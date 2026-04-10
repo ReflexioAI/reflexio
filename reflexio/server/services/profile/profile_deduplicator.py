@@ -158,8 +158,11 @@ class ProfileDeduplicator(BaseDeduplicator):
                 else "unknown"
             )
             source = profile.source or "unknown"
+            modified_date = datetime.fromtimestamp(
+                profile.last_modified_timestamp, tz=UTC
+            ).strftime("%Y-%m-%d %H:%M UTC")
             lines.append(
-                f'[{prefix}-{idx}] Content: "{profile.content}" | TTL: {ttl} | Source: {source}'
+                f'[{prefix}-{idx}] Content: "{profile.content}" | TTL: {ttl} | Source: {source} | Last Modified: {modified_date}'
             )
         return "\n".join(lines)
 

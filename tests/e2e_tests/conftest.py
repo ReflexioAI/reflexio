@@ -1,6 +1,7 @@
 """Shared fixtures and utilities for end-to-end integration tests."""
 
 import csv
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -144,6 +145,69 @@ choice of ['basic_info', 'conversation_intent']
 
 
 @pytest.fixture
+def reflexio_instance_lifestyle_profile(
+    sqlite_storage_config: StorageConfigSQLite, test_org_id: str
+) -> Reflexio:
+    """Create a Reflexio instance with a profile extractor that captures lifestyle facts.
+
+    Used by contradiction/deduplication tests where the user changes preferences
+    (e.g., becomes vegetarian, moves cities). The extractor captures any enduring
+    fact about the user's lifestyle, habits, preferences, and location so that
+    contradictions between sessions can be detected and resolved by the dedup step.
+    """
+    config = Config(
+        storage_config=sqlite_storage_config,
+        agent_context_prompt="this is a personal assistant that learns about the user over time",
+        profile_extractor_configs=[
+            ProfileExtractorConfig(
+                extractor_name="lifestyle_extractor",
+                context_prompt="""
+Extract enduring facts about the user's lifestyle, habits, preferences, and personal context
+from the conversation. Focus on things that describe who the user is and how they live.
+""",
+                profile_content_definition_prompt="""
+dietary habits and preferences (e.g., "vegetarian", "loves beef"),
+location and living situation (e.g., "lives in Austin"),
+hobbies and interests, work style, health conditions
+""",
+                metadata_definition_prompt="""
+choice of ['diet', 'location', 'hobby', 'work', 'health']
+""",
+            )
+        ],
+    )
+    configurator = DefaultConfigurator(org_id=test_org_id, config=config)
+    return Reflexio(org_id=test_org_id, configurator=configurator)
+
+
+@pytest.fixture
+def contradiction_scenarios() -> dict:
+    """Load contradiction test scenarios from test_data/contradiction_scenarios.json.
+
+    Each scenario contains a name, description, expected_final_state,
+    should_not_contain substrings, and two batches of interactions that
+    represent contradictory user preferences (e.g., beef-lover → vegetarian).
+    """
+    scenarios_path = _TEST_DATA_DIR / "contradiction_scenarios.json"
+    with open(scenarios_path, encoding="utf-8") as f:
+        data = json.load(f)
+    return {scenario["name"]: scenario for scenario in data["scenarios"]}
+
+
+def _scenario_batch_to_interactions(batch: list[dict]) -> list[InteractionData]:
+    """Convert a JSON scenario batch into a list of InteractionData objects."""
+    return [
+        InteractionData(content=turn["content"], role=turn["role"]) for turn in batch
+    ]
+
+
+@pytest.fixture
+def scenario_batch_to_interactions():
+    """Expose the batch-to-interactions helper as a fixture for tests."""
+    return _scenario_batch_to_interactions
+
+
+@pytest.fixture
 def reflexio_instance_playbook_only(
     sqlite_storage_config: StorageConfigSQLite, test_org_id: str
 ) -> Reflexio:
@@ -283,6 +347,14 @@ def cleanup_playbook_only(reflexio_instance_playbook_only):
     _cleanup_storage(reflexio_instance_playbook_only)
     yield
     _cleanup_storage(reflexio_instance_playbook_only)
+
+
+@pytest.fixture
+def cleanup_lifestyle_profile(reflexio_instance_lifestyle_profile):
+    """Fixture to clean up test data for the lifestyle_profile instance."""
+    _cleanup_storage(reflexio_instance_lifestyle_profile)
+    yield
+    _cleanup_storage(reflexio_instance_lifestyle_profile)
 
 
 @pytest.fixture

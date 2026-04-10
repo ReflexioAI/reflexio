@@ -1278,3 +1278,173 @@ def test_rerun_profile_generation_with_nonexistent_extractor_name(
     )
     # Should fail because no matching interactions/extractors
     assert rerun_response.success is False or rerun_response.profiles_generated == 0
+
+
+# ---------------------------------------------------------------------------
+# Contradiction / deduplication scenarios
+# ---------------------------------------------------------------------------
+
+
+def _assert_contradiction_resolved(
+    profiles: list[UserProfile],
+    scenario: dict,
+) -> None:
+    """Assert that final profiles reflect the newer state, not the stale one.
+
+    Args:
+        profiles: Current profiles after both batches have been extracted.
+        scenario: Scenario dict from contradiction_scenarios.json with
+            ``expected_final_state`` and ``should_not_contain`` keys.
+    """
+    assert profiles, (
+        f"[{scenario['name']}] expected at least one profile after dedup, got none"
+    )
+
+    combined = " ".join(p.content.lower() for p in profiles)
+
+    # The newer state should be represented somewhere in the profiles.
+    expected_keywords = [
+        w.lower()
+        for w in scenario["expected_final_state"].split()
+        if len(w) > 3 and w.lower() not in {"user", "does", "lives", "have", "their"}
+    ]
+    assert any(keyword in combined for keyword in expected_keywords), (
+        f"[{scenario['name']}] expected final state "
+        f"'{scenario['expected_final_state']}' not reflected in profiles: "
+        f"{[p.content for p in profiles]}"
+    )
+
+    # None of the stale phrases from batch 1 should survive into CURRENT profiles.
+    for stale_phrase in scenario["should_not_contain"]:
+        assert stale_phrase.lower() not in combined, (
+            f"[{scenario['name']}] stale phrase '{stale_phrase}' still present "
+            f"in profiles after dedup: {[p.content for p in profiles]}"
+        )
+
+
+@skip_in_precommit
+@skip_low_priority
+def test_profile_dedup_resolves_diet_reversal(
+    reflexio_instance_lifestyle_profile: Reflexio,
+    contradiction_scenarios: dict,
+    scenario_batch_to_interactions: Callable[[list[dict]], list[InteractionData]],
+    cleanup_lifestyle_profile: Callable[[], None],
+):
+    """Verify the dedup prompt resolves a direct preference reversal (diet).
+
+    Flow:
+      1. Publish batch 1 (user loves beef / eats meat every day).
+      2. Confirm a meat-eating profile was extracted.
+      3. Publish batch 2 (user became vegetarian for health reasons).
+      4. Verify the CURRENT profiles reflect the newer vegetarian state and
+         that none of the stale "loves beef" phrasing survives.
+
+    This exercises the dedup LLM's ability to use the Last Modified timestamp
+    guidance in the updated profile_deduplication prompt: when NEW profiles
+    contradict EXISTING ones, the newer information should win.
+    """
+    scenario = contradiction_scenarios["diet_reversal"]
+    user_id = f"diet_reversal_user_{uuid.uuid4().hex[:8]}"
+
+    # ---- Batch 1: establish "loves beef" profile -------------------------
+    batch_1 = scenario_batch_to_interactions(scenario["batch_1"])
+    response = reflexio_instance_lifestyle_profile.publish_interaction(
+        {
+            "user_id": user_id,
+            "interaction_data_list": batch_1,
+            "source": "contradiction_test",
+        }
+    )
+    assert response.success is True, f"batch 1 publish failed: {response.message}"
+
+    profiles_after_batch_1 = (
+        reflexio_instance_lifestyle_profile.request_context.storage.get_user_profile(
+            user_id, status_filter=[None]
+        )
+    )
+    assert profiles_after_batch_1, "expected initial profiles from batch 1"
+    batch_1_text = " ".join(p.content.lower() for p in profiles_after_batch_1)
+    assert any(term in batch_1_text for term in ("beef", "meat", "steak")), (
+        f"batch 1 should have produced a meat-related profile, got: "
+        f"{[p.content for p in profiles_after_batch_1]}"
+    )
+
+    # ---- Batch 2: contradictory "now vegetarian" profile -----------------
+    batch_2 = scenario_batch_to_interactions(scenario["batch_2"])
+    response = reflexio_instance_lifestyle_profile.publish_interaction(
+        {
+            "user_id": user_id,
+            "interaction_data_list": batch_2,
+            "source": "contradiction_test",
+        }
+    )
+    assert response.success is True, f"batch 2 publish failed: {response.message}"
+
+    # ---- Verify dedup resolved the contradiction -------------------------
+    final_profiles = (
+        reflexio_instance_lifestyle_profile.request_context.storage.get_user_profile(
+            user_id, status_filter=[None]
+        )
+    )
+    _assert_contradiction_resolved(final_profiles, scenario)
+
+
+@skip_in_precommit
+@skip_low_priority
+def test_profile_dedup_resolves_location_move(
+    reflexio_instance_lifestyle_profile: Reflexio,
+    contradiction_scenarios: dict,
+    scenario_batch_to_interactions: Callable[[list[dict]], list[InteractionData]],
+    cleanup_lifestyle_profile: Callable[[], None],
+):
+    """Verify the dedup prompt resolves a factual contradiction (location change).
+
+    Flow:
+      1. Publish batch 1 (user lives in SF).
+      2. Publish batch 2 (user moved to Austin).
+      3. Verify the CURRENT profiles reflect Austin and none of the stale
+         "lives in San Francisco" phrasing survives.
+    """
+    scenario = contradiction_scenarios["location_move"]
+    user_id = f"location_move_user_{uuid.uuid4().hex[:8]}"
+
+    # Batch 1: lives in SF
+    batch_1 = scenario_batch_to_interactions(scenario["batch_1"])
+    response = reflexio_instance_lifestyle_profile.publish_interaction(
+        {
+            "user_id": user_id,
+            "interaction_data_list": batch_1,
+            "source": "contradiction_test",
+        }
+    )
+    assert response.success is True, f"batch 1 publish failed: {response.message}"
+
+    profiles_after_batch_1 = (
+        reflexio_instance_lifestyle_profile.request_context.storage.get_user_profile(
+            user_id, status_filter=[None]
+        )
+    )
+    assert profiles_after_batch_1, "expected initial profiles from batch 1"
+    batch_1_text = " ".join(p.content.lower() for p in profiles_after_batch_1)
+    assert "san francisco" in batch_1_text or "sf" in batch_1_text, (
+        f"batch 1 should have produced an SF-related profile, got: "
+        f"{[p.content for p in profiles_after_batch_1]}"
+    )
+
+    # Batch 2: moved to Austin
+    batch_2 = scenario_batch_to_interactions(scenario["batch_2"])
+    response = reflexio_instance_lifestyle_profile.publish_interaction(
+        {
+            "user_id": user_id,
+            "interaction_data_list": batch_2,
+            "source": "contradiction_test",
+        }
+    )
+    assert response.success is True, f"batch 2 publish failed: {response.message}"
+
+    final_profiles = (
+        reflexio_instance_lifestyle_profile.request_context.storage.get_user_profile(
+            user_id, status_filter=[None]
+        )
+    )
+    _assert_contradiction_resolved(final_profiles, scenario)

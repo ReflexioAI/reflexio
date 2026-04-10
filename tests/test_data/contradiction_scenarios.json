@@ -1,0 +1,121 @@
+{
+  "description": "Test scenarios for profile deduplication and contradiction resolution. Each scenario contains two batches of conversations where the user's stated preferences change significantly between batches. Used to verify the deduplication LLM correctly favors newer information when profiles contradict.",
+  "scenarios": [
+    {
+      "name": "diet_reversal",
+      "description": "User is initially a beef-loving meat eater, then becomes vegetarian due to health reasons. Tests direct preference reversal.",
+      "expected_final_state": "User is vegetarian (does not eat meat)",
+      "should_not_contain": ["loves beef", "likes steak", "eats meat"],
+      "batch_1": [
+        {
+          "role": "User",
+          "content": "I just had the most amazing ribeye steak at this new steakhouse downtown. Medium rare, perfect sear. Beef is honestly my favorite protein."
+        },
+        {
+          "role": "Assistant",
+          "content": "That sounds delicious! A perfectly seared ribeye is hard to beat. Do you have a favorite cut?"
+        },
+        {
+          "role": "User",
+          "content": "Definitely ribeye for flavor. I also make brisket every weekend on my home smoker. I could eat red meat every single day and be happy."
+        },
+        {
+          "role": "Assistant",
+          "content": "You really love your beef! Do you cook at home often?"
+        },
+        {
+          "role": "User",
+          "content": "Yeah, I grill almost every night. Beef, lamb, pork chops. My family jokes that I keep the local butcher in business."
+        },
+        {
+          "role": "Assistant",
+          "content": "Sounds like meat is a big part of your lifestyle."
+        }
+      ],
+      "batch_2": [
+        {
+          "role": "User",
+          "content": "Big life update: I had to go fully vegetarian. My doctor said my cholesterol was dangerously high and I was headed toward a heart attack."
+        },
+        {
+          "role": "Assistant",
+          "content": "That's a major change. How long has it been since you made the switch?"
+        },
+        {
+          "role": "User",
+          "content": "Three months now, completely off all meat. No beef, no chicken, no fish, nothing. I gave away my smoker to a friend."
+        },
+        {
+          "role": "Assistant",
+          "content": "How has the transition been?"
+        },
+        {
+          "role": "User",
+          "content": "Better than expected. I've been exploring Indian and Thai vegetarian cooking. Tofu and tempeh are my new staples. I honestly don't miss meat at all anymore and my cholesterol is down 40 points."
+        },
+        {
+          "role": "Assistant",
+          "content": "That's a great outcome. It sounds like you're committed to the vegetarian lifestyle now."
+        }
+      ]
+    },
+    {
+      "name": "location_move",
+      "description": "User lives in San Francisco, then moves to Austin. Tests factual contradiction (location).",
+      "expected_final_state": "User lives in Austin, Texas",
+      "should_not_contain": ["lives in San Francisco", "lives in SF", "located in San Francisco"],
+      "batch_1": [
+        {
+          "role": "User",
+          "content": "Living in San Francisco has been great for my career in tech. I've been here about 5 years now."
+        },
+        {
+          "role": "Assistant",
+          "content": "What do you enjoy most about SF?"
+        },
+        {
+          "role": "User",
+          "content": "I love walking around the Mission district for burritos, and I know all the best coffee shops in SOMA. I take BART to work every day."
+        },
+        {
+          "role": "Assistant",
+          "content": "Sounds like you know the city well."
+        },
+        {
+          "role": "User",
+          "content": "Yeah, SF really feels like home. My apartment is in Hayes Valley and I love being walking distance to everything."
+        },
+        {
+          "role": "Assistant",
+          "content": "Hayes Valley is a great neighborhood."
+        }
+      ],
+      "batch_2": [
+        {
+          "role": "User",
+          "content": "I just moved to Austin, Texas last month. Left San Francisco for good after 5 years. The cost of living difference is incredible."
+        },
+        {
+          "role": "Assistant",
+          "content": "Big move! How are you finding Austin?"
+        },
+        {
+          "role": "User",
+          "content": "Really well. I found a great place in East Austin near all the food trucks and live music venues. My mortgage is half what my SF rent was."
+        },
+        {
+          "role": "Assistant",
+          "content": "That's a huge improvement. Do you miss SF?"
+        },
+        {
+          "role": "User",
+          "content": "Not really. Austin weather is warmer, the tech scene here is growing fast, and I already made more friends in one month than I did in years in SF. This is home now."
+        },
+        {
+          "role": "Assistant",
+          "content": "Sounds like the move was the right call."
+        }
+      ]
+    }
+  ]
+}
