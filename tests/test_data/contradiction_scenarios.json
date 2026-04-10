@@ -5,6 +5,8 @@
       "name": "diet_reversal",
       "description": "User is initially a beef-loving meat eater, then becomes vegetarian due to health reasons. Tests direct preference reversal.",
       "expected_final_state": "User is vegetarian (does not eat meat)",
+      "expected_keywords": ["vegetarian"],
+      "batch_1_sanity_terms": ["beef", "meat", "steak"],
       "should_not_contain": ["loves beef", "likes steak", "eats meat"],
       "batch_1": [
         {
@@ -63,6 +65,8 @@
       "name": "location_move",
       "description": "User lives in San Francisco, then moves to Austin. Tests factual contradiction (location).",
       "expected_final_state": "User lives in Austin, Texas",
+      "expected_keywords": ["austin"],
+      "batch_1_sanity_terms": ["san francisco", "sf"],
       "should_not_contain": ["lives in San Francisco", "lives in SF", "located in San Francisco"],
       "batch_1": [
         {

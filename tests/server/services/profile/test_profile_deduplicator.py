@@ -33,6 +33,7 @@ from reflexio.server.services.profile.profile_deduplicator import (
     ProfileDeduplicationOutput,
     ProfileDeduplicator,
     ProfileDuplicateGroup,
+    _format_profile_timestamp,
 )
 
 # ===============================
@@ -349,6 +350,63 @@ class TestFormatProfilesForPrompt:
         )
         result = deduplicator._format_profiles_with_prefix([], "NEW")
         assert result == "(None)"
+
+    def test_format_profiles_includes_last_modified_utc(
+        self, mock_request_context, mock_llm_client, mock_site_var_manager
+    ):
+        """Test that formatted profiles include the last-modified timestamp in UTC."""
+        # 1704067200 == 2024-01-01 00:00:00 UTC
+        profiles = [
+            UserProfile(
+                profile_id="1",
+                user_id="user",
+                content="test content",
+                last_modified_timestamp=1704067200,
+                generated_from_request_id="req",
+                profile_time_to_live=ProfileTimeToLive.ONE_MONTH,
+                source="extractor_a",
+            )
+        ]
+        deduplicator = ProfileDeduplicator(
+            request_context=mock_request_context,
+            llm_client=mock_llm_client,
+        )
+        result = deduplicator._format_profiles_with_prefix(profiles, "NEW")
+        assert "Last Modified: 2024-01-01 00:00 UTC" in result
+
+    def test_format_profiles_timestamp_fallback_on_invalid(
+        self, mock_request_context, mock_llm_client, mock_site_var_manager
+    ):
+        """Test formatting degrades gracefully when the timestamp is out of range."""
+        # Absurdly large value that overflows datetime.fromtimestamp on every
+        # supported platform, but is still a valid ``int`` for the Pydantic
+        # model field.
+        profiles = [
+            UserProfile(
+                profile_id="1",
+                user_id="user",
+                content="test content",
+                last_modified_timestamp=99999999999999999,
+                generated_from_request_id="req",
+                profile_time_to_live=ProfileTimeToLive.ONE_MONTH,
+                source="extractor_a",
+            )
+        ]
+        deduplicator = ProfileDeduplicator(
+            request_context=mock_request_context,
+            llm_client=mock_llm_client,
+        )
+        # Must not raise.
+        result = deduplicator._format_profiles_with_prefix(profiles, "NEW")
+        assert "Last Modified: unknown" in result
+
+    def test_format_profile_timestamp_helper_happy_path(self):
+        """The helper formats a valid timestamp identically to the old inline call."""
+        assert _format_profile_timestamp(1704067200) == "2024-01-01 00:00 UTC"
+
+    def test_format_profile_timestamp_helper_fallback(self):
+        """The helper returns the sentinel when the timestamp is out of range."""
+        assert _format_profile_timestamp(99999999999999999) == "unknown"
 
 
 # ===============================

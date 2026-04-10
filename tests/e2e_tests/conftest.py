@@ -3,6 +3,7 @@
 import csv
 import json
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -165,7 +166,7 @@ def reflexio_instance_lifestyle_profile(
 Extract enduring facts about the user's lifestyle, habits, preferences, and personal context
 from the conversation. Focus on things that describe who the user is and how they live.
 """,
-                profile_content_definition_prompt="""
+                extraction_definition_prompt="""
 dietary habits and preferences (e.g., "vegetarian", "loves beef"),
 location and living situation (e.g., "lives in Austin"),
 hobbies and interests, work style, health conditions
@@ -180,31 +181,41 @@ choice of ['diet', 'location', 'hobby', 'work', 'health']
     return Reflexio(org_id=test_org_id, configurator=configurator)
 
 
-@pytest.fixture
-def contradiction_scenarios() -> dict:
-    """Load contradiction test scenarios from test_data/contradiction_scenarios.json.
+@pytest.fixture(scope="session")
+def contradiction_scenarios() -> dict[str, dict[str, Any]]:
+    """
+    Load contradiction test scenarios from test_data/contradiction_scenarios.json.
 
     Each scenario contains a name, description, expected_final_state,
-    should_not_contain substrings, and two batches of interactions that
-    represent contradictory user preferences (e.g., beef-lover → vegetarian).
+    expected_keywords, batch_1_sanity_terms, should_not_contain substrings,
+    and two batches of interactions that represent contradictory user
+    preferences (e.g., beef-lover -> vegetarian).
+
+    Returns:
+        dict[str, dict[str, Any]]: Mapping from scenario name to the scenario dict.
     """
     scenarios_path = _TEST_DATA_DIR / "contradiction_scenarios.json"
-    with open(scenarios_path, encoding="utf-8") as f:
-        data = json.load(f)
+    data = json.loads(scenarios_path.read_text(encoding="utf-8"))
     return {scenario["name"]: scenario for scenario in data["scenarios"]}
 
 
-def _scenario_batch_to_interactions(batch: list[dict]) -> list[InteractionData]:
-    """Convert a JSON scenario batch into a list of InteractionData objects."""
+def scenario_batch_to_interactions(
+    batch: list[dict[str, str]],
+) -> list[InteractionData]:
+    """
+    Convert a JSON scenario batch into a list of InteractionData objects.
+
+    Args:
+        batch (list[dict[str, str]]): Sequence of turn dicts with ``content``
+            and ``role`` string fields, as stored in
+            ``contradiction_scenarios.json``.
+
+    Returns:
+        list[InteractionData]: One InteractionData per turn, preserving order.
+    """
     return [
         InteractionData(content=turn["content"], role=turn["role"]) for turn in batch
     ]
-
-
-@pytest.fixture
-def scenario_batch_to_interactions():
-    """Expose the batch-to-interactions helper as a fixture for tests."""
-    return _scenario_batch_to_interactions
 
 
 @pytest.fixture
