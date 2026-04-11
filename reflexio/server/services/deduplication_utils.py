@@ -7,6 +7,7 @@ ProfileDeduplicator and PlaybookDeduplicator.
 
 import logging
 from abc import ABC
+from datetime import UTC, datetime
 
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient
@@ -14,6 +15,33 @@ from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
 from reflexio.server.site_var.site_var_manager import SiteVarManager
 
 logger = logging.getLogger(__name__)
+
+# Format used for "Last Modified" timestamps shown to deduplication LLMs.
+# Includes hours and minutes so same-day contradictions (morning vs evening)
+# can be distinguished.
+DEDUP_TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M UTC"
+DEDUP_TIMESTAMP_FALLBACK = "unknown"
+
+
+def format_dedup_timestamp(ts: int) -> str:
+    """Format a Unix timestamp as a UTC date string for deduplication prompts.
+
+    Wraps ``datetime.fromtimestamp`` in a try/except so a single malformed
+    timestamp (negative, zero, or out-of-range integer) cannot abort an entire
+    deduplication batch. Returns ``DEDUP_TIMESTAMP_FALLBACK`` on failure.
+
+    Args:
+        ts (int): Unix timestamp (seconds since epoch).
+
+    Returns:
+        str: Human-readable UTC timestamp like ``"2026-04-11 14:30 UTC"``,
+            or ``"unknown"`` if the value is unparseable.
+    """
+    try:
+        return datetime.fromtimestamp(ts, tz=UTC).strftime(DEDUP_TIMESTAMP_FORMAT)
+    except (OverflowError, ValueError, OSError, TypeError) as exc:
+        logger.warning("Failed to format dedup timestamp %r: %s", ts, exc)
+        return DEDUP_TIMESTAMP_FALLBACK
 
 
 def parse_item_id(item_id: str) -> tuple[str, int] | None:

@@ -17,6 +17,7 @@ from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.services.deduplication_utils import (
     BaseDeduplicator,
+    format_dedup_timestamp,
     parse_item_id,
 )
 from reflexio.server.services.profile.profile_generation_service_utils import (
@@ -26,34 +27,10 @@ from reflexio.server.services.profile.profile_generation_service_utils import (
 
 logger = logging.getLogger(__name__)
 
-_DEDUP_TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M UTC"
-_DEDUP_TIMESTAMP_FALLBACK = "unknown"
 
-
-def _format_profile_timestamp(ts: int) -> str:
-    """
-    Format a profile's last-modified timestamp for inclusion in the
-    deduplication prompt.
-
-    Wraps ``datetime.fromtimestamp`` / ``strftime`` so that a malformed row
-    (zero, negative, or out-of-range integer) cannot abort the enclosing
-    dedup batch. On failure a sentinel string is returned and a warning is
-    logged instead of propagating the exception.
-
-    Args:
-        ts (int): Unix timestamp in seconds.
-
-    Returns:
-        str: The formatted timestamp (e.g. ``"2024-01-01 00:00 UTC"``),
-            or ``"unknown"`` if the value cannot be converted.
-    """
-    try:
-        return datetime.fromtimestamp(ts, tz=UTC).strftime(_DEDUP_TIMESTAMP_FORMAT)
-    except (OverflowError, ValueError, OSError, TypeError) as e:
-        logger.warning(
-            "Failed to format profile timestamp %r for dedup prompt: %s", ts, e
-        )
-        return _DEDUP_TIMESTAMP_FALLBACK
+# Backward-compat alias — existing unit tests import this name from this
+# module. Delegates to the shared helper in deduplication_utils.
+_format_profile_timestamp = format_dedup_timestamp
 
 
 # ===============================

@@ -20,6 +20,7 @@ from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.services.deduplication_utils import (
     BaseDeduplicator,
+    format_dedup_timestamp,
     parse_item_id,
 )
 from reflexio.server.services.playbook.playbook_service_utils import (
@@ -140,8 +141,9 @@ class PlaybookDeduplicator(BaseDeduplicator):
         for idx, playbook in enumerate(playbooks):
             playbook_name = playbook.playbook_name or "unknown"
             source = playbook.source or "unknown"
+            created_date = format_dedup_timestamp(playbook.created_at)
             lines.append(
-                f'[{prefix}-{idx}] Content: "{playbook.content}" | Name: {playbook_name} | Source: {source}'
+                f'[{prefix}-{idx}] Content: "{playbook.content}" | Name: {playbook_name} | Source: {source} | Last Modified: {created_date}'
             )
         return "\n".join(lines)
 

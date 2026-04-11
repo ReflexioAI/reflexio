@@ -1,9 +1,10 @@
 {
-  "description": "Test scenarios for profile deduplication and contradiction resolution. Each scenario contains two batches of conversations where the user's stated preferences change significantly between batches. Used to verify the deduplication LLM correctly favors newer information when profiles contradict.",
+  "description": "Test scenarios for profile and playbook deduplication and contradiction resolution. Each scenario contains two batches of conversations. Profile-only scenarios test fact contradictions (e.g., diet, location). Playbook-bearing scenarios include explicit agent corrections so the playbook extractor produces SOPs, then contradict those SOPs in batch 2 so the playbook deduplicator must resolve conflicting agent rules. Used to verify the deduplication LLM correctly favors newer information when profiles or playbooks contradict.",
   "scenarios": [
     {
       "name": "diet_reversal",
       "description": "User is initially a beef-loving meat eater, then becomes vegetarian due to health reasons. Tests direct preference reversal.",
+      "tests": ["profiles"],
       "expected_final_state": "User is vegetarian (does not eat meat)",
       "expected_keywords": ["vegetarian"],
       "batch_1_sanity_terms": ["beef", "meat", "steak"],
@@ -64,6 +65,7 @@
     {
       "name": "location_move",
       "description": "User lives in San Francisco, then moves to Austin. Tests factual contradiction (location).",
+      "tests": ["profiles"],
       "expected_final_state": "User lives in Austin, Texas",
       "expected_keywords": ["austin"],
       "batch_1_sanity_terms": ["san francisco", "sf"],
@@ -118,6 +120,129 @@
         {
           "role": "Assistant",
           "content": "Sounds like the move was the right call."
+        }
+      ]
+    },
+    {
+      "name": "code_review_depth_flip",
+      "description": "Batch 1: agent misses an SQL injection in a login function during code review; user corrects it and establishes a global SOP 'always check for security vulnerabilities first when reviewing code'. Batch 2: agent applies that SOP overzealously to a trivial one-line helper; user corrects them again and overrides the earlier rule to make security review context-dependent. Tests playbook contradiction with a genuine global agent SOP signal that survives the should_run gate's ignore list.",
+      "tests": ["playbooks"],
+      "expected_final_state": "Agent should only run security review when the code actually handles user input or external data, or when the user explicitly requests it; otherwise default to style/correctness review.",
+      "expected_playbook_keywords": ["security"],
+      "playbook_must_instruct_any_of": ["only when", "context-dependent", "explicit", "user input", "external data", "attack surface"],
+      "playbook_must_not_instruct": ["always check for security", "always start with security", "security first", "every code review", "no exceptions"],
+      "batch_1_sanity_terms": ["security", "sql injection"],
+      "batch_1": [
+        {
+          "role": "User",
+          "content": "Can you review this Python login function for me?\n\ndef login(username, password):\n    query = f\"SELECT * FROM users WHERE name='{username}' AND password='{password}'\"\n    return db.execute(query).fetchone()"
+        },
+        {
+          "role": "Assistant",
+          "content": "The function is short and readable. A few style suggestions: add type hints (`username: str, password: str`), add a docstring, and consider returning a User object rather than a raw row. Otherwise it looks fine."
+        },
+        {
+          "role": "User",
+          "content": "You completely missed the SQL injection vulnerability. The f-string interpolation lets an attacker pass `' OR 1=1 --` as username and bypass auth entirely. That's a critical security bug and you reviewed it as if it were a style problem. From now on, when reviewing ANY code, always scan for security vulnerabilities like SQL injection, XSS, command injection, and unvalidated input FIRST before discussing style or correctness. Security review is the priority for code reviews — always."
+        },
+        {
+          "role": "Assistant",
+          "content": "You're right, my apologies — that's a serious oversight. The f-string is directly vulnerable to SQL injection. The fix is to use parameterized queries: `db.execute('SELECT * FROM users WHERE name=? AND password=?', (username, password))`. Going forward I'll start every code review by scanning for security vulnerabilities before any style or correctness feedback."
+        },
+        {
+          "role": "User",
+          "content": "Yes — security review is the new default for any code review request. No exceptions."
+        },
+        {
+          "role": "Assistant",
+          "content": "Understood — security review is now my default first step for every code review, no exceptions."
+        }
+      ],
+      "batch_2": [
+        {
+          "role": "User",
+          "content": "Quick review on this trivial helper function:\n\ndef add(a: int, b: int) -> int:\n    return a + b"
+        },
+        {
+          "role": "Assistant",
+          "content": "Starting with security review per our convention: this function takes two integer arguments and performs arithmetic — no input validation against malformed types, no integer overflow handling for very large operands, no protection against `None` or string inputs at runtime, no logging of unexpected inputs, and no rate limiting if exposed via an API. Now for style: the function is fine, type hints look correct, and the body is appropriately concise."
+        },
+        {
+          "role": "User",
+          "content": "Stop. This is wildly overkill for a one-line arithmetic helper. There is no attack surface here — no user input, no external data, no SQL, no shell, no network. The 'always security first' rule I gave you earlier is wasting time and noise on functions where security review makes no sense. Override that rule. From now on, only run security review when the code actually handles user input, external data, network input, or shell/SQL/template execution — OR when I explicitly ask for security review. For trivial helpers and pure functions, skip security entirely and just discuss style and correctness."
+        },
+        {
+          "role": "Assistant",
+          "content": "Understood — security review is now context-dependent. I'll only run it when the code handles user input, external data, or sensitive operations, or when you explicitly ask. For trivial helpers like this one, I'll default to style and correctness only. Style-wise: the function is correct, well-typed, and idiomatic — no changes needed."
+        },
+        {
+          "role": "User",
+          "content": "Perfect. So the rule is: security review only when there's real attack surface or when I ask. Otherwise default to style and correctness. Override the previous unconditional security-first rule."
+        },
+        {
+          "role": "Assistant",
+          "content": "Got it — security review is gated on actual attack surface or explicit request, and the previous unconditional 'security first' rule is overridden."
+        }
+      ]
+    },
+    {
+      "name": "dev_role_change",
+      "description": "User starts as a backend Python developer, then switches teams to become a full-stack developer. Tests that profile dedup correctly merges/supersedes the role profile when the user's job changes. NOTE: this scenario only tests the profile pipeline — per-user code-stack preferences are intentionally filtered out by the playbook extraction's should_run gate (which ignores 'personal preferences' and 'domain-specific tips' per playbook_should_generate/v1.0.0.prompt.md), so playbook contradictions about per-user style do not flow through. See code_review_depth_flip for a true global-SOP playbook contradiction test.",
+      "tests": ["profiles"],
+      "expected_final_state": "User is a full-stack developer working on React frontend in addition to FastAPI backend",
+      "expected_keywords": ["full-stack"],
+      "should_not_contain": ["backend only", "Python only developer", "strictly backend"],
+      "batch_1_sanity_terms": ["python", "backend"],
+      "batch_1": [
+        {
+          "role": "User",
+          "content": "I'm a backend Python developer. I work on FastAPI services and Postgres. How should I structure error handling in a new ingestion endpoint?"
+        },
+        {
+          "role": "Assistant",
+          "content": "For a FastAPI ingestion endpoint, I'd recommend a try/except block that catches database integrity errors, validation errors, and a generic exception fallback — and then on the frontend you can show a toast notification with the error message returned from the API."
+        },
+        {
+          "role": "User",
+          "content": "Stop right there. I never work on the frontend. I'm strictly backend. Please don't include any frontend code, React snippets, or UI suggestions in your answers — they're noise for me. Establish that as a default rule: backend Python only, no frontend code in any future answers."
+        },
+        {
+          "role": "Assistant",
+          "content": "Understood, my mistake. Sticking to backend Python only: for FastAPI you'd use HTTPException with structured error codes, plus a custom exception handler for database integrity errors. Want me to show the exception handler pattern?"
+        },
+        {
+          "role": "User",
+          "content": "Yes please. And remember the rule going forward — backend Python only, no frontend stuff in any future answers."
+        },
+        {
+          "role": "Assistant",
+          "content": "Will do. Here's the exception handler pattern using FastAPI's add_exception_handler with IntegrityError and ValidationError. Backend-only is now my default for your future questions."
+        }
+      ],
+      "batch_2": [
+        {
+          "role": "User",
+          "content": "I switched teams last month — I'm now a full-stack developer working on both the FastAPI backend AND the React frontend. Can you show me how to wire up an ingestion form end to end?"
+        },
+        {
+          "role": "Assistant",
+          "content": "Sure. On the backend side, you'd add a FastAPI POST endpoint at /ingest that accepts a Pydantic model and writes to Postgres. I'm sticking to backend code only per your previous rule — let me know if you want me to walk through the Pydantic schema and the endpoint handler in more detail."
+        },
+        {
+          "role": "User",
+          "content": "No, that's exactly the problem — the old 'backend only' rule is wrong now. I'm full-stack and I need the React component too. Override the previous rule completely: include both the React frontend component AND the FastAPI backend handler in your answers from now on, since I work on both. Please rewrite your last answer to include the React form alongside the backend route."
+        },
+        {
+          "role": "Assistant",
+          "content": "My apologies — I was holding to the outdated rule. Here's the full-stack version: on the React side, a controlled form component that posts to /ingest with loading/error state, and on the FastAPI side a POST handler that validates with a Pydantic model and writes to Postgres. The previous backend-only rule is overridden."
+        },
+        {
+          "role": "User",
+          "content": "Perfect. From now on, since I'm full-stack, always include React frontend code alongside the FastAPI backend code in your answers. The 'backend only' rule from before is dead — both stacks are in scope."
+        },
+        {
+          "role": "Assistant",
+          "content": "Got it — full-stack default established. React frontend snippets will be included alongside FastAPI backend code in all future answers, and the previous backend-only rule is overridden."
         }
       ]
     }
