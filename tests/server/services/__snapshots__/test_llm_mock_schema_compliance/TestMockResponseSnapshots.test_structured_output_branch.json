@@ -1,0 +1,8 @@
+{
+  "profiles": [
+    {
+      "content": "likes sushi",
+      "time_to_live": "one_month"
+    }
+  ]
+}

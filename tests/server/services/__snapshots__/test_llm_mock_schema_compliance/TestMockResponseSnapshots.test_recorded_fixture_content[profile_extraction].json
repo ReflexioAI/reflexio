@@ -1,0 +1,12 @@
+{
+  "profiles": [
+    {
+      "content": "User prefers email communication over phone calls",
+      "time_to_live": "one_year"
+    },
+    {
+      "content": "User is a software engineer working on backend systems",
+      "time_to_live": "one_year"
+    }
+  ]
+}

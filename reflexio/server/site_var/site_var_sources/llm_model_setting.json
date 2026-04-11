@@ -1,0 +1,7 @@
+{
+    "should_run_model_name": "",
+    "default_generation_model_name": "",
+    "default_evaluate_model_name": "",
+    "embedding_model_name": "",
+    "pre_retrieval_model_name": ""
+}

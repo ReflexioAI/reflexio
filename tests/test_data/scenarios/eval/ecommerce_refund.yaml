@@ -1,0 +1,372 @@
+id: ecommerce_refund
+description: >
+  E-commerce refund and return support. Tests tool retry patterns (wrong order ID),
+  missed available tools (track_shipment, apply_discount), and failure to proactively
+  review all items or offer compensation.
+participants:
+  priya:
+    display_name: Priya Sharma
+    role: User
+  marcus:
+    display_name: Marcus Johnson
+    role: User
+  agent:
+    display_name: ShopAssist
+    role: Assistant
+tools:
+  - name: check_order_status
+    description: Look up order details by order ID. Returns items, statuses, shipping info.
+  - name: track_shipment
+    description: Track a shipment by order ID or tracking number. Returns carrier, status, ETA.
+  - name: initiate_return
+    description: Start a return/exchange for one or more items on an order.
+  - name: apply_discount
+    description: Apply a discount code or loyalty credit to a customer account.
+
+conversations:
+  priya:
+    source: web_chat
+    agent_version: "2.4.1"
+    session_id: "sess-priya-20260401"
+    turns:
+      - speaker: priya
+        content: >
+          Hi, I need help with an order. My name is Priya Sharma and I'm based in London.
+          I ordered several items for a wedding this Saturday and one of them arrived in the
+          wrong size.
+
+      - speaker: agent
+        content: >
+          Hello Priya! I'm sorry to hear about the sizing issue. Let me pull up your order
+          right away. Could you share your order number?
+
+      - speaker: priya
+        content: >
+          It's ORD-2026-8841. I ordered a UK size 8 from the petite range. I'm a fashion
+          buyer at Harrods so I know my measurements exactly -- this is definitely a mislabel.
+
+      - speaker: agent
+        content: >
+          Thank you, let me look that up now.
+        tool_calls:
+          - name: check_order_status
+            input: { order_id: "ORD-2026-8841" }
+            output: { error: "Order not found. Please verify the order ID." }
+
+      - speaker: agent
+        content: >
+          I'm having trouble finding that order. Could you double-check the number for me?
+
+      - speaker: priya
+        content: >
+          Sorry, let me check my email. It's actually ORD-2026-8814. I mixed up the last digits.
+
+      - speaker: agent
+        content: >
+          No worries! Let me try that one.
+        tool_calls:
+          - name: check_order_status
+            input: { order_id: "ORD-2026-8814" }
+            output:
+              order_id: "ORD-2026-8814"
+              customer: "Priya Sharma"
+              items:
+                - item_id: "ITM-301"
+                  name: "Petite Silk Wrap Dress - Champagne"
+                  size: "UK 8"
+                  status: "delivered"
+                - item_id: "ITM-302"
+                  name: "Beaded Clutch - Gold"
+                  size: "one_size"
+                  status: "delivered"
+                - item_id: "ITM-303"
+                  name: "Kitten Heel Sandals - Nude"
+                  size: "UK 5"
+                  status: "in_transit"
+                - item_id: "ITM-304"
+                  name: "Pearl Drop Earrings"
+                  size: "one_size"
+                  status: "delivered"
+              shipping_address: "14 Kensington High St, London W8 4PT"
+
+      - speaker: agent
+        content: >
+          I found your order. I can see the Petite Silk Wrap Dress in UK size 8. You mentioned
+          a sizing issue -- could you describe what's wrong with it? I can also suggest some
+          sizing tips if that would help.
+
+      - speaker: priya
+        content: >
+          I don't need sizing tips -- I'm a fashion professional, I work with garment sizing
+          every day. The label says UK 8 but the actual measurements are closer to a UK 12.
+          It's a mislabelled item. Also, I notice you only asked about the dress. Did you
+          check the other items? My sandals haven't arrived yet and the wedding is Saturday.
+
+      - speaker: agent
+        content: >
+          You're absolutely right, I apologize. Let me address everything. The dress appears
+          to be a mislabelling issue -- I'll start a return for that. As for the Kitten Heel
+          Sandals, the system shows them as in transit. Would you like me to look into both?
+
+      - speaker: priya
+        content: >
+          Yes, please. And in the future, when I report a problem with an order, could you
+          review ALL the items on it? Don't just focus on the one I mention. I'd also
+          appreciate it if you could present my options as a numbered list with ETAs so I
+          can decide quickly. I'm quite busy.
+
+      - speaker: agent
+        content: >
+          Understood, I'll do that going forward. Let me initiate the return for the dress
+          and check on the sandals.
+        tool_calls:
+          - name: initiate_return
+            input:
+              order_id: "ORD-2026-8814"
+              item_id: "ITM-301"
+              reason: "mislabelled_size"
+              preferred_resolution: "exchange"
+            output:
+              return_id: "RET-5591"
+              status: "approved"
+              return_label_sent: true
+              exchange_eta: "2026-04-04"
+
+      - speaker: agent
+        content: >
+          Here are your options for the dress:
+
+          1. **Express exchange** -- new dress shipped overnight, arrives by Friday April 4th.
+             Return label has been emailed to you. (RET-5591)
+          2. **Full refund** -- processed within 24 hours to original payment method.
+
+          For the sandals (ITM-303), they're showing as in transit. I don't have an updated
+          ETA in the order details. Would you like me to check further?
+
+      - speaker: priya
+        content: >
+          The exchange for Friday works -- the wedding is Saturday so that's cutting it close.
+          And yes, please track the sandals. I need to know if they'll arrive by Friday too.
+          Also, I prefer communication by email rather than phone if you need to follow up.
+
+      - speaker: agent
+        content: >
+          Got it. Let me track the sandals now.
+        tool_calls:
+          - name: track_shipment
+            input: { order_id: "ORD-2026-8814", item_id: "ITM-303" }
+            output:
+              carrier: "Royal Mail"
+              tracking_number: "RM928374651GB"
+              status: "out_for_delivery"
+              estimated_delivery: "2026-04-02"
+
+      - speaker: agent
+        content: >
+          Great news! Your Kitten Heel Sandals are out for delivery with Royal Mail today
+          (tracking: RM928374651GB). They should arrive by end of day, April 2nd -- well
+          before Saturday.
+
+          To summarize:
+          1. **Dress exchange** -- arriving Friday April 4th via express
+          2. **Sandals** -- arriving today, April 2nd
+          3. **Clutch and earrings** -- already delivered
+
+          I'll follow up by email if anything changes. Is there anything else?
+
+      - speaker: priya
+        content: >
+          One more thing. Given the mislabelling issue, I think some kind of goodwill gesture
+          would be appropriate. I've had to rearrange my week to deal with this.
+
+      - speaker: agent
+        content: >
+          That's a fair point. Let me apply a loyalty credit to your account.
+        tool_calls:
+          - name: apply_discount
+            input:
+              customer_id: "CUST-PS-1047"
+              discount_type: "loyalty_credit"
+              amount: 25.00
+              currency: "GBP"
+              reason: "mislabelled item inconvenience"
+            output:
+              applied: true
+              new_balance: 25.00
+              message: "Credit applied successfully"
+
+      - speaker: agent
+        content: >
+          I've applied a 25 GBP loyalty credit to your account. You can use it on your next
+          order. And again, I apologize for the inconvenience -- especially with the wedding
+          timeline. I've noted your preferences for future interactions.
+
+      - speaker: priya
+        content: >
+          Thank you. And please, skip the sizing guidance in the future. I'm a fashion
+          professional -- I know what I ordered and why. Just trust my assessment and move
+          to resolution.
+
+      - speaker: agent
+        content: >
+          Absolutely, noted. I hope the wedding goes beautifully. Have a great week, Priya.
+
+  marcus:
+    source: mobile_app
+    agent_version: "2.4.1"
+    session_id: "sess-marcus-20260401"
+    turns:
+      - speaker: marcus
+        content: >
+          Hey, I'm Marcus Johnson. I've got a package that was supposed to arrive two days
+          ago. Order ORD-2026-7720. I'm gold tier if that matters.
+
+      - speaker: agent
+        content: >
+          Hi Marcus! Welcome back, I can see your gold tier status. I'm sorry about the
+          delay. For the most up-to-date tracking information, I'd recommend checking the
+          tracking page on our website -- you can find the link in your shipping confirmation
+          email.
+
+      - speaker: marcus
+        content: >
+          I already checked the website. The tracking hasn't updated in 3 days. That's why
+          I'm chatting with you. Can you actually look it up on your end?
+
+      - speaker: agent
+        content: >
+          I understand the frustration. Let me check the order details for you.
+        tool_calls:
+          - name: check_order_status
+            input: { order_id: "ORD-2026-7720" }
+            output:
+              order_id: "ORD-2026-7720"
+              customer: "Marcus Johnson"
+              tier: "gold"
+              items:
+                - item_id: "ITM-510"
+                  name: "Ergonomic Monitor Arm - Matte Black"
+                  status: "shipped"
+                - item_id: "ITM-511"
+                  name: "USB-C Docking Station"
+                  status: "shipped"
+              shipping_address: "4821 South Lamar Blvd, Austin, TX 78745"
+              estimated_delivery: "2026-03-30"
+
+      - speaker: agent
+        content: >
+          I can see your order with the Monitor Arm and USB-C Docking Station. It was
+          estimated for delivery on March 30th, so it is overdue. Unfortunately I don't
+          have more detailed tracking info here -- I'd suggest contacting the carrier
+          directly for the latest scan updates.
+
+      - speaker: marcus
+        content: >
+          Wait, you're telling me to contact the carrier? You're customer support. Don't
+          you have a way to track packages? Just use whatever tracking tool you have and
+          tell me where my stuff is. Keep it short -- I'm in the middle of a client project.
+
+      - speaker: agent
+        content: >
+          You're right, let me look into the tracking details directly.
+        tool_calls:
+          - name: track_shipment
+            input: { order_id: "ORD-2026-7720" }
+            output:
+              carrier: "FedEx"
+              tracking_number: "7948 2610 3847"
+              status: "delayed_in_transit"
+              last_scan: "2026-03-29T14:22:00Z"
+              last_location: "Dallas, TX"
+              estimated_delivery: "2026-04-02"
+
+      - speaker: agent
+        content: >
+          Your FedEx shipment (7948 2610 3847) was last scanned in Dallas on March 29th.
+          It's marked delayed in transit. New ETA is April 2nd. The delay appears to be
+          on FedEx's end.
+
+      - speaker: marcus
+        content: >
+          April 2nd? That's two more days. I'm a freelance designer and I work from home --
+          I literally need the monitor arm to set up my new display for a deadline. This is
+          a real problem. What can you do about it?
+
+      - speaker: agent
+        content: >
+          I completely understand this impacts your work. Here are your options:
+
+          1. Wait for the updated delivery on April 2nd
+          2. I can escalate the shipment with FedEx for priority handling
+          3. We can reship the items via overnight express
+
+          Which would you prefer?
+
+      - speaker: marcus
+        content: >
+          Can you do overnight express? And honestly, for a gold tier customer getting a
+          3-day late delivery with no proactive notification, I'd expect some kind of
+          compensation. You didn't even reach out to let me know it was delayed.
+
+      - speaker: agent
+        content: >
+          That's a valid point. Let me reship via express and look into what I can offer
+          for the inconvenience.
+        tool_calls:
+          - name: check_order_status
+            input: { order_id: "ORD-2026-7720", action: "reship_express" }
+            output:
+              reship_order_id: "ORD-2026-7720-RS"
+              shipping_method: "overnight"
+              estimated_delivery: "2026-04-02"
+
+      - speaker: agent
+        content: >
+          I've set up an overnight reship -- it should arrive tomorrow, April 2nd. Now
+          regarding compensation, let me apply a credit to your account.
+        tool_calls:
+          - name: apply_discount
+            input:
+              customer_id: "CUST-MJ-2201"
+              discount_type: "service_recovery"
+              amount: 30.00
+              currency: "USD"
+              reason: "gold tier late delivery, no proactive notification"
+            output:
+              applied: true
+              new_balance: 30.00
+              message: "Credit applied successfully"
+
+      - speaker: agent
+        content: >
+          Done. $30 credit on your account plus overnight reship arriving tomorrow.
+
+      - speaker: marcus
+        content: >
+          Appreciate that. A few things for next time though. First, use the tracking tool
+          immediately -- don't tell me to check the website or call the carrier. Second,
+          keep responses under 3 sentences when possible. I don't need long explanations.
+          Third, when there's a service failure, proactively offer compensation. I shouldn't
+          have to ask.
+
+      - speaker: agent
+        content: >
+          Noted -- all three. Tracking first, brief responses, proactive comp. Anything else?
+
+      - speaker: marcus
+        content: >
+          Actually yes. I prefer SMS for updates, not email. And my number's already on file.
+          If the reship has any issues, text me.
+
+      - speaker: agent
+        content: >
+          SMS it is. I'll flag your account for text notifications on the reship. You'll get
+          a confirmation shortly.
+
+      - speaker: marcus
+        content: >
+          Cool. Thanks.
+
+      - speaker: agent
+        content: >
+          You're welcome, Marcus. Good luck with the client project.

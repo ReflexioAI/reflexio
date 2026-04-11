@@ -1,0 +1,17 @@
+{
+  "name": "claude-code-hook-reflexio-capture",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Claude Code Stop hook for Reflexio: reads session transcripts and publishes conversations for automatic playbook and profile extraction",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/reflexio-ai/reflexio"
+  },
+  "files": [
+    "handler.js",
+    "search_hook.js",
+    "session_start_hook.sh",
+    "HOOK.md"
+  ]
+}

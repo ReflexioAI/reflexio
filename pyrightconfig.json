@@ -1,0 +1,14 @@
+{
+    "include": ["reflexio"],
+    "exclude": [
+        "reflexio/website", "reflexio/tests", "reflexio/data",
+        "reflexio/public_docs", "**/__pycache__",
+        "reflexio/reflexio_commons/tests",
+        "reflexio/reflexio_client/tests",
+        "reflexio/scripts", "notebooks", "demo"
+    ],
+    "extraPaths": ["."],
+    "pythonVersion": "3.14",
+    "typeCheckingMode": "basic",
+    "reportMissingTypeStubs": false
+}

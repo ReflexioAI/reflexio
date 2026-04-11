@@ -1,0 +1,221 @@
+id: customer-support
+description: >
+  Customer support conversations covering returns, shipping, and account issues.
+  Tests profile extraction across two users with distinct preferences, and validates
+  that agent mistakes produce generalizable playbook rules.
+
+participants:
+  priya:
+    display_name: Priya Sharma
+    role: User
+  marcus:
+    display_name: Marcus Johnson
+    role: User
+  agent:
+    display_name: Support Agent
+    role: Assistant
+
+conversations:
+  priya:
+    source: zendesk
+    agent_version: support-bot-v2.1
+    session_id: cs-priya-001
+    turns:
+      - speaker: priya
+        content: >
+          Hi there, my name is Priya Sharma and I need help with an order I placed
+          last week. The dress I received doesn't fit right.
+
+      - speaker: agent
+        content: >
+          Hello Priya! I'm sorry to hear the dress didn't fit. I'd be happy to help
+          you with a return. Could you provide your order number so I can look into this?
+
+      - speaker: priya
+        content: >
+          Sure, it's order #PS-90472. I ordered a UK size 8 from the petite range.
+          The length is fine but the shoulders are too wide. I live in London so
+          I was hoping to exchange it at one of your local stores if possible.
+
+      - speaker: agent
+        content: >
+          Thank you, Priya. I've pulled up order #PS-90472. I can see the Elara Petite
+          Wrap Dress in navy, UK size 8. For returns and exchanges, our standard process
+          takes 7-10 business days. You can either ship it back using the prepaid label
+          or visit any of our stores. I'll email you the return shipping label now.
+
+      - speaker: priya
+        content: >
+          Wait, 7-10 days won't work at all. I need a replacement by this Saturday
+          because I'm wearing it to a wedding. That's four days from now. Can you
+          check if the next size down is available at your Covent Garden store so I
+          can just swap it in person tomorrow?
+
+      - speaker: agent
+        content: >
+          I completely understand the urgency! Let me check stock at the Covent Garden
+          location right now. Yes, the Elara Petite Wrap Dress in UK size 6 is available
+          there. I've placed a 48-hour hold on it under your name. You can bring in
+          your size 8 and exchange it directly at the store.
+
+      - speaker: priya
+        content: >
+          Perfect, that's exactly what I needed. In the future, when I ask about timelines,
+          please give me exact dates instead of ranges like "7-10 days." If you'd said
+          "you'll have it by the 15th" I would have immediately known that was too late.
+
+      - speaker: agent
+        content: >
+          That's a great point, and I apologize for not asking about your timeline upfront.
+          I'll make sure to provide specific dates going forward. Is there anything else
+          about the exchange I can help with?
+
+      - speaker: priya
+        content: >
+          Actually yes. I work as a fashion buyer at Harrods, so I deal with garment
+          specs all day. When I say the shoulders are too wide, I don't need you to
+          walk me through how to measure or suggest I try a different style. I'm a
+          fashion professional — skip the basic sizing advice, I know what I need.
+
+      - speaker: agent
+        content: >
+          Understood completely. With your background, I'll keep sizing discussions
+          technical and to the point. Would you like me to pull the size 6 spec sheet
+          so you can compare shoulder measurements before heading to the store?
+
+      - speaker: priya
+        content: >
+          Yes, that would actually be really helpful. Can you send it to my email?
+          I prefer email over phone calls for things like this — easier to reference
+          documents when I'm on the go.
+
+      - speaker: agent
+        content: >
+          Absolutely. I'll email the spec sheet to the address on your account right away.
+          You should have it within a few minutes.
+
+      - speaker: priya
+        content: >
+          Great. One more thing — when you present options to me, could you always
+          format them as a numbered list? Like "1. Exchange in store, 2. Ship replacement,
+          3. Full refund." That way I can just reply with a number and we move faster.
+
+      - speaker: agent
+        content: >
+          Done! I'll format options as numbered lists from now on. Here's a summary
+          of your next steps:
+
+          1. Visit the Covent Garden store before Friday 6pm (hold expires then)
+          2. Bring the navy Elara dress in UK 8 for exchange
+          3. Pick up the UK 6 held under your name
+
+          Anything else I can help with?
+
+      - speaker: priya
+        content: >
+          That's perfect, thank you. Much easier to scan. I think that covers everything
+          for now.
+
+      - speaker: agent
+        content: >
+          Wonderful! I've sent the spec sheet to your email. Good luck at the wedding
+          Saturday — I'm sure the dress will be perfect. Don't hesitate to reach out
+          if you need anything else.
+
+  marcus:
+    source: zendesk
+    agent_version: support-bot-v2.1
+    session_id: cs-marcus-001
+    turns:
+      - speaker: marcus
+        content: >
+          Hey, I need to check on an order. Marcus Johnson, order #MJ-31085.
+          Gold tier member.
+
+      - speaker: agent
+        content: >
+          Hi Marcus! Welcome back, and thank you for being a valued Gold tier member.
+          I can see your order #MJ-31085. How can I assist you today?
+
+      - speaker: marcus
+        content: >
+          The standing desk converter I ordered was supposed to arrive yesterday.
+          I work from home as a freelance designer here in Austin, and I've got a
+          client presentation setup I need it for. Where is it?
+
+      - speaker: agent
+        content: >
+          I understand how important that is for your work setup! You can check the
+          latest tracking status by visiting our tracking page at track.example.com
+          and entering your order number. That'll give you the most up-to-date
+          delivery information.
+
+      - speaker: marcus
+        content: >
+          Come on, you have my order number right there. Don't send me to a tracking
+          page — just look it up and tell me where the package is.
+
+      - speaker: agent
+        content: >
+          You're absolutely right, I apologize. Let me pull that up directly. Your
+          package is currently at the Austin distribution center and is out for delivery
+          today. The estimated delivery window is between 2pm and 6pm CST.
+
+      - speaker: marcus
+        content: >
+          That's more like it. Keep responses short from now on — no filler, no fluff,
+          just the facts. I don't need a paragraph when a sentence will do.
+
+      - speaker: agent
+        content: >
+          Got it. Package arrives today, 2-6pm CST. Anything else?
+
+      - speaker: marcus
+        content: >
+          Yeah. I also ordered a monitor arm last week, order #MJ-31102. I'm setting
+          up my whole home office this month. What's the status on that one?
+
+      - speaker: agent
+        content: >
+          Order #MJ-31102, the monitor arm: shipped yesterday, tracking shows it left
+          the Dallas facility this morning. Estimated delivery is Thursday.
+
+      - speaker: marcus
+        content: >
+          Good. And don't repeat my information back to me — I know what I ordered
+          and my own order numbers. Just give me the status.
+
+      - speaker: agent
+        content: >
+          Fair point. Shipped yesterday, arrives Thursday. Anything else?
+
+      - speaker: marcus
+        content: >
+          One more thing. I noticed you sent a delivery confirmation to my email last
+          time. I barely check email. Can you always send updates via SMS instead?
+          That's how I prefer to get notifications.
+
+      - speaker: agent
+        content: >
+          Updated your notification preference to SMS. You'll get delivery alerts
+          via text for both orders.
+
+      - speaker: marcus
+        content: >
+          Good. Also, the desk mat I got last month has a tear in it already. Order
+          #MJ-30844. I need a replacement.
+
+      - speaker: agent
+        content: >
+          I see the order. Since you're Gold tier, I've initiated an immediate
+          replacement — no need to return the damaged one. Ships today, arrives
+          by Wednesday. SMS confirmation incoming.
+
+      - speaker: marcus
+        content: >
+          That's how it should be done. Quick, no runaround. Thanks.
+
+      - speaker: agent
+        content: >
+          Anytime. Three orders in flight — desk converter today, monitor arm Thursday,
+          desk mat replacement Wednesday. All SMS updates active.

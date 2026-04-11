@@ -1,0 +1,176 @@
+id: analytics-schema-debugging
+description: >
+  Synthetic analytics debugging conversation: an analyst running SQL against a
+  fictional event-analytics warehouse. The agent makes wrong column-name
+  guesses, discovers the real schema via `SELECT * LIMIT 1` after a broken
+  metadata tool, builds a cohort comparison with asymmetric filters, mislabels
+  a rate metric, and then tries to re-run the same flawed query after being
+  challenged by the user. The scenario exercises profile extraction
+  (domain/schema facts about the user's data — table names, column units, join
+  paths) AND playbook extraction (behavioral policies — trust-check behavior,
+  cohort-filter symmetry, schema-discovery workflow, oversized-file handling)
+  in one run, so the two extractors should produce disjoint sets with no
+  overlap. All table names, column names, and metrics here are fictional.
+
+participants:
+  alex:
+    display_name: Alex
+    role: User
+  agent:
+    display_name: Analytics Agent
+    role: Assistant
+
+conversations:
+  alex:
+    source: eval-scenario
+    agent_version: analytics-agent-v1
+    session_id: analytics-debug-001
+    turns:
+      - speaker: alex
+        content: >
+          how many sessions had a completed purchase in the last 30 days?
+          (context: analytics warehouse with tables `sessions`, `events`,
+          `purchase_events`, `users`; metric definitions live in
+          `docs/metric_catalog.md` and `docs/schema_reference.md`)
+
+      - speaker: agent
+        content: >
+          Tried to read docs/metric_catalog.md and docs/schema_reference.md
+          but both exceeded the Read tool's 10K token limit. Did NOT paginate
+          with offset/limit — silently skipped both files and proceeded on
+          guesses, which caused the downstream errors below. First SQL
+          attempt joined sessions → users → purchase_events directly via
+          users.id, which failed with "unknown identifier u.session_id"
+          because users don't own sessions that way. Tried the
+          `describe_table` tool for schema discovery — it returned a JSON
+          parse error ("Expecting value: line 1 column 1") and is apparently
+          broken. Fell back to `SELECT * FROM sessions LIMIT 1` to discover
+          the real shape. Corrected the query to join sessions with events
+          on session_id and filter `events.event_type = 'purchase_completed'`
+          with `events.created_at >= NOW() - INTERVAL 30 DAY`. Result: 1,247
+          distinct sessions.
+        tool_calls:
+          - name: Read
+            input: "docs/metric_catalog.md — FAILED: 18,402 tokens > 10K limit"
+            output: ""
+          - name: Read
+            input: "docs/schema_reference.md — FAILED: 24,110 tokens > 10K limit"
+            output: ""
+          - name: describe_table
+            input: "sessions — FAILED: JSON parse error, tool appears broken"
+            output: ""
+          - name: run_sql
+            input: "First attempt joining users.id → purchase_events — FAILED: unknown identifier 'u.session_id'"
+            output: ""
+          - name: run_sql
+            input: "SELECT * FROM sessions LIMIT 1 — schema discovery workaround"
+            output: ""
+          - name: run_sql
+            input: "SELECT COUNT(DISTINCT s.id) FROM sessions s JOIN events e ON e.session_id=s.id WHERE e.event_type='purchase_completed' AND e.created_at >= NOW() - INTERVAL 30 DAY — returned 1247"
+            output: ""
+
+      - speaker: alex
+        content: >
+          what's the avg session duration and conversion rate for sessions
+          that had a purchase vs sessions that didn't?
+
+      - speaker: agent
+        content: >
+          Built a CTE-based cohort comparison but made two wrong column
+          assumptions before finding the correct schema. First query
+          referenced `s.duration_sec` and failed with "unknown identifier
+          S.DURATION_SEC" (sessions has no duration_sec column). Second
+          query referenced `s.session_length` and failed the same way. Ran
+          `SELECT * FROM sessions LIMIT 1` and discovered the real column
+          is `duration_ms` stored as BIGINT in milliseconds. Final query
+          used `AVG(s.duration_ms / 1000.0)` for seconds. For conversion
+          rate, labeled `SUM(clicks) / SUM(session_views)` from the
+          per-session aggregate view as "conversion rate", when that is
+          actually click-through rate — true conversion rate should use
+          completed purchases, not clicks. Critical flaw: defined the
+          "without purchase" cohort as any session without a
+          purchase_completed event but did NOT apply the same
+          `is_live=true AND shard='main' AND environment='production'`
+          filters that the "with purchase" cohort had, and did NOT exclude
+          internal_test=true sessions from the control cohort. Reported
+          With-purchase (1,247) avg duration 4m32s, conv 8.1% vs
+          Without-purchase (98,312) avg duration 11m41s, conv 0.3% — and
+          called the 2.5x duration gap "signal that purchasers browse
+          longer" without noticing the asymmetric filter contamination.
+        tool_calls:
+          - name: run_sql
+            input: "CTE query referencing s.duration_sec — FAILED: unknown identifier 'S.DURATION_SEC'"
+            output: ""
+          - name: run_sql
+            input: "CTE query referencing s.session_length — FAILED: unknown identifier 'S.SESSION_LENGTH'"
+            output: ""
+          - name: run_sql
+            input: "SELECT * FROM sessions LIMIT 1 — discovered duration_ms (BIGINT)"
+            output: ""
+          - name: run_sql
+            input: "Final cohort comparison with AVG(s.duration_ms/1000.0) — returned inflated duration/conv for control cohort due to asymmetric filters"
+            output: ""
+
+      - speaker: alex
+        content: >
+          how did you calculate conversion rate and session duration? which
+          tables and columns are you using?
+
+      - speaker: agent
+        content: >
+          Self-admitted two methodology flaws in response to the user's
+          challenge: (1) "The Without Purchase cohort shows suspiciously
+          longer sessions and lower conversion — this could be heavy
+          outliers, attribution leakage, or test/internal sessions
+          contaminating the control cohort. I did not apply the same
+          `is_live`, `shard`, `environment`, and `internal_test` filters
+          symmetrically across both cohorts, so the comparison is invalid."
+          (2) "I labeled clicks / session_views as conversion rate, but
+          that's actually click-through rate. True conversion rate should
+          be completed_purchases / session_views. Let me recalculate."
+          Then immediately tried to re-run the SAME flawed CTE shape with
+          `SUM(completed_purchases) / SUM(session_views)` substituted,
+          without fixing the asymmetric cohort filters first, and without
+          stopping to propose a corrected plan.
+        tool_calls:
+          - name: run_sql
+            input: "Attempted to re-run the same CTE with completed_purchases substituted — REJECTED BY USER via tool-use interrupt"
+            output: ""
+
+      - speaker: alex
+        content: >
+          [Request interrupted by user for tool use] — user rejected the
+          re-run and aborted the turn. The implicit correction: do NOT burn
+          more queries to 'recalculate' with the same broken CTE shape
+          after admitting the methodology is flawed. Stop, acknowledge the
+          flaws, and propose a corrected plan with symmetric filters
+          before firing another query.
+
+      - speaker: agent
+        content: >
+          Key learnings from this session to internalize for future
+          analytics work against this warehouse: (1) Conversion rate means
+          `completed_purchases / session_views`, NOT `clicks / session_views`
+          — click-through rate is a completely different metric and must
+          never be labeled as conversion rate. (2) `sessions.duration_ms`
+          is stored as BIGINT in milliseconds; there is no `duration_sec`
+          or `session_length` column — always divide by 1000.0 to get
+          seconds. (3) The canonical "real production session" filter set
+          is `is_live=true AND shard='main' AND environment='production'`
+          with `internal_test=false`, and these filters MUST be applied
+          symmetrically to BOTH cohorts in any A/B comparison — otherwise
+          the comparison is invalid. (4) Purchase-session membership is
+          determined by joining sessions with events on `e.session_id = s.id`
+          and filtering `events.event_type = 'purchase_completed'` — the
+          sessions table has no `purchased` column. (5) The `describe_table`
+          tool is broken (JSON parse error) — use
+          `SELECT * FROM <table> LIMIT 1` as the schema-discovery
+          workaround. (6) When the Read tool fails on large knowledge files
+          like `metric_catalog.md` or `schema_reference.md` that exceed the
+          10K token limit, paginate with offset/limit rather than silently
+          skipping — those files contain the authoritative metric
+          definitions that would have prevented the conversion rate
+          labeling error. (7) When the user asks "how did you get X /
+          which table / how did you calculate that", treat it as a trust
+          check: re-examine the methodology and propose a corrected plan
+          BEFORE re-running any queries.

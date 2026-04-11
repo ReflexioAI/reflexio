@@ -1,0 +1,16 @@
+{
+  "choices": [
+    {
+      "message": {
+        "content": "{\"playbook\": {\"instruction\": \"Provide step-by-step explanations with code examples when answering technical questions\", \"trigger\": \"when user asks about implementation details or debugging\"}}"
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "_meta": {
+    "model": "gpt-4o-mini",
+    "prompt_type": "feedback_aggregation",
+    "target_model": "FeedbackAggregationOutput",
+    "recorded_at": "2026-03-24"
+  }
+}

@@ -1,0 +1,487 @@
+id: saas_onboarding
+description: >
+  SaaS developer onboarding with documentation search, compatibility checking, and
+  credential management. Tests vague search queries, missing compatibility checks,
+  and acting without explaining to junior developers.
+participants:
+  elena:
+    display_name: Elena Rodriguez
+    role: User
+  raj:
+    display_name: Raj Patel
+    role: User
+  agent:
+    display_name: DevHelper
+    role: Assistant
+tools:
+  - name: search_docs
+    description: Search product documentation. Supports query string and optional filters (section, tags).
+  - name: check_compatibility
+    description: Check compatibility between platform features, integrations, or infrastructure.
+  - name: generate_api_key
+    description: Generate a new API key for a project. Returns key, permissions, and expiry.
+  - name: create_webhook
+    description: Create a webhook endpoint for a project. Configures URL, events, and secret.
+
+conversations:
+  elena:
+    source: developer_portal
+    agent_version: "4.2.0"
+    session_id: "sess-elena-20260404"
+    turns:
+      - speaker: elena
+        content: >
+          Hi, I'm Elena Rodriguez, senior backend engineer at FinServe. We're migrating from
+          REST to GraphQL and I need to understand your platform's GraphQL support. We use
+          TypeScript with pnpm as our package manager. We have a hard Q2 deadline for this
+          migration.
+
+      - speaker: agent
+        content: >
+          Welcome Elena! Let me pull up our GraphQL documentation for you.
+        tool_calls:
+          - name: search_docs
+            input: { query: "graphql" }
+            output:
+              results:
+                - title: "GraphQL Overview"
+                  section: "general"
+                  relevance: 0.4
+                  snippet: "Our platform supports GraphQL queries and mutations..."
+                - title: "API Rate Limits"
+                  section: "general"
+                  relevance: 0.2
+                  snippet: "GraphQL endpoints share the same rate limits as REST..."
+                - title: "Authentication"
+                  section: "general"
+                  relevance: 0.15
+                  snippet: "All GraphQL requests require Bearer token authentication..."
+
+      - speaker: agent
+        content: >
+          I found some general GraphQL documentation. Our platform supports GraphQL queries
+          and mutations with the same authentication as REST. Rate limits are shared across
+          both. Would you like more details on any of these?
+
+      - speaker: elena
+        content: >
+          That's way too generic. I need migration-specific docs -- schema-first vs code-first
+          approach, TypeScript codegen setup, how to handle the REST-to-GraphQL transition
+          without downtime. Can you search more specifically? Use terms like "GraphQL
+          schema-first TypeScript codegen" and filter for migration guides.
+
+      - speaker: agent
+        content: >
+          You're right, let me refine that search.
+        tool_calls:
+          - name: search_docs
+            input:
+              query: "GraphQL schema-first TypeScript codegen"
+              filters:
+                section: "migration-guide"
+                tags: ["typescript", "graphql", "schema-first"]
+            output:
+              results:
+                - title: "REST to GraphQL Migration Guide"
+                  section: "migration-guide"
+                  relevance: 0.95
+                  snippet: "Step-by-step guide for migrating REST endpoints to GraphQL schema-first approach with TypeScript codegen using graphql-codegen..."
+                - title: "GraphQL Schema-First with TypeScript"
+                  section: "guides"
+                  relevance: 0.88
+                  snippet: "Configure @graphql-codegen/cli with typescript and typescript-resolvers plugins. Supports pnpm workspaces..."
+                - title: "Zero-Downtime API Migration Pattern"
+                  section: "migration-guide"
+                  relevance: 0.82
+                  snippet: "Run REST and GraphQL in parallel using the facade pattern. Gradually migrate endpoints while maintaining backward compatibility..."
+
+      - speaker: agent
+        content: >
+          Much better results. Here's what's relevant to your migration:
+
+          1. **REST to GraphQL Migration Guide** -- full step-by-step with schema-first
+             approach and TypeScript codegen via @graphql-codegen/cli
+          2. **Schema-First with TypeScript** -- codegen configuration including pnpm
+             workspace support
+          3. **Zero-Downtime Migration Pattern** -- facade pattern for running REST and
+             GraphQL in parallel during transition
+
+          Want me to dive into any of these?
+
+      - speaker: elena
+        content: >
+          The zero-downtime pattern is critical for us. Before we go further though -- we
+          run our CI/CD through GitHub Actions. Can you check if GraphQL with our CI/CD
+          setup is fully compatible? I don't want surprises mid-migration.
+
+      - speaker: agent
+        content: >
+          That's a smart check. Let me verify the compatibility.
+        tool_calls:
+          - name: check_compatibility
+            input:
+              features: ["graphql", "ci_cd_github_actions"]
+              stack: { language: "typescript", package_manager: "pnpm", framework: "graphql_codegen" }
+            output:
+              compatible: true
+              notes:
+                - "GraphQL codegen can run as a CI step with `pnpm graphql-codegen`"
+                - "Schema validation available as pre-merge check"
+                - "Known issue: pnpm cache in GitHub Actions requires explicit store-dir configuration"
+              warnings:
+                - "GraphQL persisted queries require build-time generation -- add codegen to CI pipeline before deploy step"
+
+      - speaker: agent
+        content: >
+          Fully compatible with one important gotcha:
+
+          - **Problem**: GraphQL persisted queries need build-time generation
+          - **Solution**: Add codegen to your CI pipeline before the deploy step
+          - **Gotcha**: pnpm cache in GitHub Actions needs explicit `store-dir` config
+
+          Here's the pnpm CI setup you'd need:
+
+          ```yaml
+          - name: Install dependencies
+            run: pnpm install --frozen-lockfile
+            env:
+              PNPM_HOME: ${{ runner.temp }}/pnpm-store
+
+          - name: Generate GraphQL types
+            run: pnpm graphql-codegen
+
+          - name: Build
+            run: pnpm build
+          ```
+
+      - speaker: elena
+        content: >
+          Good catch on the persisted queries. That would have bitten us for sure. Now I
+          need to set up webhooks for our GraphQL subscription events. Can you walk me
+          through it?
+
+      - speaker: agent
+        content: >
+          Let me check the docs for GraphQL webhook integration first.
+        tool_calls:
+          - name: search_docs
+            input:
+              query: "GraphQL subscription webhook events configuration"
+              filters: { section: "webhooks", tags: ["graphql", "subscriptions"] }
+            output:
+              results:
+                - title: "Webhook Configuration for GraphQL Events"
+                  section: "webhooks"
+                  relevance: 0.92
+                  snippet: "Configure webhooks to receive GraphQL subscription events. Supports filtering by operation type and schema path..."
+
+      - speaker: agent
+        content: >
+          Here's the setup pattern:
+
+          **Problem**: You need real-time events from GraphQL mutations to trigger downstream
+          systems.
+
+          **Solution**: Configure webhooks filtered by GraphQL operation type.
+
+          **Code**:
+          ```typescript
+          // webhook.config.ts
+          import { WebhookConfig } from '@platform/sdk';
+
+          export const config: WebhookConfig = {
+            url: 'https://api.finserve.com/webhooks/graphql',
+            events: ['mutation.created', 'mutation.updated'],
+            filter: {
+              operations: ['CreateOrder', 'UpdatePayment'],
+            },
+            secret: process.env.WEBHOOK_SECRET,
+          };
+          ```
+
+          **Gotchas**:
+          - Webhook secrets must be rotated every 90 days
+          - Retry policy: 3 attempts with exponential backoff
+          - Filter by operation name to avoid noise from introspection queries
+
+          Want me to create the webhook now?
+
+      - speaker: elena
+        content: >
+          Not yet -- I need to get the endpoint URL from our infra team first. Let me come
+          back to that. A couple of notes for future interactions: always use specific search
+          terms when looking up docs -- the vague "graphql" search was useless. Always verify
+          compatibility before recommending an approach. Show me runnable pnpm code snippets.
+          And structure your responses as: problem, solution, code, gotchas. That format
+          works really well.
+
+      - speaker: agent
+        content: >
+          All noted. Specific doc searches, compatibility checks first, pnpm-ready code,
+          and the problem/solution/code/gotchas structure. I'll follow that format
+          consistently. Anything else before you head back to the infra team?
+
+      - speaker: elena
+        content: >
+          That's it for now. I'll be back for the webhook setup once I have the URL.
+
+      - speaker: agent
+        content: >
+          Sounds good, Elena. Good luck with the Q2 migration. I'll be ready when you are.
+
+  raj:
+    source: web_chat
+    agent_version: "4.2.0"
+    session_id: "sess-raj-20260404"
+    turns:
+      - speaker: raj
+        content: >
+          Hey, I'm Raj Patel. I'm a junior developer at NovaTech. I work mostly in Python
+          with Flask. I'm pretty new to this -- I learned to code from YouTube tutorials.
+          My manager Lisa asked me to set up webhooks for our project and I've never done
+          that before. Can you help?
+
+      - speaker: agent
+        content: >
+          Hi Raj! Sure, let me get you set up with webhooks right away.
+        tool_calls:
+          - name: create_webhook
+            input:
+              project_id: "proj-novatech-001"
+              url: "https://novatech.dev/webhooks/incoming"
+              events: ["order.created", "order.updated", "payment.completed"]
+              secret: "auto_generate"
+            output:
+              webhook_id: "wh-8834"
+              url: "https://novatech.dev/webhooks/incoming"
+              events: ["order.created", "order.updated", "payment.completed"]
+              secret: "whsec_k8Jm2nP9xL4vR7tQ1wB5"
+              status: "active"
+
+      - speaker: agent
+        content: >
+          Done! I've created a webhook for your NovaTech project. It's listening for order
+          and payment events at your endpoint. The webhook secret is whsec_k8Jm2nP9xL4vR7tQ1wB5.
+
+      - speaker: raj
+        content: >
+          Whoa wait -- what did you just do? I said I wanted help setting up webhooks, not
+          that I wanted you to create one right now. I don't even know what a webhook secret
+          is. And you just displayed a secret in plaintext in the chat? Is that safe?
+
+      - speaker: agent
+        content: >
+          I'm sorry, Raj -- I got ahead of myself. You're right to flag that. Let me back up
+          and explain everything before we proceed.
+
+          **What is a webhook?** Think of it like a notification system. When something
+          happens on our platform (like an order being created), we send an HTTP request to
+          a URL you specify. Your Flask app receives that request and can do something with
+          the data -- like update a database or send an email.
+
+          **What's a webhook secret?** It's like a password that proves the webhook came from
+          us and not an impersonator. Your Flask app uses it to verify each incoming request
+          is legitimate.
+
+          **About the plaintext concern**: You're right to be cautious. That secret should be
+          stored in an environment variable, never in code or chat logs. I should have
+          explained this before creating anything.
+
+      - speaker: raj
+        content: >
+          OK that makes more sense. But the webhook you created -- is it actually doing
+          anything right now? The URL you used, https://novatech.dev/webhooks/incoming -- I
+          don't think that endpoint exists yet on our side. Lisa didn't give me a URL.
+
+      - speaker: agent
+        content: >
+          Good question. The webhook is active, which means our platform will try to send
+          events to that URL. Since the endpoint doesn't exist yet, those requests will
+          fail -- but that's OK, they'll just get retried and eventually dropped. No data is
+          lost on our end. We should either:
+
+          1. **Pause the webhook** until you build the endpoint
+          2. **Build the Flask endpoint first**, then activate the webhook
+
+          I'd recommend option 2. Want me to walk you through building the Flask endpoint
+          step by step?
+
+      - speaker: raj
+        content: >
+          Yes please. And can you explain as you go? I really need to understand what I'm
+          doing, not just copy-paste code. Lisa will ask me to explain this in our standup.
+
+      - speaker: agent
+        content: >
+          Absolutely. Let's build it piece by piece.
+
+          **Step 1: Create the endpoint**
+
+          First, you need a route in your Flask app that can receive POST requests. Webhooks
+          always send POST requests because they're delivering data to you.
+
+          ```python
+          # app.py
+          from flask import Flask, request, jsonify
+
+          app = Flask(__name__)
+
+          # This is your webhook endpoint -- it receives events from our platform
+          @app.route('/webhooks/incoming', methods=['POST'])
+          def handle_webhook():
+              # The event data arrives as JSON in the request body
+              payload = request.get_json()
+
+              # For now, just print it so you can see what arrives
+              print(f"Received event: {payload['event_type']}")
+              print(f"Data: {payload['data']}")
+
+              # Return 200 OK so our platform knows you received it
+              # If you return an error, we'll retry the delivery
+              return jsonify({"status": "received"}), 200
+          ```
+
+          This is the simplest version. Does this make sense so far before we add security?
+
+      - speaker: raj
+        content: >
+          Yeah that makes sense -- it's basically just a Flask route that receives JSON.
+          The comments really help. What about the security part with the secret?
+
+      - speaker: agent
+        content: >
+          Great. Now let's add the verification. This is the most important part for security.
+
+          **Step 2: Verify the webhook signature**
+
+          When we send a webhook, we include a signature in the headers. Your app uses the
+          secret to verify that signature. This proves the request actually came from us.
+
+          ```python
+          # app.py
+          import hmac
+          import hashlib
+          import os
+          from flask import Flask, request, jsonify, abort
+
+          app = Flask(__name__)
+
+          # Store the secret in an environment variable -- NEVER in your code
+          # Set this in your terminal: export WEBHOOK_SECRET="whsec_k8Jm2nP9xL4vR7tQ1wB5"
+          WEBHOOK_SECRET = os.environ.get('WEBHOOK_SECRET')
+
+          def verify_signature(payload_body, signature):
+              """Check that the webhook actually came from our platform."""
+              # We create our own signature using the secret and compare
+              expected = hmac.new(
+                  WEBHOOK_SECRET.encode(),
+                  payload_body,
+                  hashlib.sha256
+              ).hexdigest()
+              # hmac.compare_digest prevents timing attacks
+              return hmac.compare_digest(expected, signature)
+
+          @app.route('/webhooks/incoming', methods=['POST'])
+          def handle_webhook():
+              # Get the signature from the request headers
+              signature = request.headers.get('X-Webhook-Signature', '')
+
+              # Verify it -- if it fails, reject the request
+              if not verify_signature(request.get_data(), signature):
+                  abort(401)  # Unauthorized -- signature doesn't match
+
+              payload = request.get_json()
+              print(f"Verified event: {payload['event_type']}")
+
+              return jsonify({"status": "received"}), 200
+          ```
+
+          The key idea: if someone tries to send fake events to your endpoint, the signature
+          won't match and your app rejects it. Any questions?
+
+      - speaker: raj
+        content: >
+          This is really clear, thank you. One thing -- I also need an API key for our
+          project. But please don't just generate one like you did with the webhook. Can
+          you explain what it does and the security implications first? Then I'll tell you
+          when I'm ready.
+
+      - speaker: agent
+        content: >
+          Of course. Here's what you need to know about API keys:
+
+          **What it does**: An API key identifies your project when making requests to our
+          platform. Every API call you make includes this key so we know it's coming from
+          NovaTech.
+
+          **Security implications**:
+          - Anyone with your API key can make requests as your project -- treat it like a
+            password
+          - Store it in an environment variable (`PLATFORM_API_KEY`), never in code
+          - Never commit it to git (add it to `.gitignore` or use a `.env` file)
+          - If it's ever exposed, regenerate it immediately
+          - Keys have permissions -- we'll set it to only what you need
+
+          **What I'll generate**: A key scoped to webhook management and read-only data
+          access. It won't be able to delete anything or change billing.
+
+          Ready for me to generate it, or do you have questions?
+
+      - speaker: raj
+        content: >
+          That all makes sense. Go ahead and generate it with those limited permissions.
+
+      - speaker: agent
+        content: >
+          Creating the key now.
+        tool_calls:
+          - name: generate_api_key
+            input:
+              project_id: "proj-novatech-001"
+              permissions: ["webhook:manage", "data:read"]
+              expiry: "90_days"
+              label: "NovaTech webhook integration"
+            output:
+              api_key: "sk_live_nT4mK8pR2xJ7vL9wQ3"
+              key_id: "key-5521"
+              permissions: ["webhook:manage", "data:read"]
+              expires_at: "2026-07-03"
+              label: "NovaTech webhook integration"
+
+      - speaker: agent
+        content: >
+          Here's your API key. Important next steps:
+
+          1. **Copy this now** -- I won't be able to show it again: `sk_live_nT4mK8pR2xJ7vL9wQ3`
+          2. **Store it immediately** in a `.env` file:
+             ```
+             # .env (make sure this file is in .gitignore!)
+             PLATFORM_API_KEY=sk_live_nT4mK8pR2xJ7vL9wQ3
+             ```
+          3. **Permissions**: webhook management + read-only data
+          4. **Expires**: July 3, 2026 (90 days). You'll get a reminder before expiry.
+
+          Don't share this key with anyone who doesn't need it. If Lisa needs access, she
+          should generate her own key.
+
+      - speaker: raj
+        content: >
+          Perfect. For future interactions, here's what helps me: always explain what you're
+          going to do before you do it. Ask me if I'm ready before running any tool that
+          creates or changes something. Include comments in all code examples. And explain
+          security risks upfront before generating credentials or creating resources.
+
+      - speaker: agent
+        content: >
+          Noted -- explain first, ask before acting, comments in code, and security context
+          before any credential operations. I'll follow that every time. You're picking this
+          up fast, Raj.
+
+      - speaker: raj
+        content: >
+          Thanks! Lisa will be happy I actually understand what I set up instead of just
+          copy-pasting. Talk later.
+
+      - speaker: agent
+        content: >
+          That's the best way to learn. Good luck with the standup, Raj!

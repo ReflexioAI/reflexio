@@ -1,0 +1,16 @@
+{
+  "choices": [
+    {
+      "message": {
+        "content": "{\"is_success\": true, \"is_escalated\": false}"
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "_meta": {
+    "model": "gpt-4o-mini",
+    "prompt_type": "agent_success_evaluation",
+    "target_model": "AgentSuccessEvaluationOutput",
+    "recorded_at": "2026-03-24"
+  }
+}

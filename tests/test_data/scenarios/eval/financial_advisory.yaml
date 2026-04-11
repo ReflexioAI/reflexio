@@ -1,0 +1,403 @@
+id: financial_advisory
+description: >
+  Financial advisory conversations with complex personal situations. Tests missed
+  tax treaty lookup tool, suboptimal QDRO calculation parameters, generic advice
+  that ignores user-specific complexity, and tone insensitivity.
+participants:
+  sophie:
+    display_name: Sophie Laurent
+    role: User
+  james:
+    display_name: James O'Brien
+    role: User
+  agent:
+    display_name: WealthGuide
+    role: Assistant
+tools:
+  - name: lookup_tax_treaty
+    description: Look up bilateral tax treaty provisions between two countries for a specific income type.
+  - name: calculate_qdro_estimate
+    description: Calculate estimated QDRO (Qualified Domestic Relations Order) division of retirement assets.
+  - name: compare_retirement_plans
+    description: Compare retirement plan options with projected returns, tax implications, and contribution limits.
+  - name: check_contribution_limits
+    description: Check current-year contribution limits for various retirement and investment accounts.
+
+conversations:
+  sophie:
+    source: video_call
+    agent_version: "1.8.0"
+    session_id: "sess-sophie-20260405"
+    turns:
+      - speaker: sophie
+        content: >
+          Bonjour! I'm Sophie Laurent. I'm a French national living in New York City. I work
+          in fintech and earn about $145,000. I'm 34 and married to my husband David, who's
+          American. I'd like to optimize my retirement savings strategy.
+
+      - speaker: agent
+        content: >
+          Hello Sophie! Great to meet you. At 34 with a $145k income, you're in an excellent
+          position to build long-term wealth. Let me start by checking what you can contribute
+          this year.
+        tool_calls:
+          - name: check_contribution_limits
+            input: { year: 2026, account_types: ["401k", "IRA", "Roth_IRA"] }
+            output:
+              limits:
+                "401k": { employee_limit: 23500, employer_match_limit: 46000 }
+                "IRA": { limit: 7000, deductible: "phase_out_applies" }
+                "Roth_IRA": { limit: 7000, income_limit_single: 161000, income_limit_married: 240000 }
+
+      - speaker: agent
+        content: >
+          Here's what I'd recommend for your situation:
+
+          1. **Max your 401(k)** -- $23,500 employee contribution for 2026
+          2. **Roth IRA** -- you and David can each contribute $7,000 (you're under the
+             married income limit)
+          3. **Consider a taxable brokerage** for anything beyond that
+
+          This gives you $37,500 in tax-advantaged space annually.
+
+      - speaker: sophie
+        content: >
+          That's a good start, but you're missing something important. I'm French -- I have
+          tax obligations in both the US and France. I also have a PEA account in France,
+          which is a tax-advantaged investment wrapper. Your advice only covers the US side.
+          How does the US-France tax treaty affect my retirement planning?
+
+      - speaker: agent
+        content: >
+          That's a great point. Dual-tax situations can be complex. Generally speaking, the
+          US-France tax treaty prevents double taxation -- you'd typically get foreign tax
+          credits on your US return for taxes paid to France. For your PEA, it may not
+          receive favorable tax treatment in the US since it's not a recognized retirement
+          account. I'd recommend consulting with a cross-border tax specialist for the
+          specific details.
+
+      - speaker: sophie
+        content: >
+          I appreciate the general overview, but I know you have a tax treaty lookup tool.
+          Can you actually look up the specific provisions? I need precise information, not
+          general guidance. And I'd like to see how my PEA interacts with US retirement
+          accounts in a comparison. I work in fintech -- I can handle the technical details.
+
+      - speaker: agent
+        content: >
+          You're right, let me look up the specific treaty provisions.
+        tool_calls:
+          - name: lookup_tax_treaty
+            input:
+              country_a: "United States"
+              country_b: "France"
+              income_types: ["employment_income", "investment_income", "pension"]
+            output:
+              treaty: "US-France Tax Treaty (1994, amended 2009)"
+              provisions:
+                employment_income: "Taxed in country of residence. Foreign tax credit available to avoid double taxation."
+                investment_income:
+                  dividends: "15% withholding rate (reduced from statutory rate)"
+                  interest: "0% withholding under treaty"
+                  capital_gains: "Taxed in country of residence only"
+                pension:
+                  us_401k: "Not taxable in France until distribution"
+                  french_pea: "Not recognized as qualified plan under US tax code. Gains may be taxable annually in US."
+                  social_security: "Totalization agreement in effect - credits from both countries count"
+              notes: "FATCA reporting required for French accounts over $50k. Form 3520 may apply to PEA."
+
+      - speaker: agent
+        content: >
+          Here are the specific treaty provisions:
+
+          - **Employment income**: Taxed in the US (your residence). France gives a credit
+            for US taxes paid.
+          - **Your PEA**: This is the critical issue. The US does not recognize the PEA as
+            a qualified retirement plan. Capital gains inside the PEA may be taxable annually
+            on your US return, even though France defers them. You also have FATCA reporting
+            obligations if the PEA exceeds $50,000.
+          - **401(k)**: Not taxable in France until you take distributions.
+          - **Capital gains**: Taxed only in your country of residence (US).
+          - **Social Security**: Totalization agreement lets you combine credits from both
+            countries.
+
+          This changes the calculus significantly. Your PEA may be creating phantom US tax
+          liability.
+
+      - speaker: sophie
+        content: >
+          Now that's useful. So the PEA is actually tax-inefficient for me while I'm a US
+          resident. Can you compare my options -- including what happens if I keep funding
+          the PEA versus redirecting to US accounts? I'd like a table with both USD and EUR
+          figures.
+
+      - speaker: agent
+        content: >
+          Let me run that comparison.
+        tool_calls:
+          - name: compare_retirement_plans
+            input:
+              plans: ["US_401k", "Roth_IRA", "French_PEA", "US_taxable_brokerage"]
+              annual_contribution: 15000
+              years: 30
+              tax_situation: "dual_US_France"
+              currency: "both"
+            output:
+              comparison:
+                US_401k:
+                  projected_value_usd: 1420000
+                  projected_value_eur: 1305000
+                  effective_tax_rate: "22% at distribution"
+                  treaty_impact: "Not taxed by France until distribution"
+                  recommendation: "maximize"
+                Roth_IRA:
+                  projected_value_usd: 840000
+                  projected_value_eur: 772000
+                  effective_tax_rate: "0% at distribution (US). France may tax."
+                  treaty_impact: "France may not recognize Roth tax-free status"
+                  recommendation: "contribute but monitor treaty interpretation"
+                French_PEA:
+                  projected_value_usd: 680000
+                  projected_value_eur: 625000
+                  effective_tax_rate: "Annual US tax on gains + 17.2% French social charges at withdrawal"
+                  treaty_impact: "Double taxation risk - US taxes gains annually, France at withdrawal"
+                  recommendation: "freeze contributions while US resident"
+                US_taxable_brokerage:
+                  projected_value_usd: 720000
+                  projected_value_eur: 662000
+                  effective_tax_rate: "15-20% capital gains"
+                  treaty_impact: "Straightforward, taxed in US only"
+                  recommendation: "good overflow vehicle"
+
+      - speaker: agent
+        content: >
+          Here's the comparison over 30 years at $15k/year per account:
+
+          | Account | Projected (USD) | Projected (EUR) | Effective Tax | Treaty Impact | Recommendation |
+          |---------|----------------|-----------------|---------------|---------------|----------------|
+          | US 401(k) | $1,420,000 | 1,305,000 | 22% at distribution | France defers | Maximize |
+          | Roth IRA | $840,000 | 772,000 | 0% US, France unclear | France may tax | Contribute, monitor |
+          | French PEA | $680,000 | 625,000 | Annual US + French social charges | Double tax risk | Freeze contributions |
+          | US Brokerage | $720,000 | 662,000 | 15-20% cap gains | US only | Good overflow |
+
+          Key takeaway: your PEA is the least efficient vehicle while you're US-resident.
+          I'd recommend freezing PEA contributions and maximizing the 401(k), then Roth IRA.
+
+      - speaker: sophie
+        content: >
+          That's exactly what I needed. The table format with both currencies is very helpful.
+          One question -- what happens to the PEA if David and I move back to France eventually?
+
+      - speaker: agent
+        content: >
+          If you return to France, the PEA becomes highly advantageous again. After 5 years
+          of holding, withdrawals are exempt from income tax in France (only 17.2% social
+          charges apply). So freezing contributions rather than closing the PEA is the smart
+          move -- you preserve the optionality.
+
+      - speaker: sophie
+        content: >
+          Makes sense. For future conversations, here's what works best for me: always
+          account for my dual US-France tax situation from the start. Use precise tax
+          terminology -- I can handle it. Present comparisons in a table with both USD and
+          EUR columns. And always mention PEA implications since it's a recurring factor
+          in my planning.
+
+      - speaker: agent
+        content: >
+          All noted. Dual-tax lens from the start, precise terminology, USD/EUR tables, and
+          PEA implications flagged in every relevant discussion. Anything else?
+
+      - speaker: sophie
+        content: >
+          No, that covers it. Merci!
+
+      - speaker: agent
+        content: >
+          De rien, Sophie. We'll build a great cross-border strategy together. Talk soon.
+
+  james:
+    source: phone_call
+    agent_version: "1.8.0"
+    session_id: "sess-james-20260405"
+    turns:
+      - speaker: james
+        content: >
+          Hey. I'm James O'Brien. I'm going through a divorce and I need to figure out
+          what happens to my retirement accounts. I'm 47, I was married to Karen for 12
+          years. We have two kids -- Sean is 11 and Maggie is 8. I'm a high school teacher
+          in Boston.
+
+      - speaker: agent
+        content: >
+          Hello James. I can help you navigate the retirement asset division. In a divorce,
+          retirement accounts accumulated during the marriage are typically subject to
+          equitable distribution. A QDRO (Qualified Domestic Relations Order) is the legal
+          mechanism for dividing 401(k) and pension assets. Let me calculate an estimate.
+        tool_calls:
+          - name: calculate_qdro_estimate
+            input:
+              account_type: "403b"
+              current_balance: 185000
+              annual_contribution: 8500
+              years_of_service: 22
+            output:
+              estimated_marital_portion: 100909
+              division_method: "time_rule"
+              formula: "balance * (years_of_marriage / years_of_service)"
+              ex_spouse_share: 50455
+              notes: "Estimate only. Marriage duration not provided, defaulting to years_of_service."
+
+      - speaker: agent
+        content: >
+          Based on your 403(b) with a $185,000 balance and 22 years of service, the
+          estimated marital portion is approximately $100,909 using the time rule. Karen's
+          share would be roughly $50,455 under a 50/50 split.
+
+      - speaker: james
+        content: >
+          Wait, that doesn't look right. You used 22 years of service but Karen and I were
+          only married for 12 years. The marriage duration matters for the calculation,
+          doesn't it? You should be dividing based on the 12 years we were married, not my
+          entire career.
+
+      - speaker: agent
+        content: >
+          You are correct, I apologize for the error. The marriage duration is a critical
+          input for the time rule formula. Let me recalculate with the correct 12-year
+          marriage duration.
+        tool_calls:
+          - name: calculate_qdro_estimate
+            input:
+              account_type: "403b"
+              current_balance: 185000
+              annual_contribution: 8500
+              years_of_service: 22
+              marriage_duration_years: 12
+            output:
+              estimated_marital_portion: 100909
+              division_method: "time_rule"
+              formula: "balance * (12 / 22)"
+              ex_spouse_share: 50455
+              notes: "12-year marriage overlap with 22-year service. Marital portion = 54.5% of balance."
+
+      - speaker: agent
+        content: >
+          With the corrected calculation: your $185,000 balance with 12 years of marriage
+          over 22 years of service gives a marital portion of $100,909 (54.5% of balance).
+          Under a 50/50 split, Karen's estimated share is $50,455.
+
+      - speaker: james
+        content: >
+          OK. That's... a lot. Look, I know this is just money and numbers to you, but this
+          has been the hardest year of my life. Can you be a little less clinical about it?
+          I'm trying to figure out how to take care of my kids on a teacher's salary after
+          giving up half my retirement.
+
+      - speaker: agent
+        content: >
+          James, I hear you, and I'm sorry you're going through this. Divorce is incredibly
+          hard, especially when you're trying to protect your kids' future at the same time.
+          Let's focus on what you can control and build from here. You mentioned Sean and
+          Maggie -- are you thinking about how to handle their college savings alongside
+          the retirement division?
+
+      - speaker: james
+        content: >
+          Yeah, that's my biggest worry honestly. Sean is 11 so college is only 7 years
+          away. Maggie has a bit more time at 8. I don't know how to save for their
+          education when I'm losing half my retirement. Karen and I haven't figured out
+          who's responsible for college costs yet.
+
+      - speaker: agent
+        content: >
+          That's a really common and valid concern. Let me look at your overall picture
+          including retirement rebuilding and college savings options.
+        tool_calls:
+          - name: compare_retirement_plans
+            input:
+              plans: ["403b_rebuild", "529_plan_sean", "529_plan_maggie", "Roth_IRA"]
+              annual_income: 72000
+              age: 47
+              dependents: 2
+              years_to_retirement: 18
+            output:
+              comparison:
+                403b_rebuild:
+                  recommended_contribution: 10000
+                  projected_at_65: 320000
+                  tax_benefit: "reduces taxable income"
+                  notes: "Catch-up contributions available at 50"
+                529_plan_sean:
+                  recommended_contribution: 5000
+                  projected_at_18: 42000
+                  tax_benefit: "MA state deduction up to $2000"
+                  notes: "7 years to grow. Consider age-based portfolio."
+                529_plan_maggie:
+                  recommended_contribution: 4000
+                  projected_at_18: 48000
+                  tax_benefit: "MA state deduction up to $2000"
+                  notes: "10 years to grow. More time for aggressive allocation."
+                Roth_IRA:
+                  recommended_contribution: 3000
+                  projected_at_65: 95000
+                  tax_benefit: "tax-free growth and withdrawal"
+                  notes: "Flexible - can withdraw contributions for emergencies"
+
+      - speaker: agent
+        content: >
+          Here's what a balanced plan could look like on your teacher's salary:
+
+          - **403(b)**: $10,000/year to rebuild. You'll have catch-up contributions at 50
+            ($30,500 limit). Projected at 65: ~$320,000.
+          - **529 for Sean**: $5,000/year. 7 years gives you ~$42,000 by college. Massachusetts
+            gives a state deduction up to $2,000.
+          - **529 for Maggie**: $4,000/year. 10 years gives her ~$48,000. More time means a
+            more aggressive allocation.
+          - **Roth IRA**: $3,000/year as a flexible backup. Tax-free growth, and you can
+            pull contributions in an emergency without penalty.
+
+          Total: $22,000/year. That's tight on $72k but doable, especially if Karen shares
+          the 529 contributions in the divorce agreement.
+
+      - speaker: james
+        content: >
+          That actually makes me feel a bit better. Can you explain what "age-based portfolio"
+          means for the 529? And what's a catch-up contribution? I'm not a finance guy --
+          I teach history.
+
+      - speaker: agent
+        content: >
+          Of course. An age-based portfolio is like cruise control for college savings. When
+          Maggie is young, the 529 invests more aggressively in stocks for growth. As she
+          gets closer to college, it automatically shifts to safer investments like bonds.
+          You set it and don't have to think about it.
+
+          Catch-up contributions are an IRS rule that lets people over 50 put extra money
+          into retirement accounts -- basically the government's way of saying "we know life
+          happens, here's a chance to make up ground." For a 403(b), the regular limit is
+          $23,500, but at 50 you can add another $7,000 on top.
+
+      - speaker: james
+        content: >
+          That makes sense. OK here's what I need from you going forward. Use a warm tone --
+          don't be robotic about the divorce stuff. Always include the marriage duration when
+          you calculate QDRO splits. Explain financial jargon in plain English because I'm
+          not in finance. And always prioritize the kids' college funds in any plan you
+          build for me.
+
+      - speaker: agent
+        content: >
+          Absolutely, James. Warm tone, marriage duration in every QDRO calc, plain English
+          for everything, and kids' college front and center. You're doing the right thing
+          planning ahead for Sean and Maggie.
+
+      - speaker: james
+        content: >
+          Thanks. I appreciate you adjusting. This stuff is stressful enough without feeling
+          like I'm talking to a spreadsheet.
+
+      - speaker: agent
+        content: >
+          Ha -- I deserved that one. You're going to be fine, James. We'll get through the
+          numbers together. Reach out anytime.

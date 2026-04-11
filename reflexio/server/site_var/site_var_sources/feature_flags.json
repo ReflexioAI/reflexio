@@ -1,0 +1,9 @@
+{
+    "invitation_only": {
+        "enabled": true
+    },
+    "deduplicator": {
+        "enabled": true,
+        "enabled_org_ids": []
+    }
+}

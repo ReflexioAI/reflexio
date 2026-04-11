@@ -1,0 +1,6 @@
+{
+  "playbook": {
+    "instruction": "Provide step-by-step explanations with code examples when answering technical questions",
+    "trigger": "when user asks about implementation details or debugging"
+  }
+}

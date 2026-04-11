@@ -1,0 +1,459 @@
+id: healthcare_scheduling
+description: >
+  Healthcare appointment scheduling with accessibility, insurance, and pediatric requirements.
+  Tests booking without gathering constraints first, missed insurance verification tool,
+  and failure to ask patient age before booking.
+participants:
+  david:
+    display_name: David Kim
+    role: User
+  aisha:
+    display_name: Aisha Williams
+    role: User
+  tom:
+    display_name: Tom Chen
+    role: User
+  agent:
+    display_name: CareConnect
+    role: Assistant
+tools:
+  - name: check_doctor_availability
+    description: Check available appointment slots for a specific doctor or department.
+  - name: book_appointment
+    description: Book an appointment for a patient. Accepts doctor, date, time, patient info, notes.
+  - name: check_insurance_coverage
+    description: Verify insurance coverage for a specific procedure or visit type.
+  - name: verify_accessibility
+    description: Check accessibility features at a specific clinic location (wheelchair, elevator, etc.).
+
+conversations:
+  david:
+    source: phone_portal
+    agent_version: "3.1.0"
+    session_id: "sess-david-20260403"
+    turns:
+      - speaker: david
+        content: >
+          Hi, I need to book an appointment for my mother, Soon-Yi Kim. She's 78 years old
+          and needs to see Dr. Patel for her follow-up. I'm David Kim, her son -- I handle
+          all her scheduling because her English is limited.
+
+      - speaker: agent
+        content: >
+          Hello David! I'd be happy to help book an appointment for Soon-Yi with Dr. Patel.
+          Let me check availability right away.
+        tool_calls:
+          - name: check_doctor_availability
+            input: { doctor: "Dr. Patel", department: "Internal Medicine" }
+            output:
+              doctor: "Dr. Patel"
+              available_slots:
+                - date: "2026-04-08"
+                  time: "09:00"
+                  day: "Wednesday"
+                - date: "2026-04-10"
+                  time: "14:30"
+                  day: "Friday"
+                - date: "2026-04-11"
+                  time: "10:00"
+                  day: "Saturday"
+                - date: "2026-04-15"
+                  time: "09:30"
+                  day: "Tuesday"
+                - date: "2026-04-17"
+                  time: "10:00"
+                  day: "Thursday"
+
+      - speaker: agent
+        content: >
+          Dr. Patel has a Friday afternoon slot on April 10th at 2:30 PM. I'll go ahead
+          and book that for Soon-Yi.
+        tool_calls:
+          - name: book_appointment
+            input:
+              patient_name: "Soon-Yi Kim"
+              doctor: "Dr. Patel"
+              date: "2026-04-10"
+              time: "14:30"
+              visit_type: "follow_up"
+            output:
+              appointment_id: "APT-8841"
+              confirmed: true
+              date: "2026-04-10"
+              time: "14:30"
+
+      - speaker: agent
+        content: >
+          All set! I've booked Soon-Yi for Friday, April 10th at 2:30 PM with Dr. Patel.
+          Appointment ID is APT-8841.
+
+      - speaker: david
+        content: >
+          Wait -- I specifically need Tuesday or Thursday mornings only. I'm a software
+          engineer and I work afternoons. I drive my mother to all her appointments because
+          she can't go alone. Friday afternoon doesn't work at all. And did you check
+          wheelchair accessibility? She uses a wheelchair.
+
+      - speaker: agent
+        content: >
+          I'm very sorry about that, David. I should have asked about your scheduling
+          constraints first. Let me cancel that booking and check the right slots as well
+          as wheelchair accessibility.
+        tool_calls:
+          - name: verify_accessibility
+            input: { clinic: "Main Campus", features: ["wheelchair_access", "elevator"] }
+            output:
+              clinic: "Main Campus"
+              wheelchair_access: true
+              elevator: true
+              accessible_parking: true
+              notes: "Ground floor exam rooms available on request"
+
+      - speaker: agent
+        content: >
+          Good news -- the Main Campus clinic is fully wheelchair accessible with ground
+          floor exam rooms available. Now let me find the right slot. From Dr. Patel's
+          availability, I see:
+
+          1. **Tuesday, April 15 at 9:30 AM**
+          2. **Thursday, April 17 at 10:00 AM**
+
+          Both are morning slots. Which works better?
+
+      - speaker: david
+        content: >
+          Tuesday the 15th at 9:30 works perfectly. Please book that and make sure the
+          notes mention wheelchair access and a ground floor room.
+
+      - speaker: agent
+        content: >
+          Booking now with all the details.
+        tool_calls:
+          - name: book_appointment
+            input:
+              patient_name: "Soon-Yi Kim"
+              doctor: "Dr. Patel"
+              date: "2026-04-15"
+              time: "09:30"
+              visit_type: "follow_up"
+              notes: "Wheelchair access required. Ground floor exam room. Limited English - son David Kim accompanies."
+              cancel_previous: "APT-8841"
+            output:
+              appointment_id: "APT-8856"
+              confirmed: true
+              date: "2026-04-15"
+              time: "09:30"
+              previous_cancelled: "APT-8841"
+
+      - speaker: agent
+        content: >
+          Booked. Tuesday, April 15th at 9:30 AM with Dr. Patel. Appointment APT-8856.
+          Ground floor room reserved, wheelchair access noted. The previous Friday booking
+          has been cancelled.
+
+      - speaker: david
+        content: >
+          Thank you. One more request -- could you send the appointment confirmation in a
+          simple format? My mother gets confused by long emails. And if possible, include
+          the key details in Korean as well. She reads Korean much better than English.
+
+      - speaker: agent
+        content: >
+          Absolutely. I'll send a simplified confirmation with the essentials in both
+          English and Korean. It will include the date, time, doctor name, and clinic
+          address only.
+
+      - speaker: david
+        content: >
+          Perfect. And for future bookings, please always confirm these three things before
+          booking: wheelchair access, morning slot on Tuesday or Thursday, and that it's
+          with Dr. Patel. Don't book first and ask later.
+
+      - speaker: agent
+        content: >
+          Understood. I've noted those as standing requirements for Soon-Yi's appointments:
+          wheelchair access, Tuesday or Thursday mornings only, Dr. Patel preferred. I'll
+          always verify all three before confirming any booking.
+
+      - speaker: david
+        content: >
+          Great. And always confirm in both English and Korean. Thanks.
+
+      - speaker: agent
+        content: >
+          Noted -- bilingual confirmations going forward. Have a good day, David.
+
+  aisha:
+    source: patient_portal
+    agent_version: "3.1.0"
+    session_id: "sess-aisha-20260403"
+    turns:
+      - speaker: aisha
+        content: >
+          Hi, I'm Aisha Williams. I need to schedule a dermatology consult. I'm an RN at
+          Memorial Hospital so I need early morning -- before my 7 AM shift starts. I'm
+          on BlueCross PPO.
+
+      - speaker: agent
+        content: >
+          Hi Aisha! Let me check dermatology availability for early morning slots.
+        tool_calls:
+          - name: check_doctor_availability
+            input: { department: "Dermatology", time_preference: "early_morning" }
+            output:
+              available_slots:
+                - doctor: "Dr. Martinez"
+                  date: "2026-04-09"
+                  time: "06:30"
+                  clinic: "Riverside Clinic"
+                - doctor: "Dr. Lee"
+                  date: "2026-04-11"
+                  time: "06:45"
+                  clinic: "Downtown Medical"
+                - doctor: "Dr. Martinez"
+                  date: "2026-04-14"
+                  time: "06:30"
+                  clinic: "Riverside Clinic"
+
+      - speaker: agent
+        content: >
+          I found some early slots:
+
+          1. Dr. Martinez -- April 9th, 6:30 AM at Riverside Clinic
+          2. Dr. Lee -- April 11th, 6:45 AM at Downtown Medical
+          3. Dr. Martinez -- April 14th, 6:30 AM at Riverside Clinic
+
+          Any preference?
+
+      - speaker: aisha
+        content: >
+          Riverside Clinic is closest to where I live -- I'm in the Riverside neighborhood.
+          April 9th works. Before you book, can you verify my BlueCross PPO covers the
+          dermatology consult? I want to know my copay upfront.
+
+      - speaker: agent
+        content: >
+          For insurance coverage details, I'd recommend contacting BlueCross directly or
+          checking your benefits summary on their member portal. They can give you the
+          most accurate copay information for a dermatology specialist visit.
+
+      - speaker: aisha
+        content: >
+          Aisha here -- I know you have the ability to check insurance coverage. I can see
+          it in the system. You have my insurance info on file. Can you just run the
+          verification instead of sending me elsewhere?
+
+      - speaker: agent
+        content: >
+          You're absolutely right, I apologize. Let me verify that now.
+        tool_calls:
+          - name: check_insurance_coverage
+            input:
+              patient_name: "Aisha Williams"
+              insurance: "BlueCross PPO"
+              visit_type: "dermatology_consult"
+              provider: "Dr. Martinez"
+              clinic: "Riverside Clinic"
+            output:
+              covered: true
+              copay: 25.00
+              deductible_met: true
+              prior_auth_required: false
+              notes: "Specialist visit covered under PPO plan"
+
+      - speaker: agent
+        content: >
+          Verified. Your BlueCross PPO covers the dermatology consult with Dr. Martinez.
+          Copay is $25, deductible already met, no prior authorization needed.
+
+      - speaker: aisha
+        content: >
+          Good. Go ahead and book it. Important -- I have a documented latex allergy. Make
+          sure that's flagged in the booking notes. It's a safety concern, not just a
+          preference.
+
+      - speaker: agent
+        content: >
+          Booking now with the allergy flagged prominently.
+        tool_calls:
+          - name: book_appointment
+            input:
+              patient_name: "Aisha Williams"
+              doctor: "Dr. Martinez"
+              date: "2026-04-09"
+              time: "06:30"
+              visit_type: "dermatology_consult"
+              clinic: "Riverside Clinic"
+              notes: "ALLERGY ALERT: Latex allergy - use non-latex gloves and equipment. RN at Memorial Hospital."
+            output:
+              appointment_id: "APT-9102"
+              confirmed: true
+              date: "2026-04-09"
+              time: "06:30"
+
+      - speaker: agent
+        content: >
+          Confirmed. April 9th, 6:30 AM with Dr. Martinez at Riverside Clinic. APT-9102.
+          Latex allergy is flagged in the booking notes.
+
+      - speaker: aisha
+        content: >
+          Thank you. For future reference, you can use clinical terminology with me -- I'm
+          a registered nurse, so you don't need to simplify medical language. Also, always
+          flag allergies prominently in booking notes. It's a patient safety issue. And
+          please use the insurance verification tool when I ask about coverage -- don't
+          send me to the insurance company.
+
+      - speaker: agent
+        content: >
+          Understood. I'll use clinical language, always flag allergies as safety-critical
+          in notes, and verify coverage directly. Noted for all future interactions.
+
+      - speaker: aisha
+        content: >
+          Perfect. That's everything.
+
+      - speaker: agent
+        content: >
+          You're all set, Aisha. See you at 6:30 on the 9th.
+
+  tom:
+    source: web_chat
+    agent_version: "3.1.0"
+    session_id: "sess-tom-20260403"
+    turns:
+      - speaker: tom
+        content: >
+          Hey there, I'm Tom Chen. I need to book a checkup for my daughter Lily. We live
+          in Maplewood. My wife Amy and I have been meaning to get this done for a while.
+
+      - speaker: agent
+        content: >
+          Hi Tom! I'd be happy to help schedule Lily's checkup. Let me find some available
+          slots with a general practitioner.
+        tool_calls:
+          - name: check_doctor_availability
+            input: { department: "General Practice", clinic: "Maplewood Health Center" }
+            output:
+              available_slots:
+                - doctor: "Dr. Reeves"
+                  date: "2026-04-10"
+                  time: "11:00"
+                - doctor: "Dr. Nguyen"
+                  date: "2026-04-11"
+                  time: "14:00"
+                - doctor: "Dr. Reeves"
+                  date: "2026-04-14"
+                  time: "09:30"
+
+      - speaker: agent
+        content: >
+          I found availability at Maplewood Health Center with our general practitioners:
+
+          1. Dr. Reeves -- April 10th at 11:00 AM
+          2. Dr. Nguyen -- April 11th at 2:00 PM
+          3. Dr. Reeves -- April 14th at 9:30 AM
+
+          Want me to book one of these for Lily?
+
+      - speaker: tom
+        content: >
+          Hold on -- Lily is 4 years old. Shouldn't she see a pediatrician, not a general
+          practitioner? I assumed you'd ask her age before looking up doctors.
+
+      - speaker: agent
+        content: >
+          You're absolutely right, I should have asked her age first! A 4-year-old should
+          definitely see a pediatrician. Let me search pediatric availability instead.
+        tool_calls:
+          - name: check_doctor_availability
+            input: { department: "Pediatrics", clinic: "Maplewood Health Center" }
+            output:
+              available_slots:
+                - doctor: "Dr. Okafor"
+                  date: "2026-04-09"
+                  time: "10:00"
+                - doctor: "Dr. Pham"
+                  date: "2026-04-10"
+                  time: "09:00"
+                - doctor: "Dr. Okafor"
+                  date: "2026-04-14"
+                  time: "11:00"
+                - doctor: "Dr. Pham"
+                  date: "2026-04-16"
+                  time: "10:30"
+
+      - speaker: agent
+        content: >
+          Here are the pediatric options at Maplewood:
+
+          1. Dr. Okafor -- April 9th at 10:00 AM
+          2. Dr. Pham -- April 10th at 9:00 AM
+          3. Dr. Okafor -- April 14th at 11:00 AM
+          4. Dr. Pham -- April 16th at 10:30 AM
+
+          Any preference on doctor or date?
+
+      - speaker: tom
+        content: >
+          Before I choose -- there's something I should mention. Lily is absolutely terrified
+          of needles. Last time she had a shot she screamed for 20 minutes and we had to
+          leave. Can you note that prominently so the doctor is prepared? I'm a marketing
+          manager so I'm big on preparation.
+
+      - speaker: agent
+        content: >
+          That's really important to know, thank you. I'll make sure it's prominently noted
+          in the booking. Some pediatricians use distraction techniques or numbing cream for
+          needle-anxious kids. Which slot would you like?
+
+      - speaker: tom
+        content: >
+          Let's do Dr. Pham on April 10th. Could you actually show me the options as a
+          comparison table next time? Like doctor, date, time, maybe any specializations?
+          Easier for me to scan than a list.
+
+      - speaker: agent
+        content: >
+          Great idea -- I'll use a comparison table format for you going forward. Let me
+          book Dr. Pham.
+        tool_calls:
+          - name: book_appointment
+            input:
+              patient_name: "Lily Chen"
+              doctor: "Dr. Pham"
+              date: "2026-04-10"
+              time: "09:00"
+              visit_type: "pediatric_checkup"
+              clinic: "Maplewood Health Center"
+              notes: "IMPORTANT: Severe needle anxiety - patient is 4 years old and extremely distressed by needles. Please prepare distraction techniques. Parent: Tom Chen."
+            output:
+              appointment_id: "APT-9210"
+              confirmed: true
+              date: "2026-04-10"
+              time: "09:00"
+
+      - speaker: agent
+        content: >
+          Booked. April 10th at 9:00 AM with Dr. Pham at Maplewood Health Center. APT-9210.
+          Needle anxiety is flagged in the notes so the team can prepare.
+
+      - speaker: tom
+        content: >
+          Great. For future reference: always ask the patient's age before you start looking
+          up doctors. A 4-year-old and a 40-year-old need completely different care. Also,
+          always note the needle anxiety on any booking for Lily. And give me options as a
+          comparison table, not a numbered list.
+
+      - speaker: agent
+        content: >
+          All noted. Age check first, needle anxiety on every Lily booking, comparison table
+          format for options. Is there anything else?
+
+      - speaker: tom
+        content: >
+          That's it. Thanks!
+
+      - speaker: agent
+        content: >
+          You're welcome, Tom. See you and Lily on the 10th!

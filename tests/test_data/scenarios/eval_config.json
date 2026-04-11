@@ -1,0 +1,23 @@
+{
+  "storage_config": {},
+  "profile_extractor_configs": [
+    {
+      "extractor_name": "default_profile_extractor",
+      "extraction_definition_prompt": "Extract key user information: name, location, occupation, preferences, constraints, family details, technical setup, communication preferences, or any personal facts.",
+      "context_prompt": "Multi-user conversation between customers and a support agent.",
+      "batch_size_override": 20,
+      "batch_interval_override": 1
+    }
+  ],
+  "user_playbook_extractor_configs": [
+    {
+      "extractor_name": "default_playbook_extractor",
+      "extraction_definition_prompt": "Identify agent mistakes, missed tools, incorrect info, or user-specific instructions about preferred response format, tone, style, or detail level. Focus on actionable corrections.",
+      "aggregation_config": {
+        "min_cluster_size": 2
+      },
+      "batch_size_override": 20,
+      "batch_interval_override": 1
+    }
+  ]
+}

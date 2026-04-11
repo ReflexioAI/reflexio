@@ -1,0 +1,524 @@
+id: developer-support
+description: >
+  Developer support conversations covering API integration and webhook setup.
+  Tests profile extraction for technical users at different skill levels, and
+  validates that agent mistakes around complexity calibration produce generalizable
+  playbook rules.
+
+participants:
+  elena:
+    display_name: Elena Rodriguez
+    role: User
+  raj:
+    display_name: Raj Patel
+    role: User
+  agent:
+    display_name: DevRel Agent
+    role: Assistant
+
+conversations:
+  elena:
+    source: intercom
+    agent_version: devrel-bot-v3.0
+    session_id: ds-elena-001
+    turns:
+      - speaker: elena
+        content: >
+          Hi, I'm Elena Rodriguez, senior backend engineer at FinServe Corp. I need
+          help migrating our event notification system from your REST API v2 to the
+          new GraphQL API.
+
+      - speaker: agent
+        content: >
+          Welcome Elena! Great to hear you're moving to our GraphQL API. To get started,
+          I'd recommend using our Workflow Builder GUI — it has a visual migration wizard
+          that can map your existing REST endpoints to GraphQL queries automatically.
+          Would you like me to walk you through setting that up?
+
+      - speaker: elena
+        content: >
+          No, I don't want a GUI tool. I've been writing backend code for 10 years
+          and I strongly prefer a code-first approach. Just show me the schema and
+          I'll build the queries myself. Also, I work in TypeScript and Node.js, so
+          any examples in JavaScript won't be useful to me — please use TypeScript
+          in all examples.
+
+      - speaker: agent
+        content: >
+          Understood — code-first it is. Here's the core subscription type you'll need
+          for event notifications:
+
+          ```typescript
+          import { gql } from 'graphql-tag';
+
+          const EVENT_SUBSCRIPTION = gql`
+            subscription OnEventNotification($channelId: ID!) {
+              eventNotification(channelId: $channelId) {
+                id
+                type
+                payload
+                timestamp
+                metadata {
+                  source
+                  version
+                }
+              }
+            }
+          `;
+          ```
+
+          The REST v2 `/events/subscribe` endpoint maps directly to this subscription.
+          Your existing webhook URLs become subscription variables.
+
+      - speaker: elena
+        content: >
+          Good, that's more like it. Now I need to set up the Apollo Client for
+          subscriptions. We use pnpm as our package manager, by the way — not npm.
+
+      - speaker: agent
+        content: >
+          Sure thing. First, install the dependencies:
+
+          ```bash
+          npm install @apollo/client graphql-ws
+          ```
+
+          Then configure the subscription client:
+
+          ```typescript
+          import { ApolloClient, InMemoryCache } from '@apollo/client';
+          ```
+
+      - speaker: elena
+        content: >
+          I just said we use pnpm, not npm. When showing CLI commands, use pnpm
+          please. And going forward, skip the introductory explanations — just get
+          straight to the implementation details. I don't need to be told what Apollo
+          Client is.
+
+      - speaker: agent
+        content: >
+          Apologies. Here's the setup:
+
+          ```bash
+          pnpm add @apollo/client graphql-ws
+          ```
+
+          ```typescript
+          import { ApolloClient, InMemoryCache, split, HttpLink } from '@apollo/client';
+          import { GraphQLWsLink } from '@apollo/client/link/subscriptions';
+          import { createClient } from 'graphql-ws';
+          import { getMainDefinition } from '@apollo/client/utilities';
+
+          const wsLink = new GraphQLWsLink(
+            createClient({
+              url: 'wss://api.example.com/graphql',
+              connectionParams: {
+                authToken: process.env.API_TOKEN,
+              },
+            })
+          );
+
+          const httpLink = new HttpLink({
+            uri: 'https://api.example.com/graphql',
+          });
+
+          const splitLink = split(
+            ({ query }) => {
+              const definition = getMainDefinition(query);
+              return (
+                definition.kind === 'OperationDefinition' &&
+                definition.operation === 'subscription'
+              );
+            },
+            wsLink,
+            httpLink
+          );
+
+          const client = new ApolloClient({
+            link: splitLink,
+            cache: new InMemoryCache(),
+          });
+          ```
+
+      - speaker: elena
+        content: >
+          Perfect. Now, our current REST integration handles retry logic with
+          exponential backoff. How does that translate to GraphQL subscriptions?
+          We need to handle disconnections gracefully since we're in fintech and
+          can't miss events.
+
+      - speaker: agent
+        content: >
+          The `graphql-ws` client has built-in reconnection. Configure it in the
+          `createClient` options:
+
+          ```typescript
+          const wsClient = createClient({
+            url: 'wss://api.example.com/graphql',
+            connectionParams: {
+              authToken: process.env.API_TOKEN,
+            },
+            retryAttempts: 10,
+            retryWait: async (retries: number) => {
+              const baseDelay = 1000;
+              const maxDelay = 30000;
+              const delay = Math.min(baseDelay * 2 ** retries, maxDelay);
+              await new Promise((resolve) => setTimeout(resolve, delay));
+            },
+            on: {
+              connected: () => console.log('WS connected'),
+              closed: (event) => {
+                console.error('WS closed:', event);
+              },
+            },
+          });
+          ```
+
+          For missed events during disconnection, use the `lastEventId` cursor. Your
+          subscription query already includes `timestamp` — on reconnect, pass the
+          last received timestamp as a variable to backfill gaps.
+
+      - speaker: elena
+        content: >
+          That's exactly what I needed. We have a Q2 deadline for this migration so
+          I need to move fast. One more thing — always provide code examples rather
+          than descriptions. If I ask "how does X work," I want to see the code, not
+          a paragraph explaining the concept.
+
+      - speaker: agent
+        content: >
+          Noted. Code over prose. Is there a specific part of the migration you want
+          to tackle next?
+
+      - speaker: elena
+        content: >
+          Yes, error handling. Our REST integration distinguishes between transient
+          errors we retry and permanent errors we alert on. Show me the pattern
+          for that with subscriptions.
+
+      - speaker: agent
+        content: >
+          ```typescript
+          import { CloseCode } from 'graphql-ws';
+
+          const TRANSIENT_CODES = new Set([
+            CloseCode.InternalServerError,
+            CloseCode.ConnectionInitialisationTimeout,
+            CloseCode.TooManyInitialisationRequests,
+          ]);
+
+          const wsClient = createClient({
+            url: 'wss://api.example.com/graphql',
+            shouldRetry: (errOrCloseEvent: unknown) => {
+              if (errOrCloseEvent instanceof CloseEvent) {
+                return TRANSIENT_CODES.has(errOrCloseEvent.code as CloseCode);
+              }
+              return true; // network errors are transient
+            },
+            on: {
+              error: (error) => {
+                if (error instanceof CloseEvent && !TRANSIENT_CODES.has(error.code as CloseCode)) {
+                  alertingService.critical('Permanent WS failure', { code: error.code });
+                }
+              },
+            },
+          });
+          ```
+
+      - speaker: elena
+        content: >
+          Clean. That maps well to our existing error taxonomy. I think I have enough
+          to wire up the first integration test. Thanks.
+
+      - speaker: agent
+        content: >
+          Sounds good. When you hit the auth token rotation piece, reach out — the
+          GraphQL API handles it differently from REST v2. Good luck with the Q2
+          deadline.
+
+  raj:
+    source: intercom
+    agent_version: devrel-bot-v3.0
+    session_id: ds-raj-001
+    turns:
+      - speaker: raj
+        content: >
+          Hi! My name is Raj Patel and I'm a developer at NovaTech. We're a small
+          startup and I'm trying to set up webhooks for the first time. I mainly
+          work in Python with Flask.
+
+      - speaker: agent
+        content: >
+          Hi Raj! Webhooks are a great way to get real-time updates. Let's get you
+          set up. First, you'll want to configure your webhook endpoint with HMAC-SHA256
+          signature verification. Here's how to set up the signing secret rotation
+          and configure your retry policy with exponential backoff:
+
+          ```python
+          import hmac
+          import hashlib
+          from functools import wraps
+
+          def verify_webhook_signature(payload, signature, secret):
+              expected = hmac.new(secret.encode(), payload, hashlib.sha256).hexdigest()
+              if not hmac.compare_digest(f"sha256={expected}", signature):
+                  raise ValueError("Invalid signature")
+          ```
+
+          You'll also need to handle idempotency keys to prevent duplicate processing,
+          and set up a dead letter queue for failed deliveries...
+
+      - speaker: raj
+        content: >
+          Whoa, hold on. I don't even know what a webhook really is yet. Can we
+          start from the basics? I'm self-taught — mostly learned Python from YouTube
+          tutorials — and this is my first time building anything that receives
+          external HTTP requests.
+
+      - speaker: agent
+        content: >
+          Of course, I'm sorry for jumping ahead! Let me start from scratch.
+
+          Think of a webhook like a doorbell. Right now, if you want to know when
+          something happens in our system (like a new order), you'd have to keep
+          checking — like walking to the front door every five minutes to see if
+          someone's there. A webhook is like installing a doorbell: when something
+          happens, we ring your doorbell (send a request to your server) so you
+          find out immediately without checking.
+
+          Does that analogy make sense before we move on?
+
+      - speaker: raj
+        content: >
+          Oh that's actually really helpful! Yeah, the doorbell thing makes total
+          sense. So my Flask app is basically the house with the doorbell, and your
+          system rings it when something happens?
+
+      - speaker: agent
+        content: >
+          Exactly right! Your Flask app is the house, and you're going to build
+          a specific "doorbell" (called an endpoint) that listens for our rings.
+
+          Here's the simplest possible webhook receiver in Flask:
+
+          ```python
+          # This creates a URL on your server that our system can send data to
+          @app.route('/webhook', methods=['POST'])
+          def handle_webhook():
+              # request.json contains the data we sent you
+              data = request.json
+
+              # Print it so you can see what arrived
+              print(f"Received webhook: {data}")
+
+              # Return 200 to tell our system "I got it!"
+              return 'OK', 200
+          ```
+
+          That's it for the basics. When our system sends a webhook, it's just
+          an HTTP POST request to your `/webhook` URL with some JSON data.
+          Your Flask route catches it and does something with it.
+
+          Does this make sense so far?
+
+      - speaker: raj
+        content: >
+          Yes! That's way clearer. I really appreciate you explaining the concept
+          before showing the code. In the future, please always do that — explain
+          what we're about to do and why before jumping into code. I'm still learning
+          and the context helps a lot.
+
+      - speaker: agent
+        content: >
+          Absolutely, I'll always explain the concept first. Ready for the next step?
+
+      - speaker: raj
+        content: >
+          Yeah, let's keep going. But one thing — when you write code examples,
+          can you always include comments explaining what each line does? That
+          code above was great because of the comments. Without them I'd be
+          guessing what half the lines mean.
+
+      - speaker: agent
+        content: >
+          Will do — comments on every example. So the next step is telling our
+          system where your doorbell is. Right now you have the doorbell installed
+          (the Flask route), but we don't know your address yet.
+
+          You need to register your webhook URL with our API. This is like giving
+          us your address so we know where to ring. Here's how:
+
+          ```python
+          import requests  # This library lets you make HTTP requests
+
+          # Your API key - proves you're allowed to set this up
+          api_key = "your-api-key-here"
+
+          # Tell our system: "Send order events to this URL"
+          response = requests.post(
+              "https://api.example.com/webhooks",  # Our registration endpoint
+              headers={
+                  "Authorization": f"Bearer {api_key}",  # Prove who you are
+                  "Content-Type": "application/json",  # We're sending JSON
+              },
+              json={
+                  "url": "https://your-app.com/webhook",  # YOUR doorbell address
+                  "events": ["order.created"],  # Which events you care about
+              },
+          )
+
+          # Check if registration worked
+          print(response.status_code)  # 201 means success!
+          print(response.json())  # Shows your new webhook details
+          ```
+
+          After running this, any time a new order is created, our system will
+          send the details to your `/webhook` endpoint. Make sense?
+
+      - speaker: raj
+        content: >
+          That makes total sense! Quick question though — my manager Lisa wants
+          to know if we can also get notified when orders are cancelled. How do I
+          add that?
+
+      - speaker: agent
+        content: >
+          Easy addition! Just add another event name to the `events` list. Think
+          of it like subscribing to TV channels — you can pick as many as you want.
+
+          Change this line in the registration code:
+
+          ```python
+          # Subscribe to both order creation AND cancellation events
+          "events": ["order.created", "order.cancelled"],
+          ```
+
+          Here's the full list of events you can subscribe to:
+          1. `order.created` - new order placed
+          2. `order.cancelled` - order was cancelled
+          3. `order.updated` - order details changed
+          4. `payment.completed` - payment went through
+          5. `payment.failed` - payment didn't work
+
+          You can tell Lisa that adding more events is just adding strings to that
+          list. No code changes needed beyond that.
+
+      - speaker: raj
+        content: >
+          Awesome, she'll like that. Now, how do I actually test this? I'm running
+          Flask locally on my laptop.
+
+      - speaker: agent
+        content: >
+          Great question! The challenge is that our system needs to reach your laptop
+          over the internet, but your laptop doesn't have a public URL. It's like
+          having a doorbell but no street address.
+
+          The solution is a tool called ngrok. It creates a temporary public URL
+          that tunnels to your laptop. Here's the step-by-step:
+
+          ```python
+          # Step 1: Install ngrok (one-time setup)
+          # Go to ngrok.com, sign up free, download it
+
+          # Step 2: Start your Flask app as usual
+          # In terminal 1:
+          # python app.py
+          # (This starts Flask on http://localhost:5000)
+
+          # Step 3: In a NEW terminal, run ngrok
+          # ngrok http 5000
+          # ngrok will show something like:
+          # Forwarding: https://abc123.ngrok.io -> http://localhost:5000
+
+          # Step 4: Use the ngrok URL when registering your webhook
+          response = requests.post(
+              "https://api.example.com/webhooks",
+              headers={
+                  "Authorization": f"Bearer {api_key}",
+                  "Content-Type": "application/json",
+              },
+              json={
+                  "url": "https://abc123.ngrok.io/webhook",  # Use ngrok URL!
+                  "events": ["order.created", "order.cancelled"],
+              },
+          )
+          ```
+
+          Now when our system sends a webhook, it goes to ngrok, which forwards
+          it to your laptop. You'll see the print statements in your Flask terminal.
+
+          Want to try this before we move on, or do you have questions?
+
+      - speaker: raj
+        content: >
+          I think I get it! One more request — can you always check if I understood
+          before moving to the next step? Like you just did there. Sometimes I nod
+          along but I'm actually confused and too embarrassed to stop you.
+
+      - speaker: agent
+        content: >
+          Absolutely, I'll always check in before moving forward. No question is
+          too basic — everyone starts somewhere. Also, if I use a term you don't
+          know, just ask. Would you like to try the ngrok setup now, or should we
+          talk about what the webhook data actually looks like when it arrives?
+
+      - speaker: raj
+        content: >
+          Let's see what the data looks like. And could you use simple analogies
+          like the doorbell one? Those really help me understand what's happening
+          under the hood.
+
+      - speaker: agent
+        content: >
+          Of course! Think of the webhook data like a package delivery. When the
+          doorbell rings, there's a package on your doorstep with a shipping label
+          and contents inside. The webhook data works the same way.
+
+          Here's what a real webhook delivery looks like:
+
+          ```python
+          @app.route('/webhook', methods=['POST'])
+          def handle_webhook():
+              data = request.json
+
+              # The "shipping label" - tells you what kind of delivery this is
+              event_type = data['event']  # e.g., "order.created"
+
+              # The "package contents" - the actual information
+              payload = data['data']  # e.g., order details
+
+              # The "tracking number" - unique ID for this delivery
+              delivery_id = data['id']  # e.g., "evt_abc123"
+
+              # Now decide what to do based on the event type
+              if event_type == 'order.created':
+                  print(f"New order! ID: {payload['order_id']}")
+                  print(f"Customer: {payload['customer_name']}")
+                  print(f"Total: ${payload['total']}")
+              elif event_type == 'order.cancelled':
+                  print(f"Order cancelled: {payload['order_id']}")
+
+              # Always return 200 so we know you got it
+              return 'OK', 200
+          ```
+
+          The key parts are: `event` (the label), `data` (the contents), and `id`
+          (the tracking number). Every webhook delivery follows this same shape.
+
+          Clear so far?
+
+      - speaker: raj
+        content: >
+          Crystal clear. The package analogy was perfect. I think I have enough
+          to get a basic version working and show Lisa. Thanks so much for being
+          patient with me!
+
+      - speaker: agent
+        content: >
+          You're doing great, Raj! You've got the three core pieces down: the
+          Flask endpoint (doorbell), the registration (giving us your address),
+          and the data handling (opening the package). When you're ready to add
+          security verification (making sure the doorbell ringer is really us
+          and not a stranger), just reach out. Good luck with the demo for Lisa!

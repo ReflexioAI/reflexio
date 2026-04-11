@@ -1,0 +1,237 @@
+[project]
+name = "reflexio-ai"
+version = "0.2.8.dev4"
+description = "A Python library for the Reflexio"
+authors = [{name = "Reflexio Team"}]
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.11"
+dependencies = [
+    # Client deps (lightweight)
+    "pydantic>=2.0.0",
+    "requests>=2.25.0",
+    "aiohttp>=3.11.12",
+    "python-dateutil>=2.8.0",
+    "python-dotenv>=1.1.0",
+    "pyyaml>=6.0",
+    # Server deps
+    "fastapi>=0.111.1",
+    "uvicorn>=0.34.0",
+    "openai>=2.8.0",
+    "anthropic>=0.72.0",
+    "litellm>=1.80.11",
+    "braintrust>=0.12.0",
+    "python-jose>=3.3.0",
+    "passlib>=1.7.4",
+    "tenacity>=9.0.0",
+    "bcrypt>=4.2.1",
+    "duckduckgo-search>=7.0.1",
+    "xlsxwriter>=3.2.2",
+    "hdbscan>=0.8.40",
+    "redis>=6.2.0",
+    "websocket-client>=1.8.0",
+    "tiktoken>=0.12.0",
+    "slowapi>=0.1.9",
+    "cachetools>=6.2.4",
+    "colorlog>=6.10.1",
+    "httpx>=0.28.1",
+    "pydantic[email]>=2.12.5",
+    "nltk>=3.9.3",
+    # CLI
+    "typer>=0.15.0",
+    "rich>=13.0.0",
+]
+
+[project.optional-dependencies]
+vec = ["sqlite-vec>=0.1.6"]
+notebooks = ["pandas>=3.0.2"]
+
+[dependency-groups]
+dev = [
+    "pre-commit>=4.0.1",
+    "pytest>=8.3.4",
+    "pytest-asyncio>=0.25.0",
+    "pytest-xdist>=3.8.0",
+    "pytest-timeout>=2.3.1",
+    "black>=24.10.0",
+    "moto>=5.0.28",
+    "jupyterlab>=4.4.3",
+    "matplotlib>=3.10.8",
+    "ruff>=0.15.0",
+    "pyright>=1.1.400",
+    "pytest-cov>=6.0",
+    "syrupy>=5.0",
+    "mutmut>=3.2.0",
+    "commitizen>=4.1.0",
+    "python-semantic-release>=10.0.0",
+    "build>=1.0.0",
+    "twine>=6.0.0",
+]
+docs = [
+    "mkdocs>=1.5.3",
+    "mkdocs-material>=9.5.3",
+    "mkdocstrings[python]>=0.24.0",
+    "griffe>=0.38.0",
+    "mkdocstrings-python>=1.7.0",
+]
+
+[project.scripts]
+reflexio = "reflexio.cli.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# sdist: explicitly list what goes in. Without this, hatchling's default
+# file walker follows the `client_dist/reflexio` symlink (which points to
+# `../reflexio`), caches the resolved paths, and then skips the real
+# top-level `reflexio/` directory as already-seen — producing an sdist
+# (and wheel-from-sdist) missing the entire package.
+[tool.hatch.build.targets.sdist]
+only-include = [
+    "reflexio",
+    "pyproject.toml",
+    "README.md",
+    "LICENSE",
+    ".env.example",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["reflexio"]
+
+[tool.hatch.build.targets.wheel.force-include]
+".env.example" = "reflexio/data/.env.example"
+
+[tool.pytest.ini_options]
+# Parallel test execution with pytest-xdist
+# -n auto: Use all available CPU cores
+# --dist worksteal: Dynamic load balancing — idle workers steal from busy workers' queues
+addopts = "-n auto --dist worksteal --cov --cov-report=term-missing --cov-report=html --timeout=120"
+testpaths = ["tests"]
+asyncio_default_fixture_loop_scope = "function"
+markers = [
+    "unit: Fast isolated tests with all dependencies mocked",
+    "integration: Tests with real storage but mocked LLM",
+    "e2e: Full workflow tests with real storage and services",
+    "requires_credentials: Tests that need API keys (costs money)",
+]
+
+[tool.coverage.run]
+# Measure branch coverage — ensures both if/else paths are tested, not just lines
+branch = true
+source = ["reflexio"]
+omit = [
+    "**/__init__.py",
+    "tests/*",
+    "reflexio/data/*",
+    "*/conftest.py",
+    "reflexio/scripts/*",
+    "reflexio/reflexio_commons/*",
+    "reflexio/server/services/email/templates/*",
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+skip_empty = true
+fail_under = 65
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+    "@overload",
+]
+
+[tool.coverage.html]
+directory = "htmlcov"
+
+[tool.ruff]
+target-version = "py314"
+line-length = 88
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "F",      # pyflakes (unused imports, undefined names)
+    "W",      # pycodestyle warnings
+    "B",      # flake8-bugbear (likely bugs & design problems)
+    "UP",     # pyupgrade (modern Python syntax)
+    "I",      # isort (import sorting)
+    "C4",     # flake8-comprehensions (correct dict/list/set usage)
+    "SIM",    # flake8-simplify (code simplification patterns)
+    "RET",    # flake8-return (return statement quality)
+    "PERF",   # perflint (performance anti-patterns)
+    "C90",    # McCabe complexity
+    "S",      # flake8-bandit (security checks)
+    "N",      # pep8-naming conventions
+    "ANN",    # flake8-annotations (enforce type annotations)
+    "ARG",    # flake8-unused-arguments
+    "G",      # flake8-logging-format (no f-strings in logging)
+    "PTH",    # flake8-use-pathlib (pathlib over os.path)
+    "FURB",   # refurb (modern Python idioms)
+    "FLY",    # flynt (string join → f-string)
+    "PLR1714",# pylint: repeated-equality-comparison → use `in`
+    "PLR1716",# pylint: boolean-chained-comparison → chain
+]
+ignore = [
+    "E501",   # line too long (handled by formatter/black)
+    "E402",   # module-level import not at top (common in __init__.py)
+    "ANN002",  # missing type for *args (often inherited from frameworks)
+    "ANN003",  # missing type for **kwargs (often inherited from frameworks)
+    "ANN204",  # missing return type for __init__ (-> None is obvious)
+    "ANN401",  # dynamically typed Any (sometimes intentional)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401", "F403"]
+"tests/**" = ["S101", "ARG001", "ARG002", "PTH", "ANN", "S105", "S106", "S107", "S108"]
+"conftest.py" = ["ARG001"]
+"notebooks/**" = ["S101", "F821", "S105", "S106", "ANN", "PTH", "RET504", "S113", "ARG001"]
+"reflexio/scripts/**" = ["S101", "G004", "ANN"]
+"reflexio/server/api.py" = ["B008", "ARG001", "ARG002"]
+"reflexio/server/api_endpoints/**" = ["B008", "ARG001", "ARG002"]
+"reflexio/integrations/**" = ["ARG002"]
+"reflexio/server/services/configurator/test_config_storage.py" = ["S101", "ANN", "S108"]
+"demo/**" = ["S101", "PTH", "G004", "ANN"]
+"reflexio/server/services/storage/sqlite_storage/**" = ["S608"]
+"reflexio/cli/**" = ["S603", "S607", "S104"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 20
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.mutmut]
+paths_to_mutate = [
+    "reflexio/server/services/service_utils.py",
+    "reflexio/server/services/deduplication_utils.py",
+    "reflexio/server/services/feedback/feedback_service_utils.py",
+    "reflexio/server/services/storage/storage_base/_base.py",
+]
+tests_dir = "tests/"
+runner = "python -m pytest -x -q -o 'addopts='"
+
+[tool.commitizen]
+name = "cz_conventional_commits"
+version_provider = "pep621"
+tag_format = "reflexio-v$version"
+update_changelog_on_bump = false
+
+[tool.semantic_release]
+version_toml = ["pyproject.toml:project.version"]
+tag_format = "reflexio-v{version}"
+commit_message = "chore(release): reflexio v{version}"
+build_command = "pip install build && python -m build"
+
+[tool.semantic_release.branches.main]
+match = "^(main|master)$"
+prerelease = false
+
+[tool.semantic_release.changelog]
+exclude_commit_patterns = ["^chore\\(release\\)"]
+
+[tool.semantic_release.remote]
+type = "github"
+token = { env = "GH_TOKEN" }

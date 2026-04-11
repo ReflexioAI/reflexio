@@ -1,0 +1,9 @@
+{
+  "playbooks": [
+    {
+      "instruction": "Agent should provide more detailed explanations when answering technical questions",
+      "rationale": "User expressed frustration with vague answers",
+      "trigger": "when user asks about implementation details"
+    }
+  ]
+}
