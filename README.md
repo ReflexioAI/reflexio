@@ -18,7 +18,7 @@
 ## What is Reflexio?
 The moat for AI agents isn't the model — it's what your agent learns from every interaction it handles.
 
-Reflexio is an **agent self-improvement** platform. It turns every conversation your AI agent has into a learning opportunity — automatically extracting user preferences and behavioral playbooks so your agent continuously improves itself without manual tuning.
+Reflexio is a **self-improvement platform** for AI agents. It turns every conversation your AI agent has into a learning opportunity — automatically extracting user preferences and behavioral playbooks so your agent continuously improves itself without manual tuning.
 
 ```mermaid
 flowchart LR

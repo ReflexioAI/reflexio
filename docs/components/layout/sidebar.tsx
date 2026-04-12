@@ -14,6 +14,7 @@ import {
   Search,
   Cpu,
   Settings,
+  Pencil,
   ChevronRight,
   type LucideIcon,
 } from "lucide-react";
@@ -71,7 +72,11 @@ function SidebarGroup({
   group: (typeof resourceGroups)[0];
   pathname: string;
 }) {
-  const isActive = pathname.startsWith(`/${group.id}`);
+  const isConfigGroup = group.id === "configuration";
+  const configureActive = pathname === "/configure";
+  const isActive =
+    pathname.startsWith(`/${group.id}`) ||
+    (isConfigGroup && configureActive);
   const [open, setOpen] = useState(isActive);
   const Icon = iconMap[group.icon] ?? MessageSquare;
 
@@ -91,6 +96,20 @@ function SidebarGroup({
       </CollapsibleTrigger>
       <CollapsibleContent>
         <div className="ml-4 pl-3 border-l border-border space-y-0.5 py-1">
+          {isConfigGroup && (
+            <Link
+              href="/configure"
+              className={cn(
+                "flex items-center gap-2 px-2 py-1.5 text-sm rounded-md transition-colors",
+                configureActive
+                  ? "bg-accent text-accent-foreground font-medium"
+                  : "text-muted-foreground hover:text-foreground hover:bg-accent/50"
+              )}
+            >
+              <Pencil className="h-3.5 w-3.5" />
+              <span className="truncate">Edit Config</span>
+            </Link>
+          )}
           {group.methods.map((method) => {
             const href = `/${group.id}/${method.id}`;
             const active = pathname === href;
