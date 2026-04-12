@@ -21,6 +21,7 @@ export const configurationMethods: MethodDef[] = [
     httpMethod: "POST",
     endpoint: "/api/set_config",
     requestStyle: "json_body",
+    bodyFromParam: "config",
     params: [
       {
         name: "config",

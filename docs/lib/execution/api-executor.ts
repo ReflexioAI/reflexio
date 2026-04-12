@@ -48,11 +48,11 @@ export async function executeApiCall(
       }
     }
 
-    // When there's a single json param, send its value directly as the body
-    // (FastAPI expects the model fields at the top level, not wrapped in a key)
-    const jsonParams = method.params.filter((p) => p.type === "json");
-    if (jsonParams.length === 1 && bodyObj[jsonParams[0].name] !== undefined) {
-      body = JSON.stringify(bodyObj[jsonParams[0].name]);
+    // Endpoints can opt into sending a single param's value as the raw body
+    // (e.g. /api/set_config where FastAPI deserializes the body into Config
+    // directly). Otherwise the body is {param: value} for every param.
+    if (method.bodyFromParam && bodyObj[method.bodyFromParam] !== undefined) {
+      body = JSON.stringify(bodyObj[method.bodyFromParam]);
     } else {
       body = JSON.stringify(bodyObj);
     }

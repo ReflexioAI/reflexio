@@ -17,8 +17,8 @@ interface ResultsPanelProps {
 const ARRAY_KEYS_TO_TABLE = new Set([
   "interactions",
   "user_profiles",
-  "feedbacks",
-  "raw_feedbacks",
+  "agent_playbooks",
+  "user_playbooks",
   "sessions",
   "agent_success_evaluation_results",
   "profile_change_logs",

@@ -3,8 +3,8 @@ import { NAV_GROUPS } from "../constants";
 import { interactionMethods } from "./interactions";
 import { profileMethods } from "./profiles";
 import { requestSessionMethods } from "./requests-sessions";
-import { rawFeedbackMethods } from "./raw-feedbacks";
-import { feedbackMethods } from "./feedbacks";
+import { userPlaybookMethods } from "./user-playbooks";
+import { agentPlaybookMethods } from "./agent-playbooks";
 import { agentEvaluationMethods } from "./agent-evaluation";
 import { unifiedSearchMethods } from "./unified-search";
 import { generationMethods } from "./generation";
@@ -14,8 +14,8 @@ const methodsByGroup: Record<string, MethodDef[]> = {
   interactions: interactionMethods,
   profiles: profileMethods,
   "requests-sessions": requestSessionMethods,
-  "raw-feedbacks": rawFeedbackMethods,
-  feedbacks: feedbackMethods,
+  "user-playbooks": userPlaybookMethods,
+  "agent-playbooks": agentPlaybookMethods,
   "agent-evaluation": agentEvaluationMethods,
   "unified-search": unifiedSearchMethods,
   generation: generationMethods,

@@ -7,7 +7,7 @@ export const unifiedSearchMethods: MethodDef[] = [
     displayName: "Search",
     group: "unified-search",
     description:
-      "Search across all entity types (profiles, feedbacks, raw_feedbacks) in parallel.",
+      "Search across all entity types (profiles, agent playbooks, user playbooks) in parallel.",
     httpMethod: "POST",
     endpoint: "/api/search",
     requestStyle: "json_body",
@@ -37,20 +37,20 @@ export const unifiedSearchMethods: MethodDef[] = [
         type: "string",
         required: false,
         description:
-          "Filter by agent version (feedbacks, raw_feedbacks)",
+          "Filter by agent version (agent_playbooks, user_playbooks)",
       },
       {
-        name: "feedback_name",
+        name: "playbook_name",
         type: "string",
         required: false,
         description:
-          "Filter by feedback name (feedbacks, raw_feedbacks)",
+          "Filter by playbook name (agent_playbooks, user_playbooks)",
       },
       {
         name: "user_id",
         type: "string",
         required: false,
-        description: "Filter by user ID (profiles, raw_feedbacks)",
+        description: "Filter by user ID (profiles, user_playbooks)",
       },
       {
         name: "enable_reformulation",
