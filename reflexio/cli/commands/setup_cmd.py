@@ -338,8 +338,10 @@ def _install_openclaw_integration() -> bool:
     import reflexio
 
     pkg_dir = Path(reflexio.__file__).parent
-    hook_dir = pkg_dir / "integrations" / "openclaw" / "hook"
-    skill_dir = pkg_dir / "integrations" / "openclaw" / "skill"
+    integration_dir = pkg_dir / "integrations" / "openclaw"
+    hook_dir = integration_dir / "hook"
+    skill_dir = integration_dir / "skill"
+    commands_dir = integration_dir / "commands"
 
     # Install plugin and enable hook
     try:
@@ -364,6 +366,14 @@ def _install_openclaw_integration() -> bool:
     if workspace_skills.exists():
         shutil.rmtree(workspace_skills)
     shutil.copytree(skill_dir, workspace_skills)
+
+    # Copy each command directory to ~/.openclaw/skills/<command-name>
+    if commands_dir.exists():
+        for cmd_subdir in commands_dir.iterdir():
+            if cmd_subdir.is_dir():
+                dest = Path.home() / ".openclaw" / "skills" / cmd_subdir.name
+                shutil.copytree(cmd_subdir, dest, dirs_exist_ok=True)
+                typer.echo(f"Command installed: {dest}")
 
     # Verify
     result = subprocess.run(
