@@ -645,12 +645,12 @@ class SQLiteStorageBase(BaseStorage):
             if row and row["cnt"] > 0:
                 continue  # Already populated
             rows = self._fetchall(
-                f"SELECT rowid, embedding FROM {main_table} WHERE embedding IS NOT NULL"
+                f"SELECT rowid AS rid, embedding FROM {main_table} WHERE embedding IS NOT NULL"
             )
             for r in rows:
                 emb = _json_loads(r["embedding"])
                 if emb:
-                    self._vec_upsert(vec_table, r["rowid"], emb)
+                    self._vec_upsert(vec_table, r["rid"], emb)
 
     def _migrate_interactions_schema(self) -> None:
         """Add new columns to existing interactions table if missing."""
