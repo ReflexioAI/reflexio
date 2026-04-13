@@ -5,7 +5,7 @@ description = "A Python library for the Reflexio"
 authors = [{name = "Reflexio Team"}]
 readme = "README.md"
 license = "Apache-2.0"
-requires-python = ">=3.11"
+requires-python = ">=3.14"
 dependencies = [
     # Client deps (lightweight)
     "pydantic>=2.0.0",
