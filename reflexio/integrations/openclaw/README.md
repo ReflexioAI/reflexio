@@ -224,6 +224,10 @@ openclaw/
     └── reflexio-aggregate/ ← /reflexio-aggregate: trigger aggregation manually
 ```
 
+## Manual Testing
+
+See [TESTING.md](TESTING.md) for a step-by-step guide to manually test the integration end-to-end — from install through search, capture, retrieval, multi-user isolation, graceful degradation, and uninstall.
+
 ## Comparison with Claude Code / LangChain Integrations
 
 | Aspect | OpenClaw | Claude Code | LangChain |

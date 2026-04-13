@@ -422,6 +422,7 @@ def _uninstall_openclaw() -> None:
     workspace_skills = Path.home() / ".openclaw" / "skills" / "reflexio"
     if workspace_skills.exists():
         shutil.rmtree(workspace_skills)
+        typer.echo(f"Removed skill: {workspace_skills}")
 
     import reflexio as _reflexio
 
@@ -439,7 +440,7 @@ def _uninstall_openclaw() -> None:
         rules_file.unlink()
         typer.echo(f"Removed rule: {rules_file}")
 
-    typer.echo("Reflexio integration removed from OpenClaw.")
+    typer.echo("Reflexio integration fully removed from OpenClaw.")
 
 
 @app.command("openclaw")
