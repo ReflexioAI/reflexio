@@ -350,11 +350,10 @@ function ensureServerRunning() {
 		// Flag file doesn't exist — proceed with health check
 	}
 
-	// Quick health check via reflexio status check (2s timeout)
+	// Quick health check via direct HTTP request (much faster than CLI spawn)
 	try {
-		execFileSync("reflexio", ["status", "check"], {
-			timeout: 2_000,
-			encoding: "utf-8",
+		execFileSync("curl", ["-sf", "--max-time", "2", `${serverUrl}/health`], {
+			timeout: 3_000,
 			stdio: ["ignore", "pipe", "pipe"],
 		});
 		// Server is healthy — nothing to do
