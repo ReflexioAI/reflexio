@@ -8,6 +8,7 @@
 [![Python >= 3.11](https://img.shields.io/badge/python-%3E%3D3.11-blue)](https://www.python.org/)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-green)](LICENSE)
 [![PyPI](https://img.shields.io/pypi/v/reflexio-client)](https://pypi.org/project/reflexio-client/)
+[![Search p50 57ms](https://img.shields.io/badge/search-57ms%20p50-brightgreen)](reflexio/benchmarks/retrieval_latency/results/report.md)
 
 [Quick Start](#quick-start) · [Features](#features) · [SDK](#sdk-usage) · [CLI](reflexio/cli/README.md) · [Architecture](#architecture) · [Docs](https://www.reflexio.ai/docs) · [Contributing](#contributing)
 
@@ -169,6 +170,7 @@ Reflexio will automatically generate profiles and extract playbooks in the backg
 - Hybrid search (vector + full-text) across profiles and playbooks
 - LLM-powered query rewriting for improved recall
 - Unified search across all entity types in parallel
+- **Fast at scale**: unified search across ~3,000 indexed rows (profile + user playbook + agent playbook, ~1,000 rows each, queried in parallel) runs at **~57 ms p50 / ~73 ms p95** — measured service-layer with local SQLite on an Apple Silicon MacBook, 30 trials × 20 fixed queries. See the [full benchmark report](reflexio/benchmarks/retrieval_latency/results/report.md) or reproduce with [`reflexio.benchmarks.retrieval_latency`](reflexio/benchmarks/retrieval_latency/README.md).
 
 ### Multi-Provider LLM Support
 
