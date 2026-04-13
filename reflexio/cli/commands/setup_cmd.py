@@ -242,8 +242,7 @@ def _prompt_managed_reflexio(env_path: Path) -> str:
             "storage, not your per-org Supabase."
         )
         typer.echo(
-            "      • Other users hitting the same server share the same "
-            "data namespace."
+            "      • Other users hitting the same server share the same data namespace."
         )
         typer.echo(
             "    Contact the server operator to enable enterprise auth, "
@@ -338,8 +337,11 @@ def _install_openclaw_integration() -> bool:
     import reflexio
 
     pkg_dir = Path(reflexio.__file__).parent
-    hook_dir = pkg_dir / "integrations" / "openclaw" / "hook"
-    skill_dir = pkg_dir / "integrations" / "openclaw" / "skill"
+    integration_dir = pkg_dir / "integrations" / "openclaw"
+    hook_dir = integration_dir / "hook"
+    skill_dir = integration_dir / "skill"
+    rules_dir = integration_dir / "rules"
+    commands_dir = integration_dir / "commands"
 
     # Install plugin and enable hook
     try:
@@ -364,6 +366,23 @@ def _install_openclaw_integration() -> bool:
     if workspace_skills.exists():
         shutil.rmtree(workspace_skills)
     shutil.copytree(skill_dir, workspace_skills)
+
+    # Copy each command directory to ~/.openclaw/skills/<command-name>
+    if commands_dir.exists():
+        for cmd_subdir in commands_dir.iterdir():
+            if cmd_subdir.is_dir():
+                dest = Path.home() / ".openclaw" / "skills" / cmd_subdir.name
+                shutil.copytree(cmd_subdir, dest, dirs_exist_ok=True)
+                typer.echo(f"Command installed: {dest}")
+
+    # Copy rules to default workspace (always-active behavioral constraints)
+    if rules_dir.exists():
+        workspace_dir = Path.home() / ".openclaw" / "workspace"
+        for rule_file in rules_dir.glob("*.md"):
+            dest = workspace_dir / rule_file.name
+            workspace_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(rule_file, dest)
+            typer.echo(f"Rule installed: {dest}")
 
     # Verify
     result = subprocess.run(
@@ -403,7 +422,25 @@ def _uninstall_openclaw() -> None:
     workspace_skills = Path.home() / ".openclaw" / "skills" / "reflexio"
     if workspace_skills.exists():
         shutil.rmtree(workspace_skills)
-    typer.echo("Reflexio integration removed from OpenClaw.")
+        typer.echo(f"Removed skill: {workspace_skills}")
+
+    import reflexio as _reflexio
+
+    integration_dir = Path(_reflexio.__file__).parent / "integrations" / "openclaw"
+    commands_dir = integration_dir / "commands"
+    if commands_dir.exists():
+        for cmd_subdir in commands_dir.iterdir():
+            if cmd_subdir.is_dir():
+                cmd_dir = Path.home() / ".openclaw" / "skills" / cmd_subdir.name
+                if cmd_dir.exists():
+                    shutil.rmtree(cmd_dir)
+    # Remove rules from default workspace
+    rules_file = Path.home() / ".openclaw" / "workspace" / "reflexio.md"
+    if rules_file.exists():
+        rules_file.unlink()
+        typer.echo(f"Removed rule: {rules_file}")
+
+    typer.echo("Reflexio integration fully removed from OpenClaw.")
 
 
 @app.command("openclaw")

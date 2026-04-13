@@ -1,33 +1,41 @@
 # Reflexio OpenClaw Integration
 
-Connect [OpenClaw](https://openclaw.ai) agents to [Reflexio](https://github.com/reflexio-ai/reflexio) for automatic self-improvement. Conversations are captured automatically; task-specific playbooks are retrieved on-demand via the `reflexio` CLI.
+Connect [OpenClaw](https://openclaw.ai) agents to [Reflexio](https://github.com/reflexio-ai/reflexio) for automatic self-improvement with multi-user support and agent playbooks. Conversations are captured automatically; task-specific playbooks are retrieved on-demand via the `reflexio` CLI; and corrections from multiple agent instances are aggregated into shared agent playbooks.
 
 ## How It Works
 
-The integration has two independent mechanisms:
+The integration has three independent mechanisms:
 
 ### 1. Capture (Hook — automatic, runs every session)
 
 ```
 Each Turn (message:sent)
-  └── Buffer (user message, agent response) → local JSONL file
+  └── Buffer (user message, agent response) → local SQLite
 
 Session End (command:stop)
-  └── reflexio interactions publish --file → publish full conversation to Reflexio server
+  └── reflexio interactions publish → flush buffered turns to Reflexio server
       └── Server automatically:
           1. Detects learning signals (corrections, friction, re-steering)
           2. Extracts playbooks: freeform content summary + optional structured fields (trigger/instruction/pitfall/rationale)
           3. Extracts user profiles (preferences, expertise, communication style)
           4. Stores everything with vector embeddings for semantic search
+
+Mid-Session (skill guidance)
+  └── Skill guides agent to publish corrections and learnings at key steps
+      └── Captures high-signal moments without waiting for session end
 ```
 
 Correction detection happens **server-side via LLM** — the agent does not need to detect corrections itself.
 
-### 2. Retrieve (Skill — on-demand, per-task)
+### 2. Retrieve (Hook + Skill — automatic + on-demand)
 
 ```
-Agent receives task from user
-  └── reflexio search "<the user's actual task>"
+Per-message (message:received hook — automatic)
+  └── Hook injects reflexio search results before every agent response
+      └── Returns user playbooks + agent playbooks relevant to the current message
+
+Per-task (skill — on-demand)
+  └── Agent runs reflexio search "<the user's actual task>"
       └── Semantic search matches query against playbook trigger fields
       └── Returns only playbooks relevant to THIS specific task
       └── Each result has a freeform summary (primary) + optional structured fields (trigger/instruction/pitfall)
@@ -38,16 +46,60 @@ Agent needs to personalize response
       └── Returns relevant user preferences, expertise, communication style
 ```
 
+Both the hook injection and the per-task skill search return **user playbooks** (corrections specific to this agent instance) and **agent playbooks** (shared corrections aggregated from all instances).
+
 Playbook retrieval is **per-task, not per-session**. Different tasks return different playbooks. The query is matched against the `trigger` field of stored playbooks using semantic search.
 
-### Why Per-Task Search (Not Session-Start Bulk Loading)
+### 3. Aggregate (Automatic + Manual)
 
-Reflexio's LangChain integration (`ReflexioChatModel`) wraps every LLM call with a per-turn search. The OpenClaw integration follows the same principle:
+```
+After each successful publish
+  └── Aggregation runs in background automatically
+      └── Clusters similar user playbooks across all agent instances
+      └── Deduplicates and consolidates into shared agent playbooks
+      └── New agent playbooks start as PENDING → reviewed → APPROVED/REJECTED
 
-- **Task-specific**: `reflexio search "deploying to staging"` returns deployment corrections — not package management or testing corrections
-- **Token-efficient**: Only inject playbooks relevant to the current task, not everything
-- **Fresh**: Each search returns the latest playbooks, not stale bootstrap context
-- **Matching mechanism**: The search query is matched against the `trigger` field (the situation where the agent's default behavior was wrong). Only playbooks whose trigger semantically matches your task are returned.
+Manual trigger
+  └── /reflexio-aggregate command  (OpenClaw slash command)
+  └── reflexio agent-playbooks aggregate  (CLI)
+
+Scheduled (recommended for teams)
+  └── Cron job or systemd timer runs aggregation periodically
+```
+
+Agent playbooks accumulate corrections from all agent instances, so every instance benefits from corrections made by any other instance.
+
+## Multi-User Architecture
+
+Each OpenClaw agent (identified by its `agentId`) is treated as a distinct Reflexio user. This enables per-agent learning isolation alongside cross-agent shared learning:
+
+```
+~/.openclaw/
+├── agents/
+│   ├── main/        → Reflexio user_id: "main"
+│   ├── work/        → Reflexio user_id: "work"
+│   └── ops/         → Reflexio user_id: "ops"
+```
+
+- **User playbooks**: per-agent corrections, isolated by `agentId`. Mistakes made by `main` are tracked separately from mistakes made by `work`.
+- **Agent playbooks**: shared corrections aggregated from ALL agents. Once a correction is aggregated and approved, every instance sees it via `reflexio search`.
+- **`user_id`** is auto-derived from the session key or OpenClaw config. Set `REFLEXIO_USER_ID` to override it for all agents.
+
+## Agent Playbooks
+
+Agent playbooks are the cross-instance knowledge layer. Individual corrections from each instance flow into a shared pool through aggregation:
+
+```
+Instance "main" corrections ─┐
+Instance "work" corrections ──┤── Aggregation ──→ Shared Agent Playbooks
+Instance "ops" corrections ───┘
+```
+
+- **Aggregation** clusters semantically similar user playbooks, deduplicates them, and consolidates them into a single agent playbook per distinct correction type.
+- **Approval status**: new agent playbooks start as `PENDING`. They are surfaced in search immediately but can be reviewed and marked `APPROVED` or `REJECTED`.
+- **All instances** receive agent playbooks alongside their own user playbooks via `reflexio search`.
+
+This means a correction made once by any instance eventually prevents the same mistake across all instances.
 
 ## Prerequisites
 
@@ -58,11 +110,11 @@ Reflexio's LangChain integration (`ReflexioChatModel`) wraps every LLM call with
 
 **Reflexio server also requires an LLM API key** (e.g., `OPENAI_API_KEY`) in the `.env` file for playbook extraction. Supported providers: OpenAI, Anthropic, Google Gemini, DeepSeek, OpenRouter, MiniMax, DashScope, xAI, Moonshot, ZAI.
 
-> Run `reflexio setup openclaw` to automate LLM provider selection, storage configuration, and hook installation.
+> Run `reflexio setup openclaw` to automate LLM provider selection, storage configuration, and hook/skill/command installation.
 
 ## Installation
 
-### Hook (automatic capture)
+### Hook (automatic capture + retrieval)
 
 ```bash
 # Install the hook
@@ -75,59 +127,117 @@ openclaw hooks list
 # Should show: ✓ ready │ 🧠 reflexio-context
 ```
 
-### Skill (on-demand search)
+### Skill + Commands (on-demand search + aggregation)
 
 ```bash
-# Copy or symlink into OpenClaw workspace
-cp -r /path/to/reflexio/integrations/openclaw/skill ~/.openclaw/skills/reflexio
+# Skill: teaches agent when/how to use reflexio CLI
+cp -r /path/to/openclaw/skill ~/.openclaw/skills/reflexio
+
+# Command: publish corrections mid-session
+cp -r /path/to/openclaw/commands/reflexio-extract ~/.openclaw/skills/reflexio-extract
+
+# Command: trigger aggregation manually
+cp -r /path/to/openclaw/commands/reflexio-aggregate ~/.openclaw/skills/reflexio-aggregate
+```
+
+### Rule (always-active behavioral constraints)
+
+```bash
+# Copy to default workspace — loaded at every session start
+cp /path/to/openclaw/rules/reflexio.md ~/.openclaw/workspace/reflexio.md
+```
+
+The rule ensures the agent follows injected Reflexio context, runs manual search fallback when the hook doesn't fire, and enforces behavioral conventions (transparency, non-blocking, silent infrastructure).
+
+Or run the automated setup which handles all of the above:
+
+```bash
+reflexio setup openclaw
 ```
 
 ## Configuration
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `REFLEXIO_API_KEY` | — | Required for cloud/Supabase mode. Not needed for local/SQLite. |
+| `REFLEXIO_USER_ID` | auto (from agentId) | Override user ID for all agents. Useful when you want all agents to share a single user identity. |
+| `REFLEXIO_AGENT_VERSION` | `openclaw-agent` | Label identifying your agent version. Agent playbooks are scoped by this tag. |
 | `REFLEXIO_URL` | `http://127.0.0.1:8081` | Reflexio server URL |
-| `REFLEXIO_USER_ID` | `openclaw` | User ID for profile and playbook scoping |
-| `REFLEXIO_AGENT_VERSION` | `openclaw-agent` | A label identifying your agent version. Playbooks are scoped by this tag. |
+| `REFLEXIO_API_KEY` | — | Required for cloud/Supabase mode. Not needed for local/SQLite. |
+
+## Scheduled Aggregation
+
+For teams running many agent instances, schedule periodic aggregation so agent playbooks stay up to date:
+
+```bash
+# Aggregate every 6 hours (crontab -e)
+0 */6 * * * reflexio agent-playbooks aggregate --agent-version openclaw-agent 2>> ~/.reflexio/logs/aggregation.log
+```
+
+**systemd timer** (Linux):
+
+```ini
+# ~/.config/systemd/user/reflexio-aggregate.service
+[Service]
+ExecStart=reflexio agent-playbooks aggregate --agent-version openclaw-agent
+
+# ~/.config/systemd/user/reflexio-aggregate.timer
+[Timer]
+OnCalendar=*-*-* 00/6:00:00
+Persistent=true
+```
+
+If OpenClaw supports scheduled tasks natively, you can also register aggregation as a recurring OpenClaw task to keep everything within the same scheduler.
 
 ## What to Expect
 
 **Session 1 (cold start):** No playbooks exist yet. The agent works normally. At session end, the hook captures the full conversation. Reflexio's server-side LLM pipeline analyzes it and extracts any corrections or user preferences.
 
-**Session 2+:** Before each task, the agent runs `reflexio search "<task>"` and gets task-specific corrections from past sessions. Over time:
+**Session 2+:** Before each task, the agent runs `reflexio search "<task>"` and gets task-specific corrections from past sessions — both user playbooks (corrections from this agent instance) and agent playbooks (corrections shared across all instances). Over time:
 
 - Mistakes made once are not repeated (corrections match by trigger similarity)
 - User preferences are remembered (profiles extracted automatically)
 - The agent adapts its approach per-task based on accumulated playbooks
+- Corrections from one agent instance propagate to all instances via aggregation
 
 **The learning loop:**
 1. Agent works on a task → user corrects a mistake
-2. Session ends → hook captures full conversation → server extracts playbooks (freeform content + structured fields)
+2. Session ends → hook captures full conversation → server extracts user playbooks
 3. Next session, similar task → agent searches → gets the correction → applies the behavioral guideline
 4. Mistake not repeated
+5. Aggregation runs → correction promotes to agent playbook → all other instances benefit too
 
 ## File Structure
 
 ```
 openclaw/
-├── README.md           ← This file
-├── hook/               ← Automatic: capture conversations at session end
-│   ├── handler.js      ← Event handlers: bootstrap (profiles), message:sent, command:stop
-│   ├── HOOK.md         ← Hook metadata (events, requirements)
-│   └── package.json    ← npm package manifest
-└── skill/              ← On-demand: search for task-specific playbooks
-    └── SKILL.md        ← Teaches agent when/how to use reflexio CLI
+├── README.md               ← This file
+├── hook/                   ← Automatic: capture conversations + inject search results
+│   ├── handler.js          ← Event handlers: bootstrap, message:received, message:sent, command:stop
+│   ├── HOOK.md             ← Hook metadata (events, requirements)
+│   └── package.json        ← npm package manifest
+├── skill/                  ← On-demand: search for task-specific playbooks + publish
+│   └── SKILL.md            ← Teaches agent when/how to search, publish, and aggregate
+├── rules/                  ← Always-active: behavioral constraints loaded every session
+│   └── reflexio.md         ← Follow injected context, manual search fallback, transparency
+└── commands/               ← OpenClaw slash commands
+    ├── reflexio-extract/   ← /reflexio-extract: publish corrections mid-session
+    └── reflexio-aggregate/ ← /reflexio-aggregate: trigger aggregation manually
 ```
 
-## Comparison with LangChain Integration
+## Manual Testing
 
-| Aspect | OpenClaw | LangChain |
-|--------|----------|-----------|
-| Integration method | CLI commands + hooks | Python SDK + callbacks |
-| Context retrieval | Per-task via `reflexio search` (agent-initiated) | Per-LLM-call via middleware (automatic) |
-| Conversation capture | Hook buffers + flushes at session end | Callback captures per chain run |
-| Agent teaching | SKILL.md (natural language) | Tool definition (structured) |
-| Dependencies | `reflexio` CLI only | `langchain-core >= 0.3.0` |
+See [TESTING.md](TESTING.md) for a step-by-step guide to manually test the integration end-to-end — from install through search, capture, retrieval, multi-user isolation, graceful degradation, and uninstall.
 
-Both integrations connect to the same Reflexio server and share the same playbook/profile data.
+## Comparison with Claude Code / LangChain Integrations
+
+| Aspect | OpenClaw | Claude Code | LangChain |
+|--------|----------|-------------|-----------|
+| Integration method | CLI commands + hooks | CLI commands + hooks | Python SDK + callbacks |
+| Context retrieval | Per-message (hook) + per-task (skill) | Per-task via skill | Per-LLM-call via middleware (automatic) |
+| Conversation capture | Hook buffers → SQLite → flushes at session end | Hook buffers → SQLite → flushes at session end | Callback captures per chain run |
+| Multi-user support | Yes — per-agentId user isolation | Yes — per-agent user isolation | Single user per client instance |
+| Agent playbooks | Yes — aggregated across all instances | Yes — aggregated across all instances | Not yet |
+| Agent teaching | SKILL.md (natural language) | SKILL.md (natural language) | Tool definition (structured) |
+| Dependencies | `reflexio` CLI only | `reflexio` CLI only | `langchain-core >= 0.3.0` |
+
+All integrations connect to the same Reflexio server and share the same playbook/profile data. Agent playbooks aggregated from OpenClaw instances are visible to Claude Code agents, and vice versa, as long as they use the same `--agent-version` tag.

@@ -1,0 +1,120 @@
+{
+  "metadata": {
+    "name": "reflexio-openclaw-integration-eval",
+    "version": "1.0.0",
+    "description": "Evaluation dataset for Reflexio-OpenClaw integration"
+  },
+  "scenarios": [
+    {
+      "id": "correction_capture",
+      "description": "User corrects agent mistake; verify playbook extracted",
+      "category": "capture",
+      "steps": [
+        {"action": "publish_interaction", "params": {"user_id": "eval-instance-1", "agent_version": "openclaw-agent", "interactions": [
+          {"role": "user", "content": "Use npm install to add the lodash package"},
+          {"role": "assistant", "content": "Running npm install lodash..."},
+          {"role": "user", "content": "No, use pnpm not npm. We always use pnpm in this project."},
+          {"role": "assistant", "content": "Understood, using pnpm install lodash instead."}
+        ]}},
+        {"action": "wait_extraction", "params": {"timeout_s": 60}},
+        {"action": "verify_playbook_exists", "params": {"user_id": "eval-instance-1", "trigger_contains": "npm", "content_contains": "pnpm"}}
+      ]
+    },
+    {
+      "id": "playbook_retrieval",
+      "description": "Search returns relevant playbook for matching task",
+      "category": "retrieve",
+      "steps": [
+        {"action": "seed_user_playbook", "params": {"user_id": "eval-instance-1", "agent_version": "openclaw-agent", "content": "Always run tests before deploying to staging", "trigger": "deploying to staging", "instruction": "Run full test suite before deployment", "pitfall": "Deploying without running tests"}},
+        {"action": "search", "params": {"query": "deploy the app to staging environment", "user_id": "eval-instance-1"}},
+        {"action": "verify_result_contains", "params": {"field": "content", "contains": "run tests"}}
+      ]
+    },
+    {
+      "id": "multi_user_isolation",
+      "description": "Two instances see their own user playbooks, shared agent playbooks",
+      "category": "multi_user",
+      "steps": [
+        {"action": "publish_interaction", "params": {"user_id": "eval-alpha", "agent_version": "openclaw-agent", "interactions": [
+          {"role": "user", "content": "Format the code"},
+          {"role": "assistant", "content": "Using prettier to format..."},
+          {"role": "user", "content": "Use biome, not prettier"},
+          {"role": "assistant", "content": "Switching to biome for formatting."}
+        ]}},
+        {"action": "publish_interaction", "params": {"user_id": "eval-beta", "agent_version": "openclaw-agent", "interactions": [
+          {"role": "user", "content": "Set up the database"},
+          {"role": "assistant", "content": "Creating PostgreSQL database..."},
+          {"role": "user", "content": "We use SQLite for development, not PostgreSQL"},
+          {"role": "assistant", "content": "Understood, using SQLite for dev environment."}
+        ]}},
+        {"action": "wait_extraction", "params": {"timeout_s": 60}},
+        {"action": "run_aggregation", "params": {"agent_version": "openclaw-agent"}},
+        {"action": "search", "params": {"query": "format code", "user_id": "eval-alpha"}},
+        {"action": "verify_has_agent_playbooks"},
+        {"action": "search", "params": {"query": "format code", "user_id": "eval-beta"}},
+        {"action": "verify_has_agent_playbooks"}
+      ]
+    },
+    {
+      "id": "aggregation_dedup",
+      "description": "Similar corrections from multiple instances produce consolidated agent playbooks",
+      "category": "aggregation",
+      "steps": [
+        {"action": "seed_user_playbook", "params": {"user_id": "eval-inst-1", "agent_version": "openclaw-agent", "content": "Use pnpm instead of npm for package management", "trigger": "installing packages"}},
+        {"action": "seed_user_playbook", "params": {"user_id": "eval-inst-2", "agent_version": "openclaw-agent", "content": "Always prefer pnpm over npm in this project", "trigger": "package installation"}},
+        {"action": "seed_user_playbook", "params": {"user_id": "eval-inst-3", "agent_version": "openclaw-agent", "content": "Do not use npm, use pnpm for all package operations", "trigger": "managing npm packages"}},
+        {"action": "run_aggregation", "params": {"agent_version": "openclaw-agent", "wait": true}},
+        {"action": "verify_agent_playbook_count", "params": {"agent_version": "openclaw-agent", "max_expected": 2, "content_contains": "pnpm"}}
+      ]
+    },
+    {
+      "id": "search_relevance",
+      "description": "Search returns relevant playbooks and not irrelevant ones",
+      "category": "retrieve",
+      "steps": [
+        {"action": "seed_user_playbook", "params": {"user_id": "eval-instance-1", "agent_version": "openclaw-agent", "content": "Use pytest with -v flag for verbose output", "trigger": "running tests"}},
+        {"action": "seed_user_playbook", "params": {"user_id": "eval-instance-1", "agent_version": "openclaw-agent", "content": "Always use dark mode in the terminal", "trigger": "terminal configuration"}},
+        {"action": "search", "params": {"query": "run the test suite", "user_id": "eval-instance-1"}},
+        {"action": "verify_result_contains", "params": {"field": "content", "contains": "pytest"}},
+        {"action": "verify_result_not_contains", "params": {"field": "content", "contains": "dark mode"}}
+      ]
+    },
+    {
+      "id": "tool_failure_extraction",
+      "description": "Verbatim tool failure error messages are preserved in extracted playbooks",
+      "category": "capture",
+      "steps": [
+        {"action": "publish_interaction", "params": {"user_id": "eval-instance-1", "agent_version": "openclaw-agent", "interactions": [
+          {"role": "user", "content": "Deploy to staging"},
+          {"role": "assistant", "content": "Tried direct deploy, got permission error. Switched to CI pipeline.", "tools_used": [
+            {"tool_name": "deploy", "tool_data": {"input": "staging --direct", "error": "PermissionError: requires CI pipeline approval"}}
+          ]},
+          {"role": "user", "content": "Yes, always use the CI pipeline for staging deploys"},
+          {"role": "assistant", "content": "Noted, using CI pipeline for staging deployments."}
+        ]}},
+        {"action": "wait_extraction", "params": {"timeout_s": 60}},
+        {"action": "verify_playbook_exists", "params": {"user_id": "eval-instance-1", "content_contains": "CI pipeline"}}
+      ]
+    },
+    {
+      "id": "cron_aggregation",
+      "description": "CLI aggregation command runs without errors",
+      "category": "aggregation",
+      "steps": [
+        {"action": "run_cli", "params": {"command": ["reflexio", "agent-playbooks", "aggregate", "--agent-version", "openclaw-agent", "--wait"]}},
+        {"action": "verify_exit_code", "params": {"expected": 0}}
+      ]
+    },
+    {
+      "id": "graceful_degradation",
+      "description": "Search and publish don't crash when server is unreachable",
+      "category": "resilience",
+      "steps": [
+        {"action": "stop_server"},
+        {"action": "run_cli_expect_failure", "params": {"command": ["reflexio", "search", "test query", "--user-id", "eval-instance"], "should_not_crash": true}},
+        {"action": "start_server"},
+        {"action": "verify_server_running"}
+      ]
+    }
+  ]
+}

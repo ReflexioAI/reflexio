@@ -811,12 +811,15 @@ def format_interactions(interactions: list[Any]) -> str:
 def format_context(
     profiles: list[Any],
     agent_playbooks: list[Any],
+    user_playbooks: list[Any] | None = None,
 ) -> str:
-    """Build a combined context block from profiles and agent playbooks.
+    """Build a combined context block from profiles, agent playbooks, and user playbooks.
 
     Args:
         profiles: Profile objects
-        agent_playbooks: Agent playbook objects
+        agent_playbooks: Agent playbook objects (org-level behavioral corrections)
+        user_playbooks: User playbook objects (user-specific behavioral corrections).
+            When provided, rendered after agent playbooks in their own section.
 
     Returns:
         str: Combined markdown context block, or empty string if all empty
@@ -828,6 +831,9 @@ def format_context(
 
     if playbook_text := format_agent_playbooks(agent_playbooks):
         sections.append(f"## Behavior Corrections — FOLLOW THESE\n{playbook_text}")
+
+    if user_playbooks and (user_pb_text := format_user_playbooks(user_playbooks)):
+        sections.append(f"## User Behavior Corrections — FOLLOW THESE\n{user_pb_text}")
 
     if not sections:
         return ""

@@ -1,6 +1,6 @@
 [project]
 name = "reflexio-ai"
-version = "0.2.8.dev4"
+version = "0.2.8"
 description = "A Python library for the Reflexio"
 authors = [{name = "Reflexio Team"}]
 readme = "README.md"

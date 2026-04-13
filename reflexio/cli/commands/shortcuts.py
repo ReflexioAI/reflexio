@@ -201,15 +201,21 @@ def register_shortcuts(app: typer.Typer) -> None:
 
             context = format_context(
                 profiles=response.profiles,
-                agent_playbooks=response.user_playbooks,
+                agent_playbooks=response.agent_playbooks,
+                user_playbooks=response.user_playbooks,
             )
             if context:
                 print(context)
 
-            total = len(response.profiles) + len(response.user_playbooks)
+            total = (
+                len(response.profiles)
+                + len(response.agent_playbooks)
+                + len(response.user_playbooks)
+            )
             print_info(
                 f"Found {len(response.profiles)} profiles, "
-                f"{len(response.user_playbooks)} playbooks ({total} total)"
+                f"{len(response.agent_playbooks)} agent playbooks, "
+                f"{len(response.user_playbooks)} user playbooks ({total} total)"
             )
 
     @app.command()

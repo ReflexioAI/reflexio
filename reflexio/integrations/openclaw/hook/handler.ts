@@ -1,6 +1,6 @@
 import { execFileSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, writeFileSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -86,6 +86,111 @@ function getSessionId(event) {
 }
 
 // ---------------------------------------------------------------------------
+// JSON5 comment stripping — respects quoted strings
+// ---------------------------------------------------------------------------
+
+function stripJsonComments(raw) {
+	return raw.split("\n").map(line => {
+		let inString = false;
+		let escape = false;
+		for (let i = 0; i < line.length; i++) {
+			const ch = line[i];
+			if (escape) { escape = false; continue; }
+			if (ch === "\\") { escape = true; continue; }
+			if (ch === '"') { inString = !inString; continue; }
+			if (!inString && ch === "/" && line[i + 1] === "/") return line.slice(0, i);
+			if (!inString && ch === "/" && line[i + 1] === "*") return line.slice(0, i);
+		}
+		return line;
+	}).join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// User ID resolution — multi-agent instance support
+// ---------------------------------------------------------------------------
+
+let _openclawConfig = null; // cached after first read
+
+function resolveUserId(event) {
+	// 1. Explicit env override — highest priority
+	if (process.env.REFLEXIO_USER_ID) return process.env.REFLEXIO_USER_ID;
+
+	// 2. Extract agentId from sessionKey (format: agent:<agentId>:<key>)
+	const sessionKey = event.context?.sessionKey ?? "";
+	const sessionMatch = sessionKey.match(/^agent:([^:]+):/);
+	if (sessionMatch) return sessionMatch[1];
+
+	// 3. Read ~/.openclaw/openclaw.json (JSON5 — strip comments before parsing)
+	if (_openclawConfig === null) {
+		try {
+			const configPath = join(homedir(), ".openclaw", "openclaw.json");
+			const raw = readFileSync(configPath, "utf-8");
+			// Strip comments while respecting quoted strings to avoid corrupting
+			// string values that contain // (e.g. URLs like http://example.com).
+			const stripped = stripJsonComments(raw);
+			_openclawConfig = JSON.parse(stripped);
+		} catch {
+			_openclawConfig = {}; // cache failure so we don't retry every call
+		}
+	}
+	const agents = _openclawConfig?.agents;
+	if (agents) {
+		// Try agents.defaults first, then first entry in agents.list[]
+		if (agents.defaults && typeof agents.defaults === "string") {
+			return agents.defaults;
+		}
+		if (Array.isArray(agents.list) && agents.list.length > 0) {
+			const first = agents.list[0];
+			if (first && typeof first === "object" && first.name) return first.name;
+			if (typeof first === "string") return first;
+		}
+	}
+
+	// 4. Backward-compatible fallback
+	return "openclaw";
+}
+
+// ---------------------------------------------------------------------------
+// Aggregation trigger — fire-and-forget after successful publish
+// ---------------------------------------------------------------------------
+
+function triggerAggregationIfNeeded(agentVersion) {
+	const flagFile = join(homedir(), ".reflexio", "logs", ".aggregation-running");
+
+	// Skip if aggregation is already running (flag < 5 min old)
+	try {
+		const stat = statSync(flagFile);
+		if (Date.now() - stat.mtimeMs < 5 * 60 * 1000) {
+			console.error("[reflexio] Aggregation already running, skipping");
+			return;
+		}
+	} catch {
+		// Flag file doesn't exist — proceed
+	}
+
+	// Create flag and logs dir
+	const logsDir = join(homedir(), ".reflexio", "logs");
+	mkdirSync(logsDir, { recursive: true, mode: 0o700 });
+	writeFileSync(flagFile, String(Date.now()), { mode: 0o600 });
+
+	const child = spawn(
+		"reflexio",
+		["agent-playbooks", "aggregate", "--agent-version", agentVersion],
+		{ stdio: ["ignore", "ignore", "ignore"], detached: true },
+	);
+	child.on("close", () => {
+		try {
+			unlinkSync(flagFile);
+		} catch {}
+	});
+	child.unref();
+
+	console.error(
+		`[reflexio] Triggered aggregation for agent-version=${agentVersion}`,
+	);
+}
+
+// ---------------------------------------------------------------------------
 // Shared publish logic — used by session end, incremental, and retry
 // ---------------------------------------------------------------------------
 
@@ -139,6 +244,7 @@ function publishSession(db, sessionId, userId, agentVersion) {
 					`[reflexio] Failed to mark turns as published: ${e.message}`,
 				);
 			}
+			triggerAggregationIfNeeded(agentVersion);
 		} else {
 			console.error(
 				`[reflexio] Publish failed (exit ${code}), incrementing retry count`,
@@ -170,11 +276,12 @@ function publishSession(db, sessionId, userId, agentVersion) {
  * Main hook dispatcher for Reflexio-OpenClaw integration.
  *
  * Events handled:
- *   agent:bootstrap  - Inject user profile + retry unpublished sessions
- *   message:sent     - Buffer turn to SQLite + incremental publish
- *   command:stop     - Flush remaining unpublished turns to Reflexio
+ *   agent:bootstrap   - Inject user profile + retry unpublished sessions
+ *   message:received  - Search Reflexio before agent responds
+ *   message:sent      - Buffer turn to SQLite + incremental publish
+ *   command:stop      - Flush remaining unpublished turns to Reflexio
  */
-export default async function reflexioHook(event) {
+export default async function reflexioHook(event: any) {
 	// Skip sub-agent sessions to avoid recursion (guards all event types)
 	const sessionKey = event.context?.sessionKey ?? "";
 	if (sessionKey.includes(":subagent:")) return;
@@ -184,6 +291,8 @@ export default async function reflexioHook(event) {
 	switch (eventKey) {
 		case "agent:bootstrap":
 			return handleBootstrap(event);
+		case "message:received":
+			return handleSearchBeforeResponse(event);
 		case "message:sent":
 			return handleMessageSent(event);
 		case "command:stop":
@@ -192,18 +301,101 @@ export default async function reflexioHook(event) {
 }
 
 // ---------------------------------------------------------------------------
-// Bootstrap: inject user profile + retry unpublished sessions from past
+// Server auto-start — ensure local Reflexio server is running
+// ---------------------------------------------------------------------------
+
+const SERVER_STARTING_FLAG = join(homedir(), ".reflexio", "logs", ".server-starting");
+const STALE_FLAG_MS = 2 * 60 * 1000; // 2 minutes — matches Claude Code hook
+
+/**
+ * Resolve the Reflexio server URL from env or ~/.reflexio/.env.
+ * Returns the URL string (default: http://127.0.0.1:8081).
+ */
+function resolveServerUrl() {
+	if (process.env.REFLEXIO_URL) return process.env.REFLEXIO_URL;
+	try {
+		const envPath = join(homedir(), ".reflexio", ".env");
+		const envContent = readFileSync(envPath, "utf-8");
+		const match = envContent.match(/^REFLEXIO_URL="?([^"\n]+)/m);
+		if (match) return match[1];
+	} catch {
+		// .env file missing — use default
+	}
+	return "http://127.0.0.1:8081";
+}
+
+/**
+ * Check if the Reflexio server is running; start it in background if not.
+ * Only auto-starts local servers (localhost/127.0.0.1). Remote servers are
+ * never started — if they're down, the hooks degrade gracefully.
+ *
+ * Uses a flag file (~/.reflexio/logs/.server-starting) to prevent concurrent
+ * start attempts. Stale flags (>2 min) are cleaned up automatically.
+ */
+function ensureServerRunning() {
+	const serverUrl = resolveServerUrl();
+	const isLocal = serverUrl.includes("127.0.0.1") || serverUrl.includes("localhost");
+	if (!isLocal) return; // Remote server — can't start it locally
+
+	// Check flag file: if a recent start is in progress, skip
+	try {
+		const flagStat = statSync(SERVER_STARTING_FLAG);
+		if (Date.now() - flagStat.mtimeMs < STALE_FLAG_MS) {
+			console.error("[reflexio] Server start already in progress, skipping");
+			return;
+		}
+		// Stale flag — clean it up
+		unlinkSync(SERVER_STARTING_FLAG);
+	} catch {
+		// Flag file doesn't exist — proceed with health check
+	}
+
+	// Quick health check via direct HTTP request (much faster than CLI spawn)
+	try {
+		execFileSync("curl", ["-sf", "--max-time", "2", `${serverUrl}/health`], {
+			timeout: 3_000,
+			stdio: ["ignore", "pipe", "pipe"],
+		});
+		// Server is healthy — nothing to do
+		return;
+	} catch {
+		// Server not running — start it
+	}
+
+	// Start server in background
+	const logsDir = join(homedir(), ".reflexio", "logs");
+	mkdirSync(logsDir, { recursive: true, mode: 0o700 });
+	writeFileSync(SERVER_STARTING_FLAG, String(Date.now()), { mode: 0o600 });
+
+	const child = spawn(
+		"sh",
+		[
+			"-c",
+			`reflexio services start --only backend >> "${join(logsDir, "server.log")}" 2>&1 & sleep 30 && rm -f "${SERVER_STARTING_FLAG}"`,
+		],
+		{ detached: true, stdio: ["ignore", "ignore", "ignore"] },
+	);
+	child.unref();
+
+	console.error("[reflexio] Server not running — starting in background");
+}
+
+// ---------------------------------------------------------------------------
+// Bootstrap: ensure server running, inject profile, retry unpublished
 // ---------------------------------------------------------------------------
 
 function handleBootstrap(event) {
 	const workspaceDir = event.context?.workspaceDir;
 	if (!workspaceDir) return;
 
-	const userId = process.env.REFLEXIO_USER_ID || "openclaw";
+	console.error(`[reflexio] bootstrap hook fired, workspace=${workspaceDir}`);
+
+	// --- Ensure server is running (auto-start if local and down) ---
+	ensureServerRunning();
+
+	const userId = resolveUserId(event);
 	const agentVersion = process.env.REFLEXIO_AGENT_VERSION || "openclaw-agent";
 	const currentSessionId = getSessionId(event);
-
-	console.error(`[reflexio] bootstrap hook fired, workspace=${workspaceDir}`);
 
 	// --- Inject user profile ---
 	try {
@@ -284,6 +476,52 @@ function handleBootstrap(event) {
 }
 
 // ---------------------------------------------------------------------------
+// Message received: search Reflexio before the agent responds
+// ---------------------------------------------------------------------------
+
+const TRIVIAL_RESPONSE_RE = /^(yes|no|ok|sure|thanks|y|n)$/i;
+
+function handleSearchBeforeResponse(event) {
+	let prompt = event.context?.userMessage;
+	if (!prompt || prompt.length < 5) return;
+	if (TRIVIAL_RESPONSE_RE.test(prompt.trim())) return;
+	prompt = prompt.slice(0, 4096);
+
+	try {
+		const userId = resolveUserId(event);
+		const result = execFileSync(
+			"reflexio",
+			["search", prompt, "--user-id", userId, "--top-k", "5"],
+			{ timeout: 5_000, encoding: "utf-8" },
+		);
+
+		if (result && result.trim() && Array.isArray(event.context?.bootstrapFiles)) {
+			event.context.bootstrapFiles.push({
+				name: "REFLEXIO_CONTEXT.md",
+				path: "REFLEXIO_CONTEXT.md",
+				content: result.trim(),
+				source: "hook:reflexio-context",
+			});
+			console.error(
+				`[reflexio] Injected search context for message (${result.trim().length} chars)`,
+			);
+		}
+	} catch (err) {
+		console.error(`[reflexio] Per-message search failed: ${err.message}`);
+
+		// If server is down, try to start it so the next message finds it ready
+		const errMsg = (err.stderr || "") + (err.message || "");
+		const isConnectionError =
+			errMsg.includes("Cannot reach server") ||
+			errMsg.includes("Connection refused") ||
+			errMsg.includes("ECONNREFUSED");
+		if (isConnectionError) {
+			ensureServerRunning();
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Message sent: buffer turn + incremental publish every BATCH_SIZE exchanges
 // ---------------------------------------------------------------------------
 
@@ -315,7 +553,7 @@ function handleMessageSent(event) {
 			.get(sessionId);
 
 		if (count >= BATCH_SIZE * 2) {
-			const userId = process.env.REFLEXIO_USER_ID || "openclaw";
+			const userId = resolveUserId(event);
 			const agentVersion =
 				process.env.REFLEXIO_AGENT_VERSION || "openclaw-agent";
 			publishSession(db, sessionId, userId, agentVersion);
@@ -331,7 +569,7 @@ function handleMessageSent(event) {
 
 function handleSessionEnd(event) {
 	const sessionId = getSessionId(event);
-	const userId = process.env.REFLEXIO_USER_ID || "openclaw";
+	const userId = resolveUserId(event);
 	const agentVersion = process.env.REFLEXIO_AGENT_VERSION || "openclaw-agent";
 
 	try {

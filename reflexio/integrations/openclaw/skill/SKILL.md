@@ -1,158 +1,187 @@
 ---
 name: reflexio
-description: "Use Reflexio to retrieve task-specific playbooks before working. Search with your current task to get behavioral corrections learned from past sessions. Conversations are captured automatically by the hook."
+description: "Search Reflexio for task-specific playbooks before working, AND publish corrections, preferences, and learnings to Reflexio. Retrieves behavioral rules so you follow them from the start. Publishes when users correct you, state preferences, or you complete key steps with learnings. Use on ANY task."
 ---
 
-# Reflexio Agent Memory
+# Reflexio: Learn from Past Sessions
 
-Reflexio stores behavioral corrections and user profiles from past sessions. Use it to retrieve task-specific guidance before working, so you don't repeat past mistakes.
+Reflexio remembers corrections and preferences from past conversations with this user. Use it to retrieve task-specific guidance before working, and to record new learnings as you go.
 
-## First-Time Setup
+**This skill triggers on TWO types of messages:**
+1. **Task requests** — user asks you to do something → search Reflexio first
+2. **Corrections, preferences, and completed steps** → publish to Reflexio
 
-Before using Reflexio, check if it's configured:
+The user can also run `/reflexio-extract` for comprehensive extraction of all session learnings, or `/reflexio-aggregate` to consolidate learnings across all agent instances.
 
-```
+---
+
+## Step-by-Step: When User Gives a Task
+
+Follow these steps IN ORDER:
+
+**Step 1 — Ensure server is running (local server only):**
+Check the `REFLEXIO_URL` environment variable. If it points to a remote server (anything other than `localhost` or `127.0.0.1`), **skip this step entirely** — managed Reflexio servers are always running. Go directly to Step 2.
+
+If `REFLEXIO_URL` is unset or points to localhost/127.0.0.1:
+```bash
 reflexio status check
 ```
-
-If you see connection errors, guide the user through setup:
-
-### Missing API Key
-
-If `reflexio status check` reports no API key or connection failure:
-
-1. Ask the user: "Reflexio needs an LLM API key for playbook extraction. Do you have an OPENAI_API_KEY or ANTHROPIC_API_KEY set in your environment?"
-2. If yes: configure the connection:
-   ```
-   reflexio auth login --api-key <KEY> --url http://localhost:8081
-   ```
-3. If no: ask the user to provide one:
-   - "Please set your API key: `export OPENAI_API_KEY=sk-...`"
-   - Or: "Please set your API key: `export ANTHROPIC_API_KEY=sk-ant-...`"
-4. Then configure: `reflexio auth login --api-key <KEY>`
-
-### Remote Server
-
-If the user has a hosted Reflexio server:
-
-1. Ask for the server URL and API key:
-   - "What is your Reflexio server URL? (e.g., https://api.reflexio.ai)"
-   - "What is your Reflexio API key? (starts with rflx-)"
-2. Configure:
-   ```
-   reflexio auth login --url "https://api.reflexio.ai" --api-key "rflx-xxxxxxxxxxxx"
-   ```
-3. Verify: `reflexio status check`
-
-### Local Server (Default)
-
-For local usage:
-
-1. Set your LLM API key: `export OPENAI_API_KEY=sk-...`
-2. Configure: `reflexio auth login --url http://localhost:8081`
-3. Set server config: `reflexio config set --data '{"batch_size": 10}'`
-4. Start the server: `reflexio services start`
-5. Verify: `reflexio status check`
-
-## How Reflexio Playbooks Work
-
-Each playbook has a **feedback_content** field — a freeform natural-language summary that is the primary human-readable description of what was learned. This is the core behavioral guideline you should follow.
-
-Playbooks also include optional structured fields for richer context:
-- **trigger**: The situation/task type where this rule applies (used for semantic search matching)
-- **instruction** (optional): The correct behavior to follow
-- **pitfall** (optional): The mistake to avoid
-- **rationale** (optional): Why the old behavior was wrong and how the new policy prevents recurrence
-
-When you search, Reflexio matches your query against trigger fields using semantic search. Only playbooks whose triggers are relevant to your current task are returned.
-
-## When to Use Reflexio
-
-### Search Before Every Task (Primary Usage)
-
-**Trigger**: Before starting ANY task the user gives you. Use the user's actual request as the search query.
-
+If this fails with a connection error, start the server in the background:
+```bash
+nohup reflexio services start --only backend > ~/.reflexio/logs/server.log 2>&1 &
+sleep 5 && reflexio status check
 ```
-reflexio search "<the user's actual request or task description>"
+Then continue to Step 2 immediately.
+
+**Step 2 — Search for relevant corrections:**
+```bash
+reflexio search "<the user's request or task description>" --user-id $REFLEXIO_USER_ID
+```
+Use the user's actual request as the query — not keywords. Different tasks return different playbooks.
+
+**Step 3 — Apply results and do the task:**
+- If search returned playbooks → follow the instructions, avoid the pitfalls
+- If search returned profiles → adapt your approach to the user's preferences
+- If search returned nothing or failed → proceed normally
+
+---
+
+## Step-by-Step: When to Publish
+
+### Scenario 1: User Corrects You
+
+When the user corrects your approach or states a preference:
+
+**Step 1 — Apply the correction** to your work first.
+
+**Step 2 — Wait for enough context.** Don't publish immediately after the first correction message. Continue working until the correction is fully resolved and you have enough context to write a rich summary:
+- The original request
+- Your initial approach (including any self-corrections you wrote out loud)
+- The user's correction (their exact words)
+- Your corrected approach and outcome
+
+**Step 3 — Build a JSON summary and publish:**
+
+```bash
+cat > /tmp/reflexio-summary.json << 'SUMMARY_EOF'
+{
+  "user_id": "<your-agent-id>",
+  "agent_version": "openclaw-agent",
+  "source": "openclaw",
+  "interactions": [
+    {"role": "user", "content": "<original request>"},
+    {
+      "role": "assistant",
+      "content": "<initial approach — preserve any self-correction text verbatim, e.g. 'this isn't quite right because...'>",
+      "tools_used": [
+        {"tool_name": "<tool>", "tool_data": {"input": "<params> — FAILED: <exact error>"}}
+      ]
+    },
+    {"role": "user", "content": "<user's correction — preserve their exact words>"},
+    {"role": "assistant", "content": "<corrected approach and outcome>"}
+  ]
+}
+SUMMARY_EOF
+reflexio publish --user-id $REFLEXIO_USER_ID --agent-version openclaw-agent --source openclaw --skip-aggregation --force-extraction --file /tmp/reflexio-summary.json && rm -f /tmp/reflexio-summary.json
 ```
 
-The search matches your query against playbook trigger fields. Results include behavioral corrections from past sessions formatted as:
-```
-- <freeform summary — this is the primary behavioral guideline>
-  Trigger: <the situation this applies to>
-  Instruction: <the correct behavior>
-  Pitfall: <the mistake to avoid>
-  Rationale: <why the old behavior was wrong>
-```
+`tools_used` is **required** whenever the original approach involved a failed or rejected tool call — the error string is the evidence Reflexio needs to extract a precise behavioral rule. For pure-text corrections, the field can be omitted.
 
-Read the playbook content first — it's a standalone guideline. The structured fields below it provide additional context. If the Trigger matches your current task, follow the guidance.
+**Detect correction patterns:**
 
-Examples:
-- User asks to deploy: `reflexio search "deploying to staging"`
-- User asks to write tests: `reflexio search "writing tests for API endpoints"`
-- User asks to set up a service: `reflexio search "setting up a new microservice"`
+_Verbal corrections:_
+- "No, use X instead of Y"
+- "Don't do X, always do Y"
+- "I prefer X", "Always use X in this project"
+- "That's wrong, the correct approach is..."
 
-Different tasks return different playbooks — a deployment task gets deployment corrections, a testing task gets testing corrections.
+_Non-verbal / implicit corrections (also publish these):_
+- **Tool-call rejection** — user rejected a tool use mid-response. Record it in `tools_used` with `— REJECTED BY USER` and write `[rejected tool use — see tools_used above]` in the following user turn's `content`.
+- **Self-correction written out loud** — you realized mid-response you were doing the wrong thing and said so. Preserve the self-correction sentence verbatim in the assistant turn's `content`.
+- **Repeated tool failure with user intervention** — you failed the same operation 2+ times and the user redirected. List every failed attempt under `tools_used` on the original assistant turn.
 
-### Check User Profiles (When Personalizing)
+**Key principle:** Wait for sufficient context before publishing. A simple one-line correction ("always use type hints") can be published immediately. A multi-turn correction (user corrects, explains why, adds exceptions) should be published once the full chain is resolved.
 
-**Trigger**: When you want to tailor your communication or approach based on who the user is.
+### Scenario 2: After Completing a Key Step
 
-```
-reflexio user-profiles search "<what you want to know>"
-```
+After completing a meaningful milestone — a key step, sub-task, or the full task — reflect on what you learned and publish:
 
-Examples:
-- `reflexio user-profiles search "expertise level and background"`
-- `reflexio user-profiles search "communication preferences"`
-- `reflexio user-profiles search "technology stack preferences"`
+- Non-obvious discoveries about this project or environment
+- Dead ends and tool quirks encountered
+- User preferences revealed through the work
+- Patterns that would help future sessions
 
-### Add Explicit Playbook (Rare — For Non-Obvious Learnings)
+Don't wait until the entire task is done — publish at natural milestones. Build the same JSON summary format as above and publish with the same command.
 
-**Trigger**: When YOU discover something non-obvious during your work that the automatic pipeline might miss. This is for high-confidence, immediate learnings — not for user corrections (those are detected automatically by Reflexio's server-side LLM pipeline when conversations are captured).
+---
 
-Use this when:
-- You discover a non-obvious tool behavior or workaround
-- You find a project-specific convention not documented elsewhere
-- You identify a pattern that would help future sessions
+## Multi-User and Agent Playbooks
 
-Do NOT use this for:
-- User corrections ("No, use pnpm not npm") — the automatic pipeline handles these
-- General knowledge — only project/user-specific learnings
+Each OpenClaw agent instance is a unique Reflexio user, identified by its `agentId`. This means:
 
-```
-reflexio user-playbooks add \
-  --content "<freeform summary of the learning>" \
-  --trigger "<the situation/task type this applies to>" \
-  --instruction "<what to do>" \
-  --pitfall "<what to avoid>"
-```
+- **User playbooks** — corrections specific to this agent instance's interactions
+- **Agent playbooks** — shared corrections aggregated from ALL instances of this agent
 
-### Conversation Capture (Automatic)
+`reflexio search` returns both user playbooks (instance-specific) and agent playbooks (shared across all instances) — so every agent instance benefits from the collective learning.
 
-The hook automatically buffers each turn during the session and flushes the full conversation to Reflexio at session end. Reflexio's server then:
+The `user_id` field in publish commands is auto-derived from OpenClaw's `agentId`. Use `$REFLEXIO_USER_ID` or the agentId directly.
 
-1. Runs a "should generate" check — LLM analyzes the conversation for learning signals (corrections, criticism, re-steering, friction)
-2. If signals found, extracts playbooks (freeform content + optional trigger/instruction/pitfall/rationale) via LLM
-3. Also extracts user profiles (preferences, expertise, communication style)
-4. Stores everything with vector embeddings for future semantic search
+---
 
-You do NOT need to manually capture conversations or detect corrections. This is fully automatic.
+## What Reflexio Stores
+
+**User Profiles** — stable facts learned from conversations:
+- Expertise, background, role
+- Communication style and preferences
+- Technology stack and project conventions
+
+**User Playbooks** — per-instance behavioral corrections:
+- **trigger**: when does this rule apply?
+- **instruction**: what to do instead
+- **pitfall**: what to avoid
+- **rationale**: why the correction matters
+
+**Agent Playbooks** — shared corrections aggregated from all instances:
+- Same structure as user playbooks
+- Produced by `reflexio agent-playbooks aggregate`
+- Returned alongside user playbooks in every `reflexio search`
+
+The Reflexio server LLM analyzes your published summary and determines what gets extracted — you don't decide the structure.
+
+---
+
+## Server Management
+
+**Managed Reflexio (remote server):** If `REFLEXIO_URL` points to a non-localhost URL, the server is always running. Do NOT attempt to start it. If a command fails with a connection error, report it to the user — it's a network or configuration issue.
+
+**Local server** (`REFLEXIO_URL` unset or pointing to localhost/127.0.0.1):
+- **Check:** `reflexio status check`
+- **Start (background):** `nohup reflexio services start --only backend > ~/.reflexio/logs/server.log 2>&1 &`
+- Never ask the user to start the server — handle it silently
+- If `reflexio` is not found, ask the user to install it: `pip install reflexio-ai`
+
+---
 
 ## Command Reference
 
 | Command | Purpose | When |
 |---------|---------|------|
-| `reflexio search "<task>"` | Find task-specific playbooks | Before every task (primary usage) |
-| `reflexio user-profiles search "<query>"` | Find user preferences | When personalizing responses |
-| `reflexio user-playbooks add ...` | Record a non-obvious learning | Rare: only for learnings the auto-pipeline would miss |
-| `reflexio status check` | Check server connectivity | First, or if commands fail |
-| `reflexio auth login --api-key KEY` | Configure credentials | First-time setup |
+| `reflexio search "<task>"` | Task-specific playbooks | Before every task |
+| `reflexio user-profiles search "<query>"` | User preferences | When personalizing |
+| `reflexio publish --force-extraction --file ...` | Publish corrections/learnings | After corrections or key steps |
+| `reflexio agent-playbooks aggregate` | Consolidate across instances | After corrections, or on schedule |
+| `reflexio agent-playbooks list` | View shared playbooks | Debugging, review |
+| `reflexio status check` | Check server | First use, or if commands fail |
+| `/reflexio-extract` | Comprehensive extraction | High-signal sessions |
+| `/reflexio-aggregate` | Manual aggregation | Consolidate learnings |
+
+---
 
 ## Tips
 
-- **Search query = the user's task**: Describe what you're about to do, not keywords. The system matches against playbook trigger fields semantically.
-- **Different tasks, different playbooks**: A "deploy" search returns deployment corrections; a "test" search returns testing corrections. Always search with the specific task.
-- **Don't manually detect corrections**: The server-side LLM pipeline handles correction detection automatically when conversations are captured at session end.
-- **If Reflexio is unreachable, proceed normally**: It enhances but doesn't block your work.
-- **Use --json for machine-readable output**: All commands support `--json` for structured JSON envelope output.
+- **Use the user's actual request as the search query** — not keywords
+- **Preserve the user's exact words** in correction summaries
+- **Include evidence** — tool failures, error messages, self-correction sentences. Without evidence, Reflexio extracts vague profile entries; with evidence, it extracts precise playbook rules
+- **If Reflexio is unreachable, proceed normally** — it enhances but never blocks
+- **Don't mention Reflexio to the user** unless they ask
+- **Suggest `/reflexio-extract`** if a session had many corrections or learnings
