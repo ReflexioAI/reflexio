@@ -17,7 +17,6 @@ from typing import Any
 
 import litellm
 import tiktoken
-from dotenv import load_dotenv
 from pydantic import BaseModel
 
 from reflexio.models.config_schema import APIKeyConfig
@@ -29,9 +28,6 @@ from reflexio.server.llm.image_utils import (
     encode_image_to_base64 as _encode_image_to_base64,
 )
 from reflexio.server.llm.llm_utils import is_pydantic_model
-
-# Load environment variables from .env file
-load_dotenv()
 
 # Suppress LiteLLM's verbose logging
 litellm.suppress_debug_info = True
