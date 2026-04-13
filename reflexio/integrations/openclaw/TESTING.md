@@ -56,28 +56,34 @@ ls ~/.openclaw/skills/reflexio-aggregate/SKILL.md
 
 All five checks should succeed. If any fail, re-run `reflexio setup openclaw`.
 
-### 1.3 Verify Reflexio server
+### 1.3 Verify Reflexio server (optional)
+
+The hook automatically starts the local Reflexio server when the first OpenClaw session begins (see Phase 2). You can optionally verify it manually:
 
 ```bash
 reflexio status check
 ```
 
-If using a local server and it's not running:
-
-```bash
-reflexio services start --only backend &
-sleep 5
-reflexio status check
-# Expected: Server is running
-```
+If the server isn't running yet, that's fine — the hook will start it automatically.
 
 ---
 
-## Phase 2: Search (Cold Start)
+## Phase 2: Server Auto-Start & Cold-Start Search
 
-On a fresh install, there are no playbooks yet. This phase verifies the search hook doesn't break agent behavior.
+This phase verifies two things: (1) the hook automatically starts the Reflexio server if it's not running, and (2) the search hook works correctly with no playbooks yet.
 
-### 2.1 Start a conversation with your default OpenClaw agent
+### 2.0 Ensure the server is NOT running
+
+Stop the server if it's currently running, so we can test auto-start:
+
+```bash
+reflexio services stop 2>/dev/null
+# Verify it's stopped:
+reflexio status check
+# Expected: connection error or "Server is not running"
+```
+
+### 2.1 Start a conversation — the hook should auto-start the server
 
 ```bash
 openclaw chat
@@ -91,12 +97,36 @@ Write a Python function that takes a list of numbers and returns the mean and me
 
 **What to check:**
 - The agent responds normally with working code (no errors, no mention of Reflexio)
-- In the hook logs (stderr), you should see one of:
-  - `[reflexio] Search failed: ...` (if server isn't ready yet — acceptable)
-  - Empty search results (expected on cold start)
+- In the hook logs (stderr), you should see:
+  - `[reflexio] bootstrap hook fired` — the bootstrap handler ran
+  - `[reflexio] Server not running — starting in background` — auto-start triggered
+  - The first search may fail (`[reflexio] Per-message search failed`) — this is expected because the server needs ~5-10 seconds to start
 - The response should NOT be delayed more than ~5 seconds by the hook (timeout limit)
 
-### 2.2 Verify the agent doesn't mention Reflexio
+### 2.2 Verify the server started automatically
+
+After the first message, wait ~10 seconds and check:
+
+```bash
+reflexio status check
+# Expected: Server is running
+```
+
+The hook started the server in the background during `agent:bootstrap`. Subsequent messages in this session (and all future sessions) will find the server ready.
+
+### 2.3 Send a second message to verify search works
+
+In the same session:
+
+```
+Now write a version that also returns the standard deviation.
+```
+
+**What to check:**
+- In hook logs: search should succeed now (no "Search failed" errors)
+- Search results may be empty (no playbooks yet on cold start) — that's expected
+
+### 2.4 Verify the agent doesn't mention Reflexio
 
 The rule file says "never mention Reflexio to the user." Confirm the agent response contains no references to Reflexio, playbooks, or search results.
 
@@ -378,15 +408,32 @@ Explain the difference between TCP and UDP.
 
 **What to check:**
 - The agent responds normally (no crashes, no errors visible to the user)
-- In hook logs: `[reflexio] Search failed: connect ECONNREFUSED` (or similar connection error)
-- The hook buffers the turn to local SQLite (`~/.reflexio/sessions.db`) — it will be published when the server returns
+- In hook logs:
+  - `[reflexio] Server not running — starting in background` — auto-start triggered at bootstrap
+  - `[reflexio] Per-message search failed` — first search may fail while server starts (expected)
+- The hook buffers the turn to local SQLite (`~/.reflexio/sessions.db`) — it will be published when the server is ready
 
-### 7.2 Restart server and verify buffered turns are retried
+### 7.2 Verify the server auto-recovered
+
+Wait ~10 seconds after the first message, then check:
 
 ```bash
-reflexio services start --only backend &
-sleep 5
+reflexio status check
+# Expected: Server is running (auto-started by the hook)
 ```
+
+Send a second message in the same session:
+```
+Now explain when you'd use one over the other.
+```
+
+**What to check:**
+- Search should succeed now (server is running)
+- No "Search failed" errors in hook logs for this message
+
+### 7.3 Verify buffered turns are retried on next session
+
+Exit the current session: `/stop`
 
 Start a new session (this triggers the `agent:bootstrap` event):
 ```bash
@@ -394,7 +441,7 @@ openclaw chat
 ```
 
 **What to check in hook logs:**
-- `[reflexio] Retrying N unpublished session(s)` — the bootstrap handler retries buffered turns from Phase 7.1
+- `[reflexio] Retrying N unpublished session(s)` — the bootstrap handler retries buffered turns from the previous session where the server wasn't ready
 
 Exit the session: `/stop`
 
