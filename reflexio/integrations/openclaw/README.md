@@ -140,6 +140,15 @@ cp -r /path/to/openclaw/commands/reflexio-extract ~/.openclaw/skills/reflexio-ex
 cp -r /path/to/openclaw/commands/reflexio-aggregate ~/.openclaw/skills/reflexio-aggregate
 ```
 
+### Rule (always-active behavioral constraints)
+
+```bash
+# Copy to default workspace — loaded at every session start
+cp /path/to/openclaw/rules/reflexio.md ~/.openclaw/workspace/reflexio.md
+```
+
+The rule ensures the agent follows injected Reflexio context, runs manual search fallback when the hook doesn't fire, and enforces behavioral conventions (transparency, non-blocking, silent infrastructure).
+
 Or run the automated setup which handles all of the above:
 
 ```bash
@@ -203,11 +212,13 @@ If OpenClaw supports scheduled tasks natively, you can also register aggregation
 openclaw/
 ├── README.md               ← This file
 ├── hook/                   ← Automatic: capture conversations + inject search results
-│   ├── handler.js          ← Event handlers: bootstrap (profiles), message:received, message:sent, command:stop
+│   ├── handler.js          ← Event handlers: bootstrap, message:received, message:sent, command:stop
 │   ├── HOOK.md             ← Hook metadata (events, requirements)
 │   └── package.json        ← npm package manifest
-├── skill/                  ← On-demand: search for task-specific playbooks
-│   └── SKILL.md            ← Teaches agent when/how to use reflexio CLI
+├── skill/                  ← On-demand: search for task-specific playbooks + publish
+│   └── SKILL.md            ← Teaches agent when/how to search, publish, and aggregate
+├── rules/                  ← Always-active: behavioral constraints loaded every session
+│   └── reflexio.md         ← Follow injected context, manual search fallback, transparency
 └── commands/               ← OpenClaw slash commands
     ├── reflexio-extract/   ← /reflexio-extract: publish corrections mid-session
     └── reflexio-aggregate/ ← /reflexio-aggregate: trigger aggregation manually

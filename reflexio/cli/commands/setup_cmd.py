@@ -340,6 +340,7 @@ def _install_openclaw_integration() -> bool:
     integration_dir = pkg_dir / "integrations" / "openclaw"
     hook_dir = integration_dir / "hook"
     skill_dir = integration_dir / "skill"
+    rules_dir = integration_dir / "rules"
     commands_dir = integration_dir / "commands"
 
     # Install plugin and enable hook
@@ -373,6 +374,15 @@ def _install_openclaw_integration() -> bool:
                 dest = Path.home() / ".openclaw" / "skills" / cmd_subdir.name
                 shutil.copytree(cmd_subdir, dest, dirs_exist_ok=True)
                 typer.echo(f"Command installed: {dest}")
+
+    # Copy rules to default workspace (always-active behavioral constraints)
+    if rules_dir.exists():
+        workspace_dir = Path.home() / ".openclaw" / "workspace"
+        for rule_file in rules_dir.glob("*.md"):
+            dest = workspace_dir / rule_file.name
+            workspace_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(rule_file, dest)
+            typer.echo(f"Rule installed: {dest}")
 
     # Verify
     result = subprocess.run(
@@ -423,6 +433,12 @@ def _uninstall_openclaw() -> None:
                 cmd_dir = Path.home() / ".openclaw" / "skills" / cmd_subdir.name
                 if cmd_dir.exists():
                     shutil.rmtree(cmd_dir)
+    # Remove rules from default workspace
+    rules_file = Path.home() / ".openclaw" / "workspace" / "reflexio.md"
+    if rules_file.exists():
+        rules_file.unlink()
+        typer.echo(f"Removed rule: {rules_file}")
+
     typer.echo("Reflexio integration removed from OpenClaw.")
 
 
