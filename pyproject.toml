@@ -188,6 +188,7 @@ ignore = [
 "conftest.py" = ["ARG001"]
 "notebooks/**" = ["S101", "F821", "S105", "S106", "ANN", "PTH", "RET504", "S113", "ARG001"]
 "reflexio/scripts/**" = ["S101", "G004", "ANN"]
+"reflexio/benchmarks/**" = ["S311"]
 "reflexio/server/api.py" = ["B008", "ARG001", "ARG002"]
 "reflexio/server/api_endpoints/**" = ["B008", "ARG001", "ARG002"]
 "reflexio/integrations/**" = ["ARG002"]

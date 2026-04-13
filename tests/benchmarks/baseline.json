@@ -1,0 +1,7 @@
+{
+  "config": {
+    "note": "Placeholder baseline. Regenerate by running the smoke benchmark on main and overwriting this file (see reflexio/benchmarks/retrieval_latency/README.md)."
+  },
+  "stats": {},
+  "raw": []
+}

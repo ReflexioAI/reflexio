@@ -190,6 +190,7 @@ demo/reflexio_storage/
 benchmarks/locomo/output/*
 !benchmarks/locomo/output/.gitkeep
 benchmarks/locomo/data/locomo10.json
+reflexio/benchmarks/retrieval_latency/results/
 
 # IDE
 .vscode/

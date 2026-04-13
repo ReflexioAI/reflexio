@@ -2084,7 +2084,7 @@ class ReflexioClient:
     def get_my_config(self) -> MyConfigResponse:
         """Return raw storage credentials for the caller's org.
 
-        Used by ``reflexio config pull`` / ``config show`` to let users
+        Used by ``reflexio config pull`` / ``config storage`` to let users
         move their per-org server-side config to a fresh machine.
 
         Returns:

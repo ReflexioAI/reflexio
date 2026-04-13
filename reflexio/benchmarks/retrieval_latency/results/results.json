@@ -1,0 +1,4478 @@
+{
+  "config": {
+    "timestamp": "2026-04-13_021000",
+    "git_sha": "67604eb",
+    "org_id": "bench_org",
+    "sizes": [
+      100,
+      1000
+    ],
+    "trials": 30,
+    "warmup": 3,
+    "backends": [
+      "sqlite"
+    ],
+    "layers": [
+      "service",
+      "http"
+    ],
+    "retrievals": [
+      "profile",
+      "user_playbook",
+      "agent_playbook",
+      "unified"
+    ]
+  },
+  "stats": {
+    "sqlite|profile|service|100": {
+      "trials": 30,
+      "mean_ms": 1.9613554666666666,
+      "p50_ms": 1.823375,
+      "p95_ms": 2.18392515,
+      "p99_ms": 3.8979523200000017,
+      "max_ms": 4.596792
+    },
+    "sqlite|profile|http|100": {
+      "trials": 30,
+      "mean_ms": 4.401726433333334,
+      "p50_ms": 4.062396,
+      "p95_ms": 5.604022249999999,
+      "p99_ms": 9.384655820000004,
+      "max_ms": 10.867583
+    },
+    "sqlite|user_playbook|service|100": {
+      "trials": 30,
+      "mean_ms": 1.6744153333333334,
+      "p50_ms": 1.6405625000000001,
+      "p95_ms": 1.95754115,
+      "p99_ms": 1.98251689,
+      "max_ms": 1.983375
+    },
+    "sqlite|user_playbook|http|100": {
+      "trials": 30,
+      "mean_ms": 4.154295666666667,
+      "p50_ms": 3.928146,
+      "p95_ms": 4.8435042,
+      "p99_ms": 7.295504680000002,
+      "max_ms": 8.292875
+    },
+    "sqlite|agent_playbook|service|100": {
+      "trials": 30,
+      "mean_ms": 15.4721001,
+      "p50_ms": 15.2380835,
+      "p95_ms": 16.94073545,
+      "p99_ms": 17.560502,
+      "max_ms": 17.662292
+    },
+    "sqlite|agent_playbook|http|100": {
+      "trials": 30,
+      "mean_ms": 21.4020056,
+      "p50_ms": 18.756396,
+      "p95_ms": 39.11567674999997,
+      "p99_ms": 55.063582820000015,
+      "max_ms": 59.560625
+    },
+    "sqlite|unified|service|100": {
+      "trials": 30,
+      "mean_ms": 20.123704133333334,
+      "p50_ms": 20.071208,
+      "p95_ms": 21.47605625,
+      "p99_ms": 22.263936610000002,
+      "max_ms": 22.463541
+    },
+    "sqlite|unified|http|100": {
+      "trials": 30,
+      "mean_ms": 25.373548433333333,
+      "p50_ms": 24.6919585,
+      "p95_ms": 30.264070499999995,
+      "p99_ms": 32.83827907,
+      "max_ms": 33.477125
+    },
+    "sqlite|profile|service|1000": {
+      "trials": 30,
+      "mean_ms": 17.851333333333333,
+      "p50_ms": 17.368499999999997,
+      "p95_ms": 21.221340999999995,
+      "p99_ms": 22.13025564,
+      "max_ms": 22.22975
+    },
+    "sqlite|profile|http|1000": {
+      "trials": 30,
+      "mean_ms": 21.228937466666665,
+      "p50_ms": 20.72525,
+      "p95_ms": 25.55049825,
+      "p99_ms": 26.439850930000002,
+      "max_ms": 26.75525
+    },
+    "sqlite|user_playbook|service|1000": {
+      "trials": 30,
+      "mean_ms": 17.128815266666667,
+      "p50_ms": 17.0567915,
+      "p95_ms": 17.8434878,
+      "p99_ms": 20.624102680000004,
+      "max_ms": 21.758208
+    },
+    "sqlite|user_playbook|http|1000": {
+      "trials": 30,
+      "mean_ms": 19.799073500000002,
+      "p50_ms": 19.4842085,
+      "p95_ms": 22.01218155,
+      "p99_ms": 22.41753518,
+      "max_ms": 22.555708
+    },
+    "sqlite|agent_playbook|service|1000": {
+      "trials": 30,
+      "mean_ms": 17.64712216666667,
+      "p50_ms": 16.858729,
+      "p95_ms": 21.63322744999999,
+      "p99_ms": 25.146945790000004,
+      "max_ms": 25.730208
+    },
+    "sqlite|agent_playbook|http|1000": {
+      "trials": 30,
+      "mean_ms": 19.70230283333333,
+      "p50_ms": 19.203916999999997,
+      "p95_ms": 21.319635599999998,
+      "p99_ms": 24.040728430000005,
+      "max_ms": 25.12325
+    },
+    "sqlite|unified|service|1000": {
+      "trials": 30,
+      "mean_ms": 58.32456943333333,
+      "p50_ms": 57.47095899999999,
+      "p95_ms": 72.6891814,
+      "p99_ms": 75.96141410999999,
+      "max_ms": 77.021666
+    },
+    "sqlite|unified|http|1000": {
+      "trials": 30,
+      "mean_ms": 59.93885133333333,
+      "p50_ms": 58.8470625,
+      "p95_ms": 71.77371279999997,
+      "p99_ms": 75.88308911,
+      "max_ms": 76.002291
+    }
+  },
+  "raw": [
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "service",
+      "n": 100,
+      "trial": 0,
+      "elapsed_ms": 1.811,
+      "query_idx": 0
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "service",
+      "n": 100,
+      "trial": 1,
+      "elapsed_ms": 1.741459,
+      "query_idx": 1
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "service",
+      "n": 100,
+      "trial": 2,
+      "elapsed_ms": 1.772292,
+      "query_idx": 2
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "service",
+      "n": 100,
+      "trial": 3,
+      "elapsed_ms": 1.7765,
+      "query_idx": 3
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "service",
+      "n": 100,
+      "trial": 4,
+      "elapsed_ms": 2.097666,
+      "query_idx": 4
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "service",
+      "n": 100,
+      "trial": 5,
+      "elapsed_ms": 2.180167,
+      "query_idx": 5
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "service",
+      "n": 100,
+      "trial": 6,
+      "elapsed_ms": 4.596792,
+      "query_idx": 6
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "service",
+      "n": 100,
+      "trial": 7,
+      "elapsed_ms": 2.138875,
+      "query_idx": 7
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "service",
+      "n": 100,
+      "trial": 8,
+      "elapsed_ms": 1.836542,
+      "query_idx": 8
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "service",
+      "n": 100,
+      "trial": 9,
+      "elapsed_ms": 1.811667,
+      "query_idx": 9
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "service",
+      "n": 100,
+      "trial": 10,
+      "elapsed_ms": 2.187,
+      "query_idx": 10
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "service",
+      "n": 100,
+      "trial": 11,
+      "elapsed_ms": 2.046333,
+      "query_idx": 11
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "service",
+      "n": 100,
+      "trial": 12,
+      "elapsed_ms": 2.016208,
+      "query_idx": 12
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "service",
+      "n": 100,
+      "trial": 13,
+      "elapsed_ms": 2.053083,
+      "query_idx": 13
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "service",
+      "n": 100,
+      "trial": 14,
+      "elapsed_ms": 2.119958,
+      "query_idx": 14
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "service",
+      "n": 100,
+      "trial": 15,
+      "elapsed_ms": 2.003959,
+      "query_idx": 15
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "service",
+      "n": 100,
+      "trial": 16,
+      "elapsed_ms": 1.855792,
+      "query_idx": 16
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "service",
+      "n": 100,
+      "trial": 17,
+      "elapsed_ms": 1.737041,
+      "query_idx": 17
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "service",
+      "n": 100,
+      "trial": 18,
+      "elapsed_ms": 1.718958,
+      "query_idx": 18
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "service",
+      "n": 100,
+      "trial": 19,
+      "elapsed_ms": 1.862375,
+      "query_idx": 19
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "service",
+      "n": 100,
+      "trial": 20,
+      "elapsed_ms": 1.7635,
+      "query_idx": 0
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "service",
+      "n": 100,
+      "trial": 21,
+      "elapsed_ms": 1.708375,
+      "query_idx": 1
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "service",
+      "n": 100,
+      "trial": 22,
+      "elapsed_ms": 1.713083,
+      "query_idx": 2
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "service",
+      "n": 100,
+      "trial": 23,
+      "elapsed_ms": 1.680292,
+      "query_idx": 3
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "service",
+      "n": 100,
+      "trial": 24,
+      "elapsed_ms": 1.733458,
+      "query_idx": 4
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "service",
+      "n": 100,
+      "trial": 25,
+      "elapsed_ms": 1.873958,
+      "query_idx": 5
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "service",
+      "n": 100,
+      "trial": 26,
+      "elapsed_ms": 1.780041,
+      "query_idx": 6
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "service",
+      "n": 100,
+      "trial": 27,
+      "elapsed_ms": 1.835083,
+      "query_idx": 7
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "service",
+      "n": 100,
+      "trial": 28,
+      "elapsed_ms": 1.660166,
+      "query_idx": 8
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "service",
+      "n": 100,
+      "trial": 29,
+      "elapsed_ms": 1.729041,
+      "query_idx": 9
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "http",
+      "n": 100,
+      "trial": 0,
+      "elapsed_ms": 4.315167,
+      "query_idx": 0
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "http",
+      "n": 100,
+      "trial": 1,
+      "elapsed_ms": 4.093792,
+      "query_idx": 1
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "http",
+      "n": 100,
+      "trial": 2,
+      "elapsed_ms": 3.720417,
+      "query_idx": 2
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "http",
+      "n": 100,
+      "trial": 3,
+      "elapsed_ms": 4.137209,
+      "query_idx": 3
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "http",
+      "n": 100,
+      "trial": 4,
+      "elapsed_ms": 4.15425,
+      "query_idx": 4
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "http",
+      "n": 100,
+      "trial": 5,
+      "elapsed_ms": 4.274291,
+      "query_idx": 5
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "http",
+      "n": 100,
+      "trial": 6,
+      "elapsed_ms": 3.937667,
+      "query_idx": 6
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "http",
+      "n": 100,
+      "trial": 7,
+      "elapsed_ms": 3.890334,
+      "query_idx": 7
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "http",
+      "n": 100,
+      "trial": 8,
+      "elapsed_ms": 3.755125,
+      "query_idx": 8
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "http",
+      "n": 100,
+      "trial": 9,
+      "elapsed_ms": 4.535125,
+      "query_idx": 9
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "http",
+      "n": 100,
+      "trial": 10,
+      "elapsed_ms": 4.949292,
+      "query_idx": 10
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "http",
+      "n": 100,
+      "trial": 11,
+      "elapsed_ms": 5.420666,
+      "query_idx": 11
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "http",
+      "n": 100,
+      "trial": 12,
+      "elapsed_ms": 5.19425,
+      "query_idx": 12
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "http",
+      "n": 100,
+      "trial": 13,
+      "elapsed_ms": 5.131458,
+      "query_idx": 13
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "http",
+      "n": 100,
+      "trial": 14,
+      "elapsed_ms": 5.2395,
+      "query_idx": 14
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "http",
+      "n": 100,
+      "trial": 15,
+      "elapsed_ms": 5.754041,
+      "query_idx": 15
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "http",
+      "n": 100,
+      "trial": 16,
+      "elapsed_ms": 10.867583,
+      "query_idx": 16
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "http",
+      "n": 100,
+      "trial": 17,
+      "elapsed_ms": 3.741416,
+      "query_idx": 17
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "http",
+      "n": 100,
+      "trial": 18,
+      "elapsed_ms": 3.783417,
+      "query_idx": 18
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "http",
+      "n": 100,
+      "trial": 19,
+      "elapsed_ms": 3.83525,
+      "query_idx": 19
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "http",
+      "n": 100,
+      "trial": 20,
+      "elapsed_ms": 3.559709,
+      "query_idx": 0
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "http",
+      "n": 100,
+      "trial": 21,
+      "elapsed_ms": 3.459583,
+      "query_idx": 1
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "http",
+      "n": 100,
+      "trial": 22,
+      "elapsed_ms": 3.403667,
+      "query_idx": 2
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "http",
+      "n": 100,
+      "trial": 23,
+      "elapsed_ms": 3.426625,
+      "query_idx": 3
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "http",
+      "n": 100,
+      "trial": 24,
+      "elapsed_ms": 3.389875,
+      "query_idx": 4
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "http",
+      "n": 100,
+      "trial": 25,
+      "elapsed_ms": 3.769917,
+      "query_idx": 5
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "http",
+      "n": 100,
+      "trial": 26,
+      "elapsed_ms": 4.43025,
+      "query_idx": 6
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "http",
+      "n": 100,
+      "trial": 27,
+      "elapsed_ms": 4.14825,
+      "query_idx": 7
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "http",
+      "n": 100,
+      "trial": 28,
+      "elapsed_ms": 3.702667,
+      "query_idx": 8
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "http",
+      "n": 100,
+      "trial": 29,
+      "elapsed_ms": 4.031,
+      "query_idx": 9
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "service",
+      "n": 100,
+      "trial": 0,
+      "elapsed_ms": 1.584417,
+      "query_idx": 0
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "service",
+      "n": 100,
+      "trial": 1,
+      "elapsed_ms": 1.60125,
+      "query_idx": 1
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "service",
+      "n": 100,
+      "trial": 2,
+      "elapsed_ms": 1.573333,
+      "query_idx": 2
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "service",
+      "n": 100,
+      "trial": 3,
+      "elapsed_ms": 1.537458,
+      "query_idx": 3
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "service",
+      "n": 100,
+      "trial": 4,
+      "elapsed_ms": 1.569542,
+      "query_idx": 4
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "service",
+      "n": 100,
+      "trial": 5,
+      "elapsed_ms": 1.683709,
+      "query_idx": 5
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "service",
+      "n": 100,
+      "trial": 6,
+      "elapsed_ms": 1.681042,
+      "query_idx": 6
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "service",
+      "n": 100,
+      "trial": 7,
+      "elapsed_ms": 1.67925,
+      "query_idx": 7
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "service",
+      "n": 100,
+      "trial": 8,
+      "elapsed_ms": 1.563209,
+      "query_idx": 8
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "service",
+      "n": 100,
+      "trial": 9,
+      "elapsed_ms": 1.62025,
+      "query_idx": 9
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "service",
+      "n": 100,
+      "trial": 10,
+      "elapsed_ms": 1.929583,
+      "query_idx": 10
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "service",
+      "n": 100,
+      "trial": 11,
+      "elapsed_ms": 1.893916,
+      "query_idx": 11
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "service",
+      "n": 100,
+      "trial": 12,
+      "elapsed_ms": 1.733542,
+      "query_idx": 12
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "service",
+      "n": 100,
+      "trial": 13,
+      "elapsed_ms": 1.734792,
+      "query_idx": 13
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "service",
+      "n": 100,
+      "trial": 14,
+      "elapsed_ms": 1.980416,
+      "query_idx": 14
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "service",
+      "n": 100,
+      "trial": 15,
+      "elapsed_ms": 1.983375,
+      "query_idx": 15
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "service",
+      "n": 100,
+      "trial": 16,
+      "elapsed_ms": 1.665459,
+      "query_idx": 16
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "service",
+      "n": 100,
+      "trial": 17,
+      "elapsed_ms": 1.602125,
+      "query_idx": 17
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "service",
+      "n": 100,
+      "trial": 18,
+      "elapsed_ms": 1.578167,
+      "query_idx": 18
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "service",
+      "n": 100,
+      "trial": 19,
+      "elapsed_ms": 1.5695,
+      "query_idx": 19
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "service",
+      "n": 100,
+      "trial": 20,
+      "elapsed_ms": 1.7165,
+      "query_idx": 0
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "service",
+      "n": 100,
+      "trial": 21,
+      "elapsed_ms": 1.685625,
+      "query_idx": 1
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "service",
+      "n": 100,
+      "trial": 22,
+      "elapsed_ms": 1.584167,
+      "query_idx": 2
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "service",
+      "n": 100,
+      "trial": 23,
+      "elapsed_ms": 1.555625,
+      "query_idx": 3
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "service",
+      "n": 100,
+      "trial": 24,
+      "elapsed_ms": 1.599708,
+      "query_idx": 4
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "service",
+      "n": 100,
+      "trial": 25,
+      "elapsed_ms": 1.660875,
+      "query_idx": 5
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "service",
+      "n": 100,
+      "trial": 26,
+      "elapsed_ms": 1.727917,
+      "query_idx": 6
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "service",
+      "n": 100,
+      "trial": 27,
+      "elapsed_ms": 1.724708,
+      "query_idx": 7
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "service",
+      "n": 100,
+      "trial": 28,
+      "elapsed_ms": 1.606583,
+      "query_idx": 8
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "service",
+      "n": 100,
+      "trial": 29,
+      "elapsed_ms": 1.606417,
+      "query_idx": 9
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "http",
+      "n": 100,
+      "trial": 0,
+      "elapsed_ms": 3.71375,
+      "query_idx": 0
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "http",
+      "n": 100,
+      "trial": 1,
+      "elapsed_ms": 3.649625,
+      "query_idx": 1
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "http",
+      "n": 100,
+      "trial": 2,
+      "elapsed_ms": 3.837084,
+      "query_idx": 2
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "http",
+      "n": 100,
+      "trial": 3,
+      "elapsed_ms": 4.853667,
+      "query_idx": 3
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "http",
+      "n": 100,
+      "trial": 4,
+      "elapsed_ms": 4.301791,
+      "query_idx": 4
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "http",
+      "n": 100,
+      "trial": 5,
+      "elapsed_ms": 4.334833,
+      "query_idx": 5
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "http",
+      "n": 100,
+      "trial": 6,
+      "elapsed_ms": 3.8745,
+      "query_idx": 6
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "http",
+      "n": 100,
+      "trial": 7,
+      "elapsed_ms": 3.872958,
+      "query_idx": 7
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "http",
+      "n": 100,
+      "trial": 8,
+      "elapsed_ms": 3.543208,
+      "query_idx": 8
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "http",
+      "n": 100,
+      "trial": 9,
+      "elapsed_ms": 3.672791,
+      "query_idx": 9
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "http",
+      "n": 100,
+      "trial": 10,
+      "elapsed_ms": 3.998583,
+      "query_idx": 10
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "http",
+      "n": 100,
+      "trial": 11,
+      "elapsed_ms": 3.623083,
+      "query_idx": 11
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "http",
+      "n": 100,
+      "trial": 12,
+      "elapsed_ms": 3.761625,
+      "query_idx": 12
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "http",
+      "n": 100,
+      "trial": 13,
+      "elapsed_ms": 3.658208,
+      "query_idx": 13
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "http",
+      "n": 100,
+      "trial": 14,
+      "elapsed_ms": 4.121292,
+      "query_idx": 14
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "http",
+      "n": 100,
+      "trial": 15,
+      "elapsed_ms": 4.206083,
+      "query_idx": 15
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "http",
+      "n": 100,
+      "trial": 16,
+      "elapsed_ms": 4.796083,
+      "query_idx": 16
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "http",
+      "n": 100,
+      "trial": 17,
+      "elapsed_ms": 4.831083,
+      "query_idx": 17
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "http",
+      "n": 100,
+      "trial": 18,
+      "elapsed_ms": 8.292875,
+      "query_idx": 18
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "http",
+      "n": 100,
+      "trial": 19,
+      "elapsed_ms": 3.757416,
+      "query_idx": 19
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "http",
+      "n": 100,
+      "trial": 20,
+      "elapsed_ms": 3.2875,
+      "query_idx": 0
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "http",
+      "n": 100,
+      "trial": 21,
+      "elapsed_ms": 4.106875,
+      "query_idx": 1
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "http",
+      "n": 100,
+      "trial": 22,
+      "elapsed_ms": 3.526333,
+      "query_idx": 2
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "http",
+      "n": 100,
+      "trial": 23,
+      "elapsed_ms": 3.778875,
+      "query_idx": 3
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "http",
+      "n": 100,
+      "trial": 24,
+      "elapsed_ms": 4.4595,
+      "query_idx": 4
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "http",
+      "n": 100,
+      "trial": 25,
+      "elapsed_ms": 4.7465,
+      "query_idx": 5
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "http",
+      "n": 100,
+      "trial": 26,
+      "elapsed_ms": 3.981792,
+      "query_idx": 6
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "http",
+      "n": 100,
+      "trial": 27,
+      "elapsed_ms": 4.275458,
+      "query_idx": 7
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "http",
+      "n": 100,
+      "trial": 28,
+      "elapsed_ms": 4.081791,
+      "query_idx": 8
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "http",
+      "n": 100,
+      "trial": 29,
+      "elapsed_ms": 3.683708,
+      "query_idx": 9
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "service",
+      "n": 100,
+      "trial": 0,
+      "elapsed_ms": 14.806625,
+      "query_idx": 0
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "service",
+      "n": 100,
+      "trial": 1,
+      "elapsed_ms": 14.688959,
+      "query_idx": 1
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "service",
+      "n": 100,
+      "trial": 2,
+      "elapsed_ms": 14.812083,
+      "query_idx": 2
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "service",
+      "n": 100,
+      "trial": 3,
+      "elapsed_ms": 14.765375,
+      "query_idx": 3
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "service",
+      "n": 100,
+      "trial": 4,
+      "elapsed_ms": 14.938584,
+      "query_idx": 4
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "service",
+      "n": 100,
+      "trial": 5,
+      "elapsed_ms": 17.662292,
+      "query_idx": 5
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "service",
+      "n": 100,
+      "trial": 6,
+      "elapsed_ms": 15.48275,
+      "query_idx": 6
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "service",
+      "n": 100,
+      "trial": 7,
+      "elapsed_ms": 16.352417,
+      "query_idx": 7
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "service",
+      "n": 100,
+      "trial": 8,
+      "elapsed_ms": 16.107708,
+      "query_idx": 8
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "service",
+      "n": 100,
+      "trial": 9,
+      "elapsed_ms": 15.657375,
+      "query_idx": 9
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "service",
+      "n": 100,
+      "trial": 10,
+      "elapsed_ms": 16.349792,
+      "query_idx": 10
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "service",
+      "n": 100,
+      "trial": 11,
+      "elapsed_ms": 16.487833,
+      "query_idx": 11
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "service",
+      "n": 100,
+      "trial": 12,
+      "elapsed_ms": 17.311292,
+      "query_idx": 12
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "service",
+      "n": 100,
+      "trial": 13,
+      "elapsed_ms": 15.925417,
+      "query_idx": 13
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "service",
+      "n": 100,
+      "trial": 14,
+      "elapsed_ms": 15.705041,
+      "query_idx": 14
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "service",
+      "n": 100,
+      "trial": 15,
+      "elapsed_ms": 15.901375,
+      "query_idx": 15
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "service",
+      "n": 100,
+      "trial": 16,
+      "elapsed_ms": 15.569333,
+      "query_idx": 16
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "service",
+      "n": 100,
+      "trial": 17,
+      "elapsed_ms": 15.277333,
+      "query_idx": 17
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "service",
+      "n": 100,
+      "trial": 18,
+      "elapsed_ms": 15.88075,
+      "query_idx": 18
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "service",
+      "n": 100,
+      "trial": 19,
+      "elapsed_ms": 14.895625,
+      "query_idx": 19
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "service",
+      "n": 100,
+      "trial": 20,
+      "elapsed_ms": 15.124333,
+      "query_idx": 0
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "service",
+      "n": 100,
+      "trial": 21,
+      "elapsed_ms": 14.77025,
+      "query_idx": 1
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "service",
+      "n": 100,
+      "trial": 22,
+      "elapsed_ms": 14.664834,
+      "query_idx": 2
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "service",
+      "n": 100,
+      "trial": 23,
+      "elapsed_ms": 15.143459,
+      "query_idx": 3
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "service",
+      "n": 100,
+      "trial": 24,
+      "elapsed_ms": 14.753875,
+      "query_idx": 4
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "service",
+      "n": 100,
+      "trial": 25,
+      "elapsed_ms": 15.331625,
+      "query_idx": 5
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "service",
+      "n": 100,
+      "trial": 26,
+      "elapsed_ms": 14.786959,
+      "query_idx": 6
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "service",
+      "n": 100,
+      "trial": 27,
+      "elapsed_ms": 15.198834,
+      "query_idx": 7
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "service",
+      "n": 100,
+      "trial": 28,
+      "elapsed_ms": 14.927208,
+      "query_idx": 8
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "service",
+      "n": 100,
+      "trial": 29,
+      "elapsed_ms": 14.883667,
+      "query_idx": 9
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "http",
+      "n": 100,
+      "trial": 0,
+      "elapsed_ms": 18.086459,
+      "query_idx": 0
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "http",
+      "n": 100,
+      "trial": 1,
+      "elapsed_ms": 17.511458,
+      "query_idx": 1
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "http",
+      "n": 100,
+      "trial": 2,
+      "elapsed_ms": 17.808791,
+      "query_idx": 2
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "http",
+      "n": 100,
+      "trial": 3,
+      "elapsed_ms": 17.712625,
+      "query_idx": 3
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "http",
+      "n": 100,
+      "trial": 4,
+      "elapsed_ms": 17.050542,
+      "query_idx": 4
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "http",
+      "n": 100,
+      "trial": 5,
+      "elapsed_ms": 17.616959,
+      "query_idx": 5
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "http",
+      "n": 100,
+      "trial": 6,
+      "elapsed_ms": 18.183791,
+      "query_idx": 6
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "http",
+      "n": 100,
+      "trial": 7,
+      "elapsed_ms": 19.637125,
+      "query_idx": 7
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "http",
+      "n": 100,
+      "trial": 8,
+      "elapsed_ms": 17.199125,
+      "query_idx": 8
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "http",
+      "n": 100,
+      "trial": 9,
+      "elapsed_ms": 18.122458,
+      "query_idx": 9
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "http",
+      "n": 100,
+      "trial": 10,
+      "elapsed_ms": 20.55875,
+      "query_idx": 10
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "http",
+      "n": 100,
+      "trial": 11,
+      "elapsed_ms": 18.835084,
+      "query_idx": 11
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "http",
+      "n": 100,
+      "trial": 12,
+      "elapsed_ms": 18.632584,
+      "query_idx": 12
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "http",
+      "n": 100,
+      "trial": 13,
+      "elapsed_ms": 18.975375,
+      "query_idx": 13
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "http",
+      "n": 100,
+      "trial": 14,
+      "elapsed_ms": 44.053583,
+      "query_idx": 14
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "http",
+      "n": 100,
+      "trial": 15,
+      "elapsed_ms": 59.560625,
+      "query_idx": 15
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "http",
+      "n": 100,
+      "trial": 16,
+      "elapsed_ms": 33.080458,
+      "query_idx": 16
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "http",
+      "n": 100,
+      "trial": 17,
+      "elapsed_ms": 23.492917,
+      "query_idx": 17
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "http",
+      "n": 100,
+      "trial": 18,
+      "elapsed_ms": 17.275875,
+      "query_idx": 18
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "http",
+      "n": 100,
+      "trial": 19,
+      "elapsed_ms": 17.742792,
+      "query_idx": 19
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "http",
+      "n": 100,
+      "trial": 20,
+      "elapsed_ms": 21.188208,
+      "query_idx": 0
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "http",
+      "n": 100,
+      "trial": 21,
+      "elapsed_ms": 19.526125,
+      "query_idx": 1
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "http",
+      "n": 100,
+      "trial": 22,
+      "elapsed_ms": 19.357958,
+      "query_idx": 2
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "http",
+      "n": 100,
+      "trial": 23,
+      "elapsed_ms": 18.264083,
+      "query_idx": 3
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "http",
+      "n": 100,
+      "trial": 24,
+      "elapsed_ms": 17.623667,
+      "query_idx": 4
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "http",
+      "n": 100,
+      "trial": 25,
+      "elapsed_ms": 19.036709,
+      "query_idx": 5
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "http",
+      "n": 100,
+      "trial": 26,
+      "elapsed_ms": 18.913667,
+      "query_idx": 6
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "http",
+      "n": 100,
+      "trial": 27,
+      "elapsed_ms": 19.227542,
+      "query_idx": 7
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "http",
+      "n": 100,
+      "trial": 28,
+      "elapsed_ms": 19.107125,
+      "query_idx": 8
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "http",
+      "n": 100,
+      "trial": 29,
+      "elapsed_ms": 18.677708,
+      "query_idx": 9
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "service",
+      "n": 100,
+      "trial": 0,
+      "elapsed_ms": 19.720834,
+      "query_idx": 0
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "service",
+      "n": 100,
+      "trial": 1,
+      "elapsed_ms": 20.25975,
+      "query_idx": 1
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "service",
+      "n": 100,
+      "trial": 2,
+      "elapsed_ms": 20.508375,
+      "query_idx": 2
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "service",
+      "n": 100,
+      "trial": 3,
+      "elapsed_ms": 20.625041,
+      "query_idx": 3
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "service",
+      "n": 100,
+      "trial": 4,
+      "elapsed_ms": 19.901667,
+      "query_idx": 4
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "service",
+      "n": 100,
+      "trial": 5,
+      "elapsed_ms": 20.220458,
+      "query_idx": 5
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "service",
+      "n": 100,
+      "trial": 6,
+      "elapsed_ms": 22.463541,
+      "query_idx": 6
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "service",
+      "n": 100,
+      "trial": 7,
+      "elapsed_ms": 20.777334,
+      "query_idx": 7
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "service",
+      "n": 100,
+      "trial": 8,
+      "elapsed_ms": 19.140125,
+      "query_idx": 8
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "service",
+      "n": 100,
+      "trial": 9,
+      "elapsed_ms": 19.369542,
+      "query_idx": 9
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "service",
+      "n": 100,
+      "trial": 10,
+      "elapsed_ms": 20.458125,
+      "query_idx": 10
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "service",
+      "n": 100,
+      "trial": 11,
+      "elapsed_ms": 20.036459,
+      "query_idx": 11
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "service",
+      "n": 100,
+      "trial": 12,
+      "elapsed_ms": 20.32325,
+      "query_idx": 12
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "service",
+      "n": 100,
+      "trial": 13,
+      "elapsed_ms": 21.110375,
+      "query_idx": 13
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "service",
+      "n": 100,
+      "trial": 14,
+      "elapsed_ms": 20.445583,
+      "query_idx": 14
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "service",
+      "n": 100,
+      "trial": 15,
+      "elapsed_ms": 20.093083,
+      "query_idx": 15
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "service",
+      "n": 100,
+      "trial": 16,
+      "elapsed_ms": 20.5195,
+      "query_idx": 16
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "service",
+      "n": 100,
+      "trial": 17,
+      "elapsed_ms": 18.954625,
+      "query_idx": 17
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "service",
+      "n": 100,
+      "trial": 18,
+      "elapsed_ms": 18.732834,
+      "query_idx": 18
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "service",
+      "n": 100,
+      "trial": 19,
+      "elapsed_ms": 19.894458,
+      "query_idx": 19
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "service",
+      "n": 100,
+      "trial": 20,
+      "elapsed_ms": 19.233417,
+      "query_idx": 0
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "service",
+      "n": 100,
+      "trial": 21,
+      "elapsed_ms": 19.164,
+      "query_idx": 1
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "service",
+      "n": 100,
+      "trial": 22,
+      "elapsed_ms": 19.728958,
+      "query_idx": 2
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "service",
+      "n": 100,
+      "trial": 23,
+      "elapsed_ms": 20.098542,
+      "query_idx": 3
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "service",
+      "n": 100,
+      "trial": 24,
+      "elapsed_ms": 19.677875,
+      "query_idx": 4
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "service",
+      "n": 100,
+      "trial": 25,
+      "elapsed_ms": 20.049333,
+      "query_idx": 5
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "service",
+      "n": 100,
+      "trial": 26,
+      "elapsed_ms": 20.617333,
+      "query_idx": 6
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "service",
+      "n": 100,
+      "trial": 27,
+      "elapsed_ms": 21.77525,
+      "query_idx": 7
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "service",
+      "n": 100,
+      "trial": 28,
+      "elapsed_ms": 19.831666,
+      "query_idx": 8
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "service",
+      "n": 100,
+      "trial": 29,
+      "elapsed_ms": 19.979791,
+      "query_idx": 9
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "http",
+      "n": 100,
+      "trial": 0,
+      "elapsed_ms": 22.806083,
+      "query_idx": 0
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "http",
+      "n": 100,
+      "trial": 1,
+      "elapsed_ms": 22.946541,
+      "query_idx": 1
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "http",
+      "n": 100,
+      "trial": 2,
+      "elapsed_ms": 22.445792,
+      "query_idx": 2
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "http",
+      "n": 100,
+      "trial": 3,
+      "elapsed_ms": 22.653542,
+      "query_idx": 3
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "http",
+      "n": 100,
+      "trial": 4,
+      "elapsed_ms": 23.316,
+      "query_idx": 4
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "http",
+      "n": 100,
+      "trial": 5,
+      "elapsed_ms": 25.098208,
+      "query_idx": 5
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "http",
+      "n": 100,
+      "trial": 6,
+      "elapsed_ms": 24.572708,
+      "query_idx": 6
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "http",
+      "n": 100,
+      "trial": 7,
+      "elapsed_ms": 22.805958,
+      "query_idx": 7
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "http",
+      "n": 100,
+      "trial": 8,
+      "elapsed_ms": 25.353458,
+      "query_idx": 8
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "http",
+      "n": 100,
+      "trial": 9,
+      "elapsed_ms": 24.769667,
+      "query_idx": 9
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "http",
+      "n": 100,
+      "trial": 10,
+      "elapsed_ms": 24.2115,
+      "query_idx": 10
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "http",
+      "n": 100,
+      "trial": 11,
+      "elapsed_ms": 24.23125,
+      "query_idx": 11
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "http",
+      "n": 100,
+      "trial": 12,
+      "elapsed_ms": 24.967917,
+      "query_idx": 12
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "http",
+      "n": 100,
+      "trial": 13,
+      "elapsed_ms": 28.507541,
+      "query_idx": 13
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "http",
+      "n": 100,
+      "trial": 14,
+      "elapsed_ms": 27.628625,
+      "query_idx": 14
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "http",
+      "n": 100,
+      "trial": 15,
+      "elapsed_ms": 31.274208,
+      "query_idx": 15
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "http",
+      "n": 100,
+      "trial": 16,
+      "elapsed_ms": 33.477125,
+      "query_idx": 16
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "http",
+      "n": 100,
+      "trial": 17,
+      "elapsed_ms": 27.425666,
+      "query_idx": 17
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "http",
+      "n": 100,
+      "trial": 18,
+      "elapsed_ms": 26.126583,
+      "query_idx": 18
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "http",
+      "n": 100,
+      "trial": 19,
+      "elapsed_ms": 29.029458,
+      "query_idx": 19
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "http",
+      "n": 100,
+      "trial": 20,
+      "elapsed_ms": 24.61425,
+      "query_idx": 0
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "http",
+      "n": 100,
+      "trial": 21,
+      "elapsed_ms": 25.184542,
+      "query_idx": 1
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "http",
+      "n": 100,
+      "trial": 22,
+      "elapsed_ms": 23.911125,
+      "query_idx": 2
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "http",
+      "n": 100,
+      "trial": 23,
+      "elapsed_ms": 27.197708,
+      "query_idx": 3
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "http",
+      "n": 100,
+      "trial": 24,
+      "elapsed_ms": 23.601791,
+      "query_idx": 4
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "http",
+      "n": 100,
+      "trial": 25,
+      "elapsed_ms": 26.275208,
+      "query_idx": 5
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "http",
+      "n": 100,
+      "trial": 26,
+      "elapsed_ms": 24.354625,
+      "query_idx": 6
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "http",
+      "n": 100,
+      "trial": 27,
+      "elapsed_ms": 26.665958,
+      "query_idx": 7
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "http",
+      "n": 100,
+      "trial": 28,
+      "elapsed_ms": 22.667708,
+      "query_idx": 8
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "http",
+      "n": 100,
+      "trial": 29,
+      "elapsed_ms": 23.085708,
+      "query_idx": 9
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "service",
+      "n": 1000,
+      "trial": 0,
+      "elapsed_ms": 17.178458,
+      "query_idx": 0
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "service",
+      "n": 1000,
+      "trial": 1,
+      "elapsed_ms": 17.053959,
+      "query_idx": 1
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "service",
+      "n": 1000,
+      "trial": 2,
+      "elapsed_ms": 16.346083,
+      "query_idx": 2
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "service",
+      "n": 1000,
+      "trial": 3,
+      "elapsed_ms": 17.628459,
+      "query_idx": 3
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "service",
+      "n": 1000,
+      "trial": 4,
+      "elapsed_ms": 16.377333,
+      "query_idx": 4
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "service",
+      "n": 1000,
+      "trial": 5,
+      "elapsed_ms": 18.907041,
+      "query_idx": 5
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "service",
+      "n": 1000,
+      "trial": 6,
+      "elapsed_ms": 18.187917,
+      "query_idx": 6
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "service",
+      "n": 1000,
+      "trial": 7,
+      "elapsed_ms": 22.22975,
+      "query_idx": 7
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "service",
+      "n": 1000,
+      "trial": 8,
+      "elapsed_ms": 16.098917,
+      "query_idx": 8
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "service",
+      "n": 1000,
+      "trial": 9,
+      "elapsed_ms": 16.841,
+      "query_idx": 9
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "service",
+      "n": 1000,
+      "trial": 10,
+      "elapsed_ms": 21.886666,
+      "query_idx": 10
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "service",
+      "n": 1000,
+      "trial": 11,
+      "elapsed_ms": 18.981292,
+      "query_idx": 11
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "service",
+      "n": 1000,
+      "trial": 12,
+      "elapsed_ms": 18.514708,
+      "query_idx": 12
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "service",
+      "n": 1000,
+      "trial": 13,
+      "elapsed_ms": 19.220875,
+      "query_idx": 13
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "service",
+      "n": 1000,
+      "trial": 14,
+      "elapsed_ms": 19.010375,
+      "query_idx": 14
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "service",
+      "n": 1000,
+      "trial": 15,
+      "elapsed_ms": 19.278292,
+      "query_idx": 15
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "service",
+      "n": 1000,
+      "trial": 16,
+      "elapsed_ms": 18.507333,
+      "query_idx": 16
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "service",
+      "n": 1000,
+      "trial": 17,
+      "elapsed_ms": 17.11025,
+      "query_idx": 17
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "service",
+      "n": 1000,
+      "trial": 18,
+      "elapsed_ms": 16.828,
+      "query_idx": 18
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "service",
+      "n": 1000,
+      "trial": 19,
+      "elapsed_ms": 16.544292,
+      "query_idx": 19
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "service",
+      "n": 1000,
+      "trial": 20,
+      "elapsed_ms": 16.867083,
+      "query_idx": 0
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "service",
+      "n": 1000,
+      "trial": 21,
+      "elapsed_ms": 17.022584,
+      "query_idx": 1
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "service",
+      "n": 1000,
+      "trial": 22,
+      "elapsed_ms": 16.214083,
+      "query_idx": 2
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "service",
+      "n": 1000,
+      "trial": 23,
+      "elapsed_ms": 16.319584,
+      "query_idx": 3
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "service",
+      "n": 1000,
+      "trial": 24,
+      "elapsed_ms": 16.104542,
+      "query_idx": 4
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "service",
+      "n": 1000,
+      "trial": 25,
+      "elapsed_ms": 20.408166,
+      "query_idx": 5
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "service",
+      "n": 1000,
+      "trial": 26,
+      "elapsed_ms": 18.028166,
+      "query_idx": 6
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "service",
+      "n": 1000,
+      "trial": 27,
+      "elapsed_ms": 18.288916,
+      "query_idx": 7
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "service",
+      "n": 1000,
+      "trial": 28,
+      "elapsed_ms": 15.997334,
+      "query_idx": 8
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "service",
+      "n": 1000,
+      "trial": 29,
+      "elapsed_ms": 17.558542,
+      "query_idx": 9
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "http",
+      "n": 1000,
+      "trial": 0,
+      "elapsed_ms": 19.180042,
+      "query_idx": 0
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "http",
+      "n": 1000,
+      "trial": 1,
+      "elapsed_ms": 19.2215,
+      "query_idx": 1
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "http",
+      "n": 1000,
+      "trial": 2,
+      "elapsed_ms": 18.561666,
+      "query_idx": 2
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "http",
+      "n": 1000,
+      "trial": 3,
+      "elapsed_ms": 18.894458,
+      "query_idx": 3
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "http",
+      "n": 1000,
+      "trial": 4,
+      "elapsed_ms": 19.380375,
+      "query_idx": 4
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "http",
+      "n": 1000,
+      "trial": 5,
+      "elapsed_ms": 21.557208,
+      "query_idx": 5
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "http",
+      "n": 1000,
+      "trial": 6,
+      "elapsed_ms": 22.236666,
+      "query_idx": 6
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "http",
+      "n": 1000,
+      "trial": 7,
+      "elapsed_ms": 22.679,
+      "query_idx": 7
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "http",
+      "n": 1000,
+      "trial": 8,
+      "elapsed_ms": 25.147125,
+      "query_idx": 8
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "http",
+      "n": 1000,
+      "trial": 9,
+      "elapsed_ms": 25.407292,
+      "query_idx": 9
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "http",
+      "n": 1000,
+      "trial": 10,
+      "elapsed_ms": 25.667667,
+      "query_idx": 10
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "http",
+      "n": 1000,
+      "trial": 11,
+      "elapsed_ms": 23.338875,
+      "query_idx": 11
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "http",
+      "n": 1000,
+      "trial": 12,
+      "elapsed_ms": 22.788083,
+      "query_idx": 12
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "http",
+      "n": 1000,
+      "trial": 13,
+      "elapsed_ms": 21.735208,
+      "query_idx": 13
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "http",
+      "n": 1000,
+      "trial": 14,
+      "elapsed_ms": 25.312333,
+      "query_idx": 14
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "http",
+      "n": 1000,
+      "trial": 15,
+      "elapsed_ms": 21.6215,
+      "query_idx": 15
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "http",
+      "n": 1000,
+      "trial": 16,
+      "elapsed_ms": 20.889375,
+      "query_idx": 16
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "http",
+      "n": 1000,
+      "trial": 17,
+      "elapsed_ms": 19.259042,
+      "query_idx": 17
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "http",
+      "n": 1000,
+      "trial": 18,
+      "elapsed_ms": 20.077666,
+      "query_idx": 18
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "http",
+      "n": 1000,
+      "trial": 19,
+      "elapsed_ms": 19.386583,
+      "query_idx": 19
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "http",
+      "n": 1000,
+      "trial": 20,
+      "elapsed_ms": 18.570209,
+      "query_idx": 0
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "http",
+      "n": 1000,
+      "trial": 21,
+      "elapsed_ms": 18.394459,
+      "query_idx": 1
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "http",
+      "n": 1000,
+      "trial": 22,
+      "elapsed_ms": 18.613042,
+      "query_idx": 2
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "http",
+      "n": 1000,
+      "trial": 23,
+      "elapsed_ms": 18.794292,
+      "query_idx": 3
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "http",
+      "n": 1000,
+      "trial": 24,
+      "elapsed_ms": 19.190833,
+      "query_idx": 4
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "http",
+      "n": 1000,
+      "trial": 25,
+      "elapsed_ms": 26.75525,
+      "query_idx": 5
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "http",
+      "n": 1000,
+      "trial": 26,
+      "elapsed_ms": 20.627709,
+      "query_idx": 6
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "http",
+      "n": 1000,
+      "trial": 27,
+      "elapsed_ms": 20.822791,
+      "query_idx": 7
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "http",
+      "n": 1000,
+      "trial": 28,
+      "elapsed_ms": 23.522208,
+      "query_idx": 8
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "profile",
+      "layer": "http",
+      "n": 1000,
+      "trial": 29,
+      "elapsed_ms": 19.235667,
+      "query_idx": 9
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "service",
+      "n": 1000,
+      "trial": 0,
+      "elapsed_ms": 16.770167,
+      "query_idx": 0
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "service",
+      "n": 1000,
+      "trial": 1,
+      "elapsed_ms": 16.313958,
+      "query_idx": 1
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "service",
+      "n": 1000,
+      "trial": 2,
+      "elapsed_ms": 16.577917,
+      "query_idx": 2
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "service",
+      "n": 1000,
+      "trial": 3,
+      "elapsed_ms": 16.345583,
+      "query_idx": 3
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "service",
+      "n": 1000,
+      "trial": 4,
+      "elapsed_ms": 15.88425,
+      "query_idx": 4
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "service",
+      "n": 1000,
+      "trial": 5,
+      "elapsed_ms": 17.8475,
+      "query_idx": 5
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "service",
+      "n": 1000,
+      "trial": 6,
+      "elapsed_ms": 17.272667,
+      "query_idx": 6
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "service",
+      "n": 1000,
+      "trial": 7,
+      "elapsed_ms": 17.38025,
+      "query_idx": 7
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "service",
+      "n": 1000,
+      "trial": 8,
+      "elapsed_ms": 16.286333,
+      "query_idx": 8
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "service",
+      "n": 1000,
+      "trial": 9,
+      "elapsed_ms": 16.704583,
+      "query_idx": 9
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "service",
+      "n": 1000,
+      "trial": 10,
+      "elapsed_ms": 17.716459,
+      "query_idx": 10
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "service",
+      "n": 1000,
+      "trial": 11,
+      "elapsed_ms": 17.251,
+      "query_idx": 11
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "service",
+      "n": 1000,
+      "trial": 12,
+      "elapsed_ms": 17.561583,
+      "query_idx": 12
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "service",
+      "n": 1000,
+      "trial": 13,
+      "elapsed_ms": 17.838584,
+      "query_idx": 13
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "service",
+      "n": 1000,
+      "trial": 14,
+      "elapsed_ms": 17.654709,
+      "query_idx": 14
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "service",
+      "n": 1000,
+      "trial": 15,
+      "elapsed_ms": 17.678125,
+      "query_idx": 15
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "service",
+      "n": 1000,
+      "trial": 16,
+      "elapsed_ms": 17.324458,
+      "query_idx": 16
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "service",
+      "n": 1000,
+      "trial": 17,
+      "elapsed_ms": 17.201834,
+      "query_idx": 17
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "service",
+      "n": 1000,
+      "trial": 18,
+      "elapsed_ms": 16.837583,
+      "query_idx": 18
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "service",
+      "n": 1000,
+      "trial": 19,
+      "elapsed_ms": 17.099541,
+      "query_idx": 19
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "service",
+      "n": 1000,
+      "trial": 20,
+      "elapsed_ms": 16.440625,
+      "query_idx": 0
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "service",
+      "n": 1000,
+      "trial": 21,
+      "elapsed_ms": 16.267375,
+      "query_idx": 1
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "service",
+      "n": 1000,
+      "trial": 22,
+      "elapsed_ms": 16.344333,
+      "query_idx": 2
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "service",
+      "n": 1000,
+      "trial": 23,
+      "elapsed_ms": 16.374916,
+      "query_idx": 3
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "service",
+      "n": 1000,
+      "trial": 24,
+      "elapsed_ms": 17.416208,
+      "query_idx": 4
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "service",
+      "n": 1000,
+      "trial": 25,
+      "elapsed_ms": 21.758208,
+      "query_idx": 5
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "service",
+      "n": 1000,
+      "trial": 26,
+      "elapsed_ms": 17.6155,
+      "query_idx": 6
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "service",
+      "n": 1000,
+      "trial": 27,
+      "elapsed_ms": 17.014042,
+      "query_idx": 7
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "service",
+      "n": 1000,
+      "trial": 28,
+      "elapsed_ms": 16.321959,
+      "query_idx": 8
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "service",
+      "n": 1000,
+      "trial": 29,
+      "elapsed_ms": 16.764208,
+      "query_idx": 9
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "http",
+      "n": 1000,
+      "trial": 0,
+      "elapsed_ms": 19.019083,
+      "query_idx": 0
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "http",
+      "n": 1000,
+      "trial": 1,
+      "elapsed_ms": 21.930209,
+      "query_idx": 1
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "http",
+      "n": 1000,
+      "trial": 2,
+      "elapsed_ms": 19.479958,
+      "query_idx": 2
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "http",
+      "n": 1000,
+      "trial": 3,
+      "elapsed_ms": 19.051917,
+      "query_idx": 3
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "http",
+      "n": 1000,
+      "trial": 4,
+      "elapsed_ms": 19.037167,
+      "query_idx": 4
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "http",
+      "n": 1000,
+      "trial": 5,
+      "elapsed_ms": 20.123417,
+      "query_idx": 5
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "http",
+      "n": 1000,
+      "trial": 6,
+      "elapsed_ms": 19.44975,
+      "query_idx": 6
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "http",
+      "n": 1000,
+      "trial": 7,
+      "elapsed_ms": 20.558041,
+      "query_idx": 7
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "http",
+      "n": 1000,
+      "trial": 8,
+      "elapsed_ms": 19.069541,
+      "query_idx": 8
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "http",
+      "n": 1000,
+      "trial": 9,
+      "elapsed_ms": 18.334541,
+      "query_idx": 9
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "http",
+      "n": 1000,
+      "trial": 10,
+      "elapsed_ms": 19.4865,
+      "query_idx": 10
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "http",
+      "n": 1000,
+      "trial": 11,
+      "elapsed_ms": 20.392125,
+      "query_idx": 11
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "http",
+      "n": 1000,
+      "trial": 12,
+      "elapsed_ms": 20.137416,
+      "query_idx": 12
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "http",
+      "n": 1000,
+      "trial": 13,
+      "elapsed_ms": 19.921,
+      "query_idx": 13
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "http",
+      "n": 1000,
+      "trial": 14,
+      "elapsed_ms": 22.555708,
+      "query_idx": 14
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "http",
+      "n": 1000,
+      "trial": 15,
+      "elapsed_ms": 20.140875,
+      "query_idx": 15
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "http",
+      "n": 1000,
+      "trial": 16,
+      "elapsed_ms": 19.583792,
+      "query_idx": 16
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "http",
+      "n": 1000,
+      "trial": 17,
+      "elapsed_ms": 22.07925,
+      "query_idx": 17
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "http",
+      "n": 1000,
+      "trial": 18,
+      "elapsed_ms": 18.856375,
+      "query_idx": 18
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "http",
+      "n": 1000,
+      "trial": 19,
+      "elapsed_ms": 19.473708,
+      "query_idx": 19
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "http",
+      "n": 1000,
+      "trial": 20,
+      "elapsed_ms": 18.598542,
+      "query_idx": 0
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "http",
+      "n": 1000,
+      "trial": 21,
+      "elapsed_ms": 19.077709,
+      "query_idx": 1
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "http",
+      "n": 1000,
+      "trial": 22,
+      "elapsed_ms": 18.890958,
+      "query_idx": 2
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "http",
+      "n": 1000,
+      "trial": 23,
+      "elapsed_ms": 18.660583,
+      "query_idx": 3
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "http",
+      "n": 1000,
+      "trial": 24,
+      "elapsed_ms": 19.641708,
+      "query_idx": 4
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "http",
+      "n": 1000,
+      "trial": 25,
+      "elapsed_ms": 20.231416,
+      "query_idx": 5
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "http",
+      "n": 1000,
+      "trial": 26,
+      "elapsed_ms": 19.481917,
+      "query_idx": 6
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "http",
+      "n": 1000,
+      "trial": 27,
+      "elapsed_ms": 19.66125,
+      "query_idx": 7
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "http",
+      "n": 1000,
+      "trial": 28,
+      "elapsed_ms": 21.850208,
+      "query_idx": 8
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "user_playbook",
+      "layer": "http",
+      "n": 1000,
+      "trial": 29,
+      "elapsed_ms": 19.197541,
+      "query_idx": 9
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "service",
+      "n": 1000,
+      "trial": 0,
+      "elapsed_ms": 16.418833,
+      "query_idx": 0
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "service",
+      "n": 1000,
+      "trial": 1,
+      "elapsed_ms": 16.6635,
+      "query_idx": 1
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "service",
+      "n": 1000,
+      "trial": 2,
+      "elapsed_ms": 16.006083,
+      "query_idx": 2
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "service",
+      "n": 1000,
+      "trial": 3,
+      "elapsed_ms": 16.309083,
+      "query_idx": 3
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "service",
+      "n": 1000,
+      "trial": 4,
+      "elapsed_ms": 15.729416,
+      "query_idx": 4
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "service",
+      "n": 1000,
+      "trial": 5,
+      "elapsed_ms": 19.084,
+      "query_idx": 5
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "service",
+      "n": 1000,
+      "trial": 6,
+      "elapsed_ms": 17.716041,
+      "query_idx": 6
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "service",
+      "n": 1000,
+      "trial": 7,
+      "elapsed_ms": 18.509542,
+      "query_idx": 7
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "service",
+      "n": 1000,
+      "trial": 8,
+      "elapsed_ms": 15.541042,
+      "query_idx": 8
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "service",
+      "n": 1000,
+      "trial": 9,
+      "elapsed_ms": 16.144708,
+      "query_idx": 9
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "service",
+      "n": 1000,
+      "trial": 10,
+      "elapsed_ms": 18.773666,
+      "query_idx": 10
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "service",
+      "n": 1000,
+      "trial": 11,
+      "elapsed_ms": 18.82225,
+      "query_idx": 11
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "service",
+      "n": 1000,
+      "trial": 12,
+      "elapsed_ms": 18.729959,
+      "query_idx": 12
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "service",
+      "n": 1000,
+      "trial": 13,
+      "elapsed_ms": 18.829291,
+      "query_idx": 13
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "service",
+      "n": 1000,
+      "trial": 14,
+      "elapsed_ms": 25.730208,
+      "query_idx": 14
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "service",
+      "n": 1000,
+      "trial": 15,
+      "elapsed_ms": 23.718959,
+      "query_idx": 15
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "service",
+      "n": 1000,
+      "trial": 16,
+      "elapsed_ms": 18.993125,
+      "query_idx": 16
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "service",
+      "n": 1000,
+      "trial": 17,
+      "elapsed_ms": 17.615167,
+      "query_idx": 17
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "service",
+      "n": 1000,
+      "trial": 18,
+      "elapsed_ms": 16.453292,
+      "query_idx": 18
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "service",
+      "n": 1000,
+      "trial": 19,
+      "elapsed_ms": 16.372958,
+      "query_idx": 19
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "service",
+      "n": 1000,
+      "trial": 20,
+      "elapsed_ms": 17.926834,
+      "query_idx": 0
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "service",
+      "n": 1000,
+      "trial": 21,
+      "elapsed_ms": 16.195833,
+      "query_idx": 1
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "service",
+      "n": 1000,
+      "trial": 22,
+      "elapsed_ms": 16.220459,
+      "query_idx": 2
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "service",
+      "n": 1000,
+      "trial": 23,
+      "elapsed_ms": 15.636583,
+      "query_idx": 3
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "service",
+      "n": 1000,
+      "trial": 24,
+      "elapsed_ms": 16.313333,
+      "query_idx": 4
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "service",
+      "n": 1000,
+      "trial": 25,
+      "elapsed_ms": 18.611667,
+      "query_idx": 5
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "service",
+      "n": 1000,
+      "trial": 26,
+      "elapsed_ms": 17.706416,
+      "query_idx": 6
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "service",
+      "n": 1000,
+      "trial": 27,
+      "elapsed_ms": 17.053958,
+      "query_idx": 7
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "service",
+      "n": 1000,
+      "trial": 28,
+      "elapsed_ms": 15.747834,
+      "query_idx": 8
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "service",
+      "n": 1000,
+      "trial": 29,
+      "elapsed_ms": 15.839625,
+      "query_idx": 9
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "http",
+      "n": 1000,
+      "trial": 0,
+      "elapsed_ms": 19.443125,
+      "query_idx": 0
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "http",
+      "n": 1000,
+      "trial": 1,
+      "elapsed_ms": 18.667375,
+      "query_idx": 1
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "http",
+      "n": 1000,
+      "trial": 2,
+      "elapsed_ms": 18.7825,
+      "query_idx": 2
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "http",
+      "n": 1000,
+      "trial": 3,
+      "elapsed_ms": 18.328,
+      "query_idx": 3
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "http",
+      "n": 1000,
+      "trial": 4,
+      "elapsed_ms": 18.946708,
+      "query_idx": 4
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "http",
+      "n": 1000,
+      "trial": 5,
+      "elapsed_ms": 20.385666,
+      "query_idx": 5
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "http",
+      "n": 1000,
+      "trial": 6,
+      "elapsed_ms": 20.040292,
+      "query_idx": 6
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "http",
+      "n": 1000,
+      "trial": 7,
+      "elapsed_ms": 20.285084,
+      "query_idx": 7
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "http",
+      "n": 1000,
+      "trial": 8,
+      "elapsed_ms": 17.980333,
+      "query_idx": 8
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "http",
+      "n": 1000,
+      "trial": 9,
+      "elapsed_ms": 18.440416,
+      "query_idx": 9
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "http",
+      "n": 1000,
+      "trial": 10,
+      "elapsed_ms": 25.12325,
+      "query_idx": 10
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "http",
+      "n": 1000,
+      "trial": 11,
+      "elapsed_ms": 20.921417,
+      "query_idx": 11
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "http",
+      "n": 1000,
+      "trial": 12,
+      "elapsed_ms": 21.072042,
+      "query_idx": 12
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "http",
+      "n": 1000,
+      "trial": 13,
+      "elapsed_ms": 21.390417,
+      "query_idx": 13
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "http",
+      "n": 1000,
+      "trial": 14,
+      "elapsed_ms": 21.202417,
+      "query_idx": 14
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "http",
+      "n": 1000,
+      "trial": 15,
+      "elapsed_ms": 20.713459,
+      "query_idx": 15
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "http",
+      "n": 1000,
+      "trial": 16,
+      "elapsed_ms": 21.233125,
+      "query_idx": 16
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "http",
+      "n": 1000,
+      "trial": 17,
+      "elapsed_ms": 21.143,
+      "query_idx": 17
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "http",
+      "n": 1000,
+      "trial": 18,
+      "elapsed_ms": 18.810917,
+      "query_idx": 18
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "http",
+      "n": 1000,
+      "trial": 19,
+      "elapsed_ms": 18.945208,
+      "query_idx": 19
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "http",
+      "n": 1000,
+      "trial": 20,
+      "elapsed_ms": 18.701958,
+      "query_idx": 0
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "http",
+      "n": 1000,
+      "trial": 21,
+      "elapsed_ms": 18.635916,
+      "query_idx": 1
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "http",
+      "n": 1000,
+      "trial": 22,
+      "elapsed_ms": 18.730833,
+      "query_idx": 2
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "http",
+      "n": 1000,
+      "trial": 23,
+      "elapsed_ms": 18.15225,
+      "query_idx": 3
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "http",
+      "n": 1000,
+      "trial": 24,
+      "elapsed_ms": 17.820625,
+      "query_idx": 4
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "http",
+      "n": 1000,
+      "trial": 25,
+      "elapsed_ms": 20.019375,
+      "query_idx": 5
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "http",
+      "n": 1000,
+      "trial": 26,
+      "elapsed_ms": 19.4645,
+      "query_idx": 6
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "http",
+      "n": 1000,
+      "trial": 27,
+      "elapsed_ms": 20.473459,
+      "query_idx": 7
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "http",
+      "n": 1000,
+      "trial": 28,
+      "elapsed_ms": 18.250709,
+      "query_idx": 8
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "agent_playbook",
+      "layer": "http",
+      "n": 1000,
+      "trial": 29,
+      "elapsed_ms": 18.964709,
+      "query_idx": 9
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "service",
+      "n": 1000,
+      "trial": 0,
+      "elapsed_ms": 57.057334,
+      "query_idx": 0
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "service",
+      "n": 1000,
+      "trial": 1,
+      "elapsed_ms": 54.555833,
+      "query_idx": 1
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "service",
+      "n": 1000,
+      "trial": 2,
+      "elapsed_ms": 73.365625,
+      "query_idx": 2
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "service",
+      "n": 1000,
+      "trial": 3,
+      "elapsed_ms": 54.14425,
+      "query_idx": 3
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "service",
+      "n": 1000,
+      "trial": 4,
+      "elapsed_ms": 53.123917,
+      "query_idx": 4
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "service",
+      "n": 1000,
+      "trial": 5,
+      "elapsed_ms": 63.04725,
+      "query_idx": 5
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "service",
+      "n": 1000,
+      "trial": 6,
+      "elapsed_ms": 54.275792,
+      "query_idx": 6
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "service",
+      "n": 1000,
+      "trial": 7,
+      "elapsed_ms": 53.258625,
+      "query_idx": 7
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "service",
+      "n": 1000,
+      "trial": 8,
+      "elapsed_ms": 48.205375,
+      "query_idx": 8
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "service",
+      "n": 1000,
+      "trial": 9,
+      "elapsed_ms": 52.156458,
+      "query_idx": 9
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "service",
+      "n": 1000,
+      "trial": 10,
+      "elapsed_ms": 60.02675,
+      "query_idx": 10
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "service",
+      "n": 1000,
+      "trial": 11,
+      "elapsed_ms": 69.77125,
+      "query_idx": 11
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "service",
+      "n": 1000,
+      "trial": 12,
+      "elapsed_ms": 59.753583,
+      "query_idx": 12
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "service",
+      "n": 1000,
+      "trial": 13,
+      "elapsed_ms": 62.037958,
+      "query_idx": 13
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "service",
+      "n": 1000,
+      "trial": 14,
+      "elapsed_ms": 71.862417,
+      "query_idx": 14
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "service",
+      "n": 1000,
+      "trial": 15,
+      "elapsed_ms": 77.021666,
+      "query_idx": 15
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "service",
+      "n": 1000,
+      "trial": 16,
+      "elapsed_ms": 57.884584,
+      "query_idx": 16
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "service",
+      "n": 1000,
+      "trial": 17,
+      "elapsed_ms": 51.055833,
+      "query_idx": 17
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "service",
+      "n": 1000,
+      "trial": 18,
+      "elapsed_ms": 65.439667,
+      "query_idx": 18
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "service",
+      "n": 1000,
+      "trial": 19,
+      "elapsed_ms": 52.910666,
+      "query_idx": 19
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "service",
+      "n": 1000,
+      "trial": 20,
+      "elapsed_ms": 61.573417,
+      "query_idx": 0
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "service",
+      "n": 1000,
+      "trial": 21,
+      "elapsed_ms": 53.523458,
+      "query_idx": 1
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "service",
+      "n": 1000,
+      "trial": 22,
+      "elapsed_ms": 48.989416,
+      "query_idx": 2
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "service",
+      "n": 1000,
+      "trial": 23,
+      "elapsed_ms": 59.620375,
+      "query_idx": 3
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "service",
+      "n": 1000,
+      "trial": 24,
+      "elapsed_ms": 49.988584,
+      "query_idx": 4
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "service",
+      "n": 1000,
+      "trial": 25,
+      "elapsed_ms": 59.536666,
+      "query_idx": 5
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "service",
+      "n": 1000,
+      "trial": 26,
+      "elapsed_ms": 60.867542,
+      "query_idx": 6
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "service",
+      "n": 1000,
+      "trial": 27,
+      "elapsed_ms": 58.870083,
+      "query_idx": 7
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "service",
+      "n": 1000,
+      "trial": 28,
+      "elapsed_ms": 51.1395,
+      "query_idx": 8
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "service",
+      "n": 1000,
+      "trial": 29,
+      "elapsed_ms": 54.673209,
+      "query_idx": 9
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "http",
+      "n": 1000,
+      "trial": 0,
+      "elapsed_ms": 62.511375,
+      "query_idx": 0
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "http",
+      "n": 1000,
+      "trial": 1,
+      "elapsed_ms": 54.661459,
+      "query_idx": 1
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "http",
+      "n": 1000,
+      "trial": 2,
+      "elapsed_ms": 58.281834,
+      "query_idx": 2
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "http",
+      "n": 1000,
+      "trial": 3,
+      "elapsed_ms": 58.871,
+      "query_idx": 3
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "http",
+      "n": 1000,
+      "trial": 4,
+      "elapsed_ms": 51.474,
+      "query_idx": 4
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "http",
+      "n": 1000,
+      "trial": 5,
+      "elapsed_ms": 64.441958,
+      "query_idx": 5
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "http",
+      "n": 1000,
+      "trial": 6,
+      "elapsed_ms": 60.530083,
+      "query_idx": 6
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "http",
+      "n": 1000,
+      "trial": 7,
+      "elapsed_ms": 60.913583,
+      "query_idx": 7
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "http",
+      "n": 1000,
+      "trial": 8,
+      "elapsed_ms": 56.7695,
+      "query_idx": 8
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "http",
+      "n": 1000,
+      "trial": 9,
+      "elapsed_ms": 63.58875,
+      "query_idx": 9
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "http",
+      "n": 1000,
+      "trial": 10,
+      "elapsed_ms": 76.002291,
+      "query_idx": 10
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "http",
+      "n": 1000,
+      "trial": 11,
+      "elapsed_ms": 63.13225,
+      "query_idx": 11
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "http",
+      "n": 1000,
+      "trial": 12,
+      "elapsed_ms": 58.823125,
+      "query_idx": 12
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "http",
+      "n": 1000,
+      "trial": 13,
+      "elapsed_ms": 60.170125,
+      "query_idx": 13
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "http",
+      "n": 1000,
+      "trial": 14,
+      "elapsed_ms": 66.004125,
+      "query_idx": 14
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "http",
+      "n": 1000,
+      "trial": 15,
+      "elapsed_ms": 62.540083,
+      "query_idx": 15
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "http",
+      "n": 1000,
+      "trial": 16,
+      "elapsed_ms": 60.170667,
+      "query_idx": 16
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "http",
+      "n": 1000,
+      "trial": 17,
+      "elapsed_ms": 52.90475,
+      "query_idx": 17
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "http",
+      "n": 1000,
+      "trial": 18,
+      "elapsed_ms": 55.663541,
+      "query_idx": 18
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "http",
+      "n": 1000,
+      "trial": 19,
+      "elapsed_ms": 58.37175,
+      "query_idx": 19
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "http",
+      "n": 1000,
+      "trial": 20,
+      "elapsed_ms": 55.409125,
+      "query_idx": 0
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "http",
+      "n": 1000,
+      "trial": 21,
+      "elapsed_ms": 54.931916,
+      "query_idx": 1
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "http",
+      "n": 1000,
+      "trial": 22,
+      "elapsed_ms": 58.054833,
+      "query_idx": 2
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "http",
+      "n": 1000,
+      "trial": 23,
+      "elapsed_ms": 52.031333,
+      "query_idx": 3
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "http",
+      "n": 1000,
+      "trial": 24,
+      "elapsed_ms": 54.598709,
+      "query_idx": 4
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "http",
+      "n": 1000,
+      "trial": 25,
+      "elapsed_ms": 62.573708,
+      "query_idx": 5
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "http",
+      "n": 1000,
+      "trial": 26,
+      "elapsed_ms": 67.107834,
+      "query_idx": 6
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "http",
+      "n": 1000,
+      "trial": 27,
+      "elapsed_ms": 75.59125,
+      "query_idx": 7
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "http",
+      "n": 1000,
+      "trial": 28,
+      "elapsed_ms": 57.2085,
+      "query_idx": 8
+    },
+    {
+      "backend": "sqlite",
+      "retrieval_type": "unified",
+      "layer": "http",
+      "n": 1000,
+      "trial": 29,
+      "elapsed_ms": 54.832083,
+      "query_idx": 9
+    }
+  ]
+}

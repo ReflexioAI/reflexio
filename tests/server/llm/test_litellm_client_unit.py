@@ -7,6 +7,7 @@ prompt caching. All LiteLLM SDK calls are mocked -- no real API requests are mad
 
 import base64
 import json
+import logging
 import struct
 import tempfile
 import zlib
@@ -37,6 +38,9 @@ from reflexio.server.llm.litellm_client import (
     LiteLLMClient,
     LiteLLMClientError,
     LiteLLMConfig,
+    _get_embedding_encoding,
+    _get_embedding_limit,
+    _truncate_for_embedding,
     create_litellm_client,
 )
 
@@ -717,6 +721,171 @@ class TestGetEmbeddings:
 
         assert result[0] == [0.1, 0.2]
         assert result[1] == [0.3, 0.4]
+
+
+# ===================================================================
+# Embedding input truncation tests
+# ===================================================================
+
+
+class TestEmbeddingTruncation:
+    """Tests for the embedding-input truncation helpers."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_caches(self):
+        """
+        Clear both embedding-helper lru_caches and the warned-models set
+        before and after every test so ordering can't leak mocked values.
+        """
+        from reflexio.server.llm.litellm_client import _TRUNCATION_WARNED_MODELS
+
+        _get_embedding_limit.cache_clear()
+        _get_embedding_encoding.cache_clear()
+        _TRUNCATION_WARNED_MODELS.clear()
+        yield
+        _get_embedding_limit.cache_clear()
+        _get_embedding_encoding.cache_clear()
+        _TRUNCATION_WARNED_MODELS.clear()
+
+    def test_get_embedding_limit_openai_family(self):
+        """Known OpenAI embedding models resolve to the 8191 cap."""
+        # Patch the registry so the assertion doesn't ride on whatever value
+        # the installed litellm build happens to report today.
+        with patch(
+            "reflexio.server.llm.litellm_client.litellm.get_model_info",
+            return_value={"mode": "embedding", "max_input_tokens": 8191},
+        ):
+            assert _get_embedding_limit("text-embedding-3-small") == 8191
+            assert _get_embedding_limit("text-embedding-3-large") == 8191
+            assert _get_embedding_limit("text-embedding-ada-002") == 8191
+
+    @pytest.mark.parametrize(
+        ("model", "mock_kwargs", "expected"),
+        [
+            # Unknown text-embedding-* name — litellm has no entry, OpenAI fallback.
+            ("text-embedding-bogus", {"side_effect": Exception("unmapped")}, 8191),
+            # openai/* prefix, unknown to litellm — fallback.
+            ("openai/custom-embed", {"side_effect": Exception("unmapped")}, 8191),
+            # azure/* prefix, unknown to litellm — fallback.
+            ("azure/custom-embed", {"side_effect": Exception("unmapped")}, 8191),
+            # Unknown non-OpenAI provider — no safe fallback, return None.
+            ("mystery-provider/embed-v1", {"side_effect": Exception("unmapped")}, None),
+            # Registry reports a non-embedding mode — don't trust max_input_tokens.
+            (
+                "mystery/chat-model",
+                {"return_value": {"mode": "chat", "max_input_tokens": 100000}},
+                None,
+            ),
+            # Cohere-style provider with a small cap — return exactly what litellm says.
+            (
+                "cohere/embed-english-v3.0",
+                {"return_value": {"mode": "embedding", "max_input_tokens": 512}},
+                512,
+            ),
+        ],
+    )
+    def test_get_embedding_limit_variants(self, model, mock_kwargs, expected):
+        """Exhaustive table of registry lookup + prefix-fallback outcomes."""
+        with patch(
+            "reflexio.server.llm.litellm_client.litellm.get_model_info",
+            **mock_kwargs,
+        ):
+            assert _get_embedding_limit(model) == expected
+
+    def test_get_embedding_encoding_unknown_model_falls_back_to_cl100k(self):
+        """Unknown model names use the cl100k_base tokenizer as a proxy."""
+        encoding = _get_embedding_encoding("totally-custom-model")
+        assert encoding.name == "cl100k_base"
+
+    def test_truncate_empty_string_is_pass_through(self):
+        assert _truncate_for_embedding("", "text-embedding-3-small") == ""
+
+    def test_truncate_short_text_is_unchanged(self):
+        """Text already within the limit is returned unchanged."""
+        text = "hello world"
+        result = _truncate_for_embedding(text, "text-embedding-3-small")
+        assert result == text
+
+    def test_truncate_long_text_is_shortened(self):
+        """A tiny override limit exercises the truncation path on short input."""
+        text = "word " * 200
+        result = _truncate_for_embedding(text, "text-embedding-3-small", max_tokens=10)
+        encoding = _get_embedding_encoding("text-embedding-3-small")
+        assert len(encoding.encode(result)) <= 10
+        assert len(result) < len(text)
+
+    def test_truncate_unknown_provider_is_pass_through(self):
+        """Unknown non-OpenAI models skip truncation entirely."""
+        text = "word " * 5000
+        with patch(
+            "reflexio.server.llm.litellm_client.litellm.get_model_info",
+            side_effect=Exception("unmapped"),
+        ):
+            result = _truncate_for_embedding(text, "mystery-provider/embed-v1")
+        assert result == text
+
+    def test_truncate_preserves_prefix_from_storage_caller(self):
+        """Prefix (`search_document:` / `search_query:`) survives truncation.
+
+        Mirrors how sqlite_storage._base._get_embedding builds its input: the
+        prefix is concatenated onto the text before reaching the LLM client,
+        so the truncation budget must be spent on the suffix, not the prefix.
+        """
+        encoding = _get_embedding_encoding("text-embedding-3-small")
+        prefix = "search_document: "
+        body = encoding.decode(list(range(9000)))
+        result = _truncate_for_embedding(prefix + body, "text-embedding-3-small")
+        assert result.startswith(prefix)
+        assert len(encoding.encode(result)) <= 8191
+
+    def test_truncate_warning_emitted_once_then_debug(self, caplog):
+        """First oversized text for a model warns; subsequent calls go to DEBUG."""
+        encoding = _get_embedding_encoding("text-embedding-3-small")
+        oversized = encoding.decode(list(range(9000)))
+
+        with caplog.at_level(
+            logging.WARNING, logger="reflexio.server.llm.litellm_client"
+        ):
+            _truncate_for_embedding(oversized, "text-embedding-3-small")
+            _truncate_for_embedding(oversized, "text-embedding-3-small")
+
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        assert "Truncating embedding input" in warnings[0].getMessage()
+        assert "text-embedding-3-small" in warnings[0].getMessage()
+
+    @patch("reflexio.server.llm.litellm_client.litellm.embedding")
+    def test_get_embedding_long_text_is_truncated_before_call(self, mock_embedding):
+        """The string reaching litellm.embedding is always under the cap."""
+        mock_embedding.return_value = _make_embedding_response([0.1, 0.2, 0.3])
+        client = _build_client()
+        encoding = _get_embedding_encoding("text-embedding-3-small")
+        oversized = encoding.decode(list(range(9000)))
+
+        client.get_embedding(oversized)
+
+        call_kwargs = mock_embedding.call_args.kwargs
+        sent_text = call_kwargs["input"][0]
+        assert len(encoding.encode(sent_text)) <= 8191
+        assert sent_text != oversized
+
+    @patch("reflexio.server.llm.litellm_client.litellm.embedding")
+    def test_get_embeddings_truncates_each_element_independently(self, mock_embedding):
+        """Batch truncation is per-element: short strings are not rewritten."""
+        mock_embedding.return_value = _make_batch_embedding_response(
+            [[0.1, 0.2], [0.3, 0.4]]
+        )
+        client = _build_client()
+        encoding = _get_embedding_encoding("text-embedding-3-small")
+        short = "hello"
+        oversized = encoding.decode(list(range(9000)))
+
+        client.get_embeddings([short, oversized])
+
+        sent_texts = mock_embedding.call_args.kwargs["input"]
+        assert sent_texts[0] == short
+        assert sent_texts[1] != oversized
+        assert len(encoding.encode(sent_texts[1])) <= 8191
 
 
 # ===================================================================
