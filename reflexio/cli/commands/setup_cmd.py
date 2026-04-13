@@ -242,8 +242,7 @@ def _prompt_managed_reflexio(env_path: Path) -> str:
             "storage, not your per-org Supabase."
         )
         typer.echo(
-            "      • Other users hitting the same server share the same "
-            "data namespace."
+            "      • Other users hitting the same server share the same data namespace."
         )
         typer.echo(
             "    Contact the server operator to enable enterprise auth, "
@@ -413,6 +412,10 @@ def _uninstall_openclaw() -> None:
     workspace_skills = Path.home() / ".openclaw" / "skills" / "reflexio"
     if workspace_skills.exists():
         shutil.rmtree(workspace_skills)
+    for cmd_name in ("reflexio-extract", "reflexio-aggregate"):
+        cmd_dir = Path.home() / ".openclaw" / "skills" / cmd_name
+        if cmd_dir.exists():
+            shutil.rmtree(cmd_dir)
     typer.echo("Reflexio integration removed from OpenClaw.")
 
 

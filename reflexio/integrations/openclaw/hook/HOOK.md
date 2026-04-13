@@ -40,5 +40,5 @@ Flushes the complete buffered conversation to Reflexio via `reflexio interaction
 |----------|---------|-------------|
 | `REFLEXIO_API_KEY` | — | Required for cloud/Supabase mode. Not needed for local/SQLite. |
 | `REFLEXIO_URL` | `http://127.0.0.1:8081` | Reflexio server URL |
-| `REFLEXIO_USER_ID` | `openclaw` | User ID for profile search |
+| `REFLEXIO_USER_ID` | auto (from agentId) | User ID for profile search |
 | `REFLEXIO_AGENT_VERSION` | `openclaw-agent` | A label identifying your agent version. Playbooks are scoped by this tag. |
