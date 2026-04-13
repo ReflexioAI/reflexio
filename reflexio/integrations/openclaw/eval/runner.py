@@ -162,7 +162,11 @@ class EvalRunner:
         self._port = _find_free_port()
         self._base_url = f"http://127.0.0.1:{self._port}"
 
-        env = {**os.environ, "REFLEXIO_STORAGE": "sqlite", "REFLEXIO_DATA_DIR": str(data_dir)}
+        env = {
+            **os.environ,
+            "REFLEXIO_STORAGE": "sqlite",
+            "REFLEXIO_DATA_DIR": str(data_dir),
+        }
 
         self._server_proc = subprocess.Popen(  # noqa: S603
             [
@@ -255,6 +259,7 @@ class EvalRunner:
             tuple[bool, str]: (success, message)
         """
         timeout_s: float = float(params.get("timeout_s", 60))
+        user_id: str | None = params.get("user_id")
         deadline = time.monotonic() + timeout_s
 
         # We just need the server to have finished background work.
@@ -262,7 +267,7 @@ class EvalRunner:
         # so extraction should already be complete — a short sleep guards
         # against any final async flush.
         while time.monotonic() < deadline:
-            resp = self._client.get_user_playbooks()
+            resp = self._client.get_user_playbooks(user_id=user_id)
             if resp.user_playbooks:
                 return True, f"extraction done ({len(resp.user_playbooks)} playbooks)"
             time.sleep(_POLL_INTERVAL_S)
@@ -287,13 +292,14 @@ class EvalRunner:
 
         for pb in playbooks:
             trigger_text = (
-                (pb.structured_data.trigger or "").lower()
-                if pb.structured_data
-                else ""
+                (pb.structured_data.trigger or "").lower() if pb.structured_data else ""
             )
             content_text = (pb.content or "").lower()
 
-            if trigger_contains and trigger_contains.lower() not in trigger_text + content_text:
+            if (
+                trigger_contains
+                and trigger_contains.lower() not in trigger_text + content_text
+            ):
                 continue
             if content_contains and content_contains.lower() not in content_text:
                 continue
@@ -304,7 +310,10 @@ class EvalRunner:
             criteria.append(f"trigger~{trigger_contains!r}")
         if content_contains:
             criteria.append(f"content~{content_contains!r}")
-        return False, f"no playbook matched {', '.join(criteria)} among {len(playbooks)} playbooks"
+        return (
+            False,
+            f"no playbook matched {', '.join(criteria)} among {len(playbooks)} playbooks",
+        )
 
     def _action_seed_user_playbook(self, params: dict) -> tuple[bool, str]:
         """Directly add a user playbook (seed for search/aggregation tests).
@@ -380,7 +389,10 @@ class EvalRunner:
         all_texts = _collect_field_values(results, field_name)
         if any(needle in t.lower() for t in all_texts):
             return True, f"found {needle!r} in {field_name}"
-        return False, f"{needle!r} not found in any {field_name} value; got: {all_texts[:3]}"
+        return (
+            False,
+            f"{needle!r} not found in any {field_name} value; got: {all_texts[:3]}",
+        )
 
     def _action_verify_result_not_contains(self, params: dict) -> tuple[bool, str]:
         """Assert that no search result contains the unwanted text.
@@ -419,7 +431,7 @@ class EvalRunner:
             agent_version=agent_version,
             wait_for_response=wait,
         )
-        msg = (resp.message if resp is not None else "aggregation queued") if wait else "aggregation queued"
+        msg = resp.message if wait and resp is not None else "aggregation queued"
         return True, msg
 
     def _action_verify_has_agent_playbooks(self, _params: dict) -> tuple[bool, str]:
@@ -453,11 +465,15 @@ class EvalRunner:
         max_expected: int = int(params.get("max_expected", 9999))
         content_contains: str | None = params.get("content_contains")
 
-        resp = self._client.get_agent_playbooks(agent_version=agent_version, force_refresh=True)
+        resp = self._client.get_agent_playbooks(
+            agent_version=agent_version, force_refresh=True
+        )
         pbs = resp.agent_playbooks or []
 
         if content_contains:
-            pbs = [p for p in pbs if content_contains.lower() in (p.content or "").lower()]
+            pbs = [
+                p for p in pbs if content_contains.lower() in (p.content or "").lower()
+            ]
 
         if len(pbs) > max_expected:
             return (
@@ -478,7 +494,7 @@ class EvalRunner:
         cmd: list[str] = params["command"]
         env = {
             **os.environ,
-            "REFLEXIO_API_URL": self._base_url,
+            "REFLEXIO_URL": self._base_url,
         }
         result = subprocess.run(cmd, capture_output=True, text=True, env=env)  # noqa: S603
         self._last_exit_code = result.returncode
@@ -512,7 +528,7 @@ class EvalRunner:
         cmd: list[str] = params["command"]
         env = {
             **os.environ,
-            "REFLEXIO_API_URL": self._base_url,
+            "REFLEXIO_URL": self._base_url,
         }
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, env=env)  # noqa: S603
@@ -521,7 +537,10 @@ class EvalRunner:
             crashed = "Traceback (most recent call last):" in (result.stderr or "")
             if crashed:
                 return False, "command produced an unhandled traceback"
-            return True, f"command completed (exit={result.returncode}) without crashing"
+            return (
+                True,
+                f"command completed (exit={result.returncode}) without crashing",
+            )
         except Exception as exc:
             return False, f"subprocess raised exception: {exc}"
 
@@ -634,7 +653,9 @@ class EvalRunner:
             except Exception as exc:
                 passed, message = False, f"exception: {exc}"
 
-            step_results.append(StepResult(action=action, passed=passed, message=message))
+            step_results.append(
+                StepResult(action=action, passed=passed, message=message)
+            )
 
             if not passed:
                 scenario_passed = False
@@ -755,7 +776,9 @@ def _print_report(results: list[ScenarioResult]) -> None:
 
     for result in results:
         status = "PASS" if result.passed else "FAIL"
-        print(f"\n  [{status}] {result.scenario_id}  ({result.category})  {result.elapsed_s:.1f}s")
+        print(
+            f"\n  [{status}] {result.scenario_id}  ({result.category})  {result.elapsed_s:.1f}s"
+        )
 
         for step in result.steps:
             step_mark = "✓" if step.passed else "✗"

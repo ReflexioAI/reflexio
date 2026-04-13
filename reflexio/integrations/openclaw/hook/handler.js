@@ -86,6 +86,26 @@ function getSessionId(event) {
 }
 
 // ---------------------------------------------------------------------------
+// JSON5 comment stripping — respects quoted strings
+// ---------------------------------------------------------------------------
+
+function stripJsonComments(raw) {
+	return raw.split("\n").map(line => {
+		let inString = false;
+		let escape = false;
+		for (let i = 0; i < line.length; i++) {
+			const ch = line[i];
+			if (escape) { escape = false; continue; }
+			if (ch === "\\") { escape = true; continue; }
+			if (ch === '"') { inString = !inString; continue; }
+			if (!inString && ch === "/" && line[i + 1] === "/") return line.slice(0, i);
+			if (!inString && ch === "/" && line[i + 1] === "*") return line.slice(0, i);
+		}
+		return line;
+	}).join("\n");
+}
+
+// ---------------------------------------------------------------------------
 // User ID resolution — multi-agent instance support
 // ---------------------------------------------------------------------------
 
@@ -105,10 +125,9 @@ function resolveUserId(event) {
 		try {
 			const configPath = join(homedir(), ".openclaw", "openclaw.json");
 			const raw = readFileSync(configPath, "utf-8");
-			// Strip single-line (//) and multi-line (/* */) comments
-			const stripped = raw
-				.replace(/\/\/[^\n]*/g, "")
-				.replace(/\/\*[\s\S]*?\*\//g, "");
+			// Strip comments while respecting quoted strings to avoid corrupting
+			// string values that contain // (e.g. URLs like http://example.com).
+			const stripped = stripJsonComments(raw);
 			_openclawConfig = JSON.parse(stripped);
 		} catch {
 			_openclawConfig = {}; // cache failure so we don't retry every call
@@ -380,9 +399,10 @@ function handleBootstrap(event) {
 const TRIVIAL_RESPONSE_RE = /^(yes|no|ok|sure|thanks|y|n)$/i;
 
 function handleSearchBeforeResponse(event) {
-	const prompt = event.context?.userMessage;
+	let prompt = event.context?.userMessage;
 	if (!prompt || prompt.length < 5) return;
 	if (TRIVIAL_RESPONSE_RE.test(prompt.trim())) return;
+	prompt = prompt.slice(0, 4096);
 
 	try {
 		const userId = resolveUserId(event);

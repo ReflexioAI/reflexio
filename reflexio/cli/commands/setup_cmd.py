@@ -412,10 +412,17 @@ def _uninstall_openclaw() -> None:
     workspace_skills = Path.home() / ".openclaw" / "skills" / "reflexio"
     if workspace_skills.exists():
         shutil.rmtree(workspace_skills)
-    for cmd_name in ("reflexio-extract", "reflexio-aggregate"):
-        cmd_dir = Path.home() / ".openclaw" / "skills" / cmd_name
-        if cmd_dir.exists():
-            shutil.rmtree(cmd_dir)
+
+    import reflexio as _reflexio
+
+    integration_dir = Path(_reflexio.__file__).parent / "integrations" / "openclaw"
+    commands_dir = integration_dir / "commands"
+    if commands_dir.exists():
+        for cmd_subdir in commands_dir.iterdir():
+            if cmd_subdir.is_dir():
+                cmd_dir = Path.home() / ".openclaw" / "skills" / cmd_subdir.name
+                if cmd_dir.exists():
+                    shutil.rmtree(cmd_dir)
     typer.echo("Reflexio integration removed from OpenClaw.")
 
 
