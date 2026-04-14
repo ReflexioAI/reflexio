@@ -214,9 +214,9 @@ def add(
 @handle_errors
 def update(
     ctx: typer.Context,
-    id: Annotated[  # noqa: A002
+    playbook_id: Annotated[
         int,
-        typer.Option("--id", help="User playbook ID to update"),
+        typer.Option("--playbook-id", help="User playbook ID to update"),
     ],
     content: Annotated[
         str | None,
@@ -238,7 +238,7 @@ def update(
 
     Args:
         ctx: Typer context with CliState in ctx.obj
-        id: User playbook ID to update
+        playbook_id: User playbook ID to update
         content: New content text
         playbook_name: New playbook category name
     """
@@ -251,7 +251,7 @@ def update(
 
     client = get_client(ctx)
     resp = client.update_user_playbook(
-        user_playbook_id=id,
+        user_playbook_id=playbook_id,
         content=content,
         playbook_name=playbook_name,
     )
@@ -261,7 +261,7 @@ def update(
         render(resp, json_mode=True)
     else:
         raise_if_failed(resp, default="Failed to update user playbook")
-        print_info(f"User playbook {id} updated")
+        print_info(f"User playbook {playbook_id} updated")
 
 
 @app.command()
@@ -336,7 +336,9 @@ def regenerate(
     ] = False,
     agent_version: Annotated[
         str | None,
-        typer.Option("--agent-version", help="Agent version to regenerate playbooks for"),
+        typer.Option(
+            "--agent-version", help="Agent version to regenerate playbooks for"
+        ),
     ] = None,
 ) -> None:
     """Re-extract user playbooks from published interactions.
@@ -361,20 +363,20 @@ def regenerate(
 
     # When waiting, auto-promote PENDING user playbooks to CURRENT so
     # they're immediately visible in `list` output.
+    promoted = 0
     if wait:
-        upgrade_resp = client.upgrade_user_playbooks(
-            agent_version=resolved_version,
-        )
-        promoted = upgrade_resp.user_playbooks_promoted if upgrade_resp else 0
-    else:
-        promoted = 0
+        try:
+            upgrade_resp = client.upgrade_user_playbooks(
+                agent_version=resolved_version,
+            )
+            promoted = upgrade_resp.user_playbooks_promoted
+        except Exception:
+            print_info("Warning: promotion failed, but regeneration succeeded")
 
     json_mode: bool = ctx.obj.json_mode
     if json_mode:
         render(resp, json_mode=True)
     elif wait:
-        print_info(
-            f"Playbook regeneration complete ({promoted} playbook(s) promoted)"
-        )
+        print_info(f"Playbook regeneration complete ({promoted} playbook(s) promoted)")
     else:
         print_info("Playbook regeneration started")

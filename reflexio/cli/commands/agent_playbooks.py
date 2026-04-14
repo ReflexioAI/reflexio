@@ -21,7 +21,7 @@ from reflexio.cli.output import (
     print_info,
     render,
 )
-from reflexio.cli.state import get_client, require_agent_version
+from reflexio.cli.state import get_client
 
 app = typer.Typer(help="Manage agent playbooks.")
 
@@ -269,9 +269,9 @@ def add(
 @handle_errors
 def update(
     ctx: typer.Context,
-    id: Annotated[  # noqa: A002
+    playbook_id: Annotated[
         int,
-        typer.Option("--id", help="Agent playbook ID to update"),
+        typer.Option("--playbook-id", help="Agent playbook ID to update"),
     ],
     content: Annotated[
         str | None,
@@ -295,7 +295,7 @@ def update(
 
     Args:
         ctx: Typer context with CliState in ctx.obj
-        id: Agent playbook ID to update
+        playbook_id: Agent playbook ID to update
         content: New content text
         playbook_name: New playbook category name
     """
@@ -308,7 +308,7 @@ def update(
 
     client = get_client(ctx)
     resp = client.update_agent_playbook(
-        agent_playbook_id=id,
+        agent_playbook_id=playbook_id,
         content=content,
         playbook_name=playbook_name,
     )
@@ -318,16 +318,16 @@ def update(
         render(resp, json_mode=True)
     else:
         raise_if_failed(resp, default="Failed to update agent playbook")
-        print_info(f"Agent playbook {id} updated")
+        print_info(f"Agent playbook {playbook_id} updated")
 
 
 @app.command(name="update-status")
 @handle_errors
 def update_status(
     ctx: typer.Context,
-    id: Annotated[  # noqa: A002
+    playbook_id: Annotated[
         int,
-        typer.Option("--id", help="Agent playbook ID"),
+        typer.Option("--playbook-id", help="Agent playbook ID"),
     ],
     status: Annotated[
         str,
@@ -346,7 +346,7 @@ def update_status(
 
     Args:
         ctx: Typer context with CliState in ctx.obj
-        id: Agent playbook ID
+        playbook_id: Agent playbook ID
         status: New approval status (pending/approved/rejected)
     """
     pb_status = _validate_playbook_status(status)
@@ -361,7 +361,7 @@ def update_status(
 
     client = get_client(ctx)
     resp = client.update_agent_playbook_status(
-        agent_playbook_id=id,
+        agent_playbook_id=playbook_id,
         playbook_status=pb_status,
     )
 
@@ -370,7 +370,7 @@ def update_status(
         render(resp, json_mode=True)
     else:
         raise_if_failed(resp, default="Failed to update agent playbook status")
-        print_info(f"Agent playbook {id} status set to {pb_status.value}")
+        print_info(f"Agent playbook {playbook_id} status set to {pb_status.value}")
 
 
 @app.command()
@@ -529,5 +529,3 @@ def aggregate(
                 print_info("  Done")
             else:
                 print_info("  Started")
-
-
