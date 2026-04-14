@@ -313,7 +313,7 @@ In async contexts (e.g., FastAPI), fire-and-forget uses the existing event loop.
 
 ## Requirements
 
-- Python >= 3.11
+- Python >= 3.12
 - `pydantic >= 2.0.0`
 - `requests >= 2.25.0`
 - `aiohttp >= 3.12.9`
