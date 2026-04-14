@@ -21,7 +21,7 @@ In future sessions, Reflexio searches for relevant profiles and playbooks before
 
 ## Prerequisites
 
-- **Python >=3.11** (the `reflexio-ai` package requires `>=3.11` — see `pyproject.toml`)
+- **Python >=3.12** (the `reflexio-ai` package requires `>=3.12` — see `pyproject.toml`)
 - **Node.js** (for the search hook that runs on every user message)
 - **An LLM API key** (e.g., `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`) — only needed for **SQLite (local) mode**. Managed Reflexio and self-hosted servers handle extraction on their own — you only need the `REFLEXIO_API_KEY` for authentication.
 - **Claude Code** installed and working
