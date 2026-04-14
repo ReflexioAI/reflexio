@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -9,8 +10,14 @@ import pytest
 import typer
 
 from reflexio.cli.commands.setup_cmd import (
+    InstallLocation,
+    _detect_install_locations,
+    _install_claude_code_integration,
+    _prompt_install_location,
     _prompt_storage,
+    _remove_from_dir,
     _set_env_var,
+    _write_marker,
 )
 from reflexio.models.api_schema.service_schemas import WhoamiResponse
 
@@ -225,3 +232,209 @@ class TestPromptStorage:
             pytest.raises(typer.Exit),
         ):
             _prompt_storage(env)
+
+
+# ---------------------------------------------------------------------------
+# _prompt_install_location — location picker
+# ---------------------------------------------------------------------------
+
+
+class TestPromptInstallLocation:
+    """Covers the interactive install location picker."""
+
+    def test_choice_1_returns_all_projects(self) -> None:
+        """Choice 1 returns ALL_PROJECTS."""
+        with patch("typer.prompt", return_value=1):
+            result = _prompt_install_location()
+        assert result == InstallLocation.ALL_PROJECTS
+
+    def test_choice_2_returns_current_project(self) -> None:
+        """Choice 2 returns CURRENT_PROJECT."""
+        with patch("typer.prompt", return_value=2):
+            result = _prompt_install_location()
+        assert result == InstallLocation.CURRENT_PROJECT
+
+    def test_default_is_all_projects(self) -> None:
+        """Default prompt value is 1 (ALL_PROJECTS)."""
+        with patch("typer.prompt", return_value=1) as mock_prompt:
+            _prompt_install_location()
+        mock_prompt.assert_called_once_with("Choice", type=int, default=1)
+
+    def test_invalid_choice_exits(self) -> None:
+        """Choices outside 1/2 raise typer.Exit."""
+        with (
+            patch("typer.prompt", return_value=5),
+            pytest.raises(typer.Exit),
+        ):
+            _prompt_install_location()
+
+
+# ---------------------------------------------------------------------------
+# _install_claude_code_integration — both locations
+# ---------------------------------------------------------------------------
+
+
+class TestInstallClaudeCodeIntegration:
+    """Covers install to project-level and user-level locations."""
+
+    def test_project_level_creates_files(self, tmp_path: Path) -> None:
+        """Project-level install creates skill, rules, hooks, and marker."""
+        _install_claude_code_integration(
+            tmp_path, location=InstallLocation.CURRENT_PROJECT
+        )
+        claude_dir = tmp_path / ".claude"
+        assert (claude_dir / "skills" / "reflexio" / "SKILL.md").exists()
+        assert (claude_dir / "rules" / "reflexio.md").exists()
+        assert (claude_dir / "settings.json").exists()
+        # Marker file
+        marker = claude_dir / "skills" / "reflexio" / ".installed-by-reflexio"
+        assert marker.exists()
+        data = json.loads(marker.read_text())
+        assert data["location"] == "current_project"
+
+    def test_user_level_creates_files_in_home(self, tmp_path: Path) -> None:
+        """User-level install creates files under the target dir (simulating ~)."""
+        _install_claude_code_integration(
+            tmp_path, location=InstallLocation.ALL_PROJECTS
+        )
+        claude_dir = tmp_path / ".claude"
+        assert (claude_dir / "skills" / "reflexio" / "SKILL.md").exists()
+        assert (claude_dir / "rules" / "reflexio.md").exists()
+        assert (claude_dir / "settings.json").exists()
+        marker = claude_dir / "skills" / "reflexio" / ".installed-by-reflexio"
+        assert marker.exists()
+        data = json.loads(marker.read_text())
+        assert data["location"] == "all_projects"
+        assert "installed_at" in data
+
+    def test_expert_mode_installs_command(self, tmp_path: Path) -> None:
+        """Expert mode also installs the reflexio-extract command."""
+        _install_claude_code_integration(
+            tmp_path, expert=True, location=InstallLocation.CURRENT_PROJECT
+        )
+        cmd = tmp_path / ".claude" / "commands" / "reflexio-extract" / "SKILL.md"
+        assert cmd.exists()
+
+    def test_normal_mode_no_command(self, tmp_path: Path) -> None:
+        """Normal mode does not install the reflexio-extract command."""
+        _install_claude_code_integration(
+            tmp_path, location=InstallLocation.CURRENT_PROJECT
+        )
+        cmd = tmp_path / ".claude" / "commands" / "reflexio-extract" / "SKILL.md"
+        assert not cmd.exists()
+
+    def test_hooks_in_settings_json(self, tmp_path: Path) -> None:
+        """Hooks are written to settings.json with correct events."""
+        _install_claude_code_integration(
+            tmp_path, location=InstallLocation.ALL_PROJECTS
+        )
+        settings = json.loads(
+            (tmp_path / ".claude" / "settings.json").read_text()
+        )
+        assert "SessionStart" in settings["hooks"]
+        assert "UserPromptSubmit" in settings["hooks"]
+
+    def test_idempotent_install(self, tmp_path: Path) -> None:
+        """Running install twice doesn't corrupt files or duplicate hooks."""
+        for _ in range(2):
+            _install_claude_code_integration(
+                tmp_path, location=InstallLocation.ALL_PROJECTS
+            )
+        settings = json.loads(
+            (tmp_path / ".claude" / "settings.json").read_text()
+        )
+        # Each event should have exactly one hook entry
+        assert len(settings["hooks"]["SessionStart"]) == 1
+        assert len(settings["hooks"]["UserPromptSubmit"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# _detect_install_locations / _remove_from_dir / uninstall
+# ---------------------------------------------------------------------------
+
+
+class TestUninstallDetection:
+    """Covers marker-based install detection and removal."""
+
+    def test_detect_no_installs(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Returns empty list when nothing is installed."""
+        fake_home = tmp_path / "empty_home"
+        fake_home.mkdir()
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
+        locations = _detect_install_locations(tmp_path / "project")
+        assert locations == []
+
+    def test_detect_project_level(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Detects project-level install via marker file."""
+        fake_home = tmp_path / "home"
+        fake_home.mkdir()
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
+        project = tmp_path / "project"
+        project.mkdir()
+        _install_claude_code_integration(
+            project, location=InstallLocation.CURRENT_PROJECT
+        )
+        locations = _detect_install_locations(project)
+        found_locs = {loc for loc, _ in locations}
+        assert InstallLocation.CURRENT_PROJECT in found_locs
+        assert InstallLocation.ALL_PROJECTS not in found_locs
+
+    def test_detect_user_level(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Detects user-level install via marker file in home dir."""
+        fake_home = tmp_path / "home"
+        fake_home.mkdir()
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
+        _install_claude_code_integration(
+            fake_home, location=InstallLocation.ALL_PROJECTS
+        )
+        locations = _detect_install_locations(tmp_path / "project")
+        found_locs = {loc for loc, _ in locations}
+        assert InstallLocation.ALL_PROJECTS in found_locs
+
+    def test_remove_from_dir_cleans_all_files(self, tmp_path: Path) -> None:
+        """_remove_from_dir removes skill, rules, commands, and hooks."""
+        _install_claude_code_integration(
+            tmp_path, expert=True, location=InstallLocation.CURRENT_PROJECT
+        )
+        claude_dir = tmp_path / ".claude"
+        assert (claude_dir / "skills" / "reflexio").exists()
+        assert (claude_dir / "rules" / "reflexio.md").exists()
+        assert (claude_dir / "commands" / "reflexio-extract").exists()
+
+        _remove_from_dir(tmp_path)
+
+        assert not (claude_dir / "skills" / "reflexio").exists()
+        assert not (claude_dir / "rules" / "reflexio.md").exists()
+        assert not (claude_dir / "commands" / "reflexio-extract").exists()
+        # settings.json should have empty hooks
+        settings = json.loads((claude_dir / "settings.json").read_text())
+        assert "hooks" not in settings or not settings.get("hooks")
+
+    def test_marker_file_metadata(self, tmp_path: Path) -> None:
+        """Marker file contains location and installed_at fields."""
+        marker = tmp_path / ".marker"
+        _write_marker(marker, InstallLocation.ALL_PROJECTS)
+        data = json.loads(marker.read_text())
+        assert data["location"] == "all_projects"
+        assert "installed_at" in data
+
+
+# ---------------------------------------------------------------------------
+# CLI flag mutual exclusion (tested via the command function directly)
+# ---------------------------------------------------------------------------
+
+
+class TestClaudeCodeSetupFlags:
+    """Tests for --global / --project-dir mutual exclusion."""
+
+    def test_global_and_project_dir_mutual_exclusion(self) -> None:
+        """Passing both --global and --project-dir raises typer.Exit."""
+        from reflexio.cli.commands.setup_cmd import claude_code_setup
+
+        with pytest.raises(typer.Exit):
+            claude_code_setup(
+                uninstall=False,
+                expert=False,
+                project_dir=Path("/tmp"),
+                global_install=True,
+            )

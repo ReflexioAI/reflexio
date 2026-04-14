@@ -41,10 +41,9 @@ This installs:
 
 ## Set Up Claude Code Integration
 
-Navigate to your project directory and run:
+Run the setup wizard:
 
 ```bash
-cd your-project/
 reflexio setup claude-code            # Normal mode (search-only)
 # or
 reflexio setup claude-code --expert   # Expert mode (search + publish + /reflexio-extract)
@@ -52,21 +51,42 @@ reflexio setup claude-code --expert   # Expert mode (search + publish + /reflexi
 
 The setup wizard will:
 
-1. Ask you to choose a storage backend (SQLite is the default — no external database needed)
-2. Ask you to choose an LLM provider and enter your API key — **only if using SQLite (local) storage**. If you chose Managed Reflexio or self-hosted, this step is skipped (the remote server handles extraction).
-3. Configure `REFLEXIO_USER_ID=claude-code` for consistent user identification
-4. Install the skill and search hook into your project's `.claude/` directory
+1. Ask you where to install — **all projects** (`~/.claude/`) or **current project only** (`./.claude/`)
+2. Ask you to choose a storage backend (SQLite is the default — no external database needed)
+3. Ask you to choose an LLM provider and enter your API key — **only if using SQLite (local) storage**. If you chose Managed Reflexio or self-hosted, this step is skipped (the remote server handles extraction).
+4. Configure `REFLEXIO_USER_ID=claude-code` for consistent user identification
+5. Install the skill, rules, and search hooks into the chosen `.claude/` directory
+
+You can also skip the interactive prompt with flags:
+
+```bash
+reflexio setup claude-code --global               # Install to ~/.claude/ (all projects)
+reflexio setup claude-code --project-dir ./myapp   # Install to ./myapp/.claude/
+```
+
+### Which location?
+
+| | All projects (`~/.claude/`) | Current project (`./.claude/`) |
+|---|---|---|
+| **Scope** | Every Claude Code session | Only this directory |
+| **Best for** | Desktop app users, personal preferences | CLI users, team-shared config |
+| **Hooks fire** | In all sessions | Only in this project |
+| **Priority** | Lower — project-level overrides | Higher — overrides user-level |
+
+If you have both user-level and project-level installs, Claude Code's priority rules apply: project-level skills, rules, and hooks take precedence over user-level ones.
 
 ### What gets installed
 
 **Normal mode:**
 
 - `.claude/skills/reflexio/SKILL.md` — the normal skill that teaches Claude to search Reflexio
+- `.claude/rules/reflexio.md` — always-in-context rules for Reflexio behavior
 - `.claude/settings.json` — adds `SessionStart` hook (auto-starts server) and `UserPromptSubmit` hook (runs `reflexio search` on every user message)
 
 **Expert mode:**
 
 - `.claude/skills/reflexio/SKILL.md` — the expert skill (different content from normal — includes instructions for publishing corrections and references `/reflexio-extract`)
+- `.claude/rules/reflexio.md` — always-in-context rules for Reflexio behavior
 - `.claude/commands/reflexio-extract/SKILL.md` — the `/reflexio-extract` slash command for manual extraction
 - `.claude/settings.json` — same `SessionStart` + `UserPromptSubmit` hooks as normal mode
 
@@ -95,11 +115,17 @@ The setup wizard will:
 ## Uninstall
 
 ```bash
-cd your-project/
 reflexio setup claude-code --uninstall
 ```
 
-This removes the skill, commands, and hooks from your project. Your extracted data in `~/.reflexio/` is preserved.
+The uninstaller auto-detects where Reflexio is installed (user-level, project-level, or both) and asks which to remove. You can also target a specific location:
+
+```bash
+reflexio setup claude-code --uninstall --global               # Remove from ~/.claude/
+reflexio setup claude-code --uninstall --project-dir ./myapp   # Remove from ./myapp/.claude/
+```
+
+This removes the skill, rules, commands, and hooks. Your extracted data in `~/.reflexio/` is preserved.
 
 To fully remove Reflexio:
 
@@ -319,16 +345,20 @@ User sends message to Claude Code
 
 ### File structure
 
+Integration files are installed to either `~/.claude/` (all projects) or `your-project/.claude/` (current project only). The layout is identical in both cases:
+
 ```
-your-project/
-└── .claude/
-    ├── settings.json                    ← Hook configuration (SessionStart + UserPromptSubmit)
-    ├── skills/
-    │   └── reflexio/
-    │       └── SKILL.md                 ← Normal or expert skill
-    └── commands/                         ← Expert mode only
-        └── reflexio-extract/
-            └── SKILL.md                 ← /reflexio-extract command
+~/.claude/ or your-project/.claude/
+├── settings.json                    ← Hook configuration (SessionStart + UserPromptSubmit)
+├── skills/
+│   └── reflexio/
+│       ├── SKILL.md                 ← Normal or expert skill
+│       └── .installed-by-reflexio   ← Marker for uninstall auto-detection
+├── rules/
+│   └── reflexio.md                  ← Always-in-context instructions
+└── commands/                         ← Expert mode only
+    └── reflexio-extract/
+        └── SKILL.md                 ← /reflexio-extract command
 
 ~/.reflexio/
 ├── .env                                 ← API keys, REFLEXIO_USER_ID

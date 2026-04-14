@@ -6,10 +6,22 @@ import contextlib
 import json
 import shutil
 import subprocess
+from enum import Enum
 from pathlib import Path
 from typing import Annotated
 
 import typer
+
+
+class InstallLocation(Enum):
+    """Where to install the Claude Code integration files.
+
+    CURRENT_PROJECT installs into ``<cwd>/.claude/`` — scoped to one project.
+    ALL_PROJECTS installs into ``~/.claude/`` — active in every Claude Code session.
+    """
+
+    CURRENT_PROJECT = "current_project"
+    ALL_PROJECTS = "all_projects"
 
 app = typer.Typer(
     help="Configure Reflexio: run 'init' for plain CLI setup, or one of "
@@ -113,6 +125,28 @@ def _prompt_llm_provider(env_path: Path) -> tuple[str, str, str]:
     _set_env_var(env_path, env_var, api_key)
 
     return display_name, model, selected_key
+
+
+def _prompt_install_location() -> InstallLocation:
+    """Interactively prompt the user to choose where to install the integration.
+
+    Returns:
+        InstallLocation: The chosen install location.
+    """
+    typer.echo("\nWhere should the Claude Code integration be installed?")
+    typer.echo("  [1] All projects (~/.claude/) — applies to every Claude Code session")
+    typer.echo(
+        "  [2] Current project only (./.claude/) — applies only when working in this directory"
+    )
+
+    choice = typer.prompt("Choice", type=int, default=1)
+    if choice == 1:
+        return InstallLocation.ALL_PROJECTS
+    if choice == 2:
+        return InstallLocation.CURRENT_PROJECT
+
+    typer.echo("Error: choice must be 1 or 2")
+    raise typer.Exit(1)
 
 
 _EMBEDDING_CHOICES: list[tuple[str, str, str]] = [
@@ -684,14 +718,43 @@ def _remove_hook_config(settings_path: Path) -> None:
     settings_path.write_text(json.dumps(settings, indent=2) + "\n")
 
 
-def _install_claude_code_integration(
-    project_dir: Path, *, expert: bool = False
-) -> tuple[Path, Path]:
-    """Install the Reflexio skill and hook into a Claude Code project.
+_MARKER_FILENAME = ".installed-by-reflexio"
+
+
+def _write_marker(marker_path: Path, location: InstallLocation) -> None:
+    """Write a JSON marker file recording the install location and timestamp.
 
     Args:
-        project_dir: Root directory of the Claude Code project.
+        marker_path: Where to write the marker file.
+        location: The install location enum value.
+    """
+    import datetime
+
+    marker_path.parent.mkdir(parents=True, exist_ok=True)
+    marker_path.write_text(
+        json.dumps(
+            {
+                "location": location.value,
+                "installed_at": datetime.datetime.now(datetime.UTC).isoformat(),
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+
+
+def _install_claude_code_integration(
+    target_dir: Path,
+    *,
+    expert: bool = False,
+    location: InstallLocation = InstallLocation.ALL_PROJECTS,
+) -> tuple[Path, Path]:
+    """Install the Reflexio skill and hook into a Claude Code project or user directory.
+
+    Args:
+        target_dir: Root directory — either the project root or ``Path.home()``.
         expert: If True, install the expert skill instead of the normal skill.
+        location: Where to install (current project or all projects).
 
     Returns:
         tuple[Path, Path]: (skill_path, handler_js_path) for the summary.
@@ -701,74 +764,175 @@ def _install_claude_code_integration(
         typer.echo(f"Error: integration files not found at {integration_dir}")
         raise typer.Exit(1)
 
+    claude_dir = target_dir / ".claude"
+
     # Copy skill
     skill_src = (
         integration_dir / "skill" / "SKILL-expert.md"
         if expert
         else integration_dir / "skill" / "SKILL.md"
     )
-    skill_dest = project_dir / ".claude" / "skills" / "reflexio" / "SKILL.md"
+    skill_dest = claude_dir / "skills" / "reflexio" / "SKILL.md"
     skill_dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(skill_src, skill_dest)
 
     # Copy rules file (always-in-context instructions)
     rules_src = integration_dir / "rules" / "reflexio.md"
-    rules_dest = project_dir / ".claude" / "rules" / "reflexio.md"
+    rules_dest = claude_dir / "rules" / "reflexio.md"
     rules_dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(rules_src, rules_dest)
 
     # Expert mode: also install /reflexio-extract command
     if expert:
         cmd_src = integration_dir / "commands" / "reflexio-extract" / "SKILL.md"
-        cmd_dest = (
-            project_dir / ".claude" / "commands" / "reflexio-extract" / "SKILL.md"
-        )
+        cmd_dest = claude_dir / "commands" / "reflexio-extract" / "SKILL.md"
         cmd_dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(cmd_src, cmd_dest)
 
     # Configure hook
     handler_js = integration_dir / "hook" / "handler.js"
-    settings_path = project_dir / ".claude" / "settings.json"
+    settings_path = claude_dir / "settings.json"
     _merge_hook_config(settings_path, handler_js)
+
+    # Write marker for uninstall auto-detection
+    marker_path = claude_dir / "skills" / "reflexio" / _MARKER_FILENAME
+    _write_marker(marker_path, location)
 
     return skill_dest, handler_js
 
 
-def _uninstall_claude_code(project_dir: Path) -> None:
-    """Remove the Reflexio integration from a Claude Code project.
+def _detect_install_locations(
+    project_dir: Path,
+) -> list[tuple[InstallLocation, Path]]:
+    """Detect where Reflexio is installed by checking marker files.
 
     Args:
-        project_dir: Root directory of the Claude Code project.
-    """
-    typer.confirm(
-        "This will remove the Reflexio skill and hook from this project. Continue?",
-        abort=True,
-    )
+        project_dir: The project directory to check for project-level installs.
 
-    # Remove skill directory
-    skill_dir = project_dir / ".claude" / "skills" / "reflexio"
+    Returns:
+        list[tuple[InstallLocation, Path]]: List of (location, base_dir) pairs
+            where the integration is installed.
+    """
+    locations: list[tuple[InstallLocation, Path]] = []
+    for loc, base in [
+        (InstallLocation.ALL_PROJECTS, Path.home()),
+        (InstallLocation.CURRENT_PROJECT, project_dir),
+    ]:
+        marker = base / ".claude" / "skills" / "reflexio" / _MARKER_FILENAME
+        if marker.exists():
+            locations.append((loc, base))
+    return locations
+
+
+def _remove_from_dir(base_dir: Path) -> None:
+    """Remove the Reflexio integration files from a .claude directory.
+
+    Args:
+        base_dir: The directory containing the .claude/ folder.
+    """
+    claude_dir = base_dir / ".claude"
+
+    # Remove skill directory (includes marker file)
+    skill_dir = claude_dir / "skills" / "reflexio"
     if skill_dir.exists():
         shutil.rmtree(skill_dir)
         typer.echo(f"  Removed skill: {skill_dir}")
 
     # Remove rules file
-    rules_file = project_dir / ".claude" / "rules" / "reflexio.md"
+    rules_file = claude_dir / "rules" / "reflexio.md"
     if rules_file.exists():
         rules_file.unlink()
         typer.echo(f"  Removed rules: {rules_file}")
 
     # Remove /reflexio-extract command
-    cmd_dir = project_dir / ".claude" / "commands" / "reflexio-extract"
+    cmd_dir = claude_dir / "commands" / "reflexio-extract"
     if cmd_dir.exists():
         shutil.rmtree(cmd_dir)
         typer.echo(f"  Removed command: {cmd_dir}")
 
     # Remove hook from settings
-    settings_path = project_dir / ".claude" / "settings.json"
+    settings_path = claude_dir / "settings.json"
     _remove_hook_config(settings_path)
     typer.echo(f"  Removed hook from: {settings_path}")
 
-    typer.echo("Reflexio integration removed from Claude Code project.")
+
+def _uninstall_claude_code(
+    project_dir: Path, *, global_install: bool = False
+) -> None:
+    """Remove the Reflexio integration from Claude Code.
+
+    When ``--global`` or ``--project-dir`` is explicit, removes from that
+    location directly. Otherwise auto-detects via marker files.
+
+    Args:
+        project_dir: Root directory of the Claude Code project.
+        global_install: If True, only remove from ~/.claude/.
+    """
+    # When --global is explicit, skip detection and remove from ~/.claude/
+    if global_install:
+        home = Path.home()
+        marker = home / ".claude" / "skills" / "reflexio" / _MARKER_FILENAME
+        if not marker.exists():
+            typer.confirm(
+                "No Reflexio marker found in ~/.claude/. Remove anyway?",
+                abort=True,
+            )
+        else:
+            typer.confirm(
+                "Remove Reflexio integration from ~/.claude/ (all projects)?",
+                abort=True,
+            )
+        _remove_from_dir(home)
+        typer.echo("Reflexio integration removed.")
+        return
+
+    locations = _detect_install_locations(project_dir)
+
+    if not locations:
+        typer.confirm(
+            f"No Reflexio marker found. Remove integration from {project_dir}/.claude/?",
+            abort=True,
+        )
+        _remove_from_dir(project_dir)
+        typer.echo("Reflexio integration removed.")
+        return
+
+    if len(locations) == 1:
+        loc, base = locations[0]
+        loc_label = (
+            "~/.claude/ (all projects)"
+            if loc == InstallLocation.ALL_PROJECTS
+            else f"{base}/.claude/ (current project)"
+        )
+        typer.confirm(
+            f"Found Reflexio integration at {loc_label}. Remove it?",
+            abort=True,
+        )
+        _remove_from_dir(base)
+        typer.echo("Reflexio integration removed.")
+        return
+
+    # Both locations have installs
+    typer.echo("\nReflexio is installed in multiple locations:")
+    typer.echo("  [1] All projects (~/.claude/)")
+    typer.echo(f"  [2] Current project ({project_dir}/.claude/)")
+    typer.echo("  [3] Both")
+    choice = typer.prompt("Which installation to remove?", type=int)
+
+    targets: list[tuple[InstallLocation, Path]] = []
+    if choice == 1:
+        targets = [locations[0]]
+    elif choice == 2:
+        targets = [locations[1]]
+    elif choice == 3:
+        targets = locations
+    else:
+        typer.echo("Error: choice must be 1, 2, or 3")
+        raise typer.Exit(1)
+
+    for _, base in targets:
+        _remove_from_dir(base)
+    typer.echo("Reflexio integration removed.")
 
 
 @app.command("claude-code")
@@ -791,13 +955,43 @@ def claude_code_setup(
             help="Target project directory (default: current directory)",
         ),
     ] = None,
+    global_install: Annotated[
+        bool,
+        typer.Option(
+            "--global",
+            help="Install to ~/.claude/ (user-level, applies to all projects)",
+        ),
+    ] = False,
 ) -> None:
     """Set up (or remove) the Reflexio integration for Claude Code."""
-    target = Path(project_dir) if project_dir else Path.cwd()
+    # Resolve install location
+    if global_install and project_dir is not None:
+        typer.echo("Error: --global and --project-dir are mutually exclusive")
+        raise typer.Exit(1)
 
+    # Uninstall uses auto-detection — no need for the interactive location prompt
     if uninstall:
-        _uninstall_claude_code(target)
+        target = (
+            Path.home()
+            if global_install
+            else Path(project_dir) if project_dir is not None else Path.cwd()
+        )
+        _uninstall_claude_code(target, global_install=global_install)
         return
+
+    if global_install:
+        target = Path.home()
+        location = InstallLocation.ALL_PROJECTS
+    elif project_dir is not None:
+        target = Path(project_dir)
+        location = InstallLocation.CURRENT_PROJECT
+    else:
+        location = _prompt_install_location()
+        target = (
+            Path.home()
+            if location == InstallLocation.ALL_PROJECTS
+            else Path.cwd()
+        )
 
     # Step 1: Load .env path
     from reflexio.cli.env_loader import load_reflexio_env
@@ -828,12 +1022,20 @@ def claude_code_setup(
 
     # Step 4: Install skill + hook
     typer.echo("")
-    skill_path, _ = _install_claude_code_integration(target, expert=expert)
+    skill_path, _ = _install_claude_code_integration(
+        target, expert=expert, location=location
+    )
     skill_type = "expert" if expert else "normal"
 
     # Step 5: Summary
+    location_label = (
+        "All projects (~/.claude/)"
+        if location == InstallLocation.ALL_PROJECTS
+        else f"Current project ({target}/.claude/)"
+    )
     typer.echo("")
     typer.echo("Setup complete!")
+    typer.echo(f"  Install location: {location_label}")
     if is_remote:
         typer.echo("  LLM Provider: managed by remote server")
     else:
@@ -843,8 +1045,14 @@ def claude_code_setup(
     typer.echo(f"  Storage: {storage_label}")
     typer.echo(f"  Skill ({skill_type}): {skill_path}")
     typer.echo("  Hooks: SessionStart + UserPromptSubmit")
+    if location == InstallLocation.ALL_PROJECTS:
+        typer.echo("")
+        typer.echo("Note: User-level hooks fire for ALL Claude Code sessions.")
     typer.echo("")
-    typer.echo("Next: Start a Claude Code session in this project.")
+    if location == InstallLocation.ALL_PROJECTS:
+        typer.echo("Next: Start any Claude Code session — Reflexio is active in all projects.")
+    else:
+        typer.echo("Next: Start a Claude Code session in this project.")
     if is_remote:
         typer.echo("Reflexio will connect to the remote server automatically.")
     else:
