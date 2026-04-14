@@ -453,6 +453,8 @@ class Config(BaseModel):
     api_key_config: APIKeyConfig | None = None
     # LLM model configuration overrides
     llm_config: LLMConfig | None = None
+    # Skip the LLM pre-extraction eligibility check (always run extraction)
+    skip_should_run_check: bool = False
     # Enable storage-time document expansion for improved FTS recall
     enable_document_expansion: bool = False
 

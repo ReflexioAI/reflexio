@@ -622,6 +622,15 @@ class BaseGenerationService(
         if os.getenv("MOCK_LLM_RESPONSE", "").lower() == "true":
             return True
 
+        # Skip if org config disables the pre-extraction check
+        root_config = self.request_context.configurator.get_config()
+        if root_config and root_config.skip_should_run_check:
+            logger.info(
+                "skip_should_run_check is enabled for %s, bypassing pre-extraction check",
+                self._get_service_name(),
+            )
+            return True
+
         # Collect scoped interactions
         session_data_models, scoped_configs = (
             self._collect_scoped_interactions_for_precheck(extractor_configs)

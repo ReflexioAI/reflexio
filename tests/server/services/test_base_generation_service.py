@@ -569,6 +569,37 @@ class TestFilterConfigsByBatchInterval:
 
 
 # ===============================
+# Test: _should_run_before_extraction (skip_should_run_check flag)
+# ===============================
+
+
+class TestShouldRunBeforeExtraction:
+    """Tests for the skip_should_run_check config flag in _should_run_before_extraction."""
+
+    def test_skip_should_run_check_bypasses_llm_call(self, llm_client, request_context):
+        """When skip_should_run_check=True, extraction proceeds without LLM check."""
+        from reflexio.models.config_schema import Config
+
+        config = Config(storage_config={"type": "sqlite"}, skip_should_run_check=True)
+        request_context.configurator._config = config
+
+        service = ConcreteGenerationService(llm_client, request_context)
+        service.service_config = MockServiceConfig(auto_run=True)
+
+        configs = [MockExtractorConfig(extractor_name="test")]
+        result = service._should_run_before_extraction(configs)
+
+        assert result is True
+
+    def test_default_skip_should_run_check_does_not_bypass(self):
+        """When skip_should_run_check=False (default), the flag guard does not fire."""
+        from reflexio.models.config_schema import Config
+
+        config = Config(storage_config={"type": "sqlite"})
+        assert config.skip_should_run_check is False
+
+
+# ===============================
 # Test: run()
 # ===============================
 
