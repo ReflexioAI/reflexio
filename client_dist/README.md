@@ -43,37 +43,30 @@ The base URL defaults to `https://www.reflexio.ai/` and can be overridden with `
 Publish user interactions to trigger profile extraction, playbook generation, and evaluation:
 
 ```python
-from reflexio import InteractionData
-
-# Fire-and-forget (non-blocking, returns None)
-client.publish_interaction(
+# Server-async mode: HTTP round-trip blocks, but server returns as soon as
+# it has registered the background extraction (~100 ms).
+response = client.publish_interaction(
     user_id="user-123",
     interactions=[
-        InteractionData(
-            request_id="req-001",
-            user_request="How do I reset my password?",
-            agent_response="Go to Settings > Security > Reset Password.",
-        )
+        {"role": "user",      "content": "How do I reset my password?"},
+        {"role": "assistant", "content": "Go to Settings > Security > Reset Password."},
     ],
     source="support-bot",
     agent_version="v2.1",
     session_id="session-abc",
 )
 
-# Wait for server to finish processing
+# Wait for the server to finish processing before returning.
 response = client.publish_interaction(
     user_id="user-123",
     interactions=[
-        InteractionData(
-            request_id="req-002",
-            user_request="Thanks, that worked!",
-            agent_response="Glad I could help!",
-        )
+        {"role": "user",      "content": "Thanks, that worked!"},
+        {"role": "assistant", "content": "Glad I could help!"},
     ],
     agent_version="v2.1",
     wait_for_response=True,
 )
-print(response.success, response.msg)
+print(response.success, response.message)
 ```
 
 ## Profiles
@@ -145,27 +138,28 @@ client.delete_session(session_id="session-abc", wait_for_response=True)
 ### User Playbooks (extracted from interactions)
 
 ```python
+from reflexio import UserPlaybook
+
 # Get user playbooks
-raw = client.get_raw_feedbacks(feedback_name="usability", limit=50)
+playbooks = client.get_user_playbooks(playbook_name="usability", limit=50)
 
 # Search user playbooks
-results = client.search_raw_feedbacks(query="slow response", agent_version="v2.1")
+results = client.search_user_playbooks(query="slow response", agent_version="v2.1")
 
-# Add user playbook directly
-from reflexio import RawFeedback
-client.add_raw_feedback(raw_feedbacks=[
-    RawFeedback(
+# Add a user playbook directly
+client.add_user_playbook(user_playbooks=[
+    UserPlaybook(
         agent_version="v2.1",
         request_id="req-001",
-        feedback_content="User found the response helpful",
-        feedback_name="satisfaction",
+        content="User found the response helpful",
+        playbook_name="satisfaction",
     )
 ])
 
 # Rerun playbook generation
-client.rerun_feedback_generation(
+client.rerun_playbook_generation(
     agent_version="v2.1",
-    feedback_name="usability",
+    playbook_name="usability",
     wait_for_response=True,
 )
 ```
@@ -173,8 +167,9 @@ client.rerun_feedback_generation(
 ### Agent Playbooks (clustered insights)
 
 ```python
+from reflexio import AgentPlaybook, PlaybookStatus
+
 # Get agent playbooks
-from reflexio import PlaybookStatus
 agent_playbooks = client.get_agent_playbooks(
     playbook_name="usability",
     playbook_status_filter=PlaybookStatus.APPROVED,
@@ -183,8 +178,7 @@ agent_playbooks = client.get_agent_playbooks(
 # Search agent playbooks
 results = client.search_agent_playbooks(query="response quality", agent_version="v2.1")
 
-# Add agent playbook directly
-from reflexio import AgentPlaybook
+# Add an agent playbook directly
 client.add_agent_playbooks(agent_playbooks=[
     AgentPlaybook(
         agent_version="v2.1",
@@ -237,16 +231,6 @@ results = client.get_agent_success_evaluation_results(
 )
 ```
 
-## Skills
-
-```python
-# Search skills
-skills = client.search_skills(request={"query": "data export", "agent_version": "v2.1"})
-
-# Get skills
-skills = client.get_skills(request={"agent_version": "v2.1"})
-```
-
 ## Configuration
 
 ```python
@@ -269,13 +253,13 @@ client.set_config(Config(
 # Delete by IDs
 client.delete_requests_by_ids(["req-001", "req-002"])
 client.delete_profiles_by_ids(["prof-001", "prof-002"])
-client.delete_feedbacks_by_ids([1, 2, 3])
-client.delete_raw_feedbacks_by_ids([4, 5, 6])
+client.delete_agent_playbooks_by_ids([1, 2, 3])
+client.delete_user_playbooks_by_ids([4, 5, 6])
 
 # Delete all
 client.delete_all_interactions()
 client.delete_all_profiles()
-client.delete_all_feedbacks()
+client.delete_all_playbooks()
 ```
 
 ## Fire-and-Forget vs Blocking
@@ -306,28 +290,26 @@ In async contexts (e.g., FastAPI), fire-and-forget uses the existing event loop.
 | `get_requests()` | Get requests grouped by session |
 | `delete_request()` | Delete a request and its interactions |
 | `delete_session()` | Delete all requests in a session |
-| `get_raw_feedbacks()` | Get user playbooks |
-| `search_raw_feedbacks()` | Search user playbooks |
-| `add_raw_feedback()` | Add user playbook directly |
-| `get_feedbacks()` | Get agent playbooks |
-| `search_feedbacks()` | Search agent playbooks |
-| `add_feedbacks()` | Add agent playbook directly |
-| `rerun_feedback_generation()` | Regenerate playbooks for an agent version |
-| `manual_feedback_generation()` | Trigger playbook generation with window-sized interactions |
-| `run_feedback_aggregation()` | Cluster user playbooks into agent playbooks |
+| `get_user_playbooks()` | Get user playbooks |
+| `search_user_playbooks()` | Search user playbooks |
+| `add_user_playbook()` | Add user playbook directly |
+| `get_agent_playbooks()` | Get agent playbooks |
+| `search_agent_playbooks()` | Search agent playbooks |
+| `add_agent_playbooks()` | Add agent playbooks directly |
+| `rerun_playbook_generation()` | Regenerate playbooks for an agent version |
+| `manual_playbook_generation()` | Trigger playbook generation with window-sized interactions |
+| `run_playbook_aggregation()` | Cluster user playbooks into agent playbooks |
 | `search()` | Unified search across all entity types |
 | `get_agent_success_evaluation_results()` | Get evaluation results |
-| `search_skills()` | Search skills |
-| `get_skills()` | Get skills |
 | `set_config()` | Update org configuration |
 | `get_config()` | Get current configuration |
 | `delete_requests_by_ids()` | Bulk delete requests |
 | `delete_profiles_by_ids()` | Bulk delete profiles |
-| `delete_feedbacks_by_ids()` | Bulk delete agent playbooks |
-| `delete_raw_feedbacks_by_ids()` | Bulk delete user playbooks |
+| `delete_agent_playbooks_by_ids()` | Bulk delete agent playbooks |
+| `delete_user_playbooks_by_ids()` | Bulk delete user playbooks |
 | `delete_all_interactions()` | Delete all interactions |
 | `delete_all_profiles()` | Delete all profiles |
-| `delete_all_feedbacks()` | Delete all playbooks |
+| `delete_all_playbooks()` | Delete all playbooks |
 
 ## Requirements
 

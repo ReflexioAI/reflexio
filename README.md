@@ -118,13 +118,12 @@ client = reflexio.ReflexioClient(
 # Reflexio extracts a profile ("prod region = us-west-2") and a playbook
 # ("confirm region before deploying").
 client.publish_interaction(
-    request_id="req-001",
     user_id="alice",
     interactions=[
-        reflexio.Interaction(role="user",      content="Deploy the new service."),
-        reflexio.Interaction(role="assistant", content="Starting deployment to us-east-1..."),
-        reflexio.Interaction(role="user",      content="Wait — we never deploy production to us-east-1. Always use us-west-2."),
-        reflexio.Interaction(role="assistant", content="Understood. Switching to us-west-2."),
+        {"role": "user",      "content": "Deploy the new service."},
+        {"role": "assistant", "content": "Starting deployment to us-east-1..."},
+        {"role": "user",      "content": "Wait — we never deploy production to us-east-1. Always use us-west-2."},
+        {"role": "assistant", "content": "Understood. Switching to us-west-2."},
     ],
 )
 ```
@@ -197,21 +196,23 @@ client = reflexio.ReflexioClient(
 )
 
 # Publish interactions
-await client.publish_interaction(
-    request_id="req-001",
+client.publish_interaction(
     user_id="user-123",
-    interactions=[...],
+    interactions=[
+        {"role": "user",      "content": "..."},
+        {"role": "assistant", "content": "..."},
+    ],
     agent_version="v1",       # optional: track agent versions
     session_id="session-abc", # optional: group requests into sessions
 )
 
 # Search profiles
-profiles = await client.search_profiles(
+profiles = client.search_profiles(
     reflexio.SearchUserProfileRequest(query="deployment region preference")
 )
 
 # Search agent playbooks
-playbooks = await client.get_agent_playbooks(
+playbooks = client.get_agent_playbooks(
     reflexio.GetAgentPlaybooksRequest(agent_version="v1")
 )
 ```
@@ -220,7 +221,7 @@ playbooks = await client.get_agent_playbooks(
 
 ```python
 # Update org configuration
-await client.set_config(reflexio.SetConfigRequest(
+client.set_config(reflexio.SetConfigRequest(
     config=reflexio.Config(
         api_key_config=reflexio.APIKeyConfig(openai="sk-..."),
         profile_extractor_configs=[...],
