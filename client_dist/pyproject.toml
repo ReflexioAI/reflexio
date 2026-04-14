@@ -1,6 +1,6 @@
 [project]
 name = "reflexio-client"
-version = "0.2.2"
+version = "0.2.3"
 description = "Lightweight Python client for the Reflexio API"
 authors = [{name = "Reflexio Team"}]
 readme = "README.md"
@@ -24,6 +24,7 @@ build-backend = "hatchling.build"
 [tool.hatch.build]
 include = [
     "reflexio/__init__.py",
+    "reflexio/defaults.py",
     "reflexio/client/**",
     "reflexio/models/**",
     "reflexio/integrations/**",
