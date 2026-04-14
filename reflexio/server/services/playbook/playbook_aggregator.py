@@ -1,11 +1,12 @@
+from __future__ import annotations
+
 import hashlib
 import logging
 import os
+from typing import TYPE_CHECKING
 
-import hdbscan
-import numpy as np
-from sklearn.cluster import AgglomerativeClustering
-from sklearn.metrics.pairwise import cosine_distances
+if TYPE_CHECKING:
+    import numpy as np
 
 from reflexio.models.api_schema.service_schemas import (
     AgentPlaybook,
@@ -922,6 +923,9 @@ class PlaybookAggregator:
             return self._cluster_by_trigger_mock(user_playbooks, min_cluster_size)
 
         # Extract embeddings from user playbooks
+        import numpy as np
+        from sklearn.metrics.pairwise import cosine_distances
+
         embeddings = np.array([playbook.embedding for playbook in user_playbooks])
 
         if len(embeddings) < min_cluster_size:
@@ -1025,6 +1029,8 @@ class PlaybookAggregator:
         Returns:
             np.ndarray: Cluster labels for each point
         """
+        from sklearn.cluster import AgglomerativeClustering
+
         logger.info(
             "Using Agglomerative Clustering for %d playbooks (< %d threshold), distance_threshold=%.2f",
             len(distance_matrix),
@@ -1058,6 +1064,8 @@ class PlaybookAggregator:
         Returns:
             np.ndarray: Cluster labels for each point (-1 indicates noise)
         """
+        import hdbscan
+
         logger.info(
             "Using HDBSCAN for %d playbooks (>= %d threshold), distance_threshold=%.2f",
             len(distance_matrix),
