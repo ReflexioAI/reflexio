@@ -5,6 +5,8 @@ Each new request upserts the fire time for its group.
 When the fire time arrives, a daemon thread runs the evaluation callback.
 """
 
+from __future__ import annotations
+
 import heapq
 import logging
 import os
