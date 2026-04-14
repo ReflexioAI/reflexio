@@ -1,5 +1,7 @@
 """Service to generate user profiles from interactions"""
 
+from __future__ import annotations
+
 import logging
 import uuid
 from dataclasses import dataclass, field
