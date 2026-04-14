@@ -268,20 +268,20 @@ def update(
 @handle_errors
 def delete(
     ctx: typer.Context,
-    id: Annotated[  # noqa: A002
+    playbook_id: Annotated[
         str,
-        typer.Option("--id", help="User playbook ID"),
+        typer.Option("--playbook-id", help="User playbook ID"),
     ],
 ) -> None:
     """Delete a user playbook by ID.
 
     Args:
         ctx: Typer context with CliState in ctx.obj
-        id: User playbook ID to delete
+        playbook_id: User playbook ID to delete
     """
     client = get_client(ctx)
     resp = client.delete_user_playbook(
-        user_playbook_id=int(id),
+        user_playbook_id=int(playbook_id),
         wait_for_response=True,
     )
 
@@ -289,7 +289,7 @@ def delete(
     if json_mode:
         render(resp, json_mode=True)
     else:
-        print_info(f"Deleted user playbook {id}")
+        print_info(f"Deleted user playbook {playbook_id}")
 
 
 @app.command(name="delete-all")

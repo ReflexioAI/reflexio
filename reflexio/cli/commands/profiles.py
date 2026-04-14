@@ -282,10 +282,22 @@ def regenerate(
         wait_for_response=wait,
     )
 
+    # When waiting, auto-promote PENDING profiles to CURRENT so they're
+    # immediately visible in `list` output.  Without this, regenerated
+    # profiles stay in PENDING status and the default list filter (CURRENT
+    # only) returns 0 results.
+    if wait:
+        upgrade_resp = client.upgrade_profiles(user_id=user_id)
+        promoted = upgrade_resp.profiles_promoted if upgrade_resp else 0
+    else:
+        promoted = 0
+
     json_mode: bool = ctx.obj.json_mode
     if json_mode:
         render(resp, json_mode=True)
     elif wait:
-        print_info("Profile generation complete")
+        print_info(
+            f"Profile generation complete ({promoted} profile(s) promoted)"
+        )
     else:
         print_info("Profile generation started")
