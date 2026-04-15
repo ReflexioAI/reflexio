@@ -1,6 +1,7 @@
 """Playbook CRUD + search methods for SQLite storage."""
 
 import json
+import logging
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
@@ -33,6 +34,8 @@ from ._base import (
     _vector_rank_rows,
 )
 
+logger = logging.getLogger(__name__)
+
 
 class PlaybookMixin:
     """Mixin providing user playbook, agent playbook, and evaluation CRUD + search."""
@@ -62,6 +65,14 @@ class PlaybookMixin:
             sd = up.structured_data
             embedding_text = sd.embedding_text or sd.trigger or up.content
             if embedding_text:
+                # Embeddings are best-effort. When no embedding provider is
+                # configured (e.g. the LLM-free OpenClaw setup), vector
+                # ranking is unavailable but FTS5 still works for retrieval.
+                # On failure, leave ``up.embedding`` as the empty list so the
+                # in-memory model stays valid, and rely on ``up.embedding or
+                # None`` at INSERT time to store SQL NULL — that lets a
+                # future re-embed migration target the row via
+                # ``WHERE embedding IS NULL``.
                 if self._should_expand_documents():
                     with ThreadPoolExecutor(max_workers=2) as executor:
                         emb_future = executor.submit(
@@ -70,10 +81,26 @@ class PlaybookMixin:
                         exp_future = executor.submit(
                             self._expand_document, embedding_text
                         )
-                        up.embedding = emb_future.result(timeout=15)
+                        try:
+                            up.embedding = emb_future.result(timeout=15)
+                        except Exception as exc:  # noqa: BLE001
+                            logger.warning(
+                                "Embedding generation failed for user "
+                                "playbook; saving without vector (FTS only): %s",
+                                exc,
+                            )
+                            up.embedding = []
                         up.expanded_terms = exp_future.result(timeout=15)
                 else:
-                    up.embedding = self._get_embedding(embedding_text)
+                    try:
+                        up.embedding = self._get_embedding(embedding_text)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "Embedding generation failed for user "
+                            "playbook; saving without vector (FTS only): %s",
+                            exc,
+                        )
+                        up.embedding = []
 
             created_at_iso = _epoch_to_iso(up.created_at)
             with self._lock:
@@ -94,7 +121,7 @@ class PlaybookMixin:
                         _json_dumps(up.source_interaction_ids or None),
                         up.status.value if up.status else None,
                         up.source,
-                        _json_dumps(up.embedding),
+                        _json_dumps(up.embedding or None),
                         up.expanded_terms,
                     ),
                 )

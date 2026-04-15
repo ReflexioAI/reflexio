@@ -49,12 +49,11 @@ ls ~/.openclaw/skills/reflexio/SKILL.md
 # Rule installed?
 ls ~/.openclaw/workspace/reflexio.md
 
-# Commands installed?
+# Command installed?
 ls ~/.openclaw/skills/reflexio-extract/SKILL.md
-ls ~/.openclaw/skills/reflexio-aggregate/SKILL.md
 ```
 
-All five checks should succeed. If any fail, re-run `reflexio setup openclaw`.
+All four checks should succeed. If any fail, re-run `reflexio setup openclaw`.
 
 ### 1.3 Verify Reflexio server (optional)
 
@@ -161,43 +160,29 @@ Also add a health check that curls localhost:3000/health before starting the mai
 
 **What to check:**
 - The agent applies the correction (uses pnpm in the rewrite)
-- In hook logs: look for `reflexio publish` — the skill should detect the correction and publish it
-- If you don't see a publish, that's also OK — the session-end hook will capture the full conversation
+- The agent should run `/reflexio-extract` at some point to persist the correction (see Phase 5 — extraction is explicit, not automatic)
 
-### 3.2 End the session
+### 3.2 Persist the correction
 
-Exit the session:
+Run the extract slash command so the correction is stored:
+
 ```
-/stop
+/reflexio-extract
 ```
-(or press Ctrl+C, depending on your OpenClaw configuration)
 
 **What to check in hook logs:**
-- `[reflexio] Queued N interactions for publish` — the `command:stop` handler flushed buffered turns
+- `[reflexio]` log lines during per-message search (hook injection)
+- The agent runs `reflexio user-playbooks search` followed by `reflexio user-playbooks add` or `update`
 
 ### 3.3 Verify playbooks were extracted
 
-Wait ~30 seconds for server-side LLM extraction, then check:
-
 ```bash
-reflexio user-playbooks list --limit 10
+reflexio user-playbooks list --agent-version openclaw-agent --limit 10
 ```
 
 **Expected:** At least one playbook containing "pnpm" (e.g., content like "use pnpm instead of npm").
 
-If no playbooks appear, the batch interval may not have been met (requires 5+ interactions). Use the manual extraction command instead:
-
-```bash
-# If no playbooks were extracted automatically, this is expected for short sessions.
-# Phase 5 covers manual extraction as a workaround.
-```
-
-Also check profiles:
-```bash
-reflexio user-profiles list --limit 10
-```
-
-You may see a profile entry about project conventions (e.g., "uses pnpm").
+If no playbooks appear, the agent either skipped `/reflexio-extract` or extraction produced no entries — re-run `/reflexio-extract` in a session that has clear friction.
 
 ---
 
@@ -261,31 +246,15 @@ Now run the extract command:
 ```
 
 **What to check:**
-- The agent reviews the conversation and builds a JSON summary
-- It publishes via `reflexio publish --force-extraction`
-- It reports what was published (e.g., "Published 2 interactions to Reflexio")
-- Verify extraction worked:
-  ```bash
-  reflexio user-playbooks list --limit 10
-  ```
-  You should see a new playbook about email validation regex.
-
-### 5.2 Test `/reflexio-aggregate`
-
-After accumulating playbooks from Phases 3-5.1:
-
-```
-/reflexio-aggregate
-```
-
-**What to check:**
-- The agent runs `reflexio agent-playbooks aggregate --wait`
-- It reports how many agent playbooks were created or updated
+- The agent reviews the conversation and applies the v3.0.0 extraction rubric in its own context
+- For each extracted entry it runs `reflexio user-playbooks search --agent-version openclaw-agent` first
+- On no match, it runs `reflexio user-playbooks add --agent-version openclaw-agent --content ... --trigger ... --instruction ...`
+- On a match, it runs `reflexio user-playbooks update --playbook-id <id> --content "<merged>"`
 - Verify:
   ```bash
-  reflexio agent-playbooks list --agent-version openclaw-agent
+  reflexio user-playbooks list --agent-version openclaw-agent --limit 10
   ```
-  You should see agent playbooks with `PENDING` status.
+  You should see a new (or refined) playbook about email validation regex.
 
 ---
 
@@ -465,11 +434,10 @@ openclaw hooks list
 
 ls ~/.openclaw/skills/reflexio 2>/dev/null && echo "STILL EXISTS" || echo "Removed"
 ls ~/.openclaw/skills/reflexio-extract 2>/dev/null && echo "STILL EXISTS" || echo "Removed"
-ls ~/.openclaw/skills/reflexio-aggregate 2>/dev/null && echo "STILL EXISTS" || echo "Removed"
 ls ~/.openclaw/workspace/reflexio.md 2>/dev/null && echo "STILL EXISTS" || echo "Removed"
 ```
 
-All four should print "Removed."
+All three should print "Removed."
 
 ### 8.3 Verify agent works without Reflexio
 

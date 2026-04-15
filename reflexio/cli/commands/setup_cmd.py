@@ -23,6 +23,7 @@ class InstallLocation(Enum):
     CURRENT_PROJECT = "current_project"
     ALL_PROJECTS = "all_projects"
 
+
 app = typer.Typer(
     help="Configure Reflexio: run 'init' for plain CLI setup, or one of "
     "the integration commands (openclaw, claude-code) to also install "
@@ -492,7 +493,17 @@ def openclaw(
         ),
     ] = False,
 ) -> None:
-    """Set up (or remove) the Reflexio integration for OpenClaw."""
+    """Set up (or remove) the Reflexio integration for OpenClaw.
+
+    The OpenClaw integration does NOT require an LLM provider API key.
+    Playbook extraction runs in the agent's own session (via the
+    ``/reflexio-extract`` slash command, which applies the v3.0.0
+    extraction rubric in-context and writes playbooks through direct CRUD).
+    The Reflexio server only performs CRUD + semantic search against its
+    local store, and falls back gracefully to FTS-only ranking when no
+    embedding provider is configured. The wizard therefore skips the LLM
+    provider prompt entirely.
+    """
     if uninstall:
         _uninstall_openclaw()
         return
@@ -505,28 +516,27 @@ def openclaw(
         typer.echo("Error: could not locate or create a .env file")
         raise typer.Exit(1)
 
-    # Step 2: LLM provider
-    display_name, model, provider_key = _prompt_llm_provider(env_path)
+    typer.echo(
+        "\nThe OpenClaw integration is fully LLM-free. Extraction runs in "
+        "your own agent session when you invoke /reflexio-extract, and the "
+        "Reflexio server only performs local CRUD + search. No LLM provider "
+        "API key is required."
+    )
 
-    # Step 2.5: Embedding provider (if LLM provider lacks embedding support)
-    embedding_label = _prompt_embedding_provider(env_path, provider_key)
-
-    # Step 3: Storage
+    # Step 2: Storage
     storage_label = _prompt_storage(env_path)
 
-    # Step 4: Install OpenClaw integration
+    # Step 3: Install OpenClaw integration
     typer.echo("")
     hook_ok = _install_openclaw_integration()
 
-    # Step 5: Summary
+    # Step 4: Summary
     hook_status = "reflexio-context" if hook_ok else "reflexio-context (unverified)"
     skill_path = Path.home() / ".openclaw" / "skills" / "reflexio"
 
     typer.echo("")
     typer.echo("Setup complete!")
-    typer.echo(f"  LLM Provider: {display_name} ({model})")
-    if embedding_label:
-        typer.echo(f"  Embedding Provider: {embedding_label}")
+    typer.echo("  LLM Provider: not required (extraction runs in the agent session)")
     typer.echo(f"  Storage: {storage_label}")
     typer.echo(f"  Hook: {hook_status}")
     typer.echo(f"  Skill: {skill_path}")
@@ -535,7 +545,8 @@ def openclaw(
     typer.echo("  1. Start Reflexio: reflexio services start")
     typer.echo("  2. Restart OpenClaw gateway: openclaw gateway restart")
     typer.echo(
-        "  3. Start a conversation -- Reflexio will capture and learn automatically"
+        "  3. Start a conversation -- the hook retrieves past-session "
+        "memory, and you can run /reflexio-extract to persist new learnings."
     )
 
 
@@ -862,9 +873,7 @@ def _remove_from_dir(base_dir: Path) -> None:
     typer.echo(f"  Removed hook from: {settings_path}")
 
 
-def _uninstall_claude_code(
-    project_dir: Path, *, global_install: bool = False
-) -> None:
+def _uninstall_claude_code(project_dir: Path, *, global_install: bool = False) -> None:
     """Remove the Reflexio integration from Claude Code.
 
     When ``--global`` or ``--project-dir`` is explicit, removes from that
@@ -980,7 +989,9 @@ def claude_code_setup(
         target = (
             Path.home()
             if global_install
-            else Path(project_dir) if project_dir is not None else Path.cwd()
+            else Path(project_dir)
+            if project_dir is not None
+            else Path.cwd()
         )
         _uninstall_claude_code(target, global_install=global_install)
         return
@@ -993,11 +1004,7 @@ def claude_code_setup(
         location = InstallLocation.CURRENT_PROJECT
     else:
         location = _prompt_install_location()
-        target = (
-            Path.home()
-            if location == InstallLocation.ALL_PROJECTS
-            else Path.cwd()
-        )
+        target = Path.home() if location == InstallLocation.ALL_PROJECTS else Path.cwd()
 
     # Step 1: Load .env path
     from reflexio.cli.env_loader import load_reflexio_env
@@ -1056,7 +1063,9 @@ def claude_code_setup(
         typer.echo("Note: User-level hooks fire for ALL Claude Code sessions.")
     typer.echo("")
     if location == InstallLocation.ALL_PROJECTS:
-        typer.echo("Next: Start any Claude Code session — Reflexio is active in all projects.")
+        typer.echo(
+            "Next: Start any Claude Code session — Reflexio is active in all projects."
+        )
     else:
         typer.echo("Next: Start a Claude Code session in this project.")
     if is_remote:

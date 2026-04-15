@@ -1,36 +1,28 @@
 // ---------------------------------------------------------------------------
-// Security contract — localhost only, HTTP only.
+// Security contract — localhost only, HTTP only, search-only.
 //
-// This hook is a localhost-only integration. It buffers OpenClaw conversations
-// to a local SQLite database and talks to the Reflexio backend HTTP server on
-// the same machine via native fetch(). It does not spawn subprocesses, does
-// not read configuration from the filesystem, and does not consult any
-// environment variables. The destination is a hardcoded loopback URL.
+// This hook is a localhost-only, read-only integration. It makes HTTP calls
+// to the Reflexio backend on the same machine via native fetch() and
+// injects the results as bootstrap files for the agent to read. It never
+// writes conversation data anywhere — no SQLite, no filesystem buffer, no
+// subprocess, no environment-variable reads, no outbound hosts other than
+// the hardcoded loopback URL below.
 //
-// Traffic: only HTTP requests to http://127.0.0.1:8081/api/* and
-// http://127.0.0.1:8081/health. No other hosts are contacted.
+// Traffic: only HTTP requests to http://127.0.0.1:8081/api/* .
+// No other hosts are contacted.
 //
-// Bootstrap: the Reflexio server must be running on port 8081 before the
-// hook is useful. If it is not, every fetch() attempt fails gracefully with
-// a logged error and the hook returns — the agent continues without
-// cross-session memory that session. Starting the server is the user's
-// responsibility; the skill's First-Use Setup runs `reflexio services start`
-// once at install time.
-//
-// Writes are confined to ~/.reflexio/sessions.db (SQLite buffer).
+// Publishing (extracting playbooks from conversations and writing them
+// back to Reflexio) is NOT performed by the hook. That responsibility
+// belongs to the `/reflexio-extract` slash command, which runs in the
+// agent's own context and performs extraction + CRUD through the
+// `reflexio user-playbooks` CLI. The Reflexio server therefore needs no
+// LLM provider API key for this integration.
 // ---------------------------------------------------------------------------
-
-const { randomUUID } = require("node:crypto");
-const { mkdirSync } = require("node:fs");
-const { homedir } = require("node:os");
-const { dirname, join } = require("node:path");
-
-const Database = require("better-sqlite3");
 
 // Hardcoded loopback destination — all traffic goes here, nowhere else.
 const LOCAL_SERVER_URL = "http://127.0.0.1:8081";
-// Hardcoded agent label; stored alongside extracted playbooks so they are
-// scoped to this integration build.
+// Hardcoded agent label; used as the agent_version filter for searches so
+// results stay scoped to this integration build.
 const AGENT_VERSION = "openclaw-agent";
 
 // ---------------------------------------------------------------------------
@@ -95,88 +87,6 @@ function formatSearchResults(data) {
 }
 
 // ---------------------------------------------------------------------------
-// SQLite session store — persistent, crash-safe conversation buffer.
-// DB lives in ~/.reflexio/sessions.db.
-// ---------------------------------------------------------------------------
-
-const DB_PATH = join(homedir(), ".reflexio", "sessions.db");
-const MAX_CONTENT_LENGTH = 10_000;
-const MAX_INTERACTIONS = 200;
-const BATCH_SIZE = 10; // Publish every N complete exchanges mid-session
-const MAX_RETRIES = 3; // Give up retrying after this many failures
-
-let _db = null;
-
-function getDb() {
-	if (_db) return _db;
-	mkdirSync(dirname(DB_PATH), { recursive: true, mode: 0o700 });
-	_db = new Database(DB_PATH);
-	_db.pragma("journal_mode = WAL");
-	// Use prepare().run() for DDL; better-sqlite3 accepts DDL statements
-	// through prepared statements the same as DML.
-	_db.prepare(
-		"CREATE TABLE IF NOT EXISTS turns (" +
-			"id INTEGER PRIMARY KEY AUTOINCREMENT, " +
-			"session_id TEXT NOT NULL, " +
-			"role TEXT NOT NULL, " +
-			"content TEXT NOT NULL, " +
-			"timestamp TEXT NOT NULL, " +
-			"published INTEGER DEFAULT 0, " +
-			"retry_count INTEGER DEFAULT 0" +
-			")",
-	).run();
-	_db.prepare(
-		"CREATE INDEX IF NOT EXISTS idx_session_published ON turns(session_id, published)",
-	).run();
-	// Add retry_count column if missing (migration for existing DBs)
-	try {
-		_db.prepare("ALTER TABLE turns ADD COLUMN retry_count INTEGER DEFAULT 0").run();
-	} catch {
-		// Column already exists -- ignore
-	}
-	// Clean up old published turns (keep 7 days)
-	_db.prepare(
-		"DELETE FROM turns WHERE published = 1 AND timestamp < datetime('now', '-7 days')",
-	).run();
-	// Graceful close on process exit is intentionally omitted:
-	// better-sqlite3 flushes WAL on its own and we avoid referencing the
-	// runtime's process object here.
-	return _db;
-}
-
-// ---------------------------------------------------------------------------
-// Smart truncation — preserves head + tail with a marker in between
-// ---------------------------------------------------------------------------
-
-function smartTruncate(content, maxLength = MAX_CONTENT_LENGTH) {
-	if (!content || content.length <= maxLength) return content || "";
-	const headLen = Math.floor(maxLength * 0.8);
-	const tailLen = Math.max(0, maxLength - headLen - 80);
-	const truncated = content.length - headLen - tailLen;
-	const marker = `\n\n[...truncated ${truncated} chars...]\n\n`;
-	if (tailLen === 0) return content.slice(0, headLen) + marker;
-	return content.slice(0, headLen) + marker + content.slice(-tailLen);
-}
-
-// ---------------------------------------------------------------------------
-// Session ID resolution
-// ---------------------------------------------------------------------------
-
-let _fallbackSessionId = null;
-
-function getSessionId(event) {
-	const key = event.context?.sessionKey;
-	if (key) return key;
-	if (!_fallbackSessionId) {
-		_fallbackSessionId = `anon-${randomUUID()}`;
-		console.error(
-			`[reflexio] No sessionKey; using fallback: ${_fallbackSessionId}`,
-		);
-	}
-	return _fallbackSessionId;
-}
-
-// ---------------------------------------------------------------------------
 // User ID resolution — multi-agent instance support
 //
 // Derived entirely from the OpenClaw session key, which encodes the
@@ -192,71 +102,12 @@ function resolveUserId(event) {
 	return "openclaw";
 }
 
-// ---------------------------------------------------------------------------
-// Shared publish logic — POSTs buffered turns to /api/publish_interaction
-// ---------------------------------------------------------------------------
-
-async function publishSession(db, sessionId, userId, agentVersion) {
-	const turns = db
-		.prepare(
-			"SELECT id, role, content FROM turns WHERE session_id = ? AND published = 0 AND retry_count < ? ORDER BY id LIMIT ?",
-		)
-		.all(sessionId, MAX_RETRIES, MAX_INTERACTIONS);
-
-	if (turns.length === 0) return;
-
-	// Mark selected turns as in-flight (published = 2) synchronously to prevent
-	// concurrent publishSession calls from picking up the same rows.
-	const maxId = turns[turns.length - 1].id;
-	db.prepare(
-		"UPDATE turns SET published = 2 WHERE session_id = ? AND published = 0 AND retry_count < ? AND id <= ?",
-	).run(sessionId, MAX_RETRIES, maxId);
-
-	const body = {
-		user_id: userId,
-		source: "openclaw",
-		agent_version: agentVersion,
-		session_id: sessionId,
-		interaction_data_list: turns.map((t) => ({
-			role: t.role,
-			content: t.content,
-		})),
-		skip_aggregation: false,
-		force_extraction: false,
-	};
-
-	try {
-		await apiPost("/api/publish_interaction", body, 15_000);
-		db.prepare(
-			"UPDATE turns SET published = 1 WHERE session_id = ? AND published = 2",
-		).run(sessionId);
-		console.error(
-			`[reflexio] Published ${turns.length} interactions (session ${sessionId})`,
-		);
-	} catch (err) {
-		console.error(
-			`[reflexio] Publish failed: ${err?.message ?? err}, incrementing retry count`,
-		);
-		try {
-			db.prepare(
-				"UPDATE turns SET published = 0, retry_count = retry_count + 1 WHERE session_id = ? AND published = 2",
-			).run(sessionId);
-		} catch (e) {
-			console.error(
-				`[reflexio] Failed to update retry count: ${e.message}`,
-			);
-		}
-	}
-}
-
 /**
  * Main hook dispatcher for Reflexio-OpenClaw integration.
  *
  * Events handled:
- *   agent:bootstrap   - Inject user profile + retry unpublished sessions
+ *   agent:bootstrap   - Inject user profile at session start
  *   message:received  - Search Reflexio before agent responds
- *   message:sent      - Buffer turn to SQLite + incremental publish
- *   command:stop      - Flush remaining unpublished turns to Reflexio
  */
 async function reflexioHook(event) {
 	// Skip sub-agent sessions to avoid recursion (guards all event types)
@@ -270,15 +121,11 @@ async function reflexioHook(event) {
 			return handleBootstrap(event);
 		case "message:received":
 			return handleSearchBeforeResponse(event);
-		case "message:sent":
-			return handleMessageSent(event);
-		case "command:stop":
-			return handleSessionEnd(event);
 	}
 }
 
 // ---------------------------------------------------------------------------
-// Bootstrap: inject user profile + retry unpublished sessions
+// Bootstrap: inject user profile
 //
 // Precondition: the Reflexio backend is already running on LOCAL_SERVER_URL.
 // The hook does not start it — that's the user's responsibility, handled
@@ -293,9 +140,7 @@ async function handleBootstrap(event) {
 	console.error(`[reflexio] bootstrap hook fired, workspace=${workspaceDir}`);
 
 	const userId = resolveUserId(event);
-	const currentSessionId = getSessionId(event);
 
-	// --- Inject user profile via unified search ---
 	try {
 		const data = await apiPost(
 			"/api/search",
@@ -308,59 +153,36 @@ async function handleBootstrap(event) {
 		);
 
 		const profiles = Array.isArray(data?.profiles) ? data.profiles : [];
-		if (profiles.length > 0) {
-			const profileLines = profiles
-				.map((p) => `- ${(p.profile_content ?? p.content ?? "").trim()}`)
-				.filter((line) => line.length > 2);
+		if (profiles.length === 0) return;
 
-			if (profileLines.length > 0 && Array.isArray(event.context.bootstrapFiles)) {
-				const bootstrapContent = [
-					"## About This User (from Reflexio)",
-					"",
-					...profileLines,
-					"",
-					'Use `reflexio search "<your current task>"` before starting work to get task-specific behavioral corrections.',
-				].join("\n");
+		const profileLines = profiles
+			.map((p) => `- ${(p.profile_content ?? p.content ?? "").trim()}`)
+			.filter((line) => line.length > 2);
 
-				event.context.bootstrapFiles.push({
-					name: "REFLEXIO_USER_PROFILE.md",
-					path: "REFLEXIO_USER_PROFILE.md",
-					content: bootstrapContent,
-					source: "hook:reflexio-context",
-				});
-				console.error(
-					`[reflexio] Injected user profile (${bootstrapContent.length} chars)`,
-				);
-			}
-		}
+		if (profileLines.length === 0) return;
+		if (!Array.isArray(event.context.bootstrapFiles)) return;
+
+		const bootstrapContent = [
+			"## About This User (from Reflexio)",
+			"",
+			...profileLines,
+			"",
+			'Use `reflexio search "<your current task>"` before starting work to get task-specific behavioral corrections.',
+		].join("\n");
+
+		event.context.bootstrapFiles.push({
+			name: "REFLEXIO_USER_PROFILE.md",
+			path: "REFLEXIO_USER_PROFILE.md",
+			content: bootstrapContent,
+			source: "hook:reflexio-context",
+		});
+		console.error(
+			`[reflexio] Injected user profile (${bootstrapContent.length} chars)`,
+		);
 	} catch (err) {
 		console.error(
 			`[reflexio] Bootstrap profile fetch failed: ${err?.message ?? err}`,
 		);
-	}
-
-	// --- Retry unpublished turns from previous sessions ---
-	try {
-		const db = getDb();
-		const oldSessions = db
-			.prepare(
-				"SELECT DISTINCT session_id FROM turns WHERE published = 0 AND retry_count < ? AND session_id != ? LIMIT 5",
-			)
-			.all(MAX_RETRIES, currentSessionId);
-
-		if (oldSessions.length > 0) {
-			console.error(
-				`[reflexio] Retrying ${oldSessions.length} unpublished session(s)`,
-			);
-			for (const { session_id } of oldSessions) {
-				// Await sequentially so we don't hammer the server with
-				// concurrent publishes for stale sessions.
-				// eslint-disable-next-line no-await-in-loop
-				await publishSession(db, session_id, userId, AGENT_VERSION);
-			}
-		}
-	} catch (err) {
-		console.error(`[reflexio] Retry failed: ${err?.message ?? err}`);
 	}
 }
 
@@ -407,64 +229,6 @@ async function handleSearchBeforeResponse(event) {
 		);
 		// Server may be down. The skill's First-Use Setup is responsible for
 		// starting it; the hook does not launch processes.
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Message sent: buffer turn + incremental publish every BATCH_SIZE exchanges
-// ---------------------------------------------------------------------------
-
-function handleMessageSent(event) {
-	const userMessage = event.context?.userMessage;
-	const agentResponse = event.context?.agentResponse;
-	const sessionId = getSessionId(event);
-
-	if (!userMessage && !agentResponse) return;
-
-	try {
-		const db = getDb();
-		const now = new Date().toISOString();
-
-		const insertTurn = db.transaction((sid, user, agent, ts) => {
-			const stmt = db.prepare(
-				"INSERT INTO turns (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
-			);
-			if (user) stmt.run(sid, "user", smartTruncate(user), ts);
-			if (agent) stmt.run(sid, "assistant", smartTruncate(agent), ts);
-		});
-		insertTurn(sessionId, userMessage, agentResponse, now);
-
-		// Incremental publish: every BATCH_SIZE complete exchanges
-		const { count } = db
-			.prepare(
-				"SELECT COUNT(*) as count FROM turns WHERE session_id = ? AND published = 0",
-			)
-			.get(sessionId);
-
-		if (count >= BATCH_SIZE * 2) {
-			const userId = resolveUserId(event);
-			void publishSession(db, sessionId, userId, AGENT_VERSION).catch((e) =>
-				console.error(`[reflexio] Incremental publish failed: ${e?.message ?? e}`),
-			);
-		}
-	} catch (err) {
-		console.error(`[reflexio] Failed to buffer turn: ${err.message}`);
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Session end: flush remaining unpublished turns
-// ---------------------------------------------------------------------------
-
-async function handleSessionEnd(event) {
-	const sessionId = getSessionId(event);
-	const userId = resolveUserId(event);
-
-	try {
-		const db = getDb();
-		await publishSession(db, sessionId, userId, AGENT_VERSION);
-	} catch (err) {
-		console.error(`[reflexio] Session flush failed: ${err?.message ?? err}`);
 	}
 }
 

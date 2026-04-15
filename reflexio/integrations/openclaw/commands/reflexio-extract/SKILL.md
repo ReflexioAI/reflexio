@@ -1,97 +1,206 @@
 ---
 name: reflexio-extract
-description: "Summarize the current conversation — including reasoning, tool calls, corrections, and preferences — and publish to Reflexio for user profile and playbook extraction."
+description: "Extract reusable playbooks from the current conversation — corrections, tool failures, and successful recipes — and upsert them into Reflexio via direct CRUD. No LLM call on the Reflexio server."
 ---
 
 # Extract Learnings to Reflexio
 
-Summarize this conversation and publish to Reflexio so future sessions can learn from it.
+You (the agent running this command) apply the extraction rubric below to
+the full conversation in your current context, then write each resulting
+playbook into Reflexio via the `reflexio user-playbooks` CLI. The Reflexio
+server does NO LLM work for this integration — extraction happens in your
+own session, which is why OpenClaw's Reflexio setup requires no LLM
+provider API key on the server side.
 
-## What to Do
+**The rubric embedded below is fully self-contained. Do NOT attempt to open
+any external file** — the canonical source at
+`reflexio/server/prompt/prompt_bank/playbook_extraction_context/v3.0.0.prompt.md`
+is a maintainer reference inside the `reflexio-ai` source tree and is
+**not shipped** with the ClawHub skill bundle (the publish script stages
+only `integrations/openclaw/`). Everything you need to produce valid
+playbooks is inline in this file.
 
-Review the full conversation above, including your chain-of-thought reasoning, tool calls, tool results, and all user messages. Create a summary that captures:
-
-1. **User corrections** — the user said "no, do X instead" or corrected your approach. Preserve their exact words. **Tool-call rejections count as corrections** — if the user rejected a tool use mid-response, record it as its own turn and note what the rejection was objecting to.
-2. **User preferences** — how they like things done, their expertise, communication style, project conventions.
-3. **Environment facts** — project setup, tools, constraints, team conventions, schema details, column types, undocumented quirks.
-4. **Procedural signals** — moments where something went wrong and you learned from it. **These are the primary source of behavioral rules** — without them, Reflexio can only extract vague profile entries, not precise playbook rules:
-   - **Failed tool calls with their error messages verbatim** (invalid identifier, file too large, permission denied, timeouts, JSON parse errors, etc.) — the exact error string is load-bearing evidence
-   - **Self-corrections mid-response** — moments you wrote "actually…", "this isn't quite X but…", or "I should have…" (these are evidence the user would have valued catching the mistake earlier)
-   - **Anomalies and implausible results** — mean/median divergence, unexpected zeros, row-count mismatches, results that contradict documentation
-   - **Retries and the reason for each retry** — not just the final successful call
-5. **Non-obvious learnings** — surprises, dead ends, workarounds, documentation gaps.
-
-Skip routine pleasantries, but do **NOT** skip failures, rejections, or anomalies — these are the highest-signal moments. If a section of the conversation contains only successful tool calls and no friction, it probably yields domain facts; if it contains friction, it probably yields behavioral rules. Both layers matter.
-
-## How to Publish
-
-1. Ensure the local Reflexio server is running. This integration always talks to `http://127.0.0.1:8081` — it does not support remote servers.
+## Step 1 — Ensure the local Reflexio server is running
 
 ```bash
 reflexio status check
 ```
 
-If not running, tell the user you're starting it in the background, then:
+If it fails with a connection error, tell the user you're starting the
+local Reflexio server in the background, then run:
+
 ```bash
 nohup reflexio services start --only backend > ~/.reflexio/logs/server.log 2>&1 &
 sleep 5
 ```
 
-2. Use your own agent identity as `user_id` — the agent name or instance identifier configured for this OpenClaw agent. The Reflexio CLI will auto-derive it from OpenClaw's session key if you leave it out of the payload.
+## Step 2 — Apply the extraction rubric to your conversation
 
-3. Write the summary as a JSON file. **Pattern-match on the shape below**: a single assistant turn captures one coherent learning; failed attempts plus the eventual success live together as an ordered list in `tools_used` so the failure → recovery arc reads as one unit. Self-corrections belong **verbatim** inside the `content` field:
+Review the full conversation in your context — every user message, your
+own assistant turns, every tool call and tool result. Produce a JSON array
+of playbook entries.
 
-```bash
-cat > /tmp/reflexio-extract.json << 'EXTRACT_EOF'
+**Two extraction categories** — a single trajectory can yield both:
+
+### Category 1: Correction SOPs
+
+Extract a Correction SOP when ALL are true:
+1. You (the agent) performed an action, assumption, or default behavior.
+2. The user signaled it was incorrect, inefficient, or misaligned.
+3. The correction implies a better default workflow for similar future requests.
+4. The rule can be phrased as: *"When [user intent/problem], the agent should [policy]."*
+
+Valid correction signals:
+- User correcting or rejecting your approach
+- User redirecting you to a different mode or level of detail
+- User clarifying expectations that contradict your behavior
+- Tool-call rejection — user rejected a tool use mid-response (record in tools_used verbatim)
+- Self-correction written out loud — you wrote "actually, this isn't quite right" mid-response
+- Repeated tool failure with user intervention — you failed the same operation twice and the user redirected
+
+**Trigger quality — the "Skill Test":** a valid trigger describes the
+**problem or situation**, NOT the user's explicitly-stated preference.
+- BAD (tautological): `"User requests CLI tools"` — restates the ask
+- BAD (topic-based): `"User talks about Python code"` — too broad
+- BAD (interaction-based): `"User corrects the agent"` — too generic
+- GOOD (intent-based): `"User requests help debugging a specific error trace"`
+- GOOD (problem-based): `"User's initial high-level request is ambiguous"`
+- GOOD (situation-based): `"User reports timeout failures on large data transfers (>10TB)"`
+
+**Tautology check:** if the trigger reduces to "user asks for X" and the
+instruction is "do X", the entry is tautological — re-derive the real
+trigger as the *problem or situation* you encountered.
+
+`instruction` for a Correction SOP is **< 20 words**.
+
+### Category 2: Success Path Recipes
+
+Extract a Success Path Recipe when ALL are true:
+1. You completed a task successfully (produced deliverables, resolved the request).
+2. The trajectory contains domain-specific work — computation, data
+   transformation, multi-step orchestration — not just conversation.
+3. The solution path contains at least one of:
+   - **Domain formulas, constants, or parameter values**
+   - **Specific tool sequences that worked**
+   - **Input/output format specifics that mattered**
+   - **Concrete values or answers you computed**
+   - **Key decisions you made and why**
+
+A Success Path Recipe does NOT require a user correction. It captures
+"what worked" from a successful trajectory.
+
+**Trigger for a recipe** describes the task type — domain + action:
+- GOOD: `"Audit sample selection from a risk-metrics spreadsheet with multi-criteria filtering"`
+- BAD (too generic): `"Spreadsheet analysis task"`
+- BAD (copies task verbatim): `"Calculate sample size for audit testing..."`
+
+`instruction` for a recipe can be **up to 80 words** and MUST include
+specific formulas, tool sequences, parameter values, or computed answers.
+`content` must be an **actionable recipe** — a future agent reading it
+should be able to short-circuit discovery by following it verbatim.
+
+### Blocking issues (optional)
+
+If you could not complete the task because a capability was missing, also
+populate a `blocking_issue` field with one of: `missing_tool`,
+`permission_denied`, `external_dependency`, `policy_restriction`. The
+`instruction` must still be an executable workaround (inform the user,
+suggest alternatives) — NOT the missing capability itself.
+
+### Output schema
+
+For each extracted playbook, produce an object with these fields:
+
+```json
 {
-  "user_id": "<your-agent-id>",
-  "agent_version": "openclaw-agent",
-  "source": "openclaw-expert",
-  "interactions": [
-    {"role": "user", "content": "how many live streams had a giveaway in the last 6 months?"},
-    {
-      "role": "assistant",
-      "content": "Tried to query live_streams with a channels join to filter by business type; discovered live_streams has no channel_id column. Fell back to SELECT * LIMIT 1 for schema introspection, then rewrote the query without the channels join. Got 588 streams. NOTE: mid-response I wrote 'this is not true CVR' — I had substituted engagement_rate for conversion rate without flagging the substitution upfront.",
-      "tools_used": [
-        {"tool_name": "run_query", "tool_data": {"input": "SELECT ... JOIN channels ... — FAILED: invalid identifier 'L.CHANNEL_ID'"}},
-        {"tool_name": "run_query", "tool_data": {"input": "SELECT * FROM live_streams LIMIT 1 — schema introspection"}},
-        {"tool_name": "run_query", "tool_data": {"input": "Rewritten query without channels join — succeeded, returned 588"}}
-      ]
-    }
-  ]
+  "rationale": "1-2 sentences: for a Correction SOP, what implicit expectation was violated. For a Recipe, why this captures transferable value.",
+  "trigger": "Situation/condition for a Correction SOP OR task-type descriptor for a Recipe. Must NOT be a tautological restatement of the user's explicit preference.",
+  "instruction": "For a Correction SOP: < 20 words. For a Recipe: up to 80 words with specific values/tools/formulas.",
+  "pitfall": "Optional — the specific behavior or assumption to avoid.",
+  "content": "For a Correction SOP: concise standalone insight. For a Recipe: actionable recipe with concrete formulas, tool sequences, parameter values, column names, and computed answers from the trajectory.",
+  "playbook_name": "agent_corrections for Correction SOPs, success_recipes for Recipes"
 }
-EXTRACT_EOF
 ```
 
-Notice the three things the example models: (1) the `content` field names the failure, the recovery, **and** the self-correction verbatim; (2) all three tool attempts — failed, introspection, success — are listed in order under the **same** `tools_used` so the arc is one learning unit; (3) the failed attempt's `input` ends with `— FAILED: <exact error>` so the error string survives intact.
+**Evidence requirements — do NOT drop these in favor of pleasantries:**
+- Preserve user corrections **verbatim** in the `content` field.
+- Preserve tool failures and error messages **verbatim** — exact strings like `invalid identifier 'L.CHANNEL_ID'` are what make the rule extractable.
+- Preserve self-corrections ("actually, this isn't quite right because...") **verbatim**.
+- Retries belong together with their eventual success — describe the failure → recovery arc as one learning unit in `content`.
 
-`tools_used` is **required** for any assistant turn containing a failed, rejected, or retried tool call. The error message and the offending input are what make behavioral rules extractable — include them verbatim. For purely successful tool calls that only yielded a domain fact already captured in the `content` field, `tools_used` is optional.
+**How many entries to return:** one per distinct Correction SOP, plus one
+per distinct Success Path Recipe when the trajectory contains substantive
+domain work. A successful trajectory with real domain work MUST yield at
+least one recipe. Return zero entries only when the conversation is
+trivially short (fewer than 4 non-trivial agent actions).
 
-4. **Self-check before publishing.** Scan your JSON and ask:
-   1. Does it contain at least one failed tool call, user rejection, or self-correction? If the original conversation had any friction and your summary has none, re-read the conversation for the failure moments you dropped.
-   2. For each failed tool call, is the **actual error message present verbatim** (not paraphrased)? Error strings like `invalid identifier 'L.CHANNEL_ID'` are what let Reflexio extract behavioral rules — paraphrases lose the signal.
-   3. Are retries grouped under the **same** assistant turn as an ordered list, so the failure → recovery arc reads as one learning?
+Never split a single policy across multiple entries; never merge two
+independent policies into one.
 
-   If any answer is no, revise the JSON before running the publish command below. A re-extraction after publish is possible but costs a round trip.
+## Step 3 — For each extracted playbook, find-or-upsert
 
-5. Publish with forced extraction (replace `<your-agent-id>` with the resolved user ID from step 2):
+For each entry you produced in Step 2, run this sequence:
+
+### 3a. Search for a close match
+
 ```bash
-reflexio publish --user-id <your-agent-id> --agent-version openclaw-agent --source openclaw-expert --skip-aggregation --force-extraction --file /tmp/reflexio-extract.json && rm -f /tmp/reflexio-extract.json
+reflexio user-playbooks search "<trigger>" --agent-version openclaw-agent --limit 3
 ```
 
-The publish returns as soon as the server has accepted the payload — the actual extraction (LLM calls + storage writes) runs as a background task on the server. This avoids the gateway timeouts you'd hit if extraction took longer than the deployment's request budget.
+Add `--json` if you want to parse the result programmatically. The search
+returns up to three candidates ranked by semantic similarity.
 
-6. Report what was published (brief summary to the user) and tell them the extraction is running in the background. They can verify the results a minute later with:
+### 3b. Decide: update or add
+
+Read the returned candidates. Apply the same semantic reasoning you used
+to extract the new entry:
+
+- **If a candidate's trigger + content clearly describe the same
+  situation and the same rule/recipe**, treat it as a hit. Pick its `id`
+  and update it:
+  ```bash
+  reflexio user-playbooks update \
+    --playbook-id <id> \
+    --content "<merged content>"
+  ```
+  The merged `content` must **preserve the existing rule and add new
+  evidence or refinement**. Do NOT replace the existing content
+  wholesale — the point of updating rather than adding is to strengthen
+  an existing rule, not to overwrite it.
+
+- **If no candidate clearly describes the same situation**, add a new
+  entry:
+  ```bash
+  reflexio user-playbooks add \
+    --agent-version openclaw-agent \
+    --playbook-name <agent_corrections|success_recipes> \
+    --content "<content>" \
+    --trigger "<trigger>" \
+    --instruction "<instruction>" \
+    --pitfall "<pitfall, or omit if none>" \
+    --rationale "<rationale>"
+  ```
+
+When in doubt, prefer adding a new entry. Updating is for clear refinements
+of an existing rule, not for fuzzy matches.
+
+## Step 4 — Report what you did
+
+Briefly tell the user:
+- How many entries you extracted
+- How many were added vs. updated
+- One-sentence summary of the most important new rule or recipe
+
+The user can verify with:
+
 ```bash
-reflexio user-profiles list --user-id <your-agent-id> --limit 10
-reflexio user-playbooks list --user-id <your-agent-id> --limit 10
+reflexio user-playbooks list --agent-version openclaw-agent --limit 10
 ```
 
 ## Summary Guidelines
 
-- **Preserve user corrections and tool rejections verbatim** — their exact words (or the rejection moment) are the highest-signal input.
-- **Preserve failures, not just successes.** For every failed tool call, record the error message and the input that caused it. For every retry, record why you retried. A summary with zero failures in a conversation that had friction is an incomplete summary.
-- **Preserve self-corrections.** If you wrote "this isn't quite X" or "I should have done Y" in the original conversation, that sentence belongs in the extraction verbatim — it is evidence of a rule the user values.
-- **Organize as meaningful pairs** — each user/assistant pair should capture one coherent learning. Multiple failed attempts + the eventual success belong to the **same** assistant turn, listed in order in `tools_used`, so the failure → recovery arc is preserved as a single learning unit.
-- **Include reasoning context** — why you took an approach, what you expected, what surprised you.
-- **Be concise, but not at the cost of dropping failures.** Cut pleasantries and repeated narration, not error messages.
+- **Preserve user corrections and tool rejections verbatim** — their exact words are the highest-signal input.
+- **Preserve failures, not just successes.** For every failed tool call, record the error message and the input that caused it. A summary with zero failures in a conversation that had friction is an incomplete summary.
+- **Preserve self-corrections verbatim** — they are evidence of a rule the user values.
+- **Do the search before every add.** The update path is what keeps the playbook store from bloating with near-duplicates as the same pattern recurs across sessions.
+- **Be concise, but not at the cost of dropping failures.** Cut pleasantries and repeated narration, not error messages or computed values.

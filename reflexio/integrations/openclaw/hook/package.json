@@ -1,15 +1,13 @@
 {
   "name": "openclaw-hook-reflexio-context",
-  "version": "2.0.0",
-  "description": "OpenClaw hook for Reflexio: injects context at session start, captures full conversations at session end for automatic feedback and profile extraction",
+  "version": "3.0.0",
+  "description": "OpenClaw hook for Reflexio: injects user profile at session start and relevant past-session playbooks before each agent response. Search-only — no conversation buffering, no server-side LLM extraction.",
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/reflexio-ai/reflexio"
   },
-  "dependencies": {
-    "better-sqlite3": "^11.0.0"
-  },
+  "dependencies": {},
   "openclaw": {
     "hooks": ["."]
   },

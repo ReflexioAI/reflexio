@@ -104,85 +104,62 @@ frontmatter = (
 privacy = """
 ## Privacy & Data Collection — Read This First
 
-**This skill causes the agent to automatically capture conversations and
-forward them to a local Reflexio server for LLM-based extraction.** Read this
-before enabling — there are two distinct network hops and you need to
-understand both.
+**This skill retrieves cross-session memory from a local Reflexio server and
+injects it as context before the agent responds. Writing new learnings is
+explicit — it only happens when the agent runs `/reflexio-extract`, which
+applies the extraction rubric in its own session and upserts playbooks via
+direct CRUD.** Read this before enabling.
 
-### Credential requirement (not declared in skill metadata)
+### No LLM provider API key is required
 
-The skill's registry metadata declares no required environment variables and
-the hook reads none. **But the end-to-end system does require an LLM provider
-API key**, and you WILL be asked for one during First-Use Setup.
+The Reflexio server does NOT perform LLM-based extraction for this
+integration. Playbook extraction runs in your agent's own LLM session
+(whatever provider OpenClaw itself uses). The server only performs CRUD and
+semantic search against its local store, so `reflexio setup openclaw` does
+not prompt for any LLM provider key.
 
-- Step 2 of First-Use Setup below runs `reflexio setup openclaw`, which opens
-  an **interactive wizard** prompting you to choose an LLM provider (OpenAI,
-  Anthropic, Gemini, DeepSeek, OpenRouter, and several others) and paste an
-  API key.
-- The key is stored in `~/.reflexio/.env` and read by the local Reflexio
-  server during extraction. **The hook itself never reads the key** (the hook
-  has no environment variable access and no filesystem config reads — both
-  enforced in `handler.js`).
-- If you want fully offline operation, point the wizard at a local LLM
-  (Ollama at `http://127.0.0.1:11434`, LM Studio, vLLM, etc.) instead of a
-  hosted provider — the wizard accepts any LiteLLM-compatible base URL.
+If a previous version of this integration asked you to store an API key in
+`~/.reflexio/.env`, that key is no longer consulted by the openclaw code
+path. You can leave it in place (other integrations may still use it) or
+remove it.
 
-**Why the metadata doesn't declare it:** ClawHub's `metadata.openclaw.requires.env`
-describes environment variables the hook's own code path reads. The hook is
-deliberately stateless at the credential level, so listing anything there
-would be inaccurate. The dependency is at the *backend server* level, one
-hop away. This disclosure is here instead of in the metadata because prose
-is the right place to explain the distinction.
+### Single network hop — localhost only
 
-### Network hops — two of them
-
-**Hop 1: the hook → the local Reflexio server (always localhost).**
 The hook is hard-pinned to `http://127.0.0.1:8081`. It communicates via native
 `fetch()` with no configuration knobs; the destination is a hardcoded constant
 in `handler.js`. It reads zero environment variables and zero configuration
 files. This hop cannot leave your machine.
 
-**Hop 2: the local Reflexio server → an LLM provider (may leave your
-machine).** The server uses an LLM provider (OpenAI, Anthropic, Gemini,
-DeepSeek, etc.) to extract playbooks and profiles from captured conversations.
-That provider is configured in `~/.reflexio/.env`. **If you configured an
-external provider, excerpts of your conversations will be sent to that
-provider** as part of extraction — trigger text, sample content, and enough
-context for the extractor to produce a useful summary. The primary full
-conversation text stays in your local SQLite database at `~/.reflexio/`, but
-the extracted summaries and illustrative excerpts traverse whatever the LLM
-provider's network path is.
+The `/reflexio-extract` slash command, when invoked, sends playbook CRUD
+calls (search / add / update) to the same local server. Those calls carry the
+trigger / instruction / pitfall / content fields that the agent extracted
+from the current conversation — the raw transcript is not forwarded.
 
-**If you want fully offline operation**, configure the local server to use a
-local LLM (Ollama, LM Studio, vLLM, etc.) before enabling this skill. Do not
-rely on the hook's localhost pinning as a privacy guarantee for the system as
-a whole — that only bounds the hook, not the server behind it.
+### What gets written to the local store
 
-**What is captured:** full user and assistant messages; every tool call, input,
-and output (including failed tool calls and exact error strings); self-correction
-text from the assistant's own output. None of this is scrubbed for PII,
-credentials, file paths, or API outputs. If you work on sensitive tasks,
-disable the hook before starting them, or tell the agent mid-task.
+Only the fields the agent produces during `/reflexio-extract`:
+
+- `content` — concise natural-language summary of one learning
+- `trigger` — when the rule applies
+- `instruction` / `pitfall` / `rationale` — structured fields
+
+Raw conversation transcripts, tool outputs, and file paths do NOT end up in
+the local store unless you quote them verbatim into one of the fields above.
+If you work on sensitive tasks, omit those strings from the extraction, or
+skip `/reflexio-extract` entirely for that session.
 
 **How to disable:**
 
-- Per-session, stop automatic capture: `openclaw hooks disable reflexio-context`
+- Per-session, stop context injection: `openclaw hooks disable reflexio-context`
 - Remove the integration entirely: `reflexio setup openclaw --uninstall`
-- Search-only mode (keep retrieval, drop auto-publish): edit `hook/handler.js`,
-  remove the `command:stop` handler, and reinstall
-- Sensitive task: tell the agent "don't log this" — the workspace rule instructs
-  it to stop all capture and search calls for the rest of the session
+- Sensitive task: tell the agent "don't log this" — the workspace rule
+  instructs it to stop all search and extract calls for the rest of the session
 
 **Transparency contract:** the agent is instructed to tell you Reflexio is
-active on the first turn of each session, disclose what is captured AND
-mention that the local server may forward excerpts to an LLM provider, and
-honor session-level opt-outs. This is enforced by
-`~/.openclaw/workspace/reflexio.md`. Edit that file if your deployment needs
-different rules (require explicit approval before every publish, offline-only,
-etc).
-
-Full data-handling details live in the **Privacy & Data Collection** section
-further down in this SKILL.md.
+active on the first turn of each session, disclose that it retrieves
+past-session memory from a local server, and honor session-level opt-outs.
+This is enforced by `~/.openclaw/workspace/reflexio.md`. Edit that file if
+your deployment needs different rules.
 
 ---
 
@@ -194,10 +171,7 @@ first_use = """
 Run these commands the first time this skill is invoked. They are idempotent —
 skip if `reflexio` is already on PATH, the local Reflexio server is responding
 at `http://127.0.0.1:8081/health`, and `openclaw hooks list` shows
-`reflexio-context` as `ready`. **Only run them after reading the privacy
-disclosure above, and be aware that step 2 is interactive — it will prompt
-you to pick an LLM provider and paste an API key for the local server's
-extraction pipeline.**
+`reflexio-context` as `ready`. No LLM provider API key is required.
 
 ```bash
 # 1. Install the reflexio CLI (pipx preferred; pip as fallback).
@@ -205,12 +179,9 @@ command -v reflexio >/dev/null 2>&1 \\
   || pipx install reflexio-ai 2>/dev/null \\
   || pip install --user reflexio-ai
 
-# 2. INTERACTIVE: activates the hook, slash commands, and workspace rule in
-# OpenClaw. Also prompts you to choose an LLM provider and paste an API key,
-# which gets written to ~/.reflexio/.env. That key is what the local server
-# uses to extract playbooks from captured conversations. Point at a local LLM
-# (Ollama / LM Studio / vLLM) here if you want fully offline operation.
-# Before running this, tell the user what will be asked and why.
+# 2. Activates the hook, slash command, and workspace rule in OpenClaw.
+# Prompts only for a storage backend (local SQLite is the default). Before
+# running this, tell the user what will be asked and why.
 reflexio setup openclaw
 
 # 3. Start the local Reflexio backend in the background. The hook talks to
@@ -224,11 +195,12 @@ curl -sf --max-time 2 http://127.0.0.1:8081/health >/dev/null 2>&1 \\
 
 This installs:
 
-- `reflexio-context` hook — HTTP-only capture + per-message playbook
-  injection (communicates only with `http://127.0.0.1:8081`)
-- `/reflexio-extract` slash command — publish session learnings mid-session
-- `/reflexio-aggregate` slash command — consolidate user playbooks into
-  shared agent playbooks
+- `reflexio-context` hook — search-only, HTTP-only (communicates with
+  `http://127.0.0.1:8081` for bootstrap profile + per-message playbook
+  injection). It never buffers conversations.
+- `/reflexio-extract` slash command — applies the v3.0.0 rubric in your own
+  agent session, searches for existing playbooks, and adds or updates via
+  the `reflexio user-playbooks` CLI.
 - `~/.openclaw/workspace/reflexio.md` — always-active behavioral rule
   (transparency + opt-out handling)
 

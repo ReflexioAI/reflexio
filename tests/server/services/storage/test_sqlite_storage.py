@@ -241,6 +241,119 @@ def test_search_user_playbooks_with_sql_filters(storage):
     assert results[0].user_id == "user2"
 
 
+def test_save_user_playbooks_tolerates_embedding_failure():
+    """No embedding provider configured → save succeeds, row stored with
+    NULL embedding, vec table untouched, FTS still populated.
+
+    This is the core of the LLM-free OpenClaw integration: the Reflexio
+    server must accept user playbook writes even when no embedding key
+    is available. Reads fall back to FTS-only ranking.
+    """
+
+    def _raise(*_args, **_kwargs):
+        raise RuntimeError("no embedding provider configured")
+
+    with (
+        tempfile.TemporaryDirectory() as temp_dir,
+        patch.object(SQLiteStorage, "_get_embedding", side_effect=_raise),
+    ):
+        storage = SQLiteStorage(org_id="0", db_path=f"{temp_dir}/reflexio.db")
+
+        # The save call must not raise.
+        storage.save_user_playbooks(
+            [
+                UserPlaybook(
+                    user_id="openclaw-agent-main",
+                    agent_version="openclaw-agent",
+                    request_id="extract-1",
+                    playbook_name="agent_corrections",
+                    content="use pnpm instead of npm in this project",
+                    structured_data=StructuredData(
+                        trigger="user asks to install a JS dependency in this repo",
+                        instruction="run pnpm add <pkg>",
+                    ),
+                )
+            ]
+        )
+
+        # Row is persisted.
+        rows = storage._fetchall(
+            "SELECT user_playbook_id, embedding FROM user_playbooks WHERE user_id = ?",
+            ("openclaw-agent-main",),
+        )
+        assert len(rows) == 1
+        # Embedding column is SQL NULL (not an empty JSON array) so a
+        # future re-embed migration can target these rows.
+        assert rows[0]["embedding"] is None
+        upid = rows[0]["user_playbook_id"]
+
+        # FTS row is populated so retrieval still works via BM25.
+        fts_rows = storage._fetchall(
+            "SELECT search_text FROM user_playbooks_fts WHERE rowid = ?",
+            (upid,),
+        )
+        assert len(fts_rows) == 1
+        assert "pnpm" in fts_rows[0]["search_text"]
+
+        # Vec table has no entry for this row — _vec_upsert must be
+        # skipped when the embedding is empty.
+        vec_rows = storage._fetchall(
+            "SELECT rowid FROM user_playbooks_vec WHERE rowid = ?",
+            (upid,),
+        )
+        assert len(vec_rows) == 0
+
+        # FTS-only search returns the playbook.
+        results = storage.search_user_playbooks(
+            SearchUserPlaybookRequest(
+                query="pnpm", agent_version="openclaw-agent", top_k=5
+            )
+        )
+        assert len(results) == 1
+        assert results[0].user_playbook_id == upid
+
+
+def test_save_user_playbooks_tolerates_embedding_failure_with_expansion():
+    """Same as the no-expansion case, but exercises the ThreadPoolExecutor
+    branch that runs document expansion in parallel with embedding.
+    """
+
+    def _raise(*_args, **_kwargs):
+        raise RuntimeError("no embedding provider configured")
+
+    with (
+        tempfile.TemporaryDirectory() as temp_dir,
+        patch.object(SQLiteStorage, "_get_embedding", side_effect=_raise),
+        patch.object(SQLiteStorage, "_should_expand_documents", return_value=True),
+        # _expand_document has its own try/except returning None, so it
+        # won't raise — match that shape.
+        patch.object(SQLiteStorage, "_expand_document", return_value=None),
+    ):
+        storage = SQLiteStorage(org_id="0", db_path=f"{temp_dir}/reflexio.db")
+
+        storage.save_user_playbooks(
+            [
+                UserPlaybook(
+                    user_id="openclaw-agent-main",
+                    agent_version="openclaw-agent",
+                    request_id="extract-2",
+                    playbook_name="agent_corrections",
+                    content="always use type hints in new Python code",
+                    structured_data=StructuredData(
+                        trigger="writing new Python functions",
+                    ),
+                )
+            ]
+        )
+
+        rows = storage._fetchall(
+            "SELECT user_playbook_id, embedding FROM user_playbooks WHERE user_id = ?",
+            ("openclaw-agent-main",),
+        )
+        assert len(rows) == 1
+        assert rows[0]["embedding"] is None
+
+
 def test_search_agent_playbooks_with_agent_version_filter(storage):
     """Verify agent_version filter works with FTS."""
     storage.save_agent_playbooks(
