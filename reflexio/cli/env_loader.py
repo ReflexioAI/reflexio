@@ -95,6 +95,8 @@ def load_reflexio_env(
     for env_path in _ENV_SEARCH_PATHS:
         if env_path.exists():
             load_dotenv(dotenv_path=env_path)
+            sys.stdout.write(f"  Loaded env from: {env_path.resolve()}\n")
+            sys.stdout.flush()
             # Auto-generate any missing secret keys into the existing .env
             _backfill_missing_keys(env_path, auto_generate_keys or [])
             return env_path

@@ -65,6 +65,11 @@ def start(
 ) -> None:
     """Start Reflexio services (backend, docs)."""
     from reflexio.cli.bootstrap_config import resolve_storage, save_storage_to_config
+    from reflexio.cli.env_loader import load_reflexio_env
+
+    # Load .env BEFORE resolve_storage so env vars from ~/.reflexio/.env
+    # (e.g. REFLEXIO_STORAGE=supabase) are visible to the resolution chain.
+    load_reflexio_env()
 
     resolved = resolve_storage(storage)
     os.environ["REFLEXIO_STORAGE"] = resolved
