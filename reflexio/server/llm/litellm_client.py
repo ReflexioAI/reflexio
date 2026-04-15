@@ -565,6 +565,22 @@ class LiteLLMClient:
         else:
             params["temperature"] = temperature
 
+        # Determinism knob: if REFLEXIO_LLM_SEED is set in the environment,
+        # inject it as seed + force temperature=0 on non-restricted models so
+        # repeated extraction calls produce stable outputs on providers that
+        # honor `seed`. Current-gen reasoning models (gpt-5-*) do not honor
+        # seed or temperature, so the knob is best-effort only on those.
+        seed_env = os.environ.get("REFLEXIO_LLM_SEED") or ""
+        if seed_env:
+            try:
+                params["seed"] = int(seed_env)
+            except ValueError:
+                self.logger.warning(
+                    "REFLEXIO_LLM_SEED=%r is not an int; ignoring", seed_env
+                )
+            if not self._is_temperature_restricted_model(actual_model):
+                params["temperature"] = 0.0
+
         max_tokens = kwargs.pop("max_tokens", self.config.max_tokens)
         if max_tokens:
             params["max_tokens"] = max_tokens

@@ -217,8 +217,11 @@ class PlaybookDeduplicator(BaseDeduplicator):
                 )
 
         logger.info(
-            "Retrieved %d unique existing user playbook entries for deduplication",
+            "Retrieved %d unique existing user playbook entries for deduplication "
+            "(scoped to user_id=%r agent_version=%r)",
             len(existing_playbooks),
+            user_id,
+            agent_version,
         )
         return existing_playbooks
 

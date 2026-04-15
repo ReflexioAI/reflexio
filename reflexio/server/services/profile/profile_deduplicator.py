@@ -33,6 +33,11 @@ logger = logging.getLogger(__name__)
 _format_profile_timestamp = format_dedup_timestamp
 
 
+# Backward-compat alias — existing unit tests import this name from this
+# module. Delegates to the shared helper in deduplication_utils.
+_format_profile_timestamp = format_dedup_timestamp
+
+
 # ===============================
 # Profile-specific Pydantic Output Schemas for LLM
 # ===============================

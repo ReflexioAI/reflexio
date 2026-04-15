@@ -18,10 +18,20 @@
 
 ---
 
+<p align="center">
+  <b>−81% planning steps</b> &nbsp;·&nbsp; <b>−72% tokens</b> &nbsp;·&nbsp; on real GDPVal knowledge-work tasks, <br/>
+  <i>on top of</i> what a SOTA self-improving Hermes agent already learns on its own.<br/>
+  <a href="benchmark/gdpval/RESULTS.md"><b>See the benchmark →</b></a>
+</p>
+
+---
+
 ## What is Reflexio?
 The moat for AI agents isn't the model — it's what your agent learns from every interaction it handles.
 
-Reflexio is a **self-improvement platform** for AI agents. It turns every conversation your AI agent has into a learning opportunity — automatically extracting user preferences and behavioral playbooks so your agent continuously improves itself without manual tuning.
+Reflexio is a **self-improvement platform** for AI agents. It gives *any* agent the self-improvement ability that frameworks like [hermes-agent](https://github.com/nousresearch/hermes-agent) have built-in. And on agents that already self-improve on their own, Reflexio compounds additional gains on top. It turns every conversation your AI agent has into a learning opportunity — automatically extracting user preferences and behavioral playbooks so your agent continuously improves itself without manual tuning.
+
+> **Benchmarked on GDPVal**: on 4 of 5 real knowledge-work tasks from OpenAI's public GDPVal benchmark, Reflexio cuts a **median −81% planning steps and −72% tokens** on a Hermes agent running `minimax/MiniMax-M2.7` — measured against a *warm baseline*: the same agent re-running the task after it has already learned from itself. In other words, Reflexio's savings come **on top of** what a SOTA self-improving agent has learnt on its own. See the full writeup → [benchmark/gdpval/RESULTS.md](benchmark/gdpval/RESULTS.md).
 
 ```mermaid
 flowchart LR

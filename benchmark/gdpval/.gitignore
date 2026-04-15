@@ -1,0 +1,6 @@
+# Benchmark transient state — never committed.
+output/
+logs/
+.openspace_baseline/
+__pycache__/
+*.pyc
