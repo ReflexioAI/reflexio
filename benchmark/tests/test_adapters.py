@@ -14,7 +14,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from benchmark.adapters.base import AgentResult
 from benchmark.memory.injection import render_memory_block
 
 pytestmark = pytest.mark.integration
@@ -72,7 +71,10 @@ def test_openspace_adapter_memory_prepend(tmp_path: Path) -> None:
 
     ws = tmp_path / "ws"
 
-    with patch("benchmark.task_loader.prepare_task_workspace", return_value=_EXAMPLE_TASK["prompt"]):
+    with patch(
+        "benchmark.task_loader.prepare_task_workspace",
+        return_value=_EXAMPLE_TASK["prompt"],
+    ):
         result = asyncio.run(adapter.run(_EXAMPLE_TASK, ws, memory="USE PLAYBOOK: foo"))
 
     assert result.status == "success"
@@ -109,13 +111,20 @@ def test_openspace_adapter_no_memory(tmp_path: Path) -> None:
     adapter._tracker.begin_task = MagicMock(return_value="ctx")
     adapter._tracker.end_task = MagicMock(
         return_value=SimpleNamespace(
-            prompt_tokens=0, completion_tokens=0, total_tokens=0,
-            cost_usd=0.0, llm_calls=0, wall_time_sec=0.1,
+            prompt_tokens=0,
+            completion_tokens=0,
+            total_tokens=0,
+            cost_usd=0.0,
+            llm_calls=0,
+            wall_time_sec=0.1,
         )
     )
 
     ws = tmp_path / "ws"
-    with patch("benchmark.task_loader.prepare_task_workspace", return_value=_EXAMPLE_TASK["prompt"]):
+    with patch(
+        "benchmark.task_loader.prepare_task_workspace",
+        return_value=_EXAMPLE_TASK["prompt"],
+    ):
         asyncio.run(adapter.run(_EXAMPLE_TASK, ws, memory=None))
 
     called_task = fake_os.execute.call_args.kwargs["task"]
@@ -141,7 +150,11 @@ def test_hermes_adapter_system_message_wiring(tmp_path: Path) -> None:
             "final_response": "done",
             "messages": [
                 {"role": "user", "content": _EXAMPLE_TASK["prompt"]},
-                {"role": "assistant", "content": "done", "tool_calls": [{"name": "write"}]},
+                {
+                    "role": "assistant",
+                    "content": "done",
+                    "tool_calls": [{"name": "write"}],
+                },
             ],
             "api_calls": 2,
             "input_tokens": 200,
@@ -157,7 +170,10 @@ def test_hermes_adapter_system_message_wiring(tmp_path: Path) -> None:
     adapter._build_fresh_agent = lambda: fake_agent  # type: ignore[assignment]
 
     ws = tmp_path / "ws"
-    with patch("benchmark.task_loader.prepare_task_workspace", return_value=_EXAMPLE_TASK["prompt"]):
+    with patch(
+        "benchmark.task_loader.prepare_task_workspace",
+        return_value=_EXAMPLE_TASK["prompt"],
+    ):
         result = asyncio.run(adapter.run(_EXAMPLE_TASK, ws, memory="USE PLAYBOOK: foo"))
 
     fake_agent.run_conversation.assert_called_once()
@@ -194,11 +210,10 @@ def test_injection_empty_response_returns_empty_string() -> None:
 def test_injection_renders_sections() -> None:
     """Non-empty hits are rendered as a CACHED SOLUTION recipe block.
 
-    v1 Success-Recipe format: the extractor emits a single concrete
-    recipe per task, and the renderer wraps it in a strong trust header
-    telling the agent to re-run the cached steps. No IF/THEN gating,
-    no OPTIONAL framing — the pool is per-task-scoped so every hit is
-    relevant to the current task.
+    The extractor emits a single concrete recipe per task, and the
+    renderer wraps it in a strong trust header telling the agent to
+    re-run the cached steps. Profiles are dropped (they are org-wide
+    and leak across tasks), so only playbook content should appear.
     """
     response = SimpleNamespace(
         profiles=[SimpleNamespace(content="Workspace uses Python 3.11")],
@@ -213,11 +228,48 @@ def test_injection_renders_sections() -> None:
     block = render_memory_block(response)
     assert "CACHED SOLUTION" in block
     assert "Recipe" in block
-    # Playbook content is passed through verbatim — no rewriting
     assert "TASK: SOAP notes" in block
     assert "STEPS: write four-section output" in block
-    # Profiles attach as context facts
-    assert "Workspace uses Python 3.11" in block
+    # Profiles are intentionally dropped to prevent cross-task leakage.
+    assert "Workspace uses Python 3.11" not in block
+
+
+def test_injection_drops_profiles_even_when_only_hit() -> None:
+    """If the only hit is a profile, the renderer returns an empty string.
+
+    Regression guard for the cross-task profile leak: profiles are
+    org-wide in the reflexio backend, so they would otherwise bleed
+    facts from task A's trajectory into task B's P3 memory block.
+    """
+    response = SimpleNamespace(
+        profiles=[SimpleNamespace(content="Prior task wrote out.csv with 142 rows")],
+        agent_playbooks=[],
+        user_playbooks=[],
+    )
+    assert render_memory_block(response) == ""
+
+
+def test_injection_dedupes_whitespace_variants() -> None:
+    """Near-duplicate playbooks differing only in whitespace render once.
+
+    Regression guard for a prior benchmark failure in which the extractor
+    emitted three copies of the same 3715-char recipe, producing a
+    ~12k-char block that pushed a Hermes task over its token budget.
+    """
+    recipe = "Step 1: load data\nStep 2: aggregate\nFinal: 61 rows"
+    response = SimpleNamespace(
+        profiles=[],
+        agent_playbooks=[],
+        user_playbooks=[
+            SimpleNamespace(content=recipe),
+            SimpleNamespace(content=recipe + "\n\n"),
+            SimpleNamespace(content="  " + recipe.replace("\n", "  ") + "  "),
+            SimpleNamespace(content=recipe.upper()),
+        ],
+    )
+    block = render_memory_block(response)
+    assert block.count("Step 1: load data") == 1
+    assert block.count("Final: 61 rows") == 1
 
 
 def test_injection_renders_plain_recipe_body() -> None:
@@ -317,3 +369,78 @@ def test_copy_tree_round_trip(tmp_path: Path) -> None:
     (src / "a.txt").write_text("updated")
     _copy_tree(src, dest)
     assert (dest / "a.txt").read_text() == "updated"
+
+
+# ---------------------------------------------------------------------------
+# run_benchmark CLI helpers
+# ---------------------------------------------------------------------------
+
+
+def _mk_tasks(n: int) -> list[dict]:
+    """Build `n` stub task dicts for slice tests."""
+    return [{"task_id": f"t{i:03d}"} for i in range(n)]
+
+
+def test_apply_task_slice_offset_and_cap() -> None:
+    """_apply_task_slice skips `offset` tasks, then caps at `max_tasks`."""
+    from benchmark.run_benchmark import _apply_task_slice
+
+    tasks = _mk_tasks(10)
+    sliced = _apply_task_slice(tasks, offset=5, max_tasks=3)
+    assert [t["task_id"] for t in sliced] == ["t005", "t006", "t007"]
+
+
+def test_apply_task_slice_offset_only() -> None:
+    """max_tasks=None means "no cap" — offset still applies alone."""
+    from benchmark.run_benchmark import _apply_task_slice
+
+    tasks = _mk_tasks(4)
+    sliced = _apply_task_slice(tasks, offset=2, max_tasks=None)
+    assert [t["task_id"] for t in sliced] == ["t002", "t003"]
+
+
+def test_apply_task_slice_offset_beyond_length_returns_empty() -> None:
+    """offset >= len(tasks) yields an empty list instead of wrapping."""
+    from benchmark.run_benchmark import _apply_task_slice
+
+    tasks = _mk_tasks(3)
+    assert _apply_task_slice(tasks, offset=5, max_tasks=10) == []
+
+
+def test_apply_task_slice_negative_offset_clamped() -> None:
+    """Negative offsets are clamped to 0 so callers can't accidentally
+    reverse-index from the end of the list."""
+    from benchmark.run_benchmark import _apply_task_slice
+
+    tasks = _mk_tasks(3)
+    sliced = _apply_task_slice(tasks, offset=-2, max_tasks=2)
+    assert [t["task_id"] for t in sliced] == ["t000", "t001"]
+
+
+def test_resolve_task_ids_csv_overrides_task_list(tmp_path: Path) -> None:
+    """Explicit --task-ids takes precedence over --task-list (JSON file)."""
+    from benchmark.run_benchmark import _resolve_task_ids
+
+    list_file = tmp_path / "tasks.json"
+    list_file.write_text('["from-file-001", "from-file-002"]')
+
+    resolved = _resolve_task_ids(str(list_file), "from-cli-a, from-cli-b ,")
+    assert resolved == ["from-cli-a", "from-cli-b"]
+
+
+def test_resolve_task_ids_falls_back_to_list(tmp_path: Path) -> None:
+    """With no CSV, _resolve_task_ids reads the JSON file."""
+    from benchmark.run_benchmark import _resolve_task_ids
+
+    list_file = tmp_path / "tasks.json"
+    list_file.write_text('["a", "b"]')
+
+    assert _resolve_task_ids(str(list_file), None) == ["a", "b"]
+
+
+def test_resolve_task_ids_returns_none_when_both_absent() -> None:
+    """No filter flags → no task-ID filter."""
+    from benchmark.run_benchmark import _resolve_task_ids
+
+    assert _resolve_task_ids(None, None) is None
+    assert _resolve_task_ids("", "") is None

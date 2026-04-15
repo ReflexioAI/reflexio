@@ -1,33 +1,31 @@
-"""Render reflexio search hits into an advisory prompt block.
+"""Render reflexio search hits into a solution-recipe prompt block.
 
 Used by the reflexio bridge to turn a `UnifiedSearchViewResponse` into a
 string the host adapters can splice into the prompt (OpenSpace) or system
 message (Hermes). One shared renderer keeps the P3 injection format
 identical across hosts.
 
-Design decisions, derived from the Step E rerun v2 observations:
+Design decisions, as of the v3 extractor + cached-solution header:
 
-1. The block is framed as OPTIONAL hints, not task instructions. The
-   original format used `# Reflexio memory` + bulleted imperative rules,
-   which the LLM interpreted as binding directives — causing it to
-   attempt to implement every rule even when the rule was irrelevant to
-   the task at hand. A single 454-char injection caused ~30k extra
-   tokens of behavioral drift on a Music Tour task that had no
-   relationship to the financial-consolidation playbook it received.
+1. The block is framed as an EXECUTE-NOW cached solution, not optional
+   hints. Earlier variants used "# Reflexio memory" + bulleted rules or
+   "IF task involves X, THEN Y" conditionals. Both caused the LLM to
+   treat the injection as a checklist to verify and redo the task
+   anyway, which burned iterations instead of saving them. The v3
+   extractor produces a concrete, already-solved recipe, so the header
+   tells the agent to copy the recipe into the deliverable rather than
+   re-derive it.
 
-2. Each playbook is rendered as a conditional IF/THEN rule so the LLM
-   has an explicit relevance gate to check before applying. "IF task
-   involves X, THEN Y" is much easier to ignore when X doesn't match
-   than a bare "Save intermediate results after each stage" which reads
-   like an unconditional mandate.
+2. Only user_playbooks and agent_playbooks are rendered. Profiles are
+   org-wide in the reflexio backend and therefore leak across tasks in
+   the benchmark (P3 of task A gets stale facts extracted from task B),
+   so they are dropped at this layer.
 
-3. An explicit "ignore if not relevant" directive precedes the rules.
-   The framing cost (~250 chars) is a small fixed overhead per P3 task
-   and is the cheapest place to buy behavioral hygiene from the model.
-
-4. The block still starts with a heading, so agents that scroll past
-   it or truncate it on context pressure still see the "optional"
-   framing first rather than diving straight into rules.
+3. Recipe sections are deduped by whitespace-normalized content. The
+   extractor can emit near-identical recipes across re-extraction, and
+   an observed 12k-char triple-copy once pushed a task over its token
+   budget and caused a quality regression. Stripping exact and
+   whitespace-only duplicates keeps the signal.
 """
 
 from __future__ import annotations
@@ -60,66 +58,84 @@ CRITICAL CONSTRAINTS:
   everything you need."""
 
 
+def _dedupe_key(text: str) -> str:
+    """Collapse whitespace and case to produce a stable dedupe key.
+
+    Args:
+        text (str): Playbook content to hash for duplicate detection.
+
+    Returns:
+        str: Lowercased, whitespace-collapsed form of the input.
+    """
+    return " ".join(text.lower().split())
+
+
+def _append_unique(
+    sections: list[str],
+    playbooks: Any,
+    seen: set[str],
+    max_items: int,
+) -> None:
+    """Append up to `max_items` non-duplicate playbook contents to `sections`.
+
+    Mutates `sections` and `seen` in place. Playbooks with empty content
+    or content whose normalized key has already been seen are skipped.
+
+    Args:
+        sections (list[str]): Recipe section list to append to.
+        playbooks (Any): Iterable of playbook objects exposing `.content`.
+        seen (set[str]): Set of already-seen dedupe keys, updated in place.
+        max_items (int): Maximum number of playbooks to consider.
+    """
+    for pb in list(playbooks)[:max_items]:
+        content = (getattr(pb, "content", "") or "").strip()
+        if not content:
+            continue
+        key = _dedupe_key(content)
+        if key in seen:
+            continue
+        seen.add(key)
+        sections.append(content)
+
+
 def render_memory_block(response: Any, max_items_per_section: int = 10) -> str:
     """Turn a `UnifiedSearchViewResponse` into a prompt-ready text block.
 
-    v1 Success-Recipe format: the backend extractor now emits a single
-    concrete CACHED SOLUTION per task (see GDPVAL_PLAYBOOK_EXTRACTOR_PROMPT
-    in reflexio_bridge.py). Each playbook's `content` is already a
-    recipe, so we just concatenate them under a strong trust header that
-    tells the agent to RE-RUN the cached steps rather than treat them as
-    optional hints.
+    The backend extractor emits a concrete CACHED SOLUTION per task (see
+    GDPVAL_PLAYBOOK_EXTRACTOR_PROMPT in reflexio_bridge.py). Each
+    playbook's `content` is already a recipe, so this function just
+    concatenates them under a strong trust header that tells the agent
+    to execute the cached steps rather than re-derive them.
+
+    Profiles are intentionally ignored — they are org-wide in the
+    reflexio backend and would leak across tasks in the benchmark. Only
+    `user_playbooks` and `agent_playbooks` are rendered, with exact +
+    whitespace-insensitive deduplication across both sources.
 
     Returns an empty string when nothing relevant — callers pass `None`
     to adapters in that case so P3 degenerates to P2 behavior cleanly.
 
     Args:
         response (Any): The `UnifiedSearchViewResponse` returned by
-            `ReflexioClient.search()` (or a list-like with .user_playbooks).
-        max_items_per_section (int): Cap on items rendered from each of
-            profiles / agent_playbooks / user_playbooks.
+            `ReflexioClient.search()` (or any object exposing
+            `user_playbooks` / `agent_playbooks` attributes).
+        max_items_per_section (int): Cap on items considered from each
+            of `user_playbooks` and `agent_playbooks`.
 
     Returns:
         str: Rendered memory block, or "" if nothing relevant.
     """
-    profiles = list(getattr(response, "profiles", []) or [])
-    agent_playbooks = list(getattr(response, "agent_playbooks", []) or [])
-    user_playbooks = list(getattr(response, "user_playbooks", []) or [])
+    user_playbooks = getattr(response, "user_playbooks", None) or []
+    agent_playbooks = getattr(response, "agent_playbooks", None) or []
 
-    if not (profiles or agent_playbooks or user_playbooks):
-        return ""
-
+    seen: set[str] = set()
     recipe_sections: list[str] = []
+    _append_unique(recipe_sections, user_playbooks, seen, max_items_per_section)
+    _append_unique(recipe_sections, agent_playbooks, seen, max_items_per_section)
 
-    for pb in user_playbooks[:max_items_per_section]:
-        content = (getattr(pb, "content", "") or "").strip()
-        if content:
-            recipe_sections.append(content)
-
-    for pb in agent_playbooks[:max_items_per_section]:
-        content = (getattr(pb, "content", "") or "").strip()
-        if content:
-            recipe_sections.append(content)
-
-    # Profiles are stable facts — useful but secondary to the recipe.
-    # Tack them on at the end as context hints.
-    profile_facts: list[str] = []
-    for profile in profiles[:max_items_per_section]:
-        content = (getattr(profile, "content", "") or "").strip()
-        if content:
-            profile_facts.append(f"- {content}")
-
-    if not recipe_sections and not profile_facts:
+    if not recipe_sections:
         return ""
 
-    parts = [_SOLUTION_HEADER, ""]
-    if recipe_sections:
-        parts.append("## Recipe")
-        parts.append("")
-        parts.extend(recipe_sections)
-    if profile_facts:
-        parts.append("")
-        parts.append("## Context facts")
-        parts.extend(profile_facts)
-
+    parts = [_SOLUTION_HEADER, "", "## Recipe", ""]
+    parts.extend(recipe_sections)
     return "\n".join(parts).strip()

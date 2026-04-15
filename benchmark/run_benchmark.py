@@ -43,7 +43,6 @@ from dotenv import load_dotenv  # noqa: E402
 from benchmark.adapters.base import AgentResult, HostAgentAdapter  # noqa: E402
 from benchmark.adapters.hermes_adapter import HermesAdapter  # noqa: E402
 from benchmark.adapters.openspace_adapter import OpenSpaceAdapter  # noqa: E402
-from benchmark.tokens import TokenStats  # noqa: E402
 from benchmark.config import (  # noqa: E402
     CLAWWORK_ROOT,
     DEFAULT_HOSTS,
@@ -60,6 +59,7 @@ from benchmark.memory.reflexio_bridge import (  # noqa: E402
     update_playbook_extractor_prompt,
 )
 from benchmark.task_loader import load_tasks  # noqa: E402
+from benchmark.tokens import TokenStats  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -130,16 +130,67 @@ def _parse_args() -> argparse.Namespace:
         default=str(DEFAULT_TASK_LIST),
         help="Path to a JSON list of task IDs (OpenSpace gdpval_bench/tasks_50.json works)",
     )
-    parser.add_argument("--max-tasks", type=int, default=None, help="Cap tasks for smoke runs")
-    parser.add_argument("--per-occupation", type=int, default=None, help="Stratified sample: N tasks per occupation")
-    parser.add_argument("--sectors", nargs="+", default=None, help="Filter by sector substring")
-    parser.add_argument("--occupations", nargs="+", default=None, help="Filter by occupation substring")
-    parser.add_argument("--run-name", default=None, help="Output subdir name (default: gdpval_<timestamp>)")
-    parser.add_argument("--model", default=DEFAULT_MODEL, help=f"Model (default: {DEFAULT_MODEL})")
-    parser.add_argument("--reflexio-url", default=DEFAULT_REFLEXIO_URL, help="Reflexio backend URL")
-    parser.add_argument("--max-iterations", type=int, default=30, help="Per-task tool-calling iteration cap")
-    parser.add_argument("--no-eval", action="store_true", help="Skip LLMEvaluator scoring (saves credits)")
-    parser.add_argument("--dry-run", action="store_true", help="Load tasks, check env, don't execute")
+    parser.add_argument(
+        "--max-tasks", type=int, default=None, help="Cap tasks for smoke runs"
+    )
+    parser.add_argument(
+        "--task-offset",
+        type=int,
+        default=0,
+        help=(
+            "Skip the first N tasks after filtering, before applying --max-tasks. "
+            "Use with --max-tasks to run a different slice of the same task list "
+            "on a subsequent day (e.g. day 1: --max-tasks 5; day 2: --task-offset 5 "
+            "--max-tasks 5). Combine with --run-name pointing at the prior run to "
+            "accumulate results in the same output dir."
+        ),
+    )
+    parser.add_argument(
+        "--task-ids",
+        default=None,
+        help=(
+            "Comma-separated explicit task IDs to run (overrides the JSON file "
+            "specified by --task-list). Useful for rerunning a specific failing "
+            "task or extending a run with hand-picked additions."
+        ),
+    )
+    parser.add_argument(
+        "--per-occupation",
+        type=int,
+        default=None,
+        help="Stratified sample: N tasks per occupation",
+    )
+    parser.add_argument(
+        "--sectors", nargs="+", default=None, help="Filter by sector substring"
+    )
+    parser.add_argument(
+        "--occupations", nargs="+", default=None, help="Filter by occupation substring"
+    )
+    parser.add_argument(
+        "--run-name",
+        default=None,
+        help="Output subdir name (default: gdpval_<timestamp>)",
+    )
+    parser.add_argument(
+        "--model", default=DEFAULT_MODEL, help=f"Model (default: {DEFAULT_MODEL})"
+    )
+    parser.add_argument(
+        "--reflexio-url", default=DEFAULT_REFLEXIO_URL, help="Reflexio backend URL"
+    )
+    parser.add_argument(
+        "--max-iterations",
+        type=int,
+        default=30,
+        help="Per-task tool-calling iteration cap",
+    )
+    parser.add_argument(
+        "--no-eval",
+        action="store_true",
+        help="Skip LLMEvaluator scoring (saves credits)",
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Load tasks, check env, don't execute"
+    )
     parser.add_argument("--verbose", action="store_true", help="DEBUG-level logging")
     parser.add_argument(
         "--progress-interval",
@@ -185,6 +236,60 @@ def _parse_args() -> argparse.Namespace:
         ),
     )
     return parser.parse_args()
+
+
+def _resolve_task_ids(
+    task_list_path: str | None,
+    task_ids_csv: str | None,
+) -> list[str] | None:
+    """Resolve the task-ID filter from CLI flags.
+
+    `--task-ids` (a comma-separated string) takes precedence over
+    `--task-list` (a JSON file path). Whitespace is trimmed and empty
+    segments are dropped.
+
+    Args:
+        task_list_path (str | None): Path to a JSON task-list file.
+        task_ids_csv (str | None): Comma-separated task IDs from the CLI.
+
+    Returns:
+        list[str] | None: Explicit task IDs to filter by, or None when
+            neither flag is set (meaning "no ID filter").
+    """
+    if task_ids_csv:
+        return [tid.strip() for tid in task_ids_csv.split(",") if tid.strip()]
+    if task_list_path:
+        return _parse_task_list(task_list_path)
+    return None
+
+
+def _apply_task_slice(
+    tasks: list[dict[str, Any]],
+    offset: int,
+    max_tasks: int | None,
+) -> list[dict[str, Any]]:
+    """Apply `--task-offset` and `--max-tasks` to a loaded task list.
+
+    The offset is clamped to non-negative values. When offset exceeds the
+    length of `tasks`, an empty list is returned so the caller can log
+    and abort cleanly. `max_tasks=None` means "no cap".
+
+    Args:
+        tasks (list[dict[str, Any]]): Tasks loaded from the task list.
+        offset (int): Number of tasks to skip before slicing.
+        max_tasks (int | None): Maximum number of tasks to return, or
+            None for no cap.
+
+    Returns:
+        list[dict[str, Any]]: Sliced task list.
+    """
+    offset = max(0, int(offset or 0))
+    if offset >= len(tasks):
+        return []
+    sliced = tasks[offset:]
+    if max_tasks is not None:
+        sliced = sliced[:max_tasks]
+    return sliced
 
 
 def _parse_task_list(task_list_path: str) -> list[str] | None:
@@ -333,7 +438,7 @@ class _TaskProgressLogger:
         self._task: asyncio.Task[None] | None = None
         self._start: float = 0.0
 
-    async def __aenter__(self) -> "_TaskProgressLogger":
+    async def __aenter__(self) -> _TaskProgressLogger:
         self._stop = asyncio.Event()
         self._start = time.monotonic()
         self._task = asyncio.create_task(self._run())
@@ -353,11 +458,13 @@ class _TaskProgressLogger:
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=self._interval)
                 return
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 pass
             elapsed = time.monotonic() - self._start
             files, size, newest = _workspace_snapshot(self._workspace)
-            delta_note = f"+{files - last_file_count}" if last_file_count >= 0 else f"{files}"
+            delta_note = (
+                f"+{files - last_file_count}" if last_file_count >= 0 else f"{files}"
+            )
             last_file_count = files
             action = None
             if self._host == "hermes" and self._host_state_dir is not None:
@@ -435,7 +542,10 @@ async def _run_phase(
 
     logger.info(
         "[%s][%s] Running %d task(s) with concurrency=%d",
-        host, phase, len(tasks), len(adapters),
+        host,
+        phase,
+        len(tasks),
+        len(adapters),
     )
 
     phase_start = time.monotonic()
@@ -457,15 +567,25 @@ async def _run_phase(
             fetch_elapsed = time.monotonic() - fetch_t0
             logger.info(
                 "[%s][%s] (%d/%d) %s reflexio fetch: %d chars in %.1fs",
-                host, phase, idx, len(tasks), tid[:8],
-                len(memory) if memory else 0, fetch_elapsed,
+                host,
+                phase,
+                idx,
+                len(tasks),
+                tid[:8],
+                len(memory) if memory else 0,
+                fetch_elapsed,
             )
 
         worker_id, adapter, host_state_dir = await pool.get()
         try:
             logger.info(
                 "[%s][%s] (%d/%d) %s START w%d — %s%s",
-                host, phase, idx, len(tasks), tid[:8], worker_id,
+                host,
+                phase,
+                idx,
+                len(tasks),
+                tid[:8],
+                worker_id,
                 task.get("occupation", ""),
                 f" (memory={len(memory)}ch)" if memory else "",
             )
@@ -489,7 +609,13 @@ async def _run_phase(
                 task_elapsed = time.monotonic() - task_t0
                 logger.error(
                     "[%s][%s] (%d/%d) %s TIMEOUT after %.0fs — task_timeout_sec=%.0f",
-                    host, phase, idx, len(tasks), tid[:8], task_elapsed, task_timeout_sec,
+                    host,
+                    phase,
+                    idx,
+                    len(tasks),
+                    tid[:8],
+                    task_elapsed,
+                    task_timeout_sec,
                 )
                 files, size, newest = _workspace_snapshot(workspace)
                 result = AgentResult(
@@ -499,11 +625,46 @@ async def _run_phase(
                     tokens=TokenStats(wall_time_sec=round(task_elapsed, 2)),
                     artifacts_dir=workspace,
                     messages=[
-                        {"role": "User", "content": task.get("prompt", "")[:2000] or ""},
-                        {"role": "Assistant", "content": f"[TIMEOUT after {task_elapsed:.0f}s — {files} artifacts in workspace]"},
+                        {
+                            "role": "User",
+                            "content": task.get("prompt", "")[:2000] or "",
+                        },
+                        {
+                            "role": "Assistant",
+                            "content": f"[TIMEOUT after {task_elapsed:.0f}s — {files} artifacts in workspace]",
+                        },
                     ],
                     raw={"timeout_sec": task_timeout_sec, "elapsed": task_elapsed},
                 )
+                # Force-reinit the adapter so the next task gets a clean state.
+                # When asyncio.wait_for cancels adapter.run(), OpenSpace's
+                # internal `_task_done` Event can be left unreleased, causing
+                # every subsequent task to hit "OpenSpace is busy — waiting
+                # up to 660s" and also fail. cleanup() + initialize() forces
+                # a fresh OpenSpace instance. Hermes is immune to this
+                # (its AIAgent is rebuilt per task) but calling the same
+                # reset path is harmless.
+                try:
+                    await adapter.cleanup()
+                    await adapter.initialize(host_state_dir)
+                    logger.info(
+                        "[%s][%s] (%d/%d) %s adapter force-reinit after timeout",
+                        host,
+                        phase,
+                        idx,
+                        len(tasks),
+                        tid[:8],
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "[%s][%s] (%d/%d) %s adapter reinit failed after timeout: %s",
+                        host,
+                        phase,
+                        idx,
+                        len(tasks),
+                        tid[:8],
+                        exc,
+                    )
             task_elapsed = time.monotonic() - task_t0
 
             eval_result: dict[str, Any] = {"has_evaluation": False}
@@ -515,18 +676,30 @@ async def _run_phase(
             files, size, newest = _workspace_snapshot(workspace)
             async with results_lock:
                 phase_tokens += result.tokens.total_tokens
-                phase_status_counts[result.status] = phase_status_counts.get(result.status, 0) + 1
+                phase_status_counts[result.status] = (
+                    phase_status_counts.get(result.status, 0) + 1
+                )
                 logger.info(
                     "[%s][%s] (%d/%d) %s DONE %s in %.0fs — "
                     "iters=%d tool_calls=%d tokens=%d (p=%d c=%d) "
                     "artifacts=%d (%dK) eval=%s%s",
-                    host, phase, idx, len(tasks), tid[:8],
-                    result.status, task_elapsed,
-                    result.iterations, result.tool_calls,
+                    host,
+                    phase,
+                    idx,
+                    len(tasks),
+                    tid[:8],
+                    result.status,
+                    task_elapsed,
+                    result.iterations,
+                    result.tool_calls,
                     result.tokens.total_tokens,
-                    result.tokens.prompt_tokens, result.tokens.completion_tokens,
-                    files, size // 1024,
-                    f"{eval_result.get('score_10', 0)}/10" if eval_result.get("has_evaluation") else "skipped",
+                    result.tokens.prompt_tokens,
+                    result.tokens.completion_tokens,
+                    files,
+                    size // 1024,
+                    f"{eval_result.get('score_10', 0)}/10"
+                    if eval_result.get("has_evaluation")
+                    else "skipped",
                     f" (eval {eval_elapsed:.1f}s)" if eval_elapsed > 0.5 else "",
                 )
                 record = {
@@ -571,7 +744,12 @@ async def _run_phase(
                 publish_elapsed = time.monotonic() - publish_t0
                 logger.info(
                     "[%s][%s] (%d/%d) %s published to reflexio in %.1fs",
-                    host, phase, idx, len(tasks), tid[:8], publish_elapsed,
+                    host,
+                    phase,
+                    idx,
+                    len(tasks),
+                    tid[:8],
+                    publish_elapsed,
                 )
         finally:
             pool.put_nowait((worker_id, adapter, host_state_dir))
@@ -580,15 +758,20 @@ async def _run_phase(
     # the bounded pool (via Queue.get/put) throttles actual parallelism to
     # len(adapters). Tasks execute in the order they become dispatchable,
     # not in the task-list order, so we label by idx for log correlation.
-    await asyncio.gather(*(
-        _execute_one(idx, task) for idx, task in enumerate(tasks, start=1)
-    ))
+    await asyncio.gather(
+        *(_execute_one(idx, task) for idx, task in enumerate(tasks, start=1))
+    )
 
     phase_elapsed = time.monotonic() - phase_start
-    status_summary = " ".join(f"{k}={v}" for k, v in sorted(phase_status_counts.items()))
+    status_summary = " ".join(
+        f"{k}={v}" for k, v in sorted(phase_status_counts.items())
+    )
     logger.info(
         "[%s][%s] PHASE DONE — %d tasks in %.0fs (%s) total_tokens=%d mean=%d",
-        host, phase, len(tasks), phase_elapsed,
+        host,
+        phase,
+        len(tasks),
+        phase_elapsed,
         status_summary or "no-tasks",
         phase_tokens,
         phase_tokens // max(1, len(tasks)),
@@ -651,7 +834,8 @@ async def _hydrate_cache(
         logger.warning(
             "[%s] cache-from: trajectories_p1 missing at %s — "
             "reflexio will have no memory to extract from",
-            host, traj_dir,
+            host,
+            traj_dir,
         )
         return
 
@@ -661,7 +845,9 @@ async def _hydrate_cache(
         try:
             data = json.loads(traj_file.read_text())
         except Exception as exc:
-            logger.warning("[%s] cache-from: bad trajectory file %s: %s", host, traj_file, exc)
+            logger.warning(
+                "[%s] cache-from: bad trajectory file %s: %s", host, traj_file, exc
+            )
             continue
         tid = data.get("task_id")
         if tid not in task_map:
@@ -674,7 +860,9 @@ async def _hydrate_cache(
         published += 1
         logger.info(
             "[%s] cache-from: republished trajectory %s (%d messages)",
-            host, tid[:8], len(messages),
+            host,
+            tid[:8],
+            len(messages),
         )
     logger.info("[%s] cache-from: %d trajectories replayed", host, published)
 
@@ -737,7 +925,9 @@ async def _run_host(
             phase_state_dir.mkdir(parents=True, exist_ok=True)
         else:
             if not snapshot_dir.exists():
-                logger.warning("Snapshot missing for %s; %s cannot start warm", host, phase)
+                logger.warning(
+                    "Snapshot missing for %s; %s cannot start warm", host, phase
+                )
                 phase_state_dir.mkdir(parents=True, exist_ok=True)
             else:
                 _copy_tree(snapshot_dir, phase_state_dir)
@@ -804,7 +994,8 @@ async def _run_host(
                 )
                 logger.info(
                     "[%s][%s] extraction done — playbook counts: %s",
-                    host, phase,
+                    host,
+                    phase,
                     {tid[:8]: n for tid, n in counts.items()},
                 )
         finally:
@@ -820,14 +1011,20 @@ async def _amain(args: argparse.Namespace) -> None:
             raise ValueError(f"Unknown phase: {phase}. Expected one of {_ALL_PHASES}")
     for host in hosts:
         if host not in _ADAPTER_FACTORY:
-            raise ValueError(f"Unknown host: {host}. Supported: {list(_ADAPTER_FACTORY)}")
+            raise ValueError(
+                f"Unknown host: {host}. Supported: {list(_ADAPTER_FACTORY)}"
+            )
 
-    task_ids = _parse_task_list(args.task_list) if args.task_list else None
+    # Explicit --task-ids overrides the JSON file-based --task-list.
+    task_ids = _resolve_task_ids(args.task_list, args.task_ids)
+
+    # Load without max-tasks so --task-offset can slice deterministically over
+    # the full filtered pool; we apply max-tasks ourselves after the offset.
     try:
         tasks = load_tasks(
             clawwork_root=str(CLAWWORK_ROOT),
             task_ids=task_ids,
-            max_tasks=args.max_tasks,
+            max_tasks=None,
             sectors=args.sectors,
             occupations=args.occupations,
             per_occupation=args.per_occupation,
@@ -839,11 +1036,23 @@ async def _amain(args: argparse.Namespace) -> None:
         else:
             raise
 
+    original_count = len(tasks)
+    tasks = _apply_task_slice(tasks, args.task_offset, args.max_tasks)
+    if not tasks and args.task_offset and args.task_offset >= original_count:
+        logger.error(
+            "task-offset %d >= loaded task count %d — nothing to run",
+            args.task_offset,
+            original_count,
+        )
+        return
+
     if not tasks and not args.dry_run:
         logger.error("No tasks loaded — aborting.")
         return
 
-    run_name = args.run_name or f"gdpval_{datetime.now(tz=UTC).strftime('%Y%m%d_%H%M%S')}"
+    run_name = (
+        args.run_name or f"gdpval_{datetime.now(tz=UTC).strftime('%Y%m%d_%H%M%S')}"
+    )
     run_dir = OUTPUT_DIR / run_name
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "config.json").write_text(
@@ -883,7 +1092,9 @@ async def _amain(args: argparse.Namespace) -> None:
             )
 
     for host in hosts:
-        await _run_host(host=host, phases=phases, args=args, tasks=tasks, run_dir=run_dir)
+        await _run_host(
+            host=host, phases=phases, args=args, tasks=tasks, run_dir=run_dir
+        )
 
     from benchmark.report import build_comparison  # noqa: E402
 
