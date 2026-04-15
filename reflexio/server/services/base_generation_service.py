@@ -54,7 +54,7 @@ TRequest = TypeVar("TRequest")
 # Unified base class for all generation services (evaluation, playbook, profile)
 class BaseGenerationService(
     ABC,
-    Generic[TExtractorConfig, TExtractor, TGenerationServiceConfig, TRequest],
+    Generic[TExtractorConfig, TExtractor, TGenerationServiceConfig, TRequest],  # noqa: UP046
 ):
     """
     Base class for generation services that run multiple extractors sequentially.

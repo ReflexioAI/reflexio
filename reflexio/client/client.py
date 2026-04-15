@@ -51,6 +51,12 @@ IS_TEST_ENV = os.environ.get("IS_TEST_ENV", "false").strip() == "true"
 
 BACKEND_URL = "http://127.0.0.1:8000" if IS_TEST_ENV else "https://www.reflexio.ai/"
 
+from reflexio.models.api_schema.domain.entities import (
+    UpgradeProfilesRequest,
+    UpgradeProfilesResponse,
+    UpgradeUserPlaybooksRequest,
+    UpgradeUserPlaybooksResponse,
+)
 from reflexio.models.api_schema.service_schemas import (
     AddAgentPlaybookRequest,
     AddAgentPlaybookResponse,
@@ -96,12 +102,6 @@ from reflexio.models.api_schema.service_schemas import (
     UserPlaybook,
     UserProfile,
     WhoamiResponse,
-)
-from reflexio.models.api_schema.domain.entities import (
-    UpgradeProfilesRequest,
-    UpgradeProfilesResponse,
-    UpgradeUserPlaybooksRequest,
-    UpgradeUserPlaybooksResponse,
 )
 from reflexio.models.config_schema import Config
 

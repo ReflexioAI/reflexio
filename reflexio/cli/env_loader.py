@@ -158,7 +158,7 @@ def _find_env_example(package_data_module: str) -> str | None:
         candidate = project_root / ".env.example"
         if candidate.is_file():
             return candidate.read_text()
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001, S110
         pass
 
     return None

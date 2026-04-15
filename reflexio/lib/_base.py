@@ -169,7 +169,7 @@ class ReflexioBase:
         try:
             return storage._get_embedding(query, purpose="query")  # type: ignore[reportAttributeAccessIssue]
         except Exception as e:
-            logger.warning(f"Failed to generate query embedding due to {e}— falling back to FTS")
+            logger.warning("Failed to generate query embedding due to %s — falling back to FTS", e)
             return None
 
     def _reformulate_query(

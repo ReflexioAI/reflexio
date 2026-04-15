@@ -933,7 +933,7 @@ class TestBuildUserPlaybook:
             "agent provides a factual correction during debugging",
         }
         assert all(p.source_interaction_ids == [1, 2, 3] for p in result)
-        assert all(p.playbook_name == extractor_config.playbook_name for p in result)
+        assert all(p.playbook_name == extractor_config.extractor_name for p in result)
 
     def test_mock_mode_routes_through_process_structured_response_list(
         self,

@@ -16,6 +16,8 @@ from reflexio.models.config_schema import (
 from reflexio.server.services.configurator.configurator import DefaultConfigurator
 from tests.server.test_utils import skip_in_precommit, skip_low_priority
 
+pytestmark = pytest.mark.e2e
+
 
 @pytest.fixture
 def temp_config_dir():

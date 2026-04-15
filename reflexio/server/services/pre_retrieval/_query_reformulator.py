@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T")
 
 
-class ReformulationSearchResult(BaseModel, Generic[T]):
+class ReformulationSearchResult(BaseModel, Generic[T]):  # noqa: UP046
     """Output of reformulation + search.
 
     Args:

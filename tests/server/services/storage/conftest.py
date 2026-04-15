@@ -23,7 +23,9 @@ def storage(request: pytest.FixtureRequest) -> Generator[BaseStorage]:
         if backend == "sqlite":
             from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 
-            with patch.object(SQLiteStorage, "_get_embedding", return_value=[0.0]):
+            with patch.object(
+                SQLiteStorage, "_get_embedding", return_value=[0.0] * 512
+            ):
                 yield SQLiteStorage(
                     org_id="contract_test", db_path=f"{temp_dir}/reflexio.db"
                 )

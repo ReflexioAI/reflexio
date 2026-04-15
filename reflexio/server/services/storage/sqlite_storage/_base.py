@@ -789,7 +789,7 @@ class SQLiteStorageBase(BaseStorage):
                             f"PRAGMA table_info({table})"
                         ).fetchall()  # noqa: S608
                     }
-                except Exception:
+                except Exception:  # noqa: S112
                     continue  # Table doesn't exist yet
 
                 if not cols:
