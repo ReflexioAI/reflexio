@@ -397,12 +397,14 @@ class TestQMDCheckInstalled:
 
     def test_auto_installs_when_not_found(self, tmp_path: Path) -> None:
         """When qmd is not found, auto-install is attempted; raises if all methods fail."""
-        with patch("subprocess.run", side_effect=FileNotFoundError):
-            with pytest.raises(StorageError, match="automatic installation failed"):
-                QMDClient(
-                    collection_path=tmp_path,
-                    collection_name="test_col",
-                )
+        with (
+            patch("subprocess.run", side_effect=FileNotFoundError),
+            pytest.raises(StorageError, match="automatic installation failed"),
+        ):
+            QMDClient(
+                collection_path=tmp_path,
+                collection_name="test_col",
+            )
 
 
 class TestQMDSearch:

@@ -8,10 +8,10 @@ from __future__ import annotations
 
 import itertools
 import logging
-from pathlib import Path
 import sys
 import threading
 import time
+from pathlib import Path
 
 # ANSI color codes for service prefixes
 SERVICE_COLORS: dict[str, str] = {

@@ -3,6 +3,8 @@
 from collections.abc import Callable
 from unittest.mock import patch
 
+import pytest
+
 from reflexio.lib.reflexio_lib import Reflexio
 from reflexio.models.api_schema.retriever_schema import (
     GetAgentSuccessEvaluationResultsRequest,
@@ -17,6 +19,8 @@ from reflexio.server.services.agent_success_evaluation.group_evaluation_runner i
     run_group_evaluation,
 )
 from tests.server.test_utils import skip_in_precommit, skip_low_priority
+
+pytestmark = pytest.mark.e2e
 
 
 def _trigger_group_evaluation(

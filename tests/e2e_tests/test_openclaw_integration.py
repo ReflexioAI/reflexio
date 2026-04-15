@@ -35,6 +35,8 @@ from reflexio.models.config_schema import (
 from reflexio.server.services.configurator.configurator import DefaultConfigurator
 from tests.server.test_utils import skip_in_precommit
 
+pytestmark = pytest.mark.e2e
+
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------

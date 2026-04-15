@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import typer
 
-from reflexio import __version__ as _VERSION
+from reflexio import __version__ as _VERSION  # noqa: N812
 
 
 class TestCreateApp:

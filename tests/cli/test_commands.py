@@ -200,7 +200,7 @@ class TestUserPlaybooksUpdate:
             [
                 "user-playbooks",
                 "update",
-                "--id",
+                "--playbook-id",
                 "42",
                 "--content",
                 "new content",
@@ -217,7 +217,7 @@ class TestUserPlaybooksUpdate:
         self, runner, app, mock_client
     ) -> None:
         """Calling update with no editable fields should fail with a validation error."""
-        result = runner.invoke(app, ["user-playbooks", "update", "--id", "42"])
+        result = runner.invoke(app, ["user-playbooks", "update", "--playbook-id", "42"])
         assert result.exit_code != 0
         mock_client.update_user_playbook.assert_not_called()
 
@@ -263,7 +263,7 @@ class TestAgentPlaybooksUpdate:
             [
                 "agent-playbooks",
                 "update",
-                "--id",
+                "--playbook-id",
                 "7",
                 "--playbook-name",
                 "new_category",
@@ -279,7 +279,7 @@ class TestAgentPlaybooksUpdate:
     def test_update_agent_playbook_no_fields_errors(
         self, runner, app, mock_client
     ) -> None:
-        result = runner.invoke(app, ["agent-playbooks", "update", "--id", "7"])
+        result = runner.invoke(app, ["agent-playbooks", "update", "--playbook-id", "7"])
         assert result.exit_code != 0
         mock_client.update_agent_playbook.assert_not_called()
 
@@ -294,7 +294,7 @@ class TestAgentPlaybooksUpdateStatus:
             [
                 "agent-playbooks",
                 "update-status",
-                "--id",
+                "--playbook-id",
                 "5",
                 "--status",
                 "approved",
@@ -314,7 +314,7 @@ class TestAgentPlaybooksUpdateStatus:
             [
                 "agent-playbooks",
                 "update-status",
-                "--id",
+                "--playbook-id",
                 "5",
                 "--status",
                 "pending",
@@ -333,7 +333,7 @@ class TestAgentPlaybooksUpdateStatus:
             [
                 "agent-playbooks",
                 "update-status",
-                "--id",
+                "--playbook-id",
                 "5",
                 "--status",
                 "rejected",
@@ -351,7 +351,7 @@ class TestAgentPlaybooksUpdateStatus:
             [
                 "agent-playbooks",
                 "update-status",
-                "--id",
+                "--playbook-id",
                 "5",
                 "--status",
                 "garbage",

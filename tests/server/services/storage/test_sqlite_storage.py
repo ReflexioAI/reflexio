@@ -31,12 +31,19 @@ from reflexio.server.services.storage.sqlite_storage import (
 # Helpers
 # ---------------------------------------------------------------------------
 
+_EMBED_DIM = 512
+
+
+def _pad_embedding(values: list[float]) -> list[float]:
+    """Pad a short embedding vector to 512 dimensions with zeros."""
+    return values + [0.0] * (_EMBED_DIM - len(values))
+
 
 @pytest.fixture
 def storage():
     with (
         tempfile.TemporaryDirectory() as temp_dir,
-        patch.object(SQLiteStorage, "_get_embedding", return_value=[0.0]),
+        patch.object(SQLiteStorage, "_get_embedding", return_value=[0.0] * 512),
     ):
         yield SQLiteStorage(org_id="0", db_path=f"{temp_dir}/reflexio.db")
 
@@ -299,7 +306,7 @@ def test_user_playbook_searchable_by_when_condition(storage):
 
 def test_search_user_profile_queryless_respects_time_window():
     with tempfile.TemporaryDirectory() as temp_dir:
-        with patch.object(SQLiteStorage, "_get_embedding", return_value=[0.0]):
+        with patch.object(SQLiteStorage, "_get_embedding", return_value=[0.0] * 512):
             storage = SQLiteStorage(org_id="0", db_path=f"{temp_dir}/reflexio.db")
 
             storage.add_user_profile(
@@ -388,9 +395,10 @@ class TestEffectiveSearchMode:
 
 
 def _deterministic_embedding(text: str) -> list[float]:
-    """Generate a deterministic 8-dim embedding from text for testing."""
+    """Generate a deterministic 512-dim embedding from text for testing."""
     h = hashlib.sha256(text.encode()).digest()
-    return [b / 255.0 for b in h[:8]]
+    # Repeat the 32-byte hash to fill 512 dimensions
+    return [h[i % 32] / 255.0 for i in range(512)]
 
 
 @pytest.fixture
@@ -528,11 +536,11 @@ def test_explicit_vector_mode_bypasses_fts_filter(storage):
 
     storage._execute(
         "UPDATE agent_playbooks SET embedding = ? WHERE agent_playbook_id = ?",
-        (json.dumps([0.0, 1.0]), 1),
+        (json.dumps(_pad_embedding([0.0, 1.0])), 1),
     )
     storage._execute(
         "UPDATE agent_playbooks SET embedding = ? WHERE agent_playbook_id = ?",
-        (json.dumps([1.0, 0.0]), 2),
+        (json.dumps(_pad_embedding([1.0, 0.0])), 2),
     )
 
     results = storage.search_agent_playbooks(
@@ -541,7 +549,7 @@ def test_explicit_vector_mode_bypasses_fts_filter(storage):
             top_k=1,
             search_mode=SearchMode.VECTOR,
         ),
-        options=SearchOptions(query_embedding=[1.0, 0.0]),
+        options=SearchOptions(query_embedding=_pad_embedding([1.0, 0.0])),
     )
 
     assert len(results) == 1
@@ -593,17 +601,17 @@ def test_vector_search_ranks_full_filtered_set(storage):
 
     storage._execute(
         "UPDATE agent_playbooks SET embedding = ? WHERE agent_playbook_id = ?",
-        (json.dumps([1.0, 0.0]), 1),
+        (json.dumps(_pad_embedding([1.0, 0.0])), 1),
     )
     for playbook_id in range(2, 7):
         storage._execute(
             "UPDATE agent_playbooks SET embedding = ? WHERE agent_playbook_id = ?",
-            (json.dumps([0.0, 1.0]), playbook_id),
+            (json.dumps(_pad_embedding([0.0, 1.0])), playbook_id),
         )
 
     results = storage.search_agent_playbooks(
         SearchAgentPlaybookRequest(top_k=1),
-        options=SearchOptions(query_embedding=[1.0, 0.0]),
+        options=SearchOptions(query_embedding=_pad_embedding([1.0, 0.0])),
     )
 
     assert len(results) == 1
@@ -647,7 +655,7 @@ def test_hybrid_search_with_null_embeddings(storage):
     )
 
     # Provide a real embedding for the query — should still return results
-    query_emb = [1.0, 0.5, 0.3, 0.1, 0.0, 0.0, 0.0, 0.0]
+    query_emb = _pad_embedding([1.0, 0.5, 0.3, 0.1])
     results = storage.search_agent_playbooks(
         SearchAgentPlaybookRequest(query="errors", top_k=10),
         options=SearchOptions(query_embedding=query_emb),
@@ -794,15 +802,17 @@ def test_hybrid_surfaces_semantic_only_match(storage):
     # while playbook #2 (database) matches lexically
     storage._execute(
         "UPDATE agent_playbooks SET embedding = ? WHERE agent_playbook_id = ?",
-        (json.dumps([1.0, 0.0, 0.0, 0.0]), 1),  # closest to query
+        (json.dumps(_pad_embedding([1.0, 0.0, 0.0, 0.0])), 1),  # closest to query
     )
     storage._execute(
         "UPDATE agent_playbooks SET embedding = ? WHERE agent_playbook_id = ?",
-        (json.dumps([0.0, 1.0, 0.0, 0.0]), 2),  # farther from query
+        (json.dumps(_pad_embedding([0.0, 1.0, 0.0, 0.0])), 2),  # farther from query
     )
 
     # Query: "database" matches #2 lexically, but embedding is closest to #1
-    query_emb = [0.9, 0.1, 0.0, 0.0]  # very close to playbook #1's embedding
+    query_emb = _pad_embedding(
+        [0.9, 0.1, 0.0, 0.0]
+    )  # very close to playbook #1's embedding
     results = storage.search_agent_playbooks(
         SearchAgentPlaybookRequest(
             query="database", top_k=10, search_mode=SearchMode.HYBRID
@@ -841,18 +851,18 @@ def test_hybrid_surfaces_semantic_only_user_playbook(storage):
 
     storage._execute(
         "UPDATE user_playbooks SET embedding = ? WHERE user_playbook_id = ?",
-        (json.dumps([1.0, 0.0]), 1),
+        (json.dumps(_pad_embedding([1.0, 0.0])), 1),
     )
     storage._execute(
         "UPDATE user_playbooks SET embedding = ? WHERE user_playbook_id = ?",
-        (json.dumps([0.0, 1.0]), 2),
+        (json.dumps(_pad_embedding([0.0, 1.0])), 2),
     )
 
     results = storage.search_user_playbooks(
         SearchUserPlaybookRequest(
             query="database", top_k=10, search_mode=SearchMode.HYBRID
         ),
-        options=SearchOptions(query_embedding=[0.9, 0.1]),
+        options=SearchOptions(query_embedding=_pad_embedding([0.9, 0.1])),
     )
 
     result_ids = [r.user_playbook_id for r in results]
@@ -871,7 +881,7 @@ def test_embedding_prefix_applied():
 
     def mock_llm_get_embedding(text, model, dimensions):
         captured_texts.append(text)
-        return [0.0]
+        return [0.0] * 512
 
     with (
         tempfile.TemporaryDirectory() as temp_dir,
@@ -905,7 +915,7 @@ def test_sqlite_vec_fallback_graceful():
     """When sqlite-vec is not installed, _has_sqlite_vec should be False and search still works."""
     with (
         tempfile.TemporaryDirectory() as temp_dir,
-        patch.object(SQLiteStorage, "_get_embedding", return_value=[0.0]),
+        patch.object(SQLiteStorage, "_get_embedding", return_value=[0.0] * 512),
     ):
         s = SQLiteStorage(org_id="0", db_path=f"{temp_dir}/reflexio.db")
         # Whether sqlite-vec is available or not, the storage should work

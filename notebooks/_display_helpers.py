@@ -15,7 +15,7 @@ import pandas as pd
 from IPython.display import HTML, Markdown, display
 from rich import print as rprint
 from rich.console import Console
-from rich.json import JSON as RichJSON
+from rich.json import JSON as RichJSON  # noqa: N811
 
 if TYPE_CHECKING:
     from reflexio import Config, UserProfile

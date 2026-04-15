@@ -24,6 +24,8 @@ from reflexio.models.api_schema.service_schemas import (
 from tests.e2e_tests.conftest import scenario_batch_to_interactions
 from tests.server.test_utils import skip_in_precommit, skip_low_priority
 
+pytestmark = pytest.mark.e2e
+
 
 @skip_in_precommit
 def test_publish_interaction_profile_only(
