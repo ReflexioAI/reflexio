@@ -6,7 +6,6 @@ using LiteLLM. It maintains the same interface as the existing LLMClient for eas
 """
 
 import base64
-import hashlib
 import json
 import logging
 import os
@@ -14,7 +13,6 @@ import re
 import time
 from dataclasses import dataclass
 from functools import lru_cache
-from pathlib import Path
 from typing import Any
 
 import litellm
@@ -161,174 +159,6 @@ def _truncate_for_embedding(
             model,
         )
     return encoding.decode(tokens[:max_tokens])
-
-
-# ---------------------------------------------------------------------------
-# Determinism cache (opt-in via REFLEXIO_LLM_CACHE_DIR)
-#
-# Reasoning models such as gpt-5-mini ignore temperature and do not honor
-# seed reliably. For benchmark re-runs we need the same trajectory to yield
-# the same extraction output every time, so this tiny on-disk cache memoizes
-# raw LLM response strings keyed by a hash of the completion params. When
-# the env var is unset, both helpers are no-ops and normal uncached behavior
-# is preserved.
-# ---------------------------------------------------------------------------
-
-
-def _llm_cache_dir() -> Path | None:
-    """Resolve the opt-in LLM response cache directory.
-
-    Reads `REFLEXIO_LLM_CACHE_DIR` and ensures the directory exists. When
-    the env var is unset, returns None so callers can no-op. Creation
-    failures are logged at debug and treated as "cache disabled".
-
-    Returns:
-        Path | None: The cache directory, or None when disabled / unusable.
-    """
-    d = os.environ.get("REFLEXIO_LLM_CACHE_DIR")
-    if not d:
-        return None
-    p = Path(d)
-    try:
-        p.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
-        _LOGGER.debug("llm cache dir %s not writable: %s", p, exc)
-        return None
-    return p
-
-
-_SESSION_HEADER_RE = re.compile(r"^=== Session: [^=]+ ===\s*$", re.MULTILINE)
-
-
-def _normalize_message_content(content: Any) -> Any:
-    """Strip volatile markers (like session headers with per-run IDs) from
-    message content so the same trajectory produces the same cache key
-    regardless of how publish_interaction labeled the session."""
-    if isinstance(content, str):
-        return _SESSION_HEADER_RE.sub("=== Session: <normalized> ===", content)
-    if isinstance(content, list):
-        out = []
-        for b in content:
-            if isinstance(b, dict):
-                b2 = dict(b)
-                if "text" in b2 and isinstance(b2["text"], str):
-                    b2["text"] = _normalize_message_content(b2["text"])
-                out.append(b2)
-            else:
-                out.append(b)
-        return out
-    return content
-
-
-def _llm_cache_key(params: dict[str, Any]) -> str | None:
-    """Hash the params deterministically, skipping volatile fields.
-
-    Builds a stable SHA256 over the completion params with per-run fields
-    (api_key, timeouts, metadata) stripped and message content normalized.
-    Response-format classes are serialized via their JSON schema so
-    equivalent Pydantic models hash identically.
-
-    Args:
-        params (dict[str, Any]): Completion params passed to litellm.
-
-    Returns:
-        str | None: Hex digest of the normalized params, or None if the
-            params contain anything that cannot be stably serialized. A
-            None return means "bypass the cache", which is safer than a
-            non-deterministic fallback key that could silently miss.
-    """
-    skip = {"api_key", "api_base", "api_version", "timeout", "num_retries", "metadata"}
-    filtered: dict[str, Any] = {}
-    for k, v in params.items():
-        if k in skip:
-            continue
-        if k == "messages" and isinstance(v, list):
-            filtered[k] = [
-                {**m, "content": _normalize_message_content(m.get("content"))}
-                if isinstance(m, dict)
-                else m
-                for m in v
-            ]
-            continue
-        filtered[k] = v
-
-    def _default(obj: Any) -> Any:
-        if isinstance(obj, type):
-            return f"<class {obj.__module__}.{obj.__qualname__}>"
-        if hasattr(obj, "model_json_schema"):
-            try:
-                return obj.model_json_schema()
-            except Exception as exc:  # noqa: BLE001 — schema extraction is best-effort
-                _LOGGER.debug(
-                    "llm cache key: model_json_schema failed on %s: %s",
-                    type(obj).__name__,
-                    exc,
-                )
-                raise TypeError(
-                    f"unhashable response_format {type(obj).__name__}"
-                ) from exc
-        raise TypeError(f"unhashable param type {type(obj).__name__}")
-
-    try:
-        payload = json.dumps(filtered, sort_keys=True, default=_default).encode("utf-8")
-    except TypeError as exc:
-        _LOGGER.debug("llm cache key: bypass — %s", exc)
-        return None
-    return hashlib.sha256(payload).hexdigest()
-
-
-def _read_llm_cache(params: dict[str, Any]) -> str | None:
-    """Return a cached raw response string for the given params, or None.
-
-    Args:
-        params (dict[str, Any]): Completion params passed to litellm.
-
-    Returns:
-        str | None: Cached raw content, or None on miss / disabled / error.
-    """
-    d = _llm_cache_dir()
-    if d is None:
-        return None
-    key = _llm_cache_key(params)
-    if key is None:
-        return None
-    fp = d / f"{key}.json"
-    if not fp.is_file():
-        return None
-    try:
-        obj = json.loads(fp.read_text())
-    except (OSError, json.JSONDecodeError) as exc:
-        _LOGGER.debug("llm cache read failed for %s: %s", fp.name, exc)
-        return None
-    return obj.get("content") if isinstance(obj, dict) else None
-
-
-def _write_llm_cache(params: dict[str, Any], content: Any) -> None:
-    """Persist a raw response string to the LLM cache directory.
-
-    No-op if the cache is disabled, the content is non-string, or the
-    params cannot be stably hashed. Write failures are logged at debug
-    and swallowed — a failed cache write must never break the request.
-
-    Args:
-        params (dict[str, Any]): Completion params passed to litellm.
-        content (Any): Raw response content to persist; only string
-            values are cached.
-    """
-    d = _llm_cache_dir()
-    if d is None or not isinstance(content, str):
-        return
-    key = _llm_cache_key(params)
-    if key is None:
-        return
-    fp = d / f"{key}.json"
-    try:
-        model = params.get("model", "")
-        fp.write_text(
-            json.dumps({"model": model, "content": content}, ensure_ascii=False)
-        )
-    except OSError as exc:
-        _LOGGER.debug("llm cache write failed for %s: %s", fp.name, exc)
 
 
 @dataclass
@@ -739,8 +569,7 @@ class LiteLLMClient:
         # inject it as seed + force temperature=0 on non-restricted models so
         # repeated extraction calls produce stable outputs on providers that
         # honor `seed`. Current-gen reasoning models (gpt-5-*) do not honor
-        # seed or temperature, so the response cache below is the primary
-        # determinism lever; this knob is the fallback for the cache-miss path.
+        # seed or temperature, so the knob is best-effort only on those.
         seed_env = os.environ.get("REFLEXIO_LLM_SEED") or ""
         if seed_env:
             try:
@@ -901,31 +730,6 @@ class LiteLLMClient:
             self._build_completion_params(messages, **kwargs)
         )
 
-        # Determinism cache: if REFLEXIO_LLM_CACHE_DIR is set, hash the
-        # completion params and return a cached raw response string on hit.
-        # This is what makes repeated extraction over the same trajectory
-        # byte-identical — reasoning models (gpt-5-*) do not honor seed or
-        # temperature, so the only reliable determinism lever is response
-        # memoization. Structured-output parsing downstream is deterministic
-        # given the same raw string.
-        cached = _read_llm_cache(params)
-        if cached is not None:
-            # Emit an llm_request_end event with cache_hit=True so downstream
-            # log aggregators still see one row per request — otherwise a
-            # cache-heavy benchmark run looks like a silent dashboard gap.
-            self.logger.info(
-                "event=llm_request_end model=%s timeout=%s has_response_format=%s "
-                "attempt=1/1 elapsed_seconds=0.000 success=True cache_hit=True",
-                params.get("model"),
-                params.get("timeout"),
-                response_format is not None,
-            )
-            return self._maybe_parse_structured_output(
-                cached,
-                response_format,
-                parse_structured_output,
-            )
-
         last_error: Exception | None = None
         for attempt in range(max_retries):
             request_start = time.perf_counter()
@@ -940,7 +744,6 @@ class LiteLLMClient:
             try:
                 response = litellm.completion(**params)
                 content = response.choices[0].message.content  # type: ignore[reportAttributeAccessIssue]
-                _write_llm_cache(params, content)
                 elapsed_seconds = time.perf_counter() - request_start
 
                 self._log_token_usage(params, response)
