@@ -1,9 +1,5 @@
 # Reflexio + Claude Code Integration
 
-[![PyPI version](https://img.shields.io/pypi/v/reflexio-ai)](https://pypi.org/project/reflexio-ai/)
-[![Python version](https://img.shields.io/pypi/pyversions/reflexio-ai)](https://pypi.org/project/reflexio-ai/)
-[![License](https://img.shields.io/pypi/l/reflexio-ai)](https://github.com/reflexio-ai/reflexio/blob/main/LICENSE)
-
 **Reflexio helps Claude Code remember what it learns about you and your projects across sessions.** It extracts two types of knowledge from your conversations:
 
 - **User Profiles** — facts about you, your preferences, settings and environment shared by you (e.g. tools, project conventions, constraints)

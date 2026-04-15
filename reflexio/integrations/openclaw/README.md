@@ -1,9 +1,5 @@
 # Reflexio OpenClaw Integration
 
-[![PyPI version](https://img.shields.io/pypi/v/reflexio-ai)](https://pypi.org/project/reflexio-ai/)
-[![Python version](https://img.shields.io/pypi/pyversions/reflexio-ai)](https://pypi.org/project/reflexio-ai/)
-[![License](https://img.shields.io/pypi/l/reflexio-ai)](https://github.com/reflexio-ai/reflexio/blob/main/LICENSE)
-
 Connect [OpenClaw](https://openclaw.ai) agents to [Reflexio](https://github.com/reflexio-ai/reflexio) for automatic self-improvement with multi-user support and agent playbooks. Conversations are captured automatically; task-specific playbooks are retrieved on-demand via the `reflexio` CLI; and corrections from multiple agent instances are aggregated into shared agent playbooks.
 
 ## Table of Contents

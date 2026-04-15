@@ -46,7 +46,6 @@ Publish conversations from your agent, and Reflexio closes the self-improvement 
 
 ## Table of Contents
 
-- [What Makes Reflexio Different](#what-makes-reflexio-different)
 - [Demo](#demo)
 - [Quick Start](#quick-start)
 - [Features](#features)
@@ -57,15 +56,6 @@ Publish conversations from your agent, and Reflexio closes the self-improvement 
 - [Contributing](#contributing)
 - [Star History](#star-history)
 - [License](#license)
-
-## What Makes Reflexio Different
-
-| Approach | Learns from conversations | No retraining | Per-user personalization | Works with any LLM |
-|----------|:---:|:---:|:---:|:---:|
-| Fine-tuning | - | - | - | - |
-| RAG | - | Yes | - | Yes |
-| Prompt engineering | - | Yes | - | Yes |
-| **Reflexio** | **Yes** | **Yes** | **Yes** | **Yes** |
 
 ## Demo
 

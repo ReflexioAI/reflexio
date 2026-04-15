@@ -1,10 +1,5 @@
 # Reflexio LangChain Integration
 
-[![PyPI version](https://img.shields.io/pypi/v/reflexio-ai)](https://pypi.org/project/reflexio-ai/)
-[![LangChain compatibility](https://img.shields.io/badge/langchain--core-%3E%3D0.3.0-blue)](https://python.langchain.com/)
-[![Python version](https://img.shields.io/pypi/pyversions/reflexio-ai)](https://pypi.org/project/reflexio-ai/)
-[![License](https://img.shields.io/pypi/l/reflexio-ai)](https://github.com/reflexio-ai/reflexio/blob/main/LICENSE)
-
 [Reflexio](../../../../README.md) is an open-source memory layer that helps AI agents learn from past interactions. It extracts behavioral playbooks and user profiles from conversations, then retrieves relevant context before each response -- so agents improve over time without retraining.
 
 Connect LangChain agents to Reflexio for automatic self-improvement. Capture conversations, retrieve learned context, and inject behavioral guidelines — all through standard LangChain interfaces.

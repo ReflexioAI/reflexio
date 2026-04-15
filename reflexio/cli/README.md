@@ -262,6 +262,7 @@ You should see a profile entry reflecting the user's preference.
 
 ```shell
 uv run reflexio user-profiles list --user-id alice
+uv run reflexio user-playbooks list --user-id alice
 uv run reflexio agent-playbooks list
 ```
 
@@ -271,6 +272,7 @@ Every command and subcommand supports `--help`:
 
 ```shell
 uv run reflexio --help
+uv run reflexio user-profiles --help
+uv run reflexio user-playbooks --help
 uv run reflexio agent-playbooks --help
-uv run reflexio agent-playbooks aggregate --help
 ```

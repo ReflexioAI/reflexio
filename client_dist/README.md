@@ -24,7 +24,6 @@ The official Python SDK for [Reflexio](https://www.reflexio.ai/) — the adaptiv
 - [Configuration](#configuration)
 - [Bulk Delete Operations](#bulk-delete-operations)
 - [Fire-and-Forget vs Blocking](#fire-and-forget-vs-blocking)
-- [Error Handling](#error-handling)
 - [API Reference](#api-reference)
 - [Requirements](#requirements)
 
@@ -296,28 +295,6 @@ Most write/delete methods support `wait_for_response`:
 - **`wait_for_response=True`**: Blocks until the server finishes processing. Returns the full response.
 
 In async contexts (e.g., FastAPI), fire-and-forget uses the existing event loop. In sync contexts, it uses a shared thread pool.
-
-## Error Handling
-
-The client raises standard exceptions that you can catch to handle API errors gracefully:
-
-```python
-from reflexio import ReflexioClient
-import requests
-
-client = ReflexioClient(api_key="your-api-key")
-
-try:
-    results = client.search_profiles(user_id="user-123", query="preferences")
-    for profile in results.profiles:
-        print(profile.profile_name)
-except requests.exceptions.ConnectionError:
-    print("Could not connect to the Reflexio server. Is it running?")
-except requests.exceptions.HTTPError as e:
-    print(f"API request failed: {e.response.status_code} - {e.response.text}")
-except Exception as e:
-    print(f"Unexpected error: {e}")
-```
 
 ## API Reference
 
