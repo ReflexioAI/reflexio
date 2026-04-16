@@ -35,11 +35,10 @@ All retrieval is via Openclaw's memory engine — vector + FTS + MMR + temporal 
 - [OpenClaw](https://openclaw.ai) installed and `openclaw` CLI on PATH
 - Node.js and npm (for the hook handler)
 - macOS or Linux (Windows via WSL)
+- A bash-compatible shell (install/uninstall scripts and `reflexio-write.sh` use `#!/usr/bin/env bash`)
 - Strongly recommended:
   - An embedding provider API key (OpenAI, Gemini, Voyage, or Mistral) for vector search
   - The `active-memory` plugin enabled (auto-retrieval into turns)
-- Optional:
-  - A bash-compatible shell (plugin uses `reflexio-write.sh`)
 
 The plugin works without active-memory and without an embedding key — with degraded retrieval quality. See `references/architecture.md` for degradation modes.
 
@@ -76,8 +75,9 @@ This guarantees zero manual `openclaw.json` editing. If `exec` is denied by admi
 Defaults live in `config.json`. To override, use one of:
 
 1. Edit `config.json` directly
-2. Set env vars: `REFLEXIO_EMBEDDED_SHALLOW_THRESHOLD=0.65`
-3. Use `openclaw config` for overrides persisted at the Openclaw layer
+2. Use `openclaw config` for overrides persisted at the Openclaw layer
+
+(env var overrides are planned for v2; see `references/future-work.md`)
 
 Tunables:
 
@@ -86,6 +86,7 @@ Tunables:
 | `dedup.shallow_threshold` | 0.7 | Similarity above which in-session writes trigger pairwise dedup |
 | `dedup.full_threshold` | 0.75 | Similarity cluster-member cutoff in daily consolidation |
 | `dedup.top_k` | 5 | How many neighbors to consider |
+| `ttl_sweep.on_bootstrap` | `true` | Whether to sweep expired profiles on each agent bootstrap |
 | `consolidation.cron` | `"0 3 * * *"` | Daily consolidation schedule |
 | `extraction.subagent_timeout_seconds` | 120 | Flow C sub-agent timeout |
 
