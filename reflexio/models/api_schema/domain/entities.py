@@ -271,7 +271,7 @@ class ShareLink(BaseModel):
     """A shareable public link that maps a token to a resource within an org.
 
     Args:
-        id (int | None): Auto-generated primary key (None when creating).
+        id (int): Primary key assigned by the storage layer.
         org_id (str): The organization that owns the share link.
         token (str): The share token (unique). Format: shr_<org_id_b64>.<random>.
         resource_type (str): One of "profile", "request", "session", "user_playbook", "agent_playbook".
@@ -281,7 +281,7 @@ class ShareLink(BaseModel):
         created_by_email (str | None): Optional email of the user who created the link.
     """
 
-    id: int | None = None
+    id: int
     org_id: str
     token: str
     resource_type: str
