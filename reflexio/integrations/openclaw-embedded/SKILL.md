@@ -189,3 +189,28 @@ When you are about to write a profile or playbook in-session (Flow A or Flow B),
 Session-end (Flow C) runs deeper dedup with an LLM merge decision. You don't need to replicate that in-session.
 
 The daily consolidation cron runs full n-way consolidation across all files. You never need to run this yourself.
+
+## Safety
+
+- **Never write secrets.** No API keys, tokens, access tokens, private keys, environment variables, OAuth secrets, auth headers. If the user's message contains any of these, redact them before writing.
+- **Redact pasted code.** User-pasted snippets often contain credentials. Strip them first.
+- **PII.** Do not capture PII beyond what's operationally useful (name, timezone, role are fine; government IDs, addresses, phone numbers only if explicitly relevant).
+
+## Best Practices
+
+1. **Write immediately** on a clear signal. Don't queue to session-end — that's Flow C's job; you have a different role.
+2. **One fact per profile file.** Multi-fact files are harder to dedupe and easier to contradict.
+3. **Trigger phrase = search anchor.** Write `## When` as a noun phrase describing the situation, not a sentence. Retrieval hits on semantic similarity to this field.
+4. **Skip writing when uncertain.** Flow C has a second pass over the full transcript. It's better to let it handle ambiguous cases.
+5. **Prefer shorter TTL for transient facts.** Don't let "working on project X" accumulate as infinity-TTL cruft.
+
+## Opt-in Hook
+
+This skill works standalone — your in-session Flow A (profile) and Flow B (playbook) writes populate `.reflexio/` without any hook.
+
+The optional hook (`hook/` directory of this plugin) adds two capabilities:
+
+1. **TTL sweep at session start**: deletes expired profiles before Active Memory runs.
+2. **Session-end batch extraction (Flow C)**: on `session:compact:before`, `command:stop`, or `command:reset`, spawns a `reflexio-extractor` sub-agent that extracts profiles/playbooks from the full transcript and runs shallow pairwise dedup.
+
+See this plugin's `README.md` for install instructions (runs via `./scripts/install.sh`). If the hook is not installed, Flows A+B still work.
