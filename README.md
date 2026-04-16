@@ -27,9 +27,14 @@
 ---
 
 ## What is Reflexio?
-The moat for AI agents isn't the model — it's what your agent learns from every interaction it handles.
+Reflexio is an **AI agent self-improvement harness** that enables your AI agents to continuously learn from real user interactions. It turns user corrections into persisted behavioral improvements for agents and capturing successful execution paths for reuse.  
 
-Reflexio is a **self-improvement platform** for AI agents. It gives *any* agent the self-improvement ability that frameworks like [hermes-agent](https://github.com/nousresearch/hermes-agent) have built-in. And on agents that already self-improve on their own, Reflexio compounds additional gains on top. It turns every conversation your AI agent has into a learning opportunity — automatically extracting user preferences and behavioral playbooks so your agent continuously improves itself without manual tuning.
+What one user teaches, every user benefits from.  
+
+As your agent is used more, it becomes smarter, faster, and more effective at solving domain-specific tasks.
+The moat for AI agents is what your agent learns from every interaction it handles.  
+
+Our vision is that AI systems should get better with every interaction.
 
 > **Benchmarked on GDPVal**: on 4 of 5 real knowledge-work tasks from OpenAI's public GDPVal benchmark, Reflexio cuts a **median −81% planning steps and −72% tokens** on a Hermes agent running `minimax/MiniMax-M2.7` — measured against a *warm baseline*: the same agent re-running the task after it has already learned from itself. In other words, Reflexio's savings come **on top of** what a SOTA self-improving agent has learnt on its own. See the full writeup → [benchmark/gdpval/RESULTS.md](benchmark/gdpval/RESULTS.md).
 
@@ -47,10 +52,8 @@ Publish conversations from your agent, and Reflexio closes the self-improvement 
 
 - **Never Repeat the Same Mistake**: Transforms user corrections and interaction signals into improved decision-making processes — so agents adapt their behavior and avoid repeating the same mistakes.
 - **Lock In What Works**: Persists successful strategies and workflows so your agent reuses proven paths instead of starting from scratch.
-- **Correct in Real Time**: Retrieves personalization and operational signals to fix agent behavior live — no retraining required.
+- **Transfer Learning Across Users**: What one user teaches, every user benefits from — corrections and successful strategies from one individual propagate to improve the agent for everyone, no retraining required.
 - **Learn from Human Experts**: Publish expert-provided ideal responses alongside agent responses — Reflexio automatically extracts actionable playbooks from the differences.
-- **Personal & Global Improvements**: Separates individual user preferences from system-wide agent improvements.
-- **AI First Self-Optimization**: Agents autonomously reflect, learn, and improve — less human-in-the-loop, more compounding gains.
 
 > **For developers**: See [developer.md](developer.md) for project structure, environment setup, testing, and coding guidelines.
 
@@ -88,19 +91,33 @@ Publish conversations from your agent, and Reflexio closes the self-improvement 
 
 ### Setup
 
+**Option A — Install from PyPI** (fastest, for users):
+
 ```shell
-# 1. Clone and configure
+pip install reflexio-ai
+
+# start/stop services. data saved under ~/.reflexio
+reflexio services start           # API (8081), Docs (8082), SQLite storage
+reflexio services stop            # Stop all services
+```
+
+**Option B — Clone from source** (for contributors):
+
+```shell
+# clone the repo
 git clone https://github.com/ReflexioAI/reflexio.git
 cd reflexio
-cp .env.example .env          # Set at least one LLM API key (OpenAI, Anthropic, etc.)
 
-# 2. Install dependencies
-uv sync                                   # Python (includes workspace packages)
+# configure: copy env template, then set at least one LLM API key (OpenAI, Anthropic, etc.)
+cp .env.example .env
+
+# install dependencies
+uv sync                                    # Python (includes workspace packages)
 npm --prefix docs install                  # API docs
 
-# 3. Start services (--storage sqlite is the default)
-uv run reflexio services start                    # API (8081), Docs (8082), SQLite storage
-uv run reflexio services stop                     # Stop all services
+# start/stop services. data saved under ~/.reflexio
+uv run reflexio services start             # API (8081), Docs (8082), SQLite storage
+uv run reflexio services stop              # Stop all services
 ```
 
 > Alternative: `python -m reflexio.cli services start` or `./run_services.sh`
