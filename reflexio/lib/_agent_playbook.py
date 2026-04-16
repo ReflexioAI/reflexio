@@ -140,16 +140,16 @@ class AgentPlaybookMixin(ReflexioBase):
 
         try:
             # Normalize playbooks - only keep required fields, reset others to defaults.
-            # structured_data is preserved so CLI callers that pass
-            # trigger/instruction/pitfall/rationale don't silently lose them;
-            # the publish/aggregation pipeline also constructs playbooks with
-            # structured_data and expects it to survive this normalization.
+            # Top-level structured fields (trigger, rationale, blocking_issue) are
+            # preserved so CLI callers and the aggregation pipeline don't lose them.
             normalized_playbooks = [
                 AgentPlaybook(
                     agent_version=fb.agent_version,
                     playbook_name=fb.playbook_name,
                     content=fb.content,
-                    structured_data=fb.structured_data,
+                    trigger=fb.trigger,
+                    rationale=fb.rationale,
+                    blocking_issue=fb.blocking_issue,
                     playbook_status=fb.playbook_status,
                     playbook_metadata=(fb.playbook_metadata or ""),
                 )
@@ -294,7 +294,9 @@ class AgentPlaybookMixin(ReflexioBase):
             agent_playbook_id=request.agent_playbook_id,
             playbook_name=request.playbook_name,
             content=request.content,
-            structured_data=request.structured_data,
+            trigger=request.trigger,
+            rationale=request.rationale,
+            blocking_issue=request.blocking_issue,
             playbook_status=request.playbook_status,
         )
         return UpdateAgentPlaybookResponse(

@@ -43,8 +43,8 @@ publish (see below).
 ### On `command:stop` (session end)
 POSTs the complete buffered conversation to `/api/publish_interaction` as a
 single JSON request. The local Reflexio server detects corrections via LLM
-analysis, extracts playbooks (freeform content summary + optional structured
-fields: trigger/instruction/pitfall/rationale) and user profiles. Blocks
+analysis, extracts playbooks (content + top-level fields: trigger, rationale,
+blocking_issue) and user profiles. Blocks
 briefly on the HTTP round-trip; if it fails, turns stay unpublished and are
 retried on the next `agent:bootstrap`.
 

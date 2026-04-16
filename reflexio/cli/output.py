@@ -143,40 +143,39 @@ def format_profiles(profiles: list[Any]) -> str:
     return "\n".join(f"- {p.content}{_lifecycle_tag(p)}" for p in profiles)
 
 
-def _structured_lines(sd: Any) -> list[str]:
-    """Build indented structured-data lines from a StructuredData-like object.
+def _structured_lines(playbook: Any) -> list[str]:
+    """Build indented structured-data lines from a playbook's top-level fields.
 
-    Uses the canonical labels: Trigger, Instruction, Pitfall, Rationale.
+    Uses the canonical labels: Trigger, Rationale, Blocking Issue.
 
     Args:
-        sd: Object with optional trigger, instruction, pitfall, rationale attrs
+        playbook: Playbook object with optional trigger, rationale, blocking_issue attrs
 
     Returns:
         list[str]: Indented lines (may be empty)
     """
     lines: list[str] = []
-    if sd is None:
+    if playbook is None:
         return lines
-    if getattr(sd, "trigger", None):
-        lines.append(f"  Trigger: {sd.trigger}")
-    if getattr(sd, "instruction", None):
-        lines.append(f"  Instruction: {sd.instruction}")
-    if getattr(sd, "pitfall", None):
-        lines.append(f"  Pitfall: {sd.pitfall}")
-    if getattr(sd, "rationale", None):
-        lines.append(f"  Rationale: {sd.rationale}")
+    if getattr(playbook, "trigger", None):
+        lines.append(f"  Trigger: {playbook.trigger}")
+    if getattr(playbook, "rationale", None):
+        lines.append(f"  Rationale: {playbook.rationale}")
+    if getattr(playbook, "blocking_issue", None):
+        lines.append(f"  Blocking Issue: {playbook.blocking_issue}")
     return lines
 
 
 def format_agent_playbooks(agent_playbooks: list[Any]) -> str:
-    """Format agent playbook objects with structured data.
+    """Format agent playbook objects with structured fields.
 
     Shows an approval status tag ([APPROVED]/[PENDING]/[REJECTED]) from
     ``playbook_status`` and a lifecycle tag ([PENDING]/[ARCHIVED]) from
     ``status`` when not CURRENT/None.
 
     Args:
-        agent_playbooks: Agent playbook objects with content and structured_data
+        agent_playbooks: Agent playbook objects with content, trigger, rationale,
+            blocking_issue as top-level fields
 
     Returns:
         str: Formatted agent playbooks with structured action lines
@@ -195,21 +194,21 @@ def format_agent_playbooks(agent_playbooks: list[Any]) -> str:
 
         lifecycle = _lifecycle_tag(playbook)
         parts = [f"- {playbook.content}{approval_tag}{lifecycle}"]
-        parts.extend(_structured_lines(playbook.structured_data))
+        parts.extend(_structured_lines(playbook))
         blocks.append("\n".join(parts))
     return "\n\n".join(blocks)
 
 
 def format_user_playbooks(user_playbooks: list[Any]) -> str:
-    """Format user playbook objects with structured data and source metadata.
+    """Format user playbook objects with structured fields and source metadata.
 
     User playbooks show source/request_id metadata instead of approval status.
     A lifecycle tag ([PENDING]/[ARCHIVED]) is shown when status is not
     CURRENT/None.
 
     Args:
-        user_playbooks: User playbook objects with content, structured_data,
-            source, and request_id
+        user_playbooks: User playbook objects with content, trigger, rationale,
+            blocking_issue as top-level fields, plus source and request_id
 
     Returns:
         str: Formatted user playbooks with structured action lines and source
@@ -220,7 +219,7 @@ def format_user_playbooks(user_playbooks: list[Any]) -> str:
     for playbook in user_playbooks:
         lifecycle = _lifecycle_tag(playbook)
         parts = [f"- {playbook.content}{lifecycle}"]
-        parts.extend(_structured_lines(playbook.structured_data))
+        parts.extend(_structured_lines(playbook))
         source = getattr(playbook, "source", None) or "unknown"
         request_id = getattr(playbook, "request_id", None) or "unknown"
         parts.append(f"  Source: {source} (request: {request_id})")
@@ -316,14 +315,14 @@ def print_user_playbooks(user_playbooks: list[Any]) -> None:
 
     Each playbook becomes a bordered panel. The panel title is the
     rule's content (the human-readable summary). The body is a
-    two-column grid of the structured fields (Trigger / Instruction
-    / Pitfall / Rationale) with right-aligned bold labels and
-    word-wrapped values. A dim footer shows source + short request ID.
+    two-column grid of the structured fields (Trigger / Rationale /
+    Blocking Issue) with right-aligned bold labels and word-wrapped
+    values. A dim footer shows source + short request ID.
 
     Args:
         user_playbooks: Playbook objects with ``content``,
-            ``structured_data`` (trigger/instruction/pitfall/rationale),
-            ``source``, ``request_id``, optional ``status``.
+            ``trigger``, ``rationale``, ``blocking_issue`` as top-level
+            fields, plus ``source``, ``request_id``, optional ``status``.
     """
     if not user_playbooks:
         return
@@ -342,14 +341,12 @@ def print_user_playbooks(user_playbooks: list[Any]) -> None:
         grid.add_column(style="bold dim", justify="right", no_wrap=True)
         grid.add_column(overflow="fold")
 
-        sd = getattr(pb, "structured_data", None)
         for label, attr in (
             ("Trigger", "trigger"),
-            ("Instruction", "instruction"),
-            ("Pitfall", "pitfall"),
             ("Rationale", "rationale"),
+            ("Blocking Issue", "blocking_issue"),
         ):
-            value = getattr(sd, attr, None) if sd is not None else None
+            value = getattr(pb, attr, None)
             if value:
                 grid.add_row(label, value)
 
@@ -415,15 +412,15 @@ def print_agent_playbooks(agent_playbooks: list[Any]) -> None:
     Mirrors :func:`print_user_playbooks` but the title row shows an
     approval badge (``[APPROVED]`` / ``[PENDING]`` / ``[REJECTED]``)
     colour-coded green/yellow/red instead of the source metadata
-    footer. The body still shows the structured Trigger / Instruction
-    / Pitfall / Rationale grid. The footer shows ``playbook_name ·
+    footer. The body shows the structured Trigger / Rationale /
+    Blocking Issue grid. The footer shows ``playbook_name ·
     agent_version · <relative time>``.
 
     Args:
         agent_playbooks: Agent playbook objects with ``content``,
-            ``structured_data``, ``playbook_status``, optional
-            ``playbook_name``, ``agent_version``, ``created_at``,
-            ``status``.
+            ``trigger``, ``rationale``, ``blocking_issue`` as top-level
+            fields, ``playbook_status``, optional ``playbook_name``,
+            ``agent_version``, ``created_at``, ``status``.
     """
     if not agent_playbooks:
         return
@@ -445,14 +442,12 @@ def print_agent_playbooks(agent_playbooks: list[Any]) -> None:
         grid.add_column(style="bold dim", justify="right", no_wrap=True)
         grid.add_column(overflow="fold")
 
-        sd = getattr(pb, "structured_data", None)
         for label, attr in (
             ("Trigger", "trigger"),
-            ("Instruction", "instruction"),
-            ("Pitfall", "pitfall"),
             ("Rationale", "rationale"),
+            ("Blocking Issue", "blocking_issue"),
         ):
-            value = getattr(sd, attr, None) if sd is not None else None
+            value = getattr(pb, attr, None)
             if value:
                 grid.add_row(label, value)
 

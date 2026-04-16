@@ -239,17 +239,14 @@ class TestOpenClawMultiUser:
 
         # Seed user playbooks directly (bypassing extraction batch gate)
         # to verify playbook scoping by user_id
-        from reflexio.models.api_schema.service_schemas import (
-            StructuredData,
-            UserPlaybook,
-        )
+        from reflexio.models.api_schema.service_schemas import UserPlaybook
 
         alpha_pb = UserPlaybook(
             user_id=_ALPHA_USER,
             agent_version=_AGENT_VERSION,
             playbook_name=_PLAYBOOK_NAME,
             content="Always ask for file formatting preference first",
-            structured_data=StructuredData(trigger="file formatting"),
+            trigger="file formatting",
             request_id=alpha_resp.request_id,
         )
         beta_pb = UserPlaybook(
@@ -257,7 +254,7 @@ class TestOpenClawMultiUser:
             agent_version=_AGENT_VERSION,
             playbook_name=_PLAYBOOK_NAME,
             content="Always ask for code review style preference first",
-            structured_data=StructuredData(trigger="code review"),
+            trigger="code review",
             request_id=beta_resp.request_id,
         )
         storage.save_user_playbooks([alpha_pb, beta_pb])
@@ -344,10 +341,7 @@ class TestAgentPlaybookAggregation:
 
         # Seed user playbooks directly (bypassing extraction batch gate)
         # to test aggregation scoping across multiple users
-        from reflexio.models.api_schema.service_schemas import (
-            StructuredData,
-            UserPlaybook,
-        )
+        from reflexio.models.api_schema.service_schemas import UserPlaybook
 
         seeded_playbooks = []
         for user_id in (_ALPHA_USER, _BETA_USER):
@@ -356,7 +350,7 @@ class TestAgentPlaybookAggregation:
                 agent_version=_AGENT_VERSION,
                 playbook_name=_PLAYBOOK_NAME,
                 content=f"Always ask for code formatting preference before auto-formatting (from {user_id})",
-                structured_data=StructuredData(trigger="code formatting"),
+                trigger="code formatting",
                 request_id=f"test-request-{user_id}",
             )
             seeded_playbooks.append(pb)

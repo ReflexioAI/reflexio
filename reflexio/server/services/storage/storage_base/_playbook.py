@@ -1,11 +1,11 @@
 from abc import abstractmethod
 
+from reflexio.models.api_schema.common import BlockingIssue
 from reflexio.models.api_schema.domain import (
     AgentPlaybook,
     AgentSuccessEvaluationResult,
     PlaybookStatus,
     Status,
-    StructuredData,
     UserPlaybook,
 )
 from reflexio.models.api_schema.retriever_schema import (
@@ -280,7 +280,9 @@ class PlaybookMixin:
         agent_playbook_id: int,
         playbook_name: str | None = None,
         content: str | None = None,
-        structured_data: StructuredData | None = None,
+        trigger: str | None = None,
+        rationale: str | None = None,
+        blocking_issue: BlockingIssue | None = None,
         playbook_status: PlaybookStatus | None = None,
     ) -> None:
         """Update editable fields of an agent playbook. Only non-None fields are updated.
@@ -289,7 +291,9 @@ class PlaybookMixin:
             agent_playbook_id (int): The ID of the agent playbook to update
             playbook_name (str, optional): New playbook name
             content (str, optional): New content text
-            structured_data (StructuredData, optional): New structured data
+            trigger (str, optional): New trigger text
+            rationale (str, optional): New rationale text
+            blocking_issue (BlockingIssue, optional): New blocking issue
             playbook_status (PlaybookStatus, optional): New playbook status
 
         Raises:
@@ -303,7 +307,9 @@ class PlaybookMixin:
         user_playbook_id: int,
         playbook_name: str | None = None,
         content: str | None = None,
-        structured_data: StructuredData | None = None,
+        trigger: str | None = None,
+        rationale: str | None = None,
+        blocking_issue: BlockingIssue | None = None,
     ) -> None:
         """Update editable fields of a user playbook. Only non-None fields are updated.
 
@@ -311,7 +317,9 @@ class PlaybookMixin:
             user_playbook_id (int): The ID of the user playbook to update
             playbook_name (str, optional): New playbook name
             content (str, optional): New content text
-            structured_data (StructuredData, optional): New structured data
+            trigger (str, optional): New trigger text
+            rationale (str, optional): New rationale text
+            blocking_issue (BlockingIssue, optional): New blocking issue
 
         Raises:
             ValueError: If user playbook with the given ID is not found

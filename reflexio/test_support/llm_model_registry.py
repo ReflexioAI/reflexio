@@ -56,7 +56,6 @@ def _build_registry() -> dict[str, ModelRegistryEntry]:
                     {
                         "content": "When user asks a question, provide a detailed answer rather than a brief response.",
                         "trigger": "when user asks a question",
-                        "instruction": "provide a detailed answer",
                     },
                 ],
             },
@@ -67,7 +66,6 @@ def _build_registry() -> dict[str, ModelRegistryEntry]:
                 "playbook": {
                     "content": "When user asks about implementation, provide step-by-step explanations rather than high-level overviews.",
                     "trigger": "when user asks about implementation",
-                    "instruction": "provide step-by-step explanations",
                 },
             },
         ),

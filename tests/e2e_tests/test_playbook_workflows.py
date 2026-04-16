@@ -1651,22 +1651,22 @@ def test_rerun_playbook_generation_with_extractor_names_filter(
 
 
 @skip_in_precommit
-def test_playbook_pipeline_preserves_structured_data(
+def test_playbook_pipeline_preserves_structured_fields(
     reflexio_instance_playbook_only: Reflexio,
     sample_interaction_requests: list[InteractionData],
     cleanup_playbook_only: Callable[[], None],
 ):
-    """Test that structured_data flows through all pipeline stages.
+    """Test that top-level structured fields flow through all pipeline stages.
 
-    This integration test verifies that structured_data fields (trigger,
-    instruction, pitfall) are populated after playbook extraction, preserved
+    This integration test verifies that top-level fields (trigger, rationale,
+    blocking_issue) are populated after playbook extraction, preserved
     during retrieval and search, and carried through aggregation.
 
     Pipeline stages verified:
     1. Publish interactions -> playbook extraction
-    2. Retrieve user playbooks -> assert structured_data populated
+    2. Retrieve user playbooks -> assert trigger populated
     3. Search user playbooks by trigger text -> assert results returned
-    4. Run aggregation -> assert aggregated AgentPlaybook has structured_data
+    4. Run aggregation -> assert aggregated AgentPlaybook has trigger
     """
     user_id = "test_user_structured_data"
     agent_version = "test_agent_structured_data"
@@ -1687,7 +1687,7 @@ def test_playbook_pipeline_preserves_structured_data(
         )
         assert publish_response.success is True
 
-        # Stage 2: Retrieve user playbooks and verify structured_data is populated
+        # Stage 2: Retrieve user playbooks and verify top-level fields are populated
         raw_response = reflexio_instance_playbook_only.get_user_playbooks(
             GetUserPlaybooksRequest(
                 playbook_name=playbook_name,
@@ -1698,28 +1698,14 @@ def test_playbook_pipeline_preserves_structured_data(
         assert raw_response.user_playbooks, "Expected at least one user playbook"
 
         for rf in raw_response.user_playbooks:
-            # structured_data.trigger must be populated by the extractor
-            assert rf.structured_data is not None, "structured_data should not be None"
-            assert rf.structured_data.trigger, (
-                f"structured_data.trigger should be populated, got: {rf.structured_data.trigger}"
-            )
+            # trigger must be populated by the extractor
+            assert rf.trigger, f"trigger should be populated, got: {rf.trigger}"
 
-            # At least instruction or pitfall should have content
-            has_instruction = bool(rf.structured_data.instruction)
-            has_pitfall = bool(rf.structured_data.pitfall)
-            assert has_instruction or has_pitfall, (
-                "At least one of structured_data.instruction or structured_data.pitfall "
-                f"should be populated. instruction={rf.structured_data.instruction}, "
-                f"pitfall={rf.structured_data.pitfall}"
-            )
-
-            # content should be a non-empty formatted string
-            assert rf.content.strip(), "content should be a non-empty formatted string"
+            # content should be a non-empty string
+            assert rf.content.strip(), "content should be a non-empty string"
 
         # Stage 3: Search user playbooks using trigger text
-        # The mock extractor sets trigger based on last interaction content,
-        # so search for a substring that the trigger should contain
-        trigger_text = raw_response.user_playbooks[0].structured_data.trigger
+        trigger_text = raw_response.user_playbooks[0].trigger
         search_response = reflexio_instance_playbook_only.search_user_playbooks(
             SearchUserPlaybookRequest(
                 query=trigger_text,
@@ -1732,7 +1718,7 @@ def test_playbook_pipeline_preserves_structured_data(
             f"Search for trigger text '{trigger_text}' should return results"
         )
 
-        # Stage 4: Run aggregation and verify aggregated AgentPlaybook has structured_data
+        # Stage 4: Run aggregation and verify aggregated AgentPlaybook has trigger
         # First, we need enough user playbooks to meet the min_cluster_size (3).
         # Publish more interactions to generate additional playbooks.
         for i in range(3):
@@ -1762,20 +1748,102 @@ def test_playbook_pipeline_preserves_structured_data(
         )
 
         for fb in agent_playbooks_response.agent_playbooks:
-            assert fb.structured_data is not None, (
-                "Aggregated AgentPlaybook should have structured_data"
-            )
-            assert fb.structured_data.trigger, (
-                "Aggregated AgentPlaybook.structured_data.trigger should be populated"
-            )
-            has_instruction = bool(fb.structured_data.instruction)
-            has_pitfall = bool(fb.structured_data.pitfall)
-            assert has_instruction or has_pitfall, (
-                "Aggregated AgentPlaybook should have instruction or pitfall in structured_data"
-            )
+            assert fb.trigger, "Aggregated AgentPlaybook.trigger should be populated"
             assert fb.content.strip(), (
                 "Aggregated AgentPlaybook.content should be non-empty"
             )
+
+    finally:
+        if original_env is None:
+            os.environ.pop("MOCK_LLM_RESPONSE", None)
+        else:
+            os.environ["MOCK_LLM_RESPONSE"] = original_env
+
+
+def test_knowledge_gap_playbook_extraction(
+    reflexio_instance_playbook_only: Reflexio,
+    cleanup_playbook_only: Callable[[], None],
+):
+    """Test that when user is unsatisfied and asks agent to check something it can't,
+    the extracted playbook identifies the knowledge gap without hallucinating a fix.
+
+    Scenario: User asks about order status, agent makes up a wrong answer,
+    user pushes back, agent admits it can't actually check. The playbook should
+    capture that the agent lacks the ability to look up orders and should be
+    transparent about it rather than guessing.
+    """
+    user_id = "test_user_knowledge_gap"
+    agent_version = "test_agent_gap"
+
+    # Realistic interaction: user asks agent to check something,
+    # agent guesses wrong, user is frustrated
+    knowledge_gap_interactions = [
+        InteractionData(
+            role="User",
+            content="Hey, I placed an order last week, order #A1234. Can you check the status for me?",
+        ),
+        InteractionData(
+            role="Agent",
+            content="Of course! Let me check that for you. Your order #A1234 is currently being processed and should ship within 2-3 business days.",
+        ),
+        InteractionData(
+            role="User",
+            content="That doesn't sound right. I got an email saying it was already delivered but I never received it. Can you actually look this up in your system?",
+        ),
+        InteractionData(
+            role="Agent",
+            content="I apologize for the confusion. Looking at it more carefully, it appears there may have been a delivery issue. Let me escalate this to our shipping team.",
+        ),
+        InteractionData(
+            role="User",
+            content="Wait, did you actually look it up or are you just guessing? I need you to check the real tracking info, not make something up.",
+        ),
+        InteractionData(
+            role="Agent",
+            content="You're right, I apologize. I don't actually have access to look up real-time order tracking information. I was making assumptions based on general timelines. For accurate order status, I'd recommend checking the tracking link in your confirmation email or contacting our order support team directly.",
+        ),
+    ]
+
+    original_env = os.environ.get("MOCK_LLM_RESPONSE")
+    try:
+        os.environ["MOCK_LLM_RESPONSE"] = "true"
+
+        # Publish the interaction
+        response = reflexio_instance_playbook_only.publish_interaction(
+            {
+                "user_id": user_id,
+                "interaction_data_list": knowledge_gap_interactions,
+                "source": "test_knowledge_gap",
+                "agent_version": agent_version,
+            }
+        )
+        assert response.success is True
+
+        # Retrieve extracted playbooks
+        playbooks_response = reflexio_instance_playbook_only.get_user_playbooks(
+            GetUserPlaybooksRequest(
+                playbook_name="test_playbook",
+                status_filter=[None],
+            )
+        )
+        assert playbooks_response.success is True
+        assert playbooks_response.user_playbooks, (
+            "Expected at least one playbook from knowledge-gap interaction"
+        )
+
+        # Verify the playbook has the new flat schema fields
+        for pb in playbooks_response.user_playbooks:
+            # Content must be present and non-empty (the main actionable field)
+            assert pb.content and pb.content.strip(), (
+                "Playbook content must be populated"
+            )
+            # Trigger must be present (describes when the playbook applies)
+            assert pb.trigger and pb.trigger.strip(), (
+                "Playbook trigger must be populated"
+            )
+            # No instruction or pitfall fields on the model
+            assert "instruction" not in UserPlaybook.model_fields
+            assert "pitfall" not in UserPlaybook.model_fields
 
     finally:
         if original_env is None:

@@ -12,7 +12,6 @@ import pytest
 from reflexio.models.api_schema.service_schemas import (
     BlockingIssue,
     BlockingIssueKind,
-    StructuredData,
     UserPlaybook,
 )
 from reflexio.server.services.playbook.playbook_aggregator import PlaybookAggregator
@@ -49,13 +48,10 @@ class TestFormatClusterInput:
                 request_id="req1",
                 playbook_name="test",
                 content="content1",
-                structured_data=StructuredData(
-                    trigger="user asks to delete files",
-                    instruction="inform user about permission requirements",
-                    blocking_issue=BlockingIssue(
-                        kind=BlockingIssueKind.PERMISSION_DENIED,
-                        details="No admin file deletion access",
-                    ),
+                trigger="user asks to delete files",
+                blocking_issue=BlockingIssue(
+                    kind=BlockingIssueKind.PERMISSION_DENIED,
+                    details="No admin file deletion access",
                 ),
             ),
             UserPlaybook(
@@ -63,13 +59,10 @@ class TestFormatClusterInput:
                 request_id="req2",
                 playbook_name="test",
                 content="content2",
-                structured_data=StructuredData(
-                    trigger="user requests file removal",
-                    instruction="suggest contacting admin",
-                    blocking_issue=BlockingIssue(
-                        kind=BlockingIssueKind.PERMISSION_DENIED,
-                        details="Lacks write permissions on shared drive",
-                    ),
+                trigger="user requests file removal",
+                blocking_issue=BlockingIssue(
+                    kind=BlockingIssueKind.PERMISSION_DENIED,
+                    details="Lacks write permissions on shared drive",
                 ),
             ),
         ]
@@ -88,10 +81,7 @@ class TestFormatClusterInput:
                 request_id="req1",
                 playbook_name="test",
                 content="content1",
-                structured_data=StructuredData(
-                    trigger="user asks a question",
-                    instruction="provide a detailed answer",
-                ),
+                trigger="user asks a question",
             ),
         ]
 
@@ -107,13 +97,9 @@ class TestFormatClusterInput:
                 request_id="req1",
                 playbook_name="test",
                 content="content1",
-                structured_data=StructuredData(
-                    trigger="user asks to query DB",
-                    instruction="use API instead",
-                    blocking_issue=BlockingIssue(
-                        kind=BlockingIssueKind.MISSING_TOOL,
-                        details="No DB query tool",
-                    ),
+                trigger="user asks to query DB",
+                blocking_issue=BlockingIssue(
+                    kind=BlockingIssueKind.MISSING_TOOL, details="No DB query tool"
                 ),
             ),
             UserPlaybook(
@@ -121,10 +107,7 @@ class TestFormatClusterInput:
                 request_id="req2",
                 playbook_name="test",
                 content="content2",
-                structured_data=StructuredData(
-                    trigger="user asks to query DB",
-                    instruction="suggest API endpoint",
-                ),
+                trigger="user asks to query DB",
                 # No blocking_issue
             ),
         ]
@@ -142,8 +125,8 @@ class TestFormatStructuredFieldsForDisplay:
     def test_includes_blocked_by_line(self, aggregator):
         """Test that blocking_issue is formatted as 'Blocked by:' line."""
         structured = StructuredPlaybookContent(
-            instruction="use API endpoint",
             trigger="user asks for DB access",
+            content="use API endpoint",
             blocking_issue=BlockingIssue(
                 kind=BlockingIssueKind.EXTERNAL_DEPENDENCY,
                 details="Database service is unavailable",
@@ -160,8 +143,7 @@ class TestFormatStructuredFieldsForDisplay:
     def test_omits_blocked_by_when_none(self, aggregator):
         """Test that no 'Blocked by:' line when blocking_issue is None."""
         structured = StructuredPlaybookContent(
-            instruction="validate inputs",
-            trigger="processing data",
+            trigger="processing data", content="validate inputs"
         )
 
         result = format_structured_fields_for_display(structured)
@@ -176,8 +158,8 @@ class TestProcessAggregationResponse:
         """Test that blocking_issue from LLM response is set on the resulting AgentPlaybook."""
         response = PlaybookAggregationOutput(
             playbook=StructuredPlaybookContent(
-                instruction="inform user about limitation",
                 trigger="user requests restricted action",
+                content="inform user about limitation",
                 blocking_issue=BlockingIssue(
                     kind=BlockingIssueKind.POLICY_RESTRICTION,
                     details="Corporate policy blocks external API calls",
@@ -196,20 +178,16 @@ class TestProcessAggregationResponse:
         result = aggregator._process_aggregation_response(response, cluster_playbooks)
 
         assert result is not None
-        assert result.structured_data.blocking_issue is not None
-        assert (
-            result.structured_data.blocking_issue.kind
-            == BlockingIssueKind.POLICY_RESTRICTION
-        )
-        assert "Corporate policy" in result.structured_data.blocking_issue.details
-        assert "Blocked by: [policy_restriction]" in result.content
+        assert result.blocking_issue is not None
+        assert result.blocking_issue.kind == BlockingIssueKind.POLICY_RESTRICTION
+        assert "Corporate policy" in result.blocking_issue.details
 
     def test_playbook_without_blocking_issue(self, aggregator):
         """Test that AgentPlaybook has no blocking_issue when LLM doesn't return one."""
         response = PlaybookAggregationOutput(
             playbook=StructuredPlaybookContent(
-                instruction="provide clear instructions",
                 trigger="user is confused",
+                content="provide clear instructions",
             )
         )
         cluster_playbooks = [
@@ -224,5 +202,4 @@ class TestProcessAggregationResponse:
         result = aggregator._process_aggregation_response(response, cluster_playbooks)
 
         assert result is not None
-        assert result.structured_data.blocking_issue is None
-        assert "Blocked by:" not in result.content
+        assert result.blocking_issue is None

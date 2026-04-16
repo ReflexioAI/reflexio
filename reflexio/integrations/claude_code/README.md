@@ -313,7 +313,7 @@ UNION ALL SELECT 'interactions', count(*) FROM interactions;
 
 # View playbook details
 sqlite3 ~/.reflexio/data/reflexio.db "
-SELECT content, structured_data FROM user_playbooks
+SELECT content, trigger, rationale, blocking_issue FROM user_playbooks
 ORDER BY user_playbook_id DESC LIMIT 5;
 "
 ```

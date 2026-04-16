@@ -597,9 +597,8 @@ class TestStructuredPlaybookExtraction:
         mock_llm_client.generate_chat_response.return_value = StructuredPlaybookList(
             playbooks=[
                 StructuredPlaybookContent(
-                    instruction="ask for CLI preference",
-                    pitfall="assume GUI workflows by default",
                     trigger="assisting technical users",
+                    content="ask for CLI preference before proceeding",
                 )
             ]
         )
@@ -616,13 +615,8 @@ class TestStructuredPlaybookExtraction:
             )
 
         assert len(result) == 1
-        assert result[0].structured_data.instruction == "ask for CLI preference"
-        assert result[0].structured_data.pitfall == "assume GUI workflows by default"
-        assert result[0].structured_data.trigger == "assisting technical users"
-        assert result[0].structured_data.embedding_text == "assisting technical users"
-        assert 'Trigger: "assisting technical users"' in result[0].content
-        assert 'Instruction: "ask for CLI preference"' in result[0].content
-        assert 'Pitfall: "assume GUI workflows by default"' in result[0].content
+        assert result[0].trigger == "assisting technical users"
+        assert result[0].content == "ask for CLI preference before proceeding"
         assert result[0].source_interaction_ids == [1, 2, 3]
 
     def test_extracts_structured_playbook_with_only_do_action(
@@ -642,13 +636,12 @@ class TestStructuredPlaybookExtraction:
             agent_context="Test agent",
         )
 
-        # Mock LLM response with only instruction (flat fields)
+        # Mock LLM response with trigger + content
         mock_llm_client.generate_chat_response.return_value = StructuredPlaybookList(
             playbooks=[
                 StructuredPlaybookContent(
-                    instruction="provide step-by-step instructions",
-                    pitfall=None,
                     trigger="user asks for help",
+                    content="provide step-by-step instructions",
                 )
             ]
         )
@@ -665,11 +658,8 @@ class TestStructuredPlaybookExtraction:
             )
 
         assert len(result) == 1
-        assert (
-            result[0].structured_data.instruction == "provide step-by-step instructions"
-        )
-        assert result[0].structured_data.pitfall is None
-        assert result[0].structured_data.trigger == "user asks for help"
+        assert result[0].content == "provide step-by-step instructions"
+        assert result[0].trigger == "user asks for help"
 
     def test_returns_empty_when_playbook_is_null(
         self,
@@ -768,17 +758,15 @@ class TestBuildUserPlaybook:
         )
 
         entry = StructuredPlaybookContent(
-            instruction="validate inputs",
-            pitfall="trust user data blindly",
             trigger="processing external data",
+            content="validate inputs before processing",
         )
 
         result = extractor._build_user_playbook(entry, source_interaction_ids=[])
 
         assert result is not None
-        assert result.structured_data.instruction == "validate inputs"
-        assert result.structured_data.pitfall == "trust user data blindly"
-        assert result.structured_data.trigger == "processing external data"
+        assert result.trigger == "processing external data"
+        assert result.content == "validate inputs before processing"
         assert result.playbook_name == extractor_config.extractor_name
 
     def test_returns_none_for_entry_without_content(
@@ -821,8 +809,8 @@ class TestBuildUserPlaybook:
         )
 
         entry = StructuredPlaybookContent(
-            instruction="validate inputs",
             trigger="processing external data",
+            content="validate inputs",
         )
 
         result = extractor._build_user_playbook(
@@ -875,8 +863,8 @@ class TestBuildUserPlaybook:
         response = StructuredPlaybookList(
             playbooks=[
                 StructuredPlaybookContent(
-                    instruction="validate inputs",
                     trigger="processing external data",
+                    content="validate inputs",
                 ),
                 # No content + no trigger → has_content == False, must be filtered out
                 StructuredPlaybookContent(),
@@ -888,7 +876,7 @@ class TestBuildUserPlaybook:
         )
 
         assert len(result) == 1
-        assert result[0].structured_data.trigger == "processing external data"
+        assert result[0].trigger == "processing external data"
         assert result[0].source_interaction_ids == [7, 8]
 
     def test_process_structured_response_list_emits_multiple_user_playbooks(
@@ -910,12 +898,10 @@ class TestBuildUserPlaybook:
         response = StructuredPlaybookList(
             playbooks=[
                 StructuredPlaybookContent(
-                    instruction="explain root cause first",
                     trigger="user asks for help debugging an error",
                     content="When users ask for debugging help, explain the root cause before proposing fixes.",
                 ),
                 StructuredPlaybookContent(
-                    instruction="deliver corrections without unnecessary apologies",
                     trigger="agent provides a factual correction during debugging",
                     content="Reserve apologies for genuine mistakes, not routine corrections.",
                 ),
@@ -927,7 +913,7 @@ class TestBuildUserPlaybook:
         )
 
         assert len(result) == 2
-        triggers = {p.structured_data.trigger for p in result}
+        triggers = {p.trigger for p in result}
         assert triggers == {
             "user asks for help debugging an error",
             "agent provides a factual correction during debugging",
@@ -1004,9 +990,8 @@ class TestBlockingIssueRoundTrip:
         )
 
         entry = StructuredPlaybookContent(
-            instruction="inform user that file deletion requires admin approval",
-            pitfall="attempt to delete files without permission",
             trigger="user asks to delete shared files",
+            content="inform user that file deletion requires admin approval",
             blocking_issue=BlockingIssue(
                 kind=BlockingIssueKind.PERMISSION_DENIED,
                 details="Agent lacks admin-level file deletion permissions on shared drives",
@@ -1016,16 +1001,9 @@ class TestBlockingIssueRoundTrip:
         result = extractor._build_user_playbook(entry, source_interaction_ids=[])
 
         assert result is not None
-        assert result.structured_data.blocking_issue is not None
-        assert (
-            result.structured_data.blocking_issue.kind
-            == BlockingIssueKind.PERMISSION_DENIED
-        )
-        assert (
-            "admin-level file deletion" in result.structured_data.blocking_issue.details
-        )
-        assert "Blocked by:" in result.content
-        assert "[permission_denied]" in result.content
+        assert result.blocking_issue is not None
+        assert result.blocking_issue.kind == BlockingIssueKind.PERMISSION_DENIED
+        assert "admin-level file deletion" in result.blocking_issue.details
 
     def test_build_user_playbook_without_blocking_issue(
         self,
@@ -1044,15 +1022,14 @@ class TestBlockingIssueRoundTrip:
         )
 
         entry = StructuredPlaybookContent(
-            instruction="validate inputs",
             trigger="processing external data",
+            content="validate inputs",
         )
 
         result = extractor._build_user_playbook(entry, source_interaction_ids=[])
 
         assert result is not None
-        assert result.structured_data.blocking_issue is None
-        assert "Blocked by:" not in result.content
+        assert result.blocking_issue is None
 
     def test_extracts_playbook_with_blocking_issue_end_to_end(
         self,
@@ -1074,9 +1051,8 @@ class TestBlockingIssueRoundTrip:
         mock_llm_client.generate_chat_response.return_value = StructuredPlaybookList(
             playbooks=[
                 StructuredPlaybookContent(
-                    instruction="suggest using the API endpoint instead",
-                    pitfall="attempt to access the database directly",
                     trigger="user requests direct database access",
+                    content="suggest using the API endpoint instead",
                     blocking_issue=BlockingIssue(
                         kind=BlockingIssueKind.MISSING_TOOL,
                         details="No direct database query tool available",
@@ -1095,16 +1071,12 @@ class TestBlockingIssueRoundTrip:
             )
 
         assert len(result) == 1
-        assert result[0].structured_data.blocking_issue is not None
+        assert result[0].blocking_issue is not None
+        assert result[0].blocking_issue.kind == BlockingIssueKind.MISSING_TOOL
         assert (
-            result[0].structured_data.blocking_issue.kind
-            == BlockingIssueKind.MISSING_TOOL
-        )
-        assert (
-            result[0].structured_data.blocking_issue.details
+            result[0].blocking_issue.details
             == "No direct database query tool available"
         )
-        assert "Blocked by: [missing_tool]" in result[0].content
 
 
 # ===============================
@@ -1123,7 +1095,7 @@ class TestRationaleRoundTrip:
         service_config,
         sample_request_interaction_models,
     ):
-        """Test that rationale flows from LLM response through to UserPlaybook structured_data."""
+        """Test that rationale flows from LLM response through to UserPlaybook top-level fields."""
         extractor = PlaybookExtractor(
             request_context=request_context,
             llm_client=mock_llm_client,
@@ -1137,8 +1109,7 @@ class TestRationaleRoundTrip:
                 StructuredPlaybookContent(
                     rationale="Users need to understand the approach before seeing code",
                     trigger="User asks for debugging help",
-                    instruction="Outline strategy before writing code",
-                    pitfall="Jumping straight to code fixes",
+                    content="Outline strategy before writing code",
                 )
             ]
         )
@@ -1155,29 +1126,15 @@ class TestRationaleRoundTrip:
         assert len(result) == 1
         playbook = result[0]
 
-        # Verify rationale is preserved in structured_data
+        # Verify rationale is preserved as top-level field
         assert (
-            playbook.structured_data.rationale
+            playbook.rationale
             == "Users need to understand the approach before seeing code"
         )
 
-        # Verify the other structured_data fields are populated correctly
-        assert playbook.structured_data.trigger == "User asks for debugging help"
-        assert (
-            playbook.structured_data.instruction
-            == "Outline strategy before writing code"
-        )
-        assert playbook.structured_data.pitfall == "Jumping straight to code fixes"
-        assert playbook.structured_data.embedding_text == "User asks for debugging help"
-
-        # Verify rationale appears in the formatted playbook content string
-        assert (
-            'Rationale: "Users need to understand the approach before seeing code"'
-            in playbook.content
-        )
-        assert 'Trigger: "User asks for debugging help"' in playbook.content
-        assert 'Instruction: "Outline strategy before writing code"' in playbook.content
-        assert 'Pitfall: "Jumping straight to code fixes"' in playbook.content
+        # Verify the other top-level fields are populated correctly
+        assert playbook.trigger == "User asks for debugging help"
+        assert playbook.content == "Outline strategy before writing code"
 
 
 # ===============================
@@ -1207,38 +1164,26 @@ class TestPlaybookContentExtraction:
         entry = StructuredPlaybookContent(
             content="Agent should check accounts directly when users report persistent login issues after prior attempts.",
             trigger="User reports a login issue after already trying password reset",
-            instruction="Check account directly instead of suggesting generic steps",
-            pitfall="Suggest password reset when user already tried it",
             rationale="The agent ignored the user's prior attempt, causing frustration.",
         )
 
         result = extractor._build_user_playbook(entry, source_interaction_ids=[])
 
         assert result is not None
-        # playbook content is the LLM's freeform summary, NOT formatted structured fields
+        # playbook content is the LLM's freeform summary
         assert (
             result.content
             == "Agent should check accounts directly when users report persistent login issues after prior attempts."
         )
-        assert "Trigger:" not in result.content
-        # structured_data fields are all populated
+        # top-level fields are populated
         assert (
-            result.structured_data.trigger
+            result.trigger
             == "User reports a login issue after already trying password reset"
         )
         assert (
-            result.structured_data.instruction
-            == "Check account directly instead of suggesting generic steps"
-        )
-        assert (
-            result.structured_data.pitfall
-            == "Suggest password reset when user already tried it"
-        )
-        assert (
-            result.structured_data.rationale
+            result.rationale
             == "The agent ignored the user's prior attempt, causing frustration."
         )
-        assert result.structured_data.embedding_text == result.structured_data.trigger
 
     def test_fallback_to_formatted_structured_when_no_playbook_content(
         self,
@@ -1247,7 +1192,7 @@ class TestPlaybookContentExtraction:
         extractor_config,
         service_config,
     ):
-        """Test backward compatibility: if LLM omits playbook content, fall back to formatted structured fields."""
+        """Entry with trigger but no content should be rejected (content is required)."""
         extractor = PlaybookExtractor(
             request_context=request_context,
             llm_client=mock_llm_client,
@@ -1258,16 +1203,12 @@ class TestPlaybookContentExtraction:
 
         entry = StructuredPlaybookContent(
             trigger="User asks for help debugging",
-            instruction="Outline strategy before writing code",
-            pitfall="Jump straight to code fixes",
         )
 
         result = extractor._build_user_playbook(entry, source_interaction_ids=[])
 
-        assert result is not None
-        # Falls back to formatted structured fields
-        assert "Trigger:" in result.content
-        assert "Instruction:" in result.content
+        # Without content, the entry has no actionable content and is rejected
+        assert result is None
 
     def test_playbook_content_only_still_works(
         self,
@@ -1296,7 +1237,6 @@ class TestPlaybookContentExtraction:
             result.content
             == "Agent over-apologizes when delivering factual corrections"
         )
-        assert result.structured_data.embedding_text == result.content
 
     def test_end_to_end_with_playbook_content(
         self,
@@ -1320,8 +1260,6 @@ class TestPlaybookContentExtraction:
                 StructuredPlaybookContent(
                     content="Agent should limit apologies and focus on clear, concise responses during billing inquiries.",
                     trigger="User reports a billing concern",
-                    instruction="Limit apologies and provide concise responses",
-                    pitfall="Over-apologizing in routine support interactions",
                 )
             ]
         )
@@ -1340,4 +1278,4 @@ class TestPlaybookContentExtraction:
             result[0].content
             == "Agent should limit apologies and focus on clear, concise responses during billing inquiries."
         )
-        assert result[0].structured_data.trigger == "User reports a billing concern"
+        assert result[0].trigger == "User reports a billing concern"

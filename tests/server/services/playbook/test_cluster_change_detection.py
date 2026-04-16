@@ -21,7 +21,6 @@ def disable_mock_llm_response(monkeypatch):
 from reflexio.models.api_schema.service_schemas import (
     AgentPlaybook,
     PlaybookStatus,
-    StructuredData,
     UserPlaybook,
 )
 from reflexio.models.config_schema import PlaybookAggregatorConfig
@@ -104,10 +103,7 @@ def create_user_playbooks_with_embeddings(
             request_id=str(start_id + i),
             content=f"AgentPlaybook content {start_id + i}",
             playbook_name=playbook_name,
-            structured_data=StructuredData(
-                instruction=f"Do action {start_id + i}",
-                trigger=f"When condition {start_id + i}",
-            ),
+            trigger=f"When condition {start_id + i}",
             embedding=emb,
         )
         for i, emb in enumerate(embeddings)
@@ -438,7 +434,7 @@ class TestAggregatorRunWithChangeDetection:
 
         # Setup LLM client to return structured playbook
         structured = StructuredPlaybookContent(
-            instruction="Do something",
+            content="Do something when something happens",
             trigger="When something happens",
         )
         mock_response = PlaybookAggregationOutput(playbook=structured)
@@ -797,10 +793,7 @@ class TestLLMResponseTypeSafety:
                 request_id="r1",
                 content="content",
                 playbook_name="test",
-                structured_data=StructuredData(
-                    instruction="do something",
-                    trigger="when asked",
-                ),
+                trigger="when asked",
                 embedding=[0.0] * 512,
             ),
         ]
@@ -816,7 +809,7 @@ class TestLLMResponseTypeSafety:
         mock_request_context.configurator = MagicMock()
 
         structured = StructuredPlaybookContent(
-            instruction="Be concise",
+            content="Be concise when answering questions",
             trigger="When answering questions",
         )
         mock_llm_client.generate_chat_response.return_value = PlaybookAggregationOutput(
@@ -831,8 +824,6 @@ class TestLLMResponseTypeSafety:
             agent_version="1.0",
         )
 
-        from reflexio.models.api_schema.service_schemas import StructuredData
-
         cluster_playbooks = [
             UserPlaybook(
                 user_playbook_id=1,
@@ -840,18 +831,15 @@ class TestLLMResponseTypeSafety:
                 request_id="r1",
                 content="content",
                 playbook_name="test",
-                structured_data=StructuredData(
-                    instruction="do something",
-                    trigger="when asked",
-                ),
+                trigger="when asked",
                 embedding=[0.0] * 512,
             ),
         ]
 
         result = aggregator._generate_playbook_from_cluster(cluster_playbooks, "None")
         assert result is not None
-        assert result.structured_data.instruction == "Be concise"
-        assert result.structured_data.trigger == "When answering questions"
+        assert result.content == "Be concise when answering questions"
+        assert result.trigger == "When answering questions"
         assert result.playbook_status == PlaybookStatus.PENDING
 
 

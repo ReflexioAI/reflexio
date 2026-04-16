@@ -2,7 +2,7 @@
   "choices": [
     {
       "message": {
-        "content": "{\"playbook\": {\"instruction\": \"Provide step-by-step explanations with code examples when answering technical questions\", \"trigger\": \"when user asks about implementation details or debugging\"}}"
+        "content": "{\"playbook\": {\"content\": \"Provide step-by-step explanations with code examples when answering technical questions\", \"trigger\": \"when user asks about implementation details or debugging\"}}"
       },
       "finish_reason": "stop"
     }

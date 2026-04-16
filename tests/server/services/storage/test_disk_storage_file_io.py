@@ -15,7 +15,6 @@ from reflexio.models.api_schema.service_schemas import (
     Interaction,
     PlaybookStatus,
     Request,
-    StructuredData,
     UserPlaybook,
     UserProfile,
 )
@@ -76,12 +75,8 @@ def user_playbook() -> UserPlaybook:
         playbook_name="tone-guide",
         created_at=_NOW,
         content="Always be concise and professional.",
-        structured_data=StructuredData(
-            rationale="User explicitly asked for brevity.",
-            trigger="User says 'be brief'",
-            instruction="Keep responses under 3 sentences.",
-            pitfall="Do not omit critical safety info.",
-        ),
+        rationale="User explicitly asked for brevity.",
+        trigger="User says 'be brief'",
         embedding=_fake_embedding(0.6),
     )
 
@@ -94,10 +89,8 @@ def agent_playbook() -> AgentPlaybook:
         agent_version="v3",
         created_at=_NOW,
         content="When the user is frustrated, escalate to a human.",
-        structured_data=StructuredData(
-            rationale="Prevents customer churn.",
-            trigger="Negative sentiment detected.",
-        ),
+        rationale="Prevents customer churn.",
+        trigger="Negative sentiment detected.",
         playbook_status=PlaybookStatus.APPROVED,
         playbook_metadata="meta-abc",
         embedding=_fake_embedding(0.9),
@@ -147,9 +140,13 @@ class TestUserProfileRoundTrip:
         assert restored.user_id == user_profile.user_id
         assert restored.content == user_profile.content
         assert restored.last_modified_timestamp == user_profile.last_modified_timestamp
-        assert restored.generated_from_request_id == user_profile.generated_from_request_id
+        assert (
+            restored.generated_from_request_id == user_profile.generated_from_request_id
+        )
 
-    def test_embedding_is_empty_after_round_trip(self, user_profile: UserProfile) -> None:
+    def test_embedding_is_empty_after_round_trip(
+        self, user_profile: UserProfile
+    ) -> None:
         """Embedding is excluded during serialization and defaults to [] on deserialization."""
         md = serialize_entity(user_profile)
         restored = deserialize_entity(md, UserProfile)
@@ -173,7 +170,7 @@ class TestInteractionRoundTrip:
 
 
 class TestUserPlaybookRoundTrip:
-    """Round-trip test for UserPlaybook, including nested StructuredData."""
+    """Round-trip test for UserPlaybook, including flat structured fields."""
 
     def test_round_trip_preserves_fields(self, user_playbook: UserPlaybook) -> None:
         md = serialize_entity(user_playbook)
@@ -187,14 +184,12 @@ class TestUserPlaybookRoundTrip:
         assert restored.content == user_playbook.content
         assert restored.embedding == []
 
-    def test_structured_data_nested_fields(self, user_playbook: UserPlaybook) -> None:
+    def test_flat_structured_fields(self, user_playbook: UserPlaybook) -> None:
         md = serialize_entity(user_playbook)
         restored = deserialize_entity(md, UserPlaybook)
 
-        assert restored.structured_data.rationale == user_playbook.structured_data.rationale
-        assert restored.structured_data.trigger == user_playbook.structured_data.trigger
-        assert restored.structured_data.instruction == user_playbook.structured_data.instruction
-        assert restored.structured_data.pitfall == user_playbook.structured_data.pitfall
+        assert restored.rationale == user_playbook.rationale
+        assert restored.trigger == user_playbook.trigger
 
 
 class TestAgentPlaybookRoundTrip:
@@ -211,7 +206,9 @@ class TestAgentPlaybookRoundTrip:
         assert restored.playbook_metadata == agent_playbook.playbook_metadata
         assert restored.embedding == []
 
-    def test_playbook_status_enum_preserved(self, agent_playbook: AgentPlaybook) -> None:
+    def test_playbook_status_enum_preserved(
+        self, agent_playbook: AgentPlaybook
+    ) -> None:
         md = serialize_entity(agent_playbook)
         restored = deserialize_entity(md, AgentPlaybook)
         assert restored.playbook_status == PlaybookStatus.APPROVED
@@ -243,7 +240,9 @@ class TestRequestRoundTrip:
 class TestEvaluationResultRoundTrip:
     """Round-trip test for AgentSuccessEvaluationResult -- metadata-only."""
 
-    def test_round_trip_preserves_fields(self, evaluation_result: AgentSuccessEvaluationResult) -> None:
+    def test_round_trip_preserves_fields(
+        self, evaluation_result: AgentSuccessEvaluationResult
+    ) -> None:
         md = serialize_entity(evaluation_result)
         restored = deserialize_entity(md, AgentSuccessEvaluationResult)
 
@@ -258,9 +257,8 @@ class TestEvaluationResultRoundTrip:
 class TestEmbeddingExclusion:
     """Verify that the top-level embedding field never appears in serialized output.
 
-    Note: StructuredData contains an ``embedding_text`` field which legitimately
-    includes the substring "embedding".  We check for the YAML key ``embedding:``
-    at the start of a line (top-level frontmatter key) to avoid false positives.
+    We check for the YAML key ``embedding:`` at the start of a line (top-level
+    frontmatter key) to avoid false positives.
     """
 
     @staticmethod
@@ -268,15 +266,21 @@ class TestEmbeddingExclusion:
         """Return True if 'embedding:' appears as a top-level YAML key."""
         return any(line.strip().startswith("embedding:") for line in md.split("\n"))
 
-    def test_embedding_not_in_serialized_output(self, user_profile: UserProfile) -> None:
+    def test_embedding_not_in_serialized_output(
+        self, user_profile: UserProfile
+    ) -> None:
         md = serialize_entity(user_profile)
         assert not self._has_toplevel_embedding_key(md)
 
-    def test_embedding_not_in_interaction_output(self, interaction: Interaction) -> None:
+    def test_embedding_not_in_interaction_output(
+        self, interaction: Interaction
+    ) -> None:
         md = serialize_entity(interaction)
         assert not self._has_toplevel_embedding_key(md)
 
-    def test_embedding_not_in_agent_playbook_output(self, agent_playbook: AgentPlaybook) -> None:
+    def test_embedding_not_in_agent_playbook_output(
+        self, agent_playbook: AgentPlaybook
+    ) -> None:
         md = serialize_entity(agent_playbook)
         assert not self._has_toplevel_embedding_key(md)
 
@@ -356,7 +360,9 @@ class TestEmbeddingSidecar:
 # ===================================================================
 
 
-def _make_qmd_client(collection_path: Path, collection_name: str = "test_col") -> QMDClient:
+def _make_qmd_client(
+    collection_path: Path, collection_name: str = "test_col"
+) -> QMDClient:
     """Helper to construct a QMDClient with all subprocess calls mocked during init."""
     with patch("subprocess.run") as mock_run:
         # _check_installed: qmd --version succeeds
@@ -382,8 +388,7 @@ def _make_qmd_client(collection_path: Path, collection_name: str = "test_col") -
         mock_run.side_effect = [version_result, list_result, add_result, update_result]
 
         return QMDClient(
-            collection_path=collection_path,
-            collection_name=collection_name,
+            collection_path=collection_path, collection_name=collection_name
         )
 
 
@@ -401,10 +406,7 @@ class TestQMDCheckInstalled:
             patch("subprocess.run", side_effect=FileNotFoundError),
             pytest.raises(StorageError, match="automatic installation failed"),
         ):
-            QMDClient(
-                collection_path=tmp_path,
-                collection_name="test_col",
-            )
+            QMDClient(collection_path=tmp_path, collection_name="test_col")
 
 
 class TestQMDSearch:
@@ -412,24 +414,26 @@ class TestQMDSearch:
 
     def test_parses_json_output_correctly(self, tmp_path: Path) -> None:
         client = _make_qmd_client(tmp_path)
-        search_output = json.dumps({
-            "results": [
-                {
-                    "filepath": "/data/profiles/p1.md",
-                    "score": 0.95,
-                    "title": "Profile 1",
-                    "snippet": "Likes sushi",
-                    "source": "fts",
-                },
-                {
-                    "filepath": "/data/profiles/p2.md",
-                    "score": 0.80,
-                    "title": "Profile 2",
-                    "snippet": "Likes pizza",
-                    "source": "fts",
-                },
-            ]
-        })
+        search_output = json.dumps(
+            {
+                "results": [
+                    {
+                        "filepath": "/data/profiles/p1.md",
+                        "score": 0.95,
+                        "title": "Profile 1",
+                        "snippet": "Likes sushi",
+                        "source": "fts",
+                    },
+                    {
+                        "filepath": "/data/profiles/p2.md",
+                        "score": 0.80,
+                        "title": "Profile 2",
+                        "snippet": "Likes pizza",
+                        "source": "fts",
+                    },
+                ]
+            }
+        )
 
         mock_result = MagicMock()
         mock_result.returncode = 0
@@ -517,23 +521,27 @@ class TestQMDParseResults:
         assert QMDClient._parse_results('{"data": []}') == []
 
     def test_skips_entries_without_filepath(self) -> None:
-        output = json.dumps({
-            "results": [
-                {"filepath": "/valid.md", "score": 0.9},
-                {"score": 0.5, "title": "No path"},
-                {"filepath": "", "score": 0.3},
-            ]
-        })
+        output = json.dumps(
+            {
+                "results": [
+                    {"filepath": "/valid.md", "score": 0.9},
+                    {"score": 0.5, "title": "No path"},
+                    {"filepath": "", "score": 0.3},
+                ]
+            }
+        )
         results = QMDClient._parse_results(output)
         assert len(results) == 1
         assert results[0].filepath == "/valid.md"
 
     def test_defaults_for_missing_fields(self) -> None:
-        output = json.dumps({
-            "results": [
-                {"filepath": "/minimal.md"},
-            ]
-        })
+        output = json.dumps(
+            {
+                "results": [
+                    {"filepath": "/minimal.md"},
+                ]
+            }
+        )
         results = QMDClient._parse_results(output)
         assert len(results) == 1
         assert results[0].score == 0.0

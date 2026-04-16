@@ -84,7 +84,7 @@ Available actions and their required params:
 | `publish_interaction` | `user_id`, `agent_version`, `interactions` (list of `{role, content}`) |
 | `wait_extraction` | `timeout_s` (default 60) |
 | `verify_playbook_exists` | `user_id`, `trigger_contains`, `content_contains` |
-| `seed_user_playbook` | `user_id`, `agent_version`, `content`, `trigger`, `instruction`, `pitfall` |
+| `seed_user_playbook` | `user_id`, `agent_version`, `content`, `trigger`, `rationale`, `blocking_issue` |
 | `search` | `query`, `user_id` |
 | `verify_result_contains` | `field` (content/trigger), `contains` |
 | `verify_result_not_contains` | `field`, `contains` |

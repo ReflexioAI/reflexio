@@ -291,9 +291,7 @@ class EvalRunner:
         playbooks = resp.user_playbooks
 
         for pb in playbooks:
-            trigger_text = (
-                (pb.structured_data.trigger or "").lower() if pb.structured_data else ""
-            )
+            trigger_text = (pb.trigger or "").lower()
             content_text = (pb.content or "").lower()
 
             if (
@@ -324,25 +322,19 @@ class EvalRunner:
         Returns:
             tuple[bool, str]: (success, message)
         """
-        from reflexio.models.api_schema.domain.entities import StructuredData
         from reflexio.models.api_schema.service_schemas import UserPlaybook
 
         user_id: str = params["user_id"]
         agent_version: str = params.get("agent_version", "openclaw-agent")
         content: str = params["content"]
 
-        sd = StructuredData(
-            trigger=params.get("trigger"),
-            instruction=params.get("instruction"),
-            pitfall=params.get("pitfall"),
-        )
-
         pb = UserPlaybook(
             user_id=user_id,
             agent_version=agent_version,
             request_id=f"eval-seed-{uuid.uuid4().hex[:8]}",
             content=content,
-            structured_data=sd,
+            trigger=params.get("trigger"),
+            rationale=params.get("rationale"),
         )
 
         resp = self._client.add_user_playbook(user_playbooks=[pb])
@@ -738,16 +730,9 @@ def _collect_field_values(search_response: Any, field_name: str) -> list[str]:
         if not items:
             return
         for item in items:
-            # Try direct attribute
             val = getattr(item, field_name, None)
             if val:
                 values.append(str(val))
-            # Also check structured_data sub-object
-            sd = getattr(item, "structured_data", None)
-            if sd:
-                sd_val = getattr(sd, field_name, None)
-                if sd_val:
-                    values.append(str(sd_val))
 
     _extract(getattr(search_response, "user_playbooks", None))
     _extract(getattr(search_response, "agent_playbooks", None))

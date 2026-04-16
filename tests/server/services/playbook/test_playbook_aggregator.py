@@ -19,7 +19,6 @@ import pytest
 from reflexio.models.api_schema.service_schemas import (
     AgentPlaybook,
     PlaybookStatus,
-    StructuredData,
     UserPlaybook,
 )
 from reflexio.models.config_schema import (
@@ -66,11 +65,7 @@ def _raw(
         request_id=f"req-{rid}",
         playbook_name=name,
         content=f"content-{rid}",
-        structured_data=StructuredData(
-            trigger=when,
-            instruction=do,
-            pitfall=dont,
-        ),
+        trigger=when,
     )
 
 
@@ -82,7 +77,6 @@ def _agent_playbook(
         playbook_name=name,
         agent_version="v1",
         content=content,
-        structured_data=StructuredData(instruction="do"),
         playbook_status=PlaybookStatus.PENDING,
     )
 
@@ -1074,21 +1068,11 @@ class TestRun:
 
 class TestFormatClusterInput:
     def test_all_fields_present(self):
-        """Each playbook becomes a numbered block with Content, Trigger, Instruction, Pitfall."""
+        """Each playbook becomes a numbered block with Content and Trigger."""
         agg = _make_aggregator()
         raws = [
-            _raw(
-                rid=1,
-                when="cond1",
-                do="use CLI tools for backend development",
-                dont="avoid GUI defaults in backend development",
-            ),
-            _raw(
-                rid=2,
-                when="cond2",
-                do="prefer CLI workflows for backend development",
-                dont="avoid GUI fallback in backend development",
-            ),
+            _raw(rid=1, when="cond1"),
+            _raw(rid=2, when="cond2"),
         ]
 
         result = agg._format_cluster_input(raws)
@@ -1099,35 +1083,14 @@ class TestFormatClusterInput:
         assert 'Content: "content-2"' in result
         assert 'Trigger: "cond1"' in result
         assert 'Trigger: "cond2"' in result
-        assert 'Instruction: "use CLI tools for backend development"' in result
-        assert 'Pitfall: "avoid GUI defaults in backend development"' in result
 
     def test_no_trigger_omits_trigger_line(self):
         agg = _make_aggregator()
-        raws = [_raw(rid=1, when=None, do="action1")]
+        raws = [_raw(rid=1, when=None)]
 
         result = agg._format_cluster_input(raws)
 
         assert "Trigger:" not in result
-        assert 'Instruction: "action1"' in result
-
-    def test_no_instruction_omits_instruction_line(self):
-        agg = _make_aggregator()
-        raws = [_raw(rid=1, when="cond", do=None, dont="avoid")]
-
-        result = agg._format_cluster_input(raws)
-
-        assert "Instruction:" not in result
-        assert 'Pitfall: "avoid"' in result
-
-    def test_no_pitfall_omits_pitfall_line(self):
-        agg = _make_aggregator()
-        raws = [_raw(rid=1, when="cond", do="action", dont=None)]
-
-        result = agg._format_cluster_input(raws)
-
-        assert "Pitfall:" not in result
-        assert 'Instruction: "action"' in result
 
     def test_empty_list_returns_placeholder(self):
         """Empty input returns a placeholder string."""
@@ -1138,7 +1101,7 @@ class TestFormatClusterInput:
     def test_content_is_first_field_after_number(self):
         """Content line appears immediately after the numbered header."""
         agg = _make_aggregator()
-        raws = [_raw(rid=1, when="cond", do="action")]
+        raws = [_raw(rid=1, when="cond")]
 
         result = agg._format_cluster_input(raws)
 
@@ -1149,7 +1112,7 @@ class TestFormatClusterInput:
     def test_multiple_playbooks_separated_by_blank_lines(self):
         """Multiple playbooks are separated by blank lines."""
         agg = _make_aggregator()
-        raws = [_raw(rid=1, when="cond1", do="a1"), _raw(rid=2, when="cond2", do="a2")]
+        raws = [_raw(rid=1, when="cond1"), _raw(rid=2, when="cond2")]
 
         result = agg._format_cluster_input(raws)
 
@@ -1233,14 +1196,14 @@ class TestProcessAggregationResponse:
 
         agg = _make_aggregator()
         structured = StructuredPlaybookContent(
-            instruction="do something",
             trigger="when testing",
+            content="do something",
         )
         response = PlaybookAggregationOutput(playbook=structured)
 
         result = agg._process_aggregation_response(response, [_raw()])
 
         assert result is not None
-        assert result.structured_data.instruction == "do something"
-        assert result.structured_data.trigger == "when testing"
+        assert result.trigger == "when testing"
+        assert result.content == "do something"
         assert result.playbook_status == PlaybookStatus.PENDING

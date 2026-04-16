@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from reflexio.models.api_schema.service_schemas import StructuredData, UserPlaybook
+from reflexio.models.api_schema.service_schemas import UserPlaybook
 from reflexio.server.services.playbook.playbook_deduplicator import (
     PlaybookDeduplicationDuplicateGroup,
     PlaybookDeduplicationOutput,
@@ -34,10 +34,7 @@ def _make_user_playbook(
         request_id=f"req_{idx}",
         playbook_name=playbook_name,
         content=content or f"content_{idx}",
-        structured_data=StructuredData(
-            trigger=trigger or f"condition_{idx}",
-            instruction=f"do_{idx}",
-        ),
+        trigger=trigger or f"condition_{idx}",
         source="test",
         source_interaction_ids=source_interaction_ids or [],
     )
@@ -60,8 +57,7 @@ def mock_deduplicator():
             "default_generation_model_name": "gpt-test"
         }
         return PlaybookDeduplicator(
-            request_context=mock_request_context,
-            llm_client=mock_llm_client,
+            request_context=mock_request_context, llm_client=mock_llm_client
         )
 
 
@@ -174,7 +170,7 @@ class TestRetrieveExistingPlaybooks:
             request_id="req1",
             playbook_name="test",
             content="",
-            structured_data=StructuredData(trigger=""),
+            trigger="",
         )
 
         result = mock_deduplicator._retrieve_existing_playbooks([fb])
@@ -217,9 +213,7 @@ class TestDeduplicate:
 
         with patch.dict("os.environ", {"MOCK_LLM_RESPONSE": "true"}):
             result, delete_ids = mock_deduplicator.deduplicate(
-                results=[[fb1], [fb2]],
-                request_id="req1",
-                agent_version="v1",
+                results=[[fb1], [fb2]], request_id="req1", agent_version="v1"
             )
 
         assert len(result) == 2
@@ -229,9 +223,7 @@ class TestDeduplicate:
         """Test deduplication with no playbooks."""
         with patch.dict("os.environ", {"MOCK_LLM_RESPONSE": "false"}):
             result, delete_ids = mock_deduplicator.deduplicate(
-                results=[[]],
-                request_id="req1",
-                agent_version="v1",
+                results=[[]], request_id="req1", agent_version="v1"
             )
 
         assert result == []
@@ -249,9 +241,7 @@ class TestDeduplicate:
 
         with patch.dict("os.environ", {"MOCK_LLM_RESPONSE": "false"}):
             result, delete_ids = mock_deduplicator.deduplicate(
-                results=[[fb]],
-                request_id="req1",
-                agent_version="v1",
+                results=[[fb]], request_id="req1", agent_version="v1"
             )
 
         assert len(result) == 1
@@ -278,8 +268,7 @@ class TestBuildDeduplicatedResults:
                 PlaybookDeduplicationDuplicateGroup(
                     item_ids=["NEW-0", "NEW-1"],
                     merged_content=StructuredPlaybookContent(
-                        instruction="merged do",
-                        trigger="merged when",
+                        content="merged do", trigger="merged when"
                     ),
                     reasoning="Same topic",
                 )
@@ -307,8 +296,7 @@ class TestBuildDeduplicatedResults:
         ]
 
         dedup_output = PlaybookDeduplicationOutput(
-            duplicate_groups=[],
-            unique_ids=["NEW-0", "NEW-1"],
+            duplicate_groups=[], unique_ids=["NEW-0", "NEW-1"]
         )
 
         result, _ = mock_deduplicator._build_deduplicated_results(
@@ -331,8 +319,7 @@ class TestBuildDeduplicatedResults:
                 PlaybookDeduplicationDuplicateGroup(
                     item_ids=["NEW-0", "EXISTING-0"],
                     merged_content=StructuredPlaybookContent(
-                        instruction="merged",
-                        trigger="when merged",
+                        content="merged", trigger="when merged"
                     ),
                     reasoning="Duplicate",
                 )
@@ -361,8 +348,7 @@ class TestBuildDeduplicatedResults:
 
         # LLM only mentions index 0
         dedup_output = PlaybookDeduplicationOutput(
-            duplicate_groups=[],
-            unique_ids=["NEW-0"],
+            duplicate_groups=[], unique_ids=["NEW-0"]
         )
 
         result, _ = mock_deduplicator._build_deduplicated_results(
@@ -408,8 +394,7 @@ class TestDeduplicateHappyPath:
                     PlaybookDeduplicationDuplicateGroup(
                         item_ids=["NEW-0", "NEW-1"],
                         merged_content=StructuredPlaybookContent(
-                            instruction="do X",
-                            trigger="when Y",
+                            content="do X", trigger="when Y"
                         ),
                         reasoning="Same instruction",
                     )
@@ -420,9 +405,7 @@ class TestDeduplicateHappyPath:
 
         with patch.dict("os.environ", {"MOCK_LLM_RESPONSE": "false"}):
             result, delete_ids = mock_deduplicator.deduplicate(
-                results=[[fb0, fb1], [fb2]],
-                request_id="req_test",
-                agent_version="v1",
+                results=[[fb0, fb1], [fb2]], request_id="req_test", agent_version="v1"
             )
 
         # 1 merged + 1 unique = 2 playbooks
@@ -452,16 +435,13 @@ class TestDeduplicateHappyPath:
         # LLM says all are unique
         mock_deduplicator.client.generate_chat_response.return_value = (
             PlaybookDeduplicationOutput(
-                duplicate_groups=[],
-                unique_ids=["NEW-0", "NEW-1", "NEW-2"],
+                duplicate_groups=[], unique_ids=["NEW-0", "NEW-1", "NEW-2"]
             )
         )
 
         with patch.dict("os.environ", {"MOCK_LLM_RESPONSE": "false"}):
             result, delete_ids = mock_deduplicator.deduplicate(
-                results=[[fb0], [fb1], [fb2]],
-                request_id="req_test",
-                agent_version="v1",
+                results=[[fb0], [fb1], [fb2]], request_id="req_test", agent_version="v1"
             )
 
         assert len(result) == 3
@@ -489,8 +469,7 @@ class TestDeduplicateHappyPath:
                     PlaybookDeduplicationDuplicateGroup(
                         item_ids=["NEW-0", "EXISTING-0"],
                         merged_content=StructuredPlaybookContent(
-                            instruction="do X",
-                            trigger="when Y",
+                            content="do X", trigger="when Y"
                         ),
                         reasoning="Same instruction as existing",
                     )
@@ -501,9 +480,7 @@ class TestDeduplicateHappyPath:
 
         with patch.dict("os.environ", {"MOCK_LLM_RESPONSE": "false"}):
             result, delete_ids = mock_deduplicator.deduplicate(
-                results=[[fb0]],
-                request_id="req_test",
-                agent_version="v1",
+                results=[[fb0]], request_id="req_test", agent_version="v1"
             )
 
         # 1 merged playbook replaces both
@@ -539,8 +516,7 @@ class TestBuildDeduplicatedResultsEdgeCases:
                 PlaybookDeduplicationDuplicateGroup(
                     item_ids=["EXISTING-0"],
                     merged_content=StructuredPlaybookContent(
-                        instruction="merged do",
-                        trigger="merged when",
+                        content="merged do", trigger="merged when"
                     ),
                     reasoning="Existing-only group",
                 )
@@ -568,8 +544,7 @@ class TestBuildDeduplicatedResultsEdgeCases:
                 PlaybookDeduplicationDuplicateGroup(
                     item_ids=["EXISTING-99"],  # out of range
                     merged_content=StructuredPlaybookContent(
-                        instruction="merged do",
-                        trigger="merged when",
+                        content="merged do", trigger="merged when"
                     ),
                     reasoning="Bad index",
                 )
@@ -605,8 +580,7 @@ class TestBuildDeduplicatedResultsEdgeCases:
                 PlaybookDeduplicationDuplicateGroup(
                     item_ids=["NEW-0", "EXISTING-0"],
                     merged_content=StructuredPlaybookContent(
-                        instruction="merged",
-                        trigger="merged condition",
+                        content="merged", trigger="merged condition"
                     ),
                     reasoning="Combined",
                 )
@@ -638,8 +612,7 @@ class TestBuildDeduplicatedResultsEdgeCases:
                 PlaybookDeduplicationDuplicateGroup(
                     item_ids=["NEW-0", "NEW-1"],
                     merged_content=StructuredPlaybookContent(
-                        instruction="merged",
-                        trigger="merged cond",
+                        content="merged", trigger="merged cond"
                     ),
                     reasoning="Overlap IDs",
                 )
@@ -669,8 +642,7 @@ class TestBuildDeduplicatedResultsEdgeCases:
 
         # LLM only mentions index 1 as unique, leaves 0 and 2 unmentioned
         dedup_output = PlaybookDeduplicationOutput(
-            duplicate_groups=[],
-            unique_ids=["NEW-1"],
+            duplicate_groups=[], unique_ids=["NEW-1"]
         )
 
         result, _ = mock_deduplicator._build_deduplicated_results(
@@ -693,8 +665,7 @@ class TestBuildDeduplicatedResultsEdgeCases:
         new_playbooks = [_make_user_playbook(0)]
 
         dedup_output = PlaybookDeduplicationOutput(
-            duplicate_groups=[],
-            unique_ids=["BADFORMAT", "NEW-0"],
+            duplicate_groups=[], unique_ids=["BADFORMAT", "NEW-0"]
         )
 
         result, _ = mock_deduplicator._build_deduplicated_results(
@@ -713,8 +684,7 @@ class TestBuildDeduplicatedResultsEdgeCases:
         new_playbooks = [_make_user_playbook(0)]
 
         dedup_output = PlaybookDeduplicationOutput(
-            duplicate_groups=[],
-            unique_ids=["EXISTING-0"],
+            duplicate_groups=[], unique_ids=["EXISTING-0"]
         )
 
         result, _ = mock_deduplicator._build_deduplicated_results(
@@ -802,9 +772,7 @@ class TestMockModeCheck:
 
         with patch.dict("os.environ", {"MOCK_LLM_RESPONSE": "true"}):
             result, delete_ids = mock_deduplicator.deduplicate(
-                results=[[fb]],
-                request_id="req1",
-                agent_version="v1",
+                results=[[fb]], request_id="req1", agent_version="v1"
             )
 
         assert len(result) == 1
@@ -816,9 +784,7 @@ class TestMockModeCheck:
 
         with patch.dict("os.environ", {"MOCK_LLM_RESPONSE": "True"}):
             result, delete_ids = mock_deduplicator.deduplicate(
-                results=[[fb]],
-                request_id="req1",
-                agent_version="v1",
+                results=[[fb]], request_id="req1", agent_version="v1"
             )
 
         assert len(result) == 1
@@ -829,18 +795,13 @@ class TestMockModeCheck:
         mock_deduplicator.client.get_embeddings.return_value = [[0.1]]
         mock_deduplicator.request_context.storage.search_user_playbooks.return_value = []
         mock_deduplicator.client.generate_chat_response.return_value = (
-            PlaybookDeduplicationOutput(
-                duplicate_groups=[],
-                unique_ids=["NEW-0"],
-            )
+            PlaybookDeduplicationOutput(duplicate_groups=[], unique_ids=["NEW-0"])
         )
 
         fb = _make_user_playbook(0)
         with patch.dict("os.environ", {"MOCK_LLM_RESPONSE": "false"}):
             result, _ = mock_deduplicator.deduplicate(
-                results=[[fb]],
-                request_id="req1",
-                agent_version="v1",
+                results=[[fb]], request_id="req1", agent_version="v1"
             )
 
         assert len(result) == 1

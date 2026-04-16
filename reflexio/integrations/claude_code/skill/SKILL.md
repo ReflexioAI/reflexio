@@ -16,9 +16,9 @@ Reflexio remembers corrections and preferences from your past conversations with
 
 **User Playbooks** — behavioral corrections from past sessions where the user corrected you:
 - **trigger**: the situation where your default behavior was wrong
-- **instruction**: what you should do instead
-- **pitfall**: the specific mistake to avoid
+- **content**: the actionable behavioral rule — what you should do instead
 - **rationale**: why the correction matters
+- **blocking_issue**: what prevents correct behavior (if applicable)
 
 ## How to Use
 
@@ -31,7 +31,7 @@ reflexio search "<the user's request or task description>"
 ```
 
 This returns both relevant profiles and playbooks in one call. If results come back:
-- **Read the playbooks** — follow the instructions, avoid the pitfalls
+- **Read the playbooks** — follow the content guidance in each playbook
 - **Check the profiles** — adapt your approach to the user's expertise and preferences
 
 If no results come back, proceed normally — there are no relevant corrections yet.

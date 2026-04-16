@@ -1,7 +1,6 @@
 {
   "playbook": {
     "content": "When user asks about implementation, provide step-by-step explanations rather than high-level overviews.",
-    "instruction": "provide step-by-step explanations",
     "trigger": "when user asks about implementation"
   }
 }

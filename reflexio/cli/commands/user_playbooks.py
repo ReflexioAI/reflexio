@@ -159,14 +159,6 @@ def add(
         str | None,
         typer.Option("--trigger", help="When this playbook applies"),
     ] = None,
-    instruction: Annotated[
-        str | None,
-        typer.Option("--instruction", help="What to do (DO)"),
-    ] = None,
-    pitfall: Annotated[
-        str | None,
-        typer.Option("--pitfall", help="What not to do (DON'T)"),
-    ] = None,
     rationale: Annotated[
         str | None,
         typer.Option("--rationale", help="Why this playbook matters"),
@@ -186,27 +178,20 @@ def add(
         content: Playbook content text
         playbook_name: Playbook category name
         trigger: When this playbook applies
-        instruction: What to do
-        pitfall: What not to do
         rationale: Why this playbook matters
         agent_version: Agent version label to scope the playbook to;
             defaults to "cli" so CLI-authored entries stay isolated from
             integration-authored ones (e.g. ``openclaw-agent``).
     """
-    from reflexio.models.api_schema.service_schemas import StructuredData, UserPlaybook
+    from reflexio.models.api_schema.service_schemas import UserPlaybook
 
-    structured_data = StructuredData(
-        trigger=trigger,
-        instruction=instruction,
-        pitfall=pitfall,
-        rationale=rationale,
-    )
     playbook = UserPlaybook(
         agent_version=agent_version or "cli",
         request_id="cli-manual",
         playbook_name=playbook_name,
         content=content,
-        structured_data=structured_data,
+        trigger=trigger,
+        rationale=rationale,
     )
 
     client = get_client(ctx)
@@ -240,11 +225,7 @@ def update(
     """Update editable fields of a user playbook.
 
     Pass only the fields you want to change. Currently supports
-    ``--content`` and ``--playbook-name``. To change the structured
-    data block (trigger / instruction / pitfall / rationale), use
-    the ``client.update_user_playbook`` Python API directly — the
-    storage layer replaces structured_data wholesale, so a CLI flag
-    for individual fields would risk wiping the others.
+    ``--content`` and ``--playbook-name``.
 
     Args:
         ctx: Typer context with CliState in ctx.obj

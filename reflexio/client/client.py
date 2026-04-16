@@ -98,7 +98,6 @@ from reflexio.models.api_schema.service_schemas import (
     RunPlaybookAggregationRequest,
     RunPlaybookAggregationResponse,
     Status,
-    StructuredData,
     UserPlaybook,
     UserProfile,
     WhoamiResponse,
@@ -1317,42 +1316,30 @@ class ReflexioClient:
         *,
         playbook_name: str | None = None,
         content: str | None = None,
-        structured_data: StructuredData | dict | None = None,
+        trigger: str | None = None,
+        rationale: str | None = None,
     ) -> UpdateUserPlaybookResponse:
         """Update editable fields of a user playbook in place.
 
         Pass only the fields you want to change. Fields left as
         ``None`` are not touched on the server side.
 
-        WARNING: ``structured_data`` is replaced wholesale, not
-        merged field-by-field. If you pass ``StructuredData(trigger="X")``
-        any pre-existing ``instruction``/``pitfall``/``rationale``
-        on the playbook will be wiped. To preserve them, fetch the
-        playbook first via :meth:`get_user_playbooks`, mutate the
-        fields you want to change, and pass the merged object back.
-
         Args:
             user_playbook_id (int): The ID of the user playbook to update.
             playbook_name (Optional[str]): New playbook category name.
             content (Optional[str]): New content text.
-            structured_data (Optional[Union[StructuredData, dict]]):
-                Replacement structured data block (full replacement).
+            trigger (Optional[str]): New trigger condition.
+            rationale (Optional[str]): New rationale text.
 
         Returns:
             UpdateUserPlaybookResponse: Response containing success status and message.
         """
-        sd_obj: StructuredData | None
-        if structured_data is None:
-            sd_obj = None
-        elif isinstance(structured_data, dict):
-            sd_obj = StructuredData(**structured_data)
-        else:
-            sd_obj = structured_data
         request = UpdateUserPlaybookRequest(
             user_playbook_id=user_playbook_id,
             playbook_name=playbook_name,
             content=content,
-            structured_data=sd_obj,
+            trigger=trigger,
+            rationale=rationale,
         )
         response = self._make_request(
             "PUT",
@@ -1367,40 +1354,33 @@ class ReflexioClient:
         *,
         playbook_name: str | None = None,
         content: str | None = None,
-        structured_data: StructuredData | dict | None = None,
+        trigger: str | None = None,
+        rationale: str | None = None,
         playbook_status: PlaybookStatus | None = None,
     ) -> UpdateAgentPlaybookResponse:
         """Update editable fields of an agent playbook in place.
 
-        Pass only the fields you want to change. See
-        :meth:`update_user_playbook` for the same ``structured_data``
-        full-replacement caveat. To change ONLY the approval status,
-        prefer :meth:`update_agent_playbook_status` — it has tighter
-        semantics and a single-purpose endpoint.
+        Pass only the fields you want to change. To change ONLY the
+        approval status, prefer :meth:`update_agent_playbook_status` —
+        it has tighter semantics and a single-purpose endpoint.
 
         Args:
             agent_playbook_id (int): The ID of the agent playbook to update.
             playbook_name (Optional[str]): New playbook category name.
             content (Optional[str]): New content text.
-            structured_data (Optional[Union[StructuredData, dict]]):
-                Replacement structured data block (full replacement).
+            trigger (Optional[str]): New trigger condition.
+            rationale (Optional[str]): New rationale text.
             playbook_status (Optional[PlaybookStatus]): New approval status.
 
         Returns:
             UpdateAgentPlaybookResponse: Response containing success status and message.
         """
-        sd_obj: StructuredData | None
-        if structured_data is None:
-            sd_obj = None
-        elif isinstance(structured_data, dict):
-            sd_obj = StructuredData(**structured_data)
-        else:
-            sd_obj = structured_data
         request = UpdateAgentPlaybookRequest(
             agent_playbook_id=agent_playbook_id,
             playbook_name=playbook_name,
             content=content,
-            structured_data=sd_obj,
+            trigger=trigger,
+            rationale=rationale,
             playbook_status=playbook_status,
         )
         response = self._make_request(

@@ -194,14 +194,6 @@ def add(
         str | None,
         typer.Option("--trigger", help="When this playbook applies"),
     ] = None,
-    instruction: Annotated[
-        str | None,
-        typer.Option("--instruction", help="What to do (DO)"),
-    ] = None,
-    pitfall: Annotated[
-        str | None,
-        typer.Option("--pitfall", help="What not to do (DON'T)"),
-    ] = None,
     rationale: Annotated[
         str | None,
         typer.Option("--rationale", help="Why this playbook matters"),
@@ -221,8 +213,6 @@ def add(
         playbook_name: Playbook category name
         playbook_status: Initial approval status
         trigger: When this playbook applies
-        instruction: What to do
-        pitfall: What not to do
         rationale: Why this playbook matters
     """
     # --playbook-status has a non-empty default ("pending"), so
@@ -234,22 +224,16 @@ def add(
     from reflexio.models.api_schema.service_schemas import (
         AgentPlaybook,
         PlaybookStatus,
-        StructuredData,
     )
 
     pb_status = cast(PlaybookStatus, _validate_playbook_status(playbook_status))
 
-    structured_data = StructuredData(
-        trigger=trigger,
-        instruction=instruction,
-        pitfall=pitfall,
-        rationale=rationale,
-    )
     playbook = AgentPlaybook(
         agent_version=agent_version,
         playbook_name=playbook_name,
         content=content,
-        structured_data=structured_data,
+        trigger=trigger,
+        rationale=rationale,
         playbook_status=pb_status,
         playbook_metadata='{"source": "cli-manual"}',
     )
@@ -285,11 +269,7 @@ def update(
     """Update editable fields of an agent playbook.
 
     Pass only the fields you want to change. Currently supports
-    ``--content`` and ``--playbook-name``. To change the structured
-    data block (trigger / instruction / pitfall / rationale), use
-    the ``client.update_agent_playbook`` Python API directly — the
-    storage layer replaces structured_data wholesale, so a CLI flag
-    for individual fields would risk wiping the others.
+    ``--content`` and ``--playbook-name``.
 
     To change the approval status, use ``update-status`` instead.
 

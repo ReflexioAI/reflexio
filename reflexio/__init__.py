@@ -63,7 +63,6 @@ from reflexio.models.api_schema.ui.entities import (
     InteractionView,
     ProfileChangeLogView,
     ProfileView,
-    StructuredDataView,
     UserPlaybookView,
 )
 from reflexio.models.config_schema import (
@@ -109,7 +108,6 @@ __all__ = [
     "AgentPlaybookView",
     "EvaluationResultView",
     "ProfileChangeLogView",
-    "StructuredDataView",
     # Request types
     "PublishUserInteractionRequest",
     "DeleteUserProfileRequest",

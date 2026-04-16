@@ -161,7 +161,7 @@ export const agentPlaybookMethods: MethodDef[] = [
     displayName: "Update Agent Playbook",
     group: "agent-playbooks",
     description:
-      "Update editable fields of an agent playbook. structured_data is replaced wholesale. For status-only changes, prefer update_agent_playbook_status.",
+      "Update editable fields of an agent playbook. Pass only the fields you want to change. For status-only changes, prefer update_agent_playbook_status.",
     httpMethod: "PUT",
     endpoint: "/api/update_agent_playbook",
     requestStyle: "json_body",
@@ -185,11 +185,16 @@ export const agentPlaybookMethods: MethodDef[] = [
         description: "New content text",
       },
       {
-        name: "structured_data",
-        type: "json",
+        name: "trigger",
+        type: "string",
         required: false,
-        description:
-          'Replacement structured data block (full replacement), e.g. {"trigger": "...", "instruction": "...", "pitfall": "...", "rationale": "..."}',
+        description: "New trigger condition",
+      },
+      {
+        name: "rationale",
+        type: "string",
+        required: false,
+        description: "New rationale text",
       },
       {
         name: "playbook_status",

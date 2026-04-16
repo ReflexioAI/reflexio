@@ -14,7 +14,6 @@ from reflexio.models.api_schema.service_schemas import (
     AgentPlaybookUpdateEntry,
     PlaybookAggregationChangeLog,
     PlaybookStatus,
-    StructuredData,
     UserPlaybook,
     agent_playbook_to_snapshot,
 )
@@ -183,18 +182,13 @@ class PlaybookAggregator:
             lines = [f"[{idx}]"]
             if fb.content:
                 lines.append(f'Content: "{fb.content}"')
-            sd = fb.structured_data
-            if sd.trigger:
-                lines.append(f'Trigger: "{sd.trigger}"')
-            if sd.instruction:
-                lines.append(f'Instruction: "{sd.instruction}"')
-            if sd.pitfall:
-                lines.append(f'Pitfall: "{sd.pitfall}"')
-            if sd.rationale:
-                lines.append(f'Rationale: "{sd.rationale}"')
-            if sd.blocking_issue:
+            if fb.trigger:
+                lines.append(f'Trigger: "{fb.trigger}"')
+            if fb.rationale:
+                lines.append(f'Rationale: "{fb.rationale}"')
+            if fb.blocking_issue:
                 lines.append(
-                    f"Blocked by: [{sd.blocking_issue.kind.value}] {sd.blocking_issue.details}"
+                    f"Blocked by: [{fb.blocking_issue.kind.value}] {fb.blocking_issue.details}"
                 )
             blocks.append("\n".join(lines))
         return "\n\n".join(blocks) if blocks else "(No playbook items)"
@@ -208,12 +202,9 @@ class PlaybookAggregator:
             fb: A user playbook item
 
         Returns:
-            str: Concatenation of instruction + pitfall, or content as fallback
+            str: Content as the direction key for grouping
         """
-        key = f"{fb.structured_data.instruction or ''} {fb.structured_data.pitfall or ''}".strip()
-        if not key:
-            key = fb.content or ""
-        return key
+        return fb.content or ""
 
     @staticmethod
     def _token_overlap(str1: str, str2: str, threshold: float = 0.6) -> bool:
@@ -245,7 +236,7 @@ class PlaybookAggregator:
         threshold: float = 0.6,
     ) -> list[list[UserPlaybook]]:
         """
-        Group playbooks by similarity of their actionable content (instruction + pitfall).
+        Group playbooks by similarity of their content.
 
         Uses greedy single-linkage: each playbook is assigned to the first existing group
         that has any member with sufficient token overlap. Groups are returned sorted by
@@ -319,20 +310,14 @@ class PlaybookAggregator:
         Returns:
             str: Formatted input with separate field lists
         """
-        instructions = []
-        pitfalls = []
         triggers = []
         rationales = []
 
         for fb in cluster_playbooks:
-            if fb.structured_data.instruction:
-                instructions.append(fb.structured_data.instruction)
-            if fb.structured_data.pitfall:
-                pitfalls.append(fb.structured_data.pitfall)
-            if fb.structured_data.trigger:
-                triggers.append(fb.structured_data.trigger)
-            if fb.structured_data.rationale:
-                rationales.append(fb.structured_data.rationale)
+            if fb.trigger:
+                triggers.append(fb.trigger)
+            if fb.rationale:
+                rationales.append(fb.rationale)
 
         lines: list[str] = []
 
@@ -341,14 +326,6 @@ class PlaybookAggregator:
             lines.extend(f"- {trigger}" for trigger in triggers)
         else:
             lines.append("TRIGGER conditions: (none specified)")
-
-        if instructions:
-            lines.append("INSTRUCTION actions:")
-            lines.extend(f"- {action}" for action in instructions)
-
-        if pitfalls:
-            lines.append("PITFALL actions:")
-            lines.extend(f"- {action}" for action in pitfalls)
 
         if rationales:
             lines.append("RATIONALE summaries:")
@@ -385,14 +362,10 @@ class PlaybookAggregator:
             lines.append(f"Group {idx} ({len(group)} {count_label}):")
             for fb in group:
                 parts: list[str] = []
-                if fb.structured_data.trigger:
-                    parts.append(f'Trigger: "{fb.structured_data.trigger}"')
-                if fb.structured_data.instruction:
-                    parts.append(f'Instruction: "{fb.structured_data.instruction}"')
-                if fb.structured_data.pitfall:
-                    parts.append(f'Pitfall: "{fb.structured_data.pitfall}"')
-                if fb.structured_data.rationale:
-                    parts.append(f'Rationale: "{fb.structured_data.rationale}"')
+                if fb.trigger:
+                    parts.append(f'Trigger: "{fb.trigger}"')
+                if fb.rationale:
+                    parts.append(f'Rationale: "{fb.rationale}"')
                 if not parts and fb.content:
                     parts.append(f'AgentPlaybook: "{fb.content}"')
                 if parts:
@@ -410,9 +383,9 @@ class PlaybookAggregator:
     ) -> None:
         """Append blocking issues from cluster playbooks to output lines."""
         blocking_issues = [
-            f"[{fb.structured_data.blocking_issue.kind.value}] {fb.structured_data.blocking_issue.details}"
+            f"[{fb.blocking_issue.kind.value}] {fb.blocking_issue.details}"
             for fb in cluster_playbooks
-            if fb.structured_data.blocking_issue
+            if fb.blocking_issue
         ]
         if blocking_issues:
             lines.append("BLOCKED BY issues:")
@@ -424,9 +397,7 @@ class PlaybookAggregator:
     ) -> None:
         """Append freeform observations from cluster playbooks to output lines."""
         freeform_observations = [
-            fb.content
-            for fb in cluster_playbooks
-            if not fb.structured_data.trigger and fb.content
+            fb.content for fb in cluster_playbooks if not fb.trigger and fb.content
         ]
         if freeform_observations:
             lines.append("Freeform observations (from freeform cluster members):")
@@ -982,7 +953,7 @@ class PlaybookAggregator:
         Simple mock clustering by exact trigger match.
 
         Args:
-            user_playbooks: List of user playbooks with structured_data.trigger
+            user_playbooks: List of user playbooks with trigger field
             min_cluster_size: Minimum number of playbooks per cluster
 
         Returns:
@@ -991,7 +962,7 @@ class PlaybookAggregator:
         # Group by trigger
         condition_groups: dict[str, list[UserPlaybook]] = {}
         for fb in user_playbooks:
-            condition = fb.structured_data.trigger or ""
+            condition = fb.trigger or ""
             if condition not in condition_groups:
                 condition_groups[condition] = []
             condition_groups[condition].append(fb)
@@ -1139,54 +1110,24 @@ class PlaybookAggregator:
 
         if os.getenv("MOCK_LLM_RESPONSE", "").lower() == "true":
             # Extract structured fields directly from cluster
-            instructions = [
-                fb.structured_data.instruction
-                for fb in cluster_playbooks
-                if fb.structured_data.instruction
-            ]
-            pitfalls = [
-                fb.structured_data.pitfall
-                for fb in cluster_playbooks
-                if fb.structured_data.pitfall
-            ]
-            triggers = [
-                fb.structured_data.trigger
-                for fb in cluster_playbooks
-                if fb.structured_data.trigger
-            ]
+            triggers = [fb.trigger for fb in cluster_playbooks if fb.trigger]
 
-            instruction = instructions[0] if instructions else None
-            pitfall = pitfalls[0] if pitfalls else None
             trigger = triggers[0] if triggers else "in general"
 
-            # At least one of instruction or pitfall is required for valid playbook
-            if instruction is None and pitfall is None:
-                # Fall back to using content from first playbook if available
-                first_content = cluster_playbooks[0].content
-                if first_content:
-                    instruction = first_content
-                else:
-                    logger.info("No valid structured fields in cluster, skipping")
-                    return None
+            # Fall back to using content from first playbook if available
+            first_content = cluster_playbooks[0].content
+            if not first_content:
+                logger.info("No valid content in cluster, skipping")
+                return None
 
             # Build content directly as a freeform summary
-            trigger_text = trigger or "in general"
-            action_parts = []
-            if instruction:
-                action_parts.append(instruction)
-            if pitfall:
-                action_parts.append(f"avoid: {pitfall}")
-            content_text = f"When {trigger_text}, {'; '.join(action_parts)}."
+            content_text = f"When {trigger}, {first_content}."
 
             return AgentPlaybook(
                 playbook_name=cluster_playbooks[0].playbook_name,
                 agent_version=cluster_playbooks[0].agent_version,
                 content=content_text,
-                structured_data=StructuredData(
-                    trigger=trigger,
-                    instruction=instruction,
-                    pitfall=pitfall,
-                ),
+                trigger=trigger,
                 playbook_status=PlaybookStatus.PENDING,
                 playbook_metadata="mock_generated",
             )
@@ -1262,20 +1203,14 @@ class PlaybookAggregator:
             "Aggregated playbook content (freeform): %.200s",
             playbook_content,
         )
-        structured_data = StructuredData(
-            rationale=structured.rationale,
-            trigger=structured.trigger,
-            instruction=structured.instruction,
-            pitfall=structured.pitfall,
-            blocking_issue=structured.blocking_issue,
-            embedding_text=structured.trigger or playbook_content,
-        )
 
         return AgentPlaybook(
             playbook_name=cluster_playbooks[0].playbook_name,
             agent_version=cluster_playbooks[0].agent_version,
             content=playbook_content,
-            structured_data=structured_data,
+            trigger=structured.trigger,
+            rationale=structured.rationale,
+            blocking_issue=structured.blocking_issue,
             playbook_status=PlaybookStatus.PENDING,
             playbook_metadata="",
         )

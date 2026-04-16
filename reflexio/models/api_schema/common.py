@@ -14,7 +14,6 @@ __all__ = [
     "BlockingIssueKind",
     "BlockingIssue",
     "ToolUsed",
-    "VisibleStructuredData",
 ]
 
 # OS-agnostic "never expires" timestamp (January 1, 2100 00:00:00 UTC)
@@ -40,16 +39,3 @@ class ToolUsed(BaseModel):
     tool_data: dict = Field(
         default_factory=dict
     )  # tool metadata: input, output, latency, etc.
-
-
-class VisibleStructuredData(BaseModel):
-    """StructuredData fields visible to users — excludes embedding_text.
-
-    Shared between domain layer (AgentPlaybookSnapshot) and ui layer (StructuredDataView).
-    """
-
-    rationale: str | None = None
-    trigger: str | None = None
-    instruction: str | None = None
-    pitfall: str | None = None
-    blocking_issue: BlockingIssue | None = None

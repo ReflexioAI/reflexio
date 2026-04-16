@@ -160,9 +160,8 @@ def _setup_mock_chat_completion(
         return StructuredPlaybookList(
             playbooks=[
                 StructuredPlaybookContent(
-                    instruction=content,
-                    pitfall=None,
                     trigger="interacting with users",
+                    content=content,
                 )
             ]
         )
@@ -215,14 +214,9 @@ def test_playbook_generation_with_storage(
     assert isinstance(playbook, UserPlaybook)
     assert playbook.agent_version == "test_agent_1"
     assert playbook.request_id == "test_request_1"
-    # Verify structured fields are populated
-    assert (
-        playbook.structured_data.instruction
-        == "The agent was helpful and provided accurate information"
-    )
-    assert playbook.structured_data.trigger == "interacting with users"
-    # Verify playbook content is formatted from structured fields
-    assert 'Instruction: "The agent was helpful' in playbook.content
+    # Verify top-level fields are populated
+    assert playbook.trigger == "interacting with users"
+    assert playbook.content == "The agent was helpful and provided accurate information"
 
 
 @skip_in_precommit
@@ -405,9 +399,8 @@ def test_playbook_message_construction_with_interactions(
         return StructuredPlaybookList(
             playbooks=[
                 StructuredPlaybookContent(
-                    instruction="The agent was helpful",
-                    pitfall=None,
                     trigger="assisting users",
+                    content="The agent was helpful",
                 )
             ]
         )

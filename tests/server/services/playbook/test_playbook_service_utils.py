@@ -173,67 +173,33 @@ def test_construct_playbook_extraction_messages_with_empty_sessions():
 class TestFormatStructuredFieldsForDisplay:
     """Tests for the shared format_structured_fields_for_display function (display/debug formatting)."""
 
-    def test_all_fields_present(self):
-        """Test formatting with all fields populated."""
+    def test_trigger_present(self):
+        """Test formatting with trigger populated."""
         structured = StructuredPlaybookContent(
-            instruction="use clear language",
-            pitfall="use jargon",
             trigger="explaining technical concepts to beginners",
         )
         result = format_structured_fields_for_display(structured)
         assert 'Trigger: "explaining technical concepts to beginners"' in result
-        assert 'Instruction: "use clear language"' in result
-        assert 'Pitfall: "use jargon"' in result
 
     def test_trigger_none(self):
         """Test that None trigger is omitted from output."""
         structured = StructuredPlaybookContent(
-            instruction="use clear language",
-            pitfall=None,
             trigger=None,
         )
         result = format_structured_fields_for_display(structured)
         assert "Trigger:" not in result
-        assert 'Instruction: "use clear language"' in result
 
     def test_trigger_empty_string(self):
         """Test that empty string trigger is omitted from output."""
         structured = StructuredPlaybookContent(
-            instruction="use clear language",
-            pitfall=None,
             trigger=None,
         )
         result = format_structured_fields_for_display(structured)
-        assert "Trigger:" not in result
-
-    def test_only_instruction(self):
-        """Test formatting with only instruction."""
-        structured = StructuredPlaybookContent(
-            instruction="be concise",
-            pitfall=None,
-            trigger=None,
-        )
-        result = format_structured_fields_for_display(structured)
-        assert 'Instruction: "be concise"' in result
-        assert "Pitfall:" not in result
-        assert "Trigger:" not in result
-
-    def test_only_pitfall(self):
-        """Test formatting with only pitfall."""
-        structured = StructuredPlaybookContent(
-            instruction=None,
-            pitfall="ramble",
-            trigger=None,
-        )
-        result = format_structured_fields_for_display(structured)
-        assert 'Pitfall: "ramble"' in result
-        assert "Instruction:" not in result
         assert "Trigger:" not in result
 
     def test_with_blocking_issue(self):
         """Test formatting with blocking_issue."""
         structured = StructuredPlaybookContent(
-            instruction="acknowledge limitation",
             trigger="user asks for real-time data",
             blocking_issue=BlockingIssue(
                 kind=BlockingIssueKind.MISSING_TOOL,
@@ -261,10 +227,10 @@ class TestStructuredPlaybookContentFreeform:
     """Tests for freeform playbook support in StructuredPlaybookContent."""
 
     def test_has_content_structured_only(self):
-        """Structured playbook with trigger + action returns True."""
+        """Structured playbook with trigger + content returns True."""
         sfc = StructuredPlaybookContent(
             trigger="user asks about X",
-            instruction="do Y",
+            content="do Y",
         )
         assert sfc.has_content is True
         assert sfc.is_structured is True
@@ -293,7 +259,6 @@ class TestStructuredPlaybookContentFreeform:
         """When both structured and freeform are present, structured takes precedence."""
         sfc = StructuredPlaybookContent(
             trigger="user asks X",
-            instruction="do Y",
             content="some observation",
         )
         assert sfc.has_content is True
@@ -306,14 +271,6 @@ class TestStructuredPlaybookContentFreeform:
         )
         assert sfc.content == "Agent consistently over-apologizes"
         assert sfc.trigger is None
-
-    def test_validate_trigger_without_action_still_fails(self):
-        """Trigger without instruction/pitfall still raises even with freeform."""
-        with pytest.raises(ValueError, match="instruction.*pitfall"):
-            StructuredPlaybookContent(
-                trigger="user asks about X",
-                content="some observation",
-            )
 
     def test_freeform_from_dict(self):
         """Parse freeform playbook from a dict (as LLM would return)."""
@@ -345,12 +302,10 @@ class TestStructuredPlaybookList:
                 "playbooks": [
                     {
                         "trigger": "user asks for help debugging",
-                        "instruction": "explain the root cause first",
                         "content": "Explain root cause before fixes.",
                     },
                     {
                         "trigger": "agent provides a factual correction",
-                        "instruction": "deliver corrections without apologies",
                         "content": "Reserve apologies for genuine mistakes.",
                     },
                 ]
@@ -384,7 +339,7 @@ class TestStructuredPlaybookList:
         """Legacy flat single-entry shape (no `playbooks` wrapper) is rejected.
 
         Pins the contract that an LLM regression to the v1 single-entry
-        shape ``{"trigger": ..., "instruction": ...}`` no longer parses
+        shape ``{"trigger": ..., "content": ...}`` no longer parses
         as a StructuredPlaybookList — the broad ``except`` in
         ``PlaybookExtractor.extract_playbook_entries`` then logs the
         ValidationError and returns ``[]`` instead of silently building
@@ -394,7 +349,7 @@ class TestStructuredPlaybookList:
             StructuredPlaybookList.model_validate(
                 {
                     "trigger": "user asks for help debugging",
-                    "instruction": "explain the root cause first",
+                    "content": "explain the root cause first",
                 }
             )
 
@@ -413,7 +368,7 @@ class TestStructuredPlaybookList:
                 "playbooks": [
                     {
                         "trigger": "user asks for help",
-                        "instruction": "respond",
+                        "content": "respond helpfully",
                         "bogus_field_from_provider": 1,
                     }
                 ]
@@ -438,21 +393,11 @@ class TestFormatStructuredFieldsForDisplayFreeform:
         """When structured fields present, playbook content is not used."""
         sfc = StructuredPlaybookContent(
             trigger="user asks X",
-            instruction="do Y",
             content="some observation",
         )
         result = format_structured_fields_for_display(sfc)
         assert "Trigger:" in result
-        assert "Instruction:" in result
         assert "some observation" not in result
-
-    def test_freeform_not_applied_to_structured_data(self):
-        """StructuredData (not StructuredPlaybookContent) never falls back to freeform."""
-        from reflexio.models.api_schema.service_schemas import StructuredData
-
-        sd = StructuredData()
-        result = format_structured_fields_for_display(sd)
-        assert result == ""
 
 
 # ===============================
@@ -467,7 +412,7 @@ class TestEnsurePlaybookContent:
         """When playbook content is a non-empty string, return it as-is."""
         structured = StructuredPlaybookContent(
             trigger="user asks X",
-            instruction="do Y",
+            content="do Y",
         )
         result = ensure_playbook_content("My freeform playbook", structured)
         assert result == "My freeform playbook"
@@ -476,42 +421,28 @@ class TestEnsurePlaybookContent:
         """When playbook content is None, fall back to formatted structured fields."""
         structured = StructuredPlaybookContent(
             trigger="user asks X",
-            instruction="do Y",
+            content="do Y",
         )
         result = ensure_playbook_content(None, structured)
         assert 'Trigger: "user asks X"' in result
-        assert 'Instruction: "do Y"' in result
 
     def test_falls_back_to_structured_when_empty(self):
         """When playbook content is empty string, fall back to formatted structured fields."""
         structured = StructuredPlaybookContent(
             trigger="user asks X",
-            instruction="do Y",
+            content="do Y",
         )
         result = ensure_playbook_content("", structured)
         assert 'Trigger: "user asks X"' in result
-        assert 'Instruction: "do Y"' in result
 
     def test_falls_back_to_structured_when_whitespace_only(self):
         """When playbook content is whitespace-only, fall back to formatted structured fields."""
         structured = StructuredPlaybookContent(
             trigger="user asks X",
-            instruction="do Y",
+            content="do Y",
         )
         result = ensure_playbook_content("   ", structured)
         assert 'Trigger: "user asks X"' in result
-
-    def test_works_with_structured_data(self):
-        """ensure_playbook_content also works with StructuredData (not just StructuredPlaybookContent)."""
-        from reflexio.models.api_schema.service_schemas import StructuredData
-
-        sd = StructuredData(
-            trigger="when testing",
-            instruction="check all fields",
-        )
-        result = ensure_playbook_content(None, sd)
-        assert 'Trigger: "when testing"' in result
-        assert 'Instruction: "check all fields"' in result
 
 
 # ===============================
@@ -524,10 +455,327 @@ class TestEnsurePlaybookContentEdgeCases:
 
     def test_returns_empty_string_when_both_empty(self):
         """When both playbook content and structured fields are empty, returns empty string."""
-        from reflexio.models.api_schema.service_schemas import StructuredData
-
-        result = ensure_playbook_content(None, StructuredData())
+        result = ensure_playbook_content(None, StructuredPlaybookContent())
         assert result == ""
+
+
+# ===============================
+# Tests for expert and incremental message construction
+# ===============================
+
+
+class TestConstructExpertPlaybookExtractionMessages:
+    """Tests for construct_expert_playbook_extraction_messages."""
+
+    def _make_expert_interactions(self):
+        """Create interactions with expert_content for testing."""
+        return [
+            Interaction(
+                interaction_id=1,
+                user_id="user_1",
+                request_id="req_1",
+                content="How do I reset my password?",
+                role="user",
+                created_at=int(datetime.now(UTC).timestamp()),
+            ),
+            Interaction(
+                interaction_id=2,
+                user_id="user_1",
+                request_id="req_1",
+                content="Click on forgot password on the login page.",
+                role="assistant",
+                created_at=int(datetime.now(UTC).timestamp()),
+                expert_content="Navigate to Settings > Security > Reset Password. Include the 48-hour cooling period warning.",
+            ),
+        ]
+
+    def _make_request_data(self, interactions):
+        request = Request(
+            request_id="req_1",
+            user_id="user_1",
+            source="test",
+            agent_version="1.0",
+            session_id="session_1",
+        )
+        return [
+            RequestInteractionDataModel(
+                session_id="session_1",
+                request=request,
+                interactions=interactions,
+            )
+        ]
+
+    def test_expert_messages_constructed_with_comparison_pairs(self):
+        """Expert extraction should include comparison pairs in user message."""
+        from reflexio.server.services.playbook.playbook_service_utils import (
+            construct_expert_playbook_extraction_messages,
+        )
+
+        interactions = self._make_expert_interactions()
+        ridms = self._make_request_data(interactions)
+        prompt_manager = PromptManager()
+
+        messages = construct_expert_playbook_extraction_messages(
+            prompt_manager=prompt_manager,
+            request_interaction_data_models=ridms,
+            agent_context_prompt="Customer support agent",
+            extraction_definition_prompt="Evaluate agent quality",
+        )
+
+        assert len(messages) > 0
+
+        # Extract all text from messages
+        all_text = ""
+        for m in messages:
+            content = m.get("content", "")
+            if isinstance(content, list):
+                for item in content:
+                    if isinstance(item, dict) and item.get("type") == "text":
+                        all_text += item.get("text", "")
+            else:
+                all_text += str(content)
+
+        # System message should contain the agent context
+        system_text = ""
+        for m in messages:
+            if m.get("role") == "system":
+                content = m.get("content", "")
+                if isinstance(content, list):
+                    for item in content:
+                        if isinstance(item, dict) and item.get("type") == "text":
+                            system_text += item.get("text", "")
+                else:
+                    system_text += str(content)
+
+        assert "Evaluate agent quality" in system_text
+        assert "Customer support agent" in system_text
+
+        # Should include comparison pair content
+        assert "Agent Response" in all_text or "Expert Response" in all_text
+
+    def test_expert_prompt_no_instruction_pitfall(self):
+        """Expert extraction prompt should not reference instruction or pitfall fields."""
+        from reflexio.server.services.playbook.playbook_service_utils import (
+            construct_expert_playbook_extraction_messages,
+        )
+
+        interactions = self._make_expert_interactions()
+        ridms = self._make_request_data(interactions)
+        prompt_manager = PromptManager()
+
+        messages = construct_expert_playbook_extraction_messages(
+            prompt_manager=prompt_manager,
+            request_interaction_data_models=ridms,
+            agent_context_prompt="Test agent",
+            extraction_definition_prompt="Test focus",
+        )
+
+        # Check the system message doesn't have instruction/pitfall in the output schema
+        system_text = ""
+        for m in messages:
+            if m.get("role") == "system":
+                content = m.get("content", "")
+                if isinstance(content, list):
+                    for item in content:
+                        if isinstance(item, dict) and item.get("type") == "text":
+                            system_text += item.get("text", "")
+                else:
+                    system_text += str(content)
+
+        # The new v3 prompt should NOT have instruction/pitfall in its output schema
+        assert '"instruction"' not in system_text
+        assert '"pitfall"' not in system_text
+
+
+class TestConstructIncrementalPlaybookExtractionMessages:
+    """Tests for construct_incremental_playbook_extraction_messages."""
+
+    def _make_interactions(self):
+        return [
+            Interaction(
+                interaction_id=1,
+                user_id="user_1",
+                request_id="req_1",
+                content="Help me optimize this query",
+                role="user",
+                created_at=int(datetime.now(UTC).timestamp()),
+            ),
+            Interaction(
+                interaction_id=2,
+                user_id="user_1",
+                request_id="req_1",
+                content="Here is the optimized query using indexes",
+                role="assistant",
+                created_at=int(datetime.now(UTC).timestamp()),
+            ),
+        ]
+
+    def _make_request_data(self, interactions):
+        request = Request(
+            request_id="req_1",
+            user_id="user_1",
+            source="test",
+            agent_version="1.0",
+            session_id="session_1",
+        )
+        return [
+            RequestInteractionDataModel(
+                session_id="session_1",
+                request=request,
+                interactions=interactions,
+            )
+        ]
+
+    def test_incremental_messages_include_previously_extracted(self):
+        """Incremental extraction should include previously extracted playbooks."""
+        from reflexio.models.api_schema.service_schemas import UserPlaybook
+        from reflexio.server.services.playbook.playbook_service_utils import (
+            construct_incremental_playbook_extraction_messages,
+        )
+
+        interactions = self._make_interactions()
+        ridms = self._make_request_data(interactions)
+        prompt_manager = PromptManager()
+
+        previously_extracted = [
+            UserPlaybook(
+                agent_version="1.0",
+                request_id="r1",
+                content="Always check indexes before running queries",
+                trigger="user asks for query optimization",
+            ),
+        ]
+
+        messages = construct_incremental_playbook_extraction_messages(
+            prompt_manager=prompt_manager,
+            request_interaction_data_models=ridms,
+            agent_context_prompt="Database admin agent",
+            extraction_definition_prompt="Database optimization",
+            previously_extracted=previously_extracted,
+        )
+
+        assert len(messages) > 0
+
+        # Extract all text
+        all_text = ""
+        for m in messages:
+            content = m.get("content", "")
+            if isinstance(content, list):
+                for item in content:
+                    if isinstance(item, dict) and item.get("type") == "text":
+                        all_text += item.get("text", "")
+            else:
+                all_text += str(content)
+
+        # Should include the previously extracted playbook content
+        assert "Always check indexes" in all_text
+
+    def test_incremental_prompt_no_instruction_pitfall(self):
+        """Incremental extraction prompt should not reference instruction or pitfall fields."""
+        from reflexio.server.services.playbook.playbook_service_utils import (
+            construct_incremental_playbook_extraction_messages,
+        )
+
+        interactions = self._make_interactions()
+        ridms = self._make_request_data(interactions)
+        prompt_manager = PromptManager()
+
+        messages = construct_incremental_playbook_extraction_messages(
+            prompt_manager=prompt_manager,
+            request_interaction_data_models=ridms,
+            agent_context_prompt="Test agent",
+            extraction_definition_prompt="Test focus",
+        )
+
+        # Check the system message doesn't have instruction/pitfall in the output schema
+        system_text = ""
+        for m in messages:
+            if m.get("role") == "system":
+                content = m.get("content", "")
+                if isinstance(content, list):
+                    for item in content:
+                        if isinstance(item, dict) and item.get("type") == "text":
+                            system_text += item.get("text", "")
+                else:
+                    system_text += str(content)
+
+        # The new v4 prompt should NOT have instruction/pitfall in its output schema
+        assert '"instruction"' not in system_text
+        assert '"pitfall"' not in system_text
+
+    def test_incremental_with_no_previously_extracted(self):
+        """Incremental extraction with empty previously_extracted should show (None)."""
+        from reflexio.server.services.playbook.playbook_service_utils import (
+            construct_incremental_playbook_extraction_messages,
+        )
+
+        interactions = self._make_interactions()
+        ridms = self._make_request_data(interactions)
+        prompt_manager = PromptManager()
+
+        messages = construct_incremental_playbook_extraction_messages(
+            prompt_manager=prompt_manager,
+            request_interaction_data_models=ridms,
+            agent_context_prompt="Test agent",
+            extraction_definition_prompt="Test focus",
+            previously_extracted=None,
+        )
+
+        all_text = ""
+        for m in messages:
+            content = m.get("content", "")
+            if isinstance(content, list):
+                for item in content:
+                    if isinstance(item, dict) and item.get("type") == "text":
+                        all_text += item.get("text", "")
+            else:
+                all_text += str(content)
+
+        assert "(None)" in all_text
+
+
+class TestHasExpertContent:
+    """Tests for has_expert_content utility function."""
+
+    def test_returns_true_when_expert_content_present(self):
+        from reflexio.server.services.playbook.playbook_service_utils import (
+            has_expert_content,
+        )
+
+        interactions = [
+            Interaction(
+                interaction_id=1,
+                user_id="u1",
+                request_id="r1",
+                content="agent response",
+                role="assistant",
+                expert_content="better response",
+            ),
+        ]
+        assert has_expert_content(interactions) is True
+
+    def test_returns_false_when_no_expert_content(self):
+        from reflexio.server.services.playbook.playbook_service_utils import (
+            has_expert_content,
+        )
+
+        interactions = [
+            Interaction(
+                interaction_id=1,
+                user_id="u1",
+                request_id="r1",
+                content="agent response",
+                role="assistant",
+            ),
+        ]
+        assert has_expert_content(interactions) is False
+
+    def test_returns_false_for_empty_list(self):
+        from reflexio.server.services.playbook.playbook_service_utils import (
+            has_expert_content,
+        )
+
+        assert has_expert_content([]) is False
 
 
 if __name__ == "__main__":

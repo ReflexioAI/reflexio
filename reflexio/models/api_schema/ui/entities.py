@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 
 from pydantic import BaseModel, Field, field_validator
 
-from ..common import NEVER_EXPIRES_TIMESTAMP, ToolUsed, VisibleStructuredData
+from ..common import NEVER_EXPIRES_TIMESTAMP, BlockingIssue, ToolUsed
 from ..validators import _validate_image_url
 from .enums import (
     PlaybookStatus,
@@ -15,7 +15,6 @@ from .enums import (
 )
 
 __all__ = [
-    "StructuredDataView",
     "InteractionView",
     "ProfileView",
     "UserPlaybookView",
@@ -27,9 +26,6 @@ __all__ = [
 # ===============================
 # View Models (user-facing, without embeddings)
 # ===============================
-
-
-StructuredDataView = VisibleStructuredData
 
 
 class InteractionView(BaseModel):
@@ -71,7 +67,7 @@ class ProfileView(BaseModel):
 
 
 class UserPlaybookView(BaseModel):
-    """User-facing UserPlaybook — excludes embedding, uses StructuredDataView."""
+    """User-facing UserPlaybook — excludes embedding."""
 
     user_playbook_id: int = 0
     user_id: str | None = None
@@ -80,21 +76,25 @@ class UserPlaybookView(BaseModel):
     playbook_name: str = ""
     created_at: int = Field(default_factory=lambda: int(datetime.now(UTC).timestamp()))
     content: str = ""
-    structured_data: StructuredDataView = Field(default_factory=StructuredDataView)
+    trigger: str | None = None
+    rationale: str | None = None
+    blocking_issue: BlockingIssue | None = None
     status: Status | None = None
     source: str | None = None
     source_interaction_ids: list[int] = Field(default_factory=list)
 
 
 class AgentPlaybookView(BaseModel):
-    """User-facing AgentPlaybook — excludes embedding, uses StructuredDataView."""
+    """User-facing AgentPlaybook — excludes embedding."""
 
     agent_playbook_id: int = 0
     playbook_name: str = ""
     agent_version: str
     created_at: int = Field(default_factory=lambda: int(datetime.now(UTC).timestamp()))
     content: str
-    structured_data: StructuredDataView = Field(default_factory=StructuredDataView)
+    trigger: str | None = None
+    rationale: str | None = None
+    blocking_issue: BlockingIssue | None = None
     playbook_status: PlaybookStatus = PlaybookStatus.PENDING
     playbook_metadata: str = ""
     status: Status | None = None

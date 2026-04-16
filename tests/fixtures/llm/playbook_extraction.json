@@ -2,7 +2,7 @@
   "choices": [
     {
       "message": {
-        "content": "{\"playbooks\": [{\"trigger\": \"when user asks about implementation details\", \"instruction\": \"Agent should provide more detailed explanations when answering technical questions\", \"rationale\": \"User expressed frustration with vague answers\"}]}"
+        "content": "{\"playbooks\": [{\"trigger\": \"when user asks about implementation details\", \"content\": \"Agent should provide more detailed explanations when answering technical questions\", \"rationale\": \"User expressed frustration with vague answers\"}]}"
       },
       "finish_reason": "stop"
     }

@@ -94,7 +94,7 @@ reflexio search "<the user's request or task description>"
 Use the user's actual request as the query — not keywords. Different tasks return different playbooks. The server auto-scopes results to the current agent via OpenClaw's session key.
 
 **Step 3 — Apply results and do the task:**
-- If search returned playbooks → follow the instructions, avoid the pitfalls
+- If search returned playbooks → follow the content guidance in each playbook
 - If search returned profiles → adapt your approach to the user's preferences
 - If search returned nothing or failed → proceed normally
 
@@ -191,9 +191,9 @@ The `user_id` field in publish payloads is auto-derived from OpenClaw's session 
 
 **User Playbooks** — per-instance behavioral corrections:
 - **trigger**: when does this rule apply?
-- **instruction**: what to do instead
-- **pitfall**: what to avoid
+- **content**: the actionable behavioral rule
 - **rationale**: why the correction matters
+- **blocking_issue**: what prevents correct behavior (if applicable)
 
 **Agent Playbooks** — shared corrections aggregated from all instances:
 - Same structure as user playbooks

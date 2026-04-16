@@ -39,7 +39,7 @@ reflexio search "<the user's request or task description>"
 If the server wasn't ready yet (connection error), skip this and proceed — you'll retry later.
 
 **Step 3 — Apply results and do the task:**
-- If search returned playbooks → follow the instructions, avoid the pitfalls
+- If search returned playbooks → follow the content guidance in each playbook
 - If search returned profiles → adapt your approach to the user's preferences
 - If search returned nothing or failed → proceed normally
 
@@ -79,7 +79,7 @@ SUMMARY_EOF
 reflexio publish --user-id claude-code --agent-version claude-code --source claude-code-expert --skip-aggregation --force-extraction --file /tmp/reflexio-summary.json && rm -f /tmp/reflexio-summary.json
 ```
 
-`tools_used` is **required** on the second turn whenever the original approach involved a failed or rejected tool call — the error string or rejection moment is the evidence Reflexio needs to extract a precise behavioral rule (trigger/instruction/pitfall) instead of a vague profile entry. For pure-text corrections (user corrected your wording or choice with no tool friction), the field can be omitted.
+`tools_used` is **required** on the second turn whenever the original approach involved a failed or rejected tool call — the error string or rejection moment is the evidence Reflexio needs to extract a precise behavioral rule instead of a vague profile entry. For pure-text corrections (user corrected your wording or choice with no tool friction), the field can be omitted.
 
 **Detect correction patterns:**
 
@@ -109,11 +109,11 @@ _Non-verbal / implicit corrections (also publish these):_
 - **User preferences**: communication style, tools, conventions
 - **About the environment**: project setup, team conventions, constraints
 
-**User Playbooks** — behavioral corrections with structured fields:
+**User Playbooks** — behavioral corrections with top-level fields:
 - **trigger**: when does this rule apply?
-- **instruction**: what to do instead
-- **pitfall**: what to avoid
+- **content**: the actionable behavioral rule
 - **rationale**: why the correction matters
+- **blocking_issue**: what prevents correct behavior (if applicable)
 
 You don't decide what gets extracted — the Reflexio server LLM analyzes your published summary and determines profiles vs playbooks automatically.
 
@@ -143,7 +143,7 @@ Agent(prompt="Start the Reflexio server: nohup reflexio services start --only ba
 
 - **Use the user's actual request as the search query** — not keywords
 - **Preserve the user's exact words** in the correction summary
-- **Include enough context** — what you did wrong + the correction + why + **the evidence**. Evidence means the actual failed tool input, the exact error message, or the verbatim self-correction sentence. Without the evidence, Reflexio can only extract a vague profile entry; with the evidence, it can extract a precise playbook rule with trigger/instruction/pitfall/rationale fields. If you're only publishing one correction, make it count by including the failure.
+- **Include enough context** — what you did wrong + the correction + why + **the evidence**. Evidence means the actual failed tool input, the exact error message, or the verbatim self-correction sentence. Without the evidence, Reflexio can only extract a vague profile entry; with the evidence, it can extract a precise playbook rule with trigger, content, rationale, and blocking_issue fields. If you're only publishing one correction, make it count by including the failure.
 - **If Reflexio is unreachable, proceed normally** — it enhances but never blocks
 - **Don't mention Reflexio to the user** unless they ask
 - **Suggest `/reflexio-extract`** if a session had many corrections or learnings

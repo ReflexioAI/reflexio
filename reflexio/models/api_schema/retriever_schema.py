@@ -6,6 +6,7 @@ from typing import Self
 from pydantic import BaseModel, Field, model_validator
 
 from ..config_schema import SearchMode
+from .common import BlockingIssue
 from .service_schemas import (
     AgentPlaybook,
     AgentSuccessEvaluationResult,
@@ -13,7 +14,6 @@ from .service_schemas import (
     PlaybookStatus,
     Request,
     Status,
-    StructuredData,
     UserPlaybook,
     UserProfile,
 )
@@ -318,7 +318,9 @@ class UpdateAgentPlaybookRequest(BaseModel):
     agent_playbook_id: int = Field(gt=0)
     playbook_name: str | None = None
     content: str | None = None
-    structured_data: StructuredData | None = None
+    trigger: str | None = None
+    rationale: str | None = None
+    blocking_issue: BlockingIssue | None = None
     playbook_status: PlaybookStatus | None = None
 
 
@@ -333,7 +335,9 @@ class UpdateUserPlaybookRequest(BaseModel):
     user_playbook_id: int = Field(gt=0)
     playbook_name: str | None = None
     content: str | None = None
-    structured_data: StructuredData | None = None
+    trigger: str | None = None
+    rationale: str | None = None
+    blocking_issue: BlockingIssue | None = None
 
 
 class UpdateUserPlaybookResponse(BaseModel):

@@ -104,21 +104,17 @@ class TestAddUserPlaybook:
         assert response.added_count == 1
         _get_storage(mixin).save_user_playbooks.assert_called_once()
 
-    def test_preserves_structured_data(self):
-        """Structured data fields are preserved as-is."""
-        from reflexio.models.api_schema.service_schemas import StructuredData
-
+    def test_preserves_top_level_fields(self):
+        """Top-level structured fields are preserved as-is."""
         mixin = _make_mixin()
-        sd = StructuredData(trigger="when user asks", instruction="do this")
-        rf = _sample_user_playbook(structured_data=sd)
+        rf = _sample_user_playbook(trigger="when user asks")
         request = AddUserPlaybookRequest(user_playbooks=[rf])
 
         response = mixin.add_user_playbook(request)
 
         assert response.success is True
         saved = _get_storage(mixin).save_user_playbooks.call_args[0][0]
-        assert saved[0].structured_data.trigger == "when user asks"
-        assert saved[0].structured_data.instruction == "do this"
+        assert saved[0].trigger == "when user asks"
 
     def test_storage_not_configured(self):
         """Fails when storage is not configured."""

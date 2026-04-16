@@ -75,9 +75,8 @@ class ReflexioRetriever(BaseRetriever):  # noqa: ARG002
                     page_content=fb.content,
                     metadata={
                         "type": "agent_playbook",
-                        "instruction": fb.structured_data.instruction or "",
-                        "pitfall": fb.structured_data.pitfall or "",
-                        "trigger": fb.structured_data.trigger or "",
+                        "trigger": fb.trigger or "",
+                        "rationale": fb.rationale or "",
                         "agent_version": fb.agent_version,
                     },
                 )
@@ -91,9 +90,8 @@ class ReflexioRetriever(BaseRetriever):  # noqa: ARG002
                     page_content=rf.content,
                     metadata={
                         "type": "user_playbook",
-                        "instruction": rf.structured_data.instruction or "",
-                        "pitfall": rf.structured_data.pitfall or "",
-                        "trigger": rf.structured_data.trigger or "",
+                        "trigger": rf.trigger or "",
+                        "rationale": rf.rationale or "",
                         "agent_version": rf.agent_version,
                     },
                 )

@@ -19,6 +19,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
+from reflexio.models.api_schema.common import BlockingIssue
 from reflexio.models.api_schema.service_schemas import (
     AgentPlaybook,
     AgentPlaybookSnapshot,
@@ -32,7 +33,6 @@ from reflexio.models.api_schema.service_schemas import (
     RegularVsShadow,
     Request,
     Status,
-    StructuredData,
     ToolUsed,
     UserActionType,
     UserPlaybook,
@@ -390,7 +390,11 @@ def _row_to_user_playbook(
         request_id=d["request_id"],
         agent_version=d["agent_version"],
         content=d["content"],
-        structured_data=StructuredData(**json.loads(d.get("structured_data") or "{}")),
+        trigger=d.get("trigger"),
+        rationale=d.get("rationale"),
+        blocking_issue=BlockingIssue(**json.loads(d["blocking_issue"]))
+        if d.get("blocking_issue")
+        else None,
         status=Status(d["status"]) if d.get("status") else None,
         source=d.get("source"),
         source_interaction_ids=_json_loads(d.get("source_interaction_ids")) or [],
@@ -407,7 +411,11 @@ def _row_to_agent_playbook(row: sqlite3.Row) -> AgentPlaybook:
         created_at=_iso_to_epoch(d["created_at"]),
         agent_version=d["agent_version"],
         content=d["content"],
-        structured_data=StructuredData(**json.loads(d.get("structured_data") or "{}")),
+        trigger=d.get("trigger"),
+        rationale=d.get("rationale"),
+        blocking_issue=BlockingIssue(**json.loads(d["blocking_issue"]))
+        if d.get("blocking_issue")
+        else None,
         playbook_status=PlaybookStatus(d["playbook_status"])
         if d.get("playbook_status")
         else PlaybookStatus.PENDING,
@@ -673,7 +681,7 @@ class SQLiteStorageBase(BaseStorage):
         """Drop old-schema feedback/playbook tables so _DDL can recreate them.
 
         Checks for two migration scenarios:
-        1. Old column layout (missing ``structured_data``) -- drop data tables + FTS.
+        1. Old column layout (missing ``trigger``) -- drop data tables + FTS.
         2. Old FTS column name (``feedback_content`` instead of ``search_text``)
            -- drop only the FTS tables so they are recreated with the new column.
 
@@ -732,10 +740,10 @@ class SQLiteStorageBase(BaseStorage):
         if not columns:
             return
 
-        # Scenario 1: old data schema (missing structured_data column)
-        if "structured_data" not in columns:
+        # Scenario 1: old data schema (missing trigger column — pre-flattening)
+        if "trigger" not in columns:
             logger.warning(
-                "Detected old playbook schema (missing structured_data column). "
+                "Detected old playbook schema (missing trigger column). "
                 "Dropping playbook tables so they can be recreated with the new schema."
             )
             with self._lock:
@@ -1081,7 +1089,9 @@ CREATE TABLE IF NOT EXISTS user_playbooks (
     request_id TEXT NOT NULL,
     agent_version TEXT NOT NULL DEFAULT '',
     content TEXT NOT NULL DEFAULT '',
-    structured_data TEXT,
+    trigger TEXT,
+    rationale TEXT,
+    blocking_issue TEXT,
     source_interaction_ids TEXT,
     status TEXT,
     source TEXT,
@@ -1099,7 +1109,9 @@ CREATE TABLE IF NOT EXISTS agent_playbooks (
     created_at TEXT NOT NULL,
     agent_version TEXT NOT NULL DEFAULT '',
     content TEXT NOT NULL DEFAULT '',
-    structured_data TEXT,
+    trigger TEXT,
+    rationale TEXT,
+    blocking_issue TEXT,
     playbook_status TEXT NOT NULL DEFAULT 'pending',
     playbook_metadata TEXT NOT NULL DEFAULT '',
     embedding TEXT,

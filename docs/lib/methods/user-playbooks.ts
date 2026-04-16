@@ -148,7 +148,7 @@ export const userPlaybookMethods: MethodDef[] = [
         type: "json",
         required: true,
         description:
-          'List of user playbook objects. Each must have at least one of content / structured_data fields populated, e.g. [{"agent_version": "v1", "request_id": "req-1", "playbook_name": "greeting", "content": "..."}]',
+          'List of user playbook objects. Each must have at least one of content or trigger populated, e.g. [{"agent_version": "v1", "request_id": "req-1", "playbook_name": "greeting", "content": "...", "trigger": "..."}]',
       },
     ],
   },
@@ -158,7 +158,7 @@ export const userPlaybookMethods: MethodDef[] = [
     displayName: "Update User Playbook",
     group: "user-playbooks",
     description:
-      "Update editable fields of a user playbook. structured_data is replaced wholesale.",
+      "Update editable fields of a user playbook. Pass only the fields you want to change.",
     httpMethod: "PUT",
     endpoint: "/api/update_user_playbook",
     requestStyle: "json_body",
@@ -182,11 +182,16 @@ export const userPlaybookMethods: MethodDef[] = [
         description: "New content text",
       },
       {
-        name: "structured_data",
-        type: "json",
+        name: "trigger",
+        type: "string",
         required: false,
-        description:
-          'Replacement structured data block (full replacement), e.g. {"trigger": "...", "instruction": "...", "pitfall": "...", "rationale": "..."}',
+        description: "New trigger condition",
+      },
+      {
+        name: "rationale",
+        type: "string",
+        required: false,
+        description: "New rationale text",
       },
     ],
   },

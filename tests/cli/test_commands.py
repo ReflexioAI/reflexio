@@ -63,7 +63,6 @@ class TestPlaybooksList:
     def test_list_playbooks(self, runner, app, mock_client) -> None:
         fb = MagicMock(spec=[])
         fb.content = "Be concise"
-        fb.structured_data = None
         fb.playbook_status = "pending"
         fb.status = None
         mock_client.get_agent_playbooks.return_value = MagicMock(agent_playbooks=[fb])
@@ -74,7 +73,6 @@ class TestPlaybooksList:
     def test_list_playbooks_with_status_filter(self, runner, app, mock_client) -> None:
         fb = MagicMock(spec=[])
         fb.content = "Approved rule"
-        fb.structured_data = None
         fb.playbook_status = "approved"
         fb.status = None
         mock_client.get_agent_playbooks.return_value = MagicMock(agent_playbooks=[fb])
@@ -97,7 +95,6 @@ class TestUserPlaybooks:
     def test_list_user_playbooks(self, runner, app, mock_client) -> None:
         fb = MagicMock(spec=[])
         fb.content = "Raw note"
-        fb.structured_data = None
         fb.playbook_status = None
         fb.status = None
         mock_client.get_user_playbooks.return_value = MagicMock(user_playbooks=[fb])
@@ -236,8 +233,6 @@ class TestAgentPlaybooksAdd:
                 "Always greet by name",
                 "--agent-version",
                 "v1.0",
-                "--instruction",
-                "Use first name",
                 "--rationale",
                 "Personalization",
             ],
@@ -249,8 +244,7 @@ class TestAgentPlaybooksAdd:
         assert len(playbooks) == 1
         assert playbooks[0].content == "Always greet by name"
         assert playbooks[0].agent_version == "v1.0"
-        assert playbooks[0].structured_data.instruction == "Use first name"
-        assert playbooks[0].structured_data.rationale == "Personalization"
+        assert playbooks[0].rationale == "Personalization"
 
 
 class TestAgentPlaybooksUpdate:

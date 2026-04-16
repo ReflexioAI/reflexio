@@ -56,7 +56,7 @@ Session End (command:stop)
   └── reflexio interactions publish → flush buffered turns to Reflexio server
       └── Server automatically:
           1. Detects learning signals (corrections, friction, re-steering)
-          2. Extracts playbooks: freeform content summary + optional structured fields (trigger/instruction/pitfall/rationale)
+          2. Extracts playbooks: content + top-level fields (trigger, rationale, blocking_issue)
           3. Extracts user profiles (preferences, expertise, communication style)
           4. Stores everything with vector embeddings for semantic search
 
@@ -78,7 +78,7 @@ Per-task (skill — on-demand)
   └── Agent runs reflexio search "<the user's actual task>"
       └── Semantic search matches query against playbook trigger fields
       └── Returns only playbooks relevant to THIS specific task
-      └── Each result has a freeform summary (primary) + optional structured fields (trigger/instruction/pitfall)
+      └── Each result has content (primary actionable rule) + top-level fields (trigger, rationale, blocking_issue)
 
 Agent needs to personalize response
   └── reflexio user-profiles search "<what to know about the user>"

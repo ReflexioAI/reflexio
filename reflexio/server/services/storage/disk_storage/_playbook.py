@@ -1,6 +1,7 @@
 import logging
 from pathlib import Path
 
+from reflexio.models.api_schema.common import BlockingIssue
 from reflexio.models.api_schema.retriever_schema import (
     SearchAgentPlaybookRequest,
     SearchUserPlaybookRequest,
@@ -11,7 +12,6 @@ from reflexio.models.api_schema.service_schemas import (
     PlaybookStatus,
     Request,
     Status,
-    StructuredData,
     UserPlaybook,
 )
 from reflexio.models.config_schema import SearchOptions
@@ -530,7 +530,9 @@ class PlaybookMixin:
         agent_playbook_id: int,
         playbook_name: str | None = None,
         content: str | None = None,
-        structured_data: StructuredData | None = None,
+        trigger: str | None = None,
+        rationale: str | None = None,
+        blocking_issue: BlockingIssue | None = None,
         playbook_status: PlaybookStatus | None = None,
     ) -> None:
         with self._lock:
@@ -548,8 +550,12 @@ class PlaybookMixin:
                 ap.playbook_name = playbook_name
             if content is not None:
                 ap.content = content
-            if structured_data is not None:
-                ap.structured_data = structured_data
+            if trigger is not None:
+                ap.trigger = trigger
+            if rationale is not None:
+                ap.rationale = rationale
+            if blocking_issue is not None:
+                ap.blocking_issue = blocking_issue
             if playbook_status is not None:
                 ap.playbook_status = playbook_status
             self._write_entity(path, ap)
@@ -560,7 +566,9 @@ class PlaybookMixin:
         user_playbook_id: int,
         playbook_name: str | None = None,
         content: str | None = None,
-        structured_data: StructuredData | None = None,
+        trigger: str | None = None,
+        rationale: str | None = None,
+        blocking_issue: BlockingIssue | None = None,
     ) -> None:
         with self._lock:
             path = self._entity_path(
@@ -575,8 +583,12 @@ class PlaybookMixin:
                 up.playbook_name = playbook_name
             if content is not None:
                 up.content = content
-            if structured_data is not None:
-                up.structured_data = structured_data
+            if trigger is not None:
+                up.trigger = trigger
+            if rationale is not None:
+                up.rationale = rationale
+            if blocking_issue is not None:
+                up.blocking_issue = blocking_issue
             self._write_entity(path, up)
             self._write_embedding(path, up.embedding)
 

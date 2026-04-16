@@ -29,7 +29,6 @@ def _make_playbook(**kwargs):
     """
     fb = MagicMock(spec=[])
     fb.content = kwargs.get("content", "")
-    fb.structured_data = kwargs.get("structured_data")
     fb.playbook_status = kwargs.get("playbook_status")
     fb.status = kwargs.get("status")
     return fb
@@ -113,19 +112,11 @@ class TestFormatAgentPlaybooks:
         output = format_agent_playbooks([fb])
         assert "Use formal tone" in output
 
-    def test_shows_structured_data_labels(self) -> None:
-        sd = MagicMock(spec=[])
-        sd.instruction = "Address as Mr/Ms"
-        sd.pitfall = "Don't use casual language"
-        sd.trigger = "enterprise user detected"
-        sd.rationale = "Compliance requirement"
-        fb = _make_playbook(
-            content="Tone rule",
-            structured_data=sd,
-        )
+    def test_shows_top_level_field_labels(self) -> None:
+        fb = _make_playbook(content="Tone rule")
+        fb.trigger = "enterprise user detected"
+        fb.rationale = "Compliance requirement"
         output = format_agent_playbooks([fb])
-        assert "Instruction:" in output
-        assert "Pitfall:" in output
         assert "Trigger:" in output
         assert "Rationale:" in output
 
@@ -148,7 +139,7 @@ class TestFormatAgentPlaybooks:
         """Works when the playbook_status attribute does not exist at all."""
         fb = MagicMock(spec=[])
         fb.content = "no attr"
-        fb.structured_data = None
+
         fb.status = None
         # No playbook_status attribute set -- getattr returns None
         output = format_agent_playbooks([fb])
@@ -169,7 +160,7 @@ class TestFormatUserPlaybooks:
     def test_shows_playbook_content(self) -> None:
         fb = MagicMock(spec=[])
         fb.content = "Raw note"
-        fb.structured_data = None
+
         fb.status = None
         fb.source = "cli"
         fb.request_id = "req-abc"
@@ -179,7 +170,7 @@ class TestFormatUserPlaybooks:
     def test_shows_source_metadata(self) -> None:
         fb = MagicMock(spec=[])
         fb.content = "entry"
-        fb.structured_data = None
+
         fb.status = None
         fb.source = "api"
         fb.request_id = "req-xyz"
@@ -191,7 +182,7 @@ class TestFormatUserPlaybooks:
         """User playbooks should not show [APPROVED]/[PENDING]/[REJECTED]."""
         fb = MagicMock(spec=[])
         fb.content = "raw item"
-        fb.structured_data = None
+
         fb.status = None
         fb.source = "cli"
         fb.request_id = "req-1"
@@ -365,16 +356,11 @@ class TestPrintAgentPlaybooks:
     def test_renders_structured_grid(self) -> None:
         from reflexio.cli.output import print_agent_playbooks
 
-        sd = MagicMock(spec=[])
-        sd.trigger = "user mentions price"
-        sd.instruction = "quote the latest figure"
-        sd.pitfall = "do not invent prices"
-        sd.rationale = "accuracy matters"
-        pb = _make_playbook(content="Pricing rule", structured_data=sd)
+        pb = _make_playbook(content="Pricing rule")
+        pb.trigger = "user mentions price"
+        pb.rationale = "accuracy matters"
         output = _capture_rich(print_agent_playbooks, [pb])
         assert "Trigger" in output
-        assert "Instruction" in output
-        assert "Pitfall" in output
         assert "Rationale" in output
         assert "user mentions price" in output
 

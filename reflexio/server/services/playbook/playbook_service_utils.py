@@ -9,7 +9,6 @@ from reflexio.models.api_schema.domain.entities import Interaction
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
 from reflexio.models.api_schema.service_schemas import (
     BlockingIssue,
-    StructuredData,
     UserPlaybook,
 )
 from reflexio.server.prompt.prompt_manager import PromptManager
@@ -33,11 +32,10 @@ logger = logging.getLogger(__name__)
 
 class StructuredPlaybookContent(BaseModel):
     """
-    Structured representation of a single playbook entry.
+    Structured representation of a single playbook entry from LLM output.
 
-    Field order matters for autoregressive conditioning: structured fields are
-    generated first (rationale -> trigger -> instruction -> pitfall -> blocking_issue),
-    then content is synthesized last as a summary informed by all preceding fields.
+    Field order matters for autoregressive conditioning: rationale is generated
+    first, then trigger, then content is synthesized last as a summary.
     """
 
     rationale: str | None = Field(
@@ -48,21 +46,13 @@ class StructuredPlaybookContent(BaseModel):
         default=None,
         description="The condition or context when this rule applies",
     )
-    instruction: str | None = Field(
-        default=None,
-        description="The preferred behavior the agent should adopt",
-    )
-    pitfall: str | None = Field(
-        default=None,
-        description="The mistaken behavior the agent should avoid",
-    )
     blocking_issue: BlockingIssue | None = Field(
         default=None,
         description="Present only when the agent could not complete the user's request due to a capability limitation",
     )
     content: str | None = Field(
         default=None,
-        description="Natural-language summary synthesized from the structured fields above — the primary human-readable description",
+        description="The main actionable content of the playbook entry — what to do or what to avoid",
     )
 
     model_config = ConfigDict(
@@ -70,34 +60,20 @@ class StructuredPlaybookContent(BaseModel):
         json_schema_extra={"additionalProperties": False},
     )
 
-    @model_validator(mode="after")
-    def validate_playbook_fields(self) -> StructuredPlaybookContent:
-        """Ensure at least one action is provided when trigger is present."""
-        if (
-            self.trigger is not None
-            and self.instruction is None
-            and self.pitfall is None
-        ):
-            raise ValueError(
-                "At least one of 'instruction' or 'pitfall' must be provided when 'trigger' is set"
-            )
-        return self
-
     @property
     def is_structured(self) -> bool:
-        """Check if this playbook entry has structured SOP fields (trigger + action)."""
-        has_condition = bool(self.trigger and self.trigger.strip())
-        has_action = bool(
-            (self.instruction and self.instruction.strip())
-            or (self.pitfall and self.pitfall.strip())
+        """Check if this playbook entry has both a trigger and content."""
+        return bool(
+            self.trigger
+            and self.trigger.strip()
+            and self.content
+            and self.content.strip()
         )
-        return has_condition and has_action
 
     @property
     def has_content(self) -> bool:
-        """Check if this output contains actual content (structured or freeform)."""
-        has_freeform = bool(self.content and self.content.strip())
-        return self.is_structured or has_freeform
+        """Check if this output contains actual content."""
+        return bool(self.content and self.content.strip())
 
 
 class StructuredPlaybookList(BaseModel):
@@ -149,22 +125,16 @@ class PlaybookAggregationOutput(BaseModel):
 
 
 def format_structured_fields_for_display(
-    structured: StructuredPlaybookContent | StructuredData,
+    structured: StructuredPlaybookContent,
 ) -> str:
     """
     Format structured metadata fields for display/debug purposes.
-
-    Converts structured fields to bullet format:
-    - Trigger: "condition."
-    - Instruction: "action."
-    - Pitfall: "avoid action."
-    - Rationale: "reasoning."
 
     This is NOT for producing content values. Use ensure_playbook_content()
     when you need to obtain the freeform content string.
 
     Args:
-        structured (StructuredPlaybookContent | StructuredData): The structured playbook content
+        structured (StructuredPlaybookContent): The structured playbook content
 
     Returns:
         str: Formatted structured fields string for display
@@ -174,12 +144,6 @@ def format_structured_fields_for_display(
     if structured.trigger:
         lines.append(f'Trigger: "{structured.trigger}"')
 
-    if structured.instruction:
-        lines.append(f'Instruction: "{structured.instruction}"')
-
-    if structured.pitfall:
-        lines.append(f'Pitfall: "{structured.pitfall}"')
-
     if structured.rationale:
         lines.append(f'Rationale: "{structured.rationale}"')
 
@@ -188,11 +152,7 @@ def format_structured_fields_for_display(
             f"Blocked by: [{structured.blocking_issue.kind.value}] {structured.blocking_issue.details}"
         )
 
-    if (
-        not lines
-        and isinstance(structured, StructuredPlaybookContent)
-        and structured.content
-    ):
+    if not lines and structured.content:
         return structured.content
 
     return "\n".join(lines)
@@ -200,22 +160,17 @@ def format_structured_fields_for_display(
 
 def ensure_playbook_content(
     playbook_content: str | None,
-    structured: StructuredPlaybookContent | StructuredData,
+    structured: StructuredPlaybookContent,
 ) -> str:
     """
     Return playbook_content if present; legacy fallback from structured fields.
 
-    playbook_content is the primary freeform human-readable text.
-    The fallback exists solely for backward compatibility with old LLM responses
-    that omit playbook_content.
-
     Args:
         playbook_content (str | None): The freeform content from the LLM
-        structured (StructuredPlaybookContent | StructuredData): Structured fields for fallback
+        structured (StructuredPlaybookContent): Structured fields for fallback
 
     Returns:
         str: The freeform playbook_content, or a formatted fallback from structured fields.
-            Returns empty string if neither playbook_content nor structured fields are present.
     """
     if playbook_content and playbook_content.strip():
         return playbook_content

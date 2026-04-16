@@ -154,10 +154,10 @@ def show_playbooks(playbooks: list, title: str = "Playbooks") -> None:
             or "current"
         )
 
-        # Structured data fields (user playbooks)
+        # Trigger field (user playbooks)
         trigger = ""
-        if hasattr(fb, "structured_data") and fb.structured_data:
-            trigger = getattr(fb.structured_data, "trigger", "") or ""
+        if hasattr(fb, "trigger") and fb.trigger:
+            trigger = fb.trigger or ""
         if len(trigger) > 80:
             trigger = trigger[:77] + "..."
 

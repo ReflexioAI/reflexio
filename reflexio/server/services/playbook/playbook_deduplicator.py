@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from pydantic import BaseModel, ConfigDict, Field
 
 from reflexio.models.api_schema.retriever_schema import SearchUserPlaybookRequest
-from reflexio.models.api_schema.service_schemas import StructuredData, UserPlaybook
+from reflexio.models.api_schema.service_schemas import UserPlaybook
 from reflexio.models.config_schema import (
     EMBEDDING_DIMENSIONS,
     DeduplicationConfig,
@@ -43,7 +43,7 @@ class PlaybookDeduplicationDuplicateGroup(BaseModel):
         description="IDs of items in this group matching prompt format (e.g., 'NEW-0', 'EXISTING-1')"
     )
     merged_content: StructuredPlaybookContent = Field(
-        description="Consolidated playbook entry in structured format (trigger, instruction, pitfall, blocking_issue)"
+        description="Consolidated playbook entry in structured format (trigger, rationale, blocking_issue)"
     )
     reasoning: str = Field(description="Brief explanation of the merge decision")
 
@@ -156,7 +156,7 @@ class PlaybookDeduplicator(BaseDeduplicator):
         """
         Retrieve existing user playbook entries from the database using hybrid search.
 
-        For each new entry, uses its structured_data.trigger as the query with
+        For each new entry, uses its trigger field as the query with
         pre-computed embeddings for vector search.
 
         Args:
@@ -172,7 +172,7 @@ class PlaybookDeduplicator(BaseDeduplicator):
         # Collect trigger strings for embedding
         query_texts = []
         for playbook in new_playbooks:
-            trigger = playbook.structured_data.trigger or playbook.content
+            trigger = playbook.trigger or playbook.content
             if trigger and trigger.strip():
                 query_texts.append(trigger.strip())
 
@@ -461,8 +461,6 @@ class PlaybookDeduplicator(BaseDeduplicator):
                 playbook_content,
             )
 
-            embedding_text = merged_content.trigger or merged_content.content or ""
-
             merged_playbook = UserPlaybook(
                 user_playbook_id=0,  # Will be assigned by storage
                 user_id=template_playbook.user_id,
@@ -471,14 +469,9 @@ class PlaybookDeduplicator(BaseDeduplicator):
                 playbook_name=template_playbook.playbook_name,
                 created_at=now_ts,
                 content=playbook_content,
-                structured_data=StructuredData(
-                    rationale=merged_content.rationale,
-                    trigger=merged_content.trigger,
-                    instruction=merged_content.instruction,
-                    pitfall=merged_content.pitfall,
-                    blocking_issue=merged_content.blocking_issue,
-                    embedding_text=embedding_text,
-                ),
+                trigger=merged_content.trigger,
+                rationale=merged_content.rationale,
+                blocking_issue=merged_content.blocking_issue,
                 status=template_playbook.status,
                 source=template_playbook.source,
                 source_interaction_ids=combined_source_ids,

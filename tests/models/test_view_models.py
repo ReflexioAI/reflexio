@@ -1,7 +1,7 @@
 """Tests for View converter functions in api_schema.ui.converters.
 
 Verifies that each converter correctly strips internal fields (embedding,
-image_encoding, embedding_text) while preserving all user-facing fields.
+image_encoding) while preserving all user-facing fields.
 """
 
 from reflexio.models.api_schema.domain.entities import (
@@ -10,7 +10,6 @@ from reflexio.models.api_schema.domain.entities import (
     BlockingIssue,
     Interaction,
     ProfileChangeLog,
-    StructuredData,
     ToolUsed,
     UserPlaybook,
     UserProfile,
@@ -29,7 +28,6 @@ from reflexio.models.api_schema.ui.converters import (
     to_interaction_view,
     to_profile_change_log_view,
     to_profile_view,
-    to_structured_data_view,
     to_user_playbook_view,
 )
 from reflexio.models.api_schema.ui.entities import (
@@ -38,55 +36,10 @@ from reflexio.models.api_schema.ui.entities import (
     InteractionView,
     ProfileChangeLogView,
     ProfileView,
-    StructuredDataView,
     UserPlaybookView,
 )
 
 _FAKE_EMBEDDING = [0.1] * 512
-
-
-def _make_structured_data() -> StructuredData:
-    return StructuredData(
-        rationale="test rationale",
-        trigger="test trigger",
-        instruction="test instruction",
-        pitfall="test pitfall",
-        blocking_issue=BlockingIssue(
-            kind=BlockingIssueKind.MISSING_TOOL,
-            details="missing foobar tool",
-        ),
-        embedding_text="internal embedding text",
-    )
-
-
-class TestToStructuredDataView:
-    """to_structured_data_view: strips embedding_text, preserves all 5 visible fields."""
-
-    def test_strips_embedding_text(self) -> None:
-        sd = _make_structured_data()
-        view = to_structured_data_view(sd)
-        assert isinstance(view, StructuredDataView)
-        assert "embedding_text" not in StructuredDataView.model_fields
-
-    def test_preserves_all_visible_fields(self) -> None:
-        sd = _make_structured_data()
-        view = to_structured_data_view(sd)
-        assert view.rationale == "test rationale"
-        assert view.trigger == "test trigger"
-        assert view.instruction == "test instruction"
-        assert view.pitfall == "test pitfall"
-        assert view.blocking_issue is not None
-        assert view.blocking_issue.kind == BlockingIssueKind.MISSING_TOOL
-        assert view.blocking_issue.details == "missing foobar tool"
-
-    def test_none_fields_preserved(self) -> None:
-        sd = StructuredData()
-        view = to_structured_data_view(sd)
-        assert view.rationale is None
-        assert view.trigger is None
-        assert view.instruction is None
-        assert view.pitfall is None
-        assert view.blocking_issue is None
 
 
 class TestToInteractionView:
@@ -198,7 +151,7 @@ class TestToProfileView:
 
 
 class TestToUserPlaybookView:
-    """to_user_playbook_view: strips embedding, converts structured_data to StructuredDataView."""
+    """to_user_playbook_view: strips embedding, preserves top-level trigger/rationale/blocking_issue."""
 
     def test_strips_embedding(self) -> None:
         rf = UserPlaybook(
@@ -209,7 +162,12 @@ class TestToUserPlaybookView:
             playbook_name="fb",
             created_at=1000000,
             content="content",
-            structured_data=_make_structured_data(),
+            trigger="test trigger",
+            rationale="test rationale",
+            blocking_issue=BlockingIssue(
+                kind=BlockingIssueKind.MISSING_TOOL,
+                details="missing foobar tool",
+            ),
             status=Status.CURRENT,
             source="test",
             source_interaction_ids=[1, 2],
@@ -219,22 +177,26 @@ class TestToUserPlaybookView:
         assert isinstance(view, UserPlaybookView)
         assert "embedding" not in UserPlaybookView.model_fields
 
-    def test_converts_structured_data_to_view(self) -> None:
+    def test_preserves_top_level_structured_fields(self) -> None:
         rf = UserPlaybook(
             user_playbook_id=10,
             user_id="user1",
             agent_version="v1",
             request_id="req1",
-            structured_data=_make_structured_data(),
+            trigger="test trigger",
+            rationale="test rationale",
+            blocking_issue=BlockingIssue(
+                kind=BlockingIssueKind.MISSING_TOOL,
+                details="missing foobar tool",
+            ),
             embedding=_FAKE_EMBEDDING,
         )
         view = to_user_playbook_view(rf)
-        assert isinstance(view.structured_data, StructuredDataView)
-        assert view.structured_data.rationale == "test rationale"
-        assert view.structured_data.trigger == "test trigger"
-        assert view.structured_data.instruction == "test instruction"
-        assert view.structured_data.pitfall == "test pitfall"
-        assert "embedding_text" not in StructuredDataView.model_fields
+        assert view.rationale == "test rationale"
+        assert view.trigger == "test trigger"
+        assert view.blocking_issue is not None
+        assert view.blocking_issue.kind == BlockingIssueKind.MISSING_TOOL
+        assert view.blocking_issue.details == "missing foobar tool"
 
     def test_preserves_all_other_fields(self) -> None:
         rf = UserPlaybook(
@@ -245,7 +207,8 @@ class TestToUserPlaybookView:
             playbook_name="my_playbook",
             created_at=1000000,
             content="some content",
-            structured_data=_make_structured_data(),
+            trigger="test trigger",
+            rationale="test rationale",
             status=Status.ARCHIVED,
             source="web",
             source_interaction_ids=[3, 4, 5],
@@ -265,7 +228,7 @@ class TestToUserPlaybookView:
 
 
 class TestToAgentPlaybookView:
-    """to_agent_playbook_view: strips embedding, converts structured_data to StructuredDataView."""
+    """to_agent_playbook_view: strips embedding, preserves top-level trigger/rationale/blocking_issue."""
 
     def test_strips_embedding(self) -> None:
         fb = AgentPlaybook(
@@ -274,7 +237,12 @@ class TestToAgentPlaybookView:
             agent_version="v1",
             created_at=1000000,
             content="content",
-            structured_data=_make_structured_data(),
+            trigger="test trigger",
+            rationale="test rationale",
+            blocking_issue=BlockingIssue(
+                kind=BlockingIssueKind.MISSING_TOOL,
+                details="missing foobar tool",
+            ),
             playbook_status=PlaybookStatus.APPROVED,
             playbook_metadata="meta",
             embedding=_FAKE_EMBEDDING,
@@ -284,18 +252,18 @@ class TestToAgentPlaybookView:
         assert isinstance(view, AgentPlaybookView)
         assert "embedding" not in AgentPlaybookView.model_fields
 
-    def test_converts_structured_data_to_view(self) -> None:
+    def test_preserves_top_level_structured_fields(self) -> None:
         fb = AgentPlaybook(
             agent_playbook_id=20,
             agent_version="v1",
             content="content",
-            structured_data=_make_structured_data(),
+            trigger="test trigger",
+            rationale="test rationale",
             embedding=_FAKE_EMBEDDING,
         )
         view = to_agent_playbook_view(fb)
-        assert isinstance(view.structured_data, StructuredDataView)
-        assert view.structured_data.instruction == "test instruction"
-        assert "embedding_text" not in StructuredDataView.model_fields
+        assert view.trigger == "test trigger"
+        assert view.rationale == "test rationale"
 
     def test_preserves_all_other_fields(self) -> None:
         fb = AgentPlaybook(
@@ -304,7 +272,8 @@ class TestToAgentPlaybookView:
             agent_version="v2",
             created_at=1000000,
             content="important playbook",
-            structured_data=_make_structured_data(),
+            trigger="test trigger",
+            rationale="test rationale",
             playbook_status=PlaybookStatus.REJECTED,
             playbook_metadata="some meta",
             embedding=_FAKE_EMBEDDING,

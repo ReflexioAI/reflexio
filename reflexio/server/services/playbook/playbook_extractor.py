@@ -5,7 +5,7 @@ import os
 from typing import TYPE_CHECKING
 
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
-from reflexio.models.api_schema.service_schemas import StructuredData, UserPlaybook
+from reflexio.models.api_schema.service_schemas import UserPlaybook
 from reflexio.models.config_schema import PlaybookConfig
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient
@@ -370,8 +370,6 @@ class PlaybookExtractor:
 
         entry = StructuredPlaybookContent(
             content=f"When {trigger}, improve on {playbook_definition} by adjusting the current approach.",
-            instruction=f"improve on {playbook_definition}",
-            pitfall="continue current approach without adjustment",
             trigger=trigger,
         )
         return StructuredPlaybookList(playbooks=[entry])
@@ -432,14 +430,6 @@ class PlaybookExtractor:
             return None
 
         playbook_content = ensure_playbook_content(entry.content, entry)
-        structured_data = StructuredData(
-            rationale=entry.rationale,
-            trigger=entry.trigger,
-            instruction=entry.instruction,
-            pitfall=entry.pitfall,
-            blocking_issue=entry.blocking_issue,
-            embedding_text=entry.trigger or playbook_content,
-        )
 
         return UserPlaybook(
             playbook_name=self.config.extractor_name,
@@ -447,6 +437,8 @@ class PlaybookExtractor:
             agent_version=self.service_config.agent_version,
             request_id=self.service_config.request_id,
             content=playbook_content,
-            structured_data=structured_data,
+            trigger=entry.trigger,
+            rationale=entry.rationale,
+            blocking_issue=entry.blocking_issue,
             source_interaction_ids=source_interaction_ids,
         )

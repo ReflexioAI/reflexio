@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from reflexio.defaults import DEFAULT_AGENT_VERSION
 
@@ -12,7 +12,6 @@ from ..common import (
     BlockingIssue,
     BlockingIssueKind,
     ToolUsed,
-    VisibleStructuredData,
 )
 from ..validators import (
     EmbeddingVector,
@@ -33,9 +32,6 @@ __all__ = [
     "NEVER_EXPIRES_TIMESTAMP",
     "BlockingIssue",
     "BlockingIssueKind",
-    "VisibleStructuredData",
-    "to_visible_structured_data",
-    "StructuredData",
     "ToolUsed",
     "Interaction",
     "Request",
@@ -74,7 +70,6 @@ __all__ = [
     "AddUserProfileResponse",
     "ProfileChangeLogResponse",
     "PublicStructuredData",
-    "structured_data_to_public",
     "PublicUserPlaybook",
     "PublicAgentPlaybook",
     "user_playbook_to_public",
@@ -117,41 +112,6 @@ __all__ = [
 # ===============================
 # Data Models
 # ===============================
-
-
-class StructuredData(BaseModel):
-    """Flexible structured enrichment stored as JSONB.
-
-    Adding a field here requires no DB migration — just update this model.
-    Fields are ordered for autoregressive conditioning (rationale first).
-    """
-
-    rationale: str | None = None
-    trigger: str | None = None
-    instruction: str | None = None
-    pitfall: str | None = None
-    blocking_issue: BlockingIssue | None = None
-    embedding_text: str | None = None
-
-    model_config = ConfigDict(extra="allow")
-
-
-def to_visible_structured_data(sd: StructuredData) -> VisibleStructuredData:
-    """Convert internal StructuredData to VisibleStructuredData (excludes embedding_text).
-
-    Args:
-        sd (StructuredData): Full internal structured data
-
-    Returns:
-        VisibleStructuredData: Shared type with user-visible fields only
-    """
-    return VisibleStructuredData(
-        rationale=sd.rationale,
-        trigger=sd.trigger,
-        instruction=sd.instruction,
-        pitfall=sd.pitfall,
-        blocking_issue=sd.blocking_issue,
-    )
 
 
 # information about the user interaction sent by the client
@@ -214,7 +174,9 @@ class UserPlaybook(BaseModel):
     playbook_name: str = ""
     created_at: int = Field(default_factory=lambda: int(datetime.now(UTC).timestamp()))
     content: str = ""
-    structured_data: StructuredData = Field(default_factory=StructuredData)
+    trigger: str | None = None
+    rationale: str | None = None
+    blocking_issue: BlockingIssue | None = None
     status: Status | None = (
         None  # Status.PENDING (from rerun), None (current), Status.ARCHIVED (old)
     )
@@ -240,7 +202,9 @@ class AgentPlaybook(BaseModel):
     agent_version: str
     created_at: int = Field(default_factory=lambda: int(datetime.now(UTC).timestamp()))
     content: str
-    structured_data: StructuredData = Field(default_factory=StructuredData)
+    trigger: str | None = None
+    rationale: str | None = None
+    blocking_issue: BlockingIssue | None = None
     playbook_status: PlaybookStatus = PlaybookStatus.PENDING
     playbook_metadata: str = ""
     expanded_terms: str | None = None
@@ -443,19 +407,10 @@ class AddUserPlaybookRequest(BaseModel):
     def check_content_fields(self) -> Self:
         """Ensure each user playbook has content for embedding."""
         for i, rf in enumerate(self.user_playbooks):
-            sd = rf.structured_data
-            has_content = any(
-                (
-                    sd.trigger,
-                    rf.content,
-                    sd.instruction,
-                    sd.pitfall,
-                )
-            )
-            if not has_content:
+            if not any((rf.trigger, rf.content)):
                 raise ValueError(
-                    f"user_playbooks[{i}]: at least one of content, "
-                    "trigger, instruction, or pitfall must be provided"
+                    f"user_playbooks[{i}]: at least one of content "
+                    "or trigger must be provided"
                 )
         return self
 
@@ -505,33 +460,14 @@ class ProfileChangeLogResponse(BaseModel):
 
 
 class PublicStructuredData(BaseModel):
-    """Deprecated: use VisibleStructuredData from api_schema.common instead.
-
-    Only trigger and blocking_issue — kept for backward compatibility with
-    deprecated Public* models.
-    """
+    """Deprecated: kept for backward compatibility with deprecated Public* models."""
 
     trigger: str | None = None
     blocking_issue: BlockingIssue | None = None
 
 
-def structured_data_to_public(sd: StructuredData) -> PublicStructuredData:
-    """Convert internal StructuredData to user-facing PublicStructuredData.
-
-    Args:
-        sd (StructuredData): Full internal structured data
-
-    Returns:
-        PublicStructuredData: Public subset with only trigger and blocking_issue
-    """
-    return PublicStructuredData(trigger=sd.trigger, blocking_issue=sd.blocking_issue)
-
-
 class PublicUserPlaybook(BaseModel):
-    """Deprecated: use UserPlaybookView from api_schema.ui instead.
-
-    User-facing UserPlaybook — excludes embedding and internal StructuredData fields.
-    """
+    """Deprecated: use UserPlaybookView from api_schema.ui instead."""
 
     user_playbook_id: int = 0
     user_id: str | None = None
@@ -540,40 +476,32 @@ class PublicUserPlaybook(BaseModel):
     playbook_name: str = ""
     created_at: int = Field(default_factory=lambda: int(datetime.now(UTC).timestamp()))
     content: str = ""
-    structured_data: PublicStructuredData = Field(default_factory=PublicStructuredData)
+    trigger: str | None = None
+    rationale: str | None = None
+    blocking_issue: BlockingIssue | None = None
     status: Status | None = None
     source: str | None = None
     source_interaction_ids: list[int] = Field(default_factory=list)
 
 
 class PublicAgentPlaybook(BaseModel):
-    """Deprecated: use AgentPlaybookView from api_schema.ui instead.
-
-    User-facing AgentPlaybook — excludes embedding and internal StructuredData fields.
-    """
+    """Deprecated: use AgentPlaybookView from api_schema.ui instead."""
 
     agent_playbook_id: int = 0
     playbook_name: str = ""
     agent_version: str
     created_at: int = Field(default_factory=lambda: int(datetime.now(UTC).timestamp()))
     content: str
-    structured_data: PublicStructuredData = Field(default_factory=PublicStructuredData)
+    trigger: str | None = None
+    rationale: str | None = None
+    blocking_issue: BlockingIssue | None = None
     playbook_status: PlaybookStatus = PlaybookStatus.PENDING
     playbook_metadata: str = ""
     status: Status | None = None
 
 
 def user_playbook_to_public(rf: UserPlaybook) -> PublicUserPlaybook:
-    """Deprecated: use to_user_playbook_view from api_schema.ui instead.
-
-    Convert internal UserPlaybook to user-facing PublicUserPlaybook.
-
-    Args:
-        rf (UserPlaybook): Full internal user playbook
-
-    Returns:
-        PublicUserPlaybook: Public version without embedding or internal structured data fields
-    """
+    """Deprecated: use to_user_playbook_view from api_schema.ui instead."""
     return PublicUserPlaybook(
         user_playbook_id=rf.user_playbook_id,
         user_id=rf.user_id,
@@ -582,7 +510,9 @@ def user_playbook_to_public(rf: UserPlaybook) -> PublicUserPlaybook:
         playbook_name=rf.playbook_name,
         created_at=rf.created_at,
         content=rf.content,
-        structured_data=structured_data_to_public(rf.structured_data),
+        trigger=rf.trigger,
+        rationale=rf.rationale,
+        blocking_issue=rf.blocking_issue,
         status=rf.status,
         source=rf.source,
         source_interaction_ids=rf.source_interaction_ids,
@@ -590,23 +520,16 @@ def user_playbook_to_public(rf: UserPlaybook) -> PublicUserPlaybook:
 
 
 def agent_playbook_to_public(fb: AgentPlaybook) -> PublicAgentPlaybook:
-    """Deprecated: use to_agent_playbook_view from api_schema.ui instead.
-
-    Convert internal AgentPlaybook to user-facing PublicAgentPlaybook.
-
-    Args:
-        fb (AgentPlaybook): Full internal agent playbook
-
-    Returns:
-        PublicAgentPlaybook: Public version without embedding or internal structured data fields
-    """
+    """Deprecated: use to_agent_playbook_view from api_schema.ui instead."""
     return PublicAgentPlaybook(
         agent_playbook_id=fb.agent_playbook_id,
         playbook_name=fb.playbook_name,
         agent_version=fb.agent_version,
         created_at=fb.created_at,
         content=fb.content,
-        structured_data=structured_data_to_public(fb.structured_data),
+        trigger=fb.trigger,
+        rationale=fb.rationale,
+        blocking_issue=fb.blocking_issue,
         playbook_status=fb.playbook_status,
         playbook_metadata=fb.playbook_metadata,
         status=fb.status,
@@ -678,9 +601,9 @@ class AgentPlaybookSnapshot(BaseModel):
     playbook_name: str = ""
     agent_version: str = ""
     content: str = ""
-    structured_data: VisibleStructuredData = Field(
-        default_factory=VisibleStructuredData
-    )
+    trigger: str | None = None
+    rationale: str | None = None
+    blocking_issue: BlockingIssue | None = None
     playbook_status: PlaybookStatus = PlaybookStatus.PENDING
     playbook_metadata: str = ""
 
@@ -726,7 +649,9 @@ def agent_playbook_to_snapshot(playbook: AgentPlaybook) -> AgentPlaybookSnapshot
         playbook_name=playbook.playbook_name,
         agent_version=playbook.agent_version,
         content=playbook.content,
-        structured_data=to_visible_structured_data(playbook.structured_data),
+        trigger=playbook.trigger,
+        rationale=playbook.rationale,
+        blocking_issue=playbook.blocking_issue,
         playbook_status=playbook.playbook_status,
         playbook_metadata=playbook.playbook_metadata,
     )

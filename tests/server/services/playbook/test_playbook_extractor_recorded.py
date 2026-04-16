@@ -30,19 +30,19 @@ class TestRecordedPlaybookExtraction:
         assert len(data["playbooks"]) >= 1
         first = data["playbooks"][0]
         assert "trigger" in first
-        assert "instruction" in first
+        assert "content" in first
         assert isinstance(first["trigger"], str)
-        assert len(first["instruction"]) > 0
+        assert len(first["content"]) > 0
 
     def test_fixture_playbooks_have_content(self):
-        """Each entry in the playbook fixture has non-empty trigger and instruction."""
+        """Each entry in the playbook fixture has non-empty trigger and content."""
         content = load_llm_fixture_content("playbook_extraction")
         data = json.loads(content)
 
         assert data["playbooks"]
         for entry in data["playbooks"]:
             assert entry["trigger"]
-            assert entry["instruction"]
+            assert entry["content"]
 
 
 class TestRecordedPlaybookAggregation:
@@ -54,9 +54,9 @@ class TestRecordedPlaybookAggregation:
         data = json.loads(content)
 
         assert "playbook" in data
-        assert "instruction" in data["playbook"]
+        assert "content" in data["playbook"]
         assert "trigger" in data["playbook"]
-        assert len(data["playbook"]["instruction"]) > 0
+        assert len(data["playbook"]["content"]) > 0
 
     def test_aggregation_mock_structure(self):
         """load_llm_fixture returns correct mock for aggregation responses."""

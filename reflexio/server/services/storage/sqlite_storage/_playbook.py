@@ -5,6 +5,7 @@ import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
+from reflexio.models.api_schema.common import BlockingIssue
 from reflexio.models.api_schema.retriever_schema import (
     SearchAgentPlaybookRequest,
     SearchUserPlaybookRequest,
@@ -14,7 +15,6 @@ from reflexio.models.api_schema.service_schemas import (
     AgentSuccessEvaluationResult,
     PlaybookStatus,
     Status,
-    StructuredData,
     UserPlaybook,
 )
 from reflexio.models.config_schema import SearchMode, SearchOptions
@@ -59,8 +59,7 @@ class PlaybookMixin:
     @SQLiteStorageBase.handle_exceptions
     def save_user_playbooks(self, user_playbooks: list[UserPlaybook]) -> None:
         for up in user_playbooks:
-            sd = up.structured_data
-            embedding_text = sd.embedding_text or sd.trigger or up.content
+            embedding_text = up.trigger or up.content
             if embedding_text:
                 if self._should_expand_documents():
                     with ThreadPoolExecutor(max_workers=2) as executor:
@@ -80,9 +79,10 @@ class PlaybookMixin:
                 cur = self.conn.execute(
                     """INSERT INTO user_playbooks
                        (user_id, playbook_name, created_at, request_id, agent_version,
-                        content, structured_data, source_interaction_ids,
+                        content, trigger, rationale, blocking_issue,
+                        source_interaction_ids,
                         status, source, embedding, expanded_terms)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         up.user_id,
                         up.playbook_name,
@@ -90,7 +90,11 @@ class PlaybookMixin:
                         up.request_id,
                         up.agent_version,
                         up.content,
-                        json.dumps(up.structured_data.model_dump(exclude_none=True)),
+                        up.trigger,
+                        up.rationale,
+                        json.dumps(up.blocking_issue.model_dump())
+                        if up.blocking_issue
+                        else None,
                         _json_dumps(up.source_interaction_ids or None),
                         up.status.value if up.status else None,
                         up.source,
@@ -102,7 +106,7 @@ class PlaybookMixin:
                 up.user_playbook_id = upid
                 self.conn.commit()
 
-            fts_parts = [sd.trigger or "", up.content or ""]
+            fts_parts = [up.trigger or "", up.content or ""]
             if up.expanded_terms:
                 fts_parts.append(up.expanded_terms)
             self._fts_upsert(
@@ -461,8 +465,7 @@ class PlaybookMixin:
     ) -> list[AgentPlaybook]:
         saved: list[AgentPlaybook] = []
         for ap in agent_playbooks:
-            sd = ap.structured_data
-            embedding_text = sd.embedding_text or sd.trigger or ap.content
+            embedding_text = ap.trigger or ap.content
             if self._should_expand_documents():
                 with ThreadPoolExecutor(max_workers=2) as executor:
                     emb_future = executor.submit(self._get_embedding, embedding_text)
@@ -477,16 +480,20 @@ class PlaybookMixin:
                 cur = self.conn.execute(
                     """INSERT INTO agent_playbooks
                        (playbook_name, created_at, agent_version, content,
-                        structured_data,
+                        trigger, rationale, blocking_issue,
                         playbook_status, playbook_metadata, embedding,
                         expanded_terms, status)
-                       VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         ap.playbook_name,
                         created_at_iso,
                         ap.agent_version,
                         ap.content,
-                        json.dumps(ap.structured_data.model_dump(exclude_none=True)),
+                        ap.trigger,
+                        ap.rationale,
+                        json.dumps(ap.blocking_issue.model_dump())
+                        if ap.blocking_issue
+                        else None,
                         ap.playbook_status.value
                         if isinstance(ap.playbook_status, PlaybookStatus)
                         else ap.playbook_status,
@@ -499,7 +506,7 @@ class PlaybookMixin:
                 ap.agent_playbook_id = cur.lastrowid or 0
                 self.conn.commit()
 
-            fts_parts = [sd.trigger or "", ap.content or ""]
+            fts_parts = [ap.trigger or "", ap.content or ""]
             if ap.expanded_terms:
                 fts_parts.append(ap.expanded_terms)
             self._fts_upsert(
@@ -629,7 +636,9 @@ class PlaybookMixin:
         agent_playbook_id: int,
         playbook_name: str | None = None,
         content: str | None = None,
-        structured_data: StructuredData | None = None,
+        trigger: str | None = None,
+        rationale: str | None = None,
+        blocking_issue: BlockingIssue | None = None,
         playbook_status: PlaybookStatus | None = None,
     ) -> None:
         row = self._fetchone(
@@ -646,9 +655,15 @@ class PlaybookMixin:
         if content is not None:
             updates.append("content = ?")
             params.append(content)
-        if structured_data is not None:
-            updates.append("structured_data = ?")
-            params.append(json.dumps(structured_data.model_dump(exclude_none=True)))
+        if trigger is not None:
+            updates.append("trigger = ?")
+            params.append(trigger)
+        if rationale is not None:
+            updates.append("rationale = ?")
+            params.append(rationale)
+        if blocking_issue is not None:
+            updates.append("blocking_issue = ?")
+            params.append(json.dumps(blocking_issue.model_dump()))
         if playbook_status is not None:
             updates.append("playbook_status = ?")
             params.append(playbook_status.value)
@@ -665,7 +680,9 @@ class PlaybookMixin:
         user_playbook_id: int,
         playbook_name: str | None = None,
         content: str | None = None,
-        structured_data: StructuredData | None = None,
+        trigger: str | None = None,
+        rationale: str | None = None,
+        blocking_issue: BlockingIssue | None = None,
     ) -> None:
         row = self._fetchone(
             "SELECT user_playbook_id FROM user_playbooks WHERE user_playbook_id = ?",
@@ -681,9 +698,15 @@ class PlaybookMixin:
         if content is not None:
             updates.append("content = ?")
             params.append(content)
-        if structured_data is not None:
-            updates.append("structured_data = ?")
-            params.append(json.dumps(structured_data.model_dump(exclude_none=True)))
+        if trigger is not None:
+            updates.append("trigger = ?")
+            params.append(trigger)
+        if rationale is not None:
+            updates.append("rationale = ?")
+            params.append(rationale)
+        if blocking_issue is not None:
+            updates.append("blocking_issue = ?")
+            params.append(json.dumps(blocking_issue.model_dump()))
         if updates:
             params.append(user_playbook_id)
             self._execute(
