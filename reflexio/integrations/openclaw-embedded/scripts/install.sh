@@ -49,7 +49,10 @@ openclaw plugins enable active-memory || \
   echo "warning: active-memory enable failed — plugin may already be enabled or unavailable; continuing"
 
 # 7. Register daily consolidation cron
+# Remove any pre-existing entry so reinstalls don't accumulate duplicates
+# (`openclaw cron add` appends rather than replacing by name).
 info "Registering daily consolidation cron (3am)..."
+openclaw cron rm reflexio-embedded-consolidate 2>/dev/null || true
 openclaw cron add \
   --name reflexio-embedded-consolidate \
   --cron "0 3 * * *" \
