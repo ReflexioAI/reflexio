@@ -1,0 +1,42 @@
+{
+  "id": "reflexio-embedded",
+  "name": "Reflexio Embedded",
+  "description": "Reflexio-style user profile and playbook extraction using Openclaw's native memory engine, hooks, and sub-agents — no Reflexio server required.",
+  "version": "0.1.0",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": true,
+    "properties": {
+      "dedup": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "shallow_threshold": { "type": "number" },
+          "full_threshold": { "type": "number" },
+          "top_k": { "type": "integer" }
+        }
+      },
+      "ttl_sweep": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "on_bootstrap": { "type": "boolean" }
+        }
+      },
+      "consolidation": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "cron": { "type": "string" }
+        }
+      },
+      "extraction": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "subagent_timeout_seconds": { "type": "integer" }
+        }
+      }
+    }
+  }
+}

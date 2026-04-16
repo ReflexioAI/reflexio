@@ -8,11 +8,14 @@ PURGE_DATA="${1:-}"
 
 info() { echo "==> $*"; }
 
-info "Disabling hook..."
-openclaw hooks disable reflexio-embedded || echo "(already disabled)"
+info "Disabling plugin..."
+openclaw plugins disable reflexio-embedded 2>/dev/null || echo "(already disabled)"
+
+info "Uninstalling plugin..."
+openclaw plugins uninstall --force reflexio-embedded 2>/dev/null || echo "(already uninstalled)"
 
 info "Removing cron job..."
-openclaw cron remove reflexio-embedded-consolidate || echo "(already removed)"
+openclaw cron rm reflexio-embedded-consolidate 2>/dev/null || echo "(already removed)"
 
 info "Removing skills..."
 rm -rf "$OPENCLAW_HOME/workspace/skills/reflexio-embedded"

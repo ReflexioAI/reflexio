@@ -1,1 +1,3 @@
+node_modules/
 hook/node_modules/
+*.tsbuildinfo

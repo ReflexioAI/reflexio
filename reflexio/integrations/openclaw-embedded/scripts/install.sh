@@ -14,10 +14,15 @@ info "Checking prerequisites..."
 command -v openclaw >/dev/null || die "openclaw CLI required but not found on PATH"
 command -v node >/dev/null     || die "node required but not found on PATH"
 
-# 2. Install + enable the hook
-info "Installing hook..."
-openclaw hooks install "$PLUGIN_DIR/hook" --link
-openclaw hooks enable reflexio-embedded
+# 2. Install the plugin (hooks are registered programmatically from index.ts)
+# `plugins install --link <path>` rejects `--force`, so we uninstall any prior
+# registration first to make the install idempotent.
+info "Installing plugin..."
+openclaw plugins uninstall --force reflexio-embedded 2>/dev/null || true
+openclaw plugins install --link "$PLUGIN_DIR"
+# plugins install auto-enables by default. If ever it stops doing so, fall
+# back to an explicit enable.
+openclaw plugins enable reflexio-embedded 2>/dev/null || true
 
 # 3. Copy main SKILL.md and consolidate command
 info "Copying skills to workspace..."
@@ -59,12 +64,16 @@ openclaw gateway restart
 
 # 9. Verify
 info "Verification:"
-openclaw hooks list 2>/dev/null | grep reflexio-embedded \
-  && info "  ✓ hook registered" \
-  || echo "  ⚠ hook not visible in 'openclaw hooks list'"
-openclaw cron list 2>/dev/null | grep reflexio-embedded-consolidate \
-  && info "  ✓ cron registered" \
-  || echo "  ⚠ cron not visible in 'openclaw cron list'"
+if openclaw plugins inspect reflexio-embedded 2>/dev/null | grep -q "Status: loaded"; then
+  info "  ✓ plugin registered and loaded"
+else
+  echo "  ⚠ plugin did not reach 'loaded' status; run 'openclaw plugins inspect reflexio-embedded' to debug"
+fi
+if openclaw cron list 2>/dev/null | grep -q reflexio-embedded-consolidate; then
+  info "  ✓ cron registered"
+else
+  echo "  ⚠ cron not visible in 'openclaw cron list'"
+fi
 
 info "Installation complete."
 info "On first use, the SKILL.md bootstrap will guide per-agent configuration (active-memory targeting, extraPath registration, embedding provider)."

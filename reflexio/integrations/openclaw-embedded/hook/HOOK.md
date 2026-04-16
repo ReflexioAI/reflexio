@@ -5,8 +5,14 @@ metadata:
   openclaw:
     emoji: "🧠"
     events:
-      - "agent:bootstrap"
-      - "session:compact:before"
-      - "command:stop"
-      - "command:reset"
+      - "before_agent_start"
+      - "before_compaction"
+      - "before_reset"
+      - "session_end"
 ---
+
+> **Note:** This file is no longer discovered by the Openclaw CLI. Hooks are
+> now registered programmatically from `../index.ts` via
+> `definePluginEntry({ register(api) { api.on(...) } })`. This doc is kept
+> only for human reference; see `../index.ts` and `./handler.ts` for the
+> actual behaviour.
