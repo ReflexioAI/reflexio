@@ -131,3 +131,40 @@ teardown() {
   run "$SCRIPT" profile diet-vegetarian one_millennium --body "x"
   [ "$status" -ne 0 ]
 }
+
+@test "playbook write creates file in .reflexio/playbooks" {
+  cd "$WORKSPACE"
+  body="$(cat <<EOF
+## When
+Composing a git commit.
+
+## What
+No AI-attribution trailers.
+
+## Why
+User corrected this; fix stuck.
+EOF
+)"
+  run "$SCRIPT" playbook commit-no-ai-attribution --body "$body"
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ \.reflexio/playbooks/commit-no-ai-attribution-[a-z0-9]{4}\.md$ ]]
+  [ -f "$output" ]
+}
+
+@test "playbook write frontmatter has type, id, created (but not ttl)" {
+  cd "$WORKSPACE"
+  path="$("$SCRIPT" playbook test-pb --body "content")"
+  run cat "$path"
+  [[ "$output" == *"type: playbook"* ]]
+  [[ "$output" == *"id: pbk_"* ]]
+  [[ "$output" == *"created: "* ]]
+  [[ "$output" != *"ttl:"* ]]
+  [[ "$output" != *"expires:"* ]]
+}
+
+@test "playbook ignores ttl argument if passed" {
+  # We don't want playbook to accept ttl. Playbook should reject extra positional args.
+  cd "$WORKSPACE"
+  run "$SCRIPT" playbook test-pb one_year --body "content"
+  [ "$status" -ne 0 ]
+}

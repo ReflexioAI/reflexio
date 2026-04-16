@@ -63,6 +63,43 @@ compute_expires() {
   esac
 }
 
+write_playbook() {
+  local slug="$1"
+  local body="$2"
+  local supersedes="${3:-}"
+
+  validate_slug "$slug" || return $?
+
+  local id_suffix
+  id_suffix=$(LC_ALL=C tr -dc 'a-z0-9' </dev/urandom 2>/dev/null | head -c 4 || true)
+  local id="pbk_${id_suffix}"
+  local created
+  created=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+  local workspace="${WORKSPACE:-$PWD}"
+  local dir="$workspace/.reflexio/playbooks"
+  mkdir -p "$dir"
+  local path="$dir/${slug}-${id_suffix}.md"
+  local tmp="${path}.tmp.$$"
+
+  {
+    echo "---"
+    echo "type: playbook"
+    echo "id: $id"
+    echo "created: $created"
+    if [[ -n "$supersedes" ]]; then
+      local ids_yaml="[$(echo "$supersedes" | sed 's/,/, /g')]"
+      echo "supersedes: $ids_yaml"
+    fi
+    echo "---"
+    echo
+    echo "$body"
+  } > "$tmp"
+
+  mv "$tmp" "$path"
+  echo "$path"
+}
+
 # Main profile-write function
 write_profile() {
   local slug="$1"
@@ -152,8 +189,23 @@ main() {
       write_profile "$slug" "$ttl" "$body" "$supersedes"
       ;;
     playbook)
-      echo "not implemented" >&2
-      exit 1
+      shift
+      local slug="${1:-}"
+      [[ -z "$slug" ]] && { usage; exit 2; }
+      shift
+      local body="" body_source="" supersedes=""
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --body) body="$2"; body_source="arg"; shift 2 ;;
+          --body-file) body="$(cat "$2")"; body_source="file"; shift 2 ;;
+          --supersedes) supersedes="$2"; shift 2 ;;
+          *) echo "unknown flag: $1" >&2; exit 2 ;;
+        esac
+      done
+      if [[ -z "$body_source" ]]; then
+        body="$(cat)"
+      fi
+      write_playbook "$slug" "$body" "$supersedes"
       ;;
     *)
       usage
