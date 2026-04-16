@@ -119,7 +119,8 @@ Note: if the same session also surfaces a behavioral rule (e.g., "verify column 
 2. If the information is already captured in existing profiles (see below), do NOT re-extract it.
 3. Always include `ttl` for new profiles; pick the shortest TTL that the fact will plausibly remain true for.
 4. Never output behavioral rules for the agent here — those belong to the playbook extractor.
-5. Return `[]` when there is nothing new to extract.
+5. **Never extract secrets or credentials.** Do not create profile entries for API keys, access tokens, passwords, OAuth secrets, private keys, auth headers, `.env` values, connection strings, or any other credential-shaped content, even if the user pasted such content into the conversation. Treat those as noise; skip them.
+6. Return `[]` when there is nothing new to extract.
 
 ## Existing profiles for context (do NOT re-extract these)
 

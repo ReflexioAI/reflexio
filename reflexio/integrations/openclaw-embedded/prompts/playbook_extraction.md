@@ -210,6 +210,7 @@ Both corrections have matching confirmations, so both become playbooks:
 - Each entry must describe a **distinct, independent** policy — do not split one policy across entries, and do not merge two independent policies into one.
 - If any candidate fails the confirmation gate, the Skill Test, or the Tautology Check, drop it.
 - Vague, stylistic, or unanchored advice is invalid.
+- **Never capture secrets or credentials in a playbook.** If a correction or execution trace contains API keys, tokens, passwords, or other credential material, redact that content from the `why` field before emitting the playbook. Do not emit a playbook whose `why` requires quoting credentials verbatim.
 
 ## Transcript
 

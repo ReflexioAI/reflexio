@@ -33,7 +33,7 @@ If the two items describe the same topic but assert conflicting facts, prefer th
 {
   "decision": "keep_both | supersede_old | merge | drop_new",
   "merged_content": "string — required if decision == merge; the synthesized content body",
-  "merged_slug": "string — required if decision == merge; kebab-case slug ≤48 chars for the new file",
+  "merged_slug": "string — required if decision == merge; kebab-case, regex `^[a-z0-9][a-z0-9-]{0,47}$`, for the new file",
   "rationale": "string — always required; 1-2 sentences justifying the decision"
 }
 ```

@@ -34,7 +34,7 @@ Preserve distinctions that are meaningfully different. Collapse only where conte
 {
   "action": "merge_all | merge_subset | keep_all",
   "merged_content": "string — required if action ∈ {merge_all, merge_subset}; the synthesized content body",
-  "merged_slug": "string — required if action ∈ {merge_all, merge_subset}; kebab-case slug ≤48 chars",
+  "merged_slug": "string — required if action ∈ {merge_all, merge_subset}; kebab-case, regex `^[a-z0-9][a-z0-9-]{0,47}$`",
   "ids_merged_in": ["string"],
   "ids_kept_separate": ["string"],
   "rationale": "string — always required; 2-3 sentences justifying the action"

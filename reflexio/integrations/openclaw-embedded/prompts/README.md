@@ -12,7 +12,9 @@ LLM prompt templates used by Flow C sub-agents and the consolidation cron job.
 ## Format
 
 Each file is a `.prompt.md` with YAML frontmatter (matches Reflexio's
-`server/prompt/prompt_bank/` convention):
+`server/prompt/prompt_bank/` convention). Unlike upstream's versioned layout
+(`<name>/v<ver>.prompt.md`), we store prompts flat (`<name>.md`) since the
+plugin ships atomically with one active version at a time.
 
 ```yaml
 ---
@@ -30,5 +32,6 @@ prompt body, with {var1} and {var2} substitution points
 ## Upstream sync
 
 `profile_extraction.md` and `playbook_extraction.md` are ports of Reflexio's
-prompt_bank entries. When the upstream bumps a new major version, re-apply
-the adaptations documented in `../references/porting-notes.md`.
+prompt_bank entries. On upstream bumps, review the prompt diff against our
+adapted versions. Porting notes will be maintained in
+`../references/porting-notes.md` (added in a later phase).
