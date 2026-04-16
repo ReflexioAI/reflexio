@@ -81,6 +81,12 @@ write_playbook() {
   mkdir -p "$dir"
   local path="$dir/${slug}-${id_suffix}.md"
   local tmp="${path}.tmp.$$"
+  # Ensure the tmp file is cleaned up if anything below fails mid-write.
+  # Under `set -e`, RETURN traps do not fire on command failure — the shell
+  # exits before returning — so we use an EXIT trap here. The trap is cleared
+  # after `mv` succeeds so it does not fire on the subsequent successful exit.
+  # shellcheck disable=SC2064
+  trap "rm -f '$tmp'" EXIT
 
   {
     echo "---"
@@ -88,7 +94,8 @@ write_playbook() {
     echo "id: $id"
     echo "created: $created"
     if [[ -n "$supersedes" ]]; then
-      local ids_yaml="[$(echo "$supersedes" | sed 's/,/, /g')]"
+      local ids_yaml
+      ids_yaml="[$(echo "$supersedes" | sed 's/[[:space:]]*,[[:space:]]*/, /g')]"
       echo "supersedes: $ids_yaml"
     fi
     echo "---"
@@ -97,6 +104,7 @@ write_playbook() {
   } > "$tmp"
 
   mv "$tmp" "$path"
+  trap - EXIT
   echo "$path"
 }
 
@@ -127,6 +135,12 @@ write_profile() {
   mkdir -p "$dir"
   local path="$dir/${slug}-${id_suffix}.md"
   local tmp="${path}.tmp.$$"
+  # Ensure the tmp file is cleaned up if anything below fails mid-write.
+  # Under `set -e`, RETURN traps do not fire on command failure — the shell
+  # exits before returning — so we use an EXIT trap here. The trap is cleared
+  # after `mv` succeeds so it does not fire on the subsequent successful exit.
+  # shellcheck disable=SC2064
+  trap "rm -f '$tmp'" EXIT
 
   {
     echo "---"
@@ -136,8 +150,9 @@ write_profile() {
     echo "ttl: $ttl"
     echo "expires: $expires"
     if [[ -n "$supersedes" ]]; then
-      # Convert comma-separated list to YAML array
-      local ids_yaml="[$(echo "$supersedes" | sed 's/,/, /g')]"
+      # Convert comma-separated list to YAML array; tolerate pre-spaced input.
+      local ids_yaml
+      ids_yaml="[$(echo "$supersedes" | sed 's/[[:space:]]*,[[:space:]]*/, /g')]"
       echo "supersedes: $ids_yaml"
     fi
     echo "---"
@@ -146,6 +161,7 @@ write_profile() {
   } > "$tmp"
 
   mv "$tmp" "$path"
+  trap - EXIT
   echo "$path"
 }
 

@@ -216,3 +216,24 @@ EOF
   # pattern by inspecting the script itself — smoke test.
   grep -q 'mv "\$tmp" "\$path"' "$SCRIPT"
 }
+
+@test "profile write cleans up .tmp on interrupted-like failure" {
+  cd "$WORKSPACE"
+  # Simulate a mid-write failure: tmp file is written successfully, but mv fails.
+  # We override `mv` via PATH with a stub that always fails. This exercises the
+  # exact "redirect succeeded, then something after it failed" path that the
+  # EXIT trap is meant to clean up.
+  mkdir -p fakebin
+  cat > fakebin/mv <<'STUB'
+#!/usr/bin/env bash
+echo "stub mv: simulated failure" >&2
+exit 1
+STUB
+  chmod +x fakebin/mv
+  # The script should fail (nonzero exit)
+  PATH="$WORKSPACE/fakebin:$PATH" run "$SCRIPT" profile diet-vegan one_year --body "test"
+  [ "$status" -ne 0 ]
+  # And no .tmp.* file should remain
+  run find .reflexio -name "*.tmp*"
+  [ -z "$output" ]
+}
