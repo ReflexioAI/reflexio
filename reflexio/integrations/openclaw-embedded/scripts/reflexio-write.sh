@@ -16,10 +16,36 @@ Environment:
 EOF
 }
 
+mkid() {
+  local type="${1:-}"
+  local prefix
+  case "$type" in
+    profile)  prefix="prof" ;;
+    playbook) prefix="pbk"  ;;
+    *) echo "mkid: unknown type '$type'" >&2; return 2 ;;
+  esac
+  local suffix
+  suffix=$(LC_ALL=C tr -dc 'a-z0-9' </dev/urandom 2>/dev/null | head -c 4 || true)
+  printf '%s_%s\n' "$prefix" "$suffix"
+}
+
 if [[ $# -eq 0 ]]; then
   usage
   exit 2
 fi
 
-echo "not implemented" >&2
-exit 1
+case "$1" in
+  mkid)
+    shift
+    mkid "$@"
+    exit $?
+    ;;
+  profile|playbook)
+    echo "not implemented" >&2
+    exit 1
+    ;;
+  *)
+    usage
+    exit 2
+    ;;
+esac
