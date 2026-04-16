@@ -101,3 +101,91 @@ memory_search(query=<user's current message>, filter={type: profile|playbook})
 ```
 
 Incorporate any `.reflexio/`-sourced results before responding. Skip if the user's message is trivial (greeting, acknowledgment).
+
+## File Format
+
+**Do NOT construct filenames or frontmatter by hand.** Use `./scripts/reflexio-write.sh` (via the `exec` tool). The script generates IDs, enforces the frontmatter schema, and writes atomically.
+
+### Profile template (for mental model — the script emits this)
+
+```markdown
+---
+type: profile
+id: prof_<nanoid>
+created: <ISO timestamp>
+ttl: <enum>
+expires: <ISO date or "never">
+supersedes: [<old_id>]   # optional, only after a merge
+---
+
+<1-3 sentences, one fact per file>
+```
+
+### Playbook template
+
+```markdown
+---
+type: playbook
+id: pbk_<nanoid>
+created: <ISO timestamp>
+supersedes: [<old_id>]   # optional
+---
+
+## When
+<1-sentence trigger — this is the search anchor; make it a noun phrase>
+
+## What
+<2-3 sentences of the procedural rule; DO / DON'T as actually observed>
+
+## Why
+<rationale, can be longer — reference only, not recall content>
+```
+
+### How to invoke `reflexio-write.sh`
+
+**Profile:**
+
+```bash
+echo "User is vegetarian — no meat or fish." | \
+  ./scripts/reflexio-write.sh profile diet-vegetarian one_year
+```
+
+**Playbook:**
+
+```bash
+./scripts/reflexio-write.sh playbook commit-no-ai-attribution --body "$(cat <<'EOF'
+## When
+Composing a git commit message on this project.
+
+## What
+Write conventional, scope-prefixed messages. Do not add AI-attribution trailers.
+
+## Why
+On <date> the user corrected commits that included Co-Authored-By trailers. Project's git-conventions rule prohibits them. Correction stuck across subsequent commits.
+EOF
+)"
+```
+
+## TTL Selection (profiles only)
+
+- `infinity` — durable, non-perishable facts (diet, name, permanent preferences)
+- `one_year` — stable but could plausibly change (address, role, team)
+- `one_quarter` — current focus (active project, sprint theme)
+- `one_month` — short-term context
+- `one_week` / `one_day` — transient (today's agenda, this week's priorities)
+
+Pick the most generous TTL that still reflects reality. When in doubt, prefer `infinity` — let dedup handle later contradictions via supersession.
+
+## Shallow Dedup (in-session writes only)
+
+When you are about to write a profile or playbook in-session (Flow A or Flow B), first check whether a similar one already exists:
+
+1. Call `memory_search(query=<your candidate content>, top_k=5, filter={type})`.
+2. If `results[0].similarity < 0.7` (or no results): write normally.
+3. If `results[0].similarity >= 0.7`: there is a near-duplicate. Your options:
+   - **Best choice**: skip the write; the existing file covers it. The session-end batch pass can revisit if needed.
+   - **If you are certain the candidate supersedes the existing one**: use `--supersedes "<existing_id>"` when writing, and `rm <existing_path>` afterward. Only do this when the content is an outright replacement.
+
+Session-end (Flow C) runs deeper dedup with an LLM merge decision. You don't need to replicate that in-session.
+
+The daily consolidation cron runs full n-way consolidation across all files. You never need to run this yourself.
