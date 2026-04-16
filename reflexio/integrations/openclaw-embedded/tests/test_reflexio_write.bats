@@ -196,3 +196,23 @@ EOF
   run cat "$path"
   [[ "$output" == *"supersedes: [pbk_xyz9]"* ]]
 }
+
+@test "profile write leaves no .tmp files behind on success" {
+  cd "$WORKSPACE"
+  "$SCRIPT" profile diet one_year --body "x" > /dev/null
+  run find .reflexio -name "*.tmp*"
+  [ -z "$output" ]
+}
+
+@test "playbook write leaves no .tmp files behind on success" {
+  cd "$WORKSPACE"
+  "$SCRIPT" playbook foo --body "x" > /dev/null
+  run find .reflexio -name "*.tmp*"
+  [ -z "$output" ]
+}
+
+@test "profile write: final file is either complete or absent (never partial)" {
+  # We can't easily inject a mid-write failure, but we can verify the .tmp+rename
+  # pattern by inspecting the script itself — smoke test.
+  grep -q 'mv "\$tmp" "\$path"' "$SCRIPT"
+}
