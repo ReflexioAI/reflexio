@@ -12,6 +12,8 @@ from typing import Annotated
 
 import typer
 
+from reflexio.server.llm.model_defaults import EMBEDDING_CAPABLE_PROVIDERS
+
 
 class InstallLocation(Enum):
     """Where to install the Claude Code integration files.
@@ -22,6 +24,7 @@ class InstallLocation(Enum):
 
     CURRENT_PROJECT = "current_project"
     ALL_PROJECTS = "all_projects"
+
 
 app = typer.Typer(
     help="Configure Reflexio: run 'init' for plain CLI setup, or one of "
@@ -69,8 +72,6 @@ _PROVIDERS: dict[str, dict[str, str]] = {
     },
     "zai": {"env_var": "ZAI_API_KEY", "model": "glm-4-flash", "display": "ZAI"},
 }
-
-_EMBEDDING_PROVIDERS: frozenset[str] = frozenset({"openai", "gemini"})
 
 
 def _set_env_var(env_path: Path, key: str, value: str) -> None:
@@ -172,7 +173,7 @@ def _prompt_embedding_provider(env_path: Path, llm_provider_key: str) -> str | N
         str | None: Display name of the embedding provider, or None if the LLM
             provider already supports embeddings.
     """
-    if llm_provider_key in _EMBEDDING_PROVIDERS:
+    if llm_provider_key in EMBEDDING_CAPABLE_PROVIDERS:
         return None
 
     llm_display = _PROVIDERS[llm_provider_key]["display"]
@@ -862,9 +863,7 @@ def _remove_from_dir(base_dir: Path) -> None:
     typer.echo(f"  Removed hook from: {settings_path}")
 
 
-def _uninstall_claude_code(
-    project_dir: Path, *, global_install: bool = False
-) -> None:
+def _uninstall_claude_code(project_dir: Path, *, global_install: bool = False) -> None:
     """Remove the Reflexio integration from Claude Code.
 
     When ``--global`` or ``--project-dir`` is explicit, removes from that
@@ -980,7 +979,9 @@ def claude_code_setup(
         target = (
             Path.home()
             if global_install
-            else Path(project_dir) if project_dir is not None else Path.cwd()
+            else Path(project_dir)
+            if project_dir is not None
+            else Path.cwd()
         )
         _uninstall_claude_code(target, global_install=global_install)
         return
@@ -993,11 +994,7 @@ def claude_code_setup(
         location = InstallLocation.CURRENT_PROJECT
     else:
         location = _prompt_install_location()
-        target = (
-            Path.home()
-            if location == InstallLocation.ALL_PROJECTS
-            else Path.cwd()
-        )
+        target = Path.home() if location == InstallLocation.ALL_PROJECTS else Path.cwd()
 
     # Step 1: Load .env path
     from reflexio.cli.env_loader import load_reflexio_env
@@ -1056,7 +1053,9 @@ def claude_code_setup(
         typer.echo("Note: User-level hooks fire for ALL Claude Code sessions.")
     typer.echo("")
     if location == InstallLocation.ALL_PROJECTS:
-        typer.echo("Next: Start any Claude Code session — Reflexio is active in all projects.")
+        typer.echo(
+            "Next: Start any Claude Code session — Reflexio is active in all projects."
+        )
     else:
         typer.echo("Next: Start a Claude Code session in this project.")
     if is_remote:
