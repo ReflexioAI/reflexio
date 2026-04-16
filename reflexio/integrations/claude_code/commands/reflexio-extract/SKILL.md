@@ -44,7 +44,6 @@ sleep 5
 ```bash
 cat > /tmp/reflexio-extract.json << 'EXTRACT_EOF'
 {
-  "user_id": "claude-code",
   "agent_version": "claude-code",
   "source": "claude-code-expert",
   "interactions": [
@@ -76,12 +75,12 @@ Notice the three things the example models: (1) the `content` field names the fa
 
 4. Publish with forced extraction:
 ```bash
-reflexio publish --user-id claude-code --agent-version claude-code --source claude-code-expert --skip-aggregation --force-extraction --file /tmp/reflexio-extract.json && rm -f /tmp/reflexio-extract.json
+reflexio publish --agent-version claude-code --source claude-code-expert --skip-aggregation --force-extraction --file /tmp/reflexio-extract.json && rm -f /tmp/reflexio-extract.json
 ```
 
 The publish returns as soon as the server has accepted the payload — the actual extraction (LLM calls + storage writes) runs as a background task on the server. This avoids the gateway timeouts you'd hit if extraction took longer than the deployment's request budget.
 
-5. Report what was published (brief summary to the user) and tell them the extraction is running in the background. They can verify the results a minute later with:
+5. Report what was published (brief summary to the user) and tell them the extraction is running in the background. They can verify the results a minute later with (replace `claude-code` below with the `REFLEXIO_USER_ID` configured during setup if different):
 ```bash
 reflexio user-profiles list --user-id claude-code --limit 10
 reflexio user-playbooks list --user-id claude-code --limit 10

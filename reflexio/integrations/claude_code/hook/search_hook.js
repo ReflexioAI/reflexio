@@ -22,14 +22,16 @@ const LOG_DIR = join(homedir(), ".reflexio", "logs");
 const STARTING_FLAG = join(LOG_DIR, ".server-starting");
 
 /**
- * Read REFLEXIO_URL from ~/.reflexio/.env when the env var is not set.
- * Returns the URL string, or empty string if not found.
+ * Read a variable from ~/.reflexio/.env when it is not set in process.env.
+ * Returns the raw string value (with surrounding quotes stripped), or empty
+ * string if the file is missing or the key is absent.
  */
-function readEnvUrl() {
+function readEnvVar(key) {
 	const envPath = join(homedir(), ".reflexio", ".env");
 	try {
 		const content = readFileSync(envPath, "utf-8");
-		const match = content.match(/^REFLEXIO_URL="?([^"\n]*)"?/m);
+		const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+		const match = content.match(new RegExp(`^${escaped}="?([^"\\n]*)"?`, "m"));
 		return match ? match[1] : "";
 	} catch {
 		return "";
@@ -60,7 +62,8 @@ async function main() {
 		process.exit(0);
 	}
 
-	const userId = process.env.REFLEXIO_USER_ID || "claude-code";
+	const userId =
+		process.env.REFLEXIO_USER_ID || readEnvVar("REFLEXIO_USER_ID") || "claude-code";
 
 	try {
 		const result = execFileSync(
@@ -94,7 +97,7 @@ async function main() {
 		}
 
 		// Remote server — can't start it locally, just exit
-		const serverUrl = process.env.REFLEXIO_URL || readEnvUrl();
+		const serverUrl = process.env.REFLEXIO_URL || readEnvVar("REFLEXIO_URL");
 		const isLocal =
 			!serverUrl ||
 			serverUrl.includes("127.0.0.1") ||

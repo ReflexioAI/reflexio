@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import shutil
 import subprocess
 from enum import Enum
@@ -326,6 +327,35 @@ def _prompt_self_hosted(env_path: Path) -> str:
     _set_env_var(env_path, "REFLEXIO_API_KEY", reflexio_api_key)
 
     return "Self-hosted Reflexio"
+
+
+def _prompt_user_id(env_path: Path, fallback: str = "claude-code") -> str:
+    """
+    Prompt for REFLEXIO_USER_ID. Press Enter to accept the default.
+
+    Tags all interactions, profiles, and playbooks published by Claude Code.
+    Customize when you want per-developer attribution or to match a
+    managed/remote user account. If REFLEXIO_USER_ID is already set in
+    the environment (e.g. from a previous setup run), that value is offered
+    as the default.
+
+    Args:
+        env_path (Path): Path to the .env file to persist the value.
+        fallback (str): Default user_id when neither the env nor user input supplies one.
+
+    Returns:
+        str: The resolved user_id (trimmed; fallback if empty).
+    """
+    current = (os.environ.get("REFLEXIO_USER_ID") or "").strip()
+    default = current or fallback
+    typer.echo("")
+    typer.echo(
+        "User ID tags interactions, profiles, and playbooks published by Claude Code."
+    )
+    typer.echo("Press Enter to keep the default.")
+    user_id = (typer.prompt("User ID", default=default) or default).strip() or fallback
+    _set_env_var(env_path, "REFLEXIO_USER_ID", user_id)
+    return user_id
 
 
 def _prompt_storage(env_path: Path) -> str:
@@ -1021,7 +1051,7 @@ def claude_code_setup(
         embedding_label = _prompt_embedding_provider(env_path, provider_key)
 
     # Step 3.5: Configure user_id for Claude Code
-    _set_env_var(env_path, "REFLEXIO_USER_ID", "claude-code")
+    user_id = _prompt_user_id(env_path)
 
     # Step 4: Install skill + hook
     typer.echo("")
@@ -1046,6 +1076,7 @@ def claude_code_setup(
     if embedding_label:
         typer.echo(f"  Embedding Provider: {embedding_label}")
     typer.echo(f"  Storage: {storage_label}")
+    typer.echo(f"  User ID: {user_id}")
     typer.echo(f"  Skill ({skill_type}): {skill_path}")
     typer.echo("  Hooks: SessionStart + UserPromptSubmit")
     if location == InstallLocation.ALL_PROJECTS:

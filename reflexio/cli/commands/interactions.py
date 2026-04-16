@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Annotated
@@ -165,9 +166,7 @@ def _oneline(text: str, max_len: int = _MAX_WARNING_LEN) -> str:
     return collapsed[: max_len - 1] + "…"
 
 
-def _print_publish_result(
-    result: PublishUserInteractionResponse, user_id: str
-) -> None:
+def _print_publish_result(result: PublishUserInteractionResponse, user_id: str) -> None:
     """Print human-readable publish result with diagnostics.
 
     Surfaces storage routing + extraction counts so users can tell *where*
@@ -227,7 +226,10 @@ def publish(
     user_id: Annotated[
         str | None,
         typer.Option(
-            help="User identifier (optional if provided in --file/--data payload)"
+            help=(
+                "User identifier. Falls back to REFLEXIO_USER_ID env var "
+                "or 'user_id' inside --file/--data payload."
+            )
         ),
     ] = None,
     session_id: Annotated[
@@ -294,9 +296,11 @@ def publish(
                 exit_code=EXIT_VALIDATION,
             )
         if user_id is None:
+            user_id = os.environ.get("REFLEXIO_USER_ID")
+        if user_id is None:
             raise CliError(
                 error_type="validation",
-                message="--user-id is required with --user-message",
+                message="--user-id is required with --user-message (or set REFLEXIO_USER_ID)",
                 exit_code=EXIT_VALIDATION,
             )
         interactions: list[InteractionData | dict] = [
@@ -347,11 +351,16 @@ def publish(
     resolved_version = resolve_agent_version(agent_version)
     for payload in payloads:
         interaction_items = _interactions_from_payload(payload)
-        resolved_user_id = payload.get("user_id") or user_id
+        resolved_user_id = (
+            payload.get("user_id") or user_id or os.environ.get("REFLEXIO_USER_ID")
+        )
         if not resolved_user_id:
             raise CliError(
                 error_type="validation",
-                message="--user-id is required (or include 'user_id' in the JSON payload)",
+                message=(
+                    "--user-id is required (or include 'user_id' in the JSON "
+                    "payload, or set REFLEXIO_USER_ID)"
+                ),
                 exit_code=EXIT_VALIDATION,
             )
         result = client.publish_interaction(

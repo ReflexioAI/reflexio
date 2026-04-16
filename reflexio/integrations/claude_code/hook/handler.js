@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
 /**
@@ -25,6 +25,23 @@ import { join } from "node:path";
 
 const MAX_INTERACTIONS = 200;
 const MAX_CONTENT_LENGTH = 10_000;
+
+/**
+ * Read a variable from ~/.reflexio/.env when it is not set in process.env.
+ * Returns the raw string value (with surrounding quotes stripped), or empty
+ * string if the file is missing or the key is absent.
+ */
+function readEnvVar(key) {
+	const envPath = join(homedir(), ".reflexio", ".env");
+	try {
+		const content = readFileSync(envPath, "utf-8");
+		const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+		const match = content.match(new RegExp(`^${escaped}="?([^"\\n]*)"?`, "m"));
+		return match ? match[1] : "";
+	} catch {
+		return "";
+	}
+}
 
 async function main() {
 	// Read event JSON from stdin
@@ -72,8 +89,12 @@ async function main() {
 	}
 
 	// Build payload
-	const userId = process.env.REFLEXIO_USER_ID || "claude-code";
-	const agentVersion = process.env.REFLEXIO_AGENT_VERSION || "claude-code";
+	const userId =
+		process.env.REFLEXIO_USER_ID || readEnvVar("REFLEXIO_USER_ID") || "claude-code";
+	const agentVersion =
+		process.env.REFLEXIO_AGENT_VERSION ||
+		readEnvVar("REFLEXIO_AGENT_VERSION") ||
+		"claude-code";
 
 	const payload = JSON.stringify({
 		user_id: userId,

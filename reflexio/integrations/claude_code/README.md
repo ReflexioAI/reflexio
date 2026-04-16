@@ -69,7 +69,7 @@ The setup wizard will:
 1. Ask you where to install — **all projects** (`~/.claude/`) or **current project only** (`./.claude/`)
 2. Ask you to choose a storage backend (SQLite is the default — no external database needed)
 3. Ask you to choose an LLM provider and enter your API key — **only if using SQLite (local) storage**. If you chose Managed Reflexio or self-hosted, this step is skipped (the remote server handles extraction).
-4. Configure `REFLEXIO_USER_ID=claude-code` for consistent user identification
+4. Prompt for `REFLEXIO_USER_ID` (default: `claude-code`) — tags every interaction, profile, and playbook published by Claude Code. Press Enter to accept the default, or enter your own identifier (e.g. your email, GitHub handle, or a managed-account user ID). Re-running setup offers the current value as the default.
 5. Install the skill, rules, and search hooks into the chosen `.claude/` directory
 
 You can also skip the interactive prompt with flags:
@@ -232,7 +232,7 @@ This captures richer context than the automatic mid-session publish because Clau
 ### Step 4: Verify what was extracted
 
 ```bash
-# Check playbooks (behavioral rules)
+# Check playbooks (behavioral rules) — replace claude-code with your configured user_id
 reflexio user-playbooks list --user-id claude-code
 
 # Check profiles (facts about you and your environment)
@@ -242,7 +242,7 @@ reflexio user-profiles list --user-id claude-code
 reflexio search "write a Python function"
 ```
 
-Note: `reflexio search` uses the `REFLEXIO_USER_ID` from your `.env` (set to `claude-code` by the setup wizard), so you don't need to pass `--user-id` explicitly.
+Note: `reflexio search` and `reflexio publish` both fall back to `REFLEXIO_USER_ID` from your `.env` (set by the setup wizard, default `claude-code`), so you don't need to pass `--user-id` explicitly when publishing or searching. The read-only listings above still require `--user-id` as an explicit filter.
 
 ### Step 5: Next session — knowledge applied
 
@@ -291,14 +291,14 @@ cat ~/.reflexio/logs/server.log
 ### Query extracted data
 
 ```bash
-# List playbooks
+# List playbooks — replace claude-code with your configured user_id
 reflexio user-playbooks list --user-id claude-code
 
 # List profiles
 reflexio user-profiles list --user-id claude-code
 
-# Search (what Claude sees on every message)
-reflexio search "your task description" --user-id claude-code
+# Search (what Claude sees on every message) — picks up REFLEXIO_USER_ID from .env automatically
+reflexio search "your task description"
 ```
 
 ### Query the SQLite database directly

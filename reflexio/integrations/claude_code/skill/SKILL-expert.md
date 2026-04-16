@@ -59,7 +59,6 @@ Write a summary JSON and publish it:
 ```bash
 cat > /tmp/reflexio-summary.json << 'SUMMARY_EOF'
 {
-  "user_id": "claude-code",
   "agent_version": "claude-code",
   "source": "claude-code-expert",
   "interactions": [
@@ -76,7 +75,7 @@ cat > /tmp/reflexio-summary.json << 'SUMMARY_EOF'
   ]
 }
 SUMMARY_EOF
-reflexio publish --user-id claude-code --agent-version claude-code --source claude-code-expert --skip-aggregation --force-extraction --file /tmp/reflexio-summary.json && rm -f /tmp/reflexio-summary.json
+reflexio publish --agent-version claude-code --source claude-code-expert --skip-aggregation --force-extraction --file /tmp/reflexio-summary.json && rm -f /tmp/reflexio-summary.json
 ```
 
 `tools_used` is **required** on the second turn whenever the original approach involved a failed or rejected tool call — the error string or rejection moment is the evidence Reflexio needs to extract a precise behavioral rule instead of a vague profile entry. For pure-text corrections (user corrected your wording or choice with no tool friction), the field can be omitted.

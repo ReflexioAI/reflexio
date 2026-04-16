@@ -365,3 +365,121 @@ class TestConfigShow:
         result = runner.invoke(app, ["config", "show"])
         assert result.exit_code == 0, result.output
         assert "key" in result.output
+
+
+class TestPublishUserIdResolution:
+    """Tests for 'interactions publish' user_id precedence: payload > flag > env > error."""
+
+    @staticmethod
+    def _write_payload(tmp_path, include_user_id: bool = False, **extras) -> str:
+        """Write a minimal publish payload JSON and return its path."""
+        payload: dict[str, object] = {
+            "interactions": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": "hello"},
+            ]
+        }
+        if include_user_id:
+            payload["user_id"] = extras.pop("payload_user_id", "payload-user")
+        payload.update(extras)
+        path = tmp_path / "payload.json"
+        path.write_text(json.dumps(payload))
+        return str(path)
+
+    def test_env_user_id_used_when_flag_missing(
+        self, runner, app, mock_client, tmp_path, monkeypatch
+    ) -> None:
+        """No flag, no payload user_id — REFLEXIO_USER_ID env var is used."""
+        monkeypatch.setenv("REFLEXIO_USER_ID", "env-user")
+        mock_client.publish_interaction.return_value = MagicMock(
+            counts={"interactions": 2}, user_id="env-user"
+        )
+        payload_file = self._write_payload(tmp_path)
+
+        result = runner.invoke(app, ["interactions", "publish", "--file", payload_file])
+
+        assert result.exit_code == 0, result.output
+        mock_client.publish_interaction.assert_called_once()
+        assert mock_client.publish_interaction.call_args.kwargs["user_id"] == "env-user"
+
+    def test_payload_user_id_beats_env(
+        self, runner, app, mock_client, tmp_path, monkeypatch
+    ) -> None:
+        """Payload user_id takes precedence over env var."""
+        monkeypatch.setenv("REFLEXIO_USER_ID", "env-user")
+        mock_client.publish_interaction.return_value = MagicMock(
+            counts={"interactions": 2}, user_id="payload-user"
+        )
+        payload_file = self._write_payload(tmp_path, include_user_id=True)
+
+        result = runner.invoke(app, ["interactions", "publish", "--file", payload_file])
+
+        assert result.exit_code == 0, result.output
+        assert (
+            mock_client.publish_interaction.call_args.kwargs["user_id"]
+            == "payload-user"
+        )
+
+    def test_flag_beats_env(
+        self, runner, app, mock_client, tmp_path, monkeypatch
+    ) -> None:
+        """--user-id flag wins over env var when payload lacks user_id."""
+        monkeypatch.setenv("REFLEXIO_USER_ID", "env-user")
+        mock_client.publish_interaction.return_value = MagicMock(
+            counts={"interactions": 2}, user_id="flag-user"
+        )
+        payload_file = self._write_payload(tmp_path)
+
+        result = runner.invoke(
+            app,
+            [
+                "interactions",
+                "publish",
+                "--user-id",
+                "flag-user",
+                "--file",
+                payload_file,
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert (
+            mock_client.publish_interaction.call_args.kwargs["user_id"] == "flag-user"
+        )
+
+    def test_error_when_all_sources_missing(
+        self, runner, app, mock_client, tmp_path, monkeypatch
+    ) -> None:
+        """No flag, no payload user_id, no env var → validation error."""
+        monkeypatch.delenv("REFLEXIO_USER_ID", raising=False)
+        payload_file = self._write_payload(tmp_path)
+
+        result = runner.invoke(app, ["interactions", "publish", "--file", payload_file])
+
+        assert result.exit_code != 0
+        assert "REFLEXIO_USER_ID" in result.output or "user-id" in result.output.lower()
+        mock_client.publish_interaction.assert_not_called()
+
+    def test_single_turn_env_fallback(
+        self, runner, app, mock_client, monkeypatch
+    ) -> None:
+        """Single-turn mode also falls back to REFLEXIO_USER_ID when --user-id omitted."""
+        monkeypatch.setenv("REFLEXIO_USER_ID", "env-user")
+        mock_client.publish_interaction.return_value = MagicMock(
+            counts={"interactions": 2}, user_id="env-user"
+        )
+
+        result = runner.invoke(
+            app,
+            [
+                "interactions",
+                "publish",
+                "--user-message",
+                "hi",
+                "--agent-response",
+                "hello",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert mock_client.publish_interaction.call_args.kwargs["user_id"] == "env-user"

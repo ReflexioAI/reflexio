@@ -16,6 +16,7 @@ from reflexio.cli.commands.setup_cmd import (
     _install_openclaw_integration,
     _prompt_install_location,
     _prompt_storage,
+    _prompt_user_id,
     _remove_from_dir,
     _set_env_var,
     _write_marker,
@@ -329,9 +330,7 @@ class TestInstallClaudeCodeIntegration:
         _install_claude_code_integration(
             tmp_path, location=InstallLocation.ALL_PROJECTS
         )
-        settings = json.loads(
-            (tmp_path / ".claude" / "settings.json").read_text()
-        )
+        settings = json.loads((tmp_path / ".claude" / "settings.json").read_text())
         assert "SessionStart" in settings["hooks"]
         assert "UserPromptSubmit" in settings["hooks"]
 
@@ -341,9 +340,7 @@ class TestInstallClaudeCodeIntegration:
             _install_claude_code_integration(
                 tmp_path, location=InstallLocation.ALL_PROJECTS
             )
-        settings = json.loads(
-            (tmp_path / ".claude" / "settings.json").read_text()
-        )
+        settings = json.loads((tmp_path / ".claude" / "settings.json").read_text())
         # Each event should have exactly one hook entry
         assert len(settings["hooks"]["SessionStart"]) == 1
         assert len(settings["hooks"]["UserPromptSubmit"]) == 1
@@ -357,7 +354,9 @@ class TestInstallClaudeCodeIntegration:
 class TestUninstallDetection:
     """Covers marker-based install detection and removal."""
 
-    def test_detect_no_installs(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_detect_no_installs(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Returns empty list when nothing is installed."""
         fake_home = tmp_path / "empty_home"
         fake_home.mkdir()
@@ -365,7 +364,9 @@ class TestUninstallDetection:
         locations = _detect_install_locations(tmp_path / "project")
         assert locations == []
 
-    def test_detect_project_level(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_detect_project_level(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Detects project-level install via marker file."""
         fake_home = tmp_path / "home"
         fake_home.mkdir()
@@ -380,7 +381,9 @@ class TestUninstallDetection:
         assert InstallLocation.CURRENT_PROJECT in found_locs
         assert InstallLocation.ALL_PROJECTS not in found_locs
 
-    def test_detect_user_level(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_detect_user_level(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Detects user-level install via marker file in home dir."""
         fake_home = tmp_path / "home"
         fake_home.mkdir()
@@ -489,7 +492,10 @@ class TestInstallOpenclawIntegration:
         )
 
         with (
-            patch("reflexio.cli.commands.setup_cmd.shutil.which", return_value="/usr/bin/openclaw"),
+            patch(
+                "reflexio.cli.commands.setup_cmd.shutil.which",
+                return_value="/usr/bin/openclaw",
+            ),
             patch(
                 "reflexio.cli.commands.setup_cmd.subprocess.run",
                 _make_openclaw_subprocess_stub(),
@@ -515,7 +521,10 @@ class TestInstallOpenclawIntegration:
         (skills_dir / "SKILL.md").write_text("STALE_PIP_INSTALLED_CONTENT")
 
         with (
-            patch("reflexio.cli.commands.setup_cmd.shutil.which", return_value="/usr/bin/openclaw"),
+            patch(
+                "reflexio.cli.commands.setup_cmd.shutil.which",
+                return_value="/usr/bin/openclaw",
+            ),
             patch(
                 "reflexio.cli.commands.setup_cmd.subprocess.run",
                 _make_openclaw_subprocess_stub(),
@@ -533,4 +542,101 @@ class TestInstallOpenclawIntegration:
             / "SKILL.md"
         )
         assert (skills_dir / "SKILL.md").read_text() == source_skill.read_text()
-        assert "STALE_PIP_INSTALLED_CONTENT" not in (skills_dir / "SKILL.md").read_text()
+        assert (
+            "STALE_PIP_INSTALLED_CONTENT" not in (skills_dir / "SKILL.md").read_text()
+        )
+
+
+# ---------------------------------------------------------------------------
+# _prompt_user_id — optional custom user_id during Claude Code setup
+# ---------------------------------------------------------------------------
+
+
+class TestPromptUserId:
+    """Tests for _prompt_user_id: default, custom value, whitespace, env-driven default."""
+
+    def test_default_is_persisted_when_user_accepts(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Pressing Enter keeps the fallback 'claude-code'."""
+        env = tmp_path / ".env"
+        env.write_text("")
+        monkeypatch.delenv("REFLEXIO_USER_ID", raising=False)
+        monkeypatch.setattr(typer, "prompt", lambda *_, **kwargs: kwargs["default"])
+
+        result = _prompt_user_id(env)
+
+        assert result == "claude-code"
+        assert 'REFLEXIO_USER_ID="claude-code"' in env.read_text()
+
+    def test_custom_value_is_persisted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A user-entered value is persisted verbatim."""
+        env = tmp_path / ".env"
+        env.write_text("")
+        monkeypatch.delenv("REFLEXIO_USER_ID", raising=False)
+        monkeypatch.setattr(typer, "prompt", _fixed_prompt("alice"))
+
+        result = _prompt_user_id(env)
+
+        assert result == "alice"
+        assert 'REFLEXIO_USER_ID="alice"' in env.read_text()
+
+    def test_whitespace_is_stripped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Surrounding whitespace is trimmed before persistence."""
+        env = tmp_path / ".env"
+        env.write_text("")
+        monkeypatch.delenv("REFLEXIO_USER_ID", raising=False)
+        monkeypatch.setattr(typer, "prompt", _fixed_prompt("  bob  "))
+
+        result = _prompt_user_id(env)
+
+        assert result == "bob"
+        assert 'REFLEXIO_USER_ID="bob"' in env.read_text()
+
+    def test_existing_env_value_offered_as_default(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Re-running setup offers the currently configured user_id as the default."""
+        env = tmp_path / ".env"
+        env.write_text('REFLEXIO_USER_ID="alice"\n')
+        monkeypatch.setenv("REFLEXIO_USER_ID", "alice")
+
+        captured: dict[str, object] = {}
+
+        def _fake_prompt(*_: object, **kwargs: object) -> object:
+            captured.update(kwargs)
+            return kwargs["default"]
+
+        monkeypatch.setattr(typer, "prompt", _fake_prompt)
+
+        result = _prompt_user_id(env)
+
+        assert captured["default"] == "alice"
+        assert result == "alice"
+
+    def test_empty_input_falls_back_to_default(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """If the user somehow submits an empty/whitespace-only string, fall back."""
+        env = tmp_path / ".env"
+        env.write_text("")
+        monkeypatch.delenv("REFLEXIO_USER_ID", raising=False)
+        monkeypatch.setattr(typer, "prompt", _fixed_prompt("   "))
+
+        result = _prompt_user_id(env)
+
+        assert result == "claude-code"
+        assert 'REFLEXIO_USER_ID="claude-code"' in env.read_text()
+
+
+def _fixed_prompt(return_value: str):
+    """Build a typer.prompt stub that returns a fixed value, ignoring args/kwargs."""
+
+    def _stub(*_args: object, **_kwargs: object) -> str:
+        return return_value
+
+    return _stub
