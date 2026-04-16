@@ -125,10 +125,74 @@ export const handler = async (event: HookEvent, api: HookApi): Promise<void> => 
   }
 };
 
-// Implemented in next task
+/**
+ * Decide whether the current transcript is worth extracting from.
+ * Skip if there are no user messages or fewer than 2 turns total.
+ */
+function transcriptWorthExtracting(event: HookEvent): boolean {
+  const messages = event.context?.messages;
+  if (!Array.isArray(messages) || messages.length < 2) return false;
+  const hasUser = messages.some((m) => (m as any).role === "user");
+  return hasUser;
+}
+
+/**
+ * Serialize transcript into a plain-text form suitable for the sub-agent's task prompt.
+ */
+function serializeTranscript(event: HookEvent): string {
+  const messages = event.context?.messages || [];
+  return messages
+    .map((m: any) => {
+      const role = m.role || "unknown";
+      const content = typeof m.content === "string" ? m.content : JSON.stringify(m.content);
+      const ts = m.timestamp ? ` [${m.timestamp}]` : "";
+      return `### ${role}${ts}\n${content}`;
+    })
+    .join("\n\n");
+}
+
+/**
+ * Build the task prompt handed to the reflexio-extractor sub-agent.
+ * The sub-agent's system prompt already contains its workflow (from agents/reflexio-extractor.md).
+ * This prompt just provides the transcript and reminds it of its job.
+ */
+function buildExtractionTaskPrompt(event: HookEvent): string {
+  const transcript = serializeTranscript(event);
+  return [
+    "Run your extraction workflow on the following transcript.",
+    "",
+    "Follow your system prompt: extract profiles and playbooks, then run shallow pairwise dedup against existing .reflexio/ entries.",
+    "",
+    "## Transcript",
+    "",
+    transcript,
+  ].join("\n");
+}
+
 async function handleBatchExtraction(event: HookEvent, api: HookApi, workspace: string): Promise<void> {
-  // Stub — implemented in Task 19
-  console.log("[reflexio-embedded] batch extraction not yet implemented");
+  // Always run TTL sweep (cheap, sync)
+  await ttlSweepProfiles(workspace);
+
+  if (!transcriptWorthExtracting(event)) {
+    return;
+  }
+
+  if (!api.runtime?.subagent?.run) {
+    console.error("[reflexio-embedded] subagent.run not available; skipping extraction");
+    return;
+  }
+
+  // Fire-and-forget: Openclaw manages lifecycle via its Background Tasks ledger
+  void api.runtime.subagent.run({
+    task: buildExtractionTaskPrompt(event),
+    agentId: "reflexio-extractor",
+    runTimeoutSeconds: 120,
+    mode: "run",
+  }).catch((err) => {
+    console.error(`[reflexio-embedded] failed to spawn extractor: ${err}`);
+  });
+
+  // Return immediately — do not await the subagent run
 }
 
 export default handler;
