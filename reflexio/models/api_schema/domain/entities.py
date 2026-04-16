@@ -112,6 +112,7 @@ __all__ = [
     "GetOperationStatusResponse",
     "CancelOperationRequest",
     "CancelOperationResponse",
+    "ShareLink",
 ]
 
 # ===============================
@@ -264,6 +265,30 @@ class AgentSuccessEvaluationResult(BaseModel):
     user_turns_to_resolution: int | None = None
     is_escalated: bool = False
     embedding: EmbeddingVector = []
+
+
+class ShareLink(BaseModel):
+    """A shareable public link that maps a token to a resource within an org.
+
+    Args:
+        id (int | None): Auto-generated primary key (None when creating).
+        org_id (str): The organization that owns the share link.
+        token (str): The share token (unique). Format: shr_<org_id_b64>.<random>.
+        resource_type (str): One of "profile", "request", "session", "user_playbook", "agent_playbook".
+        resource_id (str): The ID of the resource being shared.
+        created_at (int | None): Unix timestamp of creation.
+        expires_at (int | None): Optional Unix timestamp of expiration. None means never expires.
+        created_by_email (str | None): Optional email of the user who created the link.
+    """
+
+    id: int | None = None
+    org_id: str
+    token: str
+    resource_type: str
+    resource_id: str
+    created_at: int | None = None
+    expires_at: int | None = None
+    created_by_email: str | None = None
 
 
 # ===============================
