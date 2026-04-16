@@ -178,17 +178,42 @@ Pick the most generous TTL that still reflects reality. When in doubt, prefer `i
 
 ## Shallow Dedup (in-session writes only)
 
-When you are about to write a profile or playbook in-session (Flow A or Flow B), first check whether a similar one already exists:
+Before writing a profile or playbook, check whether a similar or contradictory one already exists:
 
-1. Call `memory_search(query=<your candidate content>, top_k=5, filter={type})`.
-2. If `results[0].similarity < 0.7` (or no results): write normally.
-3. If `results[0].similarity >= 0.7`: there is a near-duplicate. Your options:
-   - **Best choice**: skip the write; the existing file covers it. The session-end batch pass can revisit if needed.
-   - **If you are certain the candidate supersedes the existing one**: use `--supersedes "<existing_id>"` when writing, and `rm <existing_path>` afterward. Only do this when the content is an outright replacement.
+1. Call `memory_search(query=<your candidate content>, top_k=5)`.
+2. If no results or `results[0].similarity < 0.7`: write normally, no dedup needed.
+3. If `results[0].similarity >= 0.7`: a near-duplicate or contradiction exists. Decide:
 
-Session-end (Flow C) runs deeper dedup with an LLM merge decision. You don't need to replicate that in-session.
+### Contradiction (user changed their mind)
 
-The daily consolidation cron runs full n-way consolidation across all files. You never need to run this yourself.
+If the user's new statement **directly contradicts** an existing file (e.g., "I'm NOT vegetarian anymore" vs an existing "User is vegetarian" profile), this is a **supersession**. Always handle it immediately — don't defer to batch.
+
+**Steps:**
+1. Note the existing file's `id` and path from the `memory_search` result.
+2. Write the new file with `--supersedes`:
+   ```bash
+   echo "User is not vegetarian. Likes beef, tuna, and shrimp." | \
+     ./scripts/reflexio-write.sh profile diet-not-vegetarian infinity \
+       --supersedes "prof_3ecg"
+   ```
+3. Delete the old file:
+   ```bash
+   rm .reflexio/profiles/diet-vegetarian-3ecg.md
+   ```
+
+The `--supersedes` flag records the lineage in the new file's frontmatter. The `rm` removes the contradicted file so retrieval never returns stale facts.
+
+### Near-duplicate (same fact, minor rewording)
+
+If the existing file covers the same fact with minor wording differences (e.g., "User prefers dark mode" vs "User likes dark mode"), **skip the write**. The existing file is sufficient.
+
+### Genuinely distinct (related topic, different facts)
+
+If the existing file covers a related but different fact (e.g., existing: "User is vegetarian" vs new: "User's favorite cuisine is Italian"), **write normally** without supersedes. They're complementary, not contradictory.
+
+### When in doubt
+
+If you're unsure whether something is a contradiction, near-duplicate, or distinct: **write the new file without supersedes and without deleting the old**. The daily consolidation cron will cluster and merge them. Err on the side of preserving information.
 
 ## Safety
 
