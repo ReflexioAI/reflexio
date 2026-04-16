@@ -1,11 +1,13 @@
 """SQLite implementation of ShareLinkMixin."""
 
-import time
 from typing import Any
 
 from reflexio.models.api_schema.domain import ShareLink
 
-from ._base import SQLiteStorageBase
+from ._base import (
+    SQLiteStorageBase,
+    _epoch_now,
+)
 
 
 def _row_to_share_link(row: Any) -> ShareLink:
@@ -60,7 +62,7 @@ class SQLiteShareLinkMixin:
         Returns:
             ShareLink: The created share link with id and created_at populated.
         """
-        now = int(time.time())
+        now = _epoch_now()
         cur = self._execute(
             """INSERT INTO share_links
                (org_id, token, resource_type, resource_id, created_at, expires_at, created_by_email)

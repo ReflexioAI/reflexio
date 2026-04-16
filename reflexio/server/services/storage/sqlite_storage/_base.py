@@ -1191,7 +1191,6 @@ CREATE TABLE IF NOT EXISTS share_links (
     expires_at INTEGER,
     created_by_email TEXT
 );
-CREATE INDEX IF NOT EXISTS idx_share_links_token ON share_links(token);
 CREATE INDEX IF NOT EXISTS idx_share_links_resource ON share_links(resource_type, resource_id);
 
 """
