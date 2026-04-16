@@ -53,3 +53,51 @@ mkdir -p .reflexio/profiles .reflexio/playbooks
 ```
 
 Never overwrite existing files. Never write secrets, tokens, private keys, environment variables, or credentials into `.reflexio/` files. When capturing a fact involves a user-pasted snippet that contains credentials, redact first.
+
+## Quick Reference
+
+| Situation                                                 | Action                                     |
+|-----------------------------------------------------------|--------------------------------------------|
+| User states preference, fact, config, or constraint       | Write profile via `reflexio-write.sh`      |
+| User correction → you adjust → user confirms              | Write playbook via `reflexio-write.sh`     |
+| Start of user turn, no Active Memory injection appeared   | Run `memory_search` fallback (see below)   |
+| Unsure whether to capture                                 | Skip; batch pass at session-end has a second shot |
+
+## Detection Triggers
+
+### Profile signals (write immediately, same turn)
+
+- **Preferences**: "I prefer X", "I like Y", "I don't like Z", "I always do Q"
+- **Facts about self**: "I'm a [role]", "my timezone is X", "I've been doing Y for Z years"
+- **Config**: "use X", "our team uses Y", "the repo is at Z"
+- **Constraints**: "I'm vegetarian", "no dairy", "I can't X", "don't use Y"
+
+For each such signal, invoke `reflexio-write.sh` with a kebab-case topic slug and an appropriate TTL. See "TTL Selection" below.
+
+### Playbook signals (write AFTER confirmation)
+
+Playbooks require a specific multi-turn pattern:
+
+1. **Correction**: *"No, that's wrong"*, *"Actually..."*, *"Don't do X"*, *"Not like that"*, *"We don't use X here"*.
+2. **You adjust**: you redo the work per the correction.
+3. **Confirmation** (required — without this, do NOT write a playbook):
+   - Explicit: *"good"*, *"perfect"*, *"yes that's right"*, *"correct"*.
+   - Implicit: the user moves to an unrelated topic without re-correcting for 1-2 more turns.
+
+**Explicit don't-write rule**: if you see a correction without subsequent confirmation, do not write a playbook. The fix may be wrong; let the batch pass at session end re-evaluate.
+
+## Retrieval
+
+### When Active Memory is enabled
+
+Your turn context may already contain Reflexio-prefixed entries injected by Active Memory. Incorporate them before responding. No tool call needed.
+
+### Fallback when Active Memory is absent
+
+At the start of each user turn, call:
+
+```
+memory_search(query=<user's current message>, filter={type: profile|playbook})
+```
+
+Incorporate any `.reflexio/`-sourced results before responding. Skip if the user's message is trivial (greeting, acknowledgment).
