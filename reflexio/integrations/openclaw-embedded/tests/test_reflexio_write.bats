@@ -70,3 +70,64 @@ teardown() {
   run "$SCRIPT" validate-slug "foo/bar"
   [ "$status" -ne 0 ]
 }
+
+@test "profile write creates file in .reflexio/profiles with kebab+nanoid name" {
+  cd "$WORKSPACE"
+  run "$SCRIPT" profile diet-vegetarian one_year --body "User is vegetarian."
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ \.reflexio/profiles/diet-vegetarian-[a-z0-9]{4}\.md$ ]]
+  # File exists
+  [ -f "$output" ]
+}
+
+@test "profile write emits frontmatter with type, id, created, ttl, expires" {
+  cd "$WORKSPACE"
+  path="$("$SCRIPT" profile diet-vegetarian one_year --body "User is vegetarian.")"
+  run cat "$path"
+  [[ "$output" == *"type: profile"* ]]
+  [[ "$output" == *"id: prof_"* ]]
+  [[ "$output" == *"created: "* ]]
+  [[ "$output" == *"ttl: one_year"* ]]
+  [[ "$output" == *"expires: "* ]]
+}
+
+@test "profile write body appears after frontmatter" {
+  cd "$WORKSPACE"
+  path="$("$SCRIPT" profile diet-vegetarian one_year --body "User is vegetarian — no meat.")"
+  run cat "$path"
+  [[ "$output" == *"User is vegetarian — no meat."* ]]
+}
+
+@test "profile write with ttl=infinity sets expires to never" {
+  cd "$WORKSPACE"
+  path="$("$SCRIPT" profile name-alice infinity --body "User's name is Alice.")"
+  run cat "$path"
+  [[ "$output" == *"expires: never"* ]]
+}
+
+@test "profile write reads body from --body-file" {
+  cd "$WORKSPACE"
+  echo "User has two cats." > body.txt
+  path="$("$SCRIPT" profile pets-cats one_year --body-file body.txt)"
+  run cat "$path"
+  [[ "$output" == *"User has two cats."* ]]
+}
+
+@test "profile write reads body from stdin when no --body flag" {
+  cd "$WORKSPACE"
+  path="$(echo "User has a dog." | "$SCRIPT" profile pets-dog one_year)"
+  run cat "$path"
+  [[ "$output" == *"User has a dog."* ]]
+}
+
+@test "profile write rejects missing ttl" {
+  cd "$WORKSPACE"
+  run "$SCRIPT" profile diet-vegetarian --body "x"
+  [ "$status" -ne 0 ]
+}
+
+@test "profile write rejects invalid ttl value" {
+  cd "$WORKSPACE"
+  run "$SCRIPT" profile diet-vegetarian one_millennium --body "x"
+  [ "$status" -ne 0 ]
+}
