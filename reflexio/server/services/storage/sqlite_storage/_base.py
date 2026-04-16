@@ -1193,4 +1193,16 @@ CREATE VIRTUAL TABLE IF NOT EXISTS agent_playbooks_fts USING fts5(
     tokenize="porter unicode61"
 );
 
+CREATE TABLE IF NOT EXISTS share_links (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    org_id TEXT NOT NULL,
+    token TEXT NOT NULL UNIQUE,
+    resource_type TEXT NOT NULL,
+    resource_id TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER,
+    created_by_email TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_share_links_resource ON share_links(resource_type, resource_id);
+
 """

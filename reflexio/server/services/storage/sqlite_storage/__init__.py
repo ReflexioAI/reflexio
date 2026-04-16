@@ -10,6 +10,7 @@ from ._operations import OperationMixin
 from ._playbook import PlaybookMixin
 from ._profiles import ProfileMixin
 from ._requests import RequestMixin
+from ._share_links import SQLiteShareLinkMixin
 
 
 class SQLiteStorage(
@@ -18,6 +19,7 @@ class SQLiteStorage(
     PlaybookMixin,
     OperationMixin,
     ExtrasMixin,
+    SQLiteShareLinkMixin,
     SQLiteStorageBase,
 ):
     """SQLite-based storage with FTS5 and hybrid search."""

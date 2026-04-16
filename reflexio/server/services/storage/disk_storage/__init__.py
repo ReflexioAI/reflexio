@@ -4,9 +4,11 @@ from ._operations import OperationMixin
 from ._playbook import PlaybookMixin
 from ._profiles import ProfileMixin
 from ._requests import RequestMixin
+from ._share_links import DiskShareLinkMixin
 
 
 class DiskStorage(
+    DiskShareLinkMixin,
     ProfileMixin,
     RequestMixin,
     PlaybookMixin,
