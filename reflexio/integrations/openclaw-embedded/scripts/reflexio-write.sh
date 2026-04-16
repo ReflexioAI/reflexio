@@ -29,6 +29,19 @@ mkid() {
   printf '%s_%s\n' "$prefix" "$suffix"
 }
 
+validate_slug() {
+  local slug="${1:-}"
+  if [[ -z "$slug" ]]; then
+    echo "validate-slug: empty" >&2
+    return 3
+  fi
+  if [[ ! "$slug" =~ ^[a-z0-9][a-z0-9-]{0,47}$ ]]; then
+    echo "validate-slug: invalid format: $slug" >&2
+    return 3
+  fi
+  return 0
+}
+
 if [[ $# -eq 0 ]]; then
   usage
   exit 2
@@ -38,6 +51,11 @@ case "$1" in
   mkid)
     shift
     mkid "$@"
+    exit $?
+    ;;
+  validate-slug)
+    shift
+    validate_slug "$@"
     exit $?
     ;;
   profile|playbook)

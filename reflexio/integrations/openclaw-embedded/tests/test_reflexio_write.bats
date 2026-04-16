@@ -34,3 +34,39 @@ teardown() {
   id2="$("$SCRIPT" mkid profile)"
   [ "$id1" != "$id2" ]
 }
+
+@test "validate-slug accepts diet-vegetarian" {
+  run "$SCRIPT" validate-slug "diet-vegetarian"
+  [ "$status" -eq 0 ]
+}
+
+@test "validate-slug accepts abc" {
+  run "$SCRIPT" validate-slug "abc"
+  [ "$status" -eq 0 ]
+}
+
+@test "validate-slug rejects Empty" {
+  run "$SCRIPT" validate-slug ""
+  [ "$status" -ne 0 ]
+}
+
+@test "validate-slug rejects uppercase" {
+  run "$SCRIPT" validate-slug "Diet-Vegetarian"
+  [ "$status" -ne 0 ]
+}
+
+@test "validate-slug rejects starting with hyphen" {
+  run "$SCRIPT" validate-slug "-diet"
+  [ "$status" -ne 0 ]
+}
+
+@test "validate-slug rejects longer than 48 chars" {
+  # 49 chars
+  run "$SCRIPT" validate-slug "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  [ "$status" -ne 0 ]
+}
+
+@test "validate-slug rejects slashes" {
+  run "$SCRIPT" validate-slug "foo/bar"
+  [ "$status" -ne 0 ]
+}
