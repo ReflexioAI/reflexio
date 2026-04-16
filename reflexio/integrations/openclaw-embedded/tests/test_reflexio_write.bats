@@ -168,3 +168,31 @@ EOF
   run "$SCRIPT" playbook test-pb one_year --body "content"
   [ "$status" -ne 0 ]
 }
+
+@test "profile with single --supersedes emits YAML array" {
+  cd "$WORKSPACE"
+  path="$("$SCRIPT" profile diet-vegan one_year --body "User is vegan." --supersedes "prof_abc1")"
+  run cat "$path"
+  [[ "$output" == *"supersedes: [prof_abc1]"* ]]
+}
+
+@test "profile with multi --supersedes emits comma-joined YAML array" {
+  cd "$WORKSPACE"
+  path="$("$SCRIPT" profile diet-vegan one_year --body "User is vegan." --supersedes "prof_abc1,prof_def2")"
+  run cat "$path"
+  [[ "$output" == *"supersedes: [prof_abc1, prof_def2]"* ]]
+}
+
+@test "profile without supersedes omits the field" {
+  cd "$WORKSPACE"
+  path="$("$SCRIPT" profile diet-vegan one_year --body "x")"
+  run cat "$path"
+  [[ "$output" != *"supersedes:"* ]]
+}
+
+@test "playbook with --supersedes emits YAML array" {
+  cd "$WORKSPACE"
+  path="$("$SCRIPT" playbook test-pb --body "x" --supersedes "pbk_xyz9")"
+  run cat "$path"
+  [[ "$output" == *"supersedes: [pbk_xyz9]"* ]]
+}
