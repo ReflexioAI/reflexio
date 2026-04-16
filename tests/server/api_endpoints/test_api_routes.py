@@ -10,6 +10,7 @@ from unittest.mock import patch
 from reflexio.models.api_schema.retriever_schema import (
     SearchInteractionResponse,
     SearchUserProfileResponse,
+    UpdateUserProfileResponse,
 )
 from reflexio.models.api_schema.service_schemas import (
     PublishUserInteractionResponse,
@@ -129,4 +130,40 @@ class TestSearchEndpoints:
 
     def test_search_profiles_missing_body_returns_422(self, client):
         response = client.post("/api/search_profiles")
+        assert response.status_code == 422
+
+
+class TestUpdateUserProfileRoute:
+    """Tests for PUT /api/update_user_profile."""
+
+    def test_dispatches_to_publisher_api(self, client):
+        mock_response = UpdateUserProfileResponse(
+            success=True, msg="User profile updated successfully"
+        )
+        with patch(
+            "reflexio.server.api_endpoints.publisher_api.update_user_profile",
+            return_value=mock_response,
+        ) as mock_dispatch:
+            response = client.put(
+                "/api/update_user_profile",
+                json={
+                    "user_id": "user-1",
+                    "profile_id": "p1",
+                    "content": "updated content",
+                },
+            )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["success"] is True
+        assert mock_dispatch.call_count == 1
+        kwargs = mock_dispatch.call_args.kwargs
+        assert kwargs["org_id"] == "test-org"
+        assert kwargs["request"].profile_id == "p1"
+        assert kwargs["request"].content == "updated content"
+
+    def test_missing_required_fields_returns_422(self, client):
+        response = client.put(
+            "/api/update_user_profile",
+            json={"user_id": "user-1"},  # profile_id missing
+        )
         assert response.status_code == 422

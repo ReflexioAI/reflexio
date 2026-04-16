@@ -345,6 +345,25 @@ class UpdateUserPlaybookResponse(BaseModel):
     msg: str | None = None
 
 
+class UpdateUserProfileRequest(BaseModel):
+    """Partial update for an existing user profile.
+
+    Only non-None fields are applied. ``user_id`` and ``profile_id`` are
+    required; all other fields are optional, matching the UI edit flow
+    where the user typically changes ``content`` and/or ``custom_features``.
+    """
+
+    user_id: str
+    profile_id: str
+    content: str | None = None
+    custom_features: dict[str, object] | None = None
+
+
+class UpdateUserProfileResponse(BaseModel):
+    success: bool
+    msg: str | None = None
+
+
 class TimeSeriesDataPoint(BaseModel):
     """A single data point in a time series."""
 

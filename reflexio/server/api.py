@@ -53,6 +53,8 @@ from reflexio.models.api_schema.retriever_schema import (
     UpdatePlaybookStatusResponse,
     UpdateUserPlaybookRequest,
     UpdateUserPlaybookResponse,
+    UpdateUserProfileRequest,
+    UpdateUserProfileResponse,
 )
 from reflexio.models.api_schema.service_schemas import (
     AddAgentPlaybookRequest,
@@ -1214,6 +1216,27 @@ def update_user_playbook_endpoint(
         UpdateUserPlaybookResponse: Response containing success status and message
     """
     return publisher_api.update_user_playbook(org_id=org_id, request=request)
+
+
+@core_router.put(
+    "/api/update_user_profile",
+    response_model=UpdateUserProfileResponse,
+    response_model_exclude_none=True,
+)
+def update_user_profile_endpoint(
+    request: UpdateUserProfileRequest,
+    org_id: str = Depends(default_get_org_id),
+) -> UpdateUserProfileResponse:
+    """Apply a partial update to an existing user profile.
+
+    Args:
+        request (UpdateUserProfileRequest): The update request
+        org_id (str): Organization ID
+
+    Returns:
+        UpdateUserProfileResponse: Response containing success status and message
+    """
+    return publisher_api.update_user_profile(org_id=org_id, request=request)
 
 
 @core_router.post(

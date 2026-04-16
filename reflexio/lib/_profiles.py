@@ -2,6 +2,8 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+from datetime import UTC, datetime
+
 from reflexio.lib._base import (
     STORAGE_NOT_CONFIGURED_MSG,
     ReflexioBase,
@@ -13,6 +15,8 @@ from reflexio.models.api_schema.retriever_schema import (
     GetUserProfilesResponse,
     SearchUserProfileRequest,
     SearchUserProfileResponse,
+    UpdateUserProfileRequest,
+    UpdateUserProfileResponse,
 )
 from reflexio.models.api_schema.service_schemas import (
     AddUserProfileRequest,
@@ -107,6 +111,55 @@ class ProfilesMixin(ReflexioBase):
             request = DeleteUserProfileRequest(**request)
         self._get_storage().delete_user_profile(request)
         return DeleteUserProfileResponse(success=True, message="Deleted successfully")
+
+    @_require_storage(UpdateUserProfileResponse, msg_field="msg")
+    def update_user_profile(
+        self,
+        request: UpdateUserProfileRequest | dict,
+    ) -> UpdateUserProfileResponse:
+        """Apply a partial update to an existing user profile.
+
+        Fetches the current profile by ``(user_id, profile_id)``, applies the
+        non-None fields from ``request``, refreshes ``last_modified_timestamp``,
+        and persists the whole record via
+        :meth:`BaseStorage.update_user_profile_by_id`. The storage layer
+        regenerates the embedding for the updated content.
+
+        Args:
+            request (Union[UpdateUserProfileRequest, dict]): The update request.
+                ``user_id`` and ``profile_id`` are required; ``content`` and
+                ``custom_features`` are optional — only non-None fields are
+                applied.
+
+        Returns:
+            UpdateUserProfileResponse: ``success=True`` when the profile was
+                updated, ``success=False`` with a descriptive ``msg`` when it
+                could not be found.
+        """
+        if isinstance(request, dict):
+            request = UpdateUserProfileRequest(**request)
+        storage = self._get_storage()
+        profiles = storage.get_user_profile(request.user_id)
+        existing = next(
+            (p for p in profiles if p.profile_id == request.profile_id), None
+        )
+        if existing is None:
+            return UpdateUserProfileResponse(
+                success=False,
+                msg=(
+                    f"Profile not found: user_id={request.user_id!r} "
+                    f"profile_id={request.profile_id!r}"
+                ),
+            )
+        if request.content is not None:
+            existing.content = request.content
+        if request.custom_features is not None:
+            existing.custom_features = request.custom_features
+        existing.last_modified_timestamp = int(datetime.now(UTC).timestamp())
+        storage.update_user_profile_by_id(request.user_id, request.profile_id, existing)
+        return UpdateUserProfileResponse(
+            success=True, msg="User profile updated successfully"
+        )
 
     @_require_storage(BulkDeleteResponse)
     def delete_all_profiles_bulk(self) -> BulkDeleteResponse:

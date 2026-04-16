@@ -14,6 +14,7 @@ from reflexio.lib._profiles import ProfilesMixin
 from reflexio.models.api_schema.retriever_schema import (
     GetUserProfilesRequest,
     SearchUserProfileRequest,
+    UpdateUserProfileRequest,
 )
 from reflexio.models.api_schema.service_schemas import (
     AddUserProfileRequest,
@@ -673,3 +674,102 @@ class TestDowngradeAllProfiles:
         call_arg = mock_service.run_downgrade.call_args[0][0]
         assert isinstance(call_arg, DowngradeProfilesRequest)
         assert call_arg.only_affected_users is False
+
+
+# ---------------------------------------------------------------------------
+# update_user_profile
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateUserProfile:
+    def test_updates_content(self):
+        """Applies content update and calls storage.update_user_profile_by_id."""
+        mixin = _make_mixin()
+        existing = _sample_profile(profile_id="p1", user_id="user1", content="old")
+        _get_storage(mixin).get_user_profile.return_value = [existing]
+
+        response = mixin.update_user_profile(
+            UpdateUserProfileRequest(
+                user_id="user1", profile_id="p1", content="new content"
+            )
+        )
+
+        assert response.success is True
+        storage = _get_storage(mixin)
+        storage.update_user_profile_by_id.assert_called_once()
+        _user_id, _profile_id, new_profile = (
+            storage.update_user_profile_by_id.call_args[0]
+        )
+        assert _user_id == "user1"
+        assert _profile_id == "p1"
+        assert new_profile.content == "new content"
+
+    def test_updates_custom_features(self):
+        """Applies custom_features update while preserving content."""
+        mixin = _make_mixin()
+        existing = _sample_profile(profile_id="p1", user_id="user1", content="original")
+        _get_storage(mixin).get_user_profile.return_value = [existing]
+
+        response = mixin.update_user_profile(
+            UpdateUserProfileRequest(
+                user_id="user1",
+                profile_id="p1",
+                custom_features={"tier": "pro"},
+            )
+        )
+
+        assert response.success is True
+        _, _, new_profile = _get_storage(mixin).update_user_profile_by_id.call_args[0]
+        assert new_profile.content == "original"
+        assert new_profile.custom_features == {"tier": "pro"}
+
+    def test_profile_not_found_returns_failure(self):
+        """Returns success=False with descriptive msg when no matching profile."""
+        mixin = _make_mixin()
+        _get_storage(mixin).get_user_profile.return_value = []
+
+        response = mixin.update_user_profile(
+            UpdateUserProfileRequest(user_id="missing", profile_id="p1")
+        )
+
+        assert response.success is False
+        assert "not found" in (response.msg or "").lower()
+        _get_storage(mixin).update_user_profile_by_id.assert_not_called()
+
+    def test_profile_mismatch_returns_failure(self):
+        """Does not update when user has profiles but profile_id doesn't match."""
+        mixin = _make_mixin()
+        _get_storage(mixin).get_user_profile.return_value = [
+            _sample_profile(profile_id="other", user_id="user1")
+        ]
+
+        response = mixin.update_user_profile(
+            UpdateUserProfileRequest(user_id="user1", profile_id="p1")
+        )
+
+        assert response.success is False
+        _get_storage(mixin).update_user_profile_by_id.assert_not_called()
+
+    def test_storage_not_configured(self):
+        """Returns success=False when storage is not configured."""
+        mixin = _make_mixin(storage_configured=False)
+
+        response = mixin.update_user_profile(
+            UpdateUserProfileRequest(user_id="u", profile_id="p")
+        )
+
+        assert response.success is False
+        assert response.msg == STORAGE_NOT_CONFIGURED_MSG
+
+    def test_dict_input(self):
+        """Accepts dict input and auto-converts to UpdateUserProfileRequest."""
+        mixin = _make_mixin()
+        _get_storage(mixin).get_user_profile.return_value = [
+            _sample_profile(profile_id="p1", user_id="user1")
+        ]
+
+        response = mixin.update_user_profile(
+            {"user_id": "user1", "profile_id": "p1", "content": "updated"}
+        )
+
+        assert response.success is True

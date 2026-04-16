@@ -11,6 +11,8 @@ from reflexio.models.api_schema.retriever_schema import (
     UpdatePlaybookStatusResponse,
     UpdateUserPlaybookRequest,
     UpdateUserPlaybookResponse,
+    UpdateUserProfileRequest,
+    UpdateUserProfileResponse,
 )
 from reflexio.models.api_schema.service_schemas import (
     AddAgentPlaybookRequest,
@@ -486,3 +488,23 @@ def update_user_playbook(
     except Exception as e:
         logger.error("Failed to update user playbook: %s", e)
         return UpdateUserPlaybookResponse(success=False, msg=str(e))
+
+
+def update_user_profile(
+    org_id: str, request: UpdateUserProfileRequest
+) -> UpdateUserProfileResponse:
+    """Apply a partial update to an existing user profile.
+
+    Args:
+        org_id (str): Organization ID
+        request (UpdateUserProfileRequest): The update request
+
+    Returns:
+        UpdateUserProfileResponse: Response containing success status and message
+    """
+    reflexio = get_reflexio(org_id=org_id)
+    try:
+        return reflexio.update_user_profile(request)
+    except Exception as e:
+        logger.error("Failed to update user profile: %s", e)
+        return UpdateUserProfileResponse(success=False, msg=str(e))
