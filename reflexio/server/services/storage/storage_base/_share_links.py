@@ -4,11 +4,9 @@ Each BaseStorage subclass (SQLite, Supabase, Disk) must implement these methods.
 Storage instances are org-scoped, so org_id is not a method parameter.
 """
 
-from __future__ import annotations
-
 from abc import abstractmethod
 
-from reflexio.models.api_schema.domain.entities import ShareLink
+from reflexio.models.api_schema.domain import ShareLink
 
 
 class ShareLinkMixin:
