@@ -192,6 +192,11 @@ _PROVIDER_DEFAULTS: dict[str, ProviderDefaults] = {
 }
 
 
+EMBEDDING_CAPABLE_PROVIDERS: frozenset[str] = frozenset(
+    p for p, d in _PROVIDER_DEFAULTS.items() if d.embedding is not None
+)
+
+
 # ---------------------------------------------------------------------------
 # Model role enum and resolution
 # ---------------------------------------------------------------------------
