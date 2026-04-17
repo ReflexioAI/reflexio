@@ -94,11 +94,13 @@ Your turn context may already contain Reflexio-prefixed entries injected by Acti
 
 ### Fallback when Active Memory is absent
 
-At the start of each user turn, preprocess the user's message (see **Query Preprocessing** below) then search via exec:
+At the start of each user turn, rewrite the user's message into a search query (see **Query Preprocessing** below), then search via exec:
 
 ```bash
-openclaw memory search "<preprocessed query from user's message>" --json --max-results 5
+openclaw memory search "<your rewritten search query>" --json --max-results 5
 ```
+
+For example, if the user says *"what's my diet again?"*, rewrite to `"User dietary preferences. Related: diet, food restrictions, vegetarian, vegan"` and search with that.
 
 The result is a JSON object with a `results` array. Each entry has `path`, `score`, and `snippet` fields. Incorporate any `.reflexio/`-sourced results before responding. Skip if the user's message is trivial (greeting, acknowledgment).
 
@@ -180,17 +182,30 @@ Pick the most generous TTL that still reflects reality. When in doubt, prefer `i
 
 ## Query Preprocessing
 
-Before calling `openclaw memory search`, rewrite the raw text into a clean search query. Raw user messages are often too conversational for embedding similarity, and too noisy for FTS keyword matching.
+Before calling `openclaw memory search`, you MUST rewrite the raw text into a clean search query. Raw user messages are often too conversational for embedding similarity, and too noisy for FTS keyword matching.
 
-**Rewrite instruction (apply mentally — no extra tool call):**
+**How to produce the search query:**
+
+Given raw text (user message or candidate content), apply this rewrite mentally — no extra tool call needed:
 
 > Rewrite into a single, descriptive sentence that captures the core fact or topic. Expand with 2-3 important synonyms or related technical terms to improve matching. Remove conversational filler (apologies, hedging, corrections, "by the way"). Return ONLY the rewritten text.
 
-**Examples:**
+The output of this rewrite is your **search query**. Use it verbatim in the `openclaw memory search` command.
 
-| Raw text | Rewritten search query |
+**Concrete worked example:**
+
+User says: *"Oh, sorry I typed it wrong, I do like apple juice"*
+
+1. Apply rewrite → `"User preference for apple juice. Related: fruit juice, beverage, drink preference"`
+2. Use the rewritten text as the search query:
+   ```bash
+   openclaw memory search "User preference for apple juice. Related: fruit juice, beverage, drink preference" --json --max-results 5
+   ```
+
+**More examples:**
+
+| Raw text | Search query (after rewrite) |
 |---|---|
-| "Oh, sorry I typed it wrong, I do like apple juice" | `"User preference for apple juice. Related: fruit juice, beverage, drink preference"` |
 | "Actually I'm not vegetarian anymore, I eat everything" | `"Dietary preference update, no longer vegetarian. Related: omnivore, diet change, food restrictions"` |
 | "By the way my timezone is PST" | `"User timezone Pacific Standard Time. Related: time zone, PST, America/Los_Angeles"` |
 | "No wait, don't use pnpm, we use yarn on this project" | `"Package manager preference yarn over pnpm. Related: node package manager, dependency tool, npm alternative"` |
@@ -202,9 +217,9 @@ This produces queries that work well for both vector similarity (descriptive sen
 
 Before writing a profile or playbook, check whether a similar or contradictory one already exists:
 
-1. Preprocess the query (see **Query Preprocessing** above), then search via exec:
+1. Rewrite the candidate content into a search query (see **Query Preprocessing** above), then search:
    ```bash
-   openclaw memory search "<preprocessed search query>" --json --max-results 5
+   openclaw memory search "<your rewritten search query>" --json --max-results 5
    ```
 2. If no results or `results[0].score < 0.4`: write normally, no dedup needed.
 3. If `results[0].score >= 0.4`: a near-duplicate or contradiction may exist. Decide:
