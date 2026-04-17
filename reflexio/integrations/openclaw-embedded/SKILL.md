@@ -32,7 +32,7 @@ If `.reflexio/.setup_complete_<agentId>` does NOT exist (where `<agentId>` is yo
    If yes, guide them through `openclaw config set` or `openclaw configure`.
 
 5. On each decline, note the degraded mode but do not block:
-   - No active-memory → you must run `memory_search` explicitly at turn start (see "Retrieval" section below).
+   - No active-memory → you must run `openclaw memory search` via exec at turn start (see "Retrieval" section below).
    - No extraPath → WARN the user the plugin cannot function without this step.
    - No embedding → continue with FTS-only.
 
@@ -60,7 +60,7 @@ Never overwrite existing files. Never write secrets, tokens, private keys, envir
 |-----------------------------------------------------------|--------------------------------------------|
 | User states preference, fact, config, or constraint       | Write profile via `reflexio-write.sh`      |
 | User correction → you adjust → user confirms              | Write playbook via `reflexio-write.sh`     |
-| Start of user turn, no Active Memory injection appeared   | Run `memory_search` fallback (see below)   |
+| Start of user turn, no Active Memory injection appeared   | Run `openclaw memory search` via exec (see below) |
 | Unsure whether to capture                                 | Skip; batch pass at session-end has a second shot |
 
 ## Detection Triggers
@@ -94,13 +94,15 @@ Your turn context may already contain Reflexio-prefixed entries injected by Acti
 
 ### Fallback when Active Memory is absent
 
-At the start of each user turn, call:
+At the start of each user turn, search for relevant context via exec:
 
-```
-memory_search(query=<user's current message>, filter={type: profile|playbook})
+```bash
+openclaw memory search "<user's current message>" --json --max-results 5
 ```
 
-Incorporate any `.reflexio/`-sourced results before responding. Skip if the user's message is trivial (greeting, acknowledgment).
+The result is a JSON object with a `results` array. Each entry has `path`, `score`, and `snippet` fields. Incorporate any `.reflexio/`-sourced results before responding. Skip if the user's message is trivial (greeting, acknowledgment).
+
+**Important:** Do NOT use the `memory_search` tool — it returns memory engine config, not search results. Always use `openclaw memory search` via exec.
 
 ## File Format
 
@@ -180,16 +182,19 @@ Pick the most generous TTL that still reflects reality. When in doubt, prefer `i
 
 Before writing a profile or playbook, check whether a similar or contradictory one already exists:
 
-1. Call `memory_search(query=<your candidate content>, top_k=5)`.
-2. If no results or `results[0].similarity < 0.7`: write normally, no dedup needed.
-3. If `results[0].similarity >= 0.7`: a near-duplicate or contradiction exists. Decide:
+1. Search via exec:
+   ```bash
+   openclaw memory search "<your candidate content>" --json --max-results 5
+   ```
+2. If no results or `results[0].score < 0.4`: write normally, no dedup needed.
+3. If `results[0].score >= 0.4`: a near-duplicate or contradiction may exist. Decide:
 
 ### Contradiction (user changed their mind)
 
 If the user's new statement **directly contradicts** an existing file (e.g., "I'm NOT vegetarian anymore" vs an existing "User is vegetarian" profile), this is a **supersession**. Always handle it immediately — don't defer to batch.
 
 **Steps:**
-1. Note the existing file's `id` and path from the `memory_search` result.
+1. Note the existing file's `id` and `path` from the search result's `snippet` (contains frontmatter with `id:`) and `path` field.
 2. Write the new file with `--supersedes`:
    ```bash
    echo "User is not vegetarian. Likes beef, tuna, and shrimp." | \
