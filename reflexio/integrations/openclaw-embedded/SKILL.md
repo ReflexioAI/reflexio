@@ -94,10 +94,10 @@ Your turn context may already contain Reflexio-prefixed entries injected by Acti
 
 ### Fallback when Active Memory is absent
 
-At the start of each user turn, search for relevant context via exec:
+At the start of each user turn, preprocess the user's message (see **Query Preprocessing** below) then search via exec:
 
 ```bash
-openclaw memory search "<user's current message>" --json --max-results 5
+openclaw memory search "<preprocessed query from user's message>" --json --max-results 5
 ```
 
 The result is a JSON object with a `results` array. Each entry has `path`, `score`, and `snippet` fields. Incorporate any `.reflexio/`-sourced results before responding. Skip if the user's message is trivial (greeting, acknowledgment).
@@ -178,13 +178,33 @@ EOF
 
 Pick the most generous TTL that still reflects reality. When in doubt, prefer `infinity` — let dedup handle later contradictions via supersession.
 
+## Query Preprocessing
+
+Before calling `openclaw memory search`, rewrite the raw text into a clean search query. Raw user messages are often too conversational for embedding similarity, and too noisy for FTS keyword matching.
+
+**Rewrite instruction (apply mentally — no extra tool call):**
+
+> Rewrite into a single, descriptive sentence that captures the core fact or topic. Expand with 2-3 important synonyms or related technical terms to improve matching. Remove conversational filler (apologies, hedging, corrections, "by the way"). Return ONLY the rewritten text.
+
+**Examples:**
+
+| Raw text | Rewritten search query |
+|---|---|
+| "Oh, sorry I typed it wrong, I do like apple juice" | `"User preference for apple juice. Related: fruit juice, beverage, drink preference"` |
+| "Actually I'm not vegetarian anymore, I eat everything" | `"Dietary preference update, no longer vegetarian. Related: omnivore, diet change, food restrictions"` |
+| "By the way my timezone is PST" | `"User timezone Pacific Standard Time. Related: time zone, PST, America/Los_Angeles"` |
+| "No wait, don't use pnpm, we use yarn on this project" | `"Package manager preference yarn over pnpm. Related: node package manager, dependency tool, npm alternative"` |
+| "I changed my mind — I prefer dark mode now" | `"User display preference dark mode. Related: theme, appearance, light mode, UI preference"` |
+
+This produces queries that work well for both vector similarity (descriptive sentence captures semantic intent) and BM25 keyword matching (synonym expansion hits related terms).
+
 ## Shallow Dedup (in-session writes only)
 
 Before writing a profile or playbook, check whether a similar or contradictory one already exists:
 
-1. Search via exec:
+1. Preprocess the query (see **Query Preprocessing** above), then search via exec:
    ```bash
-   openclaw memory search "<your candidate content>" --json --max-results 5
+   openclaw memory search "<preprocessed search query>" --json --max-results 5
    ```
 2. If no results or `results[0].score < 0.4`: write normally, no dedup needed.
 3. If `results[0].score >= 0.4`: a near-duplicate or contradiction may exist. Decide:
