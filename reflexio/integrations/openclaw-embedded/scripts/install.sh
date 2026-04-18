@@ -19,7 +19,11 @@ command -v node >/dev/null     || die "node required but not found on PATH"
 # registration first to make the install idempotent.
 info "Installing plugin..."
 openclaw plugins uninstall --force reflexio-embedded 2>/dev/null || true
-openclaw plugins install --link "$PLUGIN_DIR"
+# --dangerously-force-unsafe-install: the scanner flags child_process in
+# scripts/lib/openclaw-cli.ts (used to call `openclaw infer` and
+# `openclaw memory search`). This is intentional — the scripts are CLI
+# wrappers for Openclaw's own commands, not arbitrary shell execution.
+openclaw plugins install --link "$PLUGIN_DIR" --dangerously-force-unsafe-install
 # plugins install auto-enables by default. If ever it stops doing so, fall
 # back to an explicit enable.
 openclaw plugins enable reflexio-embedded 2>/dev/null || true
