@@ -36,12 +36,13 @@ mkdir -p "$OPENCLAW_HOME/workspace/agents"
 cp "$PLUGIN_DIR/agents/reflexio-extractor.md"     "$OPENCLAW_HOME/workspace/agents/"
 cp "$PLUGIN_DIR/agents/reflexio-consolidator.md"  "$OPENCLAW_HOME/workspace/agents/"
 
-# 5. Copy prompts and scripts (referenced by agents at runtime)
-info "Copying prompts and scripts..."
+# 5. Copy prompts (referenced by agents at runtime)
+# Scripts are NOT copied — the plugin is --linked, so Openclaw loads them
+# directly from the source directory. Copying scripts/ would break
+# node_modules/.bin/ symlinks and is unnecessary.
+info "Copying prompts..."
 mkdir -p "$OPENCLAW_HOME/workspace/plugins/reflexio-embedded"
 cp -r "$PLUGIN_DIR/prompts" "$OPENCLAW_HOME/workspace/plugins/reflexio-embedded/"
-cp -r "$PLUGIN_DIR/scripts" "$OPENCLAW_HOME/workspace/plugins/reflexio-embedded/"
-chmod +x "$OPENCLAW_HOME/workspace/plugins/reflexio-embedded/scripts/"*.sh
 
 # 6. Enable active-memory plugin (host-wide; per-agent targeting is SKILL.md bootstrap's job)
 info "Enabling active-memory plugin..."
