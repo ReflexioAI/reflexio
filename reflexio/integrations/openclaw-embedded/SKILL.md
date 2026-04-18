@@ -58,9 +58,9 @@ Never overwrite existing files. Never write secrets, tokens, private keys, envir
 
 | Situation                                                 | Action                                     |
 |-----------------------------------------------------------|--------------------------------------------|
-| User states preference, fact, config, or constraint       | Write profile via `reflexio-write.sh`      |
-| User correction → you adjust → user confirms              | Write playbook via `reflexio-write.sh`     |
-| Start of user turn, no Active Memory injection appeared   | Run `openclaw memory search` via exec (see below) |
+| User states preference, fact, config, or constraint       | `reflexio.ts write-profile`                |
+| User correction → you adjust → user confirms              | `reflexio.ts write-playbook`               |
+| Start of user turn, need context                          | `reflexio.ts search`                       |
 | Unsure whether to capture                                 | Skip; batch pass at session-end has a second shot |
 
 ## Detection Triggers
@@ -72,7 +72,7 @@ Never overwrite existing files. Never write secrets, tokens, private keys, envir
 - **Config**: "use X", "our team uses Y", "the repo is at Z"
 - **Constraints**: "I'm vegetarian", "no dairy", "I can't X", "don't use Y"
 
-For each such signal, invoke `reflexio-write.sh` with a kebab-case topic slug and an appropriate TTL. See "TTL Selection" below.
+For each such signal, call `reflexio.ts write-profile` with a kebab-case topic slug and an appropriate TTL. See "TTL Selection" below.
 
 ### Playbook signals (write AFTER confirmation)
 
@@ -94,21 +94,19 @@ Your turn context may already contain Reflexio-prefixed entries injected by Acti
 
 ### Fallback when Active Memory is absent
 
-At the start of each user turn, rewrite the user's message into a search query (see **Query Preprocessing** below), then search via exec:
+At the start of each user turn, run via exec:
 
 ```bash
-openclaw memory search "<your rewritten search query>" --json --max-results 5
+npx tsx ./scripts/reflexio.ts search --query "<user's message>"
 ```
 
-For example, if the user says *"what's my diet again?"*, rewrite to `"User dietary preferences. Related: diet, food restrictions, vegetarian, vegan"` and search with that.
+The script handles query preprocessing and memory search internally. Incorporate any results into your response. Skip if the user's message is trivial (greeting, acknowledgment).
 
-The result is a JSON object with a `results` array. Each entry has `path`, `score`, and `snippet` fields. Incorporate any `.reflexio/`-sourced results before responding. Skip if the user's message is trivial (greeting, acknowledgment).
-
-**Important:** Do NOT use the `memory_search` tool — it returns memory engine config, not search results. Always use `openclaw memory search` via exec.
+**Important:** Do NOT use the `memory_search` tool — it returns memory engine config, not search results.
 
 ## File Format
 
-**Do NOT construct filenames or frontmatter by hand.** Use `./scripts/reflexio-write.sh` (via the `exec` tool). The script generates IDs, enforces the frontmatter schema, and writes atomically.
+**Do NOT construct filenames or frontmatter by hand.** Use `reflexio.ts` (via the `exec` tool). The script generates IDs, enforces the frontmatter schema, and writes atomically.
 
 ### Profile template (for mental model — the script emits this)
 
@@ -145,30 +143,38 @@ supersedes: [<old_id>]   # optional
 <rationale, can be longer — reference only, not recall content>
 ```
 
-### How to invoke `reflexio-write.sh`
+### How to invoke
 
 **Profile:**
 
 ```bash
-echo "User is vegetarian — no meat or fish." | \
-  ./scripts/reflexio-write.sh profile diet-vegetarian one_year
+npx tsx ./scripts/reflexio.ts write-profile \
+  --slug diet-vegan --ttl infinity \
+  --body "User is vegan. No meat, no fish, no dairy, no eggs."
 ```
 
 **Playbook:**
 
 ```bash
-./scripts/reflexio-write.sh playbook commit-no-ai-attribution --body "$(cat <<'EOF'
-## When
+npx tsx ./scripts/reflexio.ts write-playbook \
+  --slug commit-no-ai-attribution \
+  --body "## When
 Composing a git commit message on this project.
 
 ## What
 Write conventional, scope-prefixed messages. Do not add AI-attribution trailers.
 
 ## Why
-On <date> the user corrected commits that included Co-Authored-By trailers. Project's git-conventions rule prohibits them. Correction stuck across subsequent commits.
-EOF
-)"
+On <date> the user corrected commits that included Co-Authored-By trailers."
 ```
+
+**Retrieve context:**
+
+```bash
+npx tsx ./scripts/reflexio.ts search --query "user's question here"
+```
+
+The script handles everything automatically: query preprocessing for better search results, memory search, contradiction detection against existing entries, atomic file creation, and old-file cleanup on supersession. You only need to detect the signal, compose the content, and call the command.
 
 ## TTL Selection (profiles only)
 
@@ -179,81 +185,6 @@ EOF
 - `one_week` / `one_day` — transient (today's agenda, this week's priorities)
 
 Pick the most generous TTL that still reflects reality. When in doubt, prefer `infinity` — let dedup handle later contradictions via supersession.
-
-## Query Preprocessing
-
-Before calling `openclaw memory search`, you MUST rewrite the raw text into a clean search query. Raw user messages are often too conversational for embedding similarity, and too noisy for FTS keyword matching.
-
-**How to produce the search query:**
-
-Given raw text (user message or candidate content), apply this rewrite mentally — no extra tool call needed:
-
-> Rewrite into a single, descriptive sentence that captures the core fact or topic. Expand with 2-3 important synonyms or related technical terms to improve matching. Remove conversational filler (apologies, hedging, corrections, "by the way"). Return ONLY the rewritten text.
-
-The output of this rewrite is your **search query**. Use it verbatim in the `openclaw memory search` command.
-
-**Concrete worked example:**
-
-User says: *"Oh, sorry I typed it wrong, I do like apple juice"*
-
-1. Apply rewrite → `"User preference for apple juice. Related: fruit juice, beverage, drink preference"`
-2. Use the rewritten text as the search query:
-   ```bash
-   openclaw memory search "User preference for apple juice. Related: fruit juice, beverage, drink preference" --json --max-results 5
-   ```
-
-**More examples:**
-
-| Raw text | Search query (after rewrite) |
-|---|---|
-| "Actually I'm not vegetarian anymore, I eat everything" | `"Dietary preference update, no longer vegetarian. Related: omnivore, diet change, food restrictions"` |
-| "By the way my timezone is PST" | `"User timezone Pacific Standard Time. Related: time zone, PST, America/Los_Angeles"` |
-| "No wait, don't use pnpm, we use yarn on this project" | `"Package manager preference yarn over pnpm. Related: node package manager, dependency tool, npm alternative"` |
-| "I changed my mind — I prefer dark mode now" | `"User display preference dark mode. Related: theme, appearance, light mode, UI preference"` |
-
-This produces queries that work well for both vector similarity (descriptive sentence captures semantic intent) and BM25 keyword matching (synonym expansion hits related terms).
-
-## Shallow Dedup (in-session writes only)
-
-Before writing a profile or playbook, check whether a similar or contradictory one already exists:
-
-1. Rewrite the candidate content into a search query (see **Query Preprocessing** above), then search:
-   ```bash
-   openclaw memory search "<your rewritten search query>" --json --max-results 5
-   ```
-2. If no results or `results[0].score < 0.4`: write normally, no dedup needed.
-3. If `results[0].score >= 0.4`: a near-duplicate or contradiction may exist. Decide:
-
-### Contradiction (user changed their mind)
-
-If the user's new statement **directly contradicts** an existing file (e.g., "I'm NOT vegetarian anymore" vs an existing "User is vegetarian" profile), this is a **supersession**. Always handle it immediately — don't defer to batch.
-
-**Steps:**
-1. Note the existing file's `id` and `path` from the search result's `snippet` (contains frontmatter with `id:`) and `path` field.
-2. Write the new file with `--supersedes`:
-   ```bash
-   echo "User is not vegetarian. Likes beef, tuna, and shrimp." | \
-     ./scripts/reflexio-write.sh profile diet-not-vegetarian infinity \
-       --supersedes "prof_3ecg"
-   ```
-3. Delete the old file:
-   ```bash
-   rm .reflexio/profiles/diet-vegetarian-3ecg.md
-   ```
-
-The `--supersedes` flag records the lineage in the new file's frontmatter. The `rm` removes the contradicted file so retrieval never returns stale facts.
-
-### Near-duplicate (same fact, minor rewording)
-
-If the existing file covers the same fact with minor wording differences (e.g., "User prefers dark mode" vs "User likes dark mode"), **skip the write**. The existing file is sufficient.
-
-### Genuinely distinct (related topic, different facts)
-
-If the existing file covers a related but different fact (e.g., existing: "User is vegetarian" vs new: "User's favorite cuisine is Italian"), **write normally** without supersedes. They're complementary, not contradictory.
-
-### When in doubt
-
-If you're unsure whether something is a contradiction, near-duplicate, or distinct: **write the new file without supersedes and without deleting the old**. The daily consolidation cron will cluster and merge them. Err on the side of preserving information.
 
 ## Safety
 
