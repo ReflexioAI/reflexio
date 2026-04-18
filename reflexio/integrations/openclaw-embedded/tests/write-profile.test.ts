@@ -3,8 +3,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { writeProfile } from "../lib/write-profile.js";
-import type { CommandRunner, MemorySearchResult } from "../lib/openclaw-cli.js";
+import { writeProfile } from "../plugin/lib/write-profile.ts";
+import type { CommandRunner, MemorySearchResult } from "../plugin/lib/openclaw-cli.ts";
 
 let inferCallCount: number;
 

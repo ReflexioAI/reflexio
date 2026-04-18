@@ -33,7 +33,7 @@ All retrieval is via Openclaw's memory engine — vector + FTS + MMR + temporal 
 ## Prerequisites
 
 - [OpenClaw](https://openclaw.ai) installed and `openclaw` CLI on PATH
-- Node.js and npm (for the hook handler)
+- Node.js (for the plugin runtime)
 - macOS or Linux (Windows via WSL)
 - A bash-compatible shell (install/uninstall scripts use `#!/usr/bin/env bash`)
 - Strongly recommended:
@@ -50,15 +50,13 @@ The plugin works without active-memory and without an embedding key — with deg
 ```
 
 What it does:
-1. Installs and enables the hook
+1. Installs and links the `plugin/` directory as an Openclaw plugin
 2. Copies SKILL.md, consolidate skill, and agent definitions to workspace
-3. Copies prompts and helper scripts
-4. Enables the `active-memory` plugin host-wide
+3. Copies prompts to workspace
+4. Enables the `active-memory` plugin and configures agent targeting + extraPath
 5. Registers a daily 3am consolidation cron
 6. Restarts the Openclaw gateway
 7. Prints verification commands
-
-Per-agent config (active-memory targeting, `.reflexio/` extraPath) is NOT done at install — it happens at first use via the SKILL.md bootstrap.
 
 ## First-use Setup
 

@@ -1,14 +1,16 @@
 {
-  "name": "@reflexio/openclaw-embedded",
+  "name": "openclaw-embedded-dev",
   "version": "0.1.0",
-  "description": "Reflexio-style user profile and playbook extraction using Openclaw's native memory engine, hooks, and sub-agents.",
   "private": true,
   "type": "module",
-  "openclaw": {
-    "extensions": ["./index.ts"]
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
-    "typescript": "^5.0.0"
+    "typescript": "^5.0.0",
+    "vitest": "^3.0.0"
   }
 }

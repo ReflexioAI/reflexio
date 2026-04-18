@@ -3,8 +3,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { writePlaybook } from "../lib/write-playbook.js";
-import type { CommandRunner, MemorySearchResult } from "../lib/openclaw-cli.js";
+import { writePlaybook } from "../plugin/lib/write-playbook.ts";
+import type { CommandRunner, MemorySearchResult } from "../plugin/lib/openclaw-cli.ts";
 
 let inferCallCount: number;
 

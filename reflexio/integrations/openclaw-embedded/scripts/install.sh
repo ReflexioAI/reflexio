@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# openclaw-embedded install.sh — host-wide plugin installation.
-# Per-agent config (active-memory targeting, extraPath) is done at first use via SKILL.md bootstrap.
+# openclaw-embedded install.sh — plugin installation.
+# Skills are served from the extension dir via the manifest.
+# Agents are injected via extraSystemPrompt at runtime.
+# HEARTBEAT.md is appended on first agent session by setup.ts.
 set -euo pipefail
 
-PLUGIN_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+PLUGIN_DIR="$(cd "$(dirname "$0")/../plugin" && pwd)"
 OPENCLAW_HOME="${OPENCLAW_HOME:-$HOME/.openclaw}"
 
 die() { echo "error: $*" >&2; exit 1; }
@@ -14,70 +16,37 @@ info "Checking prerequisites..."
 command -v openclaw >/dev/null || die "openclaw CLI required but not found on PATH"
 command -v node >/dev/null     || die "node required but not found on PATH"
 
-# 2. Install the plugin (hooks are registered programmatically from index.ts)
-# `plugins install --link <path>` rejects `--force`, so we uninstall any prior
-# registration first to make the install idempotent.
+# 2. Install the plugin
 info "Installing plugin..."
 openclaw plugins uninstall --force reflexio-embedded 2>/dev/null || true
-openclaw plugins install --link "$PLUGIN_DIR"
-# plugins install auto-enables by default. If ever it stops doing so, fall
-# back to an explicit enable.
+rm -rf "$OPENCLAW_HOME/extensions/reflexio-embedded"
+openclaw plugins install "$PLUGIN_DIR"
 openclaw plugins enable reflexio-embedded 2>/dev/null || true
 
-# 3. Copy main SKILL.md and consolidate command
-info "Copying skills to workspace..."
-mkdir -p "$OPENCLAW_HOME/workspace/skills/reflexio-embedded"
-cp "$PLUGIN_DIR/SKILL.md" "$OPENCLAW_HOME/workspace/skills/reflexio-embedded/"
-cp -r "$PLUGIN_DIR/commands/reflexio-consolidate" "$OPENCLAW_HOME/workspace/skills/"
-
-# 4. Copy agent definitions
-info "Copying agent definitions..."
-mkdir -p "$OPENCLAW_HOME/workspace/agents"
-cp "$PLUGIN_DIR/agents/reflexio-extractor.md"     "$OPENCLAW_HOME/workspace/agents/"
-cp "$PLUGIN_DIR/agents/reflexio-consolidator.md"  "$OPENCLAW_HOME/workspace/agents/"
-
-# 5. Copy prompts (referenced by agents at runtime)
-# Scripts are NOT copied — the plugin is --linked, so Openclaw loads them
-# directly from the source directory. Copying scripts/ would break
-# node_modules/.bin/ symlinks and is unnecessary.
-info "Copying prompts..."
-mkdir -p "$OPENCLAW_HOME/workspace/plugins/reflexio-embedded"
-cp -r "$PLUGIN_DIR/prompts" "$OPENCLAW_HOME/workspace/plugins/reflexio-embedded/"
-
-# 6. Enable active-memory plugin (host-wide; per-agent targeting is SKILL.md bootstrap's job)
+# 3. Enable active-memory plugin and configure per-agent targeting
 info "Enabling active-memory plugin..."
 openclaw plugins enable active-memory || \
   echo "warning: active-memory enable failed — plugin may already be enabled or unavailable; continuing"
 
-# 7. Register daily consolidation cron
-# Remove any pre-existing entry so reinstalls don't accumulate duplicates
-# (`openclaw cron add` appends rather than replacing by name).
-info "Registering daily consolidation cron (3am)..."
-openclaw cron rm reflexio-embedded-consolidate 2>/dev/null || true
-openclaw cron add \
-  --name reflexio-embedded-consolidate \
-  --cron "0 3 * * *" \
-  --session isolated \
-  --agent reflexio-consolidator \
-  --message "Run your full-sweep consolidation workflow now. Follow your system prompt in full." \
-  || echo "warning: cron registration failed — you can register it manually later with the same flags"
+info "Configuring active-memory agent targeting..."
+openclaw config set plugins.entries.active-memory.config.agents '["*"]' || \
+  echo "warning: active-memory agent targeting config failed"
 
-# 8. Restart gateway
+info "Registering .reflexio/ as memory extraPath..."
+openclaw config set agents.defaults.memorySearch.extraPaths '[".reflexio/"]' --strict-json || \
+  echo "warning: extraPath registration failed"
+
+# 4. Restart gateway
 info "Restarting openclaw gateway..."
 openclaw gateway restart
 
-# 9. Verify
+# 5. Verify
 info "Verification:"
 if openclaw plugins inspect reflexio-embedded 2>/dev/null | grep -q "Status: loaded"; then
   info "  ✓ plugin registered and loaded"
 else
   echo "  ⚠ plugin did not reach 'loaded' status; run 'openclaw plugins inspect reflexio-embedded' to debug"
 fi
-if openclaw cron list 2>/dev/null | grep -q reflexio-embedded-consolidate; then
-  info "  ✓ cron registered"
-else
-  echo "  ⚠ cron not visible in 'openclaw cron list'"
-fi
 
 info "Installation complete."
-info "On first use, the SKILL.md bootstrap will guide per-agent configuration (active-memory targeting, extraPath registration, embedding provider)."
+info "Skills are served from the extension dir. HEARTBEAT.md is set up on first agent session."

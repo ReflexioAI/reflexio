@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 
-import { rawSearch, search } from "../lib/search.js";
-import type { CommandRunner, MemorySearchResult } from "../lib/openclaw-cli.js";
+import { rawSearch, search } from "../plugin/lib/search.ts";
+import type { CommandRunner, MemorySearchResult } from "../plugin/lib/openclaw-cli.ts";
 
 function createMockRunner(
   inferResult: string | null,

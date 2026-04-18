@@ -159,6 +159,7 @@ export type SpawnExtractorParams = {
   sessionKey?: string;
   messages?: unknown[];
   sessionFile?: string;
+  extraSystemPrompt?: string;
   log?: Logger;
   reason: string;
 };
@@ -174,7 +175,7 @@ export type SpawnExtractorParams = {
 export async function spawnExtractor(
   params: SpawnExtractorParams,
 ): Promise<string | undefined> {
-  const { runtime, sessionKey, messages, sessionFile, log, reason } = params;
+  const { runtime, sessionKey, messages, sessionFile, extraSystemPrompt, log, reason } = params;
 
   if (!transcriptWorthExtracting(messages) && !sessionFile) {
     return undefined;
@@ -196,6 +197,7 @@ export async function spawnExtractor(
     const result = await runFn({
       sessionKey: childSessionKey,
       message,
+      extraSystemPrompt,
       lane: "reflexio-extractor",
       idempotencyKey: `${reason}:${childSessionKey}`,
     });

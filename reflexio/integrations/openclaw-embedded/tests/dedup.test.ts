@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 
-import { preprocessQuery, judgeContradiction, extractId } from "../lib/dedup.js";
-import type { CommandRunner } from "../lib/openclaw-cli.js";
+import { preprocessQuery, judgeContradiction, extractId } from "../plugin/lib/dedup.ts";
+import type { CommandRunner } from "../plugin/lib/openclaw-cli.ts";
 
 function createMockRunner(inferResult: string | null): CommandRunner {
   return async (argv) => {

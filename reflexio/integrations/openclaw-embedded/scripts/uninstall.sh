@@ -13,20 +13,15 @@ openclaw plugins disable reflexio-embedded 2>/dev/null || echo "(already disable
 
 info "Uninstalling plugin..."
 openclaw plugins uninstall --force reflexio-embedded 2>/dev/null || echo "(already uninstalled)"
+rm -rf "$OPENCLAW_HOME/extensions/reflexio-embedded"
 
-info "Removing cron job..."
-openclaw cron rm reflexio-embedded-consolidate 2>/dev/null || echo "(already removed)"
+info "Cleaning up state files..."
+rm -f "$OPENCLAW_HOME/reflexio-consolidation-state.json"
 
-info "Removing skills..."
-rm -rf "$OPENCLAW_HOME/workspace/skills/reflexio-embedded"
-rm -rf "$OPENCLAW_HOME/workspace/skills/reflexio-consolidate"
-
-info "Removing agent definitions..."
-rm -f "$OPENCLAW_HOME/workspace/agents/reflexio-extractor.md"
-rm -f "$OPENCLAW_HOME/workspace/agents/reflexio-consolidator.md"
-
-info "Removing plugin resources..."
-rm -rf "$OPENCLAW_HOME/workspace/plugins/reflexio-embedded"
+info "Removing heartbeat entry..."
+if [[ -f "$OPENCLAW_HOME/workspace/HEARTBEAT.md" ]]; then
+  sed -i '' '/## Reflexio Consolidation Check/,/^$/d' "$OPENCLAW_HOME/workspace/HEARTBEAT.md" 2>/dev/null || true
+fi
 
 if [[ "$PURGE_DATA" == "--purge" ]]; then
   info "Purging .reflexio/ user data per --purge flag..."

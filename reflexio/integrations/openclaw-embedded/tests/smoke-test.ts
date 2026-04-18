@@ -1,7 +1,7 @@
 // Standalone smoke test for the Reflexio Embedded hook handler.
 //
 // Run (requires tsx or ts-node in PATH):
-//   npx tsx hook/smoke-test.ts
+//   npx tsx tests/smoke-test.ts
 //
 // The plugin itself does NOT depend on tsx at runtime — Openclaw loads the
 // .ts files via its own bundled jiti runtime. This smoke test only needs tsx
@@ -14,7 +14,7 @@ import {
   injectBootstrapReminder,
   spawnExtractor,
   ttlSweepProfiles,
-} from "./handler.js";
+} from "../plugin/hook/handler.ts";
 
 type FakeRunCall = {
   sessionKey: string;

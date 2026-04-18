@@ -1,4 +1,4 @@
-import { infer, type CommandRunner } from "./openclaw-cli.js";
+import { infer, type CommandRunner } from "./openclaw-cli.ts";
 
 const PREPROCESS_PROMPT = `Rewrite the following text into a single descriptive sentence that captures the core fact or topic. Expand with 2-3 important synonyms or related terms to improve search matching. Remove conversational filler. Return ONLY the rewritten text.
 

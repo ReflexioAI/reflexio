@@ -11,18 +11,18 @@ End-to-end manual validation of `openclaw-embedded`. Run this before each releas
 
 ## 1. Unit tests
 
-From the plugin directory:
+From the `openclaw-embedded/` directory:
 
 ```bash
-bats tests/test_reflexio_write.bats
+npm test
 ```
 
-Expected: all tests pass. If any fail, stop — fix before proceeding.
+Expected: 47 tests pass. If any fail, stop — fix before proceeding.
 
 ## 2. Hook smoke test
 
 ```bash
-node hook/smoke-test.js
+node plugin/hook/smoke-test.js
 ```
 
 Expected: all PASS lines printed, no FAIL.

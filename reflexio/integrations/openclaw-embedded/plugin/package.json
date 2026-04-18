@@ -1,0 +1,18 @@
+{
+  "name": "@reflexio/openclaw-embedded",
+  "version": "0.1.0",
+  "description": "Reflexio-style user profile and playbook extraction using Openclaw's native memory engine, hooks, and sub-agents.",
+  "private": true,
+  "type": "module",
+  "openclaw": {
+    "extensions": ["./index.ts"],
+    "compat": {
+      "pluginApi": ">=2026.3.24",
+      "minGatewayVersion": "2026.3.24"
+    },
+    "build": {
+      "openclawVersion": "2026.4.14",
+      "pluginSdkVersion": "2026.4.14"
+    }
+  }
+}

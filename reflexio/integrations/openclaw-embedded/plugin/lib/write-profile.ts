@@ -1,30 +1,33 @@
-import { writePlaybookFile, deleteFile, validateSlug } from "./io.js";
-import { preprocessQuery, judgeContradiction, extractId } from "./dedup.js";
-import { rawSearch } from "./search.js";
-import type { CommandRunner } from "./openclaw-cli.js";
+import { writeProfileFile, deleteFile, validateSlug, validateTtl, type Ttl } from "./io.ts";
+import { preprocessQuery, judgeContradiction, extractId } from "./dedup.ts";
+import { rawSearch } from "./search.ts";
+import type { CommandRunner } from "./openclaw-cli.ts";
 
-export interface WritePlaybookConfig {
+export interface WriteProfileConfig {
   shallow_threshold: number;
   top_k: number;
 }
 
-export interface WritePlaybookOpts {
+export interface WriteProfileOpts {
   slug: string;
+  ttl: Ttl | string;
   body: string;
   workspace?: string;
-  config: WritePlaybookConfig;
+  config: WriteProfileConfig;
   runner: CommandRunner;
 }
 
 /**
- * Full playbook write orchestration:
+ * Full profile write orchestration:
  * validate → preprocess → search → judge → write → delete (if superseding)
  */
-export async function writePlaybook(opts: WritePlaybookOpts): Promise<string> {
+export async function writeProfile(opts: WriteProfileOpts): Promise<string> {
   validateSlug(opts.slug);
+  validateTtl(opts.ttl);
 
   const query = await preprocessQuery(opts.body, opts.runner);
-  const neighbors = await rawSearch(query, opts.config.top_k, "playbook", opts.runner);
+  const neighbors = await rawSearch(query, opts.config.top_k, "profile", opts.runner);
+
   const top = neighbors[0];
   let supersedes: string[] | undefined;
   let deleteTarget: string | undefined;
@@ -42,8 +45,9 @@ export async function writePlaybook(opts: WritePlaybookOpts): Promise<string> {
     }
   }
 
-  const newPath = writePlaybookFile({
+  const newPath = writeProfileFile({
     slug: opts.slug,
+    ttl: opts.ttl as Ttl,
     body: opts.body,
     supersedes,
     workspace: opts.workspace,

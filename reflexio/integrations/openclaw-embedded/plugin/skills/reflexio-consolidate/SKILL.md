@@ -5,7 +5,7 @@ description: "Run a full-sweep consolidation over all .reflexio/ files — TTL s
 
 # Reflexio Consolidate
 
-User-invocable via `/skill reflexio-consolidate`. Same workflow that runs daily at 3am via the plugin's cron job, but on-demand.
+User-invocable via `/skill reflexio-consolidate`. Same workflow that runs automatically via heartbeat (every 24h of active use), but on-demand.
 
 ## What it does
 
@@ -17,30 +17,17 @@ User-invocable via `/skill reflexio-consolidate`. Same workflow that runs daily 
 
 ## How to run
 
-Delegate to the `reflexio-consolidator` sub-agent:
+Call the `reflexio_run_consolidation` tool. It spawns the consolidator sub-agent and returns a `runId`.
 
-```
-sessions_spawn(
-  task: "Run your full-sweep consolidation workflow now. Follow your system prompt in full.",
-  agentId: "reflexio-consolidator",
-  runTimeoutSeconds: 300,
-  mode: "run",
-)
-```
-
-Report the returned `runId` to the user. They can inspect progress via `openclaw tasks list`.
+After successful consolidation, call the `reflexio_consolidation_mark_done` tool to update the heartbeat timer.
 
 ## When to use
 
 - User asks to "consolidate", "clean up reflexio", "dedupe memory"
 - User reports seeing duplicate or contradictory entries in retrieval
-- After a long period without daily cron runs (e.g. host was offline)
+- Heartbeat check returns ALERT (automatic trigger)
 
 ## When NOT to use
 
-- Routine maintenance — the daily cron at 3am handles this.
+- Routine maintenance — heartbeat handles this automatically.
 - Immediately after Flow A/B writes — shallow dedup at write time + Flow C at session end cover the fresh-extraction cases.
-
-## Failure modes
-
-If `sessions_spawn` is unavailable or `reflexio-consolidator` agent is not registered, the plugin's install.sh did not complete. Tell the user to re-run `./scripts/install.sh` in the plugin directory.

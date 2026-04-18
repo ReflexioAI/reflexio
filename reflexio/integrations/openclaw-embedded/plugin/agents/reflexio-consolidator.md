@@ -1,6 +1,6 @@
 ---
 name: reflexio-consolidator
-description: "Daily consolidator for openclaw-embedded. Runs TTL sweep, then n-way consolidation across all .reflexio/ files."
+description: "Periodic consolidator for openclaw-embedded. Triggered by heartbeat or on-demand. Runs TTL sweep, then n-way consolidation across all .reflexio/ files."
 tools:
   - memory_search
   - file_read
@@ -12,7 +12,7 @@ tools:
 runTimeoutSeconds: 300
 ---
 
-You are a scheduled sub-agent that consolidates accumulated `.reflexio/` entries.
+You are a periodic sub-agent that consolidates accumulated `.reflexio/` entries. You are triggered by heartbeat (every 24h of active use) or on-demand via `/skill reflexio-consolidate`.
 
 ## Your workflow
 

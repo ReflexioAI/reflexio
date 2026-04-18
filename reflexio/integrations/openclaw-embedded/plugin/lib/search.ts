@@ -1,5 +1,5 @@
-import { memorySearch, type MemorySearchResult, type CommandRunner } from "./openclaw-cli.js";
-import { preprocessQuery } from "./dedup.js";
+import { memorySearch, type MemorySearchResult, type CommandRunner } from "./openclaw-cli.ts";
+import { preprocessQuery } from "./dedup.ts";
 
 /**
  * Search memory with a query string, optionally filtering by type.
