@@ -35,7 +35,7 @@ All retrieval is via Openclaw's memory engine — vector + FTS + MMR + temporal 
 - [OpenClaw](https://openclaw.ai) installed and `openclaw` CLI on PATH
 - Node.js and npm (for the hook handler)
 - macOS or Linux (Windows via WSL)
-- A bash-compatible shell (install/uninstall scripts and `reflexio-write.sh` use `#!/usr/bin/env bash`)
+- A bash-compatible shell (install/uninstall scripts use `#!/usr/bin/env bash`)
 - Strongly recommended:
   - An embedding provider API key (OpenAI, Gemini, Voyage, or Mistral) for vector search
   - The `active-memory` plugin enabled (auto-retrieval into turns)

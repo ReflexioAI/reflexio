@@ -124,7 +124,7 @@ Check `.reflexio/` before and after — duplicate or overlapping entries should 
 
 - Create a profile with short TTL:
   ```bash
-  echo "temp fact" | ./scripts/reflexio-write.sh profile test-temp one_day
+  npx tsx ./scripts/reflexio.ts write-profile --slug test-temp --ttl one_day --body "temp fact"
   ```
 - Manually edit its `expires` to a past date:
   ```bash

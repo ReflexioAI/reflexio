@@ -33,7 +33,7 @@ Deep-dive for maintainers. For a design-level overview, see the spec at
 - **Sub-agents** (`tools/subagents`): fire-and-forget work via `sessions_spawn` / `api.runtime.subagent.run()`.
 - **LLM-task** (`tools/llm-task`): structured LLM calls with schema validation.
 - **Cron** (`automation/cron-jobs`): daily consolidation.
-- **exec** (`tools/exec`): allows the agent and sub-agents to invoke `./scripts/reflexio-write.sh`.
+- **exec** (`tools/exec`): allows the agent and sub-agents to invoke `./scripts/reflexio.ts`.
 
 ## Prompt loading
 
