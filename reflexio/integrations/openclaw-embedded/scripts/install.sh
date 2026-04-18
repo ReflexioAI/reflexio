@@ -43,6 +43,11 @@ cp -r "$PLUGIN_DIR/prompts" "$OPENCLAW_HOME/workspace/plugins/reflexio-embedded/
 cp -r "$PLUGIN_DIR/scripts" "$OPENCLAW_HOME/workspace/plugins/reflexio-embedded/"
 chmod +x "$OPENCLAW_HOME/workspace/plugins/reflexio-embedded/scripts/"*.sh
 
+# 5b. Compile reflexio.ts for fast execution
+info "Compiling reflexio.ts..."
+(cd "$OPENCLAW_HOME/workspace/plugins/reflexio-embedded/scripts" && npm install && npx tsc) \
+  || echo "warning: reflexio.ts compilation failed; will use npx tsx (slower)"
+
 # 6. Enable active-memory plugin (host-wide; per-agent targeting is SKILL.md bootstrap's job)
 info "Enabling active-memory plugin..."
 openclaw plugins enable active-memory || \
