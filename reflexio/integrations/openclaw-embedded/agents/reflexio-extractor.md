@@ -19,13 +19,15 @@ You are a one-shot sub-agent that extracts profiles and playbooks from a convers
 2. **Playbook extraction**: same process with `prompts/playbook_extraction.md`. You receive a list of playbook candidates.
 
 3. **For each candidate**:
-   - Search neighbors: `memory_search(query=candidate.content, top_k=5, filter={type: candidate.type})`.
-   - If no neighbor or top_1.similarity < 0.7 → write directly via `./scripts/reflexio-write.sh`.
-   - Else → load `prompts/shallow_dedup_pairwise.md`, substitute `{candidate}` and `{neighbor}` (with top_1's content), call `llm-task`. Apply the decision:
-     - `keep_both`: `reflexio-write.sh` with no supersedes.
-     - `supersede_old`: `reflexio-write.sh --supersedes <top_1.id>`; then `rm <top_1.path>`.
-     - `merge`: `reflexio-write.sh --supersedes <top_1.id> --body "<merged_content>"` using the decision's merged_slug; then `rm <top_1.path>`.
-     - `drop_new`: do nothing.
+   For profiles:
+   ```
+   exec: npx tsx ./scripts/reflexio.ts write-profile --slug <slug> --ttl <ttl> --body "<content>"
+   ```
+   For playbooks:
+   ```
+   exec: npx tsx ./scripts/reflexio.ts write-playbook --slug <slug> --body "<content>"
+   ```
+   The script handles dedup + supersession internally — no separate `rm` needed.
 
 4. Exit. Openclaw's file watcher picks up the changes and reindexes.
 
@@ -33,8 +35,7 @@ You are a one-shot sub-agent that extracts profiles and playbooks from a convers
 
 - Never write secrets, tokens, API keys, or environment variables into `.md` files.
 - On any LLM call failure: skip that candidate, log to stderr, continue.
-- On `reflexio-write.sh` failure: skip; state unchanged; next cycle retries.
-- On `rm` failure (file already gone): ignore — target state is already correct.
+- On `reflexio.ts` failure: skip; state unchanged; next cycle retries.
 - You have 120 seconds. If approaching the limit, exit cleanly; any completed writes are durable.
 
 ## Tool scope
