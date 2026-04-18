@@ -9,12 +9,17 @@
 // The TTL sweep + extractor spawning logic lives in ./hook/handler.ts and is
 // re-used verbatim — this file is only the SDK wiring.
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
+import * as fs from "node:fs";
+import * as path from "node:path";
 
 import {
   injectBootstrapReminder,
   spawnExtractor,
   ttlSweepProfiles,
 } from "./hook/handler.js";
+import { writeProfile } from "./scripts/lib/write-profile.js";
+import { writePlaybook } from "./scripts/lib/write-playbook.js";
+import { search } from "./scripts/lib/search.js";
 
 export default definePluginEntry({
   id: "reflexio-embedded",
@@ -91,6 +96,95 @@ export default definePluginEntry({
       } catch (err) {
         log.error?.(`[reflexio-embedded] session_end failed: ${err}`);
       }
+    });
+
+    // ──────────────────────────────────────────────────────────
+    // Agent tools — deterministic control flow for writes + search
+    // ──────────────────────────────────────────────────────────
+    const runner = api.runtime.system.runCommandWithTimeout;
+
+    function loadPluginConfig() {
+      try {
+        const cfgPath = path.resolve(import.meta.dirname || __dirname, "config.json");
+        return JSON.parse(fs.readFileSync(cfgPath, "utf8"));
+      } catch {
+        return { dedup: { shallow_threshold: 0.4, top_k: 5 } };
+      }
+    }
+
+    api.registerTool({
+      name: "reflexio_write_profile",
+      description:
+        "Write a user profile to .reflexio/profiles/ with automatic query preprocessing, memory search, contradiction detection, dedup, and old-file cleanup. Returns the new file path.",
+      parameters: {
+        type: "object",
+        properties: {
+          slug: { type: "string", description: "kebab-case topic, e.g. diet-vegan" },
+          ttl: {
+            type: "string",
+            description: "one_day | one_week | one_month | one_quarter | one_year | infinity",
+          },
+          body: { type: "string", description: "1-3 sentences, one fact per profile" },
+        },
+        required: ["slug", "ttl", "body"],
+      },
+      async execute(_id: string, params: { slug: string; ttl: string; body: string }) {
+        const config = loadPluginConfig();
+        const filePath = await writeProfile({
+          slug: params.slug,
+          ttl: params.ttl,
+          body: params.body,
+          config: config.dedup,
+          runner,
+        });
+        return { content: [{ type: "text" as const, text: filePath }] };
+      },
+    });
+
+    api.registerTool({
+      name: "reflexio_write_playbook",
+      description:
+        "Write a playbook to .reflexio/playbooks/ with automatic dedup and contradiction detection. Returns the new file path.",
+      parameters: {
+        type: "object",
+        properties: {
+          slug: { type: "string", description: "kebab-case trigger summary, e.g. commit-no-trailers" },
+          body: {
+            type: "string",
+            description: "Playbook body with ## When, ## What, ## Why sections",
+          },
+        },
+        required: ["slug", "body"],
+      },
+      async execute(_id: string, params: { slug: string; body: string }) {
+        const config = loadPluginConfig();
+        const filePath = await writePlaybook({
+          slug: params.slug,
+          body: params.body,
+          config: config.dedup,
+          runner,
+        });
+        return { content: [{ type: "text" as const, text: filePath }] };
+      },
+    });
+
+    api.registerTool({
+      name: "reflexio_search",
+      description:
+        "Search .reflexio/ memory with automatic query preprocessing for better results. Returns JSON with results array.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "raw query — preprocessing is automatic" },
+        },
+        required: ["query"],
+      },
+      async execute(_id: string, params: { query: string }) {
+        const results = await search(params.query, 5, undefined, runner);
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify({ results }, null, 2) }],
+        };
+      },
     });
   },
 });
