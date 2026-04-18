@@ -1,8 +1,23 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { execSync } from "node:child_process";
 import { writeProfile } from "./lib/write-profile.js";
 import { writePlaybook } from "./lib/write-playbook.js";
 import { search } from "./lib/search.js";
+import type { CommandRunner } from "./lib/openclaw-cli.js";
+
+const cliRunner: CommandRunner = async (argv, opts) => {
+  try {
+    const stdout = execSync(argv.join(" "), {
+      encoding: "utf8",
+      timeout: opts.timeoutMs,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    return { stdout, stderr: "", code: 0 };
+  } catch (err: any) {
+    return { stdout: err.stdout || "", stderr: err.stderr || "", code: err.status || 1 };
+  }
+};
 
 function loadConfig() {
   const configPath = path.resolve(
@@ -52,7 +67,7 @@ Options:
   process.exit(2);
 }
 
-function main() {
+async function main() {
   const [command, ...rest] = process.argv.slice(2);
   if (!command) usage();
 
@@ -66,7 +81,7 @@ function main() {
           console.error("write-profile requires --slug, --ttl, and --body");
           process.exit(2);
         }
-        const filePath = writeProfile({
+        const filePath = await writeProfile({
           slug: flags.slug,
           ttl: flags.ttl,
           body: flags.body,
@@ -74,6 +89,7 @@ function main() {
             shallow_threshold: config.dedup.shallow_threshold,
             top_k: config.dedup.top_k,
           },
+          runner: cliRunner,
         });
         console.log(filePath);
         break;
@@ -84,13 +100,14 @@ function main() {
           console.error("write-playbook requires --slug and --body");
           process.exit(2);
         }
-        const filePath = writePlaybook({
+        const filePath = await writePlaybook({
           slug: flags.slug,
           body: flags.body,
           config: {
             shallow_threshold: config.dedup.shallow_threshold,
             top_k: config.dedup.top_k,
           },
+          runner: cliRunner,
         });
         console.log(filePath);
         break;
@@ -101,7 +118,7 @@ function main() {
           console.error("search requires --query");
           process.exit(2);
         }
-        const results = search(flags.query);
+        const results = await search(flags.query, 5, undefined, cliRunner);
         console.log(JSON.stringify({ results }, null, 2));
         break;
       }

@@ -129,11 +129,14 @@ export default definePluginEntry({
         required: ["slug", "ttl", "body"],
       },
       async execute(_id: string, params: { slug: string; ttl: string; body: string }) {
+        const cfg = api.runtime.config.loadConfig();
+        const workspaceDir = api.runtime.agent.resolveAgentWorkspaceDir(cfg, "default");
         const config = loadPluginConfig();
         const filePath = await writeProfile({
           slug: params.slug,
           ttl: params.ttl,
           body: params.body,
+          workspace: workspaceDir,
           config: config.dedup,
           runner,
         });
@@ -157,10 +160,13 @@ export default definePluginEntry({
         required: ["slug", "body"],
       },
       async execute(_id: string, params: { slug: string; body: string }) {
+        const cfg = api.runtime.config.loadConfig();
+        const workspaceDir = api.runtime.agent.resolveAgentWorkspaceDir(cfg, "default");
         const config = loadPluginConfig();
         const filePath = await writePlaybook({
           slug: params.slug,
           body: params.body,
+          workspace: workspaceDir,
           config: config.dedup,
           runner,
         });

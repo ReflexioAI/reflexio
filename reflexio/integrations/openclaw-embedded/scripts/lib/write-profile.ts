@@ -54,7 +54,7 @@ export async function writeProfile(opts: WriteProfileOpts): Promise<string> {
   });
 
   if (deleteTarget) {
-    const ws = opts.workspace || process.cwd();
+    const ws = opts.workspace || process.env.WORKSPACE || process.cwd();
     const absDelete = deleteTarget.startsWith("/")
       ? deleteTarget
       : `${ws}/${deleteTarget}`;
