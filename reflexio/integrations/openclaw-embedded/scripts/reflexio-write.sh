@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# DEPRECATED: This script is superseded by scripts/reflexio.ts (TypeScript CLI).
+# Use `npx tsx scripts/reflexio.ts write-profile|write-playbook|search` instead.
+# Kept for backward compatibility with sessions using an older SKILL.md.
+# Will be removed in v2.
 set -euo pipefail
 
 usage() {

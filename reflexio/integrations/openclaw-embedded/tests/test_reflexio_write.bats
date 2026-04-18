@@ -1,4 +1,7 @@
 #!/usr/bin/env bats
+# DEPRECATED: These tests validated reflexio-write.sh which is superseded by
+# scripts/reflexio.ts + scripts/lib/io.ts. See scripts/__tests__/ for the
+# replacement test suite. Kept as reference for coverage mapping.
 
 SCRIPT="${BATS_TEST_DIRNAME}/../scripts/reflexio-write.sh"
 
