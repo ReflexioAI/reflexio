@@ -1,6 +1,7 @@
 import { writePlaybookFile, deleteFile, validateSlug } from "./io.js";
 import { preprocessQuery, judgeContradiction, extractId } from "./dedup.js";
 import { rawSearch } from "./search.js";
+import type { CommandRunner } from "./openclaw-cli.js";
 
 export interface WritePlaybookConfig {
   shallow_threshold: number;
@@ -12,24 +13,25 @@ export interface WritePlaybookOpts {
   body: string;
   workspace?: string;
   config: WritePlaybookConfig;
+  runner: CommandRunner;
 }
 
 /**
  * Full playbook write orchestration:
  * validate → preprocess → search → judge → write → delete (if superseding)
  */
-export function writePlaybook(opts: WritePlaybookOpts): string {
+export async function writePlaybook(opts: WritePlaybookOpts): Promise<string> {
   validateSlug(opts.slug);
 
-  const query = preprocessQuery(opts.body);
-  const neighbors = rawSearch(query, opts.config.top_k, "playbook");
+  const query = await preprocessQuery(opts.body, opts.runner);
+  const neighbors = await rawSearch(query, opts.config.top_k, "playbook", opts.runner);
   const top = neighbors[0];
   let supersedes: string[] | undefined;
   let deleteTarget: string | undefined;
 
   if (top && top.score >= opts.config.shallow_threshold) {
     const bodyFromSnippet = top.snippet.split("---").slice(2).join("---").trim();
-    const decision = judgeContradiction(opts.body, bodyFromSnippet);
+    const decision = await judgeContradiction(opts.body, bodyFromSnippet, opts.runner);
 
     if (decision === "supersede") {
       const oldId = extractId(top.snippet);
