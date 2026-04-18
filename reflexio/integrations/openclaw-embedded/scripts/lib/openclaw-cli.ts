@@ -1,4 +1,12 @@
-import { execSync } from "node:child_process";
+/**
+ * Abstraction over command execution.
+ * Plugin runtime injects api.runtime.system.runCommandWithTimeout.
+ * Tests inject a mock.
+ */
+export type CommandRunner = (
+  argv: string[],
+  opts: { timeoutMs: number; input?: string }
+) => Promise<{ stdout: string; stderr: string; code: number | null }>;
 
 export interface MemorySearchResult {
   path: string;
@@ -14,22 +22,20 @@ export interface MemorySearchResponse {
 }
 
 /**
- * Call `openclaw memory search` CLI and return parsed results.
+ * Call `openclaw memory search` via the injected runner.
  * Returns empty array on any failure (graceful degradation).
  */
-export function memorySearch(
+export async function memorySearch(
   query: string,
-  maxResults: number = 5
-): MemorySearchResult[] {
+  maxResults: number,
+  runner: CommandRunner
+): Promise<MemorySearchResult[]> {
   try {
-    const escaped = query.replace(/'/g, "'\\''");
-    const cmd = `openclaw memory search '${escaped}' --json --max-results ${maxResults}`;
-    const output = execSync(cmd, {
-      encoding: "utf8",
-      timeout: 30_000,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    const parsed: MemorySearchResponse = JSON.parse(output.trim());
+    const result = await runner(
+      ["openclaw", "memory", "search", query, "--json", "--max-results", String(maxResults)],
+      { timeoutMs: 30_000 }
+    );
+    const parsed: MemorySearchResponse = JSON.parse(result.stdout.trim());
     return parsed.results || [];
   } catch (err) {
     console.error(`[reflexio] openclaw memory search failed: ${err}`);
@@ -38,19 +44,19 @@ export function memorySearch(
 }
 
 /**
- * Call `openclaw infer` CLI with a prompt and return the raw text response.
+ * Call `openclaw infer` via the injected runner.
  * Returns null on any failure.
  */
-export function infer(prompt: string): string | null {
+export async function infer(
+  prompt: string,
+  runner: CommandRunner
+): Promise<string | null> {
   try {
-    const escaped = prompt.replace(/'/g, "'\\''");
-    const cmd = `openclaw infer '${escaped}'`;
-    const output = execSync(cmd, {
-      encoding: "utf8",
-      timeout: 30_000,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    return output.trim();
+    const result = await runner(
+      ["openclaw", "infer", prompt],
+      { timeoutMs: 30_000 }
+    );
+    return result.stdout.trim() || null;
   } catch (err) {
     console.error(`[reflexio] openclaw infer failed: ${err}`);
     return null;
