@@ -1,15 +1,16 @@
-import { memorySearch, type MemorySearchResult } from "./openclaw-cli.js";
+import { memorySearch, type MemorySearchResult, type CommandRunner } from "./openclaw-cli.js";
 import { preprocessQuery } from "./dedup.js";
 
 /**
- * Search memory with a raw query string, optionally filtering by type.
+ * Search memory with a query string, optionally filtering by type.
  */
-export function rawSearch(
+export async function rawSearch(
   query: string,
-  maxResults: number = 5,
-  type?: "profile" | "playbook"
-): MemorySearchResult[] {
-  let results = memorySearch(query, maxResults);
+  maxResults: number,
+  type: "profile" | "playbook" | undefined,
+  runner: CommandRunner
+): Promise<MemorySearchResult[]> {
+  let results = await memorySearch(query, maxResults, runner);
   if (type) {
     const typeDir = type === "profile" ? "/profiles/" : "/playbooks/";
     results = results.filter((r) => r.path.includes(typeDir));
@@ -20,11 +21,12 @@ export function rawSearch(
 /**
  * Preprocess query (via LLM rewrite) then search memory.
  */
-export function search(
+export async function search(
   rawQuery: string,
-  maxResults: number = 5,
-  type?: "profile" | "playbook"
-): MemorySearchResult[] {
-  const query = preprocessQuery(rawQuery);
-  return rawSearch(query, maxResults, type);
+  maxResults: number,
+  type: "profile" | "playbook" | undefined,
+  runner: CommandRunner
+): Promise<MemorySearchResult[]> {
+  const query = await preprocessQuery(rawQuery, runner);
+  return rawSearch(query, maxResults, type, runner);
 }
