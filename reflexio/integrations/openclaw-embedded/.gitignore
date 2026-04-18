@@ -1,3 +1,5 @@
 node_modules/
 hook/node_modules/
 *.tsbuildinfo
+scripts/node_modules/
+scripts/dist/
