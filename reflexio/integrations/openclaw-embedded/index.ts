@@ -10,6 +10,7 @@
 // re-used verbatim — this file is only the SDK wiring.
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 
 import {
@@ -112,6 +113,25 @@ export default definePluginEntry({
       }
     }
 
+    /**
+     * Resolve the agent's workspace directory.
+     * Mirrors Openclaw's resolveDefaultAgentWorkspaceDir logic:
+     *   ~/.openclaw/workspace (default)
+     *   ~/.openclaw/workspace-{profile} (if OPENCLAW_PROFILE is set)
+     *
+     * We can't use api.runtime.agent.resolveAgentWorkspaceDir(cfg, agentId)
+     * because tool execute handlers don't receive agent context — we don't
+     * know which agentId invoked the tool. This matches the default agent's
+     * workspace which is correct for the common single-agent setup.
+     */
+    function resolveWorkspaceDir(): string {
+      const profile = process.env.OPENCLAW_PROFILE?.trim();
+      if (profile && profile.toLowerCase() !== "default") {
+        return path.join(os.homedir(), ".openclaw", `workspace-${profile}`);
+      }
+      return path.join(os.homedir(), ".openclaw", "workspace");
+    }
+
     api.registerTool({
       name: "reflexio_write_profile",
       description:
@@ -129,8 +149,7 @@ export default definePluginEntry({
         required: ["slug", "ttl", "body"],
       },
       async execute(_id: string, params: { slug: string; ttl: string; body: string }) {
-        const cfg = api.runtime.config.loadConfig();
-        const workspaceDir = api.runtime.agent.resolveAgentWorkspaceDir(cfg, "default");
+        const workspaceDir = resolveWorkspaceDir();
         const config = loadPluginConfig();
         const filePath = await writeProfile({
           slug: params.slug,
@@ -160,8 +179,7 @@ export default definePluginEntry({
         required: ["slug", "body"],
       },
       async execute(_id: string, params: { slug: string; body: string }) {
-        const cfg = api.runtime.config.loadConfig();
-        const workspaceDir = api.runtime.agent.resolveAgentWorkspaceDir(cfg, "default");
+        const workspaceDir = resolveWorkspaceDir();
         const config = loadPluginConfig();
         const filePath = await writePlaybook({
           slug: params.slug,
