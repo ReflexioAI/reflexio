@@ -10,7 +10,7 @@ Track every deviation from source prompts so maintainers can re-apply adaptation
 
 **Changes from source:**
 
-- **Output format**: `StructuredProfilesOutput` JSON with `profiles: list[ProfileAddItem{content, ttl, metadata}]` → array of `{topic_kebab, content, ttl}` objects that drive `./scripts/reflexio-write.sh profile <topic_kebab> <ttl>` invocations per item.
+- **Output format**: `StructuredProfilesOutput` JSON with `profiles: list[ProfileAddItem{content, ttl, metadata}]` → array of `{topic_kebab, content, ttl}` objects that drive `reflexio_write_profile` tool calls per item.
 - **Dropped fields**: `custom_features` dict, `metadata` field. Our frontmatter doesn't carry these.
 - **Added guidance**: slug generation rules — kebab-case, ≤48 chars, `[a-z0-9][a-z0-9-]*`.
 - **Kept verbatim**: TTL enum semantics, "do NOT re-extract existing profiles" constraint, extraction criteria (what counts as a profile signal).

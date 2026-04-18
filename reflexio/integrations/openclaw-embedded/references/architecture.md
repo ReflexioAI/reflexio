@@ -33,7 +33,7 @@ Deep-dive for maintainers. For a design-level overview, see the spec at
 - **Sub-agents** (`tools/subagents`): fire-and-forget work via `sessions_spawn` / `api.runtime.subagent.run()`.
 - **LLM-task** (`tools/llm-task`): structured LLM calls with schema validation.
 - **Cron** (`automation/cron-jobs`): daily consolidation.
-- **exec** (`tools/exec`): allows the agent and sub-agents to invoke `./scripts/reflexio.ts`.
+- **Registered tools**: `reflexio_write_profile`, `reflexio_write_playbook`, and `reflexio_search` — the plugin's tool-based interface for writes and retrieval.
 
 ## Prompt loading
 
@@ -45,5 +45,5 @@ Prompts live in `prompts/` and are loaded at runtime by sub-agents. Frontmatter 
 |---|---|
 | `active-memory` not enabled | SKILL.md instructs agent to run `memory_search` fallback at turn start |
 | No embedding provider | Falls back to FTS/BM25 only; vector search unavailable but plugin functional |
-| `exec` denied | SKILL.md falls back to printed manual commands; install.sh exits with instructions |
+| Registered tools unavailable | SKILL.md falls back to printed manual commands; install.sh exits with instructions |
 | No `openclaw cron add` | install.sh prints warning; consolidation runs only on `/skill reflexio-consolidate` |

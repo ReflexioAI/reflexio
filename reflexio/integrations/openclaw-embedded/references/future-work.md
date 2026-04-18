@@ -41,7 +41,7 @@ Add any of these in v2 only if a concrete consumer materializes.
 
 ## Native Windows support
 
-**Rationale:** V1 shell scripts assume Unix. WSL works on Windows today. Native support would require a Node/TS port of `reflexio-write.sh`.
+**Rationale:** V1 used shell scripts that assumed Unix. V1.1 moved to registered tools (`reflexio_write_profile`, `reflexio_write_playbook`), which are platform-agnostic. This item is resolved.
 
 ## Playbook TTL / expiration
 

@@ -1,7 +1,7 @@
 ---
 active: true
 description: "Profile extraction for Reflexio Embedded plugin (ported from profile_update_instruction_start/v1.0.0)"
-changelog: "Initial port (2026-04-16): output adapted from StructuredProfilesOutput JSON to list of {topic_kebab, content, ttl} suitable for ./scripts/reflexio-write.sh; custom_features and metadata fields dropped; existing_profiles variable now injected from memory_search results rather than Reflexio server."
+changelog: "Initial port (2026-04-16): output adapted from StructuredProfilesOutput JSON to list of {topic_kebab, content, ttl} suitable for the reflexio_write_profile tool; custom_features and metadata fields dropped; existing_profiles variable now injected from memory_search results rather than Reflexio server."
 variables:
   - existing_profiles_context
   - transcript

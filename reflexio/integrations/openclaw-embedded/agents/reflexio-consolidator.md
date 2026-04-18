@@ -6,7 +6,9 @@ tools:
   - file_read
   - file_write
   - file_delete
-  - exec
+  - reflexio_write_profile
+  - reflexio_write_playbook
+  - reflexio_search
 runTimeoutSeconds: 300
 ---
 
@@ -20,8 +22,8 @@ You are a scheduled sub-agent that consolidates accumulated `.reflexio/` entries
    a. Load all files in `.reflexio/<type>/`. Extract `{id, path, content}` from each.
    b. Cluster: for each unvisited file, run `memory_search(query=file.content, top_k=10, filter={type})` to find similar files. Form a cluster of the current file plus any neighbor with `similarity >= 0.75` that is unvisited. Mark the whole cluster visited. Cap cluster size at 10 (drop lowest-similarity members beyond 10).
    c. For each cluster with >1 member: load `prompts/full_consolidation.md`, substitute `{cluster}` with the cluster's items (each: id, path, content). Call `llm-task` with the output schema. Apply the decision:
-      - `merge_all`: run `npx tsx ./scripts/reflexio.ts write-profile --slug <merged_slug> --ttl <ttl> --body "<merged_content>"` (or `write-playbook` for playbooks). The script handles supersession and old-file cleanup internally.
-      - `merge_subset`: same write for the merged subset; the script handles cleanup of superseded files.
+      - `merge_all`: call the `reflexio_write_profile` tool with: slug="<merged_slug>", ttl="<ttl>", body="<merged_content>" (or `reflexio_write_playbook` for playbooks). The tools handle supersession and old-file cleanup internally.
+      - `merge_subset`: same tool call for the merged subset; the tools handle cleanup of superseded files.
       - `keep_all`: no-op.
 
 3. Exit.
@@ -34,9 +36,9 @@ When merging profiles, pick the smallest (most conservative) TTL among the clust
 
 - 300-second timeout. If approaching limit, exit cleanly.
 - On LLM call failure: skip cluster, log, continue.
-- On script failure: skip cluster.
+- On tool call failure: skip cluster.
 - Never write secrets, tokens, keys.
 
 ## Tool scope
 
-Same as reflexio-extractor: `memory_search`, `file_read`, `file_write`, `file_delete`, `exec`. No `sessions_spawn`, no network.
+Same as reflexio-extractor: `memory_search`, `file_read`, `file_write`, `file_delete`, `reflexio_write_profile`, `reflexio_write_playbook`, `reflexio_search`. No `sessions_spawn`, no network.

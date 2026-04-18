@@ -122,9 +122,9 @@ Check `.reflexio/` before and after — duplicate or overlapping entries should 
 
 ## 10. TTL sweep
 
-- Create a profile with short TTL:
-  ```bash
-  npx tsx ./scripts/reflexio.ts write-profile --slug test-temp --ttl one_day --body "temp fact"
+- Create a profile with short TTL by calling the `reflexio_write_profile` tool (or via agent session):
+  ```
+  Call the `reflexio_write_profile` tool with: slug="test-temp", ttl="one_day", body="temp fact"
   ```
 - Manually edit its `expires` to a past date:
   ```bash
