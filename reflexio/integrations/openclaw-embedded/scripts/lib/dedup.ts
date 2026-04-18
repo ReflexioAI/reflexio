@@ -1,4 +1,4 @@
-import { infer } from "./openclaw-cli.js";
+import { infer, type CommandRunner } from "./openclaw-cli.js";
 
 const PREPROCESS_PROMPT = `Rewrite the following text into a single descriptive sentence that captures the core fact or topic. Expand with 2-3 important synonyms or related terms to improve search matching. Remove conversational filler. Return ONLY the rewritten text.
 
@@ -14,9 +14,9 @@ Answer with ONLY a JSON object: {"decision": "supersede"} or {"decision": "keep_
  * Rewrite raw text into a clean search query optimized for vector + FTS search.
  * Falls back to raw text if openclaw infer is unavailable.
  */
-export function preprocessQuery(rawText: string): string {
+export async function preprocessQuery(rawText: string, runner: CommandRunner): Promise<string> {
   const prompt = PREPROCESS_PROMPT.replace("{rawText}", rawText);
-  const result = infer(prompt);
+  const result = await infer(prompt, runner);
   if (!result || result.trim().length === 0) {
     return rawText;
   }
@@ -27,15 +27,16 @@ export function preprocessQuery(rawText: string): string {
  * Ask LLM whether newContent contradicts/replaces existingContent.
  * Returns "supersede" or "keep_both". Defaults to "keep_both" on any failure.
  */
-export function judgeContradiction(
+export async function judgeContradiction(
   newContent: string,
-  existingContent: string
-): "supersede" | "keep_both" {
+  existingContent: string,
+  runner: CommandRunner
+): Promise<"supersede" | "keep_both"> {
   const prompt = CONTRADICTION_PROMPT
     .replace("{existingContent}", existingContent)
     .replace("{newContent}", newContent);
 
-  const result = infer(prompt);
+  const result = await infer(prompt, runner);
   if (!result) return "keep_both";
 
   try {
