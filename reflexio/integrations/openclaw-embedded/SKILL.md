@@ -58,9 +58,9 @@ Never overwrite existing files. Never write secrets, tokens, private keys, envir
 
 | Situation                                                 | Action                                     |
 |-----------------------------------------------------------|--------------------------------------------|
-| User states preference, fact, config, or constraint       | `reflexio.ts write-profile`                |
-| User correction → you adjust → user confirms              | `reflexio.ts write-playbook`               |
-| Start of user turn, need context                          | `reflexio.ts search`                       |
+| User states preference, fact, config, or constraint       | `reflexio_write_profile` tool              |
+| User correction → you adjust → user confirms              | `reflexio_write_playbook` tool             |
+| Start of user turn, need context                          | `reflexio_search` tool                     |
 | Unsure whether to capture                                 | Skip; batch pass at session-end has a second shot |
 
 ## Detection Triggers
@@ -72,7 +72,7 @@ Never overwrite existing files. Never write secrets, tokens, private keys, envir
 - **Config**: "use X", "our team uses Y", "the repo is at Z"
 - **Constraints**: "I'm vegetarian", "no dairy", "I can't X", "don't use Y"
 
-For each such signal, call `reflexio.ts write-profile` with a kebab-case topic slug and an appropriate TTL. See "TTL Selection" below.
+For each such signal, call the `reflexio_write_profile` tool with a kebab-case topic slug and an appropriate TTL. See "TTL Selection" below.
 
 ### Playbook signals (write AFTER confirmation)
 
@@ -94,19 +94,18 @@ Your turn context may already contain Reflexio-prefixed entries injected by Acti
 
 ### Fallback when Active Memory is absent
 
-At the start of each user turn, run via exec:
+At the start of each user turn, call the `reflexio_search` tool with:
+- query: "<user's message>"
 
-```bash
-npx tsx ./scripts/reflexio.ts search --query "<user's message>"
-```
+The tool handles query preprocessing and memory search internally.
+Incorporate any results into your response. Skip if the user's message is trivial.
 
-The script handles query preprocessing and memory search internally. Incorporate any results into your response. Skip if the user's message is trivial (greeting, acknowledgment).
-
-**Important:** Do NOT use the `memory_search` tool — it returns memory engine config, not search results.
+**Important:** Do NOT use the `memory_search` tool (returns config, not results)
+or `exec` with `openclaw memory search` — use the `reflexio_search` tool instead.
 
 ## File Format
 
-**Do NOT construct filenames or frontmatter by hand.** Use `reflexio.ts` (via the `exec` tool). The script generates IDs, enforces the frontmatter schema, and writes atomically.
+**Do NOT construct filenames or frontmatter by hand.** Use the registered tools (`reflexio_write_profile`, `reflexio_write_playbook`). They generate IDs, enforce the frontmatter schema, and write atomically.
 
 ### Profile template (for mental model — the script emits this)
 
@@ -145,36 +144,19 @@ supersedes: [<old_id>]   # optional
 
 ### How to invoke
 
-**Profile:**
+**Profile:** Call the `reflexio_write_profile` tool with:
+- slug: "diet-vegan"
+- ttl: "infinity"
+- body: "User is vegan. No meat, no fish, no dairy, no eggs."
 
-```bash
-npx tsx ./scripts/reflexio.ts write-profile \
-  --slug diet-vegan --ttl infinity \
-  --body "User is vegan. No meat, no fish, no dairy, no eggs."
-```
+**Playbook:** Call the `reflexio_write_playbook` tool with:
+- slug: "commit-no-ai-attribution"
+- body: "## When\nComposing a git commit message.\n\n## What\nNo AI-attribution trailers.\n\n## Why\nUser corrected this."
 
-**Playbook:**
+**Retrieve context:** Call the `reflexio_search` tool with:
+- query: "user's question here"
 
-```bash
-npx tsx ./scripts/reflexio.ts write-playbook \
-  --slug commit-no-ai-attribution \
-  --body "## When
-Composing a git commit message on this project.
-
-## What
-Write conventional, scope-prefixed messages. Do not add AI-attribution trailers.
-
-## Why
-On <date> the user corrected commits that included Co-Authored-By trailers."
-```
-
-**Retrieve context:**
-
-```bash
-npx tsx ./scripts/reflexio.ts search --query "user's question here"
-```
-
-The script handles everything automatically: query preprocessing for better search results, memory search, contradiction detection against existing entries, atomic file creation, and old-file cleanup on supersession. You only need to detect the signal, compose the content, and call the command.
+All tools handle preprocessing, memory search, contradiction detection, and file operations internally. You only detect the signal, compose the content, and call the tool.
 
 ## TTL Selection (profiles only)
 
