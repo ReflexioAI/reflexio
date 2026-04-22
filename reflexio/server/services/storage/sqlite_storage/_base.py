@@ -610,12 +610,15 @@ class SQLiteStorageBase(BaseStorage):
         try:
             import sqlite_vec  # type: ignore[import-untyped]
 
+            # AttributeError covers Python builds without loadable-extension
+            # support (common with pyenv/Homebrew on macOS) — the method
+            # itself is absent rather than raising at runtime.
             self.conn.enable_load_extension(True)
             sqlite_vec.load(self.conn)
             self.conn.enable_load_extension(False)
             logger.info("sqlite-vec extension loaded — native KNN search enabled")
             return True
-        except (ImportError, OSError, sqlite3.OperationalError) as e:
+        except (ImportError, OSError, AttributeError, sqlite3.OperationalError) as e:
             logger.info("sqlite-vec not available, using Python fallback: %s", e)
             return False
 
