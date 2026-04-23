@@ -171,3 +171,23 @@ if DEBUG_LOG_TO_CONSOLE and DEBUG_LOG_TO_CONSOLE not in ("false", "0", "no"):
 else:
     # Default to WARNING level when DEBUG_LOG_TO_CONSOLE is not set or is false
     root_logger.setLevel(logging.WARNING)
+
+
+def _tidy_uvicorn_log_format() -> None:
+    """Replace uvicorn's padded ``%(levelprefix)s`` formatter with a plain
+    ``%(levelname)s: %(message)s`` one.
+
+    Uvicorn's default formatter pads the level name so ``INFO`` aligns with
+    ``CRITICAL`` — helpful on a single-process console, noisy in our
+    multiplexed dev-server stream where every line already carries a
+    ``[backend ]`` prefix. Uvicorn configures its loggers before loading
+    the app module, so by the time this file is imported the handlers
+    already exist.
+    """
+    plain = logging.Formatter("%(levelname)s: %(message)s")
+    for logger_name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+        for handler in logging.getLogger(logger_name).handlers:
+            handler.setFormatter(plain)
+
+
+_tidy_uvicorn_log_format()
