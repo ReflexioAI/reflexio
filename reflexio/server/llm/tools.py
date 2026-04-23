@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Literal
+
+logger = logging.getLogger(__name__)
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
@@ -202,46 +205,53 @@ def run_tool_loop(
 
     # ---- Native tool loop ---------------------------------------------
     local_msgs = list(messages)
-    for _step in range(max_steps):
-        t0 = time.monotonic()
-        resp = client.generate_chat_response(
-            messages=local_msgs,
-            tools=registry.openai_specs(),
-            tool_choice="auto",
-            model_role=model_role,
-        )
-        tool_calls = getattr(resp, "tool_calls", None)
-        if not tool_calls:
-            trace.finished = True
-            return ToolLoopResult(ctx=ctx, trace=trace, finished_reason="finish_tool")
-        for tc in tool_calls:
-            name = tc.function.name
-            args_json = tc.function.arguments
-            result = registry.handle(name, args_json, ctx)
-            try:
-                args_dict = json.loads(args_json or "{}")
-            except json.JSONDecodeError:
-                args_dict = {}
-            trace.turns.append(
-                ToolLoopTurn(
-                    tool_name=name,
-                    args=args_dict,
-                    result=result,
-                    latency_ms=int((time.monotonic() - t0) * 1000),
-                )
+    try:
+        for _step in range(max_steps):
+            t0 = time.monotonic()
+            resp = client.generate_chat_response(
+                messages=local_msgs,
+                tools=registry.openai_specs(),
+                tool_choice="auto",
+                model_role=model_role,
             )
-            local_msgs.append({"role": "assistant", "tool_calls": [tc]})
-            local_msgs.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": tc.id,
-                    "content": json.dumps(result),
-                }
-            )
-            if name == finish_tool_name:
+            tool_calls = getattr(resp, "tool_calls", None)
+            if not tool_calls:
                 trace.finished = True
                 return ToolLoopResult(
                     ctx=ctx, trace=trace, finished_reason="finish_tool"
                 )
+            for tc in tool_calls:
+                name = tc.function.name
+                args_json = tc.function.arguments
+                result = registry.handle(name, args_json, ctx)
+                try:
+                    args_dict = json.loads(args_json or "{}")
+                except json.JSONDecodeError:
+                    args_dict = {}
+                trace.turns.append(
+                    ToolLoopTurn(
+                        tool_name=name,
+                        args=args_dict,
+                        result=result,
+                        latency_ms=int((time.monotonic() - t0) * 1000),
+                    )
+                )
+                local_msgs.append({"role": "assistant", "tool_calls": [tc]})
+                local_msgs.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": json.dumps(result),
+                    }
+                )
+                if name == finish_tool_name:
+                    trace.finished = True
+                    return ToolLoopResult(
+                        ctx=ctx, trace=trace, finished_reason="finish_tool"
+                    )
+    except Exception:
+        logger.exception("Tool loop raised an unexpected exception")
+        trace.finished = False
+        return ToolLoopResult(ctx=ctx, trace=trace, finished_reason="error")
 
     return ToolLoopResult(ctx=ctx, trace=trace, finished_reason="max_steps")

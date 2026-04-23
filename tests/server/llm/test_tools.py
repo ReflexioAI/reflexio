@@ -1,6 +1,7 @@
 import json
 from unittest.mock import patch
 
+import pytest
 from pydantic import BaseModel
 
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
@@ -227,3 +228,41 @@ def test_run_tool_loop_capability_fallback_uses_response_format(monkeypatch):
     assert result.trace.finished is True
     assert len(result.trace.turns) == 2
     assert ctx.emitted == ["x", "y"]
+
+
+def test_run_tool_loop_returns_error_on_client_exception(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When generate_chat_response raises, the loop returns finished_reason='error'."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_CLI", raising=False)
+
+    ctx = LoopCtx()  # reuse the helper class defined earlier in the test file
+
+    def _emit_handler(args: BaseModel, c: LoopCtx) -> dict:
+        c.emitted.append(args.value)  # type: ignore[attr-defined]
+        return {"ok": True}
+
+    reg = ToolRegistry([Tool(name="emit", args_model=EmitArgs, handler=_emit_handler)])
+
+    config = LiteLLMConfig(model="claude-sonnet-4-6")
+    client = LiteLLMClient(config)
+
+    def boom(**_kwargs):
+        raise RuntimeError("simulated provider failure")
+
+    monkeypatch.setattr(client, "generate_chat_response", boom)
+
+    result = run_tool_loop(
+        client=client,
+        messages=[{"role": "user", "content": "go"}],
+        registry=reg,
+        model_role=ModelRole.ANGLE_READER,
+        max_steps=5,
+        ctx=ctx,
+        finish_tool_name="finish",
+    )
+
+    assert result.finished_reason == "error"
+    assert result.trace.finished is False
+    assert result.trace.turns == []
