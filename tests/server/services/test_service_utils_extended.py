@@ -204,3 +204,99 @@ def test_format_messages_for_logging_list_content():
     assert "role: user" in result
     assert "Describe this image" in result
     assert "image_url" in result
+
+
+def test_format_messages_for_logging_renders_assistant_tool_calls_sdk_shape():
+    """Assistant messages with SDK-object tool_calls must render id/name/arguments.
+
+    Before this fix, an assistant message with ``content=None`` and only
+    ``tool_calls`` looked like ``content: null`` with zero visibility into
+    the tools the model invoked.
+    """
+    from types import SimpleNamespace
+
+    tc = SimpleNamespace(
+        id="call_abc",
+        function=SimpleNamespace(
+            name="flag_cross_entity_conflict",
+            arguments='{"candidate_index":0,"reason":"contradicts profile"}',
+        ),
+    )
+    messages = [{"role": "assistant", "content": None, "tool_calls": [tc]}]
+
+    result = format_messages_for_logging(messages)
+
+    assert "role: assistant" in result
+    assert "content: null" in result
+    assert "tool_calls:" in result
+    assert "- id: call_abc" in result
+    assert "name: flag_cross_entity_conflict" in result
+    # Arguments should be parsed + re-serialised for readability
+    assert '"candidate_index": 0' in result
+    assert '"reason": "contradicts profile"' in result
+
+
+def test_format_messages_for_logging_renders_assistant_tool_calls_dict_shape():
+    """Pass-through serialisation sometimes produces dict-shaped tool_calls."""
+    messages = [
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call_xyz",
+                    "type": "function",
+                    "function": {
+                        "name": "emit_profile",
+                        "arguments": '{"content":"User likes Go","time_to_live":"infinity"}',
+                    },
+                }
+            ],
+        }
+    ]
+
+    result = format_messages_for_logging(messages)
+
+    assert "- id: call_xyz" in result
+    assert "name: emit_profile" in result
+    assert '"content": "User likes Go"' in result
+
+
+def test_format_messages_for_logging_renders_tool_call_id_on_tool_role():
+    """Tool-role messages must surface tool_call_id so readers can correlate."""
+    messages = [
+        {"role": "tool", "tool_call_id": "call_abc", "content": '{"flagged": 0}'},
+    ]
+
+    result = format_messages_for_logging(messages)
+
+    assert "role: tool" in result
+    assert "tool_call_id: call_abc" in result
+    assert '{"flagged": 0}' in result
+
+
+def test_format_messages_for_logging_handles_malformed_arguments_json():
+    """Tool_call arguments that aren't valid JSON should fall back to raw string."""
+    from types import SimpleNamespace
+
+    tc = SimpleNamespace(
+        id="call_bad",
+        function=SimpleNamespace(name="emit", arguments="not valid json {"),
+    )
+    messages = [{"role": "assistant", "content": None, "tool_calls": [tc]}]
+
+    result = format_messages_for_logging(messages)
+
+    # Formatter must not crash, and should preserve the raw string
+    assert "name: emit" in result
+    assert "not valid json {" in result
+
+
+def test_format_messages_for_logging_skips_tool_calls_block_when_absent():
+    """Assistant messages without tool_calls don't emit a ``tool_calls:`` header."""
+    messages = [{"role": "assistant", "content": "plain text response"}]
+
+    result = format_messages_for_logging(messages)
+
+    assert "tool_calls:" not in result
+    assert "plain text response" in result

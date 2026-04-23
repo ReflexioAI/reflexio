@@ -479,6 +479,52 @@ def extract_json_from_string(text: str) -> dict:
     return {}
 
 
+def _format_tool_calls(tool_calls: list[Any]) -> list[str]:
+    """Render an assistant message's ``tool_calls`` list for the log.
+
+    Accepts either the OpenAI SDK object shape (with ``.function.name`` /
+    ``.function.arguments`` attrs) or the dict shape that pass-through
+    serialisation may produce. Returns one indented line per call with the
+    tool_call_id, the tool name, and the parsed arguments — so the log
+    reader can correlate each tool_call with its tool-role response.
+    """
+    lines: list[str] = ["  tool_calls:"]
+    for tc in tool_calls:
+        # Extract id, name, arguments from either attribute or mapping shape.
+        tc_id = getattr(tc, "id", None) or (
+            tc.get("id") if isinstance(tc, dict) else None
+        )
+        fn = getattr(tc, "function", None)
+        if fn is not None:
+            name = getattr(fn, "name", None)
+            args_raw = getattr(fn, "arguments", None)
+        elif isinstance(tc, dict):
+            fn_dict = tc.get("function", {}) or {}
+            name = fn_dict.get("name") if isinstance(fn_dict, dict) else None
+            args_raw = (
+                fn_dict.get("arguments") if isinstance(fn_dict, dict) else None
+            )
+        else:
+            name = None
+            args_raw = None
+
+        # arguments comes through as a JSON string from the provider — parse
+        # for readability, fall back to raw text on malformed JSON.
+        parsed_args: Any
+        if isinstance(args_raw, str):
+            try:
+                parsed_args = json.loads(args_raw)
+            except json.JSONDecodeError:
+                parsed_args = args_raw
+        else:
+            parsed_args = args_raw
+
+        lines.append(f"    - id: {tc_id}")
+        lines.append(f"      name: {name}")
+        lines.append(f"      arguments: {json.dumps(parsed_args)}")
+    return lines
+
+
 def format_messages_for_logging(messages: list[dict[str, Any]]) -> str:
     """
     Format messages for logging with proper newlines in text content.
@@ -493,6 +539,14 @@ def format_messages_for_logging(messages: list[dict[str, Any]]) -> str:
     for i, msg in enumerate(messages):
         formatted_parts.append(f"Message {i + 1}:")
         formatted_parts.append(f"  role: {msg.get('role', 'unknown')}")
+
+        # Tool-role messages carry a ``tool_call_id`` that correlates them
+        # back to the assistant's emitted call — render it so readers can
+        # reconstruct which response answered which call.
+        tool_call_id = msg.get("tool_call_id")
+        if tool_call_id is not None:
+            formatted_parts.append(f"  tool_call_id: {tool_call_id}")
+
         content = msg.get("content", "")
 
         if isinstance(content, str):
@@ -522,6 +576,14 @@ def format_messages_for_logging(messages: list[dict[str, Any]]) -> str:
         else:
             # Fallback to JSON for other types
             formatted_parts.append(f"  content: {json.dumps(content, indent=4)}")
+
+        # Assistant messages with tool_calls must render the call list —
+        # otherwise the log shows ``content: null`` with no visibility into
+        # which tools the model invoked. Classic extraction doesn't use
+        # tool-calling, but the agentic pipeline relies on it heavily.
+        tool_calls = msg.get("tool_calls")
+        if tool_calls:
+            formatted_parts.extend(_format_tool_calls(tool_calls))
 
         formatted_parts.append("")  # Empty line between messages
 
