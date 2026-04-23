@@ -8,6 +8,7 @@ merging items across lanes.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, cast
 
@@ -15,6 +16,8 @@ from pydantic import BaseModel, model_validator
 
 from reflexio.server.llm.model_defaults import ModelRole
 from reflexio.server.llm.tools import Tool, ToolRegistry, run_tool_loop
+
+logger = logging.getLogger(__name__)
 from reflexio.server.services.playbook.playbook_service_utils import (
     StructuredPlaybookContent,
 )
@@ -405,8 +408,23 @@ def _supersede(args: BaseModel, ctx: ReconcilerCtx) -> dict:
     a = cast(SupersedeArgs, args)
     tgt = _lane_list(ctx, a.drop_lane)
     if not 0 <= a.drop_index < len(tgt):
+        logger.warning(
+            "reconciler supersede: drop_index %d out of range for lane=%s (len=%d)",
+            a.drop_index,
+            a.drop_lane,
+            len(tgt),
+        )
         return {"error": "drop_index out of range"}
-    tgt.pop(a.drop_index)
+    dropped = tgt.pop(a.drop_index)
+    logger.info(
+        "reconciler decision=supersede drop_lane=%s drop_index=%d "
+        "keep_lane=%s keep_index=%d dropped_content=%r",
+        a.drop_lane,
+        a.drop_index,
+        a.keep_lane,
+        a.keep_index,
+        (getattr(dropped, "content", None) or "")[:80],
+    )
     return {"superseded": [a.drop_lane, a.drop_index]}
 
 
@@ -415,17 +433,40 @@ def _merge(args: BaseModel, ctx: ReconcilerCtx) -> dict:
     keep_list = _lane_list(ctx, a.keep_lane)
     drop_list = _lane_list(ctx, a.drop_lane)
     if not (0 <= a.keep_index < len(keep_list) and 0 <= a.drop_index < len(drop_list)):
+        logger.warning(
+            "reconciler merge: index out of range keep=(%s,%d) drop=(%s,%d) "
+            "keep_len=%d drop_len=%d",
+            a.keep_lane,
+            a.keep_index,
+            a.drop_lane,
+            a.drop_index,
+            len(keep_list),
+            len(drop_list),
+        )
         return {"error": "index out of range"}
     kept = keep_list[a.keep_index]
+    old_content = getattr(kept, "content", None) or ""
     keep_list[a.keep_index] = kept.model_copy(update={"content": a.merged_content})
     # If the two indices refer to the same lane, dropping may shift keep_index;
     # but cross-lane is the usual case here.
-    drop_list.pop(a.drop_index)
+    dropped = drop_list.pop(a.drop_index)
+    logger.info(
+        "reconciler decision=merge keep=(%s,%d) drop=(%s,%d) "
+        "old_content=%r merged_content=%r dropped_content=%r",
+        a.keep_lane,
+        a.keep_index,
+        a.drop_lane,
+        a.drop_index,
+        old_content[:60],
+        a.merged_content[:80],
+        (getattr(dropped, "content", None) or "")[:60],
+    )
     return {"merged": True}
 
 
 def _keep_both(args: BaseModel, _ctx: ReconcilerCtx) -> dict:
     a = cast(KeepBothArgs, args)
+    logger.info("reconciler decision=keep_both reason=%r", a.reason[:120])
     return {"kept_both": True, "reason": a.reason}
 
 
