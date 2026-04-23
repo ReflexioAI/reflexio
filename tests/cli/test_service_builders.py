@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -177,6 +178,7 @@ class TestBuildBackendService:
         """Backend launches via ``python -m reflexio.server`` so the uvicorn
         log config in :mod:`reflexio.server.uvicorn_logging` is applied."""
         svc = build_backend_service({"backend": 8081}, reload=False)
+        assert svc.command[0] == sys.executable
         assert svc.command[1:3] == ["-m", "reflexio.server"]
 
 
