@@ -79,6 +79,7 @@ dev = [
     "python-semantic-release>=10.0.0",
     "build>=1.0.0",
     "twine>=6.0.0",
+    "polars>=1.40.1",
 ]
 docs = [
     "mkdocs>=1.5.3",
