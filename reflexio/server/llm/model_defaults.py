@@ -151,6 +151,10 @@ class ProviderDefaults:
         should_run: Model for lightweight "should run extraction" checks, or None.
         pre_retrieval: Model for pre-retrieval query reformulation, or None.
         embedding: Model for embedding generation, or None.
+        angle_reader: Fast-tier model for parallel extraction/search angle agents, or None.
+        critic: Smart-tier model for extraction critics, or None.
+        synthesizer: Smart-tier model for search synthesizers, or None.
+        reconciler: Smart-tier model for cross-entity reconciler, or None.
     """
 
     generation: str | None
@@ -158,6 +162,10 @@ class ProviderDefaults:
     should_run: str | None
     pre_retrieval: str | None
     embedding: str | None
+    angle_reader: str | None = None
+    critic: str | None = None
+    synthesizer: str | None = None
+    reconciler: str | None = None
 
 
 _PROVIDER_DEFAULTS: dict[str, ProviderDefaults] = {
@@ -171,6 +179,10 @@ _PROVIDER_DEFAULTS: dict[str, ProviderDefaults] = {
         should_run="claude-code/default",
         pre_retrieval="claude-code/default",
         embedding=None,
+        angle_reader="claude-code/default",
+        critic="claude-code/default",
+        synthesizer="claude-code/default",
+        reconciler="claude-code/default",
     ),
     # local is an embedding-only provider that routes through an
     # in-process ONNX model (chromadb's all-MiniLM-L6-v2). Generation
@@ -195,6 +207,10 @@ _PROVIDER_DEFAULTS: dict[str, ProviderDefaults] = {
         should_run="claude-haiku-4-5-20251001",
         pre_retrieval="claude-haiku-4-5-20251001",
         embedding=None,
+        angle_reader="claude-haiku-4-5-20251001",
+        critic="claude-sonnet-4-6",
+        synthesizer="claude-sonnet-4-6",
+        reconciler="claude-sonnet-4-6",
     ),
     "gemini": ProviderDefaults(
         generation="gemini/gemini-3-flash-preview",
@@ -273,6 +289,12 @@ class ModelRole(StrEnum):
     SHOULD_RUN = "should_run"
     PRE_RETRIEVAL = "pre_retrieval"
     EMBEDDING = "embedding"
+    # Tool-calling agentic pipeline roles — fast tier for parallel specialists,
+    # smart tier for judgment/synthesis steps.
+    ANGLE_READER = "angle_reader"
+    CRITIC = "critic"
+    SYNTHESIZER = "synthesizer"
+    RECONCILER = "reconciler"
 
 
 def _auto_detect_model(
