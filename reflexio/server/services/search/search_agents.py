@@ -239,7 +239,7 @@ class ProfileSearchAgent:
         """Run the tool loop for one profile-search intent and return its ctx.
 
         Args:
-            query (str): User-supplied query to rendered into the prompt.
+            query (str): User-supplied query rendered into the prompt.
             req (object): Request-like object; ``user_id`` attribute is read.
 
         Returns:
@@ -293,7 +293,7 @@ class PlaybookSearchAgent:
         """Run the tool loop for one playbook-search intent and return its ctx.
 
         Args:
-            query (str): User-supplied query to rendered into the prompt.
+            query (str): User-supplied query rendered into the prompt.
             req (object): Request-like object; ``user_id`` attribute is read.
 
         Returns:

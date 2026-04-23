@@ -89,12 +89,9 @@ class AgenticSearchService:
             lists, the (possibly reformulated) query, and a ``msg`` field that
             flags partial failures.
         """
-        partial = False
         query = self._reformulate(request)
 
-        profile_batches, playbook_batches, partial = self._run_agents(
-            query, request, partial
-        )
+        profile_batches, playbook_batches, partial = self._run_agents(query, request)
 
         p_ids, p_flags, b_ids, b_flags = self._run_synthesizers(
             query, profile_batches, playbook_batches
@@ -144,7 +141,6 @@ class AgenticSearchService:
         self,
         query: str,
         request: UnifiedSearchRequest,
-        partial: bool,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool]:
         """Run all 6 intent-specialist agents in parallel.
 
@@ -187,7 +183,7 @@ class AgenticSearchService:
         return (
             profile_batches,
             playbook_batches,
-            partial or profile_partial or playbook_partial,
+            profile_partial or playbook_partial,
         )
 
     def _collect_batches(
@@ -241,10 +237,20 @@ class AgenticSearchService:
             except FuturesTimeoutError:
                 logger.warning("profile synthesizer timed out")
                 p_ids, p_flags = [], []
+            except Exception as e:
+                logger.warning(
+                    "profile synthesizer failed: %s: %s", type(e).__name__, e
+                )
+                p_ids, p_flags = [], []
             try:
                 b_ids, b_flags = playbook_fut.result(timeout=self._agent_timeout)
             except FuturesTimeoutError:
                 logger.warning("playbook synthesizer timed out")
+                b_ids, b_flags = [], []
+            except Exception as e:
+                logger.warning(
+                    "playbook synthesizer failed: %s: %s", type(e).__name__, e
+                )
                 b_ids, b_flags = [], []
         finally:
             executor.shutdown(wait=False, cancel_futures=True)

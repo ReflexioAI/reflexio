@@ -68,7 +68,8 @@ class ToolRegistry:
         try:
             return tool.handler(args, ctx)
         except Exception as e:  # handler errors are recoverable tool-turn errors
-            return {"error": f"handler error: {type(e).__name__}: {e}"}
+            logger.exception("tool handler %s failed", name)
+            return {"error": f"handler error: {type(e).__name__}"}
 
 
 class ToolLoopTurn(BaseModel):
@@ -117,7 +118,13 @@ def supports_tool_calling(model: str) -> bool:
         import litellm
 
         return bool(litellm.supports_function_calling(model=model))
-    except Exception:
+    except Exception as e:
+        logger.warning(
+            "supports_function_calling probe failed for %s: %s: %s — assuming True",
+            model,
+            type(e).__name__,
+            e,
+        )
         return True
 
 
