@@ -54,6 +54,18 @@ class StructuredPlaybookContent(BaseModel):
         default=None,
         description="The main actionable content of the playbook entry — what to do or what to avoid",
     )
+    source_span: str | None = Field(
+        default=None,
+        description="Verbatim excerpt from the source that most directly supports this playbook entry",
+    )
+    notes: str | None = Field(
+        default=None,
+        description="Free-form extraction notes — confidence, caveats, or alternative readings",
+    )
+    reader_angle: str | None = Field(
+        default=None,
+        description="The extraction perspective or reader role that surfaced this entry",
+    )
 
     model_config = ConfigDict(
         extra="allow",

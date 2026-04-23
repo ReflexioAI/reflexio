@@ -91,6 +91,18 @@ class ProfileAddItem(BaseModel):
         default=None,
         description="Metadata extracted for the profile based on metadata definition",
     )
+    source_span: str | None = Field(
+        default=None,
+        description="Verbatim excerpt from the source that most directly supports this profile item",
+    )
+    notes: str | None = Field(
+        default=None,
+        description="Free-form extraction notes — confidence, caveats, or alternative readings",
+    )
+    reader_angle: str | None = Field(
+        default=None,
+        description="The extraction perspective or reader role that surfaced this item",
+    )
 
     # OpenAI structured output requires explicit schema constraints
     model_config = ConfigDict(

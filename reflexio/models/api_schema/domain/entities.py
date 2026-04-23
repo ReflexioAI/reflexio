@@ -164,6 +164,9 @@ class UserProfile(BaseModel):
     extractor_names: list[str] | None = None
     expanded_terms: str | None = None
     embedding: EmbeddingVector = []
+    source_span: str | None = None
+    notes: str | None = None
+    reader_angle: str | None = None
 
 
 # user playbook for agents
@@ -185,6 +188,9 @@ class UserPlaybook(BaseModel):
     source_interaction_ids: list[int] = Field(default_factory=list)
     expanded_terms: str | None = None
     embedding: EmbeddingVector = []
+    source_span: str | None = None
+    notes: str | None = None
+    reader_angle: str | None = None
 
 
 class ProfileChangeLog(BaseModel):
