@@ -32,7 +32,7 @@ PROMPT_VERSION_MAP: dict[str, tuple[str, str | None]] = {
     "playbook_extraction_main": ("v1.0.0", "playbook_extraction"),
     "playbook_extraction_main_incremental": ("v1.0.0", "playbook_extraction"),
     "playbook_extraction_context": ("v4.0.1", None),
-    "playbook_extraction_context_incremental": ("v4.0.1", None),
+    "playbook_extraction_context_incremental": ("v4.0.0", None),
     "playbook_should_generate": ("v3.0.0", "boolean_evaluation"),
     "playbook_should_generate_expert": ("v1.0.0", "boolean_evaluation"),
     "playbook_extraction_context_expert": ("v3.0.0", None),
@@ -54,6 +54,25 @@ PROMPT_VERSION_MAP: dict[str, tuple[str, str | None]] = {
     "shadow_content_evaluation": ("v1.0.0", None),
     "query_reformulation": ("v1.0.0", None),
     "document_expansion": ("v1.0.0", None),
+    # Agentic extraction pipeline — Phase 3
+    "profile_reader_facts": ("v1.0.0", None),
+    "profile_reader_context": ("v1.0.0", None),
+    "profile_reader_temporal": ("v1.0.0", None),
+    "playbook_reader_behavior": ("v1.0.0", None),
+    "playbook_reader_trigger": ("v1.0.0", None),
+    "playbook_reader_rationale": ("v1.0.0", None),
+    "profile_critic": ("v1.0.0", None),
+    "playbook_critic": ("v1.0.0", None),
+    "reconciler": ("v1.0.0", None),
+    # Agentic search pipeline — Phase 4
+    "profile_search_direct": ("v1.0.0", None),
+    "profile_search_context": ("v1.0.0", None),
+    "profile_search_temporal": ("v1.0.0", None),
+    "playbook_search_direct": ("v1.0.0", None),
+    "playbook_search_context": ("v1.0.0", None),
+    "playbook_search_temporal": ("v1.0.0", None),
+    "profile_synthesizer": ("v1.0.0", None),
+    "playbook_synthesizer": ("v1.0.0", None),
 }
 
 
