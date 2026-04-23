@@ -117,6 +117,12 @@ class AgenticExtractionService:
         if not sessions:
             return ExtractionResult.skipped("no sessions to extract")
 
+        logger.info(
+            "agentic extraction: starting 6 readers + 2 critics for user=%s, "
+            "transcript=%d chars",
+            getattr(request, "user_id", "<unknown>"),
+            len(sessions),
+        )
         reader_inputs = ReaderInputs(sessions=sessions)
         profile_cands, playbook_cands = self._run_readers(reader_inputs)
 
@@ -140,33 +146,60 @@ class AgenticExtractionService:
     # ---------------- phase helpers ---------------- #
 
     def _run_readers(self, inputs: ReaderInputs) -> tuple[list[Any], list[Any]]:
-        """Run all 6 angle readers in parallel; return (profile_cands, playbook_cands)."""
+        """Run all 6 angle readers in parallel; return (profile_cands, playbook_cands).
+
+        Emits one INFO-level log line per reader summarising the angle and the
+        count of candidates emitted so operators can verify which readers
+        contributed to the batch without parsing ``llm_io.log``.
+        """
         executor = ThreadPoolExecutor(max_workers=self._reader_workers)
         try:
             profile_futs = [
-                executor.submit(
-                    ProfileReader(
-                        angle,  # type: ignore[arg-type]
-                        client=self.client,
-                        prompt_manager=self.prompt_manager,
-                    ).read,
-                    inputs,
+                (
+                    angle,
+                    executor.submit(
+                        ProfileReader(
+                            angle,  # type: ignore[arg-type]
+                            client=self.client,
+                            prompt_manager=self.prompt_manager,
+                        ).read,
+                        inputs,
+                    ),
                 )
                 for angle in self.PROFILE_ANGLES
             ]
             playbook_futs = [
-                executor.submit(
-                    PlaybookReader(
-                        angle,  # type: ignore[arg-type]
-                        client=self.client,
-                        prompt_manager=self.prompt_manager,
-                    ).read,
-                    inputs,
+                (
+                    angle,
+                    executor.submit(
+                        PlaybookReader(
+                            angle,  # type: ignore[arg-type]
+                            client=self.client,
+                            prompt_manager=self.prompt_manager,
+                        ).read,
+                        inputs,
+                    ),
                 )
                 for angle in self.PLAYBOOK_ANGLES
             ]
-            profile_cands = [c for f in profile_futs for c in _safe_result(f)]
-            playbook_cands = [c for f in playbook_futs for c in _safe_result(f)]
+            profile_cands: list[Any] = []
+            for angle, fut in profile_futs:
+                cands = _safe_result(fut)
+                logger.info(
+                    "agentic reader: profile_reader_%s emitted %d candidates",
+                    angle,
+                    len(cands),
+                )
+                profile_cands.extend(cands)
+            playbook_cands: list[Any] = []
+            for angle, fut in playbook_futs:
+                cands = _safe_result(fut)
+                logger.info(
+                    "agentic reader: playbook_reader_%s emitted %d candidates",
+                    angle,
+                    len(cands),
+                )
+                playbook_cands.extend(cands)
         finally:
             executor.shutdown(wait=False, cancel_futures=True)
         return profile_cands, playbook_cands
@@ -177,7 +210,16 @@ class AgenticExtractionService:
         playbook_cands: list[Any],
     ) -> tuple[list[VettedProfile], list[CrossEntityFlag]]:
         critic = ProfileCritic(client=self.client, prompt_manager=self.prompt_manager)
-        return critic.review(profile_cands, summarize(playbook_cands))
+        vetted, flags = critic.review(profile_cands, summarize(playbook_cands))
+        logger.info(
+            "agentic critic: profile_critic reviewed %d candidates — "
+            "%d vetted, %d rejected, %d cross-entity flags",
+            len(profile_cands),
+            len(vetted),
+            max(0, len(profile_cands) - len(vetted)),
+            len(flags),
+        )
+        return vetted, flags
 
     def _run_playbook_critic(
         self,
@@ -185,7 +227,16 @@ class AgenticExtractionService:
         profile_cands: list[Any],
     ) -> tuple[list[VettedPlaybook], list[CrossEntityFlag]]:
         critic = PlaybookCritic(client=self.client, prompt_manager=self.prompt_manager)
-        return critic.review(playbook_cands, summarize(profile_cands))
+        vetted, flags = critic.review(playbook_cands, summarize(profile_cands))
+        logger.info(
+            "agentic critic: playbook_critic reviewed %d candidates — "
+            "%d vetted, %d rejected, %d cross-entity flags",
+            len(playbook_cands),
+            len(vetted),
+            max(0, len(playbook_cands) - len(vetted)),
+            len(flags),
+        )
+        return vetted, flags
 
     def _run_reconciler(
         self,
@@ -194,7 +245,22 @@ class AgenticExtractionService:
         flags: list[CrossEntityFlag],
     ) -> tuple[list[VettedProfile], list[VettedPlaybook]]:
         reconciler = Reconciler(client=self.client, prompt_manager=self.prompt_manager)
-        return reconciler.resolve(vetted_profiles, vetted_playbooks, flags)
+        logger.info(
+            "agentic reconciler: resolving %d cross-entity flag(s) against "
+            "%d vetted profiles + %d vetted playbooks",
+            len(flags),
+            len(vetted_profiles),
+            len(vetted_playbooks),
+        )
+        resolved_profiles, resolved_playbooks = reconciler.resolve(
+            vetted_profiles, vetted_playbooks, flags
+        )
+        logger.info(
+            "agentic reconciler: %d profiles + %d playbooks survive",
+            len(resolved_profiles),
+            len(resolved_playbooks),
+        )
+        return resolved_profiles, resolved_playbooks
 
 
 def _safe_result(fut: Future, *, timeout: float = 30.0) -> list[Any]:
