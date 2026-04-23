@@ -25,6 +25,42 @@ logger = logging.getLogger(__name__)
 MODEL_RESPONSE_LEVEL = 25
 
 
+def _format_response_for_logging(response: Any) -> Any:
+    """Render ``ToolCallingChatResponse`` with pretty tool_calls; pass others through.
+
+    The dataclass's ``__repr__`` (which ``%s`` formatting falls back to)
+    prints each tool_call as an opaque object handle
+    (``<ChatCompletionMessageToolCall object at 0x…>``), erasing the
+    tool name + arguments the model emitted. This helper detects that
+    one case and renders a multi-line human-readable form using the
+    same ``_format_tool_calls`` helper the request-side formatter uses.
+
+    All other response types (strings, Pydantic ``BaseModel`` instances
+    from classic extractors / deduplicators / aggregators) fall through
+    unchanged so the existing log shape is preserved.
+
+    Lazy-imports ``ToolCallingChatResponse`` to avoid a circular
+    ``service_utils`` ↔ ``litellm_client`` dependency at module load.
+    """
+    try:
+        from reflexio.server.llm.litellm_client import ToolCallingChatResponse
+    except Exception:  # noqa: BLE001 - fall back gracefully if the import fails
+        return response
+
+    if not isinstance(response, ToolCallingChatResponse):
+        return response
+
+    lines = [
+        f"ToolCallingChatResponse(finish_reason={response.finish_reason!r}):",
+        f"  content: {response.content!r}",
+    ]
+    if response.tool_calls:
+        lines.extend(_format_tool_calls(response.tool_calls))
+    else:
+        lines.append("  tool_calls: []")
+    return "\n".join(lines)
+
+
 def log_model_response(
     target_logger: logging.Logger, label: str, response: Any
 ) -> None:
@@ -38,13 +74,16 @@ def log_model_response(
         response (Any): The model response to log
     """
     entry_id = next_llm_entry_id()
+    # Special-case ToolCallingChatResponse so tool_calls render as
+    # id/name/arguments instead of opaque ``<… object at 0x…>`` handles.
+    formatted = _format_response_for_logging(response)
     # Full response to llm_io.log only (level 15 < INFO 20, so console ignores it)
     target_logger.log(
         LLM_PROMPT_LEVEL,
         "[#%d] %s: %s",
         entry_id,
         label,
-        response,
+        formatted,
         extra={"entry_id": entry_id, "label": label},
     )
     # One-line summary to console
