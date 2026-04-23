@@ -79,7 +79,7 @@ if DEBUG_LOG_TO_CONSOLE and DEBUG_LOG_TO_CONSOLE not in ("false", "0", "no"):
         console_handler = logging.StreamHandler(sys.stdout)
         console_handler.setLevel(logging.INFO)  # Excludes LLM_PROMPT (level 15)
         formatter = colorlog.ColoredFormatter(
-            "%(log_color)s[%(correlation_id)s] %(name)s - %(levelname)s - %(message)s",
+            "%(log_color)s%(correlation_tag)s%(name)s - %(levelname)s - %(message)s",
             log_colors={
                 "DEBUG": "cyan",
                 "INFO": "reset",
@@ -112,7 +112,7 @@ if DEBUG_LOG_TO_CONSOLE and DEBUG_LOG_TO_CONSOLE not in ("false", "0", "no"):
     file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(
         logging.Formatter(
-            "%(asctime)s [%(correlation_id)s] %(name)s %(levelname)s %(message)s"
+            "%(asctime)s %(correlation_tag)s%(name)s %(levelname)s %(message)s"
         )
     )
     file_handler.addFilter(_ExcludeLLMPrompt())

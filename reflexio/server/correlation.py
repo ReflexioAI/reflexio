@@ -29,12 +29,18 @@ def generate_correlation_id() -> str:
 
 
 class CorrelationIdFilter(logging.Filter):
-    """Logging filter that injects ``correlation_id`` into every log record.
+    """Logging filter that injects correlation fields into every log record.
 
-    Attach this filter to handlers so formatters can use
-    ``%(correlation_id)s``.
+    Attach this filter to handlers so formatters can use:
+
+    - ``%(correlation_id)s`` — the raw ID (empty string outside request context).
+    - ``%(correlation_tag)s`` — a ready-to-embed ``"[<cid>] "`` string that
+      collapses to ``""`` when there is no correlation ID. Use this in format
+      strings to avoid rendering an empty ``[]`` at startup / CLI time.
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
-        record.correlation_id = correlation_id_var.get("")  # type: ignore[attr-defined]
+        cid = correlation_id_var.get("")
+        record.correlation_id = cid  # type: ignore[attr-defined]
+        record.correlation_tag = f"[{cid}] " if cid else ""  # type: ignore[attr-defined]
         return True
