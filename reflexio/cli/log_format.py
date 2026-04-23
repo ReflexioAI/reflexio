@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import itertools
 import logging
+import re
 import sys
 import threading
 import time
@@ -20,6 +21,23 @@ SERVICE_COLORS: dict[str, str] = {
     "docs": "35",  # magenta
     "supabase": "36",  # cyan
 }
+
+# ANSI codes for log-level severity highlighting in service output.
+# Keys are matched against the level token captured by `_LEVEL_RE`.
+_LEVEL_COLORS: dict[str, str] = {
+    "ERROR": "31",       # red
+    "CRITICAL": "1;31",  # bold red
+    "WARNING": "33",     # yellow
+    "WARN": "33",        # yellow (Next.js / some loggers)
+}
+
+# Match a log-level token at the start of a line, optionally bracketed,
+# followed by a typical separator (":", whitespace, or " - "). Covers
+# uvicorn ("ERROR:    msg"), stdlib logging ("[ERROR] msg"), and the
+# "ERROR - msg" style used by Next.js / some custom loggers.
+_LEVEL_RE = re.compile(
+    r"^(?:\[)?(ERROR|CRITICAL|WARNING|WARN)(?:\])?(?::|\s+-\s+|\s+)"
+)
 
 # Canonical log file paths — stored in ~/.reflexio/logs/ (not the project directory)
 _LOG_DIR = str(Path.home() / ".reflexio" / "logs")
@@ -61,8 +79,34 @@ def colorize(text: str, ansi_code: str, *, bold: bool = False) -> str:
     return f"{prefix}{text}\033[0m"
 
 
+def highlight_log_level(line: str) -> str:
+    """Wrap a line in a severity color if it starts with a log-level token.
+
+    Supports common formats: ``ERROR: msg``, ``[ERROR] msg``, ``ERROR - msg``.
+    Returns the line unchanged when stdout is not a TTY or no level matches,
+    keeping output clean for pipes, log files, and AI agents.
+
+    Args:
+        line: The log line content (without the service prefix).
+
+    Returns:
+        str: Color-wrapped line for ERROR/CRITICAL/WARNING; otherwise unchanged.
+    """
+    if not sys.stdout.isatty():
+        return line
+    match = _LEVEL_RE.match(line)
+    if not match:
+        return line
+    code = _LEVEL_COLORS[match.group(1)]
+    return f"\033[{code}m{line}\033[0m"
+
+
 def format_service_line(service_name: str, line: str) -> str:
     """Format a log line with a colored, fixed-width service prefix.
+
+    The line body is additionally wrapped in a severity color when it
+    starts with a recognised log-level token (ERROR/CRITICAL/WARNING),
+    so failures stand out against the scrolling dev-server output.
 
     Args:
         service_name: Name of the service (e.g., "backend", "frontend").
@@ -74,7 +118,7 @@ def format_service_line(service_name: str, line: str) -> str:
     color = SERVICE_COLORS.get(service_name, "37")  # default white
     padded = service_name.ljust(_PREFIX_WIDTH - 2)  # -2 for brackets
     prefix = colorize(f"[{padded}]", color)
-    return f"{prefix} {line}"
+    return f"{prefix} {highlight_log_level(line)}"
 
 
 class DuplicateFilter(logging.Filter):
