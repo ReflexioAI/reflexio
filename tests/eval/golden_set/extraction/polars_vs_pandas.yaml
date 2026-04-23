@@ -1,0 +1,30 @@
+id: polars_vs_pandas
+description: |
+  User explicitly states a tool-preference fact: polars is preferred over pandas,
+  because of lazy evaluation and strict dtypes. Includes supersession signal
+  (they used pandas before).
+sessions:
+  - role: user
+    content: "I used to use pandas everywhere, but as of last quarter our team standardized on polars — mostly for the lazy evaluation and strict dtypes. pandas still shows up in old notebooks but I don't want agents to suggest pandas for new code."
+  - role: assistant
+    content: "Got it — polars for new work, pandas only for legacy."
+  - role: user
+    content: "Right."
+expected_profiles:
+  - content: "User prefers polars over pandas for new work."
+    time_to_live: "persistent"
+    reader_angle: "facts"
+    must_include_in_source_span: "polars"
+  - content: "User's team standardized on polars last quarter."
+    time_to_live: "medium_term"
+    reader_angle: "temporal"
+    must_include_in_source_span: "last quarter"
+expected_playbooks:
+  - trigger: "user asks for DataFrame code for new work"
+    content: "use polars, not pandas"
+    rationale_must_mention: ["lazy", "dtype"]
+    reader_angle: "rationale"
+notes_for_judge: |
+  A good extraction surfaces BOTH the persistent preference AND the temporal
+  signal of "as of last quarter". Flattening to a single "user uses polars"
+  profile counts as a miss on the nuance-gap criterion.

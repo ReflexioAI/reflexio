@@ -1,0 +1,19 @@
+id: superseded_state
+description: User explicitly supersedes an earlier statement within the same session.
+sessions:
+  - role: user
+    content: "Our staging DB is on 5432."
+  - role: user
+    content: "Correction, we moved staging to 5433 yesterday — 5432 is prod now."
+expected_profiles:
+  - content: "Staging DB runs on port 5433."
+    time_to_live: "medium_term"
+    reader_angle: "temporal"
+  - content: "Prod DB runs on port 5432."
+    time_to_live: "medium_term"
+    reader_angle: "facts"
+must_NOT_include_profiles:
+  - content_contains: "staging on 5432"
+expected_playbooks: []
+notes_for_judge: |
+  Any output that keeps the superseded "staging on 5432" as a live profile is a hard fail.

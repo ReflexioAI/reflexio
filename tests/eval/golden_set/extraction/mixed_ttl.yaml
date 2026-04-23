@@ -1,0 +1,20 @@
+id: mixed_ttl
+description: Single user message mixes a persistent preference with a short-term context item.
+sessions:
+  - role: user
+    content: "I'm a senior backend engineer. This week I'm on-call so please avoid scheduling reviews before 10am."
+expected_profiles:
+  - content: "User is a senior backend engineer."
+    time_to_live: "persistent"
+    reader_angle: "facts"
+  - content: "User is on-call this week."
+    time_to_live: "short_term"
+    reader_angle: "context"
+expected_playbooks:
+  - trigger: "scheduling a review during user's on-call week"
+    content: "avoid times before 10am"
+    reader_angle: "behavior"
+notes_for_judge: |
+  Tests whether extraction distinguishes persistent identity (role) from
+  short-term context (on-call this week) — single-shot extraction often
+  collapses them into one TTL.
