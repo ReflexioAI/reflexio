@@ -117,9 +117,13 @@ class AgenticExtractionService:
         if not sessions:
             return ExtractionResult.skipped("no sessions to extract")
 
+        n_readers = len(self.PROFILE_ANGLES) + len(self.PLAYBOOK_ANGLES)
+        n_critics = 2  # one per lane — derived from the orchestrator shape
         logger.info(
-            "agentic extraction: starting 6 readers + 2 critics for user=%s, "
+            "agentic extraction: starting %d readers + %d critics for user=%s, "
             "transcript=%d chars",
+            n_readers,
+            n_critics,
             getattr(request, "user_id", "<unknown>"),
             len(sessions),
         )
