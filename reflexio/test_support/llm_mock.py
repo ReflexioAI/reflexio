@@ -116,3 +116,53 @@ def cleanup_llm_mock(config: Any) -> None:  # noqa: ARG001
     if _litellm_patcher:
         _litellm_patcher.stop()
         _litellm_patcher = None
+
+
+def make_tool_call_response(tool_name: str, args: dict[str, Any]) -> MagicMock:
+    """Build a litellm ModelResponse-shaped mock with a single tool_call.
+
+    Used by unit tests that drive tool loops against the patched
+    ``litellm.completion``. Not routed automatically by prompt
+    heuristics — callers install it explicitly with ``side_effect``.
+
+    Args:
+        tool_name (str): The name the assistant is calling.
+        args (dict[str, Any]): JSON-serialisable arguments passed to the tool.
+
+    Returns:
+        MagicMock: A response object shaped like a litellm ModelResponse
+            whose first choice has ``finish_reason="tool_calls"`` and a
+            single tool call matching the given name and args.
+    """
+    resp = MagicMock()
+    resp.choices = [MagicMock()]
+    resp.choices[0].finish_reason = "tool_calls"
+    resp.choices[0].message.content = None
+    tc = MagicMock()
+    tc.id = f"tc_{tool_name}"
+    tc.type = "function"
+    tc.function.name = tool_name
+    tc.function.arguments = json.dumps(args)
+    resp.choices[0].message.tool_calls = [tc]
+    return resp
+
+
+def make_finish_response(text: str = "done") -> MagicMock:
+    """Build a normal (non-tool-call) assistant message.
+
+    Used to terminate a tool loop that was driven by repeated
+    ``make_tool_call_response`` mocks.
+
+    Args:
+        text (str): Content of the terminal message.
+
+    Returns:
+        MagicMock: A response object with ``finish_reason="stop"``,
+            the given text, and ``tool_calls=None``.
+    """
+    resp = MagicMock()
+    resp.choices = [MagicMock()]
+    resp.choices[0].finish_reason = "stop"
+    resp.choices[0].message.content = text
+    resp.choices[0].message.tool_calls = None
+    return resp

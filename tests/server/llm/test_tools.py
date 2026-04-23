@@ -69,3 +69,13 @@ def test_openai_specs_lists_all_registered_tools():
     reg.register(Tool(name="b", args_model=EmitProfileArgs, handler=lambda *_: {}))
     specs = reg.openai_specs()
     assert {s["function"]["name"] for s in specs} == {"a", "b"}
+
+
+def test_mock_tool_call_response_shape(tool_call_completion):
+    make_tc, make_stop = tool_call_completion
+    r = make_tc("emit_profile", {"content": "x"})
+    assert r.choices[0].finish_reason == "tool_calls"
+    assert r.choices[0].message.tool_calls[0].function.name == "emit_profile"
+    s = make_stop()
+    assert s.choices[0].finish_reason == "stop"
+    assert s.choices[0].message.tool_calls is None
