@@ -1,8 +1,17 @@
 import json
+from unittest.mock import patch
 
 from pydantic import BaseModel
 
-from reflexio.server.llm.tools import Tool, ToolRegistry
+from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
+from reflexio.server.llm.model_defaults import ModelRole
+from reflexio.server.llm.tools import (
+    Tool,
+    ToolLoopResult,  # noqa: F401
+    ToolLoopTrace,  # noqa: F401
+    ToolRegistry,
+    run_tool_loop,
+)
 
 
 class EmitProfileArgs(BaseModel):
@@ -79,3 +88,142 @@ def test_mock_tool_call_response_shape(tool_call_completion):
     s = make_stop()
     assert s.choices[0].finish_reason == "stop"
     assert s.choices[0].message.tool_calls is None
+
+
+# ---------------------------------------------------------------------------
+# run_tool_loop tests
+# ---------------------------------------------------------------------------
+
+
+class EmitArgs(BaseModel):
+    """Emit a value."""
+
+    value: str
+
+
+class LoopCtx:
+    """Simple mutable context for tool-loop tests."""
+
+    def __init__(self):
+        self.emitted: list[str] = []
+        self.finished: bool = False
+
+
+def _make_registry(ctx: LoopCtx) -> ToolRegistry:
+    """Build a registry with 'emit' and 'finish' tools that mutate *ctx*."""
+
+    def _emit_handler(args: BaseModel, c: LoopCtx) -> dict:
+        c.emitted.append(args.value)  # type: ignore[attr-defined]
+        return {"ok": True}
+
+    def _finish_handler(args: BaseModel, c: LoopCtx) -> dict:
+        c.finished = True
+        return {"done": True}
+
+    class FinishArgs(BaseModel):
+        """Signal that extraction is complete."""
+
+    reg = ToolRegistry()
+    reg.register(Tool(name="emit", args_model=EmitArgs, handler=_emit_handler))
+    reg.register(Tool(name="finish", args_model=FinishArgs, handler=_finish_handler))
+    return reg
+
+
+def test_run_tool_loop_drives_multiple_turns_until_finish(
+    monkeypatch, tool_call_completion
+):
+    """Three LLM turns (emit, emit, finish) should yield finished_reason='finish_tool'."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_CLI", raising=False)
+
+    make_tc, _make_stop = tool_call_completion
+    responses = [
+        make_tc("emit", {"value": "alpha"}),
+        make_tc("emit", {"value": "beta"}),
+        make_tc("finish", {}),
+    ]
+
+    config = LiteLLMConfig(model="claude-sonnet-4-6")
+    client = LiteLLMClient(config)
+    ctx = LoopCtx()
+    registry = _make_registry(ctx)
+
+    with patch("litellm.completion", side_effect=responses):
+        result = run_tool_loop(
+            client=client,
+            messages=[{"role": "user", "content": "go"}],
+            registry=registry,
+            model_role=ModelRole.ANGLE_READER,
+            ctx=ctx,
+        )
+
+    assert result.finished_reason == "finish_tool"
+    assert result.trace.finished is True
+    assert len(result.trace.turns) == 3
+    assert ctx.emitted == ["alpha", "beta"]
+    assert ctx.finished is True
+
+
+def test_run_tool_loop_honours_max_steps(monkeypatch, tool_call_completion):
+    """With max_steps=3 and unlimited emit responses, the loop caps at 3 turns."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_CLI", raising=False)
+
+    make_tc, _make_stop = tool_call_completion
+    # Supply more responses than max_steps so we are cap-limited, not response-limited.
+    responses = [make_tc("emit", {"value": f"item-{i}"}) for i in range(10)]
+
+    config = LiteLLMConfig(model="claude-sonnet-4-6")
+    client = LiteLLMClient(config)
+    ctx = LoopCtx()
+    registry = _make_registry(ctx)
+
+    with patch("litellm.completion", side_effect=responses):
+        result = run_tool_loop(
+            client=client,
+            messages=[{"role": "user", "content": "go"}],
+            registry=registry,
+            model_role=ModelRole.ANGLE_READER,
+            max_steps=3,
+            ctx=ctx,
+        )
+
+    assert result.finished_reason == "max_steps"
+    assert len(ctx.emitted) == 3
+
+
+def test_run_tool_loop_capability_fallback_uses_response_format(monkeypatch):
+    """When supports_tool_calling is False, generate_chat_response uses response_format."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_CLI", raising=False)
+
+    from reflexio.server.llm import tools as tools_mod
+
+    monkeypatch.setattr(tools_mod, "supports_tool_calling", lambda _model: False)
+
+    config = LiteLLMConfig(model="some-legacy-model")
+    client = LiteLLMClient(config)
+
+    class FallbackSchema(BaseModel):
+        emissions: list[EmitArgs]
+
+    fake_parsed = FallbackSchema(emissions=[EmitArgs(value="x"), EmitArgs(value="y")])
+    monkeypatch.setattr(client, "generate_chat_response", lambda **_: fake_parsed)
+
+    ctx = LoopCtx()
+    registry = _make_registry(ctx)
+
+    result = run_tool_loop(
+        client=client,
+        messages=[{"role": "user", "content": "go"}],
+        registry=registry,
+        model_role=ModelRole.ANGLE_READER,
+        fallback_schema=FallbackSchema,
+        fallback_tool_name="emit",
+        ctx=ctx,
+    )
+
+    assert result.finished_reason == "finish_tool"
+    assert result.trace.finished is True
+    assert len(result.trace.turns) == 2
+    assert ctx.emitted == ["x", "y"]
