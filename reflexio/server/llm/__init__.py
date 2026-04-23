@@ -9,6 +9,7 @@ from .litellm_client import (
     LiteLLMClient,
     LiteLLMClientError,
     LiteLLMConfig,
+    ToolCallingChatResponse,
     create_litellm_client,
 )
 from .model_defaults import (
@@ -22,6 +23,7 @@ __all__ = [
     "LiteLLMConfig",
     "LiteLLMClientError",
     "ModelRole",
+    "ToolCallingChatResponse",
     "create_litellm_client",
     "resolve_model_name",
     "validate_llm_availability",

@@ -200,6 +200,10 @@ _PROVIDER_DEFAULTS: dict[str, ProviderDefaults] = {
         should_run="gpt-5-nano",
         pre_retrieval="gpt-5-nano",
         embedding="text-embedding-3-small",
+        angle_reader="gpt-5-nano",
+        critic="gpt-5-mini",
+        synthesizer="gpt-5-mini",
+        reconciler="gpt-5-mini",
     ),
     "anthropic": ProviderDefaults(
         generation="claude-sonnet-4-6",

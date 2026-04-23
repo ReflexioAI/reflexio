@@ -205,6 +205,26 @@ class LiteLLMConfig:
     api_key_config: APIKeyConfig | None = None
 
 
+@dataclass
+class ToolCallingChatResponse:
+    """Response from a chat call that was routed in tool-calling mode.
+
+    Returned instead of ``str | BaseModel`` whenever the caller passes
+    ``tools=...`` to ``generate_chat_response``. Callers inspect
+    ``tool_calls`` to drive a tool loop; ``content`` is set on the
+    terminal (non-tool) turn.
+
+    Args:
+        content: Text content from the model, or None when the model emitted tool calls.
+        tool_calls: List of tool call objects from the model, or None on the terminal turn.
+        finish_reason: The stop reason reported by the provider (e.g. "tool_calls", "stop").
+    """
+
+    content: str | None
+    tool_calls: list[Any] | None
+    finish_reason: str | None
+
+
 class LiteLLMClientError(Exception):
     """Custom exception for LiteLLM client errors."""
 
@@ -368,8 +388,8 @@ class LiteLLMClient:
         system_message: str | None = None,
         images: list[str | bytes | dict] | None = None,
         image_media_type: str | None = None,
-        **kwargs,
-    ) -> str | BaseModel:
+        **kwargs: Any,
+    ) -> str | BaseModel | ToolCallingChatResponse:
         """
         Generate a response using the configured LLM.
 
@@ -415,14 +435,25 @@ class LiteLLMClient:
         self,
         messages: list[dict[str, Any]],
         system_message: str | None = None,
-        **kwargs,
-    ) -> str | BaseModel:
+        *,
+        tools: list[Any] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
+        model_role: ModelRole | None = None,
+        **kwargs: Any,
+    ) -> str | BaseModel | ToolCallingChatResponse:
         """
         Generate a response from a list of chat messages.
 
         Args:
             messages: List of messages in chat format [{"role": "...", "content": "..."}].
             system_message: Optional system message to prepend.
+            tools: Optional list of tool definitions for tool-calling mode.
+                When provided, the return type is ``ToolCallingChatResponse``.
+            tool_choice: Optional tool choice control ("auto", "none", "required",
+                or a dict specifying a particular tool). Forwarded to the provider.
+            model_role: Optional ``ModelRole`` to override the model selected for
+                this request. The role is resolved via ``resolve_model_name`` using
+                the client's ``api_key_config``.
             **kwargs: Additional parameters including:
                 - response_format: Pydantic BaseModel class for structured output
                 - parse_structured_output: Whether to parse structured output (default True)
@@ -431,7 +462,8 @@ class LiteLLMClient:
 
         Returns:
             Generated response content. Returns string for text responses,
-            or BaseModel instance for Pydantic model responses.
+            ``BaseModel`` instance for Pydantic model responses, or
+            ``ToolCallingChatResponse`` when ``tools`` is provided.
 
         Raises:
             LiteLLMClientError: If the API call fails after all retries,
@@ -456,6 +488,14 @@ class LiteLLMClient:
                 )
             else:
                 final_messages.insert(0, {"role": "system", "content": system_message})
+
+        # Forward tool-calling and model-role kwargs into _make_request
+        if tools is not None:
+            kwargs["tools"] = tools
+        if tool_choice is not None:
+            kwargs["tool_choice"] = tool_choice
+        if model_role is not None:
+            kwargs["model_role"] = model_role
 
         return self._make_request(final_messages, **kwargs)
 
@@ -625,7 +665,24 @@ class LiteLLMClient:
         except (TypeError, ValueError):
             max_retries = max(1, int(self.config.max_retries))
 
+        # Pop tool-calling kwargs before the final params.update(kwargs) so they
+        # don't leak into the params dict twice.
+        tools = kwargs.pop("tools", None)
+        tool_choice = kwargs.pop("tool_choice", None)
+        model_role: ModelRole | None = kwargs.pop("model_role", None)
+
         actual_model = kwargs.pop("model", self.config.model)
+
+        # model_role takes priority over the default model but falls through
+        # to the custom_endpoint override below (highest priority).
+        if model_role is not None:
+            actual_model = resolve_model_name(
+                role=model_role,
+                site_var_value=None,
+                config_override=None,
+                api_key_config=self.config.api_key_config,
+            )
+
         ce = (
             self.config.api_key_config.custom_endpoint
             if self.config.api_key_config
@@ -670,6 +727,10 @@ class LiteLLMClient:
             params["top_p"] = self.config.top_p
         if response_format:
             params["response_format"] = response_format
+        if tools is not None:
+            params["tools"] = tools
+        if tool_choice is not None:
+            params["tool_choice"] = tool_choice
 
         if actual_model != self.config.model:
             api_key, api_base, api_version = self._resolve_api_key(actual_model)
@@ -794,7 +855,7 @@ class LiteLLMClient:
 
     def _make_request(
         self, messages: list[dict[str, Any]], **kwargs: Any
-    ) -> str | BaseModel:
+    ) -> str | BaseModel | ToolCallingChatResponse:
         """
         Make a request to the LLM with retry logic.
 
@@ -803,7 +864,8 @@ class LiteLLMClient:
             **kwargs: Additional parameters.
 
         Returns:
-            Response content as string or BaseModel instance.
+            Response content as string, BaseModel instance, or
+            ToolCallingChatResponse when the request was in tool-calling mode.
 
         Raises:
             LiteLLMClientError: If the request fails after all retries.
@@ -825,7 +887,8 @@ class LiteLLMClient:
             )
             try:
                 response = litellm.completion(**params)
-                content = response.choices[0].message.content  # type: ignore[reportAttributeAccessIssue]
+                message = response.choices[0].message  # type: ignore[reportAttributeAccessIssue]
+                content = message.content
                 elapsed_seconds = time.perf_counter() - request_start
 
                 self._log_token_usage(params, response)
@@ -840,6 +903,15 @@ class LiteLLMClient:
                     elapsed_seconds,
                     True,
                 )
+
+                # Tool-calling path: return a structured response instead of
+                # going through _maybe_parse_structured_output.
+                if "tools" in params:
+                    return ToolCallingChatResponse(
+                        content=content,
+                        tool_calls=getattr(message, "tool_calls", None),
+                        finish_reason=response.choices[0].finish_reason,  # type: ignore[reportAttributeAccessIssue]
+                    )
 
                 return self._maybe_parse_structured_output(
                     content,  # type: ignore[reportArgumentType]
