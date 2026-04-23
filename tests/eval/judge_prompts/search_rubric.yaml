@@ -1,0 +1,15 @@
+judge_model: "claude-sonnet-4-6"
+output_schema: JudgeScore
+prompt: |
+  You are a strict search judge. Score the ranked candidate list against the
+  expected answer:
+
+    - answer_correctness: does the top-1 (or top-3 if the case allows)
+      candidate contain the expected_answer?
+    - grounded_rate: do ranked items actually exist in seeded_profiles or
+      seeded_playbooks (no hallucinated IDs)?
+    - must_not_violated: -1.0 if any must_NOT_rank_first item ranks first,
+      else 0.0.
+
+  Respond ONLY with JSON:
+    {"signal_f1": 0, "answer_correctness": float, "grounded_rate": float, "rationale": str}
