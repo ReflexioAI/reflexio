@@ -148,6 +148,7 @@ class ProfileReader:
             max_steps=self.max_steps,
             ctx=ctx,
             finish_tool_name="finish",
+            log_label=f"profile_reader_{self.angle}",
         )
         return list(ctx.candidates)
 
@@ -198,5 +199,6 @@ class PlaybookReader:
             max_steps=self.max_steps,
             ctx=ctx,
             finish_tool_name="finish",
+            log_label=f"playbook_reader_{self.angle}",
         )
         return list(ctx.candidates)

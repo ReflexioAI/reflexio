@@ -203,6 +203,7 @@ class ProfileSynthesizer:
             max_steps=self.max_steps,
             ctx=ctx,
             finish_tool_name="finish",
+            log_label="profile_synthesizer",
         )
         return ctx.ordered, ctx.flags
 
@@ -261,5 +262,6 @@ class PlaybookSynthesizer:
             max_steps=self.max_steps,
             ctx=ctx,
             finish_tool_name="finish",
+            log_label="playbook_synthesizer",
         )
         return ctx.ordered, ctx.flags

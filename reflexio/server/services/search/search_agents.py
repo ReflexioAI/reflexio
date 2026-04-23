@@ -258,6 +258,7 @@ class ProfileSearchAgent:
             max_steps=self.max_steps,
             ctx=ctx,
             finish_tool_name="submit_candidates",
+            log_label=f"profile_search_{self.intent}",
         )
         return ctx
 
@@ -312,5 +313,6 @@ class PlaybookSearchAgent:
             max_steps=self.max_steps,
             ctx=ctx,
             finish_tool_name="submit_candidates",
+            log_label=f"playbook_search_{self.intent}",
         )
         return ctx

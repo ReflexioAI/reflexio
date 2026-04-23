@@ -266,3 +266,152 @@ def test_run_tool_loop_returns_error_on_client_exception(
     assert result.finished_reason == "error"
     assert result.trace.finished is False
     assert result.trace.turns == []
+
+
+# ---------------- log_label (llm_io.log) integration ---------------- #
+
+
+def test_run_tool_loop_log_label_none_does_not_invoke_llm_io_helpers(
+    monkeypatch, tool_call_completion
+):
+    """Default log_label=None → zero calls to log_llm_messages / log_model_response."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_CLI", raising=False)
+
+    make_tc, _ = tool_call_completion
+    responses = [make_tc("finish", {})]
+    client = LiteLLMClient(LiteLLMConfig(model="claude-sonnet-4-6"))
+    ctx = LoopCtx()
+    registry = _make_registry(ctx)
+
+    with (
+        patch(
+            "reflexio.server.services.service_utils.log_llm_messages"
+        ) as mock_log_msgs,
+        patch(
+            "reflexio.server.services.service_utils.log_model_response"
+        ) as mock_log_resp,
+        patch("litellm.completion", side_effect=responses),
+    ):
+        run_tool_loop(
+            client=client,
+            messages=[{"role": "user", "content": "go"}],
+            registry=registry,
+            model_role=ModelRole.ANGLE_READER,
+            ctx=ctx,
+        )
+
+    mock_log_msgs.assert_not_called()
+    mock_log_resp.assert_not_called()
+
+
+def test_run_tool_loop_log_label_native_path_logs_each_turn(
+    monkeypatch, tool_call_completion
+):
+    """log_label='X' → one log_llm_messages + one log_model_response per native turn.
+
+    Across 2 turns, we expect:
+      - 2 prompt log entries labelled "X (turn 1)" and "X (turn 2)"
+      - 2 response log entries with matching labels
+    """
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_CLI", raising=False)
+
+    make_tc, _ = tool_call_completion
+    responses = [make_tc("emit", {"value": "a"}), make_tc("finish", {})]
+    client = LiteLLMClient(LiteLLMConfig(model="claude-sonnet-4-6"))
+    ctx = LoopCtx()
+    registry = _make_registry(ctx)
+
+    with (
+        patch(
+            "reflexio.server.services.service_utils.log_llm_messages"
+        ) as mock_log_msgs,
+        patch(
+            "reflexio.server.services.service_utils.log_model_response"
+        ) as mock_log_resp,
+        patch("litellm.completion", side_effect=responses),
+    ):
+        run_tool_loop(
+            client=client,
+            messages=[{"role": "user", "content": "go"}],
+            registry=registry,
+            model_role=ModelRole.ANGLE_READER,
+            ctx=ctx,
+            log_label="profile_reader_facts",
+        )
+
+    assert mock_log_msgs.call_count == 2
+    assert mock_log_resp.call_count == 2
+    # Label suffixes increment per turn
+    msg_labels = [c.args[1] for c in mock_log_msgs.call_args_list]
+    resp_labels = [c.args[1] for c in mock_log_resp.call_args_list]
+    assert msg_labels == [
+        "profile_reader_facts (turn 1)",
+        "profile_reader_facts (turn 2)",
+    ]
+    assert resp_labels == [
+        "profile_reader_facts (turn 1)",
+        "profile_reader_facts (turn 2)",
+    ]
+
+
+def test_run_tool_loop_log_label_fallback_path_logs_once(monkeypatch):
+    """Capability-fallback path logs exactly one prompt + one response with '(fallback)' suffix."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_CLI", raising=False)
+
+    # Force capability-fallback path
+    monkeypatch.setattr(
+        "reflexio.server.llm.tools.supports_tool_calling", lambda _model: False
+    )
+
+    class EmitListSchema(BaseModel):
+        items: list[EmitArgs] = []
+
+    class FinishArgs(BaseModel):
+        """Signal end."""
+
+    reg = ToolRegistry()
+    ctx = LoopCtx()
+
+    def _emit(args: BaseModel, c: LoopCtx) -> dict:
+        c.emitted.append(args.value)  # type: ignore[attr-defined]
+        return {"ok": True}
+
+    reg.register(Tool(name="emit", args_model=EmitArgs, handler=_emit))
+    reg.register(
+        Tool(
+            name="finish",
+            args_model=FinishArgs,
+            handler=lambda _a, _c: {"done": True},
+        )
+    )
+
+    client = LiteLLMClient(LiteLLMConfig(model="claude-sonnet-4-6"))
+    parsed = EmitListSchema(items=[EmitArgs(value="a"), EmitArgs(value="b")])
+
+    with (
+        patch(
+            "reflexio.server.services.service_utils.log_llm_messages"
+        ) as mock_log_msgs,
+        patch(
+            "reflexio.server.services.service_utils.log_model_response"
+        ) as mock_log_resp,
+        patch.object(client, "generate_chat_response", return_value=parsed),
+    ):
+        run_tool_loop(
+            client=client,
+            messages=[{"role": "user", "content": "go"}],
+            registry=reg,
+            model_role=ModelRole.ANGLE_READER,
+            ctx=ctx,
+            fallback_schema=EmitListSchema,
+            fallback_tool_name="emit",
+            log_label="profile_reader_facts",
+        )
+
+    assert mock_log_msgs.call_count == 1
+    assert mock_log_resp.call_count == 1
+    assert mock_log_msgs.call_args.args[1] == "profile_reader_facts (fallback)"
+    assert mock_log_resp.call_args.args[1] == "profile_reader_facts (fallback)"

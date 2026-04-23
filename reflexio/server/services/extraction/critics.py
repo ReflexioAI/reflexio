@@ -292,6 +292,7 @@ class ProfileCritic:
             max_steps=self.max_steps,
             ctx=ctx,
             finish_tool_name="finish",
+            log_label="profile_critic",
         )
         return list(ctx.vetted), list(ctx.flags)
 
@@ -349,6 +350,7 @@ class PlaybookCritic:
             max_steps=self.max_steps,
             ctx=ctx,
             finish_tool_name="finish",
+            log_label="playbook_critic",
         )
         return list(ctx.vetted), list(ctx.flags)
 
@@ -544,5 +546,6 @@ class Reconciler:
             max_steps=self.max_steps,
             ctx=ctx,
             finish_tool_name="finish",
+            log_label="reconciler",
         )
         return ctx.profiles, ctx.playbooks

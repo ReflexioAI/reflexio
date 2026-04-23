@@ -139,6 +139,7 @@ def run_tool_loop(
     finish_tool_name: str = "finish",
     fallback_schema: type[BaseModel] | None = None,
     fallback_tool_name: str | None = None,
+    log_label: str | None = None,
 ) -> ToolLoopResult:
     """Drive an LLM through a tool-calling loop until ``finish_tool_name`` or ``max_steps``.
 
@@ -160,6 +161,11 @@ def run_tool_loop(
             capability-fallback path; required when tool-calling is unsupported.
         fallback_tool_name (str | None): Name of the tool each fallback item
             is dispatched against.
+        log_label (str | None): When set, each LLM call in the loop is
+            mirrored into ``~/.reflexio/logs/llm_io.log`` using this label
+            (suffixed with ``(turn N)`` or ``(fallback)``). Matches classic
+            per-call logging parity. Leave unset (default) to suppress
+            file-level logging for tool-loop callers like unit tests.
 
     Returns:
         ToolLoopResult: ``ctx``, trace, and the terminator reason.
@@ -175,17 +181,29 @@ def run_tool_loop(
     )
     trace = ToolLoopTrace()
 
+    # Lazily import the llm_io helpers only when logging is requested —
+    # matches classic's per-call lazy-import pattern in profile_deduplicator.py.
+    if log_label:
+        from reflexio.server.services.service_utils import (
+            log_llm_messages,
+            log_model_response,
+        )
+
     # ---- Capability fallback ------------------------------------------
     if not supports_tool_calling(model):
         if fallback_schema is None or fallback_tool_name is None:
             raise RuntimeError(
                 f"Model {model} lacks tool-calling and no fallback_schema provided"
             )
+        if log_label:
+            log_llm_messages(logger, f"{log_label} (fallback)", messages)
         parsed = client.generate_chat_response(
             messages=messages,
             response_format=fallback_schema,
             model_role=model_role,
         )
+        if log_label:
+            log_model_response(logger, f"{log_label} (fallback)", parsed)
         # The fallback path always passes response_format so the client
         # returns a parsed BaseModel instance. Narrow the type so pyright
         # can see model_fields is available.
@@ -215,12 +233,16 @@ def run_tool_loop(
     try:
         for _step in range(max_steps):
             t0 = time.monotonic()
+            if log_label:
+                log_llm_messages(logger, f"{log_label} (turn {_step + 1})", local_msgs)
             resp = client.generate_chat_response(
                 messages=local_msgs,
                 tools=registry.openai_specs(),
                 tool_choice="auto",
                 model_role=model_role,
             )
+            if log_label:
+                log_model_response(logger, f"{log_label} (turn {_step + 1})", resp)
             tool_calls = getattr(resp, "tool_calls", None)
             if not tool_calls:
                 trace.finished = True
