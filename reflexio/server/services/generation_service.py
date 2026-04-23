@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 from reflexio.defaults import resolve_agent_version
 from reflexio.models.api_schema.service_schemas import (
@@ -15,6 +16,7 @@ from reflexio.models.api_schema.service_schemas import (
     PublishUserInteractionRequest,
     Request,
 )
+from reflexio.models.config_schema import Config
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.services.agent_success_evaluation.delayed_group_evaluator import (
@@ -36,6 +38,9 @@ from reflexio.server.services.profile.profile_generation_service import (
 from reflexio.server.services.profile.profile_generation_service_utils import (
     ProfileGenerationRequest,
 )
+
+if TYPE_CHECKING:
+    from reflexio.server.services.unified_search_service import UnifiedSearchService
 
 logger = logging.getLogger(__name__)
 # Stale lock timeout - if cleanup started > 10 min ago and still "in_progress", assume it crashed
@@ -381,3 +386,74 @@ class GenerationService:
             )
             for interaction_data in interaction_data_list
         ]
+
+
+def build_extraction_service(
+    config: Config,
+    *,
+    llm_client: LiteLLMClient,
+    request_context: RequestContext,
+) -> ProfileGenerationService:
+    """Dispatch to the classic or agentic extraction service.
+
+    Selected by ``config.extraction_backend``. Classic returns a
+    ``ProfileGenerationService`` (the full classic pipeline runs
+    profile + playbook extractors in parallel from
+    ``GenerationService.run`` — this factory only exposes the profile
+    service as the primary handle for the dispatcher; the full agentic
+    pipeline will replace both in Phase 6).
+
+    Args:
+        config (Config): Top-level ``Config``. Reads ``extraction_backend``.
+        llm_client (LiteLLMClient): Configured ``LiteLLMClient``.
+        request_context (RequestContext): Current request context.
+
+    Returns:
+        Object with a ``run(request)`` method — either a classic
+        ``ProfileGenerationService`` or the agentic service.
+    """
+    if config.extraction_backend == "agentic":
+        # Lazy import — the agentic service lands in Phase 3.
+        from reflexio.server.services.extraction.agentic_extraction_service import (  # type: ignore[import-not-found]
+            AgenticExtractionService,
+        )
+
+        return AgenticExtractionService(
+            llm_client=llm_client, request_context=request_context
+        )
+    return ProfileGenerationService(
+        llm_client=llm_client, request_context=request_context
+    )
+
+
+def build_search_service(
+    config: Config,
+    *,
+    llm_client: LiteLLMClient,
+    request_context: RequestContext,
+) -> UnifiedSearchService:
+    """Dispatch to the classic or agentic search service.
+
+    Selected by ``config.search_backend``. Classic returns a
+    ``UnifiedSearchService``; agentic returns the Phase-4 pipeline.
+
+    Args:
+        config (Config): Top-level ``Config``. Reads ``search_backend``.
+        llm_client (LiteLLMClient): Configured ``LiteLLMClient``.
+        request_context (RequestContext): Current request context.
+
+    Returns:
+        Object holding ``llm_client`` and ``request_context`` — either a
+        classic ``UnifiedSearchService`` or the agentic service.
+    """
+    if config.search_backend == "agentic":
+        from reflexio.server.services.search.agentic_search_service import (  # type: ignore[import-not-found]
+            AgenticSearchService,
+        )
+
+        return AgenticSearchService(
+            llm_client=llm_client, request_context=request_context
+        )
+    from reflexio.server.services.unified_search_service import UnifiedSearchService
+
+    return UnifiedSearchService(llm_client=llm_client, request_context=request_context)

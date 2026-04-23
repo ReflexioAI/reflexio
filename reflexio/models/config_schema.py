@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import IntEnum, StrEnum
-from typing import Any, Self
+from typing import Any, Literal, Self
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -457,6 +457,11 @@ class Config(BaseModel):
     skip_should_run_check: bool = False
     # Enable storage-time document expansion for improved FTS recall
     enable_document_expansion: bool = False
+    # Pipeline selection — "classic" (single-shot LLM + RAG) or "agentic"
+    # (multi-reader + critic). Defaults keep existing behavior; flip to
+    # "agentic" to opt in once Phase 3/4 land.
+    extraction_backend: Literal["classic", "agentic"] = "classic"
+    search_backend: Literal["classic", "agentic"] = "classic"
 
     @model_validator(mode="before")
     @classmethod

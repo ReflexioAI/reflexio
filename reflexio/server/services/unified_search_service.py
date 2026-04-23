@@ -6,9 +6,12 @@ Executes in two phases:
   Phase B: Entity searches across profiles, agent playbooks, user playbooks (parallel)
 """
 
+from __future__ import annotations
+
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
+from typing import TYPE_CHECKING
 
 from reflexio.models.api_schema.retriever_schema import (
     ConversationTurn,
@@ -28,6 +31,9 @@ from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.prompt.prompt_manager import PromptManager
 from reflexio.server.services.pre_retrieval import QueryReformulator
 from reflexio.server.services.storage.storage_base import BaseStorage
+
+if TYPE_CHECKING:
+    from reflexio.server.api_endpoints.request_context import RequestContext
 
 logger = logging.getLogger(__name__)
 
@@ -268,3 +274,24 @@ def _search_profiles_via_storage(
     except Exception as e:
         logger.error("Profile search failed: %s", e)
         return []
+
+
+class UnifiedSearchService:
+    """Class handle for the classic unified search pipeline.
+
+    Wraps :func:`run_unified_search` so the dispatcher factory can return an
+    object whose ``__class__.__name__`` can be inspected uniformly alongside
+    the agentic search service (Phase 4).
+
+    Args:
+        llm_client (LiteLLMClient): Configured LLM client.
+        request_context (RequestContext): Current request context.
+    """
+
+    def __init__(
+        self,
+        llm_client: LiteLLMClient,
+        request_context: RequestContext,
+    ) -> None:
+        self.llm_client = llm_client
+        self.request_context = request_context
