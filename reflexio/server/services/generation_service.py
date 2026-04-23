@@ -40,6 +40,12 @@ from reflexio.server.services.profile.profile_generation_service_utils import (
 )
 
 if TYPE_CHECKING:
+    from reflexio.server.services.extraction.agentic_extraction_service import (
+        AgenticExtractionService,
+    )
+    from reflexio.server.services.search.agentic_search_service import (
+        AgenticSearchService,
+    )
     from reflexio.server.services.unified_search_service import UnifiedSearchService
 
 logger = logging.getLogger(__name__)
@@ -175,6 +181,34 @@ class GenerationService:
 
             # Extract source (empty string treated as None)
             source = publish_user_interaction_request.source or None
+
+            # Dispatch to the agentic pipeline when the config flag is set.
+            # Classic path (default) falls through to the ProfileGenerationService
+            # + PlaybookGenerationService fan-out below.
+            root_config = self.configurator.get_config()
+            if (
+                root_config is not None
+                and getattr(root_config, "extraction_backend", "classic") == "agentic"
+            ):
+                from reflexio.server.services.extraction.agentic_adapter import (
+                    AgenticExtractionRunner,
+                )
+
+                runner = AgenticExtractionRunner(
+                    llm_client=self.client,
+                    request_context=self.request_context,
+                    org_id=self.org_id,
+                )
+                result.warnings.extend(
+                    runner.run(
+                        publish_request=publish_user_interaction_request,
+                        request_id=request_id,
+                        new_interactions=new_interactions,
+                        new_request=new_request,
+                        config=root_config,
+                    )
+                )
+                return result
 
             # Create generation services and requests
             # Each service writes to separate storage tables and has no dependencies on others
@@ -393,7 +427,7 @@ def build_extraction_service(
     *,
     llm_client: LiteLLMClient,
     request_context: RequestContext,
-) -> ProfileGenerationService:
+) -> "ProfileGenerationService | AgenticExtractionService":
     """Dispatch to the classic or agentic extraction service.
 
     Selected by ``config.extraction_backend``. Classic returns a
@@ -431,7 +465,7 @@ def build_search_service(
     *,
     llm_client: LiteLLMClient,
     request_context: RequestContext,
-) -> UnifiedSearchService:
+) -> "UnifiedSearchService | AgenticSearchService":
     """Dispatch to the classic or agentic search service.
 
     Selected by ``config.search_backend``. Classic returns a
