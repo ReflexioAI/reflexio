@@ -564,3 +564,240 @@ def test_runner_output_pending_status_propagates_to_persisted_profiles():
 def test_ttl_all_finite_literals_map_correctly(ttl, expected_delta):
     now = 1_700_000_000
     assert _compute_expiration(ttl, now_ts=now) == now + expected_delta
+
+
+# ---------------- PlaybookDeduplicator wiring ---------------- #
+
+
+def test_runner_playbook_dedup_invoked_when_feature_flag_enabled():
+    """When is_deduplicator_enabled=True, PlaybookDeduplicator runs on agentic playbooks."""
+    result = ExtractionResult(
+        playbooks=[
+            VettedPlaybook(trigger="t1", content="c1"),
+            VettedPlaybook(trigger="t2", content="c2"),
+        ],
+    )
+    storage = MagicMock()
+    runner = _make_runner(storage=storage, service_result=result)
+
+    fake_dedup = MagicMock()
+    fake_dedup.deduplicate.return_value = (
+        # Single retained playbook + one superseded ID on disk
+        [
+            UserPlaybook(
+                user_id="u_test",
+                agent_version="v1",
+                request_id="req_abc",
+                content="merged",
+            )
+        ],
+        [42],
+    )
+    with (
+        patch(
+            "reflexio.server.services.extraction.agentic_adapter.is_deduplicator_enabled",
+            return_value=True,
+        ),
+        patch(
+            "reflexio.server.services.extraction.agentic_adapter.PlaybookDeduplicator",
+            return_value=fake_dedup,
+        ),
+    ):
+        runner.run(
+            publish_request=_make_publish_request(),
+            request_id="req_abc",
+            new_interactions=[
+                _make_interaction(
+                    "User", "Long user message that passes the pre-filter length check"
+                )
+            ],
+            new_request=_make_request(),
+            config=Config(storage_config=StorageConfigSQLite()),
+        )
+
+    fake_dedup.deduplicate.assert_called_once()
+    # Save ran with the deduped set (1 item, not 2)
+    assert storage.save_user_playbooks.call_count == 1
+    assert len(storage.save_user_playbooks.call_args.args[0]) == 1
+    # Superseded ID was deleted AFTER save
+    storage.delete_user_playbooks_by_ids.assert_called_once_with([42])
+
+
+def test_runner_playbook_dedup_skipped_when_feature_flag_disabled():
+    """Feature flag off → PlaybookDeduplicator never constructed; raw playbooks persist."""
+    result = ExtractionResult(
+        playbooks=[VettedPlaybook(trigger="t", content="c")],
+    )
+    storage = MagicMock()
+    runner = _make_runner(storage=storage, service_result=result)
+
+    with (
+        patch(
+            "reflexio.server.services.extraction.agentic_adapter.is_deduplicator_enabled",
+            return_value=False,
+        ),
+        patch(
+            "reflexio.server.services.extraction.agentic_adapter.PlaybookDeduplicator",
+        ) as mock_dedup_cls,
+    ):
+        runner.run(
+            publish_request=_make_publish_request(),
+            request_id="req_abc",
+            new_interactions=[
+                _make_interaction(
+                    "User", "Long user message that passes the pre-filter length check"
+                )
+            ],
+            new_request=_make_request(),
+            config=Config(storage_config=StorageConfigSQLite()),
+        )
+
+    mock_dedup_cls.assert_not_called()
+    storage.save_user_playbooks.assert_called_once()
+    storage.delete_user_playbooks_by_ids.assert_not_called()
+
+
+def test_runner_playbook_dedup_passes_extractor_config_dedup_config():
+    """dedup_config should be pulled from the first extractor config that has one."""
+    from reflexio.models.config_schema import (
+        DeduplicationConfig,
+        UserPlaybookExtractorConfig,
+    )
+
+    result = ExtractionResult(
+        playbooks=[VettedPlaybook(trigger="t", content="c")],
+    )
+    runner = _make_runner(service_result=result)
+
+    expected_cfg = DeduplicationConfig(search_threshold=0.42)
+    user_cfgs = [
+        UserPlaybookExtractorConfig(
+            extractor_name="no_dedup",
+            extraction_definition_prompt="p",
+        ),
+        UserPlaybookExtractorConfig(
+            extractor_name="with_dedup",
+            extraction_definition_prompt="p",
+            deduplication_config=expected_cfg,
+        ),
+    ]
+    cfg = Config(
+        storage_config=StorageConfigSQLite(),
+        user_playbook_extractor_configs=user_cfgs,
+    )
+
+    constructed_kwargs = {}
+
+    def fake_ctor(*args, **kwargs):
+        constructed_kwargs.update(kwargs)
+        m = MagicMock()
+        m.deduplicate.return_value = ([], [])
+        return m
+
+    with (
+        patch(
+            "reflexio.server.services.extraction.agentic_adapter.is_deduplicator_enabled",
+            return_value=True,
+        ),
+        patch(
+            "reflexio.server.services.extraction.agentic_adapter.PlaybookDeduplicator",
+            side_effect=fake_ctor,
+        ),
+    ):
+        runner.run(
+            publish_request=_make_publish_request(),
+            request_id="req_abc",
+            new_interactions=[
+                _make_interaction(
+                    "User", "Long user message that passes the pre-filter length check"
+                )
+            ],
+            new_request=_make_request(),
+            config=cfg,
+        )
+
+    assert constructed_kwargs.get("dedup_config") is expected_cfg
+
+
+def test_runner_playbook_dedup_delete_failure_surfaces_as_warning():
+    """Delete failure after save → warning, publish still returns."""
+    result = ExtractionResult(
+        playbooks=[VettedPlaybook(trigger="t", content="c")],
+    )
+    storage = MagicMock()
+    storage.delete_user_playbooks_by_ids.side_effect = RuntimeError("delete boom")
+    runner = _make_runner(storage=storage, service_result=result)
+
+    fake_dedup = MagicMock()
+    fake_dedup.deduplicate.return_value = (
+        [
+            UserPlaybook(
+                user_id="u_test",
+                agent_version="v1",
+                request_id="req_abc",
+                content="merged",
+            )
+        ],
+        [99],
+    )
+    with (
+        patch(
+            "reflexio.server.services.extraction.agentic_adapter.is_deduplicator_enabled",
+            return_value=True,
+        ),
+        patch(
+            "reflexio.server.services.extraction.agentic_adapter.PlaybookDeduplicator",
+            return_value=fake_dedup,
+        ),
+    ):
+        warnings = runner.run(
+            publish_request=_make_publish_request(),
+            request_id="req_abc",
+            new_interactions=[
+                _make_interaction(
+                    "User", "Long user message that passes the pre-filter length check"
+                )
+            ],
+            new_request=_make_request(),
+            config=Config(storage_config=StorageConfigSQLite()),
+        )
+
+    assert any("delete superseded playbooks failed" in w for w in warnings)
+    storage.save_user_playbooks.assert_called_once()
+
+
+def test_runner_playbook_dedup_failure_falls_back_to_raw_list():
+    """If PlaybookDeduplicator raises, the raw playbooks are still saved + warning recorded."""
+    vpb = VettedPlaybook(trigger="t", content="c")
+    result = ExtractionResult(playbooks=[vpb])
+    storage = MagicMock()
+    runner = _make_runner(storage=storage, service_result=result)
+
+    fake_dedup = MagicMock()
+    fake_dedup.deduplicate.side_effect = RuntimeError("dedup boom")
+    with (
+        patch(
+            "reflexio.server.services.extraction.agentic_adapter.is_deduplicator_enabled",
+            return_value=True,
+        ),
+        patch(
+            "reflexio.server.services.extraction.agentic_adapter.PlaybookDeduplicator",
+            return_value=fake_dedup,
+        ),
+    ):
+        warnings = runner.run(
+            publish_request=_make_publish_request(),
+            request_id="req_abc",
+            new_interactions=[
+                _make_interaction(
+                    "User", "Long user message that passes the pre-filter length check"
+                )
+            ],
+            new_request=_make_request(),
+            config=Config(storage_config=StorageConfigSQLite()),
+        )
+
+    assert any("playbook deduplicator failed" in w for w in warnings)
+    # Raw playbook still got saved despite the dedup failure
+    storage.save_user_playbooks.assert_called_once()
+    assert len(storage.save_user_playbooks.call_args.args[0]) == 1

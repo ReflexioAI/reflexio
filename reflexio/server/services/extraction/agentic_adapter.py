@@ -14,9 +14,11 @@ This module provides ``AgenticExtractionRunner`` — a thin wrapper that:
 3. Converts vetted items into ``UserProfile`` / ``UserPlaybook`` with
    identifiers, timestamps, and ``source`` filled in.
 4. Runs the classic ``ProfileDeduplicator`` (when its feature flag is
-   enabled) before persisting — matches classic behaviour.
-5. Persists profiles + playbooks via the existing storage APIs.
-6. Triggers ``PlaybookAggregator`` for every configured playbook with an
+   enabled) before persisting profiles — matches classic behaviour.
+5. Runs the classic ``PlaybookDeduplicator`` (same feature flag) before
+   persisting playbooks, and deletes superseded rows after successful save.
+6. Persists profiles + playbooks via the existing storage APIs.
+7. Triggers ``PlaybookAggregator`` for every configured playbook with an
    aggregation_config, unless ``skip_aggregation`` was set on the
    publish request.
 """
@@ -44,6 +46,7 @@ from reflexio.server.services.extraction.agentic_extraction_service import (
 )
 from reflexio.server.services.extraction.critics import VettedPlaybook, VettedProfile
 from reflexio.server.services.playbook.playbook_aggregator import PlaybookAggregator
+from reflexio.server.services.playbook.playbook_deduplicator import PlaybookDeduplicator
 from reflexio.server.services.playbook.playbook_service_utils import (
     PlaybookAggregatorRequest,
 )
@@ -323,9 +326,40 @@ class AgenticExtractionRunner:
             except Exception as e:  # noqa: BLE001 - degrade gracefully on delete
                 warnings.append(f"delete superseded profile {pid} failed: {e}")
 
-        # (6) Persist playbooks.
+        # (6a) Playbook dedup — matches classic's PlaybookGenerationService._process_results.
+        playbook_ids_to_delete: list[int] = []
+        if new_playbooks and is_deduplicator_enabled(self.org_id):
+            new_playbooks, playbook_ids_to_delete = self._run_playbook_dedup(
+                new_playbooks=new_playbooks,
+                publish_request=publish_request,
+                request_id=request_id,
+                config=config,
+                warnings=warnings,
+            )
+
+        # (6b) Apply status to the deduplicated playbook set (classic parity).
+        for pb in new_playbooks:
+            pb.status = Status.PENDING if self.output_pending_status else None
+
+        # (6c) Persist playbooks, then delete superseded IDs only on successful save.
         if new_playbooks:
-            self.storage.save_user_playbooks(new_playbooks)
+            try:
+                self.storage.save_user_playbooks(new_playbooks)
+                if playbook_ids_to_delete:
+                    try:
+                        deleted = self.storage.delete_user_playbooks_by_ids(
+                            playbook_ids_to_delete
+                        )
+                        logger.info("Deleted %d superseded user playbook(s)", deleted)
+                    except Exception as e:  # noqa: BLE001 - degrade gracefully
+                        warnings.append(f"delete superseded playbooks failed: {e}")
+            except Exception as e:  # noqa: BLE001 - save failures surface as warnings
+                logger.warning(
+                    "agentic save_user_playbooks failed: %s: %s",
+                    type(e).__name__,
+                    e,
+                )
+                warnings.append(f"save_user_playbooks failed: {e}")
 
         # (7) Playbook aggregation — mirrors classic's per-config loop.
         if new_playbooks and not publish_request.skip_aggregation:
@@ -351,6 +385,65 @@ class AgenticExtractionRunner:
                 interactions=list(new_interactions),
             )
         ]
+
+    def _run_playbook_dedup(
+        self,
+        *,
+        new_playbooks: list[UserPlaybook],
+        publish_request: PublishUserInteractionRequest,
+        request_id: str,
+        config: Config,
+        warnings: list[str],
+    ) -> tuple[list[UserPlaybook], list[int]]:
+        """Run the classic ``PlaybookDeduplicator`` on this publish's playbooks.
+
+        Mirrors ``PlaybookGenerationService._process_results`` at
+        ``playbook_generation_service.py:271-305``: pulls ``dedup_config`` from
+        the first extractor config that has one, wraps the list as the
+        ``list[list[UserPlaybook]]`` the deduplicator expects, and returns
+        the deduplicated playbooks plus IDs of superseded existing rows the
+        caller should delete after a successful save.
+
+        Failures degrade gracefully: the original ``new_playbooks`` are
+        returned unchanged and the error is appended to ``warnings``.
+        """
+        dedup_config = next(
+            (
+                c.deduplication_config
+                for c in (config.user_playbook_extractor_configs or [])
+                if c.deduplication_config
+            ),
+            None,
+        )
+        try:
+            deduplicator = PlaybookDeduplicator(
+                request_context=self.request_context,
+                llm_client=self.client,
+                dedup_config=dedup_config,
+            )
+            deduped, ids_to_delete = deduplicator.deduplicate(
+                [new_playbooks],
+                request_id,
+                publish_request.agent_version,
+                user_id=publish_request.user_id,
+            )
+            logger.info(
+                "Agentic playbook dedup: %d playbooks retained, %d superseded IDs to delete",
+                len(deduped),
+                len(ids_to_delete),
+            )
+            # Classic falls back to the original list when deduper returns
+            # nothing; mirror that safety net.
+            retained = deduped or new_playbooks
+            return retained, ids_to_delete
+        except Exception as e:  # noqa: BLE001 - dedup failures degrade gracefully
+            logger.warning(
+                "agentic playbook deduplicator failed: %s: %s",
+                type(e).__name__,
+                e,
+            )
+            warnings.append(f"playbook deduplicator failed: {e}")
+            return new_playbooks, []
 
     def _run_aggregation(
         self,
