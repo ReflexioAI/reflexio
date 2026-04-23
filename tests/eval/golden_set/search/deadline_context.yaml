@@ -1,0 +1,19 @@
+id: deadline_context
+description: Query asks what the user is working on; depends on short-term context profile.
+query: "what is the user working on right now?"
+conversation_history: []
+seeded_profiles:
+  - id: p_role
+    user_id: u1
+    content: "User is a senior backend engineer."
+    time_to_live: "persistent"
+  - id: p_project
+    user_id: u1
+    content: "User is migrating the billing service to Go, due Friday."
+    time_to_live: "short_term"
+seeded_playbooks: []
+expected_top_candidates: ["p_project"]
+expected_answer: "billing service migration to Go"
+notes_for_judge: |
+  The persistent role profile is a red herring for this query — any pipeline
+  that ranks p_role first fails.

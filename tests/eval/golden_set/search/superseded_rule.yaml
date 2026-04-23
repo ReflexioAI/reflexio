@@ -1,0 +1,25 @@
+id: superseded_rule
+description: Query asks about a rule the user updated — must surface the current rule, not the obsolete one.
+query: "do we skip tests on ship?"
+conversation_history: []
+seeded_profiles: []
+seeded_playbooks:
+  - id: b_old
+    user_id: u1
+    trigger: "user says ship"
+    content: "skip tests"
+    rationale: ""
+    time_to_live: "expired"
+  - id: b_new
+    user_id: u1
+    trigger: "user says ship"
+    content: "run tests then deploy"
+    rationale: "after the april regression"
+    time_to_live: "persistent"
+expected_top_candidates: ["b_new"]
+expected_answer: "run tests then deploy"
+must_NOT_rank_first: ["b_old"]
+notes_for_judge: |
+  Classic search with respect_ttl=true may drop b_old entirely (good), but
+  the agentic temporal intent can keep it flagged as "superseded" and
+  explain the supersession chain.
