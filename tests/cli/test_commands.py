@@ -429,6 +429,27 @@ class TestConfigLocalMissingFile:
         assert "Persisted storage: (not set)" in result.output
 
 
+class TestAuthStatusJson:
+    """Tests for 'auth status --json' — verifies env_exists is surfaced."""
+
+    def test_json_envelope_includes_env_exists(
+        self, runner, app, tmp_path, monkeypatch
+    ) -> None:
+        """Agents parsing JSON must be able to tell if the env file exists."""
+        # Patch the symbol at the call site — auth.py imports `get_env_path`
+        # with `from ... import`, so patching the source module has no effect.
+        monkeypatch.setattr(
+            "reflexio.cli.commands.auth.get_env_path",
+            lambda: tmp_path / "missing-reflexio" / ".env",
+        )
+        result = runner.invoke(app, ["--json", "auth", "status"])
+        assert result.exit_code == 0, result.output
+        envelope = json.loads(result.output)
+        assert envelope["ok"] is True
+        assert envelope["data"]["env_exists"] is False
+        assert envelope["data"]["env_path"].endswith(".env")
+
+
 class TestPublishUserIdResolution:
     """Tests for 'interactions publish' user_id precedence: payload > flag > env > error."""
 

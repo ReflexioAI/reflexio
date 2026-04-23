@@ -70,13 +70,16 @@ def show(
         ctx: Typer context with CliState in ctx.obj
         show_all: If True, include all fields (even None/default) in output
     """
-    from reflexio.cli.bootstrap_config import _DEFAULT_ORG_ID, _config_dir
+    from reflexio.cli.bootstrap_config import default_config_path
 
     client = get_client(ctx)
     resp = client.get_config()
 
-    config_path = _config_dir() / f"config_{_DEFAULT_ORG_ID}.json"
+    config_path = default_config_path()
     config_exists = config_path.exists()
+    # `MyConfigResponse` owns the `data` envelope field, so local-file
+    # state ships under `meta` for this command — unlike `config local`
+    # and `auth status`, where the file path IS the primary data.
     local_config_meta = {
         "path": str(config_path),
         "exists": config_exists,
@@ -115,15 +118,14 @@ def show_local(ctx: typer.Context) -> None:
         ctx: Typer context with CliState in ctx.obj
     """
     from reflexio.cli.bootstrap_config import (
-        _DEFAULT_ORG_ID,
-        _config_dir,
+        default_config_path,
         load_storage_from_config,
         resolve_storage,
     )
 
     persisted = load_storage_from_config()
     resolved = resolve_storage(None)  # full resolution without CLI flag
-    config_path = _config_dir() / f"config_{_DEFAULT_ORG_ID}.json"
+    config_path = default_config_path()
     config_exists = config_path.exists()
     resolved_mode = "local" if resolved in ("sqlite", "disk") else "cloud"
 

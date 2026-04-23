@@ -742,12 +742,13 @@ def print_auth_status(
     url: str,
     api_key: str,
     env_path: str,
-    env_exists: bool = True,
+    *,
+    env_exists: bool,
 ) -> None:
     """Render ``reflexio auth status`` as a two-column rich grid.
 
     Three rows: URL, masked API Key (via :func:`mask_api_key`), and
-    env file path.  When ``env_exists`` is False, the env file row is
+    env file path. When ``env_exists`` is False, the env file row is
     annotated so the user understands displayed values came from the
     shell environment or defaults rather than the persisted file.
 

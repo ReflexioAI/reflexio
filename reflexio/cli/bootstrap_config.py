@@ -49,6 +49,22 @@ def _config_dir(base_dir: str | None = None) -> Path:
     return Path.home() / ".reflexio" / "configs"
 
 
+def default_config_path(base_dir: str | None = None) -> Path:
+    """Return the local config file path for the default self-host org.
+
+    Shared helper so CLI display commands (e.g. ``config show``,
+    ``config local``) resolve the same path without duplicating the
+    ``<dir>/config_<org>.json`` convention.
+
+    Args:
+        base_dir: Override base directory (for testing). If None, uses ~/.reflexio/.
+
+    Returns:
+        Path: Absolute path to the default-org config file (may not exist).
+    """
+    return _config_dir(base_dir) / f"config_{_DEFAULT_ORG_ID}.json"
+
+
 def load_storage_from_config(
     org_id: str = _DEFAULT_ORG_ID,
     *,

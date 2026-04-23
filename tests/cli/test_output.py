@@ -565,6 +565,7 @@ class TestPrintAuthStatus:
             url="https://api.reflexio.ai",
             api_key="rflx-abcdefghijklmn1234",
             env_path="/home/me/.reflexio/.env",
+            env_exists=True,
         )
         assert "URL" in output
         assert "https://api.reflexio.ai" in output
@@ -582,6 +583,7 @@ class TestPrintAuthStatus:
             url="",
             api_key="",
             env_path="/tmp/.env",
+            env_exists=True,
         )
         assert "<unset>" in output
 
