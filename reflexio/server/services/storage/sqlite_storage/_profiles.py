@@ -108,8 +108,9 @@ class ProfileMixin:
                    (profile_id, user_id, content, last_modified_timestamp,
                     generated_from_request_id, profile_time_to_live,
                     expiration_timestamp, custom_features, embedding, source,
-                    status, extractor_names, expanded_terms, created_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    status, extractor_names, expanded_terms,
+                    source_span, notes, reader_angle, created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     profile.profile_id,
                     profile.user_id,
@@ -124,6 +125,9 @@ class ProfileMixin:
                     profile.status.value if profile.status else None,
                     _json_dumps(profile.extractor_names),
                     profile.expanded_terms,
+                    profile.source_span,
+                    profile.notes,
+                    profile.reader_angle,
                     _iso_now(),
                 ),
             )
@@ -164,7 +168,8 @@ class ProfileMixin:
             """UPDATE profiles SET content=?, last_modified_timestamp=?,
                generated_from_request_id=?, profile_time_to_live=?,
                expiration_timestamp=?, custom_features=?, embedding=?,
-               source=?, status=?, extractor_names=?, expanded_terms=?
+               source=?, status=?, extractor_names=?, expanded_terms=?,
+               source_span=?, notes=?, reader_angle=?
                WHERE profile_id=?""",
             (
                 new_profile.content,
@@ -178,6 +183,9 @@ class ProfileMixin:
                 new_profile.status.value if new_profile.status else None,
                 _json_dumps(new_profile.extractor_names),
                 new_profile.expanded_terms,
+                new_profile.source_span,
+                new_profile.notes,
+                new_profile.reader_angle,
                 profile_id,
             ),
         )

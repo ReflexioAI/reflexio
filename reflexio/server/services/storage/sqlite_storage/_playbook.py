@@ -81,8 +81,9 @@ class PlaybookMixin:
                        (user_id, playbook_name, created_at, request_id, agent_version,
                         content, trigger, rationale, blocking_issue,
                         source_interaction_ids,
-                        status, source, embedding, expanded_terms)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        status, source, embedding, expanded_terms,
+                        source_span, notes, reader_angle)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         up.user_id,
                         up.playbook_name,
@@ -100,6 +101,9 @@ class PlaybookMixin:
                         up.source,
                         _json_dumps(up.embedding),
                         up.expanded_terms,
+                        up.source_span,
+                        up.notes,
+                        up.reader_angle,
                     ),
                 )
                 upid = cur.lastrowid or 0

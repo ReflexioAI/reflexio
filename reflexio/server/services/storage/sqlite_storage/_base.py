@@ -334,6 +334,9 @@ def _row_to_profile(row: sqlite3.Row) -> UserProfile:
         status=Status(d["status"]) if d.get("status") else None,
         extractor_names=_json_loads(d.get("extractor_names")),
         expanded_terms=d.get("expanded_terms"),
+        source_span=d.get("source_span"),
+        notes=d.get("notes"),
+        reader_angle=d.get("reader_angle"),
     )
 
 
@@ -400,6 +403,9 @@ def _row_to_user_playbook(
         source_interaction_ids=_json_loads(d.get("source_interaction_ids")) or [],
         embedding=embedding,
         expanded_terms=d.get("expanded_terms"),
+        source_span=d.get("source_span"),
+        notes=d.get("notes"),
+        reader_angle=d.get("reader_angle"),
     )
 
 
@@ -599,6 +605,7 @@ class SQLiteStorageBase(BaseStorage):
             self._migrate_vec_tables()
         # Run after DDL so tables exist on fresh databases
         self._migrate_expanded_terms()
+        self._migrate_agentic_signals()
         return True
 
     def _try_load_sqlite_vec(self) -> bool:
@@ -842,6 +849,24 @@ class SQLiteStorageBase(BaseStorage):
                 logger.info("Added expanded_terms column to %s", table)
         self.conn.commit()
 
+    def _migrate_agentic_signals(self) -> None:
+        """Add source_span/notes/reader_angle columns if missing.
+
+        Backfill-safe: columns are nullable with no default. Applies to both
+        the profiles and user_playbooks tables — the agentic extraction
+        pipeline populates them per-row; classic extraction leaves them NULL.
+        """
+        for table in ("profiles", "user_playbooks"):
+            cols = {
+                row["name"]
+                for row in self.conn.execute(f"PRAGMA table_info({table})").fetchall()
+            }
+            for col in ("source_span", "notes", "reader_angle"):
+                if col not in cols:
+                    self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} TEXT")  # noqa: S608
+                    logger.info("Added %s column to %s", col, table)
+        self.conn.commit()
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
@@ -1048,6 +1073,9 @@ CREATE TABLE IF NOT EXISTS profiles (
     status TEXT,
     extractor_names TEXT,
     expanded_terms TEXT,
+    source_span TEXT,
+    notes TEXT,
+    reader_angle TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 CREATE INDEX IF NOT EXISTS idx_profiles_user_id ON profiles(user_id);
@@ -1099,7 +1127,10 @@ CREATE TABLE IF NOT EXISTS user_playbooks (
     status TEXT,
     source TEXT,
     embedding TEXT,
-    expanded_terms TEXT
+    expanded_terms TEXT,
+    source_span TEXT,
+    notes TEXT,
+    reader_angle TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_user_playbooks_playbook_name ON user_playbooks(playbook_name);
 CREATE INDEX IF NOT EXISTS idx_user_playbooks_agent_version ON user_playbooks(agent_version);
