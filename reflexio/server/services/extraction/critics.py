@@ -63,11 +63,20 @@ class RejectArgs(BaseModel):
 
 
 class RefineProfileArgs(BaseModel):
-    """Edit a profile candidate, then accept it."""
+    """Edit a profile candidate, then accept it.
+
+    ``time_to_live`` must be one of the six ``ProfileAddItem`` literal values
+    so the refined item round-trips into ``VettedProfile`` without a
+    ``literal_error``. Narrowing here surfaces bad LLM output as a tool-call
+    validation error (which the run loop returns to the model for retry)
+    rather than crashing inside the handler.
+    """
 
     candidate_index: int
     content: str
-    time_to_live: str
+    time_to_live: Literal[
+        "one_day", "one_week", "one_month", "one_quarter", "one_year", "infinity"
+    ]
     notes: str | None = None
 
 
