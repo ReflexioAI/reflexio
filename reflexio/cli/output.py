@@ -114,15 +114,16 @@ def _lifecycle_tag(obj: Any) -> str:
         str: Tag string like " [PENDING]" or "", including leading space
     """
     status = getattr(obj, "status", None)
-    if (
-        status is not None
-        and isinstance(status, str)
-        and status.upper() not in ("CURRENT", "")
-    ):
-        return f" [{status.upper()}]"
+    if status is None:
+        return ""
+    if isinstance(status, str):
+        if status.upper() not in ("CURRENT", ""):
+            return f" [{status.upper()}]"
+        return ""
     # Handle enum-style status where .value is not None
-    if status is not None and hasattr(status, "value") and status.value is not None:
-        return f" [{str(status.value).upper()}]"
+    value = getattr(status, "value", None)
+    if value is not None:
+        return f" [{str(value).upper()}]"
     return ""
 
 
@@ -737,16 +738,24 @@ def print_doctor_checks(checks: list[dict[str, Any]]) -> None:
     console.print(grid)
 
 
-def print_auth_status(url: str, api_key: str, env_path: str) -> None:
+def print_auth_status(
+    url: str,
+    api_key: str,
+    env_path: str,
+    env_exists: bool = True,
+) -> None:
     """Render ``reflexio auth status`` as a two-column rich grid.
 
     Three rows: URL, masked API Key (via :func:`mask_api_key`), and
-    env file path.
+    env file path.  When ``env_exists`` is False, the env file row is
+    annotated so the user understands displayed values came from the
+    shell environment or defaults rather than the persisted file.
 
     Args:
         url: The configured REFLEXIO_URL value, possibly empty.
         api_key: The raw REFLEXIO_API_KEY value, possibly empty.
         env_path: Absolute path to the env file.
+        env_exists: Whether the env file currently exists on disk.
     """
     from rich.console import Console
     from rich.table import Table
@@ -757,7 +766,8 @@ def print_auth_status(url: str, api_key: str, env_path: str) -> None:
     grid.add_column(overflow="fold")
     grid.add_row("URL", url or "<unset>")
     grid.add_row("API Key", mask_api_key(api_key))
-    grid.add_row("Env file", env_path)
+    env_suffix = "" if env_exists else " (not found — using shell env or defaults)"
+    grid.add_row("Env file", f"{env_path}{env_suffix}")
     console.print(grid)
 
 

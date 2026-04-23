@@ -70,18 +70,35 @@ def show(
         ctx: Typer context with CliState in ctx.obj
         show_all: If True, include all fields (even None/default) in output
     """
+    from reflexio.cli.bootstrap_config import _DEFAULT_ORG_ID, _config_dir
+
     client = get_client(ctx)
     resp = client.get_config()
 
+    config_path = _config_dir() / f"config_{_DEFAULT_ORG_ID}.json"
+    config_exists = config_path.exists()
+    local_config_meta = {
+        "path": str(config_path),
+        "exists": config_exists,
+        "using_defaults": not config_exists,
+    }
+
     json_mode: bool = ctx.obj.json_mode
     if json_mode:
-        render(resp, json_mode=True, exclude_none=not show_all)
+        render(
+            resp,
+            json_mode=True,
+            exclude_none=not show_all,
+            meta={"local_config": local_config_meta},
+        )
     else:
         config_data = (
             resp.model_dump(mode="json", exclude_none=not show_all)
             if hasattr(resp, "model_dump")
             else resp
         )
+        suffix = "" if config_exists else " (not found — showing defaults)"
+        print_info(f"Local config file: {config_path}{suffix}")
         print_info("Server configuration:")
         print(json.dumps(config_data, indent=2, default=str))
 
@@ -107,12 +124,14 @@ def show_local(ctx: typer.Context) -> None:
     persisted = load_storage_from_config()
     resolved = resolve_storage(None)  # full resolution without CLI flag
     config_path = _config_dir() / f"config_{_DEFAULT_ORG_ID}.json"
+    config_exists = config_path.exists()
     resolved_mode = "local" if resolved in ("sqlite", "disk") else "cloud"
 
     json_mode: bool = ctx.obj.json_mode
 
     data = {
         "config_file": str(config_path),
+        "config_file_exists": config_exists,
         "persisted_storage": persisted,
         "resolved_storage": resolved,
         "resolved_mode": resolved_mode,
@@ -121,9 +140,14 @@ def show_local(ctx: typer.Context) -> None:
     if json_mode:
         render(data, json_mode=True)
     else:
-        print_info(f"Config file: {config_path}")
-        print_info(f"Persisted storage: {persisted or '(not set)'}")
-        print_info(f"Resolved storage:  {resolved} (mode: {resolved_mode})")
+        path_suffix = "" if config_exists else " (not found — showing defaults)"
+        persisted_label = persisted or "(not set)"
+        resolved_suffix = " (default)" if persisted is None else ""
+        print_info(f"Config file: {config_path}{path_suffix}")
+        print_info(f"Persisted storage: {persisted_label}")
+        print_info(
+            f"Resolved storage:  {resolved} (mode: {resolved_mode}){resolved_suffix}"
+        )
 
 
 @app.command(name="set")

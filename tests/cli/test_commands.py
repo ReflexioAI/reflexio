@@ -365,6 +365,68 @@ class TestConfigShow:
         result = runner.invoke(app, ["config", "show"])
         assert result.exit_code == 0, result.output
         assert "key" in result.output
+        # Users need to see where the local config file lives so they can
+        # reconcile server values with any local overrides.
+        assert "Local config file:" in result.output
+        assert "config_self-host-org.json" in result.output
+
+    def test_show_config_missing_file_annotates_defaults(
+        self, runner, app, mock_client, tmp_path, monkeypatch
+    ) -> None:
+        """When the config file is absent, the output must flag defaults."""
+        config_mock = MagicMock()
+        config_mock.model_dump.return_value = {"key": "value"}
+        mock_client.get_config.return_value = config_mock
+
+        monkeypatch.setattr(
+            "reflexio.cli.bootstrap_config._config_dir",
+            lambda *_args, **_kwargs: tmp_path / "configs",
+        )
+        result = runner.invoke(app, ["config", "show"])
+        assert result.exit_code == 0, result.output
+        assert "Local config file:" in result.output
+        assert "(not found — showing defaults)" in result.output
+
+    def test_show_config_json_includes_local_config_meta(
+        self, runner, app, mock_client, tmp_path, monkeypatch
+    ) -> None:
+        """JSON envelope must expose local config file state to agent consumers."""
+        config_mock = MagicMock()
+        config_mock.model_dump.return_value = {"key": "value"}
+        mock_client.get_config.return_value = config_mock
+
+        monkeypatch.setattr(
+            "reflexio.cli.bootstrap_config._config_dir",
+            lambda *_args, **_kwargs: tmp_path / "configs",
+        )
+        result = runner.invoke(app, ["--json", "config", "show"])
+        assert result.exit_code == 0, result.output
+        envelope = json.loads(result.output)
+        assert envelope["ok"] is True
+        assert envelope["meta"]["local_config"]["exists"] is False
+        assert envelope["meta"]["local_config"]["using_defaults"] is True
+        assert envelope["meta"]["local_config"]["path"].endswith(
+            "config_self-host-org.json"
+        )
+
+
+class TestConfigLocalMissingFile:
+    """Tests for 'config local' when the local config file is absent."""
+
+    def test_local_missing_file_annotates(
+        self, runner, app, tmp_path, monkeypatch
+    ) -> None:
+        monkeypatch.setattr(
+            "reflexio.cli.bootstrap_config._config_dir",
+            lambda *_args, **_kwargs: tmp_path / "configs",
+        )
+        # Strip env overrides so resolution falls back to defaults.
+        monkeypatch.delenv("REFLEXIO_STORAGE", raising=False)
+        result = runner.invoke(app, ["config", "local"])
+        assert result.exit_code == 0, result.output
+        assert "Config file:" in result.output
+        assert "(not found — showing defaults)" in result.output
+        assert "Persisted storage: (not set)" in result.output
 
 
 class TestPublishUserIdResolution:

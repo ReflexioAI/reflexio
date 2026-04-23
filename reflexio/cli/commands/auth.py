@@ -64,6 +64,7 @@ def status(
         ctx: Typer context with CliState in ctx.obj
     """
     env_path = get_env_path()
+    env_exists = env_path.exists()
     raw_key = os.environ.get("REFLEXIO_API_KEY", "")
     raw_url = os.environ.get("REFLEXIO_URL", "")
 
@@ -74,11 +75,17 @@ def status(
                 "url": raw_url,
                 "api_key": mask_api_key(raw_key),
                 "env_path": str(env_path),
+                "env_exists": env_exists,
             },
             json_mode=True,
         )
     else:
-        print_auth_status(url=raw_url, api_key=raw_key, env_path=str(env_path))
+        print_auth_status(
+            url=raw_url,
+            api_key=raw_key,
+            env_path=str(env_path),
+            env_exists=env_exists,
+        )
 
 
 @app.command()
