@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 import time
 from pathlib import Path
 
@@ -91,8 +92,15 @@ def build_backend_service(
     Returns:
         ServiceConfig: Backend service configuration
     """
+    # Launch via our own ``python -m reflexio.server`` entrypoint rather
+    # than the ``uvicorn`` CLI so the log config in
+    # :mod:`reflexio.server.uvicorn_logging` is applied upfront via
+    # uvicorn's native ``log_config`` parameter.
     cmd = [
-        "uvicorn",
+        sys.executable,
+        "-m",
+        "reflexio.server",
+        "--app",
         app_module,
         "--host",
         "0.0.0.0",

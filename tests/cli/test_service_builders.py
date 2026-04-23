@@ -151,7 +151,8 @@ class TestBuildBackendService:
             app_module="myapp:app",
             reload=False,
         )
-        assert "myapp:app" in svc.command
+        app_idx = svc.command.index("--app")
+        assert svc.command[app_idx + 1] == "myapp:app"
 
     def test_port_from_dict(self) -> None:
         svc = build_backend_service({"backend": 9999}, reload=False)
@@ -164,12 +165,19 @@ class TestBuildBackendService:
 
     def test_default_app_module(self) -> None:
         svc = build_backend_service({"backend": 8081}, reload=False)
-        assert "reflexio.server.api:app" in svc.command
+        app_idx = svc.command.index("--app")
+        assert svc.command[app_idx + 1] == "reflexio.server.api:app"
 
     def test_host_is_all_interfaces(self) -> None:
         svc = build_backend_service({"backend": 8081}, reload=False)
         host_idx = svc.command.index("--host")
         assert svc.command[host_idx + 1] == "0.0.0.0"  # noqa: S104
+
+    def test_uses_python_module_entrypoint(self) -> None:
+        """Backend launches via ``python -m reflexio.server`` so the uvicorn
+        log config in :mod:`reflexio.server.uvicorn_logging` is applied."""
+        svc = build_backend_service({"backend": 8081}, reload=False)
+        assert svc.command[1:3] == ["-m", "reflexio.server"]
 
 
 # ---------------------------------------------------------------------------
