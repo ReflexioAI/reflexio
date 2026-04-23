@@ -8,6 +8,7 @@ from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.services.extraction.critics import (
     CriticCtx,
     CrossEntityFlag,
+    MergeArgs,
     PlaybookCritic,
     ProfileCritic,
     Reconciler,
@@ -271,6 +272,36 @@ def test_reconciler_keep_both_preserves_both_lanes(real_client, tool_call_comple
         out_p, out_b = rec.resolve(profs, pbs, flags)
     assert len(out_p) == 1
     assert len(out_b) == 1
+
+
+# ---------------- MergeArgs validator ---------------- #
+
+
+def test_merge_args_rejects_same_lane():
+    """MergeArgs must raise ValidationError when keep_lane == drop_lane."""
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="keep_lane and drop_lane must differ"):
+        MergeArgs(
+            keep_lane="profile",
+            keep_index=0,
+            drop_lane="profile",
+            drop_index=1,
+            merged_content="merged text",
+        )
+
+
+def test_merge_args_accepts_different_lanes():
+    """MergeArgs with distinct lanes should construct without error."""
+    args = MergeArgs(
+        keep_lane="profile",
+        keep_index=0,
+        drop_lane="playbook",
+        drop_index=1,
+        merged_content="merged text",
+    )
+    assert args.keep_lane == "profile"
+    assert args.drop_lane == "playbook"
 
 
 # ---------------- ctx defaults ---------------- #

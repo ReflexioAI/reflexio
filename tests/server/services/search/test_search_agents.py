@@ -34,8 +34,8 @@ def test_profile_search_agent_submits_candidates(real_client, tool_call_completi
     make_tc, _ = tool_call_completion
     storage = MagicMock()
     storage.search_user_profile.return_value = [
-        MagicMock(id="p1"),
-        MagicMock(id="p2"),
+        MagicMock(profile_id="p1"),
+        MagicMock(profile_id="p2"),
     ]
     req = MagicMock()
     req.user_id = "u1"
@@ -69,7 +69,7 @@ def test_profile_search_agent_reformulate_then_submit(
     """Reformulate mutates ctx.query; next search sees the new query."""
     make_tc, _ = tool_call_completion
     storage = MagicMock()
-    storage.search_user_profile.return_value = [MagicMock(id="p1")]
+    storage.search_user_profile.return_value = [MagicMock(profile_id="p1")]
     req = MagicMock()
     req.user_id = "u1"
     agent = ProfileSearchAgent(
@@ -142,8 +142,8 @@ def test_playbook_search_agent_submits_candidates(real_client, tool_call_complet
     make_tc, _ = tool_call_completion
     storage = MagicMock()
     storage.search_user_playbooks.return_value = [
-        MagicMock(id="b1"),
-        MagicMock(id="b2"),
+        MagicMock(user_playbook_id="b1"),
+        MagicMock(user_playbook_id="b2"),
     ]
     req = MagicMock()
     req.user_id = "u1"
@@ -167,6 +167,27 @@ def test_playbook_search_agent_submits_candidates(real_client, tool_call_complet
     assert sent.user_id == "u1"
     assert sent.query == "run tests"
     assert sent.status_filter == [None]
+
+
+def test_playbook_search_agent_missing_user_id_short_circuits(
+    real_client, tool_call_completion
+):
+    """When req.user_id is falsy, playbook search returns 0 hits without hitting storage."""
+    make_tc, _ = tool_call_completion
+    storage = MagicMock()
+    req = MagicMock()
+    req.user_id = None
+    agent = PlaybookSearchAgent(
+        "direct", client=real_client, prompt_manager=_pm(), storage=storage
+    )
+    responses = [
+        make_tc("search_playbooks", {"query": "x"}),
+        make_tc("submit_candidates", {"ids": [], "why": "no user"}),
+    ]
+    with patch("litellm.completion", side_effect=responses):
+        agent.run(query="x", req=req)
+
+    storage.search_user_playbooks.assert_not_called()
 
 
 def test_playbook_search_agent_temporal_includes_archived(

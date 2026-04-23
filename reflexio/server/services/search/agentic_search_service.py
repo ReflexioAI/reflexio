@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from typing import TYPE_CHECKING, Any
 
 from reflexio.models.api_schema.domain.entities import AgentPlaybook, UserPlaybook
@@ -20,7 +21,6 @@ from reflexio.models.api_schema.retriever_schema import (
 )
 from reflexio.server.services.extraction.critics import (
     CrossEntityFlag,
-    Reconciler,
     summarize,
 )
 from reflexio.server.services.pre_retrieval import QueryReformulator
@@ -100,8 +100,14 @@ class AgenticSearchService:
             query, profile_batches, playbook_batches
         )
 
-        if p_flags or b_flags:
-            self._annotate_flags(p_flags + b_flags)
+        all_flags = p_flags + b_flags
+        if all_flags:
+            # TODO(Phase 6+): wire proper search reconciliation here.
+            # For now just surface the flags via logs — calling Reconciler with
+            # empty lanes causes out-of-range errors on every tool call.
+            logger.info(
+                "search surfaced %d cross-entity flags: %s", len(all_flags), all_flags
+            )
 
         ranked_profiles, ranked_playbooks = self._assemble_ranked(
             profile_batches, playbook_batches, p_ids, b_ids
@@ -146,9 +152,10 @@ class AgenticSearchService:
             Tuple of (profile_batches, playbook_batches, partial_flag). Each
             batch carries ``ids``, ``why``, and the raw ``hits`` list.
         """
-        with ThreadPoolExecutor(max_workers=self._agent_workers) as pool:
+        executor = ThreadPoolExecutor(max_workers=self._agent_workers)
+        try:
             profile_futs = [
-                pool.submit(
+                executor.submit(
                     ProfileSearchAgent(
                         intent,  # type: ignore[arg-type]
                         client=self.client,
@@ -161,7 +168,7 @@ class AgenticSearchService:
                 for intent in self.PROFILE_INTENTS
             ]
             playbook_futs = [
-                pool.submit(
+                executor.submit(
                     PlaybookSearchAgent(
                         intent,  # type: ignore[arg-type]
                         client=self.client,
@@ -175,6 +182,8 @@ class AgenticSearchService:
             ]
             profile_batches, profile_partial = self._collect_batches(profile_futs)
             playbook_batches, playbook_partial = self._collect_batches(playbook_futs)
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
         return (
             profile_batches,
             playbook_batches,
@@ -209,8 +218,9 @@ class AgenticSearchService:
         profile_other_lane = summarize(
             [h for b in playbook_batches for h in b["hits"]], limit=15
         )
-        with ThreadPoolExecutor(max_workers=self._synth_workers) as pool:
-            profile_fut = pool.submit(
+        executor = ThreadPoolExecutor(max_workers=self._synth_workers)
+        try:
+            profile_fut = executor.submit(
                 ProfileSynthesizer(
                     client=self.client, prompt_manager=self.prompt_manager
                 ).rank,
@@ -218,7 +228,7 @@ class AgenticSearchService:
                 candidates=profile_batches,
                 other_lane_summary=profile_other_lane,
             )
-            playbook_fut = pool.submit(
+            playbook_fut = executor.submit(
                 PlaybookSynthesizer(
                     client=self.client, prompt_manager=self.prompt_manager
                 ).rank,
@@ -226,23 +236,19 @@ class AgenticSearchService:
                 candidates=playbook_batches,
                 other_lane_summary=playbook_other_lane,
             )
-            p_ids, p_flags = profile_fut.result()
-            b_ids, b_flags = playbook_fut.result()
+            try:
+                p_ids, p_flags = profile_fut.result(timeout=self._agent_timeout)
+            except FuturesTimeoutError:
+                logger.warning("profile synthesizer timed out")
+                p_ids, p_flags = [], []
+            try:
+                b_ids, b_flags = playbook_fut.result(timeout=self._agent_timeout)
+            except FuturesTimeoutError:
+                logger.warning("playbook synthesizer timed out")
+                b_ids, b_flags = [], []
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
         return p_ids, p_flags, b_ids, b_flags
-
-    def _annotate_flags(self, flags: list[CrossEntityFlag]) -> None:
-        """Run the Reconciler on cross-entity flags without dropping candidates.
-
-        Search reconciliation only annotates; the orchestrator leaves the
-        ranked lists untouched so downstream consumers can still inspect
-        flagged items.
-        """
-        try:
-            Reconciler(client=self.client, prompt_manager=self.prompt_manager).resolve(
-                [], [], flags
-            )
-        except Exception as e:
-            logger.warning("search reconciler failed: %s: %s", type(e).__name__, e)
 
     @staticmethod
     def _assemble_ranked(
@@ -253,16 +259,23 @@ class AgenticSearchService:
     ) -> tuple[list[Any], list[Any]]:
         """Map ranked IDs back to the raw hits collected by the agents."""
         id_to_profile = {
-            h.id: h
+            getattr(h, "profile_id", None): h
             for b in profile_batches
             for h in b["hits"]
-            if getattr(h, "id", None) is not None
+            if getattr(h, "profile_id", None) is not None
         }
         id_to_playbook = {
-            h.id: h
+            (
+                getattr(h, "user_playbook_id", None)
+                or getattr(h, "agent_playbook_id", None)
+            ): h
             for b in playbook_batches
             for h in b["hits"]
-            if getattr(h, "id", None) is not None
+            if (
+                getattr(h, "user_playbook_id", None)
+                or getattr(h, "agent_playbook_id", None)
+            )
+            is not None
         }
         ranked_profiles = [id_to_profile[i] for i in p_ids if i in id_to_profile]
         ranked_playbooks = [id_to_playbook[i] for i in b_ids if i in id_to_playbook]

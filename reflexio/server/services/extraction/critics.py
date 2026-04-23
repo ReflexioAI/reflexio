@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, cast
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 from reflexio.server.llm.model_defaults import ModelRole
 from reflexio.server.llm.tools import Tool, ToolRegistry, run_tool_loop
@@ -361,6 +361,16 @@ class MergeArgs(BaseModel):
     drop_lane: Lane
     drop_index: int
     merged_content: str
+
+    @model_validator(mode="after")
+    def lanes_must_differ(self) -> MergeArgs:
+        """Prevent same-lane merges which would cause an index-shift hazard."""
+        if self.keep_lane == self.drop_lane:
+            raise ValueError(
+                f"keep_lane and drop_lane must differ; both are '{self.keep_lane}'. "
+                "Use supersede instead."
+            )
+        return self
 
 
 class KeepBothArgs(BaseModel):

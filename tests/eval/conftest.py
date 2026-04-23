@@ -25,8 +25,7 @@ _RUBRICS = Path(__file__).parent / "judge_prompts"
 def _load(kind: str) -> list[dict[str, Any]]:
     """Load every YAML golden file under ``golden_set/<kind>/`` sorted by id."""
     return [
-        yaml.safe_load(p.read_text())
-        for p in sorted((_GOLDEN / kind).glob("*.yaml"))
+        yaml.safe_load(p.read_text()) for p in sorted((_GOLDEN / kind).glob("*.yaml"))
     ]
 
 
@@ -34,9 +33,7 @@ def pytest_generate_tests(metafunc):
     """Parametrize over every golden case for tests that ask for one."""
     if "extraction_case" in metafunc.fixturenames:
         cases = _load("extraction")
-        metafunc.parametrize(
-            "extraction_case", cases, ids=[c["id"] for c in cases]
-        )
+        metafunc.parametrize("extraction_case", cases, ids=[c["id"] for c in cases])
     if "search_case" in metafunc.fixturenames:
         cases = _load("search")
         metafunc.parametrize("search_case", cases, ids=[c["id"] for c in cases])
@@ -56,7 +53,9 @@ def _stubbed_judge(rubric: dict[str, Any]) -> LLMJudge:
 def _real_judge(rubric: dict[str, Any]) -> LLMJudge:
     from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 
-    client = LiteLLMClient(LiteLLMConfig(model=rubric.get("judge_model", "claude-sonnet-4-6")))
+    client = LiteLLMClient(
+        LiteLLMConfig(model=rubric.get("judge_model", "claude-sonnet-4-6"))
+    )
     return LLMJudge(client=client, rubric=rubric)
 
 

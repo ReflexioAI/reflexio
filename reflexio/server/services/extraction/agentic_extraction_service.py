@@ -141,9 +141,10 @@ class AgenticExtractionService:
 
     def _run_readers(self, inputs: ReaderInputs) -> tuple[list[Any], list[Any]]:
         """Run all 6 angle readers in parallel; return (profile_cands, playbook_cands)."""
-        with ThreadPoolExecutor(max_workers=self._reader_workers) as pool:
+        executor = ThreadPoolExecutor(max_workers=self._reader_workers)
+        try:
             profile_futs = [
-                pool.submit(
+                executor.submit(
                     ProfileReader(
                         angle,  # type: ignore[arg-type]
                         client=self.client,
@@ -154,7 +155,7 @@ class AgenticExtractionService:
                 for angle in self.PROFILE_ANGLES
             ]
             playbook_futs = [
-                pool.submit(
+                executor.submit(
                     PlaybookReader(
                         angle,  # type: ignore[arg-type]
                         client=self.client,
@@ -166,6 +167,8 @@ class AgenticExtractionService:
             ]
             profile_cands = [c for f in profile_futs for c in _safe_result(f)]
             playbook_cands = [c for f in playbook_futs for c in _safe_result(f)]
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
         return profile_cands, playbook_cands
 
     def _run_profile_critic(

@@ -55,10 +55,7 @@ def test_judge_passes_judge_model_as_override():
     )
     j.score(expected={}, actual={})
 
-    assert (
-        client.generate_chat_response.call_args.kwargs["model_name_override"]
-        == "claude-haiku-4-5"
-    )
+    assert client.generate_chat_response.call_args.kwargs["model"] == "claude-haiku-4-5"
 
 
 def test_judge_raises_typeerror_on_plain_string_response():

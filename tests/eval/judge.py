@@ -67,7 +67,7 @@ class LLMJudge:
         result = self.client.generate_chat_response(
             messages=[{"role": "user", "content": prompt}],
             response_format=JudgeScore,
-            model_name_override=self.rubric.get("judge_model"),
+            model=self.rubric.get("judge_model"),
         )
         if isinstance(result, JudgeScore):
             return result

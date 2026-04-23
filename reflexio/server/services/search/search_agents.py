@@ -136,7 +136,7 @@ def _search_profiles(args: BaseModel, ctx: SearchCtx) -> dict:
     ctx.hits.extend(results)
     return {
         "hit_count": len(results),
-        "ids": [getattr(r, "id", None) for r in results],
+        "ids": [getattr(r, "profile_id", None) for r in results],
     }
 
 
@@ -144,6 +144,8 @@ def _search_playbooks(args: BaseModel, ctx: SearchCtx) -> dict:
     """Tool handler: search the playbook store and extend ``ctx.hits``."""
     a = cast(SearchPlaybooksArgs, args)
     user_id = getattr(ctx.req, "user_id", None)
+    if not user_id:
+        return {"hit_count": 0, "ids": []}
     request = SearchUserPlaybookRequest(
         query=a.query,
         user_id=user_id,
@@ -154,7 +156,7 @@ def _search_playbooks(args: BaseModel, ctx: SearchCtx) -> dict:
     ctx.hits.extend(results)
     return {
         "hit_count": len(results),
-        "ids": [getattr(r, "id", None) for r in results],
+        "ids": [getattr(r, "user_playbook_id", None) for r in results],
     }
 
 

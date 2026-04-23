@@ -220,6 +220,12 @@ def run_tool_loop(
                 return ToolLoopResult(
                     ctx=ctx, trace=trace, finished_reason="finish_tool"
                 )
+            # Emit ONE assistant message carrying ALL tool_calls from this turn.
+            # OpenAI/Anthropic strict mode requires this shape.
+            local_msgs.append(
+                {"role": "assistant", "content": None, "tool_calls": list(tool_calls)}
+            )
+            # Process every tool call and append per-call tool result messages.
             for tc in tool_calls:
                 name = tc.function.name
                 args_json = tc.function.arguments
@@ -236,7 +242,6 @@ def run_tool_loop(
                         latency_ms=int((time.monotonic() - t0) * 1000),
                     )
                 )
-                local_msgs.append({"role": "assistant", "tool_calls": [tc]})
                 local_msgs.append(
                     {
                         "role": "tool",
@@ -244,11 +249,13 @@ def run_tool_loop(
                         "content": json.dumps(result),
                     }
                 )
-                if name == finish_tool_name:
-                    trace.finished = True
-                    return ToolLoopResult(
-                        ctx=ctx, trace=trace, finished_reason="finish_tool"
-                    )
+            # After processing ALL tool calls, check whether the finish sentinel
+            # appeared in this turn (may be alongside sibling calls).
+            if any(tc.function.name == finish_tool_name for tc in tool_calls):
+                trace.finished = True
+                return ToolLoopResult(
+                    ctx=ctx, trace=trace, finished_reason="finish_tool"
+                )
     except Exception:
         logger.exception("Tool loop raised an unexpected exception")
         trace.finished = False
