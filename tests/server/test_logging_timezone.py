@@ -7,7 +7,9 @@ import re
 
 from reflexio.server import _LLMIOFormatter, _TZAwareFormatter
 
-_TZ_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} [+-]\d{4}")
+_TZ_PATTERN = re.compile(
+    r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} [+-]\d{2}:\d{2}(?: [A-Z]{1,5})?"
+)
 
 
 def _make_record(msg: str = "payload") -> logging.LogRecord:
