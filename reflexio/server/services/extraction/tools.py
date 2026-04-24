@@ -1,0 +1,352 @@
+"""Atomic tool handlers for the agentic-v2 extraction + search pipelines.
+
+Each handler:
+  - Receives args (Pydantic model validated by ToolRegistry)
+  - Receives (storage, ctx)
+  - Calls an existing BaseStorage method
+  - Returns a dict projection suitable for the LLM
+
+Read handlers populate ctx.known_ids (for invariant B) and ctx.search_count
+(for invariant A). Mutating handlers (Task 5) append PlanOps to ctx.plan
+without hitting storage; commit_plan applies them via apply_plan_op after
+invariants pass.
+"""
+
+from __future__ import annotations
+
+from typing import Annotated, Any, Literal
+
+from pydantic import BaseModel, Field
+
+from reflexio.models.api_schema.domain.entities import Status
+from reflexio.models.api_schema.retriever_schema import (
+    SearchAgentPlaybookRequest,
+    SearchMode,
+    SearchUserPlaybookRequest,
+    SearchUserProfileRequest,
+)
+from reflexio.server.services.extraction.plan import (
+    ExtractionCtx,
+    PlaybookStrength,
+    ProfileTTL,
+)
+
+TOP_K_CAP = 25
+
+
+# ====================================================================
+# Arg schemas (what the LLM emits)
+# ====================================================================
+
+
+class SearchUserProfilesArgs(BaseModel):
+    """Semantic/keyword search the current user's profiles."""
+
+    query: Annotated[str, Field(min_length=1)]
+    top_k: int = 10
+
+
+class GetUserProfileArgs(BaseModel):
+    """Retrieve a single UserProfile by id."""
+
+    id: Annotated[str, Field(min_length=1)]
+
+
+class SearchUserPlaybooksArgs(BaseModel):
+    """Search the current user's playbooks."""
+
+    query: Annotated[str, Field(min_length=1)]
+    top_k: int = 10
+    status: Literal["current", "pending", "archived"] = "current"
+
+
+class GetUserPlaybookArgs(BaseModel):
+    """Retrieve a single UserPlaybook by id."""
+
+    id: Annotated[str, Field(min_length=1)]
+
+
+class SearchAgentPlaybooksArgs(BaseModel):
+    """Search agent-version-scoped playbooks (read-only; search pipeline only)."""
+
+    query: Annotated[str, Field(min_length=1)]
+    top_k: int = 10
+    status: Literal["current", "pending", "archived"] = "current"
+
+
+class GetAgentPlaybookArgs(BaseModel):
+    """Retrieve a single AgentPlaybook by id."""
+
+    id: Annotated[str, Field(min_length=1)]
+
+
+class GetSessionExcerptArgs(BaseModel):
+    """Retrieve a verbatim excerpt from a session by matching a span."""
+
+    session_id: Annotated[str, Field(min_length=1)]
+    span: Annotated[str, Field(min_length=1)]
+
+
+# Mutating arg models (handlers in Task 5)
+class CreateUserProfileArgs(BaseModel):
+    """Propose creating a new UserProfile record."""
+
+    content: Annotated[str, Field(min_length=1)]
+    ttl: ProfileTTL
+    source_span: Annotated[str, Field(min_length=1)]
+
+
+class DeleteUserProfileArgs(BaseModel):
+    """Propose deleting an existing UserProfile by id."""
+
+    id: Annotated[str, Field(min_length=1)]
+
+
+class CreateUserPlaybookArgs(BaseModel):
+    """Propose creating a new UserPlaybook record."""
+
+    trigger: Annotated[str, Field(min_length=1)]
+    content: Annotated[str, Field(min_length=1)]
+    rationale: str = ""
+    strength: PlaybookStrength = "soft"
+    source_span: Annotated[str, Field(min_length=1)]
+
+
+class DeleteUserPlaybookArgs(BaseModel):
+    """Propose deleting an existing UserPlaybook by id."""
+
+    id: Annotated[str, Field(min_length=1)]
+
+
+class FinishArgs(BaseModel):
+    """Terminate the loop."""
+
+
+# ====================================================================
+# Helpers
+# ====================================================================
+
+
+def _cap_top_k(k: int) -> int:
+    return min(max(1, k), TOP_K_CAP)
+
+
+def _status_from_str(s: str) -> Status | None:
+    return {"current": None, "pending": Status.PENDING, "archived": Status.ARCHIVED}[s]
+
+
+def _project_profile_for_llm(p: Any) -> dict[str, Any]:
+    return {
+        "id": getattr(p, "profile_id", "") or "",
+        "content": p.content,
+        "ttl": p.profile_time_to_live,
+        "last_modified": p.last_modified_timestamp,
+        "source_span": getattr(p, "source_span", None),
+    }
+
+
+def _project_user_playbook_for_llm(pb: Any) -> dict[str, Any]:
+    return {
+        "id": str(pb.user_playbook_id),
+        "trigger": pb.trigger,
+        "content": pb.content,
+        "rationale": pb.rationale,
+        "last_modified": getattr(pb, "created_at", 0),
+    }
+
+
+def _project_agent_playbook_for_llm(pb: Any) -> dict[str, Any]:
+    return {
+        "id": str(pb.agent_playbook_id),
+        "trigger": pb.trigger,
+        "content": pb.content,
+        "rationale": pb.rationale,
+        "playbook_status": getattr(pb, "playbook_status", None),
+        "last_modified": getattr(pb, "created_at", 0),
+    }
+
+
+# ====================================================================
+# Read handlers
+# ====================================================================
+
+
+def _handle_search_user_profiles(
+    args: SearchUserProfilesArgs, storage: Any, ctx: ExtractionCtx
+) -> dict[str, Any]:
+    """Search the current user's profiles and bump search_count.
+
+    Args:
+        args (SearchUserProfilesArgs): Query and top_k.
+        storage (Any): BaseStorage instance.
+        ctx (ExtractionCtx): Per-run state; search_count incremented in place.
+
+    Returns:
+        dict[str, Any]: ``{"hits": [...]}`` with LLM-facing profile projections.
+    """
+    request = SearchUserProfileRequest(
+        query=args.query,
+        user_id=ctx.user_id,
+        top_k=_cap_top_k(args.top_k),
+    )
+    hits = storage.search_user_profile(request)
+    ctx.search_count += 1
+    for h in hits:
+        pid = getattr(h, "profile_id", "") or ""
+        if pid:
+            ctx.known_ids.add(pid)
+    return {"hits": [_project_profile_for_llm(h) for h in hits]}
+
+
+def _handle_get_user_profile(
+    args: GetUserProfileArgs, storage: Any, ctx: ExtractionCtx
+) -> dict[str, Any]:
+    """Retrieve a single UserProfile by id without bumping search_count.
+
+    Args:
+        args (GetUserProfileArgs): Profile id to look up.
+        storage (Any): BaseStorage instance.
+        ctx (ExtractionCtx): Per-run state; known_ids updated on hit.
+
+    Returns:
+        dict[str, Any]: ``{"profile": {...}}`` on hit, ``{"error": "not found"}`` on miss.
+    """
+    all_profiles = storage.get_user_profile(ctx.user_id)
+    for p in all_profiles:
+        if (getattr(p, "profile_id", "") or "") == args.id:
+            ctx.known_ids.add(args.id)
+            return {"profile": _project_profile_for_llm(p)}
+    return {"error": "not found"}
+
+
+def _handle_search_user_playbooks(
+    args: SearchUserPlaybooksArgs, storage: Any, ctx: ExtractionCtx
+) -> dict[str, Any]:
+    """Search the current user's playbooks and bump search_count.
+
+    Args:
+        args (SearchUserPlaybooksArgs): Query, top_k, and status filter.
+        storage (Any): BaseStorage instance.
+        ctx (ExtractionCtx): Per-run state; search_count and known_ids updated.
+
+    Returns:
+        dict[str, Any]: ``{"hits": [...]}`` with LLM-facing playbook projections.
+    """
+    request = SearchUserPlaybookRequest(
+        query=args.query,
+        user_id=ctx.user_id,
+        agent_version=ctx.agent_version,
+        top_k=_cap_top_k(args.top_k),
+        status_filter=[_status_from_str(args.status)],
+        search_mode=SearchMode.HYBRID,
+        threshold=0.4,
+    )
+    if ctx.extractor_name:
+        request.playbook_name = ctx.extractor_name
+    hits = storage.search_user_playbooks(request)
+    ctx.search_count += 1
+    for h in hits:
+        ctx.known_ids.add(str(h.user_playbook_id))
+    return {"hits": [_project_user_playbook_for_llm(h) for h in hits]}
+
+
+def _handle_get_user_playbook(
+    args: GetUserPlaybookArgs, storage: Any, ctx: ExtractionCtx
+) -> dict[str, Any]:
+    """Retrieve a single UserPlaybook by id without bumping search_count.
+
+    Args:
+        args (GetUserPlaybookArgs): Playbook id to look up.
+        storage (Any): BaseStorage instance.
+        ctx (ExtractionCtx): Per-run state; known_ids updated on hit.
+
+    Returns:
+        dict[str, Any]: ``{"playbook": {...}}`` on hit, ``{"error": "not found"}`` on miss.
+    """
+    candidates = storage.get_user_playbooks(
+        user_id=ctx.user_id, agent_version=ctx.agent_version
+    )
+    for pb in candidates:
+        if str(pb.user_playbook_id) == args.id:
+            ctx.known_ids.add(args.id)
+            return {"playbook": _project_user_playbook_for_llm(pb)}
+    return {"error": "not found"}
+
+
+def _handle_search_agent_playbooks(
+    args: SearchAgentPlaybooksArgs, storage: Any, ctx: ExtractionCtx
+) -> dict[str, Any]:
+    """Search agent-version-scoped playbooks and bump search_count.
+
+    Args:
+        args (SearchAgentPlaybooksArgs): Query, top_k, and status filter.
+        storage (Any): BaseStorage instance.
+        ctx (ExtractionCtx): Per-run state; search_count and known_ids updated.
+
+    Returns:
+        dict[str, Any]: ``{"hits": [...]}`` with LLM-facing agent playbook projections.
+    """
+    request = SearchAgentPlaybookRequest(
+        query=args.query,
+        agent_version=ctx.agent_version,
+        top_k=_cap_top_k(args.top_k),
+        status_filter=[_status_from_str(args.status)],
+        search_mode=SearchMode.HYBRID,
+        threshold=0.4,
+    )
+    if ctx.extractor_name:
+        request.playbook_name = ctx.extractor_name
+    hits = storage.search_agent_playbooks(request)
+    ctx.search_count += 1
+    for h in hits:
+        ctx.known_ids.add(str(h.agent_playbook_id))
+    return {"hits": [_project_agent_playbook_for_llm(h) for h in hits]}
+
+
+def _handle_get_agent_playbook(
+    args: GetAgentPlaybookArgs, storage: Any, ctx: ExtractionCtx
+) -> dict[str, Any]:
+    """Retrieve a single AgentPlaybook by id without bumping search_count.
+
+    Args:
+        args (GetAgentPlaybookArgs): Agent playbook id to look up.
+        storage (Any): BaseStorage instance.
+        ctx (ExtractionCtx): Per-run state; known_ids updated on hit.
+
+    Returns:
+        dict[str, Any]: ``{"playbook": {...}}`` on hit, ``{"error": "not found"}`` on miss.
+    """
+    candidates = storage.get_agent_playbooks(agent_version=ctx.agent_version)
+    for pb in candidates:
+        if str(pb.agent_playbook_id) == args.id:
+            ctx.known_ids.add(args.id)
+            return {"playbook": _project_agent_playbook_for_llm(pb)}
+    return {"error": "not found"}
+
+
+def _handle_get_session_excerpt(
+    args: GetSessionExcerptArgs,
+    storage: Any,
+    ctx: ExtractionCtx,  # noqa: ARG001
+) -> dict[str, Any]:
+    """Return the closest verbatim match of ``span`` inside ``session_id``.
+
+    Args:
+        args (GetSessionExcerptArgs): Session id and span string to match.
+        storage (Any): BaseStorage instance; must have ``get_interactions_by_session``.
+        ctx (ExtractionCtx): Per-run state (unused for reads, present for consistency).
+
+    Returns:
+        dict[str, Any]: ``{"excerpt": str}`` on hit, ``{"error": str}`` on miss or
+            when the storage backend doesn't support this method.
+    """
+    try:
+        interactions = storage.get_interactions_by_session(args.session_id)
+    except AttributeError:
+        return {"error": "get_session_excerpt requires get_interactions_by_session"}
+    matches = [
+        i.content for i in interactions if args.span.strip() in (i.content or "")
+    ]
+    if not matches:
+        return {"error": "span not found"}
+    return {"excerpt": matches[0]}
