@@ -305,3 +305,53 @@ class TestProviderDefaults:
                 ):
                     value = getattr(defaults, role.value)
                     assert value, f"{provider}.{role.value} is empty"
+
+
+# ---------------------------------------------------------------------------
+# EXTRACTION_AGENT and SEARCH_AGENT roles
+# ---------------------------------------------------------------------------
+
+
+class TestAgenticV2Roles:
+    def test_extraction_agent_role_exists(self) -> None:
+        assert ModelRole.EXTRACTION_AGENT.value == "extraction_agent"
+
+    def test_search_agent_role_exists(self) -> None:
+        assert ModelRole.SEARCH_AGENT.value == "search_agent"
+
+    def test_anthropic_defaults_map_to_sonnet(self) -> None:
+        anthropic = _PROVIDER_DEFAULTS["anthropic"]
+        assert anthropic.extraction_agent is not None
+        assert "sonnet" in anthropic.extraction_agent.lower()
+        assert anthropic.search_agent is not None
+        assert "sonnet" in anthropic.search_agent.lower()
+
+    def test_openai_defaults_map_to_gpt5_mini(self) -> None:
+        openai = _PROVIDER_DEFAULTS["openai"]
+        assert openai.extraction_agent == "gpt-5-mini"
+        assert openai.search_agent == "gpt-5-mini"
+
+    def test_claude_code_defaults_cover_new_roles(self) -> None:
+        cc = _PROVIDER_DEFAULTS["claude-code"]
+        assert cc.extraction_agent == "claude-code/default"
+        assert cc.search_agent == "claude-code/default"
+
+    def test_unpopulated_providers_default_to_none(self) -> None:
+        """Providers that haven't opted into agentic-v2 fall through to next priority provider."""
+        local = _PROVIDER_DEFAULTS["local"]
+        assert local.extraction_agent is None
+        assert local.search_agent is None
+
+    def test_resolve_extraction_agent_with_anthropic(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "ant-test")
+        name = resolve_model_name(role=ModelRole.EXTRACTION_AGENT)
+        assert "sonnet" in name.lower()
+
+    def test_resolve_search_agent_with_openai(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        name = resolve_model_name(role=ModelRole.SEARCH_AGENT)
+        assert name == "gpt-5-mini"

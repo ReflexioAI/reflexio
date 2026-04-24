@@ -155,6 +155,8 @@ class ProviderDefaults:
         critic: Smart-tier model for extraction critics, or None.
         synthesizer: Smart-tier model for search synthesizers, or None.
         reconciler: Smart-tier model for cross-entity reconciler, or None.
+        extraction_agent: Sonnet-tier model for the agentic-v2 extraction loop, or None.
+        search_agent: Sonnet-tier model for the agentic-v2 search loop, or None.
     """
 
     generation: str | None
@@ -166,6 +168,8 @@ class ProviderDefaults:
     critic: str | None = None
     synthesizer: str | None = None
     reconciler: str | None = None
+    extraction_agent: str | None = None
+    search_agent: str | None = None
 
 
 _PROVIDER_DEFAULTS: dict[str, ProviderDefaults] = {
@@ -183,6 +187,8 @@ _PROVIDER_DEFAULTS: dict[str, ProviderDefaults] = {
         critic="claude-code/default",
         synthesizer="claude-code/default",
         reconciler="claude-code/default",
+        extraction_agent="claude-code/default",
+        search_agent="claude-code/default",
     ),
     # local is an embedding-only provider that routes through an
     # in-process ONNX model (chromadb's all-MiniLM-L6-v2). Generation
@@ -204,6 +210,8 @@ _PROVIDER_DEFAULTS: dict[str, ProviderDefaults] = {
         critic="gpt-5-mini",
         synthesizer="gpt-5-mini",
         reconciler="gpt-5-mini",
+        extraction_agent="gpt-5-mini",
+        search_agent="gpt-5-mini",
     ),
     "anthropic": ProviderDefaults(
         generation="claude-sonnet-4-6",
@@ -215,6 +223,8 @@ _PROVIDER_DEFAULTS: dict[str, ProviderDefaults] = {
         critic="claude-sonnet-4-6",
         synthesizer="claude-sonnet-4-6",
         reconciler="claude-sonnet-4-6",
+        extraction_agent="claude-sonnet-4-6",
+        search_agent="claude-sonnet-4-6",
     ),
     "gemini": ProviderDefaults(
         generation="gemini/gemini-3-flash-preview",
@@ -299,6 +309,10 @@ class ModelRole(StrEnum):
     CRITIC = "critic"
     SYNTHESIZER = "synthesizer"
     RECONCILER = "reconciler"
+    # Agentic-v2 single-loop roles — Sonnet-tier agents that replace the
+    # multi-step reader/critic/reconciler pipeline with a single tool loop.
+    EXTRACTION_AGENT = "extraction_agent"
+    SEARCH_AGENT = "search_agent"
 
 
 def _auto_detect_model(
