@@ -4,14 +4,17 @@ from datetime import UTC, datetime
 
 import pytest
 
+from reflexio.models.api_schema.common import NEVER_EXPIRES_TIMESTAMP
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
 from reflexio.models.api_schema.service_schemas import (
     Interaction,
+    ProfileTimeToLive,
     Request,
     UserProfile,
 )
 from reflexio.server.prompt.prompt_manager import PromptManager
 from reflexio.server.services.profile.profile_generation_service_utils import (
+    calculate_expiration_timestamp,
     construct_profile_extraction_messages_from_sessions,
 )
 
@@ -153,6 +156,35 @@ def test_construct_profile_extraction_messages_with_empty_sessions():
 
     # Should still create messages (system message + user message with prompt)
     assert len(messages) > 0, "No messages were created for empty sessions"
+
+
+def test_calculate_expiration_timestamp_infinity_returns_sentinel():
+    """Infinity TTL must return the NEVER_EXPIRES_TIMESTAMP sentinel (Jan 1 2100),
+    not a `datetime.max`-derived year-9999 integer that would render as
+    'Jan 1, 10000' after timezone conversion on the frontend.
+    """
+    now = int(datetime.now(UTC).timestamp())
+    assert (
+        calculate_expiration_timestamp(now, ProfileTimeToLive.INFINITY)
+        == NEVER_EXPIRES_TIMESTAMP
+    )
+
+
+@pytest.mark.parametrize(
+    "ttl, expected_delta_seconds",
+    [
+        (ProfileTimeToLive.ONE_DAY, 1 * 24 * 3600),
+        (ProfileTimeToLive.ONE_WEEK, 7 * 24 * 3600),
+        (ProfileTimeToLive.ONE_MONTH, 30 * 24 * 3600),
+        (ProfileTimeToLive.ONE_QUARTER, 90 * 24 * 3600),
+        (ProfileTimeToLive.ONE_YEAR, 365 * 24 * 3600),
+    ],
+)
+def test_calculate_expiration_timestamp_finite_ttls(ttl, expected_delta_seconds):
+    """Finite TTLs must shift last_modified forward by their documented delta."""
+    now = int(datetime.now(UTC).timestamp())
+    expiration = calculate_expiration_timestamp(now, ttl)
+    assert expiration == now + expected_delta_seconds
 
 
 if __name__ == "__main__":
