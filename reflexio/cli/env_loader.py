@@ -21,6 +21,13 @@ _USER_ENV_DIR = Path.home() / ".reflexio"
 _USER_ENV_FILE = _USER_ENV_DIR / ".env"
 
 
+# Path to the .env file that load_reflexio_env last resolved — None until
+# load_reflexio_env runs for the first time. Exposed via get_loaded_env_path
+# so the startup banner can show the operator exactly which dotenv was
+# picked (./.env vs ~/.reflexio/.env vs auto-created).
+_loaded_env_path: Path | None = None
+
+
 def get_env_path() -> Path:
     """Return the canonical path to the user-level .env file.
 
@@ -28,6 +35,17 @@ def get_env_path() -> Path:
         Path: ``~/.reflexio/.env``
     """
     return _USER_ENV_FILE
+
+
+def get_loaded_env_path() -> Path | None:
+    """Return the .env path that the most recent ``load_reflexio_env`` call
+    resolved, or None if the loader hasn't run yet.
+
+    Used by the startup banner so operators can see at a glance which
+    dotenv file was actually consumed (``./.env`` wins over
+    ``~/.reflexio/.env`` when both exist).
+    """
+    return _loaded_env_path
 
 
 def set_env_var(env_path: Path, key: str, value: str) -> None:
@@ -95,16 +113,22 @@ def load_reflexio_env(
     Returns:
         Path to the loaded .env file, or None if no .env was found/created.
     """
+    global _loaded_env_path
     for env_path in _ENV_SEARCH_PATHS:
         if env_path.exists():
             load_dotenv(dotenv_path=env_path)
-            _logger.debug("Loaded env from: %s", env_path.resolve())
+            resolved = env_path.resolve()
+            _logger.debug("Loaded env from: %s", resolved)
+            _loaded_env_path = resolved
             # Auto-generate any missing secret keys into the existing .env
             _backfill_missing_keys(env_path, auto_generate_keys or [])
             return env_path
 
     # No .env found — auto-create from bundled template
-    return _create_default_env(package_data_module, auto_generate_keys or [])
+    created = _create_default_env(package_data_module, auto_generate_keys or [])
+    if created is not None:
+        _loaded_env_path = created.resolve()
+    return created
 
 
 def _backfill_missing_keys(env_path: Path, keys: list[str]) -> None:

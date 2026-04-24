@@ -25,19 +25,17 @@ SERVICE_COLORS: dict[str, str] = {
 # ANSI codes for log-level severity highlighting in service output.
 # Keys are matched against the level token captured by `_LEVEL_RE`.
 _LEVEL_COLORS: dict[str, str] = {
-    "ERROR": "31",       # red
+    "ERROR": "31",  # red
     "CRITICAL": "1;31",  # bold red
-    "WARNING": "33",     # yellow
-    "WARN": "33",        # yellow (Next.js / some loggers)
+    "WARNING": "33",  # yellow
+    "WARN": "33",  # yellow (Next.js / some loggers)
 }
 
 # Match a log-level token at the start of a line, optionally bracketed,
 # followed by a typical separator (":", whitespace, or " - "). Covers
 # uvicorn ("ERROR:    msg"), stdlib logging ("[ERROR] msg"), and the
 # "ERROR - msg" style used by Next.js / some custom loggers.
-_LEVEL_RE = re.compile(
-    r"^(?:\[)?(ERROR|CRITICAL|WARNING|WARN)(?:\])?(?::|\s+-\s+|\s+)"
-)
+_LEVEL_RE = re.compile(r"^(?:\[)?(ERROR|CRITICAL|WARNING|WARN)(?:\])?(?::|\s+-\s+|\s+)")
 
 # Canonical log file paths — stored in ~/.reflexio/logs/ (not the project directory)
 _LOG_DIR = str(Path.home() / ".reflexio" / "logs")
@@ -162,6 +160,7 @@ def print_startup_banner(
     *,
     supabase_port: int | None = 54321,
     log_file: str = DEV_LOG_FILE,
+    config_paths: dict[str, str] | None = None,
 ) -> None:
     """Print a consolidated startup summary banner with service URLs.
 
@@ -169,6 +168,10 @@ def print_startup_banner(
         ports: Mapping of service name to port number.
         supabase_port: Supabase port, or None if not running.
         log_file: Path to the log file.
+        config_paths: Optional mapping of config-label → path string (e.g.
+            ``{"env": "~/.reflexio/.env", "config": "~/.reflexio/configs/config_default.json"}``).
+            Renders as a "Config" section above the "Logs" line so operators
+            can see at a glance which files the server actually loaded.
     """
     lines = []
     width = 44
@@ -190,6 +193,17 @@ def print_startup_banner(
         label = colorize("  Supabase   ", "36")
         status = colorize("ready", "32")
         lines.append(f"{label}{url:<26}{status}")
+
+    if config_paths:
+        lines.append(f"{'-' * width}")
+        for label, path in config_paths.items():
+            # Collapse HOME to ~ for readability; absolute paths stay absolute
+            # so log scrapers and copy-paste still work.
+            display = str(path)
+            home = str(Path.home())
+            if display.startswith(home):
+                display = "~" + display[len(home) :]
+            lines.append(f"  {label:<11}{display}")
 
     lines.append(f"{'-' * width}")
     lines.append(f"  Logs       {log_file}")
