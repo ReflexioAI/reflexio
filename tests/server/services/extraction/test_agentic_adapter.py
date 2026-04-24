@@ -9,7 +9,6 @@ Additional unit tests cover:
 - force_extraction bypasses pre-filter
 - multiple extractor configs each invoke ExtractionAgent
 - skip_aggregation short-circuits aggregator
-- output_pending_status warning when applied > 0
 - agent failure degrades to warning (not exception)
 - hard violations surface as warnings
 """
@@ -77,8 +76,6 @@ def _make_publish_request(
 
 def _make_runner(
     storage: object = None,
-    *,
-    output_pending_status: bool = False,
 ) -> AgenticExtractionRunner:
     """Build a runner with a mocked request_context."""
     rc = MagicMock()
@@ -91,7 +88,6 @@ def _make_runner(
     return AgenticExtractionRunner(
         llm_client=MagicMock(),
         request_context=rc,
-        output_pending_status=output_pending_status,
     )
 
 
@@ -433,77 +429,6 @@ def test_runner_skip_aggregation_short_circuits():
         )
 
     fake_agg_cls.assert_not_called()
-
-
-def test_runner_output_pending_status_warns_when_applied():
-    """output_pending_status=True + applied ops → warning emitted (not exception)."""
-    from reflexio.server.services.extraction.plan import CreateUserProfileOp
-
-    runner = _make_runner(output_pending_status=True)
-
-    cfg = Config(
-        storage_config=StorageConfigSQLite(),
-        profile_extractor_configs=[
-            ProfileExtractorConfig(
-                extractor_name="default",
-                extraction_definition_prompt="Extract facts.",
-            )
-        ],
-        user_playbook_extractor_configs=[],
-    )
-
-    applied_op = CreateUserProfileOp(content="fact", ttl="infinity", source_span="span")
-    result_with_applied = CommitResult(
-        applied=[applied_op],  # type: ignore[list-item]
-        violations=[],
-        outcome="finish_tool",
-    )
-
-    with patch(
-        "reflexio.server.services.extraction.agentic_adapter.ExtractionAgent.run",
-        return_value=result_with_applied,
-    ):
-        warnings = runner.run(
-            publish_request=_make_publish_request(force_extraction=True),
-            request_id="req_pending",
-            new_interactions=[_make_interaction("User", "test")],
-            new_request=_make_request(),
-            config=cfg,
-        )
-
-    assert any("output_pending_status not supported" in w for w in warnings)
-
-
-def test_runner_output_pending_status_no_warn_when_nothing_applied():
-    """output_pending_status=True but no applied ops → no warning emitted."""
-    runner = _make_runner(output_pending_status=True)
-
-    cfg = Config(
-        storage_config=StorageConfigSQLite(),
-        profile_extractor_configs=[
-            ProfileExtractorConfig(
-                extractor_name="default",
-                extraction_definition_prompt="Extract facts.",
-            )
-        ],
-        user_playbook_extractor_configs=[],
-    )
-
-    empty_result = CommitResult(applied=[], violations=[], outcome="finish_tool")
-
-    with patch(
-        "reflexio.server.services.extraction.agentic_adapter.ExtractionAgent.run",
-        return_value=empty_result,
-    ):
-        warnings = runner.run(
-            publish_request=_make_publish_request(force_extraction=True),
-            request_id="req_no_applied",
-            new_interactions=[_make_interaction("User", "test")],
-            new_request=_make_request(),
-            config=cfg,
-        )
-
-    assert not any("output_pending_status" in w for w in warnings)
 
 
 def test_runner_agent_failure_becomes_warning():

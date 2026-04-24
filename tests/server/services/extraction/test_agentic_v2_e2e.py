@@ -196,13 +196,7 @@ def test_e2e_agentic_v2_full_flow(tmp_path):
         )
 
         # --- no unexpected warnings ---
-        benign_prefixes = ("output_pending_status",)
-        unexpected = [
-            w
-            for w in result.warnings
-            if not any(w.startswith(p) for p in benign_prefixes)
-        ]
-        assert not unexpected, f"unexpected warnings: {unexpected}"
+        assert not result.warnings, f"unexpected warnings: {result.warnings}"
 
 
 # ---------------------------------------------------------------------------

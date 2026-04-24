@@ -55,9 +55,6 @@ class AgenticExtractionRunner:
         llm_client (LiteLLMClient): Configured LLM client.
         request_context (RequestContext): Provides ``storage``, ``prompt_manager``,
             and ``configurator``.
-        output_pending_status (bool): Legacy flag — v2 runner does not support
-            setting ``Status.PENDING`` after commit.  A warning is emitted when
-            ``True`` and the agent applied any mutations.
     """
 
     def __init__(
@@ -65,12 +62,10 @@ class AgenticExtractionRunner:
         *,
         llm_client: LiteLLMClient,
         request_context: RequestContext,
-        output_pending_status: bool = False,
     ) -> None:
         self.client = llm_client
         self.request_context = request_context
         self.storage = request_context.storage
-        self.output_pending_status = output_pending_status
 
     def run(
         self,
@@ -129,7 +124,6 @@ class AgenticExtractionRunner:
             storage=self.storage,
             prompt_manager=self.request_context.prompt_manager,
         )
-        total_applied = 0
         for cfg in extractor_configs:
             extractor_name: str = cfg.extractor_name
             extraction_criteria: str = cfg.extraction_definition_prompt
@@ -141,7 +135,6 @@ class AgenticExtractionRunner:
                     extraction_criteria=extraction_criteria,
                     sessions_text=sessions_str,
                 )
-                total_applied += len(result.applied)
                 logger.info(
                     "extraction_agent[%s] outcome=%s applied=%d violations=%d",
                     extractor_name,
@@ -168,12 +161,6 @@ class AgenticExtractionRunner:
             self._run_aggregation(
                 config=config, publish_request=publish_request, warnings=warnings
             )
-
-        # Phase 6 — output_pending_status compatibility notice.
-        # TODO: bolt on status-patching in a follow-up once the v2 commit path
-        #       exposes a post-commit hook or returns created entity IDs.
-        if self.output_pending_status and total_applied > 0:
-            warnings.append("output_pending_status not supported by agentic-v2 runner")
 
         return warnings
 
