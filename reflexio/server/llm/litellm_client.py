@@ -1209,6 +1209,11 @@ class LiteLLMClient:
             if hasattr(self.config, key):
                 setattr(self.config, key, value)
                 self.logger.debug("Updated config: %s = %s", key, value)
+                # Invalidate the embedding-default cache when the provider
+                # surface changes — resolve_model_name(EMBEDDING) reads
+                # api_key_config, so a swap must force a re-detect.
+                if key == "api_key_config":
+                    self._default_embedding_model = None
             else:
                 self.logger.warning("Unknown config parameter: %s", key)
 
