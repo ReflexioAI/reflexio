@@ -321,14 +321,21 @@ def test_refine_profile_args_rejects_non_literal_time_to_live():
         RefineProfileArgs(
             candidate_index=0,
             content="User is on-call this week",
-            time_to_live="2026-04-26",  # the exact bad value seen in production
+            time_to_live="2026-04-26",  # type: ignore[arg-type]  # the exact bad value seen in production
         )
 
 
 def test_refine_profile_args_accepts_all_six_literals():
     from reflexio.server.services.extraction.critics import RefineProfileArgs
 
-    for ttl in ("one_day", "one_week", "one_month", "one_quarter", "one_year", "infinity"):
+    for ttl in (
+        "one_day",
+        "one_week",
+        "one_month",
+        "one_quarter",
+        "one_year",
+        "infinity",
+    ):
         args = RefineProfileArgs(candidate_index=0, content="c", time_to_live=ttl)
         assert args.time_to_live == ttl
 

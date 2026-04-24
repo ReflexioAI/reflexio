@@ -14,11 +14,18 @@ invariants pass.
 
 from __future__ import annotations
 
+import uuid
+from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field
 
-from reflexio.models.api_schema.domain.entities import Status
+from reflexio.models.api_schema.domain.entities import (
+    Status,
+    UserPlaybook,
+    UserProfile,
+)
+from reflexio.models.api_schema.domain.enums import ProfileTimeToLive
 from reflexio.models.api_schema.retriever_schema import (
     SearchAgentPlaybookRequest,
     SearchMode,
@@ -26,6 +33,10 @@ from reflexio.models.api_schema.retriever_schema import (
     SearchUserProfileRequest,
 )
 from reflexio.server.services.extraction.plan import (
+    CreateUserPlaybookOp,
+    CreateUserProfileOp,
+    DeleteUserPlaybookOp,
+    DeleteUserProfileOp,
     ExtractionCtx,
     PlaybookStrength,
     ProfileTTL,
@@ -350,3 +361,203 @@ def _handle_get_session_excerpt(
     if not matches:
         return {"error": "span not found"}
     return {"excerpt": matches[0]}
+
+
+def _next_tentative_id(ctx: ExtractionCtx, kind: str) -> str:
+    """Generate a deterministic tentative-id scoped to this run.
+
+    Format: ``tentative::<kind>::<plan_length>`` — unique within the run,
+    recognizable in logs.
+
+    Args:
+        ctx (ExtractionCtx): Per-run state; plan length used as counter.
+        kind (str): Entity type label, e.g. ``"profile"`` or ``"playbook"``.
+
+    Returns:
+        str: Tentative id string unique within this run.
+    """
+    return f"tentative::{kind}::{len(ctx.plan)}"
+
+
+# ====================================================================
+# Mutating handlers — append to ctx.plan, no storage writes
+# ====================================================================
+
+
+def _handle_create_user_profile(
+    args: CreateUserProfileArgs,
+    storage: Any,  # noqa: ARG001
+    ctx: ExtractionCtx,
+) -> dict[str, Any]:
+    """Propose creating a new UserProfile; appends CreateUserProfileOp to ctx.plan.
+
+    No storage write occurs here — apply_plan_op commits ops after invariants pass.
+
+    Args:
+        args (CreateUserProfileArgs): Validated args from the LLM tool call.
+        storage (Any): BaseStorage instance (unused; present for handler signature consistency).
+        ctx (ExtractionCtx): Per-run state; plan and known_ids are mutated.
+
+    Returns:
+        dict[str, Any]: ``{"op_idx": int, "tentative_id": str}`` for LLM feedback.
+    """
+    tid = _next_tentative_id(ctx, "profile")
+    op = CreateUserProfileOp(
+        content=args.content, ttl=args.ttl, source_span=args.source_span
+    )
+    ctx.plan.append(op)
+    ctx.known_ids.add(tid)
+    return {"op_idx": len(ctx.plan) - 1, "tentative_id": tid}
+
+
+def _handle_delete_user_profile(
+    args: DeleteUserProfileArgs,
+    storage: Any,  # noqa: ARG001
+    ctx: ExtractionCtx,
+) -> dict[str, Any]:
+    """Propose deleting an existing UserProfile; appends DeleteUserProfileOp to ctx.plan.
+
+    No storage write occurs here.
+
+    Args:
+        args (DeleteUserProfileArgs): Validated args from the LLM tool call.
+        storage (Any): BaseStorage instance (unused).
+        ctx (ExtractionCtx): Per-run state; plan is mutated.
+
+    Returns:
+        dict[str, Any]: ``{"op_idx": int}`` for LLM feedback.
+    """
+    op = DeleteUserProfileOp(id=args.id)
+    ctx.plan.append(op)
+    return {"op_idx": len(ctx.plan) - 1}
+
+
+def _handle_create_user_playbook(
+    args: CreateUserPlaybookArgs,
+    storage: Any,  # noqa: ARG001
+    ctx: ExtractionCtx,
+) -> dict[str, Any]:
+    """Propose creating a new UserPlaybook; appends CreateUserPlaybookOp to ctx.plan.
+
+    No storage write occurs here.
+
+    Args:
+        args (CreateUserPlaybookArgs): Validated args from the LLM tool call.
+        storage (Any): BaseStorage instance (unused).
+        ctx (ExtractionCtx): Per-run state; plan and known_ids are mutated.
+
+    Returns:
+        dict[str, Any]: ``{"op_idx": int, "tentative_id": str}`` for LLM feedback.
+    """
+    tid = _next_tentative_id(ctx, "playbook")
+    op = CreateUserPlaybookOp(
+        trigger=args.trigger,
+        content=args.content,
+        rationale=args.rationale,
+        strength=args.strength,
+        source_span=args.source_span,
+    )
+    ctx.plan.append(op)
+    ctx.known_ids.add(tid)
+    return {"op_idx": len(ctx.plan) - 1, "tentative_id": tid}
+
+
+def _handle_delete_user_playbook(
+    args: DeleteUserPlaybookArgs,
+    storage: Any,  # noqa: ARG001
+    ctx: ExtractionCtx,
+) -> dict[str, Any]:
+    """Propose deleting an existing UserPlaybook; appends DeleteUserPlaybookOp to ctx.plan.
+
+    No storage write occurs here.
+
+    Args:
+        args (DeleteUserPlaybookArgs): Validated args from the LLM tool call.
+        storage (Any): BaseStorage instance (unused).
+        ctx (ExtractionCtx): Per-run state; plan is mutated.
+
+    Returns:
+        dict[str, Any]: ``{"op_idx": int}`` for LLM feedback.
+    """
+    op = DeleteUserPlaybookOp(id=args.id)
+    ctx.plan.append(op)
+    return {"op_idx": len(ctx.plan) - 1}
+
+
+def _handle_finish(
+    args: FinishArgs,  # noqa: ARG001
+    storage: Any,  # noqa: ARG001
+    ctx: ExtractionCtx,
+) -> dict[str, Any]:
+    """Terminate the agent loop.
+
+    Args:
+        args (FinishArgs): No fields (sentinel call).
+        storage (Any): BaseStorage instance (unused).
+        ctx (ExtractionCtx): Per-run state; ``finished`` is set to True.
+
+    Returns:
+        dict[str, Any]: ``{"finished": True}``.
+    """
+    ctx.finished = True
+    return {"finished": True}
+
+
+# ====================================================================
+# Commit-stage: apply a PlanOp to storage
+# ====================================================================
+
+
+def apply_plan_op(op: Any, storage: Any, ctx: ExtractionCtx) -> None:
+    """Deterministically apply one PlanOp to storage. Called by commit_plan.
+
+    Args:
+        op (Any): A PlanOp variant (CreateUserProfileOp, DeleteUserProfileOp,
+            CreateUserPlaybookOp, DeleteUserPlaybookOp).
+        storage (Any): BaseStorage handle.
+        ctx (ExtractionCtx): Per-run state providing user_id, agent_version,
+            extractor_name.
+
+    Raises:
+        TypeError: If ``op`` is not a recognised PlanOp type.
+    """
+    if isinstance(op, CreateUserProfileOp):
+        now_ts = int(datetime.now(UTC).timestamp())
+        storage.add_user_profile(
+            ctx.user_id,
+            [
+                UserProfile(
+                    user_id=ctx.user_id,
+                    profile_id=str(uuid.uuid4()),
+                    content=op.content,
+                    profile_time_to_live=ProfileTimeToLive(op.ttl),
+                    last_modified_timestamp=now_ts,
+                    # expiration_timestamp defaults to NEVER_EXPIRES_TIMESTAMP
+                    source=f"agentic_v2/{ctx.extractor_name or 'default'}",
+                    source_span=op.source_span,
+                    generated_from_request_id="",  # filled by runner if available
+                )
+            ],
+        )
+    elif isinstance(op, DeleteUserProfileOp):
+        storage.delete_profiles_by_ids([op.id])
+    elif isinstance(op, CreateUserPlaybookOp):
+        storage.save_user_playbooks(
+            [
+                UserPlaybook(
+                    user_playbook_id=0,  # storage assigns
+                    user_id=ctx.user_id,
+                    agent_version=ctx.agent_version,
+                    request_id="",
+                    playbook_name=ctx.extractor_name or "default",
+                    content=op.content,
+                    trigger=op.trigger,
+                    rationale=op.rationale,
+                    source_span=op.source_span,
+                )
+            ]
+        )
+    elif isinstance(op, DeleteUserPlaybookOp):
+        storage.delete_user_playbooks_by_ids([int(op.id)])
+    else:
+        raise TypeError(f"Unknown PlanOp: {type(op).__name__}")

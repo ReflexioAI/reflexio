@@ -60,7 +60,11 @@ def test_create_user_playbook_op_fields():
 def test_create_user_playbook_op_rejects_bad_strength():
     with pytest.raises(ValidationError):
         CreateUserPlaybookOp(
-            trigger="t", content="c", rationale="r", strength="weak", source_span="s"  # type: ignore[arg-type]
+            trigger="t",
+            content="c",
+            rationale="r",
+            strength="weak",  # type: ignore[arg-type]
+            source_span="s",
         )
 
 

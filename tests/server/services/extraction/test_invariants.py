@@ -199,10 +199,7 @@ def test_inv_K_delete_plus_create_ok():  # noqa: N802
 
 # --- commit_plan orchestrator ---
 
-import pytest
 
-
-@pytest.mark.skip(reason="Requires tools.apply_plan_op from Task 5")
 def test_commit_plan_applies_valid_ops():  # noqa: N802
     """With no violations, every op reaches storage."""
     ctx = _mk_ctx(search_count=1)
@@ -220,7 +217,6 @@ def test_commit_plan_applies_valid_ops():  # noqa: N802
     assert result.violations == []
 
 
-@pytest.mark.skip(reason="Requires tools.apply_plan_op from Task 5")
 def test_commit_plan_drops_hard_violation_ops():  # noqa: N802
     """Hard-invariant-violating ops are excluded from apply."""
     ctx = _mk_ctx(search_count=0)
@@ -237,7 +233,6 @@ def test_commit_plan_drops_hard_violation_ops():  # noqa: N802
     assert {"A", "B"}.issubset(codes)
 
 
-@pytest.mark.skip(reason="Requires tools.apply_plan_op from Task 5")
 def test_commit_plan_keeps_soft_violation_ops():  # noqa: N802
     """Soft violations are logged but ops commit."""
     ctx = _mk_ctx(search_count=1)
