@@ -218,11 +218,16 @@ class ToolCallingChatResponse:
         content: Text content from the model, or None when the model emitted tool calls.
         tool_calls: List of tool call objects from the model, or None on the terminal turn.
         finish_reason: The stop reason reported by the provider (e.g. "tool_calls", "stop").
+        usage: Raw usage object from the LLM response (provider-dependent shape), or None.
+        cost_usd: Estimated cost in USD for this call via litellm price table, or None when
+            the provider is not in the table (local ONNX, claude-code CLI, etc.).
     """
 
     content: str | None
     tool_calls: list[Any] | None
     finish_reason: str | None
+    usage: Any | None = None
+    cost_usd: float | None = None
 
 
 class LiteLLMClientError(Exception):
@@ -769,8 +774,29 @@ class LiteLLMClient:
 
         return params, response_format, parse_structured_output, max_retries
 
+    def _compute_cost_usd(self, response: Any, model: str | None) -> float | None:
+        """Compute call cost in USD via the litellm price table.
+
+        Falls back to None when the provider is not mapped (local ONNX,
+        claude-code CLI, etc.) rather than failing the request.
+
+        Args:
+            response: Raw LLM response object.
+            model: Fully-qualified model name used for the call.
+
+        Returns:
+            float | None: Cost in USD, or None when unavailable.
+        """
+        try:
+            import litellm
+
+            cost = litellm.completion_cost(completion_response=response, model=model)
+            return float(cost) if cost else None
+        except Exception:
+            return None
+
     def _log_token_usage(self, params: dict[str, Any], response: Any) -> None:
-        """Log token usage with cache statistics from an LLM response.
+        """Log token usage with cache statistics and cost from an LLM response.
 
         Args:
             params: Request parameters (for model name)
@@ -793,13 +819,17 @@ class LiteLLMClient:
                 f", cache_write: {cache_creation or 0}, cache_read: {cache_read or 0}"
             )
 
+        cost = self._compute_cost_usd(response, params.get("model"))
+        cost_suffix = f", cost: ${cost:.6f}" if cost is not None else ""
+
         self.logger.info(
-            "Token usage - model: %s, input: %s, output: %s, total: %s%s",
+            "Token usage - model: %s, input: %s, output: %s, total: %s%s%s",
             params.get("model"),
             usage.prompt_tokens,
             usage.completion_tokens,
             usage.total_tokens,
             cache_info,
+            cost_suffix,
         )
 
     def _handle_retry_or_raise(
@@ -915,10 +945,14 @@ class LiteLLMClient:
                 # Tool-calling path: return a structured response instead of
                 # going through _maybe_parse_structured_output.
                 if "tools" in params:
+                    raw_usage = getattr(response, "usage", None)
+                    call_cost = self._compute_cost_usd(response, params.get("model"))
                     return ToolCallingChatResponse(
                         content=content,
                         tool_calls=getattr(message, "tool_calls", None),
                         finish_reason=response.choices[0].finish_reason,  # type: ignore[reportAttributeAccessIssue]
+                        usage=raw_usage,
+                        cost_usd=call_cost,
                     )
 
                 return self._maybe_parse_structured_output(

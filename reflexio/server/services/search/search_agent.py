@@ -3,16 +3,64 @@
 from __future__ import annotations
 
 import logging
+import time
+from collections import Counter
 
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.llm.model_defaults import ModelRole
-from reflexio.server.llm.tools import run_tool_loop
+from reflexio.server.llm.tools import ToolLoopTrace, run_tool_loop
 from reflexio.server.prompt.prompt_manager import PromptManager
 from reflexio.server.services.extraction.plan import ExtractionCtx, HandlerBundle
 from reflexio.server.services.extraction.tools import SEARCH_TOOLS
 from reflexio.server.services.search.plan import SearchResult
 
 logger = logging.getLogger(__name__)
+
+
+def _summarise_tool_calls(trace: ToolLoopTrace) -> str:
+    """Return a compact 'tool_a:2, tool_b:1' string from a ToolLoopTrace.
+
+    Args:
+        trace (ToolLoopTrace): The completed tool loop trace.
+
+    Returns:
+        str: Comma-separated name:count pairs ordered by frequency, or '(none)'.
+    """
+    counts = Counter(t.tool_name for t in trace.turns)
+    return ", ".join(f"{name}:{n}" for name, n in counts.most_common()) or "(none)"
+
+
+def _summarise_usage(trace: ToolLoopTrace) -> str:
+    """Return a per-model 'model_x: N tokens, $0.0078' string aggregated across all turns.
+
+    A single response's usage is attached to every turn it produced, so this
+    function deduplicates by (model, prompt_tokens, completion_tokens) to avoid
+    double-counting when one LLM call produced multiple tool calls.
+
+    Args:
+        trace (ToolLoopTrace): The completed tool loop trace.
+
+    Returns:
+        str: Semicolon-separated per-model summaries, or '(none)'.
+    """
+    seen: set[tuple[str, int, int]] = set()
+    per_model: dict[str, dict[str, float]] = {}
+    for t in trace.turns:
+        if t.model is None or t.prompt_tokens is None or t.completion_tokens is None:
+            continue
+        key = (t.model, t.prompt_tokens, t.completion_tokens)
+        if key in seen:
+            continue
+        seen.add(key)
+        bucket = per_model.setdefault(t.model, {"tokens": 0.0, "cost": 0.0})
+        bucket["tokens"] += t.total_tokens or 0
+        bucket["cost"] += t.cost_usd or 0.0
+    if not per_model:
+        return "(none)"
+    return "; ".join(
+        f"{m}: {int(v['tokens'])} tokens, ${v['cost']:.6f}"
+        for m, v in per_model.items()
+    )
 
 
 class SearchAgent:
@@ -61,6 +109,7 @@ class SearchAgent:
             "search_agent", variables={"query": query}
         )
 
+        t0 = time.monotonic()
         result = run_tool_loop(
             client=self.client,
             messages=[{"role": "user", "content": prompt}],
@@ -73,6 +122,19 @@ class SearchAgent:
         )
 
         answer = ctx.search_answer if ctx.search_answer is not None else "no answer"
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+
+        logger.info(
+            "search_agent elapsed_ms=%d turns=%d/%d tools={%s} outcome=%s "
+            "answer_len=%d usage={%s}",
+            elapsed_ms,
+            len(result.trace.turns),
+            self.max_steps,
+            _summarise_tool_calls(result.trace),
+            result.finished_reason,
+            len(answer),
+            _summarise_usage(result.trace),
+        )
         return SearchResult(
             answer=answer,
             outcome=result.finished_reason,

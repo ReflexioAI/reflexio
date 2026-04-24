@@ -7,11 +7,13 @@ calls commit_plan on termination. Returns a CommitResult.
 from __future__ import annotations
 
 import logging
+import time
+from collections import Counter
 from typing import Literal
 
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.llm.model_defaults import ModelRole
-from reflexio.server.llm.tools import ToolRegistry, run_tool_loop
+from reflexio.server.llm.tools import ToolLoopTrace, ToolRegistry, run_tool_loop
 from reflexio.server.prompt.prompt_manager import PromptManager
 from reflexio.server.services.extraction.invariants import commit_plan
 from reflexio.server.services.extraction.plan import (
@@ -22,6 +24,52 @@ from reflexio.server.services.extraction.plan import (
 from reflexio.server.services.extraction.tools import EXTRACTION_TOOLS
 
 logger = logging.getLogger(__name__)
+
+
+def _summarise_tool_calls(trace: ToolLoopTrace) -> str:
+    """Return a compact 'tool_a:2, tool_b:1' string from a ToolLoopTrace.
+
+    Args:
+        trace (ToolLoopTrace): The completed tool loop trace.
+
+    Returns:
+        str: Comma-separated name:count pairs ordered by frequency, or '(none)'.
+    """
+    counts = Counter(t.tool_name for t in trace.turns)
+    return ", ".join(f"{name}:{n}" for name, n in counts.most_common()) or "(none)"
+
+
+def _summarise_usage(trace: ToolLoopTrace) -> str:
+    """Return a per-model 'model_x: N tokens, $0.0078' string aggregated across all turns.
+
+    A single response's usage is attached to every turn it produced, so this
+    function deduplicates by (model, prompt_tokens, completion_tokens) to avoid
+    double-counting when one LLM call produced multiple tool calls.
+
+    Args:
+        trace (ToolLoopTrace): The completed tool loop trace.
+
+    Returns:
+        str: Semicolon-separated per-model summaries, or '(none)'.
+    """
+    seen: set[tuple[str, int, int]] = set()
+    per_model: dict[str, dict[str, float]] = {}
+    for t in trace.turns:
+        if t.model is None or t.prompt_tokens is None or t.completion_tokens is None:
+            continue
+        key = (t.model, t.prompt_tokens, t.completion_tokens)
+        if key in seen:
+            continue
+        seen.add(key)
+        bucket = per_model.setdefault(t.model, {"tokens": 0.0, "cost": 0.0})
+        bucket["tokens"] += t.total_tokens or 0
+        bucket["cost"] += t.cost_usd or 0.0
+    if not per_model:
+        return "(none)"
+    return "; ".join(
+        f"{m}: {int(v['tokens'])} tokens, ${v['cost']:.6f}"
+        for m, v in per_model.items()
+    )
 
 
 class ExtractionAgent:
@@ -101,6 +149,7 @@ class ExtractionAgent:
             },
         )
 
+        t0 = time.monotonic()
         result = run_tool_loop(
             client=self.client,
             messages=[{"role": "user", "content": prompt}],
@@ -112,4 +161,21 @@ class ExtractionAgent:
             log_label=f"extraction_agent[{extractor_name}]",
         )
 
-        return commit_plan(ctx, self.storage, outcome=result.finished_reason)
+        commit = commit_plan(ctx, self.storage, outcome=result.finished_reason)
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+
+        logger.info(
+            "extraction_agent[%s] kind=%s elapsed_ms=%d turns=%d/%d tools={%s} "
+            "outcome=%s applied=%d violations=%s usage={%s}",
+            extractor_name,
+            extraction_kind,
+            elapsed_ms,
+            len(result.trace.turns),
+            self.max_steps,
+            _summarise_tool_calls(result.trace),
+            commit.outcome,
+            len(commit.applied),
+            sorted({v.code for v in commit.violations}) or "[]",
+            _summarise_usage(result.trace),
+        )
+        return commit

@@ -192,3 +192,70 @@ def test_extraction_agent_prompt_frames_self_improvement(prompt_manager):
     )
     assert "improve over time" in out or "self-improv" in out
     assert "memory extractor" not in out.lower()
+
+
+def test_extraction_agent_emits_summary_info_line(
+    caplog, temp_storage, prompt_manager, llm_client
+):
+    """Each run emits ONE INFO line starting with 'extraction_agent[' that
+    contains elapsed_ms, turns, tools, outcome, applied, violations, usage."""
+    import logging
+
+    llm_client.generate_chat_response.side_effect = [
+        _mk_tool_response(
+            [
+                _mk_tool_call(
+                    "c1",
+                    "search_user_profiles",
+                    {"query": "food preferences", "top_k": 10},
+                )
+            ]
+        ),
+        _mk_tool_response(
+            [
+                _mk_tool_call(
+                    "c2",
+                    "create_user_profile",
+                    {
+                        "content": "user likes sushi",
+                        "ttl": "infinity",
+                        "source_span": "I love sushi",
+                    },
+                )
+            ]
+        ),
+        _mk_tool_response([_mk_tool_call("c3", "finish", {})]),
+    ]
+
+    agent = ExtractionAgent(
+        client=llm_client,
+        storage=temp_storage,
+        prompt_manager=prompt_manager,
+        max_steps=12,
+    )
+
+    with caplog.at_level(
+        logging.INFO, logger="reflexio.server.services.extraction.extraction_agent"
+    ):
+        agent.run(
+            user_id="u_summary",
+            agent_version="v1",
+            extractor_name="food",
+            extraction_criteria="Extract food preferences.",
+            sessions_text="User: I love sushi",
+        )
+
+    summary = [
+        r for r in caplog.records if r.getMessage().startswith("extraction_agent[")
+    ]
+    assert len(summary) == 1, (
+        f"Expected 1 summary line, got: {[r.getMessage() for r in summary]}"
+    )
+    msg = summary[0].getMessage()
+    assert "elapsed_ms=" in msg
+    assert "turns=" in msg
+    assert "tools={" in msg
+    assert "outcome=" in msg
+    assert "applied=" in msg
+    assert "violations=" in msg
+    assert "usage={" in msg

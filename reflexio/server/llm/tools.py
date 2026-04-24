@@ -81,7 +81,14 @@ class ToolLoopTurn(BaseModel):
     args: dict[str, Any]
     result: dict[str, Any]
     latency_ms: int
-    tokens: int | None = None
+    # Populated from the LLM response's ``usage`` object when available
+    # (native tool-call mode). All None in capability-fallback mode and
+    # when the provider doesn't report usage.
+    model: str | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    total_tokens: int | None = None
+    cost_usd: float | None = None
 
 
 class ToolLoopTrace(BaseModel):
@@ -243,6 +250,21 @@ def run_tool_loop(
             )
             if log_label:
                 log_model_response(logger, f"{log_label} (turn {_step + 1})", resp)
+
+            # Extract per-turn usage from the response (populated by LiteLLMClient
+            # when the provider reports it; None otherwise).
+            turn_usage = getattr(resp, "usage", None)
+            turn_prompt_tokens = (
+                getattr(turn_usage, "prompt_tokens", None) if turn_usage else None
+            )
+            turn_completion_tokens = (
+                getattr(turn_usage, "completion_tokens", None) if turn_usage else None
+            )
+            turn_total_tokens = (
+                getattr(turn_usage, "total_tokens", None) if turn_usage else None
+            )
+            turn_cost_usd = getattr(resp, "cost_usd", None)
+
             tool_calls = getattr(resp, "tool_calls", None)
             if not tool_calls:
                 trace.finished = True
@@ -255,6 +277,8 @@ def run_tool_loop(
                 {"role": "assistant", "content": None, "tool_calls": list(tool_calls)}
             )
             # Process every tool call and append per-call tool result messages.
+            # A single response's usage is attached to every turn it produced —
+            # the summary helpers dedup by (model, prompt_tokens, completion_tokens).
             for tc in tool_calls:
                 name = tc.function.name
                 args_json = tc.function.arguments
@@ -269,6 +293,11 @@ def run_tool_loop(
                         args=args_dict,
                         result=result,
                         latency_ms=int((time.monotonic() - t0) * 1000),
+                        model=model,
+                        prompt_tokens=turn_prompt_tokens,
+                        completion_tokens=turn_completion_tokens,
+                        total_tokens=turn_total_tokens,
+                        cost_usd=turn_cost_usd,
                     )
                 )
                 local_msgs.append(

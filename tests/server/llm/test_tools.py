@@ -1,10 +1,14 @@
 import json
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from pydantic import BaseModel
 
-from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
+from reflexio.server.llm.litellm_client import (
+    LiteLLMClient,
+    LiteLLMConfig,
+    ToolCallingChatResponse,
+)
 from reflexio.server.llm.model_defaults import ModelRole
 from reflexio.server.llm.tools import (
     Tool,
@@ -415,3 +419,72 @@ def test_run_tool_loop_log_label_fallback_path_logs_once(monkeypatch):
     assert mock_log_resp.call_count == 1
     assert mock_log_msgs.call_args.args[1] == "profile_reader_facts (fallback)"
     assert mock_log_resp.call_args.args[1] == "profile_reader_facts (fallback)"
+
+
+# ---------------------------------------------------------------------------
+# ToolLoopTurn usage field tests
+# ---------------------------------------------------------------------------
+
+
+def test_run_tool_loop_captures_usage_on_tool_loop_turn(monkeypatch):
+    """Each ToolLoopTurn should carry prompt/completion/total tokens, model name,
+    and cost_usd when the ToolCallingChatResponse carries a usage object."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_CLI", raising=False)
+
+    # Build a fake usage object.
+    fake_usage = MagicMock()
+    fake_usage.prompt_tokens = 100
+    fake_usage.completion_tokens = 50
+    fake_usage.total_tokens = 150
+
+    # Build scripted ToolCallingChatResponse objects (one tool call, then finish).
+    tc = MagicMock()
+    tc.id = "tc_emit"
+    tc.function = MagicMock()
+    tc.function.name = "emit"
+    tc.function.arguments = json.dumps({"value": "hello"})
+
+    resp_with_usage = ToolCallingChatResponse(
+        content=None,
+        tool_calls=[tc],
+        finish_reason="tool_calls",
+        usage=fake_usage,
+        cost_usd=0.002,
+    )
+    resp_finish = ToolCallingChatResponse(
+        content=None,
+        tool_calls=None,
+        finish_reason="stop",
+        usage=None,
+        cost_usd=None,
+    )
+
+    config = LiteLLMConfig(model="claude-sonnet-4-6")
+    client = LiteLLMClient(config)
+    ctx = LoopCtx()
+    registry = _make_registry(ctx)
+
+    monkeypatch.setattr(
+        client,
+        "generate_chat_response",
+        MagicMock(side_effect=[resp_with_usage, resp_finish]),
+    )
+
+    result = run_tool_loop(
+        client=client,
+        messages=[{"role": "user", "content": "go"}],
+        registry=registry,
+        model_role=ModelRole.EXTRACTION_AGENT,
+        ctx=ctx,
+    )
+
+    assert result.finished_reason == "finish_tool"
+    assert len(result.trace.turns) == 1
+    turn = result.trace.turns[0]
+    assert turn.prompt_tokens == 100
+    assert turn.completion_tokens == 50
+    assert turn.total_tokens == 150
+    assert turn.cost_usd == pytest.approx(0.002)
+    # model field is populated from the resolved model name (non-None)
+    assert turn.model is not None

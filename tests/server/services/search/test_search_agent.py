@@ -154,3 +154,38 @@ def test_search_agent_prompt_frames_agent_improvement(prompt_manager):
     )
     assert "helping an AI agent" in out or "inform" in out
     assert "memory query agent" not in out.lower()
+
+
+def test_search_agent_emits_summary_info_line(
+    caplog, temp_storage, prompt_manager, llm_client
+):
+    """Each run emits ONE INFO line starting with 'search_agent ' that
+    contains elapsed_ms, turns, outcome, answer_len, and usage."""
+    import logging
+
+    llm_client.generate_chat_response.side_effect = [
+        _mk_resp(
+            [_mk_tc("c1", "search_user_profiles", {"query": "food", "top_k": 10})]
+        ),
+        _mk_resp([_mk_tc("c2", "finish", {"answer": "user likes sushi"})]),
+    ]
+
+    agent = SearchAgent(
+        client=llm_client, storage=temp_storage, prompt_manager=prompt_manager
+    )
+
+    with caplog.at_level(
+        logging.INFO, logger="reflexio.server.services.search.search_agent"
+    ):
+        agent.run(user_id="u_summary", agent_version="v1", query="what do I like?")
+
+    summary = [r for r in caplog.records if r.getMessage().startswith("search_agent ")]
+    assert len(summary) == 1, (
+        f"Expected 1 summary line, got: {[r.getMessage() for r in summary]}"
+    )
+    msg = summary[0].getMessage()
+    assert "elapsed_ms=" in msg
+    assert "turns=" in msg
+    assert "outcome=" in msg
+    assert "answer_len=" in msg
+    assert "usage={" in msg
