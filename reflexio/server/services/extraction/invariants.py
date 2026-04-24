@@ -204,6 +204,44 @@ SOFT_INVARIANTS = (
 )
 
 
+# --- Oscillation resolver ---
+
+
+def resolve_tentative_oscillations(plan: list) -> set[int]:
+    """Return plan indices to drop: create+delete-tentative pairs cancel.
+
+    When the agent creates an entity (issuing a tentative_id) and later
+    deletes that same tentative_id within the same plan, both ops are
+    dropped before invariants fire. This is the "oscillated self-correction"
+    pattern — the agent changed its mind mid-run.
+
+    The tentative_id format is ``tentative::<kind>::<plan_index_at_issue_time>``,
+    matching ``_next_tentative_id`` in tools.py which uses ``len(ctx.plan)``
+    (the plan length BEFORE the op is appended, i.e. the future index of the op).
+
+    Args:
+        plan: The accumulated list of PlanOp instances from ctx.plan.
+
+    Returns:
+        Set of plan indices to exclude from apply. Both the create and the
+        delete are dropped when a matching pair is found.
+    """
+    drop: set[int] = set()
+    pending_creates: dict[str, int] = {}
+    for i, op in enumerate(plan):
+        if isinstance(op, CreateUserProfileOp):
+            tentative_id = f"tentative::profile::{i}"
+            pending_creates[tentative_id] = i
+        elif isinstance(op, CreateUserPlaybookOp):
+            tentative_id = f"tentative::user_playbook::{i}"
+            pending_creates[tentative_id] = i
+        elif isinstance(op, (DeleteUserProfileOp, DeleteUserPlaybookOp)):
+            if op.id.startswith("tentative::") and op.id in pending_creates:
+                drop.add(pending_creates.pop(op.id))
+                drop.add(i)
+    return drop
+
+
 # --- commit_plan ---
 
 
@@ -234,6 +272,9 @@ def commit_plan(
         violations.extend(check(ctx))
 
     dropped: set[int] = set()
+    # Oscillation resolver runs first: matching create+delete-tentative pairs
+    # cancel before invariants decide what to keep.
+    dropped.update(resolve_tentative_oscillations(ctx.plan))
     for v in violations:
         if v.severity == "hard":
             dropped.update(v.affected_op_indices)

@@ -149,6 +149,7 @@ from reflexio.server.services.extraction.invariants import (
     inv_E_no_duplicate_creates,
     inv_H_source_span_present,
     inv_K_deletes_without_creates,
+    resolve_tentative_oscillations,
 )
 
 # --- Soft invariants ---
@@ -244,3 +245,43 @@ def test_commit_plan_keeps_soft_violation_ops():  # noqa: N802
 
     assert len(result.applied) == 1  # the delete got applied
     assert any(v.code == "K" for v in result.violations)  # but K flagged it
+
+
+# --- resolve_tentative_oscillations ---
+
+
+def test_resolve_oscillation_cancels_matching_pair():  # noqa: N802
+    """Create at index 0 + delete targeting tentative::profile::0 cancel each other."""
+    plan = [
+        CreateUserProfileOp(content="x", ttl="infinity", source_span="y"),
+        DeleteUserProfileOp(id="tentative::profile::0"),
+        CreateUserProfileOp(content="real", ttl="infinity", source_span="z"),
+    ]
+    assert resolve_tentative_oscillations(plan) == {0, 1}
+
+
+def test_resolve_oscillation_ignores_real_id_delete():  # noqa: N802
+    """Delete of a non-tentative id is not touched by the resolver."""
+    plan = [
+        CreateUserProfileOp(content="x", ttl="infinity", source_span="y"),
+        DeleteUserProfileOp(id="p_real_uuid_123"),
+    ]
+    assert resolve_tentative_oscillations(plan) == set()
+
+
+def test_resolve_oscillation_unmatched_tentative_delete_passes_through():  # noqa: N802
+    """Delete of a tentative id that doesn't match any create — resolver ignores it.
+    Invariant B will catch it separately if it's truly unknown."""
+    plan = [
+        DeleteUserProfileOp(id="tentative::profile::99"),
+    ]
+    assert resolve_tentative_oscillations(plan) == set()
+
+
+def test_resolve_oscillation_user_playbook_pair():  # noqa: N802
+    """Same oscillation-cancel logic applies to user_playbook creates/deletes."""
+    plan = [
+        CreateUserPlaybookOp(trigger="t", content="c", source_span="s"),
+        DeleteUserPlaybookOp(id="tentative::user_playbook::0"),
+    ]
+    assert resolve_tentative_oscillations(plan) == {0, 1}
