@@ -1,0 +1,16 @@
+{
+  "id": "temporal_supersede_moved_project",
+  "group": "group2_supermemory",
+  "category": "temporal_supersede",
+  "existing_storage": [
+    {"type": "profile", "id": "p_401", "content": "user works on project Alpha", "ttl": "infinity"}
+  ],
+  "session": "User: Alpha shipped last month, now I'm leading Beta full-time.",
+  "expected_plan": [
+    {"op": "delete_user_profile", "id": "p_401"},
+    {"op": "create_user_profile",
+     "content_contains": ["Beta"],
+     "ttl": "infinity"}
+  ],
+  "expected_reasoning_contains": ["supersede", "now", "current"]
+}

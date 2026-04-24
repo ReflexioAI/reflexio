@@ -1,0 +1,15 @@
+{
+  "id": "multi_hop_mixed_memory",
+  "group": "group2_supermemory",
+  "category": "multi_hop_search",
+  "existing_storage": [
+    {"type": "profile", "id": "p_501", "content": "user is a JS/TS developer", "ttl": "infinity"},
+    {"type": "user_playbook", "id": "pb_501",
+     "trigger": "user asks for code review",
+     "content": "prioritize type-safety issues",
+     "rationale": ""}
+  ],
+  "query": "What should I focus on when reviewing this user's code?",
+  "expected_answer_contains": ["type", "safety"],
+  "expected_answer_excludes": []
+}

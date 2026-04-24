@@ -1,0 +1,9 @@
+{
+  "id": "empty_result_no_memory_yet",
+  "group": "group2_supermemory",
+  "category": "empty_result_no_confab",
+  "existing_storage": [],
+  "query": "What's the user's favorite color?",
+  "expected_answer_contains": ["no evidence", "no memory", "don't have"],
+  "expected_answer_excludes": ["blue", "red", "green", "favorite"]
+}

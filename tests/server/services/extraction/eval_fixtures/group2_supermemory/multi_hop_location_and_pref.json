@@ -1,0 +1,15 @@
+{
+  "id": "multi_hop_location_and_pref",
+  "group": "group2_supermemory",
+  "category": "multi_hop_search",
+  "existing_storage": [
+    {"type": "profile", "id": "p_502", "content": "user lives in San Francisco", "ttl": "infinity"},
+    {"type": "user_playbook", "id": "pb_502",
+     "trigger": "user asks for restaurant recommendations",
+     "content": "prefers walkable / no driving",
+     "rationale": ""}
+  ],
+  "query": "Can you recommend dinner spots for the user tonight?",
+  "expected_answer_contains": ["walk", "San Francisco"],
+  "expected_answer_excludes": ["drive", "driving"]
+}

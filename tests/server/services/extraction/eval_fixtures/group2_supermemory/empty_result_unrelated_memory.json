@@ -1,0 +1,11 @@
+{
+  "id": "empty_result_unrelated_memory",
+  "group": "group2_supermemory",
+  "category": "empty_result_no_confab",
+  "existing_storage": [
+    {"type": "profile", "id": "p_520", "content": "user is a tax accountant", "ttl": "infinity"}
+  ],
+  "query": "What's the user's home address?",
+  "expected_answer_contains": ["no evidence", "don't have", "no information"],
+  "expected_answer_excludes": ["123", "street", "avenue", "road"]
+}

@@ -1,0 +1,13 @@
+{
+  "id": "constraint_broad_code_style",
+  "group": "group2_supermemory",
+  "category": "apply_nonmatching_constraint",
+  "existing_storage": [],
+  "session": "User: keep code examples short — under 40 lines, no exceptions. I'll ask for more if I need it.",
+  "expected_plan": [
+    {"op": "create_user_playbook",
+     "trigger_contains": ["code", "example"],
+     "content_contains": ["40 lines", "short"]}
+  ],
+  "expected_reasoning_contains": ["preference", "rule"]
+}

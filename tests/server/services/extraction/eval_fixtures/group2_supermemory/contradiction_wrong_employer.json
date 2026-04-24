@@ -1,0 +1,16 @@
+{
+  "id": "contradiction_wrong_employer",
+  "group": "group2_supermemory",
+  "category": "contradiction_resolution",
+  "existing_storage": [
+    {"type": "profile", "id": "p_411", "content": "user works at Google", "ttl": "infinity"}
+  ],
+  "session": "User: I don't work at Google — I work at Meta. Got them mixed up earlier.",
+  "expected_plan": [
+    {"op": "delete_user_profile", "id": "p_411"},
+    {"op": "create_user_profile",
+     "content_contains": ["Meta"],
+     "ttl": "infinity"}
+  ],
+  "expected_reasoning_contains": ["contradict", "correct"]
+}

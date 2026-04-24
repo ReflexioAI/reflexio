@@ -1,0 +1,14 @@
+{
+  "id": "agent_playbook_code_review_style",
+  "group": "group2_supermemory",
+  "category": "agent_playbook_fallback",
+  "existing_storage": [
+    {"type": "agent_playbook", "id": "ab_601",
+     "trigger": "agent is reviewing code",
+     "content": "look for missing test coverage; flag any new public API without docstrings",
+     "playbook_name": "default_agent_playbook"}
+  ],
+  "query": "How should I review this user's PR?",
+  "expected_answer_contains": ["coverage", "docstring"],
+  "expected_answer_excludes": ["no evidence"]
+}

@@ -1,0 +1,16 @@
+{
+  "id": "contradiction_wrong_language",
+  "group": "group2_supermemory",
+  "category": "contradiction_resolution",
+  "existing_storage": [
+    {"type": "profile", "id": "p_412", "content": "user's primary language is English", "ttl": "infinity"}
+  ],
+  "session": "User: actually my first language is Spanish, English is my second.",
+  "expected_plan": [
+    {"op": "delete_user_profile", "id": "p_412"},
+    {"op": "create_user_profile",
+     "content_contains": ["Spanish"],
+     "ttl": "infinity"}
+  ],
+  "expected_reasoning_contains": ["contradict", "correct"]
+}

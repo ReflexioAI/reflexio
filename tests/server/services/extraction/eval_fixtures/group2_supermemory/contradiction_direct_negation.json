@@ -1,0 +1,16 @@
+{
+  "id": "contradiction_direct_negation",
+  "group": "group2_supermemory",
+  "category": "contradiction_resolution",
+  "existing_storage": [
+    {"type": "profile", "id": "p_410", "content": "user is a vegetarian", "ttl": "infinity"}
+  ],
+  "session": "User: correction — I'm not vegetarian, never have been. Not sure where you got that.",
+  "expected_plan": [
+    {"op": "delete_user_profile", "id": "p_410"},
+    {"op": "create_user_profile",
+     "content_contains": ["not", "vegetarian"],
+     "ttl": "infinity"}
+  ],
+  "expected_reasoning_contains": ["contradict", "correct"]
+}

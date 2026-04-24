@@ -1,0 +1,16 @@
+{
+  "id": "temporal_supersede_role_change",
+  "group": "group2_supermemory",
+  "category": "temporal_supersede",
+  "existing_storage": [
+    {"type": "profile", "id": "p_402", "content": "user is a senior SWE at Acme", "ttl": "infinity"}
+  ],
+  "session": "User: I'm a principal engineer now, title changed last quarter.",
+  "expected_plan": [
+    {"op": "delete_user_profile", "id": "p_402"},
+    {"op": "create_user_profile",
+     "content_contains": ["principal"],
+     "ttl": "infinity"}
+  ],
+  "expected_reasoning_contains": ["supersede", "now", "changed"]
+}

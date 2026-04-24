@@ -1,0 +1,15 @@
+{
+  "id": "multi_hop_tooling_preference",
+  "group": "group2_supermemory",
+  "category": "multi_hop_search",
+  "existing_storage": [
+    {"type": "profile", "id": "p_500", "content": "user works in Python data science", "ttl": "infinity"},
+    {"type": "user_playbook", "id": "pb_500",
+     "trigger": "user asks for library suggestions",
+     "content": "prefer polars and duckdb over pandas and sqlite",
+     "rationale": ""}
+  ],
+  "query": "What database tool should I suggest for the user's next analysis task?",
+  "expected_answer_contains": ["duckdb"],
+  "expected_answer_excludes": ["sqlite"]
+}

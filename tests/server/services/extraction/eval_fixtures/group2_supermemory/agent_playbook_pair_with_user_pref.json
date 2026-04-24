@@ -1,0 +1,15 @@
+{
+  "id": "agent_playbook_pair_with_user_pref",
+  "group": "group2_supermemory",
+  "category": "agent_playbook_fallback",
+  "existing_storage": [
+    {"type": "profile", "id": "p_602", "content": "user is learning Rust", "ttl": "infinity"},
+    {"type": "agent_playbook", "id": "ab_602",
+     "trigger": "user is learning a language",
+     "content": "give minimal examples first; offer idioms only after the user gets comfortable with syntax",
+     "playbook_name": "default_agent_playbook"}
+  ],
+  "query": "How should I help this user with Rust practice?",
+  "expected_answer_contains": ["minimal examples", "Rust"],
+  "expected_answer_excludes": []
+}

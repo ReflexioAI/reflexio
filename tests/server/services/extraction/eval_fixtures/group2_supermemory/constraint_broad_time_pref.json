@@ -1,0 +1,13 @@
+{
+  "id": "constraint_broad_time_pref",
+  "group": "group2_supermemory",
+  "category": "apply_nonmatching_constraint",
+  "existing_storage": [],
+  "session": "User: schedule any follow-up meetings for after 3pm PT — mornings are no-go.",
+  "expected_plan": [
+    {"op": "create_user_playbook",
+     "trigger_contains": ["meeting", "schedule"],
+     "content_contains": ["after 3pm", "PT"]}
+  ],
+  "expected_reasoning_contains": ["preference", "rule"]
+}

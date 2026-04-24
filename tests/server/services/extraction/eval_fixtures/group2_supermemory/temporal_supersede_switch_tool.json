@@ -1,0 +1,16 @@
+{
+  "id": "temporal_supersede_switch_tool",
+  "group": "group2_supermemory",
+  "category": "temporal_supersede",
+  "existing_storage": [
+    {"type": "profile", "id": "p_400", "content": "user uses pandas for data work", "ttl": "infinity"}
+  ],
+  "session": "User: these days I'm all-in on polars — pandas is slow on my data sizes now.",
+  "expected_plan": [
+    {"op": "delete_user_profile", "id": "p_400"},
+    {"op": "create_user_profile",
+     "content_contains": ["polars"],
+     "ttl": "infinity"}
+  ],
+  "expected_reasoning_contains": ["supersede", "now", "switched"]
+}

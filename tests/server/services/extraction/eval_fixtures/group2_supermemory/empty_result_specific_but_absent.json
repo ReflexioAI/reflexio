@@ -1,0 +1,11 @@
+{
+  "id": "empty_result_specific_but_absent",
+  "group": "group2_supermemory",
+  "category": "empty_result_no_confab",
+  "existing_storage": [
+    {"type": "profile", "id": "p_521", "content": "user has a cat named Whiskers", "ttl": "infinity"}
+  ],
+  "query": "What is the user's dog's name?",
+  "expected_answer_contains": ["no", "dog"],
+  "expected_answer_excludes": ["Whiskers"]
+}

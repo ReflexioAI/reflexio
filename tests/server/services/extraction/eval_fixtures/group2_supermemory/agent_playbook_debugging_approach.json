@@ -1,0 +1,14 @@
+{
+  "id": "agent_playbook_debugging_approach",
+  "group": "group2_supermemory",
+  "category": "agent_playbook_fallback",
+  "existing_storage": [
+    {"type": "agent_playbook", "id": "ab_600",
+     "trigger": "agent is debugging a failing test",
+     "content": "start with the most recent diff; check the test's actual assertions before guessing at the code",
+     "playbook_name": "default_agent_playbook"}
+  ],
+  "query": "How should I approach debugging a test failure?",
+  "expected_answer_contains": ["recent diff", "assertions"],
+  "expected_answer_excludes": ["no evidence", "no memory"]
+}
