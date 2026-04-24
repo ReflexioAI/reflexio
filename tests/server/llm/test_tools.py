@@ -154,7 +154,7 @@ def test_run_tool_loop_drives_multiple_turns_until_finish(
             client=client,
             messages=[{"role": "user", "content": "go"}],
             registry=registry,
-            model_role=ModelRole.ANGLE_READER,
+            model_role=ModelRole.EXTRACTION_AGENT,
             ctx=ctx,
         )
 
@@ -184,7 +184,7 @@ def test_run_tool_loop_honours_max_steps(monkeypatch, tool_call_completion):
             client=client,
             messages=[{"role": "user", "content": "go"}],
             registry=registry,
-            model_role=ModelRole.ANGLE_READER,
+            model_role=ModelRole.EXTRACTION_AGENT,
             max_steps=3,
             ctx=ctx,
         )
@@ -218,7 +218,7 @@ def test_run_tool_loop_capability_fallback_uses_response_format(monkeypatch):
         client=client,
         messages=[{"role": "user", "content": "go"}],
         registry=registry,
-        model_role=ModelRole.ANGLE_READER,
+        model_role=ModelRole.EXTRACTION_AGENT,
         fallback_schema=FallbackSchema,
         fallback_tool_name="emit",
         ctx=ctx,
@@ -257,7 +257,7 @@ def test_run_tool_loop_returns_error_on_client_exception(
         client=client,
         messages=[{"role": "user", "content": "go"}],
         registry=reg,
-        model_role=ModelRole.ANGLE_READER,
+        model_role=ModelRole.EXTRACTION_AGENT,
         max_steps=5,
         ctx=ctx,
         finish_tool_name="finish",
@@ -297,7 +297,7 @@ def test_run_tool_loop_log_label_none_does_not_invoke_llm_io_helpers(
             client=client,
             messages=[{"role": "user", "content": "go"}],
             registry=registry,
-            model_role=ModelRole.ANGLE_READER,
+            model_role=ModelRole.EXTRACTION_AGENT,
             ctx=ctx,
         )
 
@@ -336,7 +336,7 @@ def test_run_tool_loop_log_label_native_path_logs_each_turn(
             client=client,
             messages=[{"role": "user", "content": "go"}],
             registry=registry,
-            model_role=ModelRole.ANGLE_READER,
+            model_role=ModelRole.EXTRACTION_AGENT,
             ctx=ctx,
             log_label="profile_reader_facts",
         )
@@ -404,7 +404,7 @@ def test_run_tool_loop_log_label_fallback_path_logs_once(monkeypatch):
             client=client,
             messages=[{"role": "user", "content": "go"}],
             registry=reg,
-            model_role=ModelRole.ANGLE_READER,
+            model_role=ModelRole.EXTRACTION_AGENT,
             ctx=ctx,
             fallback_schema=EmitListSchema,
             fallback_tool_name="emit",

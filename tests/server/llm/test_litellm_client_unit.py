@@ -165,7 +165,7 @@ class TestInit:
     def test_init_with_azure_config(self):
         azure = AzureOpenAIConfig(
             api_key="az-key",
-            endpoint="https://myresource.openai.azure.com/",
+            endpoint="https://myresource.openai.azure.com/",  # type: ignore[arg-type]
             api_version="2024-02-15-preview",
         )
         api_key_config = APIKeyConfig(openai=CommonsOpenAIConfig(azure_config=azure))
@@ -173,7 +173,7 @@ class TestInit:
         client = LiteLLMClient(config)
 
         assert client._api_key == "az-key"
-        assert "myresource" in client._api_base
+        assert client._api_base is not None and "myresource" in client._api_base
         assert client._api_version == "2024-02-15-preview"
 
     def test_init_with_anthropic_config(self):
@@ -215,7 +215,7 @@ class TestInit:
             custom_endpoint=CustomEndpointConfig(
                 model="my-model",
                 api_key="ce-key",
-                api_base="https://custom.api.com/v1",
+                api_base="https://custom.api.com/v1",  # type: ignore[arg-type]
             )
         )
         config = LiteLLMConfig(model="gpt-4o", api_key_config=api_key_config)
@@ -245,7 +245,7 @@ class TestResolveApiKey:
             custom_endpoint=CustomEndpointConfig(
                 model="custom-model",
                 api_key="ce-key",
-                api_base="https://custom.api.com/v1",
+                api_base="https://custom.api.com/v1",  # type: ignore[arg-type]
             ),
             openai=CommonsOpenAIConfig(api_key="sk-openai"),
         )
@@ -261,7 +261,7 @@ class TestResolveApiKey:
             custom_endpoint=CustomEndpointConfig(
                 model="custom-model",
                 api_key="ce-key",
-                api_base="https://custom.api.com/v1",
+                api_base="https://custom.api.com/v1",  # type: ignore[arg-type]
             ),
             openai=CommonsOpenAIConfig(api_key="sk-openai"),
         )
@@ -1276,7 +1276,7 @@ class TestBuildCompletionParams:
             custom_endpoint=CustomEndpointConfig(
                 model="custom-model",
                 api_key="ce-key",
-                api_base="https://custom.api.com/v1",
+                api_base="https://custom.api.com/v1",  # type: ignore[arg-type]
             )
         )
         config = LiteLLMConfig(model="gpt-4o", api_key_config=api_key_config)

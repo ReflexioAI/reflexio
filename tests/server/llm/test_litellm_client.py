@@ -9,6 +9,7 @@ import os
 import struct
 import tempfile
 import zlib
+from collections.abc import Generator
 from pathlib import Path
 
 import pytest
@@ -142,7 +143,7 @@ def test_image_bytes() -> bytes:
 
 
 @pytest.fixture
-def test_image_file(test_image_bytes: bytes) -> str:
+def test_image_file(test_image_bytes: bytes) -> Generator[str, None, None]:
     """Create a temporary PNG image file."""
     with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
         f.write(test_image_bytes)
@@ -644,7 +645,7 @@ class TestLiteLLMClientAPIKeyOverride:
             openai=OpenAIConfig(
                 azure_config=AzureOpenAIConfig(
                     api_key="test-azure-key-11111",
-                    endpoint="https://test-resource.openai.azure.com/",
+                    endpoint="https://test-resource.openai.azure.com/",  # type: ignore[arg-type]
                     api_version="2024-02-15-preview",
                     deployment_name="gpt-4o-deployment",
                 )
@@ -716,7 +717,7 @@ class TestLiteLLMClientAPIKeyOverride:
                 api_key="direct-openai-key",
                 azure_config=AzureOpenAIConfig(
                     api_key="azure-key",
-                    endpoint="https://azure.openai.azure.com/",
+                    endpoint="https://azure.openai.azure.com/",  # type: ignore[arg-type]
                     api_version="2024-02-15-preview",
                 ),
             ),

@@ -99,10 +99,10 @@ class TestToolCallingExtensions:
         assert result.finish_reason == "tool_calls"
         assert result.content is None
 
-    def test_model_role_resolves_to_angle_reader_default(
+    def test_model_role_resolves_to_extraction_agent_default(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """model_role=ANGLE_READER resolves to the anthropic angle_reader default model."""
+        """model_role=EXTRACTION_AGENT resolves to the anthropic extraction_agent default model."""
         monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
         # Ensure no other provider keys interfere
         for var in (
@@ -122,11 +122,11 @@ class TestToolCallingExtensions:
         with patch("litellm.completion", return_value=mock_response) as mock_completion:
             client.generate_chat_response(
                 messages=[{"role": "user", "content": "hello"}],
-                model_role=ModelRole.ANGLE_READER,
+                model_role=ModelRole.EXTRACTION_AGENT,
             )
 
         call_kwargs = mock_completion.call_args.kwargs
-        assert call_kwargs["model"] == "claude-haiku-4-5-20251001"
+        assert call_kwargs["model"] == "claude-sonnet-4-6"
 
     def test_non_tool_path_unchanged(self) -> None:
         """Without tools kwarg the existing str-return path is untouched."""

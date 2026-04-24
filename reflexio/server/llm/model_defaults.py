@@ -151,10 +151,6 @@ class ProviderDefaults:
         should_run: Model for lightweight "should run extraction" checks, or None.
         pre_retrieval: Model for pre-retrieval query reformulation, or None.
         embedding: Model for embedding generation, or None.
-        angle_reader: Fast-tier model for parallel extraction/search angle agents, or None.
-        critic: Smart-tier model for extraction critics, or None.
-        synthesizer: Smart-tier model for search synthesizers, or None.
-        reconciler: Smart-tier model for cross-entity reconciler, or None.
         extraction_agent: Sonnet-tier model for the agentic-v2 extraction loop, or None.
         search_agent: Sonnet-tier model for the agentic-v2 search loop, or None.
     """
@@ -164,10 +160,6 @@ class ProviderDefaults:
     should_run: str | None
     pre_retrieval: str | None
     embedding: str | None
-    angle_reader: str | None = None
-    critic: str | None = None
-    synthesizer: str | None = None
-    reconciler: str | None = None
     extraction_agent: str | None = None
     search_agent: str | None = None
 
@@ -183,10 +175,6 @@ _PROVIDER_DEFAULTS: dict[str, ProviderDefaults] = {
         should_run="claude-code/default",
         pre_retrieval="claude-code/default",
         embedding=None,
-        angle_reader="claude-code/default",
-        critic="claude-code/default",
-        synthesizer="claude-code/default",
-        reconciler="claude-code/default",
         extraction_agent="claude-code/default",
         search_agent="claude-code/default",
     ),
@@ -206,10 +194,6 @@ _PROVIDER_DEFAULTS: dict[str, ProviderDefaults] = {
         should_run="gpt-5-nano",
         pre_retrieval="gpt-5-nano",
         embedding="text-embedding-3-small",
-        angle_reader="gpt-5-nano",
-        critic="gpt-5-mini",
-        synthesizer="gpt-5-mini",
-        reconciler="gpt-5-mini",
         extraction_agent="gpt-5-mini",
         search_agent="gpt-5-mini",
     ),
@@ -219,10 +203,6 @@ _PROVIDER_DEFAULTS: dict[str, ProviderDefaults] = {
         should_run="claude-haiku-4-5-20251001",
         pre_retrieval="claude-haiku-4-5-20251001",
         embedding=None,
-        angle_reader="claude-haiku-4-5-20251001",
-        critic="claude-sonnet-4-6",
-        synthesizer="claude-sonnet-4-6",
-        reconciler="claude-sonnet-4-6",
         extraction_agent="claude-sonnet-4-6",
         search_agent="claude-sonnet-4-6",
     ),
@@ -303,14 +283,8 @@ class ModelRole(StrEnum):
     SHOULD_RUN = "should_run"
     PRE_RETRIEVAL = "pre_retrieval"
     EMBEDDING = "embedding"
-    # Tool-calling agentic pipeline roles — fast tier for parallel specialists,
-    # smart tier for judgment/synthesis steps.
-    ANGLE_READER = "angle_reader"
-    CRITIC = "critic"
-    SYNTHESIZER = "synthesizer"
-    RECONCILER = "reconciler"
-    # Agentic-v2 single-loop roles — Sonnet-tier agents that replace the
-    # multi-step reader/critic/reconciler pipeline with a single tool loop.
+    # Agentic-v2 single-loop roles — Sonnet-tier agents that drive the
+    # extraction and search tool loops.
     EXTRACTION_AGENT = "extraction_agent"
     SEARCH_AGENT = "search_agent"
 
