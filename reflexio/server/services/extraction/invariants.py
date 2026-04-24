@@ -7,7 +7,10 @@ See spec §6 for the full catalog and severity policy.
 
 from __future__ import annotations
 
+import logging
+
 from reflexio.server.services.extraction.plan import (
+    CommitResult,
     CreateUserPlaybookOp,
     CreateUserProfileOp,
     DeleteUserPlaybookOp,
@@ -15,6 +18,8 @@ from reflexio.server.services.extraction.plan import (
     ExtractionCtx,
     Violation,
 )
+
+logger = logging.getLogger(__name__)
 
 PLAN_SIZE_CAP = 30
 
@@ -113,3 +118,143 @@ HARD_INVARIANTS = (
     inv_F_no_duplicate_deletes,
     inv_J_scope_match,
 )
+
+
+# --- Soft invariants ---
+
+
+def inv_E_no_duplicate_creates(ctx: ExtractionCtx) -> list[Violation]:  # noqa: N802
+    """Two CreateOps with identical content in one plan = oscillation smell."""
+    seen: dict[str, int] = {}
+    violations: list[Violation] = []
+    for i, op in enumerate(ctx.plan):
+        key = None
+        if isinstance(op, CreateUserProfileOp):
+            key = f"profile::{op.content}"
+        elif isinstance(op, CreateUserPlaybookOp):
+            key = f"playbook::{op.trigger}::{op.content}"
+        if key is None:
+            continue
+        if key in seen:
+            violations.append(
+                Violation(
+                    code="E",
+                    severity="soft",
+                    affected_op_indices=[i],
+                    msg=f"Duplicate create content at op {i}",
+                )
+            )
+        else:
+            seen[key] = i
+    return violations
+
+
+def inv_H_source_span_present(ctx: ExtractionCtx) -> list[Violation]:  # noqa: N802
+    """CreateOps must have non-whitespace source_span.
+
+    Schema enforces min_length=1, but whitespace-only slips through —
+    this is the secondary guard.
+    """
+    violations: list[Violation] = []
+    for i, op in enumerate(ctx.plan):
+        if (
+            isinstance(op, (CreateUserProfileOp, CreateUserPlaybookOp))
+            and not op.source_span.strip()
+        ):
+            violations.append(
+                Violation(
+                    code="H",
+                    severity="soft",
+                    affected_op_indices=[i],
+                    msg=f"Empty/whitespace source_span on create op {i}",
+                )
+            )
+    return violations
+
+
+def inv_K_deletes_without_creates(ctx: ExtractionCtx) -> list[Violation]:  # noqa: N802
+    """Plan with deletes but no creates is unusual — worth logging."""
+    has_delete = any(
+        isinstance(op, (DeleteUserProfileOp, DeleteUserPlaybookOp)) for op in ctx.plan
+    )
+    has_create = any(
+        isinstance(op, (CreateUserProfileOp, CreateUserPlaybookOp)) for op in ctx.plan
+    )
+    if has_delete and not has_create:
+        indices = [
+            i
+            for i, op in enumerate(ctx.plan)
+            if isinstance(op, (DeleteUserProfileOp, DeleteUserPlaybookOp))
+        ]
+        return [
+            Violation(
+                code="K",
+                severity="soft",
+                affected_op_indices=indices,
+                msg="Plan contains deletes without any matching creates",
+            )
+        ]
+    return []
+
+
+SOFT_INVARIANTS = (
+    inv_E_no_duplicate_creates,
+    inv_H_source_span_present,
+    inv_K_deletes_without_creates,
+)
+
+
+# --- commit_plan ---
+
+
+def commit_plan(
+    ctx: ExtractionCtx,
+    storage: object,
+    *,
+    outcome: str,  # Literal["finish_tool","max_steps","error"]
+) -> CommitResult:
+    """Run all invariants, then apply surviving ops atomically.
+
+    Args:
+        ctx: Populated ExtractionCtx from the agent loop.
+        storage: BaseStorage handle for apply.
+        outcome: How the loop terminated.
+
+    Returns:
+        CommitResult containing applied ops + all violations (hard + soft).
+    """
+    # Error outcome — discard everything, do not apply
+    if outcome == "error":
+        return CommitResult(applied=[], violations=[], outcome="error")
+
+    violations: list[Violation] = []
+    for check in HARD_INVARIANTS:
+        violations.extend(check(ctx))
+    for check in SOFT_INVARIANTS:
+        violations.extend(check(ctx))
+
+    dropped: set[int] = set()
+    for v in violations:
+        if v.severity == "hard":
+            dropped.update(v.affected_op_indices)
+
+    ops_to_apply = [op for i, op in enumerate(ctx.plan) if i not in dropped]
+
+    for v in violations:
+        logger.info(
+            "invariant_violation user_id=%s code=%s severity=%s op_indices=%s msg=%s",
+            ctx.user_id,
+            v.code,
+            v.severity,
+            v.affected_op_indices,
+            v.msg,
+        )
+
+    # Delegate actual storage writes to the tool-handler module (Task 5 wires this in).
+    # Lazy import so Task 3 can land before tools.py exists.
+    from reflexio.server.services.extraction.tools import apply_plan_op  # noqa: PLC0415  # type: ignore[import-not-found]
+
+    for op in ops_to_apply:
+        apply_plan_op(op, storage, ctx)
+
+    return CommitResult(applied=ops_to_apply, violations=violations, outcome=outcome)  # type: ignore[arg-type]

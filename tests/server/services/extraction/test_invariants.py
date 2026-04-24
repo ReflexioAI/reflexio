@@ -140,3 +140,112 @@ def test_inv_J_returns_empty_for_v1():  # noqa: N802
     v1 invariant returns empty — future cross-user-check scaffolding."""
     ctx = _mk_ctx()
     assert inv_J_scope_match(ctx) == []
+
+
+from unittest.mock import MagicMock
+
+from reflexio.server.services.extraction.invariants import (
+    commit_plan,
+    inv_E_no_duplicate_creates,
+    inv_H_source_span_present,
+    inv_K_deletes_without_creates,
+)
+
+# --- Soft invariants ---
+
+
+def test_inv_E_identical_creates_flagged():  # noqa: N802
+    ctx = _mk_ctx(search_count=1)
+    ctx.plan.append(
+        CreateUserProfileOp(content="user is a PM", ttl="infinity", source_span="s")
+    )
+    ctx.plan.append(
+        CreateUserProfileOp(content="user is a PM", ttl="infinity", source_span="s")
+    )
+    v = inv_E_no_duplicate_creates(ctx)
+    assert len(v) == 1
+    assert v[0].severity == "soft"
+    assert v[0].code == "E"
+
+
+def test_inv_H_empty_source_span_is_caught_at_schema_level():  # noqa: N802
+    """source_span is schema-required non-empty; this invariant is a
+    secondary log guard if future schema changes relax that."""
+    ctx = _mk_ctx(search_count=1)
+    # construct op with non-empty source_span — schema enforces min_length=1
+    ctx.plan.append(CreateUserProfileOp(content="x", ttl="infinity", source_span=" "))
+    v = inv_H_source_span_present(ctx)
+    assert len(v) == 1
+    assert v[0].code == "H"
+    assert v[0].severity == "soft"
+
+
+def test_inv_K_deletes_only_flagged():  # noqa: N802
+    ctx = _mk_ctx()
+    ctx.known_ids.add("p_1")
+    ctx.plan.append(DeleteUserProfileOp(id="p_1"))
+    v = inv_K_deletes_without_creates(ctx)
+    assert len(v) == 1
+    assert v[0].severity == "soft"
+
+
+def test_inv_K_delete_plus_create_ok():  # noqa: N802
+    ctx = _mk_ctx(search_count=1)
+    ctx.known_ids.add("p_1")
+    ctx.plan.append(DeleteUserProfileOp(id="p_1"))
+    ctx.plan.append(CreateUserProfileOp(content="x", ttl="infinity", source_span="y"))
+    assert inv_K_deletes_without_creates(ctx) == []
+
+
+# --- commit_plan orchestrator ---
+
+import pytest
+
+
+@pytest.mark.skip(reason="Requires tools.apply_plan_op from Task 5")
+def test_commit_plan_applies_valid_ops():  # noqa: N802
+    """With no violations, every op reaches storage."""
+    ctx = _mk_ctx(search_count=1)
+    ctx.known_ids.add("p_exists")
+    ctx.plan.append(DeleteUserProfileOp(id="p_exists"))
+    ctx.plan.append(
+        CreateUserProfileOp(content="new", ttl="infinity", source_span="evidence")
+    )
+
+    storage = MagicMock()
+    result = commit_plan(ctx, storage, outcome="finish_tool")
+
+    assert len(result.applied) == 2
+    assert result.outcome == "finish_tool"
+    assert result.violations == []
+
+
+@pytest.mark.skip(reason="Requires tools.apply_plan_op from Task 5")
+def test_commit_plan_drops_hard_violation_ops():  # noqa: N802
+    """Hard-invariant-violating ops are excluded from apply."""
+    ctx = _mk_ctx(search_count=0)
+    # create without prior search → invariant A
+    ctx.plan.append(CreateUserProfileOp(content="x", ttl="infinity", source_span="y"))
+    # delete of unknown id → invariant B
+    ctx.plan.append(DeleteUserProfileOp(id="never_retrieved"))
+
+    storage = MagicMock()
+    result = commit_plan(ctx, storage, outcome="finish_tool")
+
+    assert result.applied == []
+    codes = {v.code for v in result.violations}
+    assert {"A", "B"}.issubset(codes)
+
+
+@pytest.mark.skip(reason="Requires tools.apply_plan_op from Task 5")
+def test_commit_plan_keeps_soft_violation_ops():  # noqa: N802
+    """Soft violations are logged but ops commit."""
+    ctx = _mk_ctx(search_count=1)
+    ctx.plan.append(DeleteUserProfileOp(id="p_1"))
+    ctx.known_ids.add("p_1")
+
+    storage = MagicMock()
+    result = commit_plan(ctx, storage, outcome="finish_tool")
+
+    assert len(result.applied) == 1  # the delete got applied
+    assert any(v.code == "K" for v in result.violations)  # but K flagged it
