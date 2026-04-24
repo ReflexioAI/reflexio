@@ -229,6 +229,14 @@ class LiteLLMClientError(Exception):
     """Custom exception for LiteLLM client errors."""
 
 
+class StructuredOutputParseError(Exception):
+    """Raised when a structured-output LLM call returns content that cannot be parsed.
+
+    Caught by the retry loop in ``_make_request`` so a malformed response
+    burns a retry attempt rather than silently returning unparsed content.
+    """
+
+
 class LiteLLMClient:
     """
     Unified LLM client using LiteLLM for multi-provider support.
@@ -1128,8 +1136,14 @@ class LiteLLMClient:
                 parsed = json.loads(sanitized)
                 return response_format.model_validate(parsed)
             except Exception as e:
-                self.logger.warning("Failed to parse structured output: %s", e)
-                return content
+                model = self.config.model
+                snippet = (
+                    content[:200] if isinstance(content, str) else repr(content)[:200]
+                )
+                raise StructuredOutputParseError(
+                    f"Structured output parse failed for model={model!r}: {e}. "
+                    f"Content snippet: {snippet!r}"
+                ) from e
 
     def _extract_json_from_string(self, content: str) -> str:
         """
