@@ -19,10 +19,6 @@ from reflexio.models.api_schema.retriever_schema import (
     UnifiedSearchRequest,
     UnifiedSearchResponse,
 )
-from reflexio.server.services.extraction.critics import (
-    CrossEntityFlag,
-    summarize,
-)
 from reflexio.server.services.pre_retrieval import QueryReformulator
 from reflexio.server.services.search.search_agents import (
     PlaybookSearchAgent,
@@ -30,8 +26,10 @@ from reflexio.server.services.search.search_agents import (
     SearchCtx,
 )
 from reflexio.server.services.search.synthesizers import (
+    CrossEntityFlag,
     PlaybookSynthesizer,
     ProfileSynthesizer,
+    summarize,
 )
 
 if TYPE_CHECKING:
@@ -100,8 +98,7 @@ class AgenticSearchService:
         all_flags = p_flags + b_flags
         if all_flags:
             # TODO(Phase 6+): wire proper search reconciliation here.
-            # For now just surface the flags via logs — calling Reconciler with
-            # empty lanes causes out-of-range errors on every tool call.
+            # For now just surface the flags via logs.
             logger.info(
                 "search surfaced %d cross-entity flags: %s", len(all_flags), all_flags
             )

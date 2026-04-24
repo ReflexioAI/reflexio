@@ -15,7 +15,6 @@ from pydantic import BaseModel
 
 from reflexio.server.llm.model_defaults import ModelRole
 from reflexio.server.llm.tools import Tool, ToolRegistry, run_tool_loop
-from reflexio.server.services.extraction.critics import CrossEntityFlag
 
 if TYPE_CHECKING:
     from reflexio.server.llm.litellm_client import LiteLLMClient
@@ -23,6 +22,40 @@ if TYPE_CHECKING:
 
 
 Lane = Literal["profile", "playbook"]
+
+
+class CrossEntityFlag(BaseModel):
+    """A cross-entity conflict raised by a search synthesizer."""
+
+    candidate_index: int
+    reason: str
+    lane: Lane
+
+
+def summarize(items: list[Any], limit: int = 20) -> str:
+    """Produce a deterministic bullet summary of candidate items.
+
+    No LLM call — used to render candidate sets for the synthesizer prompt.
+
+    Args:
+        items (list): Objects with ``content`` or ``trigger`` and optional
+            ``source_span`` attributes.
+        limit (int): Max number of items to render before truncation marker.
+
+    Returns:
+        str: Multi-line bullet summary; ``"(none)"`` if items is empty.
+    """
+    lines: list[str] = []
+    for i, it in enumerate(items[:limit]):
+        preview = (
+            getattr(it, "content", None) or getattr(it, "trigger", None) or str(it)
+        )
+        src = getattr(it, "source_span", None) or ""
+        src_tail = f" / src={src[:40]}" if src else ""
+        lines.append(f"- [{i}] {(preview or '')[:80]}{src_tail}")
+    if len(items) > limit:
+        lines.append(f"  ...({len(items) - limit} more truncated)")
+    return "\n".join(lines) if lines else "(none)"
 
 
 # ---------------- tool argument schemas ---------------- #

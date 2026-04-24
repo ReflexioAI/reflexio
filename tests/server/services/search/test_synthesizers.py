@@ -5,8 +5,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
-from reflexio.server.services.extraction.critics import CrossEntityFlag
 from reflexio.server.services.search.synthesizers import (
+    CrossEntityFlag,
     PlaybookSynthesizer,
     ProfileSynthesizer,
     _candidates_to_block,

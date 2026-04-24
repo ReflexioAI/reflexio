@@ -56,9 +56,6 @@ PROMPT_VERSION_MAP: dict[str, tuple[str, str | None]] = {
     "document_expansion": ("v1.0.0", None),
     # Agentic extraction pipeline — Phase 3 (v2 single-loop)
     "extraction_agent": ("v1.0.0", None),
-    "profile_critic": ("v1.0.0", None),
-    "playbook_critic": ("v1.0.0", None),
-    "reconciler": ("v1.0.0", None),
     # Agentic search pipeline — Phase 4
     "search_agent": ("v1.0.0", None),
     "profile_search_direct": ("v1.0.0", None),
