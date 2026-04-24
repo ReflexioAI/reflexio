@@ -1,0 +1,27 @@
+{
+  "id": "confused_garbage",
+  "group": "group3_loop_behavior",
+  "category": "confused_garbage",
+  "existing_storage": [],
+  "session": "User: placeholder",
+  "mock_llm_responses": [
+    {
+      "tool_calls": [
+        {"id": "c1", "name": "delete_user_profile", "args": {"id": "p_999"}}
+      ]
+    },
+    {
+      "tool_calls": [
+        {"id": "c2", "name": "create_user_profile", "args": {"content": "x", "ttl": "infinity", "source_span": "y"}}
+      ]
+    },
+    {
+      "tool_calls": [
+        {"id": "c3", "name": "finish", "args": {}}
+      ]
+    }
+  ],
+  "expected_violations": ["A", "B"],
+  "expected_applied_count": 0,
+  "expected_outcome": "finish_tool"
+}

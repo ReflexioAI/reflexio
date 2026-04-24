@@ -1,0 +1,72 @@
+{
+  "id": "stuck_in_search",
+  "group": "group3_loop_behavior",
+  "category": "stuck_in_search",
+  "existing_storage": [],
+  "session": "User: tell me what you know about me",
+  "mock_llm_responses": [
+    {
+      "tool_calls": [
+        {"id": "s1", "name": "search_user_profiles", "args": {"query": "general information about the user", "top_k": 10}}
+      ]
+    },
+    {
+      "tool_calls": [
+        {"id": "s2", "name": "search_user_profiles", "args": {"query": "user preferences and habits", "top_k": 10}}
+      ]
+    },
+    {
+      "tool_calls": [
+        {"id": "s3", "name": "search_user_profiles", "args": {"query": "work background and role", "top_k": 10}}
+      ]
+    },
+    {
+      "tool_calls": [
+        {"id": "s4", "name": "search_user_profiles", "args": {"query": "location and timezone", "top_k": 10}}
+      ]
+    },
+    {
+      "tool_calls": [
+        {"id": "s5", "name": "search_user_profiles", "args": {"query": "hobbies and personal interests", "top_k": 10}}
+      ]
+    },
+    {
+      "tool_calls": [
+        {"id": "s6", "name": "search_user_profiles", "args": {"query": "communication style and preferences", "top_k": 10}}
+      ]
+    },
+    {
+      "tool_calls": [
+        {"id": "s7", "name": "search_user_profiles", "args": {"query": "technical skills and tools", "top_k": 10}}
+      ]
+    },
+    {
+      "tool_calls": [
+        {"id": "s8", "name": "search_user_profiles", "args": {"query": "dietary restrictions and food choices", "top_k": 10}}
+      ]
+    },
+    {
+      "tool_calls": [
+        {"id": "s9", "name": "search_user_profiles", "args": {"query": "goals and ambitions", "top_k": 10}}
+      ]
+    },
+    {
+      "tool_calls": [
+        {"id": "s10", "name": "search_user_profiles", "args": {"query": "recent activities and updates", "top_k": 10}}
+      ]
+    },
+    {
+      "tool_calls": [
+        {"id": "s11", "name": "search_user_profiles", "args": {"query": "family and social context", "top_k": 10}}
+      ]
+    },
+    {
+      "tool_calls": [
+        {"id": "s12", "name": "search_user_profiles", "args": {"query": "long-term memory and past events", "top_k": 10}}
+      ]
+    }
+  ],
+  "expected_outcome": "max_steps",
+  "expected_applied_count": 0,
+  "expected_violations": []
+}
