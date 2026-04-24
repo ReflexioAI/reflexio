@@ -1207,3 +1207,31 @@ class TestProcessAggregationResponse:
         assert result.trigger == "when testing"
         assert result.content == "do something"
         assert result.playbook_status == PlaybookStatus.PENDING
+
+
+def test_playbook_aggregation_prompt_specifies_structured_format():
+    """Sanity (v2.1.0): aggregator prompt must carry the Agent-Skills
+    formatting discipline — imperative conditional triggers, markdown bullet
+    content, one-sentence rationale. Mirrors the extraction prompt v1.4.0
+    so the downstream agent sees the same shape across per-user playbooks
+    and aggregated ones. Guards against silent regression to prose shape."""
+    from reflexio.server.prompt.prompt_manager import PromptManager
+
+    pm = PromptManager()
+    out = pm.render_prompt(
+        "playbook_aggregation",
+        variables={
+            "user_playbooks": '[1]\nContent: "x"\nTrigger: "y"',
+            "existing_approved_playbooks": "(none)",
+        },
+    )
+    # The Playbook format section must be present.
+    assert "Playbook format" in out
+    # Trigger guidance — imperative conditional phrasing + keyword coverage.
+    assert "imperative conditional phrasing" in out
+    # Content guidance — markdown bullet list for multi-action policies.
+    assert "markdown bullet list" in out
+    # Examples now show bullet-shaped content, not single-sentence prose.
+    assert "- Ask for CLI preference" in out
+    # Rationale guidance — one sentence WHY.
+    assert "one sentence" in out.lower()
