@@ -194,6 +194,26 @@ def test_extraction_agent_prompt_frames_self_improvement(prompt_manager):
     assert "memory extractor" not in out.lower()
 
 
+def test_extraction_agent_prompt_forbids_profile_rule_overlap(prompt_manager):
+    """Sanity (v1.3.0): prompt must carry the anti-pattern examples for
+    rule-shaped profile content and the 'no overlap' rule. Guards against
+    regression to the earlier bundled-fact / rule-in-profile behaviour."""
+    out = prompt_manager.render_prompt(
+        "extraction_agent",
+        variables={
+            "sessions": "User: hi",
+            "extraction_criteria": "extract facts",
+            "extraction_kind": "UserProfile",
+        },
+    )
+    # One-fact-per-profile rule must be present.
+    assert "One fact per profile" in out
+    # No-overlap rule between profile and playbook.
+    assert "No overlap between profile and playbook" in out
+    # Concrete anti-pattern example showing rule leaking into profile.
+    assert "prefers no code review scheduling before 10am" in out
+
+
 def test_extraction_agent_emits_summary_info_line(
     caplog, temp_storage, prompt_manager, llm_client
 ):
