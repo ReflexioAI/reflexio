@@ -1,0 +1,128 @@
+"""Integration tests for AgenticSearchService — populated entity lists + agent_answer."""
+
+from __future__ import annotations
+
+import json
+from unittest.mock import MagicMock
+
+import pytest
+
+from reflexio.models.api_schema.retriever_schema import UnifiedSearchRequest
+
+
+def _mk_tc(id_, name, args):
+    tc = MagicMock()
+    tc.id = id_
+    tc.function = MagicMock()
+    tc.function.name = name
+    tc.function.arguments = json.dumps(args)
+    return tc
+
+
+def _mk_resp(tool_calls):
+    r = MagicMock()
+    r.tool_calls = tool_calls
+    r.content = None
+    return r
+
+
+@pytest.fixture
+def temp_storage(tmp_path):
+    from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
+
+    return SQLiteStorage(org_id="svc-test", db_path=str(tmp_path / "svc.db"))
+
+
+def test_agentic_search_populates_profiles_from_trace(temp_storage):
+    """Agent searches profiles; service fetches and returns matching profile objects."""
+    from reflexio.models.api_schema.domain.entities import (
+        NEVER_EXPIRES_TIMESTAMP,
+        UserProfile,
+    )
+    from reflexio.models.api_schema.domain.enums import ProfileTimeToLive
+
+    temp_storage.add_user_profile(
+        "u_1",
+        [
+            UserProfile(
+                profile_id="p_seed_1",
+                user_id="u_1",
+                content="user likes sushi",
+                last_modified_timestamp=0,
+                generated_from_request_id="r_1",
+                profile_time_to_live=ProfileTimeToLive.INFINITY,
+                expiration_timestamp=NEVER_EXPIRES_TIMESTAMP,
+                extractor_names=["test"],
+            ),
+        ],
+    )
+
+    client = MagicMock()
+    client.config = MagicMock()
+    client.config.api_key_config = None
+    client.generate_chat_response.side_effect = [
+        _mk_resp(
+            [_mk_tc("c1", "search_user_profiles", {"query": "sushi", "top_k": 10})]
+        ),
+        _mk_resp([_mk_tc("c2", "finish", {"answer": "sushi lover"})]),
+    ]
+
+    import tempfile
+
+    from reflexio.server.api_endpoints.request_context import RequestContext
+
+    with tempfile.TemporaryDirectory() as d:
+        rc = RequestContext(org_id="svc-test", storage_base_dir=d)
+        rc.storage = temp_storage  # type: ignore[attr-defined]
+
+        from reflexio.server.services.search.agentic_search_service import (
+            AgenticSearchService,
+        )
+
+        svc = AgenticSearchService(llm_client=client, request_context=rc)
+
+        request = UnifiedSearchRequest(
+            query="what does user like?", user_id="u_1", top_k=5
+        )
+        response = svc.search(request)
+
+    assert response.success is True
+    assert response.agent_answer == "sushi lover"
+    assert response.msg is None
+    assert len(response.profiles) == 1
+    assert response.profiles[0].profile_id == "p_seed_1"
+    assert response.user_playbooks == []
+    assert response.agent_playbooks == []
+
+
+def test_agentic_search_empty_when_agent_searches_nothing(temp_storage):
+    """Agent finishes without searching; service returns empty entity lists."""
+    client = MagicMock()
+    client.config = MagicMock()
+    client.config.api_key_config = None
+    client.generate_chat_response.side_effect = [
+        _mk_resp([_mk_tc("c1", "finish", {"answer": "no evidence"})]),
+    ]
+
+    import tempfile
+
+    from reflexio.server.api_endpoints.request_context import RequestContext
+
+    with tempfile.TemporaryDirectory() as d:
+        rc = RequestContext(org_id="svc-test2", storage_base_dir=d)
+        rc.storage = temp_storage  # type: ignore[attr-defined]
+
+        from reflexio.server.services.search.agentic_search_service import (
+            AgenticSearchService,
+        )
+
+        svc = AgenticSearchService(llm_client=client, request_context=rc)
+
+        request = UnifiedSearchRequest(query="anything?", user_id="u_nobody", top_k=5)
+        response = svc.search(request)
+
+    assert response.success is True
+    assert response.agent_answer == "no evidence"
+    assert response.profiles == []
+    assert response.user_playbooks == []
+    assert response.agent_playbooks == []

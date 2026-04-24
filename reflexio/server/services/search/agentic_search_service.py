@@ -2,16 +2,15 @@
 
 Agentic-v2 delegates to a single ``SearchAgent`` that drives a tool loop
 (``search_user_profiles``, ``search_user_playbooks``, ``search_agent_playbooks``,
-``finish``) and returns a free-text answer.
+``finish``) and returns a free-text answer plus populated entity lists harvested
+from the tool-loop trace.
 
 API contract preserved:
 - Constructor: ``AgenticSearchService(llm_client, request_context)``
 - Method: ``.search(request: UnifiedSearchRequest) -> UnifiedSearchResponse``
-- ``UnifiedSearchResponse.msg`` carries the agent's natural-language answer.
-
-Note: ``profiles``, ``user_playbooks``, and ``agent_playbooks`` are returned empty
-in agentic-v2 — the agent returns a synthesised answer rather than ranked entity
-lists. Callers that need the Q&A answer should read ``response.msg``.
+- ``UnifiedSearchResponse.agent_answer`` carries the agent's natural-language answer.
+- ``UnifiedSearchResponse.profiles`` / ``user_playbooks`` / ``agent_playbooks`` are
+  populated by filtering per-user storage reads against the IDs seen in the trace.
 """
 
 from __future__ import annotations
@@ -24,13 +23,107 @@ from reflexio.models.api_schema.retriever_schema import (
     UnifiedSearchResponse,
 )
 from reflexio.server.services.pre_retrieval import QueryReformulator
+from reflexio.server.services.search.plan import SearchResult
 from reflexio.server.services.search.search_agent import SearchAgent
 
 if TYPE_CHECKING:
     from reflexio.server.api_endpoints.request_context import RequestContext
     from reflexio.server.llm.litellm_client import LiteLLMClient
+    from reflexio.server.llm.tools import ToolLoopTrace
 
 logger = logging.getLogger(__name__)
+
+# Tool names that produce profile results in the trace
+_PROFILE_TOOLS = {"search_user_profiles", "get_user_profile"}
+# Tool names that produce user playbook results in the trace
+_USER_PLAYBOOK_TOOLS = {"search_user_playbooks", "get_user_playbook"}
+# Tool names that produce agent playbook results in the trace
+_AGENT_PLAYBOOK_TOOLS = {"search_agent_playbooks", "get_agent_playbook"}
+
+
+def _harvest_ids_from_trace(
+    trace: ToolLoopTrace,
+) -> tuple[list[str], list[str], list[str]]:
+    """Walk the trace and harvest entity IDs in first-seen order.
+
+    Args:
+        trace (ToolLoopTrace): Full tool-loop trace from a SearchAgent run.
+
+    Returns:
+        tuple[list[str], list[str], list[str]]: Three ordered lists of unique IDs:
+            profile_ids, user_playbook_ids, agent_playbook_ids.
+    """
+    profile_ids: list[str] = []
+    user_playbook_ids: list[str] = []
+    agent_playbook_ids: list[str] = []
+
+    seen_profiles: set[str] = set()
+    seen_user_playbooks: set[str] = set()
+    seen_agent_playbooks: set[str] = set()
+
+    for turn in trace.turns:
+        tool = turn.tool_name
+        result = turn.result
+
+        if tool in _PROFILE_TOOLS:
+            # search returns {"hits": [...]} each item has "id"
+            # get returns {"profile": {...}} with "id"
+            items = result.get("hits") or (
+                [result["profile"]] if "profile" in result else []
+            )
+            for item in items:
+                pid = item.get("id", "") if isinstance(item, dict) else ""
+                if pid and pid not in seen_profiles:
+                    seen_profiles.add(pid)
+                    profile_ids.append(pid)
+
+        elif tool in _USER_PLAYBOOK_TOOLS:
+            items = result.get("hits") or (
+                [result["playbook"]] if "playbook" in result else []
+            )
+            for item in items:
+                pid = item.get("id", "") if isinstance(item, dict) else ""
+                if pid and pid not in seen_user_playbooks:
+                    seen_user_playbooks.add(pid)
+                    user_playbook_ids.append(pid)
+
+        elif tool in _AGENT_PLAYBOOK_TOOLS:
+            items = result.get("hits") or (
+                [result["playbook"]] if "playbook" in result else []
+            )
+            for item in items:
+                pid = item.get("id", "") if isinstance(item, dict) else ""
+                if pid and pid not in seen_agent_playbooks:
+                    seen_agent_playbooks.add(pid)
+                    agent_playbook_ids.append(pid)
+
+    return profile_ids, user_playbook_ids, agent_playbook_ids
+
+
+def _filter_ordered(
+    entities: list,
+    id_attr: str,
+    ordered_ids: list[str],
+    top_k: int,
+) -> list:
+    """Filter entities by id set and return them in first-seen trace order, capped at top_k.
+
+    Args:
+        entities (list): Full list of entities fetched from storage.
+        id_attr (str): Attribute name on each entity that holds its string ID.
+        ordered_ids (list[str]): IDs in first-seen trace order.
+        top_k (int): Maximum number of results to return.
+
+    Returns:
+        list: Filtered and ordered entities, at most top_k items.
+    """
+    id_set = set(ordered_ids)
+    by_id = {
+        str(getattr(e, id_attr, "")): e
+        for e in entities
+        if str(getattr(e, id_attr, "")) in id_set
+    }
+    return [by_id[eid] for eid in ordered_ids if eid in by_id][:top_k]
 
 
 class AgenticSearchService:
@@ -62,14 +155,17 @@ class AgenticSearchService:
 
         Optionally reformulates the query, then delegates to ``SearchAgent``
         which drives a tool loop and returns a natural-language answer.
+        Entity IDs visited during the loop are harvested from the trace and
+        used to populate the response entity lists.
 
         Args:
             request (UnifiedSearchRequest): The unified search request.
 
         Returns:
-            UnifiedSearchResponse: ``success=True``, empty entity lists, and
-            the agent's answer in the ``msg`` field. ``reformulated_query``
-            carries the (possibly rewritten) query used for the search.
+            UnifiedSearchResponse: ``success=True``, entity lists populated from
+            the agent's trace, and the agent's answer in ``agent_answer``.
+            ``reformulated_query`` carries the (possibly rewritten) query used
+            for the search.
         """
         query = self._reformulate(request)
 
@@ -84,17 +180,33 @@ class AgenticSearchService:
             query=query,
         )
 
-        answer: str = result.get("answer") or ""
-        if result.get("budget_exceeded"):
+        if result.outcome == "error":
+            logger.warning("search agent returned error for query %r", query[:80])
+            return UnifiedSearchResponse(
+                success=True,
+                profiles=[],
+                user_playbooks=[],
+                agent_playbooks=[],
+                reformulated_query=query,
+                msg=f"agent error: {result.answer or 'unknown'}",
+                agent_answer=None,
+            )
+
+        if result.budget_exceeded:
             logger.warning("search agent hit max_steps budget for query %r", query[:80])
+
+        profiles, user_playbooks, agent_playbooks = self._fetch_entities(
+            request, result
+        )
 
         return UnifiedSearchResponse(
             success=True,
-            profiles=[],
-            user_playbooks=[],
-            agent_playbooks=[],
+            profiles=profiles,
+            user_playbooks=user_playbooks,
+            agent_playbooks=agent_playbooks,
             reformulated_query=query,
-            msg=answer or None,
+            msg=None,
+            agent_answer=result.answer,
         )
 
     # ------------------------------------------------------------------ #
@@ -121,3 +233,56 @@ class AgenticSearchService:
         )
         result = reformulator.rewrite(request.query, request.conversation_history)
         return result.standalone_query or request.query
+
+    def _fetch_entities(
+        self,
+        request: UnifiedSearchRequest,
+        result: SearchResult,
+    ) -> tuple[list, list, list]:
+        """Harvest entity IDs from trace, fetch all-user entities once, filter in-memory.
+
+        Args:
+            request (UnifiedSearchRequest): The original search request (for user_id,
+                agent_version, top_k).
+            result (SearchResult): Completed agent run with trace.
+
+        Returns:
+            tuple[list, list, list]: (profiles, user_playbooks, agent_playbooks) each
+                filtered and ordered by first-seen trace position, capped at top_k.
+        """
+        top_k = request.top_k or 5
+        user_id = request.user_id or ""
+        agent_version = request.agent_version or ""
+
+        profile_ids, user_playbook_ids, agent_playbook_ids = _harvest_ids_from_trace(
+            result.trace
+        )
+
+        storage = self.storage
+        if storage is None:
+            return [], [], []
+
+        profiles: list = []
+        if profile_ids:
+            all_profiles = storage.get_user_profile(user_id)
+            profiles = _filter_ordered(all_profiles, "profile_id", profile_ids, top_k)
+
+        user_playbooks: list = []
+        if user_playbook_ids:
+            all_user_playbooks = storage.get_user_playbooks(
+                user_id=user_id, agent_version=agent_version
+            )
+            user_playbooks = _filter_ordered(
+                all_user_playbooks, "user_playbook_id", user_playbook_ids, top_k
+            )
+
+        agent_playbooks: list = []
+        if agent_playbook_ids:
+            all_agent_playbooks = storage.get_agent_playbooks(
+                agent_version=agent_version
+            )
+            agent_playbooks = _filter_ordered(
+                all_agent_playbooks, "agent_playbook_id", agent_playbook_ids, top_k
+            )
+
+        return profiles, user_playbooks, agent_playbooks

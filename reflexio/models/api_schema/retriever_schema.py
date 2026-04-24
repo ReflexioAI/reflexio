@@ -476,6 +476,8 @@ class UnifiedSearchResponse(BaseModel):
         user_playbooks (list[UserPlaybook]): Matching user playbooks
         reformulated_query (str, optional): The query used after reformulation (None if reformulation disabled)
         msg (str, optional): Additional message
+        agent_answer (str, optional): LLM-synthesised answer populated by the agentic backend;
+            None for classic backend.
     """
 
     success: bool
@@ -484,6 +486,7 @@ class UnifiedSearchResponse(BaseModel):
     user_playbooks: list[UserPlaybook] = []
     reformulated_query: str | None = None
     msg: str | None = None
+    agent_answer: str | None = None
 
 
 # ===============================

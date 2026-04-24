@@ -63,7 +63,7 @@ def test_search_agent_returns_answer_from_finish(
     result = agent.run(
         user_id="u_1", agent_version="v1", query="what do I like to eat?"
     )
-    assert result["answer"] == "no evidence in memory"
+    assert result.answer == "no evidence in memory"
 
 
 def test_search_agent_reads_agent_playbooks(temp_storage, prompt_manager, llm_client):
@@ -77,7 +77,7 @@ def test_search_agent_reads_agent_playbooks(temp_storage, prompt_manager, llm_cl
         client=llm_client, storage=temp_storage, prompt_manager=prompt_manager
     )
     r = agent.run(user_id="u_1", agent_version="v1", query="x")
-    assert r["answer"] == "fallback answer"
+    assert r.answer == "fallback answer"
 
 
 def test_search_agent_reports_budget_exceeded_on_max_steps(
@@ -95,6 +95,52 @@ def test_search_agent_reports_budget_exceeded_on_max_steps(
         max_steps=2,
     )
     r = agent.run(user_id="u_1", agent_version="v1", query="x")
-    assert r["outcome"] == "max_steps"
-    assert r["budget_exceeded"] is True
-    assert r["answer"] == "no answer"
+    assert r.outcome == "max_steps"
+    assert r.budget_exceeded is True
+    assert r.answer == "no answer"
+
+
+def test_search_agent_trace_captures_harvested_ids(
+    temp_storage, prompt_manager, llm_client
+):
+    """Trace contains search turn results — used by AgenticSearchService for entity harvesting."""
+    from reflexio.models.api_schema.domain.entities import (
+        NEVER_EXPIRES_TIMESTAMP,
+        UserProfile,
+    )
+    from reflexio.models.api_schema.domain.enums import ProfileTimeToLive
+
+    temp_storage.add_user_profile(
+        "u_1",
+        [
+            UserProfile(
+                profile_id="p_seed_1",
+                user_id="u_1",
+                content="user likes sushi",
+                last_modified_timestamp=0,
+                generated_from_request_id="r_1",
+                profile_time_to_live=ProfileTimeToLive.INFINITY,
+                expiration_timestamp=NEVER_EXPIRES_TIMESTAMP,
+                extractor_names=["test"],
+            ),
+        ],
+    )
+
+    llm_client.generate_chat_response.side_effect = [
+        _mk_resp(
+            [_mk_tc("c1", "search_user_profiles", {"query": "food", "top_k": 10})]
+        ),
+        _mk_resp([_mk_tc("c2", "finish", {"answer": "user likes sushi"})]),
+    ]
+
+    agent = SearchAgent(
+        client=llm_client, storage=temp_storage, prompt_manager=prompt_manager
+    )
+    result = agent.run(user_id="u_1", agent_version="v1", query="what does user like?")
+
+    # trace.turns should contain at least the search turn
+    assert len(result.trace.turns) >= 1
+    search_turns = [
+        t for t in result.trace.turns if t.tool_name == "search_user_profiles"
+    ]
+    assert search_turns

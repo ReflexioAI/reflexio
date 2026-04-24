@@ -10,6 +10,7 @@ from reflexio.server.llm.tools import run_tool_loop
 from reflexio.server.prompt.prompt_manager import PromptManager
 from reflexio.server.services.extraction.plan import ExtractionCtx, HandlerBundle
 from reflexio.server.services.extraction.tools import SEARCH_TOOLS
+from reflexio.server.services.search.plan import SearchResult
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +42,7 @@ class SearchAgent:
         self.prompt_manager = prompt_manager
         self.max_steps = max_steps
 
-    def run(self, *, user_id: str, agent_version: str, query: str) -> dict:
+    def run(self, *, user_id: str, agent_version: str, query: str) -> SearchResult:
         """Run one search loop for the given query.
 
         Args:
@@ -50,7 +51,8 @@ class SearchAgent:
             query (str): The search query to answer.
 
         Returns:
-            dict: ``{"answer": str, "outcome": str, "budget_exceeded": bool}``.
+            SearchResult: Typed outcome with answer, termination reason, budget flag,
+                and the full tool-loop trace for entity harvesting by callers.
         """
         ctx = ExtractionCtx(user_id=user_id, agent_version=agent_version)
         bundle = HandlerBundle(storage=self.storage, ctx=ctx)
@@ -71,8 +73,9 @@ class SearchAgent:
         )
 
         answer = ctx.search_answer if ctx.search_answer is not None else "no answer"
-        return {
-            "answer": answer,
-            "outcome": result.finished_reason,
-            "budget_exceeded": result.finished_reason == "max_steps",
-        }
+        return SearchResult(
+            answer=answer,
+            outcome=result.finished_reason,
+            budget_exceeded=result.finished_reason == "max_steps",
+            trace=result.trace,
+        )
