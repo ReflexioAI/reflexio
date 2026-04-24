@@ -177,3 +177,18 @@ def test_extraction_agent_max_steps_still_commits_valid_ops(
     )
     assert result.outcome == "max_steps"
     assert len(result.applied) >= 1
+
+
+def test_extraction_agent_prompt_frames_self_improvement(prompt_manager):
+    """Sanity: extraction prompt opening must frame extraction around agent
+    self-improvement, not 'memory storage'."""
+    out = prompt_manager.render_prompt(
+        "extraction_agent",
+        variables={
+            "sessions": "User: hi",
+            "extraction_criteria": "extract facts",
+            "extraction_kind": "UserProfile",
+        },
+    )
+    assert "improve over time" in out or "self-improv" in out
+    assert "memory extractor" not in out.lower()

@@ -144,3 +144,13 @@ def test_search_agent_trace_captures_harvested_ids(
         t for t in result.trace.turns if t.tool_name == "search_user_profiles"
     ]
     assert search_turns
+
+
+def test_search_agent_prompt_frames_agent_improvement(prompt_manager):
+    """Sanity: search prompt opening must frame retrieval around informing
+    the agent's next action, not 'memory query'."""
+    out = prompt_manager.render_prompt(
+        "search_agent", variables={"query": "what does user like?"}
+    )
+    assert "helping an AI agent" in out or "inform" in out
+    assert "memory query agent" not in out.lower()
