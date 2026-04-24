@@ -214,6 +214,34 @@ def test_extraction_agent_prompt_forbids_profile_rule_overlap(prompt_manager):
     assert "prefers no code review scheduling before 10am" in out
 
 
+def test_extraction_agent_prompt_specifies_playbook_format(prompt_manager):
+    """Sanity (v1.4.0): prompt must carry the Agent-Skills-inspired format
+    guidance for UserPlaybook trigger + content + rationale. Guards against
+    regression to the earlier unstructured semicolon-delimited shape."""
+    out = prompt_manager.render_prompt(
+        "extraction_agent",
+        variables={
+            "sessions": "User: hi",
+            "extraction_criteria": "extract rules",
+            "extraction_kind": "UserPlaybook",
+        },
+    )
+    # The Playbook format section must be present.
+    assert "Playbook format" in out
+    # Trigger guidance — imperative conditional phrasing + keyword coverage.
+    assert "imperative conditional phrasing" in out
+    assert '"When …"' in out or "When …" in out
+    # Content guidance — markdown bullet list for independent instructions.
+    assert "Bullet list" in out
+    assert "imperative verb" in out
+    # Concrete good example — bullet-shaped content with verb-led instructions.
+    assert "Flag missing test coverage" in out
+    # Concrete anti-pattern for content — inline semicolon run rejected.
+    assert "inline-numbered semicolon run" in out
+    # Rationale guidance — one sentence explaining WHY, not what.
+    assert "one sentence" in out.lower()
+
+
 def test_extraction_agent_emits_summary_info_line(
     caplog, temp_storage, prompt_manager, llm_client
 ):
