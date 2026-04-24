@@ -197,7 +197,6 @@ class GenerationService:
                 runner = AgenticExtractionRunner(
                     llm_client=self.client,
                     request_context=self.request_context,
-                    org_id=self.org_id,
                 )
                 result.warnings.extend(
                     runner.run(
@@ -427,7 +426,7 @@ def build_extraction_service(
     *,
     llm_client: LiteLLMClient,
     request_context: RequestContext,
-) -> "ProfileGenerationService | AgenticExtractionService":
+) -> ProfileGenerationService | AgenticExtractionService:
     """Dispatch to the classic or agentic extraction service.
 
     Selected by ``config.extraction_backend``. Classic returns a
@@ -465,7 +464,7 @@ def build_search_service(
     *,
     llm_client: LiteLLMClient,
     request_context: RequestContext,
-) -> "UnifiedSearchService | AgenticSearchService":
+) -> UnifiedSearchService | AgenticSearchService:
     """Dispatch to the classic or agentic search service.
 
     Selected by ``config.search_backend``. Classic returns a

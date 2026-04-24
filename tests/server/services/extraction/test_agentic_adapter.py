@@ -91,7 +91,6 @@ def _make_runner(
     return AgenticExtractionRunner(
         llm_client=MagicMock(),
         request_context=rc,
-        org_id="test-org",
         output_pending_status=output_pending_status,
     )
 
@@ -148,7 +147,6 @@ def test_agentic_adapter_end_to_end_creates_profile(tmp_path):
     runner = AgenticExtractionRunner(
         llm_client=client,
         request_context=rc,
-        org_id="test-org-e2e",
     )
 
     # Script: search (empty result) → create profile → finish

@@ -55,7 +55,6 @@ class AgenticExtractionRunner:
         llm_client (LiteLLMClient): Configured LLM client.
         request_context (RequestContext): Provides ``storage``, ``prompt_manager``,
             and ``configurator``.
-        org_id (str): Organisation ID, used for downstream aggregator wiring.
         output_pending_status (bool): Legacy flag — v2 runner does not support
             setting ``Status.PENDING`` after commit.  A warning is emitted when
             ``True`` and the agent applied any mutations.
@@ -66,13 +65,11 @@ class AgenticExtractionRunner:
         *,
         llm_client: LiteLLMClient,
         request_context: RequestContext,
-        org_id: str,
         output_pending_status: bool = False,
     ) -> None:
         self.client = llm_client
         self.request_context = request_context
         self.storage = request_context.storage
-        self.org_id = org_id
         self.output_pending_status = output_pending_status
 
     def run(
@@ -219,15 +216,15 @@ class AgenticExtractionRunner:
             publish_request (PublishUserInteractionRequest): Provides ``agent_version``.
             warnings (list[str]): Mutable list; aggregation failures are appended.
         """
+        aggregator = PlaybookAggregator(
+            llm_client=self.client,
+            request_context=self.request_context,
+            agent_version=publish_request.agent_version,
+        )
         for pb_cfg in config.user_playbook_extractor_configs or []:
             if not getattr(pb_cfg, "aggregation_config", None):
                 continue
             try:
-                aggregator = PlaybookAggregator(
-                    llm_client=self.client,
-                    request_context=self.request_context,
-                    agent_version=publish_request.agent_version,
-                )
                 aggregator.run(
                     PlaybookAggregatorRequest(
                         agent_version=publish_request.agent_version,
