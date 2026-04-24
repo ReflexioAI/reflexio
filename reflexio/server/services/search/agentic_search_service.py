@@ -1,36 +1,30 @@
-"""AgenticSearchService — 6-agent + 2-synthesizer + optional reconciler orchestrator.
+"""AgenticSearchService — single SearchAgent loop replacing the v1 6+2 stack.
 
-Phase 4 landing: the service runs three profile-intent search agents and
-three playbook-intent search agents in parallel, then parallel synthesizers
-per lane, and finally the extraction reconciler only when synthesizers raise
-cross-entity flags. The service returns a ``UnifiedSearchResponse`` matching
-the classic pipeline's contract.
+Agentic-v2 delegates to a single ``SearchAgent`` that drives a tool loop
+(``search_user_profiles``, ``search_user_playbooks``, ``search_agent_playbooks``,
+``finish``) and returns a free-text answer.
+
+API contract preserved:
+- Constructor: ``AgenticSearchService(llm_client, request_context)``
+- Method: ``.search(request: UnifiedSearchRequest) -> UnifiedSearchResponse``
+- ``UnifiedSearchResponse.msg`` carries the agent's natural-language answer.
+
+Note: ``profiles``, ``user_playbooks``, and ``agent_playbooks`` are returned empty
+in agentic-v2 — the agent returns a synthesised answer rather than ranked entity
+lists. Callers that need the Q&A answer should read ``response.msg``.
 """
 
 from __future__ import annotations
 
 import logging
-from concurrent.futures import Future, ThreadPoolExecutor
-from concurrent.futures import TimeoutError as FuturesTimeoutError
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
-from reflexio.models.api_schema.domain.entities import AgentPlaybook, UserPlaybook
 from reflexio.models.api_schema.retriever_schema import (
     UnifiedSearchRequest,
     UnifiedSearchResponse,
 )
 from reflexio.server.services.pre_retrieval import QueryReformulator
-from reflexio.server.services.search.search_agents import (
-    PlaybookSearchAgent,
-    ProfileSearchAgent,
-    SearchCtx,
-)
-from reflexio.server.services.search.synthesizers import (
-    CrossEntityFlag,
-    PlaybookSynthesizer,
-    ProfileSynthesizer,
-    summarize,
-)
+from reflexio.server.services.search.search_agent import SearchAgent
 
 if TYPE_CHECKING:
     from reflexio.server.api_endpoints.request_context import RequestContext
@@ -50,81 +44,75 @@ class AgenticSearchService:
         llm_client (LiteLLMClient): Configured LLM client for all agent calls.
         request_context (RequestContext): Request context providing
             ``storage`` and ``prompt_manager``.
-        agent_workers (int): ThreadPool workers for the 6 parallel search agents.
-        synth_workers (int): ThreadPool workers for the 2 parallel synthesizers.
-        agent_timeout (float): Per-future timeout applied while collecting search
-            agent results.
     """
-
-    PROFILE_INTENTS: tuple[str, str, str] = ("direct", "context", "temporal")
-    PLAYBOOK_INTENTS: tuple[str, str, str] = ("direct", "context", "temporal")
 
     def __init__(
         self,
         *,
         llm_client: LiteLLMClient,
         request_context: RequestContext,
-        agent_workers: int = 6,
-        synth_workers: int = 2,
-        agent_timeout: float = 30.0,
     ) -> None:
         self.client = llm_client
         self.request_context = request_context
         self.storage = request_context.storage
         self.prompt_manager = request_context.prompt_manager
-        self._agent_workers = min(agent_workers, 6)
-        self._synth_workers = min(synth_workers, 2)
-        self._agent_timeout = agent_timeout
 
     def search(self, request: UnifiedSearchRequest) -> UnifiedSearchResponse:
-        """Execute the full 6+2+optional-reconciler pipeline for one request.
+        """Execute the agentic-v2 search for one request.
+
+        Optionally reformulates the query, then delegates to ``SearchAgent``
+        which drives a tool loop and returns a natural-language answer.
 
         Args:
             request (UnifiedSearchRequest): The unified search request.
 
         Returns:
-            UnifiedSearchResponse: Ranked profile / user_playbook / agent_playbook
-            lists, the (possibly reformulated) query, and a ``msg`` field that
-            flags partial failures.
+            UnifiedSearchResponse: ``success=True``, empty entity lists, and
+            the agent's answer in the ``msg`` field. ``reformulated_query``
+            carries the (possibly rewritten) query used for the search.
         """
         query = self._reformulate(request)
 
-        profile_batches, playbook_batches, partial = self._run_agents(query, request)
-
-        p_ids, p_flags, b_ids, b_flags = self._run_synthesizers(
-            query, profile_batches, playbook_batches
+        agent = SearchAgent(
+            client=self.client,
+            storage=self.storage,
+            prompt_manager=self.prompt_manager,
+        )
+        result = agent.run(
+            user_id=request.user_id or "",
+            agent_version=request.agent_version or "",
+            query=query,
         )
 
-        all_flags = p_flags + b_flags
-        if all_flags:
-            # TODO(Phase 6+): wire proper search reconciliation here.
-            # For now just surface the flags via logs.
-            logger.info(
-                "search surfaced %d cross-entity flags: %s", len(all_flags), all_flags
-            )
-
-        ranked_profiles, ranked_playbooks = self._assemble_ranked(
-            profile_batches, playbook_batches, p_ids, b_ids
-        )
+        answer: str = result.get("answer") or ""
+        if result.get("budget_exceeded"):
+            logger.warning("search agent hit max_steps budget for query %r", query[:80])
 
         return UnifiedSearchResponse(
             success=True,
-            profiles=ranked_profiles,
-            user_playbooks=[p for p in ranked_playbooks if isinstance(p, UserPlaybook)],
-            agent_playbooks=[
-                p for p in ranked_playbooks if isinstance(p, AgentPlaybook)
-            ],
+            profiles=[],
+            user_playbooks=[],
+            agent_playbooks=[],
             reformulated_query=query,
-            msg="partial: some agents timed out" if partial else None,
+            msg=answer or None,
         )
 
-    # ---------------- phase helpers ---------------- #
+    # ------------------------------------------------------------------ #
+    # Internal helpers                                                     #
+    # ------------------------------------------------------------------ #
 
     def _reformulate(self, request: UnifiedSearchRequest) -> str:
         """Run QueryReformulator when enabled; otherwise return the raw query.
 
         Reformulation failures fall back to the raw query (the reformulator
         is responsible for its own exception handling).
+
+        Args:
+            request (UnifiedSearchRequest): The search request.
+
+        Returns:
+            str: Reformulated query string, or the original query if
+            reformulation is disabled or the reformulator returns nothing.
         """
         if not request.enable_reformulation:
             return request.query
@@ -133,153 +121,3 @@ class AgenticSearchService:
         )
         result = reformulator.rewrite(request.query, request.conversation_history)
         return result.standalone_query or request.query
-
-    def _run_agents(
-        self,
-        query: str,
-        request: UnifiedSearchRequest,
-    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool]:
-        """Run all 6 intent-specialist agents in parallel.
-
-        Returns:
-            Tuple of (profile_batches, playbook_batches, partial_flag). Each
-            batch carries ``ids``, ``why``, and the raw ``hits`` list.
-        """
-        executor = ThreadPoolExecutor(max_workers=self._agent_workers)
-        try:
-            profile_futs = [
-                executor.submit(
-                    ProfileSearchAgent(
-                        intent,  # type: ignore[arg-type]
-                        client=self.client,
-                        prompt_manager=self.prompt_manager,
-                        storage=self.storage,  # type: ignore[arg-type]
-                    ).run,
-                    query=query,
-                    req=request,
-                )
-                for intent in self.PROFILE_INTENTS
-            ]
-            playbook_futs = [
-                executor.submit(
-                    PlaybookSearchAgent(
-                        intent,  # type: ignore[arg-type]
-                        client=self.client,
-                        prompt_manager=self.prompt_manager,
-                        storage=self.storage,  # type: ignore[arg-type]
-                    ).run,
-                    query=query,
-                    req=request,
-                )
-                for intent in self.PLAYBOOK_INTENTS
-            ]
-            profile_batches, profile_partial = self._collect_batches(profile_futs)
-            playbook_batches, playbook_partial = self._collect_batches(playbook_futs)
-        finally:
-            executor.shutdown(wait=False, cancel_futures=True)
-        return (
-            profile_batches,
-            playbook_batches,
-            profile_partial or playbook_partial,
-        )
-
-    def _collect_batches(
-        self, futures: list[Future]
-    ) -> tuple[list[dict[str, Any]], bool]:
-        """Collect agent futures into batches; set partial=True on any failure."""
-        batches: list[dict[str, Any]] = []
-        partial = False
-        for fut in futures:
-            try:
-                ctx: SearchCtx = fut.result(timeout=self._agent_timeout)
-                batches.append({"ids": ctx.ids, "why": ctx.why, "hits": ctx.hits})
-            except Exception as e:
-                logger.warning("search agent failed: %s: %s", type(e).__name__, e)
-                partial = True
-        return batches, partial
-
-    def _run_synthesizers(
-        self,
-        query: str,
-        profile_batches: list[dict[str, Any]],
-        playbook_batches: list[dict[str, Any]],
-    ) -> tuple[list[str], list[CrossEntityFlag], list[str], list[CrossEntityFlag]]:
-        """Run the 2 synthesizers in parallel and return ranked IDs + flags."""
-        playbook_other_lane = summarize(
-            [h for b in profile_batches for h in b["hits"]], limit=15
-        )
-        profile_other_lane = summarize(
-            [h for b in playbook_batches for h in b["hits"]], limit=15
-        )
-        executor = ThreadPoolExecutor(max_workers=self._synth_workers)
-        try:
-            profile_fut = executor.submit(
-                ProfileSynthesizer(
-                    client=self.client, prompt_manager=self.prompt_manager
-                ).rank,
-                query=query,
-                candidates=profile_batches,
-                other_lane_summary=profile_other_lane,
-            )
-            playbook_fut = executor.submit(
-                PlaybookSynthesizer(
-                    client=self.client, prompt_manager=self.prompt_manager
-                ).rank,
-                query=query,
-                candidates=playbook_batches,
-                other_lane_summary=playbook_other_lane,
-            )
-            try:
-                p_ids, p_flags = profile_fut.result(timeout=self._agent_timeout)
-            except FuturesTimeoutError:
-                logger.warning("profile synthesizer timed out")
-                p_ids, p_flags = [], []
-            except Exception as e:
-                logger.warning(
-                    "profile synthesizer failed: %s: %s", type(e).__name__, e
-                )
-                p_ids, p_flags = [], []
-            try:
-                b_ids, b_flags = playbook_fut.result(timeout=self._agent_timeout)
-            except FuturesTimeoutError:
-                logger.warning("playbook synthesizer timed out")
-                b_ids, b_flags = [], []
-            except Exception as e:
-                logger.warning(
-                    "playbook synthesizer failed: %s: %s", type(e).__name__, e
-                )
-                b_ids, b_flags = [], []
-        finally:
-            executor.shutdown(wait=False, cancel_futures=True)
-        return p_ids, p_flags, b_ids, b_flags
-
-    @staticmethod
-    def _assemble_ranked(
-        profile_batches: list[dict[str, Any]],
-        playbook_batches: list[dict[str, Any]],
-        p_ids: list[str],
-        b_ids: list[str],
-    ) -> tuple[list[Any], list[Any]]:
-        """Map ranked IDs back to the raw hits collected by the agents."""
-        id_to_profile = {
-            getattr(h, "profile_id", None): h
-            for b in profile_batches
-            for h in b["hits"]
-            if getattr(h, "profile_id", None) is not None
-        }
-        id_to_playbook = {
-            (
-                getattr(h, "user_playbook_id", None)
-                or getattr(h, "agent_playbook_id", None)
-            ): h
-            for b in playbook_batches
-            for h in b["hits"]
-            if (
-                getattr(h, "user_playbook_id", None)
-                or getattr(h, "agent_playbook_id", None)
-            )
-            is not None
-        }
-        ranked_profiles = [id_to_profile[i] for i in p_ids if i in id_to_profile]
-        ranked_playbooks = [id_to_playbook[i] for i in b_ids if i in id_to_playbook]
-        return ranked_profiles, ranked_playbooks
