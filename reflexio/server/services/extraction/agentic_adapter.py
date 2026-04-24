@@ -28,6 +28,10 @@ from reflexio.models.api_schema.internal_schema import RequestInteractionDataMod
 from reflexio.models.api_schema.service_schemas import Request
 from reflexio.server.services.base_generation_service import _cheap_should_run_reject
 from reflexio.server.services.extraction.extraction_agent import ExtractionAgent
+from reflexio.server.services.extraction.tools import (
+    PLAYBOOK_EXTRACTION_TOOLS,
+    PROFILE_EXTRACTION_TOOLS,
+)
 from reflexio.server.services.playbook.playbook_aggregator import PlaybookAggregator
 from reflexio.server.services.playbook.playbook_service_utils import (
     PlaybookAggregatorRequest,
@@ -113,31 +117,44 @@ class AgenticExtractionRunner:
         # Phase 2 — render transcript once; all agent calls share the same text.
         sessions_str = format_sessions_to_history_string(session_data_models)
 
-        # Phase 3 — build combined extractor config list (profile then playbook).
-        extractor_configs = list(config.profile_extractor_configs or []) + list(
-            config.user_playbook_extractor_configs or []
-        )
+        # Phase 3 — build typed extractor config list (profile then playbook).
+        # Each tuple carries: (entity_kind, extractor_config, tool_registry).
+        profile_configs = list(config.profile_extractor_configs or [])
+        playbook_configs = list(config.user_playbook_extractor_configs or [])
+        typed_configs: list[tuple[str, object, object]] = [
+            *[
+                ("UserProfile", cfg, PROFILE_EXTRACTION_TOOLS)
+                for cfg in profile_configs
+            ],
+            *[
+                ("UserPlaybook", cfg, PLAYBOOK_EXTRACTION_TOOLS)
+                for cfg in playbook_configs
+            ],
+        ]
 
         # Phase 4 — run ExtractionAgent once per enabled extractor config.
-        agent = ExtractionAgent(
-            client=self.client,
-            storage=self.storage,
-            prompt_manager=self.request_context.prompt_manager,
-        )
-        for cfg in extractor_configs:
-            extractor_name: str = cfg.extractor_name
-            extraction_criteria: str = cfg.extraction_definition_prompt
+        for kind, cfg, registry in typed_configs:
+            extractor_name: str = cfg.extractor_name  # type: ignore[union-attr]
+            extraction_criteria: str = cfg.extraction_definition_prompt  # type: ignore[union-attr]
             try:
+                agent = ExtractionAgent(
+                    client=self.client,
+                    storage=self.storage,
+                    prompt_manager=self.request_context.prompt_manager,
+                    registry=registry,  # type: ignore[arg-type]
+                )
                 result = agent.run(
                     user_id=publish_request.user_id,
                     agent_version=publish_request.agent_version,
                     extractor_name=extractor_name,
                     extraction_criteria=extraction_criteria,
                     sessions_text=sessions_str,
+                    extraction_kind=kind,  # type: ignore[arg-type]
                 )
                 logger.info(
-                    "extraction_agent[%s] outcome=%s applied=%d violations=%d",
+                    "extraction_agent[%s] kind=%s outcome=%s applied=%d violations=%d",
                     extractor_name,
+                    kind,
                     result.outcome,
                     len(result.applied),
                     len(result.violations),

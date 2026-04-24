@@ -627,18 +627,90 @@ def _bundle_handler(
     return wrapped
 
 
+_READ_TOOLS = [
+    Tool(
+        name="search_user_profiles",
+        args_model=SearchUserProfilesArgs,
+        handler=_bundle_handler(_handle_search_user_profiles),
+    ),
+    Tool(
+        name="get_user_profile",
+        args_model=GetUserProfileArgs,
+        handler=_bundle_handler(_handle_get_user_profile),
+    ),
+    Tool(
+        name="search_user_playbooks",
+        args_model=SearchUserPlaybooksArgs,
+        handler=_bundle_handler(_handle_search_user_playbooks),
+    ),
+    Tool(
+        name="get_user_playbook",
+        args_model=GetUserPlaybookArgs,
+        handler=_bundle_handler(_handle_get_user_playbook),
+    ),
+    Tool(
+        name="search_agent_playbooks",
+        args_model=SearchAgentPlaybooksArgs,
+        handler=_bundle_handler(_handle_search_agent_playbooks),
+    ),
+    Tool(
+        name="get_agent_playbook",
+        args_model=GetAgentPlaybookArgs,
+        handler=_bundle_handler(_handle_get_agent_playbook),
+    ),
+    Tool(
+        name="get_session_excerpt",
+        args_model=GetSessionExcerptArgs,
+        handler=_bundle_handler(_handle_get_session_excerpt),
+    ),
+]
+
+_FINISH_TOOL = Tool(
+    name="finish",
+    args_model=FinishArgs,
+    handler=_bundle_handler(_handle_finish),
+)
+
+PROFILE_EXTRACTION_TOOLS = ToolRegistry(
+    [
+        *_READ_TOOLS,
+        Tool(
+            name="create_user_profile",
+            args_model=CreateUserProfileArgs,
+            handler=_bundle_handler(_handle_create_user_profile),
+        ),
+        Tool(
+            name="delete_user_profile",
+            args_model=DeleteUserProfileArgs,
+            handler=_bundle_handler(_handle_delete_user_profile),
+        ),
+        _FINISH_TOOL,
+    ]
+)
+
+PLAYBOOK_EXTRACTION_TOOLS = ToolRegistry(
+    [
+        *_READ_TOOLS,
+        Tool(
+            name="create_user_playbook",
+            args_model=CreateUserPlaybookArgs,
+            handler=_bundle_handler(_handle_create_user_playbook),
+        ),
+        Tool(
+            name="delete_user_playbook",
+            args_model=DeleteUserPlaybookArgs,
+            handler=_bundle_handler(_handle_delete_user_playbook),
+        ),
+        _FINISH_TOOL,
+    ]
+)
+
+# Backward-compat alias: exposes all four create/delete tools.
+# New production code should use PROFILE_EXTRACTION_TOOLS or
+# PLAYBOOK_EXTRACTION_TOOLS to restrict the LLM to the correct entity kind.
 EXTRACTION_TOOLS = ToolRegistry(
     [
-        Tool(
-            name="search_user_profiles",
-            args_model=SearchUserProfilesArgs,
-            handler=_bundle_handler(_handle_search_user_profiles),
-        ),
-        Tool(
-            name="get_user_profile",
-            args_model=GetUserProfileArgs,
-            handler=_bundle_handler(_handle_get_user_profile),
-        ),
+        *_READ_TOOLS,
         Tool(
             name="create_user_profile",
             args_model=CreateUserProfileArgs,
@@ -650,16 +722,6 @@ EXTRACTION_TOOLS = ToolRegistry(
             handler=_bundle_handler(_handle_delete_user_profile),
         ),
         Tool(
-            name="search_user_playbooks",
-            args_model=SearchUserPlaybooksArgs,
-            handler=_bundle_handler(_handle_search_user_playbooks),
-        ),
-        Tool(
-            name="get_user_playbook",
-            args_model=GetUserPlaybookArgs,
-            handler=_bundle_handler(_handle_get_user_playbook),
-        ),
-        Tool(
             name="create_user_playbook",
             args_model=CreateUserPlaybookArgs,
             handler=_bundle_handler(_handle_create_user_playbook),
@@ -669,11 +731,7 @@ EXTRACTION_TOOLS = ToolRegistry(
             args_model=DeleteUserPlaybookArgs,
             handler=_bundle_handler(_handle_delete_user_playbook),
         ),
-        Tool(
-            name="finish",
-            args_model=FinishArgs,
-            handler=_bundle_handler(_handle_finish),
-        ),
+        _FINISH_TOOL,
     ]
 )
 

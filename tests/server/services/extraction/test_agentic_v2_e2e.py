@@ -249,3 +249,138 @@ def test_e2e_agentic_v2_extraction_agent_not_invoked_for_trivial_session(tmp_pat
 
     # Result must not have raised (warnings may be empty or trivial).
     assert result.request_id is not None
+
+
+# ---------------------------------------------------------------------------
+# Test 3: one rule → exactly one playbook (tool constraint regression)
+# ---------------------------------------------------------------------------
+
+
+def test_e2e_one_rule_produces_exactly_one_playbook(tmp_path):
+    """Single publish, single behavioural rule, two extractor configs enabled.
+
+    Profile extractor: search_user_profiles → create_user_profile → finish.
+    Playbook extractor: search_user_playbooks → create_user_playbook → finish.
+
+    Because PROFILE_EXTRACTION_TOOLS forbids create_user_playbook, the profile
+    extractor cannot accidentally emit a second playbook even if the scripted LLM
+    tried to.  Only the playbook extractor's create_user_playbook call succeeds,
+    so exactly one UserPlaybook lands in storage.
+    """
+    user_id = "e2e_user3"
+    org_id = "e2e_org3"
+
+    # 6 scripted turns:
+    # profile extractor (3): search_profiles → create_profile → finish
+    # playbook extractor (3): search_playbooks → create_playbook → finish
+    scripted = [
+        # --- profile extractor: only emits a profile ---
+        _mk_resp(
+            [
+                _mk_tool_call(
+                    "c1",
+                    "search_user_profiles",
+                    {"query": "on-call schedule", "top_k": 10},
+                )
+            ]
+        ),
+        _mk_resp(
+            [
+                _mk_tool_call(
+                    "c2",
+                    "create_user_profile",
+                    {
+                        "content": "user is on-call this week",
+                        "ttl": "one_week",
+                        "source_span": "on-call this week",
+                    },
+                )
+            ]
+        ),
+        _mk_resp([_mk_tool_call("c3", "finish", {})]),
+        # --- playbook extractor: emits one playbook ---
+        _mk_resp(
+            [
+                _mk_tool_call(
+                    "c4",
+                    "search_user_playbooks",
+                    {"query": "code review scheduling", "top_k": 10},
+                )
+            ]
+        ),
+        _mk_resp(
+            [
+                _mk_tool_call(
+                    "c5",
+                    "create_user_playbook",
+                    {
+                        "trigger": "code review scheduling",
+                        "content": "avoid scheduling code reviews before 10am",
+                        "source_span": "no code review before 10am",
+                    },
+                )
+            ]
+        ),
+        _mk_resp([_mk_tool_call("c6", "finish", {})]),
+    ]
+
+    client = _make_scripted_client(scripted)
+
+    config = Config(
+        extraction_backend="agentic",
+        storage_config=StorageConfigSQLite(),
+        profile_extractor_configs=[
+            ProfileExtractorConfig(
+                extractor_name="oncall_profile",
+                extraction_definition_prompt="Extract on-call and schedule facts.",
+            ),
+        ],
+        user_playbook_extractor_configs=[
+            UserPlaybookExtractorConfig(
+                extractor_name="scheduling_rules",
+                extraction_definition_prompt="Extract scheduling behavioural rules.",
+            ),
+        ],
+    )
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        request_context = RequestContext(org_id=org_id, storage_base_dir=temp_dir)
+        gs = GenerationService(llm_client=client, request_context=request_context)
+        gs.configurator.get_config = MagicMock(return_value=config)  # type: ignore[method-assign]
+
+        request = PublishUserInteractionRequest(
+            user_id=user_id,
+            interaction_data_list=[
+                InteractionData(
+                    role="User",
+                    content=(
+                        "I'm on-call this week. "
+                        "Please avoid scheduling code reviews before 10am for me."
+                    ),
+                ),
+                InteractionData(
+                    role="Assistant",
+                    content="Noted — I'll avoid scheduling code reviews before 10am.",
+                ),
+            ],
+            session_id="e2e_sid3",
+            force_extraction=True,
+        )
+        result = gs.run(request)
+
+    # Exactly one playbook — the profile extractor's PROFILE_EXTRACTION_TOOLS
+    # forbids create_user_playbook so only the playbook extractor's call lands.
+    assert request_context.storage is not None
+    playbooks = request_context.storage.get_user_playbooks(user_id=user_id)
+    assert len(playbooks) == 1, (
+        f"Expected exactly 1 playbook; got {len(playbooks)}: {[pb.content for pb in playbooks]}"
+    )
+
+    # Profile content must not contain behavioural guidance markers.
+    profiles = request_context.storage.get_user_profile(user_id)
+    assert len(profiles) == 1, (
+        f"Expected exactly 1 profile; got {len(profiles)}: {[p.content for p in profiles]}"
+    )
+
+    # No unexpected warnings.
+    assert not result.warnings, f"unexpected warnings: {result.warnings}"

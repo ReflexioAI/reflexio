@@ -298,12 +298,16 @@ def test_apply_plan_op_create_profile_infinity_ttl_uses_sentinel(tmp_path):
 
 from reflexio.server.services.extraction.tools import (
     EXTRACTION_TOOLS,
+    PLAYBOOK_EXTRACTION_TOOLS,
+    PROFILE_EXTRACTION_TOOLS,
     SEARCH_TOOLS,
 )
 
 
 def test_extraction_registry_has_all_tools():
     specs = {t["function"]["name"] for t in EXTRACTION_TOOLS.openai_specs()}
+    # EXTRACTION_TOOLS is the backward-compat union of all four create/delete tools
+    # plus the full read surface (including agent-playbook and session-excerpt tools).
     assert specs == {
         "search_user_profiles",
         "get_user_profile",
@@ -313,8 +317,31 @@ def test_extraction_registry_has_all_tools():
         "get_user_playbook",
         "create_user_playbook",
         "delete_user_playbook",
+        "search_agent_playbooks",
+        "get_agent_playbook",
+        "get_session_excerpt",
         "finish",
     }
+
+
+def test_profile_extraction_registry_excludes_playbook_mutations():
+    """PROFILE_EXTRACTION_TOOLS must not expose create/delete_user_playbook."""
+    specs = {t["function"]["name"] for t in PROFILE_EXTRACTION_TOOLS.openai_specs()}
+    assert "create_user_profile" in specs
+    assert "delete_user_profile" in specs
+    assert "create_user_playbook" not in specs
+    assert "delete_user_playbook" not in specs
+    assert "finish" in specs
+
+
+def test_playbook_extraction_registry_excludes_profile_mutations():
+    """PLAYBOOK_EXTRACTION_TOOLS must not expose create/delete_user_profile."""
+    specs = {t["function"]["name"] for t in PLAYBOOK_EXTRACTION_TOOLS.openai_specs()}
+    assert "create_user_playbook" in specs
+    assert "delete_user_playbook" in specs
+    assert "create_user_profile" not in specs
+    assert "delete_user_profile" not in specs
+    assert "finish" in specs
 
 
 def test_search_registry_is_read_only():
