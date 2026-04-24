@@ -264,45 +264,7 @@ class PlaybookGenerationService(
             if isinstance(result, list):
                 all_playbooks.extend(result)
 
-        # Deduplicate against existing entries in DB when deduplicator is enabled
         existing_ids_to_delete: list[int] = []
-        from reflexio.server.site_var.feature_flags import is_deduplicator_enabled
-
-        if is_deduplicator_enabled(self.org_id):
-            from reflexio.server.services.playbook.playbook_deduplicator import (
-                PlaybookDeduplicator,
-            )
-
-            # Get deduplication config from the first playbook config that has one
-            playbook_configs_list = (
-                self.configurator.get_config().user_playbook_extractor_configs
-            )
-            dedup_config = next(
-                (
-                    c.deduplication_config
-                    for c in (playbook_configs_list or [])
-                    if c.deduplication_config
-                ),
-                None,
-            )
-
-            deduplicator = PlaybookDeduplicator(
-                request_context=self.request_context,
-                llm_client=self.client,
-                dedup_config=dedup_config,
-            )
-            deduplicated_playbooks, existing_ids_to_delete = deduplicator.deduplicate(
-                results,
-                self.service_config.request_id,  # type: ignore[reportOptionalMemberAccess]
-                self.service_config.agent_version,  # type: ignore[reportOptionalMemberAccess]
-                user_id=self.service_config.user_id,  # type: ignore[reportOptionalMemberAccess]
-            )
-            logger.info(
-                "User playbook entries after deduplication: %d",
-                len(deduplicated_playbooks),
-            )
-            if deduplicated_playbooks:
-                all_playbooks = deduplicated_playbooks
 
         # Set status and source for all entries
         for playbook in all_playbooks:

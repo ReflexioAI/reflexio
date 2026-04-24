@@ -337,17 +337,11 @@ class TestProcessResults:
 
         request_context.storage.add_user_profile.assert_not_called()
 
-    def test_save_profiles_dedup_disabled(
-        self, service, request_context, sample_profile
-    ):
-        """Profiles are saved directly when deduplicator is disabled."""
+    def test_save_profiles(self, service, request_context, sample_profile):
+        """Profiles are saved with the correct source and status."""
         self._setup_service_config(service)
 
-        with patch(
-            "reflexio.server.site_var.feature_flags.is_deduplicator_enabled",
-            return_value=False,
-        ):
-            service._process_results([[sample_profile]])
+        service._process_results([[sample_profile]])
 
         request_context.storage.add_user_profile.assert_called_once_with(
             "user_1", [sample_profile]
@@ -365,110 +359,19 @@ class TestProcessResults:
             source="rerun",
         )
 
-        with patch(
-            "reflexio.server.site_var.feature_flags.is_deduplicator_enabled",
-            return_value=False,
-        ):
-            service_pending._process_results([[sample_profile]])
+        service_pending._process_results([[sample_profile]])
 
         assert sample_profile.status == Status.PENDING
-
-    def test_save_profiles_dedup_enabled(
-        self, service, request_context, sample_profile
-    ):
-        """Deduplicator is called when enabled and profiles exist."""
-        self._setup_service_config(service)
-
-        dedup_mock = MagicMock()
-        dedup_mock.deduplicate.return_value = ([sample_profile], ["old_p1"], [])
-
-        with (
-            patch(
-                "reflexio.server.site_var.feature_flags.is_deduplicator_enabled",
-                return_value=True,
-            ),
-            patch(
-                "reflexio.server.services.profile.profile_deduplicator.ProfileDeduplicator",
-                return_value=dedup_mock,
-            ),
-        ):
-            service._process_results([[sample_profile]])
-
-        dedup_mock.deduplicate.assert_called_once()
-        request_context.storage.add_user_profile.assert_called_once()
-        request_context.storage.delete_user_profile.assert_called_once()
-
-    def test_dedup_with_pending_status_filter(
-        self, service_pending, request_context, sample_profile
-    ):
-        """Deduplicator uses PENDING status filter in rerun mode."""
-        service_pending.service_config = ProfileGenerationServiceConfig(
-            user_id="user_1",
-            request_id="req_1",
-            source="rerun",
-        )
-
-        dedup_mock = MagicMock()
-        dedup_mock.deduplicate.return_value = ([sample_profile], [], [])
-
-        with (
-            patch(
-                "reflexio.server.site_var.feature_flags.is_deduplicator_enabled",
-                return_value=True,
-            ),
-            patch(
-                "reflexio.server.services.profile.profile_deduplicator.ProfileDeduplicator",
-                return_value=dedup_mock,
-            ),
-        ):
-            service_pending._process_results([[sample_profile]])
-
-        dedup_mock.deduplicate.assert_called_once()
 
     def test_save_failure_returns_early(self, service, request_context, sample_profile):
         """When add_user_profile raises, the method returns without deleting."""
         self._setup_service_config(service)
         request_context.storage.add_user_profile.side_effect = RuntimeError("DB error")
 
-        with patch(
-            "reflexio.server.site_var.feature_flags.is_deduplicator_enabled",
-            return_value=False,
-        ):
-            service._process_results([[sample_profile]])
+        service._process_results([[sample_profile]])
 
         request_context.storage.delete_user_profile.assert_not_called()
         request_context.storage.add_profile_change_log.assert_not_called()
-
-    def test_delete_superseded_failure_continues(
-        self, service, request_context, sample_profile
-    ):
-        """When deleting superseded profile fails, processing continues."""
-        self._setup_service_config(service)
-
-        dedup_mock = MagicMock()
-        dedup_mock.deduplicate.return_value = (
-            [sample_profile],
-            ["old_p1", "old_p2"],
-            [],
-        )
-
-        request_context.storage.delete_user_profile.side_effect = RuntimeError(
-            "Delete error"
-        )
-
-        with (
-            patch(
-                "reflexio.server.site_var.feature_flags.is_deduplicator_enabled",
-                return_value=True,
-            ),
-            patch(
-                "reflexio.server.services.profile.profile_deduplicator.ProfileDeduplicator",
-                return_value=dedup_mock,
-            ),
-        ):
-            service._process_results([[sample_profile]])
-
-        assert request_context.storage.delete_user_profile.call_count == 2
 
     def test_changelog_created_after_profiles_saved(
         self, service, request_context, sample_profile
@@ -476,11 +379,7 @@ class TestProcessResults:
         """Profile changelog is created when new profiles are saved."""
         self._setup_service_config(service)
 
-        with patch(
-            "reflexio.server.site_var.feature_flags.is_deduplicator_enabled",
-            return_value=False,
-        ):
-            service._process_results([[sample_profile]])
+        service._process_results([[sample_profile]])
 
         request_context.storage.add_profile_change_log.assert_called_once()
         changelog = request_context.storage.add_profile_change_log.call_args[0][0]
@@ -497,49 +396,9 @@ class TestProcessResults:
             "Changelog error"
         )
 
-        with patch(
-            "reflexio.server.site_var.feature_flags.is_deduplicator_enabled",
-            return_value=False,
-        ):
-            service._process_results([[sample_profile]])
+        service._process_results([[sample_profile]])
 
         request_context.storage.add_user_profile.assert_called_once()
-
-    def test_changelog_with_superseded_profiles(
-        self, service, request_context, sample_profile
-    ):
-        """Changelog includes superseded (removed) profiles from deduplication."""
-        self._setup_service_config(service)
-
-        superseded = UserProfile(
-            profile_id="old_p1",
-            user_id="user_1",
-            content="old preference",
-            last_modified_timestamp=int(datetime.now(UTC).timestamp()),
-            generated_from_request_id="req_0",
-        )
-
-        dedup_mock = MagicMock()
-        dedup_mock.deduplicate.return_value = (
-            [sample_profile],
-            [],
-            [superseded],
-        )
-
-        with (
-            patch(
-                "reflexio.server.site_var.feature_flags.is_deduplicator_enabled",
-                return_value=True,
-            ),
-            patch(
-                "reflexio.server.services.profile.profile_deduplicator.ProfileDeduplicator",
-                return_value=dedup_mock,
-            ),
-        ):
-            service._process_results([[sample_profile]])
-
-        changelog = request_context.storage.add_profile_change_log.call_args[0][0]
-        assert changelog.removed_profiles == [superseded]
 
     def test_no_changelog_when_no_profiles(self, service, request_context):
         """No changelog is created when there are no new or superseded profiles."""
