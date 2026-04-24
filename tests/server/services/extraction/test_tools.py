@@ -245,3 +245,45 @@ def test_apply_plan_op_delete_user_profile_removes_record(seeded_storage, ctx):
     apply_plan_op(op, seeded_storage, ctx)
     remaining = [p.profile_id for p in seeded_storage.get_user_profile("u_1")]
     assert "p_10" not in remaining
+
+
+# ====================================================================
+# Registry tests
+# ====================================================================
+
+from reflexio.server.services.extraction.tools import (
+    EXTRACTION_TOOLS,
+    SEARCH_TOOLS,
+)
+
+
+def test_extraction_registry_has_all_tools():
+    specs = {t["function"]["name"] for t in EXTRACTION_TOOLS.openai_specs()}
+    assert specs == {
+        "search_user_profiles",
+        "get_user_profile",
+        "create_user_profile",
+        "delete_user_profile",
+        "search_user_playbooks",
+        "get_user_playbook",
+        "create_user_playbook",
+        "delete_user_playbook",
+        "finish",
+    }
+
+
+def test_search_registry_is_read_only():
+    specs = {t["function"]["name"] for t in SEARCH_TOOLS.openai_specs()}
+    assert specs == {
+        "search_user_profiles",
+        "get_user_profile",
+        "search_user_playbooks",
+        "get_user_playbook",
+        "search_agent_playbooks",
+        "get_agent_playbook",
+        "get_session_excerpt",
+        "finish",
+    }
+    # No mutations allowed in search
+    assert "create_user_profile" not in specs
+    assert "delete_user_profile" not in specs

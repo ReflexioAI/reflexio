@@ -561,3 +561,133 @@ def apply_plan_op(op: Any, storage: Any, ctx: ExtractionCtx) -> None:
         storage.delete_user_playbooks_by_ids([int(op.id)])
     else:
         raise TypeError(f"Unknown PlanOp: {type(op).__name__}")
+
+
+# ====================================================================
+# Bundle adapter + Tool registries
+# ====================================================================
+
+from collections.abc import Callable  # noqa: E402
+
+from reflexio.server.llm.tools import Tool, ToolRegistry  # noqa: E402
+
+
+def _bundle_handler(
+    inner: Callable[[Any, Any, Any], dict[str, Any]],
+) -> Callable[[Any, Any], dict[str, Any]]:
+    """Adapt a (args, storage, ctx)-style handler to (args, bundle) for run_tool_loop.
+
+    Task 10 will build the _ExtractionBundle with .storage and .ctx attributes;
+    for this task we just provide the adapter so the registry accepts our
+    3-arg handlers.
+
+    Args:
+        inner (Callable[[Any, Any, Any], dict[str, Any]]): A handler callable
+            with signature ``(args, storage, ctx) -> dict``.
+
+    Returns:
+        Callable[[Any, Any], dict[str, Any]]: A 2-arg callable
+            ``(args, bundle) -> dict`` compatible with ``Tool.handler``.
+    """
+
+    def wrapped(args: Any, bundle: Any) -> dict[str, Any]:
+        return inner(args, bundle.storage, bundle.ctx)
+
+    return wrapped
+
+
+EXTRACTION_TOOLS = ToolRegistry(
+    [
+        Tool(
+            name="search_user_profiles",
+            args_model=SearchUserProfilesArgs,
+            handler=_bundle_handler(_handle_search_user_profiles),
+        ),
+        Tool(
+            name="get_user_profile",
+            args_model=GetUserProfileArgs,
+            handler=_bundle_handler(_handle_get_user_profile),
+        ),
+        Tool(
+            name="create_user_profile",
+            args_model=CreateUserProfileArgs,
+            handler=_bundle_handler(_handle_create_user_profile),
+        ),
+        Tool(
+            name="delete_user_profile",
+            args_model=DeleteUserProfileArgs,
+            handler=_bundle_handler(_handle_delete_user_profile),
+        ),
+        Tool(
+            name="search_user_playbooks",
+            args_model=SearchUserPlaybooksArgs,
+            handler=_bundle_handler(_handle_search_user_playbooks),
+        ),
+        Tool(
+            name="get_user_playbook",
+            args_model=GetUserPlaybookArgs,
+            handler=_bundle_handler(_handle_get_user_playbook),
+        ),
+        Tool(
+            name="create_user_playbook",
+            args_model=CreateUserPlaybookArgs,
+            handler=_bundle_handler(_handle_create_user_playbook),
+        ),
+        Tool(
+            name="delete_user_playbook",
+            args_model=DeleteUserPlaybookArgs,
+            handler=_bundle_handler(_handle_delete_user_playbook),
+        ),
+        Tool(
+            name="finish",
+            args_model=FinishArgs,
+            handler=_bundle_handler(_handle_finish),
+        ),
+    ]
+)
+
+
+SEARCH_TOOLS = ToolRegistry(
+    [
+        Tool(
+            name="search_user_profiles",
+            args_model=SearchUserProfilesArgs,
+            handler=_bundle_handler(_handle_search_user_profiles),
+        ),
+        Tool(
+            name="get_user_profile",
+            args_model=GetUserProfileArgs,
+            handler=_bundle_handler(_handle_get_user_profile),
+        ),
+        Tool(
+            name="search_user_playbooks",
+            args_model=SearchUserPlaybooksArgs,
+            handler=_bundle_handler(_handle_search_user_playbooks),
+        ),
+        Tool(
+            name="get_user_playbook",
+            args_model=GetUserPlaybookArgs,
+            handler=_bundle_handler(_handle_get_user_playbook),
+        ),
+        Tool(
+            name="search_agent_playbooks",
+            args_model=SearchAgentPlaybooksArgs,
+            handler=_bundle_handler(_handle_search_agent_playbooks),
+        ),
+        Tool(
+            name="get_agent_playbook",
+            args_model=GetAgentPlaybookArgs,
+            handler=_bundle_handler(_handle_get_agent_playbook),
+        ),
+        Tool(
+            name="get_session_excerpt",
+            args_model=GetSessionExcerptArgs,
+            handler=_bundle_handler(_handle_get_session_excerpt),
+        ),
+        Tool(
+            name="finish",
+            args_model=FinishArgs,
+            handler=_bundle_handler(_handle_finish),
+        ),
+    ]
+)
