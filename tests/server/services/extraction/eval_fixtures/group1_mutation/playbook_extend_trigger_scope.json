@@ -1,0 +1,20 @@
+{
+  "id": "playbook_extend_trigger_scope",
+  "group": "group1_mutation",
+  "category": "playbook_expansion",
+  "existing_storage": [
+    {"type": "user_playbook", "id": "pb_12",
+     "trigger": "user asks about SQL queries",
+     "content": "prefer CTEs over subqueries; use explicit joins",
+     "rationale": ""}
+  ],
+  "session": "User: same as SQL queries — for any database work, prefer CTEs over subqueries. And make sure to use explicit joins. This goes for Mongo and DuckDB too.",
+  "expected_plan": [
+    {"op": "delete_user_playbook", "id": "pb_12"},
+    {"op": "create_user_playbook",
+     "trigger_contains": ["database"],
+     "content_contains": ["CTEs", "explicit joins"],
+     "content_preserves_all": ["prefer CTEs over subqueries", "use explicit joins"]}
+  ],
+  "expected_reasoning_contains": ["extend", "broader scope", "expand"]
+}

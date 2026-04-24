@@ -1,0 +1,16 @@
+{
+  "id": "supersede_location",
+  "group": "group1_mutation",
+  "category": "supersede",
+  "existing_storage": [
+    {"type": "profile", "id": "p_102", "content": "user lives in Austin, TX", "ttl": "infinity"}
+  ],
+  "session": "User: Just moved to Portland, OR.",
+  "expected_plan": [
+    {"op": "delete_user_profile", "id": "p_102"},
+    {"op": "create_user_profile",
+     "content_contains": ["Portland"],
+     "ttl": "infinity"}
+  ],
+  "expected_reasoning_contains": ["supersede", "moved", "replaced"]
+}

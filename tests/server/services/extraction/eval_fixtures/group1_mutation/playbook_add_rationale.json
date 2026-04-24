@@ -1,0 +1,20 @@
+{
+  "id": "playbook_add_rationale",
+  "group": "group1_mutation",
+  "category": "playbook_expansion",
+  "existing_storage": [
+    {"type": "user_playbook", "id": "pb_11",
+     "trigger": "user asks for code review",
+     "content": "be concrete, give actionable suggestions",
+     "rationale": ""}
+  ],
+  "session": "User: by the way, when you review my code, please always explain WHY a change is better — not just what to change.",
+  "expected_plan": [
+    {"op": "delete_user_playbook", "id": "pb_11"},
+    {"op": "create_user_playbook",
+     "trigger_contains": ["code review"],
+     "content_contains": ["concrete", "actionable", "explain", "why"],
+     "content_preserves_all": ["be concrete, give actionable suggestions"]}
+  ],
+  "expected_reasoning_contains": ["extend", "augment", "additional instruction"]
+}

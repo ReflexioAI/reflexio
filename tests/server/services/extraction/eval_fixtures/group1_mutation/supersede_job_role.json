@@ -1,0 +1,16 @@
+{
+  "id": "supersede_job_role",
+  "group": "group1_mutation",
+  "category": "supersede",
+  "existing_storage": [
+    {"type": "profile", "id": "p_101", "content": "user is a software engineer at Acme", "ttl": "infinity"}
+  ],
+  "session": "User: I got promoted to staff engineer last week.",
+  "expected_plan": [
+    {"op": "delete_user_profile", "id": "p_101"},
+    {"op": "create_user_profile",
+     "content_contains": ["staff engineer", "Acme"],
+     "ttl": "infinity"}
+  ],
+  "expected_reasoning_contains": ["supersede", "promoted", "updated"]
+}

@@ -1,0 +1,18 @@
+{
+  "id": "merge_dup_profiles",
+  "group": "group1_mutation",
+  "category": "merge",
+  "existing_storage": [
+    {"type": "profile", "id": "p_200", "content": "user is vegetarian", "ttl": "infinity"},
+    {"type": "profile", "id": "p_201", "content": "user follows a vegetarian diet", "ttl": "infinity"}
+  ],
+  "session": "User: just confirming I'm vegetarian.",
+  "expected_plan": [
+    {"op": "delete_user_profile", "id": "p_200"},
+    {"op": "delete_user_profile", "id": "p_201"},
+    {"op": "create_user_profile",
+     "content_contains": ["vegetarian"],
+     "ttl": "infinity"}
+  ],
+  "expected_reasoning_contains": ["duplicate", "merge", "consolidate"]
+}

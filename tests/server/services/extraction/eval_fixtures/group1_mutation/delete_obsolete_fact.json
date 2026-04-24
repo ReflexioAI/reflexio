@@ -1,0 +1,13 @@
+{
+  "id": "delete_obsolete_fact",
+  "group": "group1_mutation",
+  "category": "delete",
+  "existing_storage": [
+    {"type": "profile", "id": "p_301", "content": "user has a golden retriever named Biscuit", "ttl": "infinity"}
+  ],
+  "session": "User: I don't have a dog anymore, she passed away last month. Not up to getting another.",
+  "expected_plan": [
+    {"op": "delete_user_profile", "id": "p_301"}
+  ],
+  "expected_reasoning_contains": ["obsolete", "no longer", "remove"]
+}

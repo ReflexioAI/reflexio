@@ -1,0 +1,13 @@
+{
+  "id": "delete_privacy_wipe",
+  "group": "group1_mutation",
+  "category": "delete",
+  "existing_storage": [
+    {"type": "profile", "id": "p_302", "content": "user lives at 123 Maple Street, Springfield", "ttl": "infinity"}
+  ],
+  "session": "User: remove my home address from your memory, I don't want that stored.",
+  "expected_plan": [
+    {"op": "delete_user_profile", "id": "p_302"}
+  ],
+  "expected_reasoning_contains": ["privacy", "remove", "requested"]
+}

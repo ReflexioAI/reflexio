@@ -1,0 +1,20 @@
+{
+  "id": "playbook_add_rule",
+  "group": "group1_mutation",
+  "category": "playbook_expansion",
+  "existing_storage": [
+    {"type": "user_playbook", "id": "pb_10",
+     "trigger": "user asks for code help",
+     "content": "show code examples with comments",
+     "rationale": ""}
+  ],
+  "session": "User: also, when I ask for code help, prefer TypeScript over JavaScript.",
+  "expected_plan": [
+    {"op": "delete_user_playbook", "id": "pb_10"},
+    {"op": "create_user_playbook",
+     "trigger_contains": ["code help"],
+     "content_contains": ["examples", "comments", "TypeScript"],
+     "content_preserves_all": ["show code examples with comments"]}
+  ],
+  "expected_reasoning_contains": ["extend", "augment", "add rule"]
+}

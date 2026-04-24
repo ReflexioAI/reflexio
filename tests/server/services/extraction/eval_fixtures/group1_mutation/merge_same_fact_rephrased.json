@@ -1,0 +1,18 @@
+{
+  "id": "merge_same_fact_rephrased",
+  "group": "group1_mutation",
+  "category": "merge",
+  "existing_storage": [
+    {"type": "profile", "id": "p_220", "content": "user prefers Python", "ttl": "infinity"},
+    {"type": "profile", "id": "p_221", "content": "user likes to code in Python", "ttl": "infinity"}
+  ],
+  "session": "User: I just prefer Python, let's say that.",
+  "expected_plan": [
+    {"op": "delete_user_profile", "id": "p_220"},
+    {"op": "delete_user_profile", "id": "p_221"},
+    {"op": "create_user_profile",
+     "content_contains": ["Python"],
+     "ttl": "infinity"}
+  ],
+  "expected_reasoning_contains": ["duplicate", "merge", "same fact"]
+}

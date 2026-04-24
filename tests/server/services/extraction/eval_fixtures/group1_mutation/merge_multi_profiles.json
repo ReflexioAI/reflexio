@@ -1,0 +1,20 @@
+{
+  "id": "merge_multi_profiles",
+  "group": "group1_mutation",
+  "category": "merge",
+  "existing_storage": [
+    {"type": "profile", "id": "p_210", "content": "user works at Acme", "ttl": "infinity"},
+    {"type": "profile", "id": "p_211", "content": "user is employed at Acme Corp", "ttl": "infinity"},
+    {"type": "profile", "id": "p_212", "content": "user's employer is Acme", "ttl": "infinity"}
+  ],
+  "session": "User: I work at Acme as a data scientist.",
+  "expected_plan": [
+    {"op": "delete_user_profile", "id": "p_210"},
+    {"op": "delete_user_profile", "id": "p_211"},
+    {"op": "delete_user_profile", "id": "p_212"},
+    {"op": "create_user_profile",
+     "content_contains": ["Acme", "data scientist"],
+     "ttl": "infinity"}
+  ],
+  "expected_reasoning_contains": ["duplicate", "merge", "unified"]
+}

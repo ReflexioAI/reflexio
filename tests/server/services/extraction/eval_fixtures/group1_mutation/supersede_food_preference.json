@@ -1,0 +1,16 @@
+{
+  "id": "supersede_food_preference",
+  "group": "group1_mutation",
+  "category": "supersede",
+  "existing_storage": [
+    {"type": "profile", "id": "p_100", "content": "user likes Chinese food", "ttl": "infinity"}
+  ],
+  "session": "User: I've gone off Chinese food, can't stand it anymore.",
+  "expected_plan": [
+    {"op": "delete_user_profile", "id": "p_100"},
+    {"op": "create_user_profile",
+     "content_contains": ["Chinese", "dislike"],
+     "ttl": "infinity"}
+  ],
+  "expected_reasoning_contains": ["supersede", "no longer", "changed"]
+}
