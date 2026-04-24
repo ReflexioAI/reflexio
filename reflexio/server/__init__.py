@@ -2,6 +2,7 @@ import logging
 import logging.handlers
 import os
 import sys
+import time
 from pathlib import Path
 
 import colorlog
@@ -65,6 +66,57 @@ class _LLMPromptOnly(logging.Filter):
         return record.levelno == LLM_PROMPT_LEVEL
 
 
+class _TZAwareFormatter(logging.Formatter):
+    """Formatter that appends the local UTC offset to every timestamp.
+
+    Renders ``2026-04-24 10:20:51.238 -0700`` so readers in any timezone
+    can compute the instant unambiguously. Offset comes from the local
+    system zoneinfo via ``time.strftime('%z')``; falls back to ``+0000``
+    on systems without a configured timezone.
+    """
+
+    default_time_format = "%Y-%m-%d %H:%M:%S"
+    default_msec_format = "%s.%03d"
+
+    def formatTime(self, record: logging.LogRecord, datefmt: str | None = None) -> str:  # noqa: ARG002, N802
+        ct = time.localtime(record.created)
+        base = time.strftime(self.default_time_format, ct)
+        msecs = int(record.msecs)
+        offset = time.strftime("%z", ct) or "+0000"
+        return f"{base}.{msecs:03d} {offset}"
+
+
+class _LLMIOFormatter(_TZAwareFormatter):
+    """Format LLM prompts/responses with delimiters and entry IDs."""
+
+    _HEADER = "═" * 64
+    _FOOTER = "─" * 64
+
+    def format(self, record: logging.LogRecord) -> str:
+        timestamp = self.formatTime(record)
+        message = record.getMessage()
+        short_logger = record.name.rsplit(".", 1)[-1]
+        # Use structured extra attributes when available; fall back to parsing
+        entry_id = getattr(record, "entry_id", None)
+        label = getattr(record, "label", None)
+        entry_tag = f"[#{entry_id}]" if entry_id is not None else ""
+        if label is None:
+            label = message[:60]
+        header_line = (
+            f"{entry_tag} [{timestamp}] {label}"
+            if entry_tag
+            else f"[{timestamp}] {label}"
+        )
+        return (
+            f"\n{self._HEADER}\n"
+            f"{header_line}\n"
+            f"Service: {short_logger}\n"
+            f"{self._HEADER}\n"
+            f"{message}\n"
+            f"{self._FOOTER}\n"
+        )
+
+
 DEBUG_LOG_TO_CONSOLE = os.environ.get("DEBUG_LOG_TO_CONSOLE", "").strip().lower()
 root_logger = logging.getLogger()
 
@@ -111,7 +163,7 @@ if DEBUG_LOG_TO_CONSOLE and DEBUG_LOG_TO_CONSOLE not in ("false", "0", "no"):
     )
     file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(
-        logging.Formatter(
+        _TZAwareFormatter(
             "%(asctime)s %(correlation_tag)s%(name)s %(levelname)s %(message)s"
         )
     )
@@ -120,36 +172,6 @@ if DEBUG_LOG_TO_CONSOLE and DEBUG_LOG_TO_CONSOLE not in ("false", "0", "no"):
     root_logger.addHandler(file_handler)
 
     # LLM I/O log file — only LLM_PROMPT level, with structured delimiters
-    _HEADER = "═" * 64
-    _FOOTER = "─" * 64
-
-    class _LLMIOFormatter(logging.Formatter):
-        """Format LLM prompts/responses with delimiters and entry IDs."""
-
-        def format(self, record: logging.LogRecord) -> str:
-            timestamp = self.formatTime(record)
-            message = record.getMessage()
-            short_logger = record.name.rsplit(".", 1)[-1]
-            # Use structured extra attributes when available; fall back to parsing
-            entry_id = getattr(record, "entry_id", None)
-            label = getattr(record, "label", None)
-            entry_tag = f"[#{entry_id}]" if entry_id is not None else ""
-            if label is None:
-                label = message[:60]
-            header_line = (
-                f"{entry_tag} [{timestamp}] {label}"
-                if entry_tag
-                else f"[{timestamp}] {label}"
-            )
-            return (
-                f"\n{_HEADER}\n"
-                f"{header_line}\n"
-                f"Service: {short_logger}\n"
-                f"{_HEADER}\n"
-                f"{message}\n"
-                f"{_FOOTER}\n"
-            )
-
     llm_io_handler = logging.handlers.RotatingFileHandler(
         LLM_IO_LOG_FILE, maxBytes=10_000_000, backupCount=3, encoding="utf-8"
     )
