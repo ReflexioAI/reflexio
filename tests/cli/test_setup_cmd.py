@@ -13,10 +13,8 @@ from reflexio.cli.commands.setup_cmd import (
     InstallLocation,
     _detect_install_locations,
     _install_claude_code_integration,
-    _install_openclaw_integration,
     _prompt_install_location,
     _prompt_storage,
-    _prompt_user_id,
     _remove_from_dir,
     _set_env_var,
     _write_marker,
@@ -325,24 +323,6 @@ class TestInstallClaudeCodeIntegration:
         cmd = tmp_path / ".claude" / "commands" / "reflexio-extract" / "SKILL.md"
         assert not cmd.exists()
 
-    def test_expert_mode_installs_references(self, tmp_path: Path) -> None:
-        """Expert mode copies skill references directory."""
-        _install_claude_code_integration(
-            tmp_path, expert=True, location=InstallLocation.CURRENT_PROJECT
-        )
-        refs = tmp_path / ".claude" / "skills" / "reflexio" / "references"
-        assert refs.exists()
-        assert (refs / "proactive-patterns.md").exists()
-        assert (refs / "server-management.md").exists()
-
-    def test_normal_mode_no_references(self, tmp_path: Path) -> None:
-        """Normal mode does not install skill references."""
-        _install_claude_code_integration(
-            tmp_path, location=InstallLocation.CURRENT_PROJECT
-        )
-        refs = tmp_path / ".claude" / "skills" / "reflexio" / "references"
-        assert not refs.exists()
-
     def test_hooks_in_settings_json(self, tmp_path: Path) -> None:
         """Hooks are written to settings.json with correct events."""
         _install_claude_code_integration(
@@ -353,34 +333,34 @@ class TestInstallClaudeCodeIntegration:
         assert "UserPromptSubmit" in settings["hooks"]
 
     def test_normal_mode_no_session_end_hook(self, tmp_path: Path) -> None:
-        """Normal mode does not install the SessionEnd hook."""
+        """Normal mode does not install the Stop hook."""
         _install_claude_code_integration(
             tmp_path, location=InstallLocation.CURRENT_PROJECT
         )
         settings = json.loads((tmp_path / ".claude" / "settings.json").read_text())
-        assert "SessionEnd" not in settings["hooks"]
+        assert "Stop" not in settings["hooks"]
 
     def test_expert_mode_installs_session_end_hook(self, tmp_path: Path) -> None:
-        """Expert mode installs SessionEnd hook alongside SessionStart and UserPromptSubmit."""
+        """Expert mode installs Stop hook alongside SessionStart and UserPromptSubmit."""
         _install_claude_code_integration(
             tmp_path, expert=True, location=InstallLocation.CURRENT_PROJECT
         )
         settings = json.loads((tmp_path / ".claude" / "settings.json").read_text())
-        assert "SessionEnd" in settings["hooks"]
-        assert len(settings["hooks"]["SessionEnd"]) == 1
-        # Verify the SessionEnd hook command points to handler.js
-        cmd = settings["hooks"]["SessionEnd"][0]["hooks"][0]["command"]
+        assert "Stop" in settings["hooks"]
+        assert len(settings["hooks"]["Stop"]) == 1
+        # Verify the Stop hook command points to handler.js
+        cmd = settings["hooks"]["Stop"][0]["hooks"][0]["command"]
         assert "handler.js" in cmd
         assert cmd.startswith("node ")
 
     def test_expert_mode_session_end_hook_idempotent(self, tmp_path: Path) -> None:
-        """Running expert install twice doesn't duplicate the SessionEnd hook."""
+        """Running expert install twice doesn't duplicate the Stop hook."""
         for _ in range(2):
             _install_claude_code_integration(
                 tmp_path, expert=True, location=InstallLocation.ALL_PROJECTS
             )
         settings = json.loads((tmp_path / ".claude" / "settings.json").read_text())
-        assert len(settings["hooks"]["SessionEnd"]) == 1
+        assert len(settings["hooks"]["Stop"]) == 1
         assert len(settings["hooks"]["SessionStart"]) == 1
         assert len(settings["hooks"]["UserPromptSubmit"]) == 1
 
@@ -392,18 +372,16 @@ class TestInstallClaudeCodeIntegration:
         )
         claude_dir = tmp_path / ".claude"
         assert (claude_dir / "commands" / "reflexio-extract").exists()
-        assert (claude_dir / "skills" / "reflexio" / "references").exists()
         settings = json.loads((claude_dir / "settings.json").read_text())
-        assert "SessionEnd" in settings["hooks"]
+        assert "Stop" in settings["hooks"]
 
         # Re-install in normal mode
         _install_claude_code_integration(
             tmp_path, expert=False, location=InstallLocation.CURRENT_PROJECT
         )
         assert not (claude_dir / "commands" / "reflexio-extract").exists()
-        assert not (claude_dir / "skills" / "reflexio" / "references").exists()
         settings = json.loads((claude_dir / "settings.json").read_text())
-        assert "SessionEnd" not in settings.get("hooks", {})
+        assert "Stop" not in settings.get("hooks", {})
 
     def test_idempotent_install(self, tmp_path: Path) -> None:
         """Running install twice doesn't corrupt files or duplicate hooks."""
@@ -486,18 +464,18 @@ class TestUninstallDetection:
         assert "hooks" not in settings or not settings.get("hooks")
 
     def test_remove_from_dir_cleans_session_end_hook(self, tmp_path: Path) -> None:
-        """Uninstall removes the SessionEnd hook installed by expert mode."""
+        """Uninstall removes the Stop hook installed by expert mode."""
         _install_claude_code_integration(
             tmp_path, expert=True, location=InstallLocation.CURRENT_PROJECT
         )
         settings_path = tmp_path / ".claude" / "settings.json"
         settings = json.loads(settings_path.read_text())
-        assert "SessionEnd" in settings["hooks"]
+        assert "Stop" in settings["hooks"]
 
         _remove_from_dir(tmp_path)
 
         settings = json.loads(settings_path.read_text())
-        assert "hooks" not in settings or "SessionEnd" not in settings.get("hooks", {})
+        assert "hooks" not in settings or "Stop" not in settings.get("hooks", {})
 
     def test_marker_file_metadata(self, tmp_path: Path) -> None:
         """Marker file contains location and installed_at fields."""
@@ -527,201 +505,3 @@ class TestClaudeCodeSetupFlags:
                 project_dir=Path("/tmp"),
                 global_install=True,
             )
-
-
-# ---------------------------------------------------------------------------
-# _install_openclaw_integration — ClawHub-vs-pip skill ownership
-# ---------------------------------------------------------------------------
-
-
-def _make_openclaw_subprocess_stub() -> MagicMock:
-    """Build a subprocess.run stub that fakes success for every openclaw call.
-
-    The three calls made by ``_install_openclaw_integration`` are:
-    ``plugins install``, ``hooks enable``, and ``hooks list`` (the last one
-    must return 'reflexio-context' in stdout to pass the verify step).
-
-    Returns:
-        MagicMock: A mock usable as ``subprocess.run`` replacement.
-    """
-
-    def _run(cmd: list[str], **_: object) -> MagicMock:
-        result = MagicMock()
-        result.returncode = 0
-        result.stderr = ""
-        result.stdout = "✓ ready │ reflexio-context" if "list" in cmd else ""
-        return result
-
-    return MagicMock(side_effect=_run)
-
-
-class TestInstallOpenclawIntegration:
-    """Regression tests for the ClawHub-vs-pip skill-ownership guard."""
-
-    def test_preserves_clawhub_installed_skill(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """If _meta.json is present, the existing SKILL.md is not overwritten.
-
-        Simulates a user who first installed via ``clawhub skill install
-        reflexio`` and then runs ``reflexio setup openclaw``. ClawHub's
-        copy should survive untouched.
-        """
-        monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
-        skills_dir = tmp_path / ".openclaw" / "skills" / "reflexio"
-        skills_dir.mkdir(parents=True)
-        sentinel = "CLAWHUB_INSTALLED_SENTINEL_DO_NOT_OVERWRITE"
-        (skills_dir / "SKILL.md").write_text(sentinel)
-        (skills_dir / "_meta.json").write_text(
-            '{"ownerId":"x","slug":"reflexio","version":"1.0.0"}'
-        )
-
-        with (
-            patch(
-                "reflexio.cli.commands.setup_cmd.shutil.which",
-                return_value="/usr/bin/openclaw",
-            ),
-            patch(
-                "reflexio.cli.commands.setup_cmd.subprocess.run",
-                _make_openclaw_subprocess_stub(),
-            ),
-        ):
-            _install_openclaw_integration()
-
-        assert (skills_dir / "SKILL.md").read_text() == sentinel
-        assert (skills_dir / "_meta.json").exists()
-
-    def test_refreshes_pip_installed_skill(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """If _meta.json is absent, an existing SKILL.md is always replaced.
-
-        Regression test for the upgrade path: ``pip install --upgrade
-        reflexio-ai && reflexio setup openclaw`` must refresh stale skill
-        content from a prior pip install.
-        """
-        monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
-        skills_dir = tmp_path / ".openclaw" / "skills" / "reflexio"
-        skills_dir.mkdir(parents=True)
-        (skills_dir / "SKILL.md").write_text("STALE_PIP_INSTALLED_CONTENT")
-
-        with (
-            patch(
-                "reflexio.cli.commands.setup_cmd.shutil.which",
-                return_value="/usr/bin/openclaw",
-            ),
-            patch(
-                "reflexio.cli.commands.setup_cmd.subprocess.run",
-                _make_openclaw_subprocess_stub(),
-            ),
-        ):
-            _install_openclaw_integration()
-
-        import reflexio
-
-        source_skill = (
-            Path(reflexio.__file__).parent
-            / "integrations"
-            / "openclaw"
-            / "skill"
-            / "SKILL.md"
-        )
-        assert (skills_dir / "SKILL.md").read_text() == source_skill.read_text()
-        assert (
-            "STALE_PIP_INSTALLED_CONTENT" not in (skills_dir / "SKILL.md").read_text()
-        )
-
-
-# ---------------------------------------------------------------------------
-# _prompt_user_id — optional custom user_id during Claude Code setup
-# ---------------------------------------------------------------------------
-
-
-class TestPromptUserId:
-    """Tests for _prompt_user_id: default, custom value, whitespace, env-driven default."""
-
-    def test_default_is_persisted_when_user_accepts(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Pressing Enter keeps the fallback 'claude-code'."""
-        env = tmp_path / ".env"
-        env.write_text("")
-        monkeypatch.delenv("REFLEXIO_USER_ID", raising=False)
-        monkeypatch.setattr(typer, "prompt", lambda *_, **kwargs: kwargs["default"])
-
-        result = _prompt_user_id(env)
-
-        assert result == "claude-code"
-        assert 'REFLEXIO_USER_ID="claude-code"' in env.read_text()
-
-    def test_custom_value_is_persisted(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """A user-entered value is persisted verbatim."""
-        env = tmp_path / ".env"
-        env.write_text("")
-        monkeypatch.delenv("REFLEXIO_USER_ID", raising=False)
-        monkeypatch.setattr(typer, "prompt", _fixed_prompt("alice"))
-
-        result = _prompt_user_id(env)
-
-        assert result == "alice"
-        assert 'REFLEXIO_USER_ID="alice"' in env.read_text()
-
-    def test_whitespace_is_stripped(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Surrounding whitespace is trimmed before persistence."""
-        env = tmp_path / ".env"
-        env.write_text("")
-        monkeypatch.delenv("REFLEXIO_USER_ID", raising=False)
-        monkeypatch.setattr(typer, "prompt", _fixed_prompt("  bob  "))
-
-        result = _prompt_user_id(env)
-
-        assert result == "bob"
-        assert 'REFLEXIO_USER_ID="bob"' in env.read_text()
-
-    def test_existing_env_value_offered_as_default(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Re-running setup offers the currently configured user_id as the default."""
-        env = tmp_path / ".env"
-        env.write_text('REFLEXIO_USER_ID="alice"\n')
-        monkeypatch.setenv("REFLEXIO_USER_ID", "alice")
-
-        captured: dict[str, object] = {}
-
-        def _fake_prompt(*_: object, **kwargs: object) -> object:
-            captured.update(kwargs)
-            return kwargs["default"]
-
-        monkeypatch.setattr(typer, "prompt", _fake_prompt)
-
-        result = _prompt_user_id(env)
-
-        assert captured["default"] == "alice"
-        assert result == "alice"
-
-    def test_empty_input_falls_back_to_default(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """If the user somehow submits an empty/whitespace-only string, fall back."""
-        env = tmp_path / ".env"
-        env.write_text("")
-        monkeypatch.delenv("REFLEXIO_USER_ID", raising=False)
-        monkeypatch.setattr(typer, "prompt", _fixed_prompt("   "))
-
-        result = _prompt_user_id(env)
-
-        assert result == "claude-code"
-        assert 'REFLEXIO_USER_ID="claude-code"' in env.read_text()
-
-
-def _fixed_prompt(return_value: str):
-    """Build a typer.prompt stub that returns a fixed value, ignoring args/kwargs."""
-
-    def _stub(*_args: object, **_kwargs: object) -> str:
-        return return_value
-
-    return _stub

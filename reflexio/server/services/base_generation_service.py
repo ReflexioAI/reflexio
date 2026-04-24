@@ -86,9 +86,11 @@ def _iter_user_contents(
     """Collect the ``content`` of every User-role interaction, order-preserving."""
     out: list[str] = []
     for model in session_data_models:
-        for interaction in model.interactions:
-            if interaction.role == "User" and interaction.content:
-                out.append(interaction.content)
+        out.extend(
+            interaction.content
+            for interaction in model.interactions
+            if interaction.role == "User" and interaction.content
+        )
     return out
 
 

@@ -1138,7 +1138,7 @@ def test_should_run_before_extraction_combines_all_extractor_criteria():
             user_id=user_id,
             request_id="request-1",
             content="I am leading a migration project and prefer concise updates.",
-            role="user",
+            role="User",
             created_at=int(datetime.datetime.now(UTC).timestamp()),
         )
         request_obj = Request(

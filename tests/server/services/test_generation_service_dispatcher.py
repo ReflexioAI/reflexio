@@ -61,20 +61,6 @@ def test_build_search_service_picks_classic_by_default() -> None:
     assert svc.__class__.__name__ == "UnifiedSearchService"
 
 
-def test_build_extraction_service_picks_agentic_when_configured() -> None:
-    try:
-        from reflexio.server.services.extraction.agentic_extraction_service import (  # noqa: F401  # type: ignore[import-not-found]
-            AgenticExtractionService,
-        )
-    except ImportError:
-        pytest.skip("AgenticExtractionService not yet implemented (Phase 3)")
-    config = _make_config(extraction_backend="agentic")
-    svc = build_extraction_service(
-        config, llm_client=MagicMock(), request_context=MagicMock()
-    )
-    assert svc.__class__.__name__ == "AgenticExtractionService"
-
-
 def test_build_search_service_picks_agentic_when_configured() -> None:
     try:
         from reflexio.server.services.search.agentic_search_service import (  # noqa: F401  # type: ignore[import-not-found]

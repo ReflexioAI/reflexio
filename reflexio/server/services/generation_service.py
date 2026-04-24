@@ -40,9 +40,6 @@ from reflexio.server.services.profile.profile_generation_service_utils import (
 )
 
 if TYPE_CHECKING:
-    from reflexio.server.services.extraction.agentic_extraction_service import (
-        AgenticExtractionService,
-    )
     from reflexio.server.services.search.agentic_search_service import (
         AgenticSearchService,
     )
@@ -426,34 +423,23 @@ def build_extraction_service(
     *,
     llm_client: LiteLLMClient,
     request_context: RequestContext,
-) -> ProfileGenerationService | AgenticExtractionService:
-    """Dispatch to the classic or agentic extraction service.
+) -> ProfileGenerationService:
+    """Return the classic profile extraction service.
 
-    Selected by ``config.extraction_backend``. Classic returns a
-    ``ProfileGenerationService`` (the full classic pipeline runs
-    profile + playbook extractors in parallel from
-    ``GenerationService.run`` — this factory only exposes the profile
-    service as the primary handle for the dispatcher; the full agentic
-    pipeline will replace both in Phase 6).
+    The agentic extraction path is handled directly by
+    ``AgenticExtractionRunner`` inside ``GenerationService.run`` and does not
+    go through this factory.  This function exists for the classic dispatcher
+    path only.
 
     Args:
-        config (Config): Top-level ``Config``. Reads ``extraction_backend``.
+        config (Config): Top-level ``Config`` (unused; kept for API consistency).
         llm_client (LiteLLMClient): Configured ``LiteLLMClient``.
         request_context (RequestContext): Current request context.
 
     Returns:
-        Object with a ``run(request)`` method — either a classic
-        ``ProfileGenerationService`` or the agentic service.
+        ProfileGenerationService: Classic profile extraction service.
     """
-    if config.extraction_backend == "agentic":
-        # Lazy import — the agentic service lands in Phase 3.
-        from reflexio.server.services.extraction.agentic_extraction_service import (  # type: ignore[import-not-found]
-            AgenticExtractionService,
-        )
-
-        return AgenticExtractionService(
-            llm_client=llm_client, request_context=request_context
-        )
+    del config  # unused — agentic path bypasses this factory
     return ProfileGenerationService(
         llm_client=llm_client, request_context=request_context
     )

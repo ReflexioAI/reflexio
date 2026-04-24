@@ -97,11 +97,17 @@ class TestInteractionsFromPayload:
                     "tools_used": [
                         {
                             "tool_name": "run_snowflake_query",
-                            "tool_data": {"statement": "SELECT ...", "status": "failed"},
+                            "tool_data": {
+                                "statement": "SELECT ...",
+                                "status": "failed",
+                            },
                         },
                         {
                             "tool_name": "run_snowflake_query",
-                            "tool_data": {"statement": "SELECT * LIMIT 1", "status": "ok"},
+                            "tool_data": {
+                                "statement": "SELECT * LIMIT 1",
+                                "status": "ok",
+                            },
                         },
                     ],
                 },

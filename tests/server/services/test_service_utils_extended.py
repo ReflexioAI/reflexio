@@ -316,9 +316,7 @@ def test_format_response_renders_tool_calling_chat_response_with_sdk_tool_calls(
 
     tc = SimpleNamespace(
         id="call_abc",
-        function=SimpleNamespace(
-            name="rank", arguments='{"ordered_ids":["b1","b2"]}'
-        ),
+        function=SimpleNamespace(name="rank", arguments='{"ordered_ids":["b1","b2"]}'),
     )
     resp = ToolCallingChatResponse(
         content=None, tool_calls=[tc], finish_reason="tool_calls"

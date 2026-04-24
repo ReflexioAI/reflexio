@@ -252,7 +252,9 @@ def commit_plan(
 
     # Delegate actual storage writes to the tool-handler module (Task 5 wires this in).
     # Lazy import so Task 3 can land before tools.py exists.
-    from reflexio.server.services.extraction.tools import apply_plan_op  # noqa: PLC0415  # type: ignore[import-not-found]
+    from reflexio.server.services.extraction.tools import (
+        apply_plan_op,  # noqa: PLC0415  # type: ignore[import-not-found]
+    )
 
     for op in ops_to_apply:
         apply_plan_op(op, storage, ctx)

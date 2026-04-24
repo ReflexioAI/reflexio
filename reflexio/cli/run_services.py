@@ -184,9 +184,7 @@ def execute(args: argparse.Namespace) -> None:
 
     if "docs" in only:
         if DOCS_DIR.is_dir():
-            services.append(
-                build_nextjs_service("docs", ports, cwd=str(DOCS_DIR))
-            )
+            services.append(build_nextjs_service("docs", ports, cwd=str(DOCS_DIR)))
         elif docs_explicit:
             print(
                 f"Cannot start docs: {DOCS_DIR} not found. "

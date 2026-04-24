@@ -54,17 +54,13 @@ PROMPT_VERSION_MAP: dict[str, tuple[str, str | None]] = {
     "shadow_content_evaluation": ("v1.0.0", None),
     "query_reformulation": ("v1.0.0", None),
     "document_expansion": ("v1.0.0", None),
-    # Agentic extraction pipeline — Phase 3
-    "profile_reader_facts": ("v1.0.0", None),
-    "profile_reader_context": ("v1.0.0", None),
-    "profile_reader_temporal": ("v1.0.0", None),
-    "playbook_reader_behavior": ("v1.0.0", None),
-    "playbook_reader_trigger": ("v1.0.0", None),
-    "playbook_reader_rationale": ("v1.0.0", None),
+    # Agentic extraction pipeline — Phase 3 (v2 single-loop)
+    "extraction_agent": ("v1.0.0", None),
     "profile_critic": ("v1.0.0", None),
     "playbook_critic": ("v1.0.0", None),
     "reconciler": ("v1.0.0", None),
     # Agentic search pipeline — Phase 4
+    "search_agent": ("v1.0.0", None),
     "profile_search_direct": ("v1.0.0", None),
     "profile_search_context": ("v1.0.0", None),
     "profile_search_temporal": ("v1.0.0", None),

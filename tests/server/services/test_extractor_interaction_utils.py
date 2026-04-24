@@ -321,7 +321,9 @@ class TestIterSlidingWindows:
     def test_single_model_fits_in_window(self):
         """Test single model that fits in window yields one window."""
         models = [_create_mock_request_interaction_model(5)]
-        windows = list(iter_sliding_windows(models, batch_size=10, batch_interval_size=5))
+        windows = list(
+            iter_sliding_windows(models, batch_size=10, batch_interval_size=5)
+        )
 
         assert len(windows) == 1
         assert windows[0][0] == 0  # window index
@@ -333,7 +335,9 @@ class TestIterSlidingWindows:
             _create_mock_request_interaction_model(3),
             _create_mock_request_interaction_model(4),
         ]
-        windows = list(iter_sliding_windows(models, batch_size=10, batch_interval_size=5))
+        windows = list(
+            iter_sliding_windows(models, batch_size=10, batch_interval_size=5)
+        )
 
         assert len(windows) == 1
         assert windows[0][0] == 0
@@ -352,7 +356,9 @@ class TestIterSlidingWindows:
             _create_mock_request_interaction_model(10),
             _create_mock_request_interaction_model(10),
         ]
-        windows = list(iter_sliding_windows(models, batch_size=15, batch_interval_size=10))
+        windows = list(
+            iter_sliding_windows(models, batch_size=15, batch_interval_size=10)
+        )
 
         assert len(windows) == 3
         # Window 0: covers [0-14], includes models[0] and models[1]
@@ -372,7 +378,9 @@ class TestIterSlidingWindows:
             _create_mock_request_interaction_model(10),
             _create_mock_request_interaction_model(10),
         ]
-        windows = list(iter_sliding_windows(models, batch_size=10, batch_interval_size=10))
+        windows = list(
+            iter_sliding_windows(models, batch_size=10, batch_interval_size=10)
+        )
 
         assert len(windows) == 3
         # Each window should contain exactly one model
@@ -388,7 +396,9 @@ class TestIterSlidingWindows:
             _create_mock_request_interaction_model(10),
         ]
         # batch_size=5, stride=15 means windows at positions 0-4, 15-19
-        windows = list(iter_sliding_windows(models, batch_size=5, batch_interval_size=15))
+        windows = list(
+            iter_sliding_windows(models, batch_size=5, batch_interval_size=15)
+        )
 
         assert len(windows) == 2
         # Window 0: covers 0-4, only models[0]
@@ -401,7 +411,9 @@ class TestIterSlidingWindows:
     def test_invalid_window_size_zero(self):
         """Test that batch_size=0 yields single window with all data."""
         models = [_create_mock_request_interaction_model(10)]
-        windows = list(iter_sliding_windows(models, batch_size=0, batch_interval_size=5))
+        windows = list(
+            iter_sliding_windows(models, batch_size=0, batch_interval_size=5)
+        )
 
         assert len(windows) == 1
         assert windows[0][1] == models
@@ -409,7 +421,9 @@ class TestIterSlidingWindows:
     def test_invalid_window_size_negative(self):
         """Test that negative window_size yields single window with all data."""
         models = [_create_mock_request_interaction_model(10)]
-        windows = list(iter_sliding_windows(models, batch_size=-5, batch_interval_size=5))
+        windows = list(
+            iter_sliding_windows(models, batch_size=-5, batch_interval_size=5)
+        )
 
         assert len(windows) == 1
         assert windows[0][1] == models
@@ -421,7 +435,9 @@ class TestIterSlidingWindows:
             _create_mock_request_interaction_model(10),
         ]
         # stride=0 should default to batch_size=10, yielding 2 non-overlapping windows
-        windows = list(iter_sliding_windows(models, batch_size=10, batch_interval_size=0))
+        windows = list(
+            iter_sliding_windows(models, batch_size=10, batch_interval_size=0)
+        )
 
         assert len(windows) == 2
 
@@ -432,7 +448,9 @@ class TestIterSlidingWindows:
             _create_mock_request_interaction_model(10),
         ]
         # stride=None should default to batch_size=10
-        windows = list(iter_sliding_windows(models, batch_size=10, batch_interval_size=None))
+        windows = list(
+            iter_sliding_windows(models, batch_size=10, batch_interval_size=None)
+        )
 
         assert len(windows) == 2
 
@@ -446,7 +464,9 @@ class TestIterSlidingWindows:
         ]
         # Total: 30 interactions
         # batch_size=15, stride=10
-        windows = list(iter_sliding_windows(models, batch_size=15, batch_interval_size=10))
+        windows = list(
+            iter_sliding_windows(models, batch_size=15, batch_interval_size=10)
+        )
 
         assert len(windows) == 3
         # Window 0: covers [0-14], models[0] (0-4) and models[1] (5-24) overlap
@@ -464,7 +484,9 @@ class TestIterSlidingWindows:
             _create_mock_request_interaction_model(5),
             _create_mock_request_interaction_model(5),
         ]
-        windows = list(iter_sliding_windows(models, batch_size=10, batch_interval_size=5))
+        windows = list(
+            iter_sliding_windows(models, batch_size=10, batch_interval_size=5)
+        )
 
         # First window should have models[0] and models[1] in order
         assert windows[0][1][0] is models[0]
@@ -478,7 +500,9 @@ class TestIterSlidingWindows:
             _create_mock_request_interaction_model(10),
         ]
         # Total: 20 interactions, empty model at position 10
-        windows = list(iter_sliding_windows(models, batch_size=15, batch_interval_size=10))
+        windows = list(
+            iter_sliding_windows(models, batch_size=15, batch_interval_size=10)
+        )
 
         assert len(windows) == 2
 
@@ -488,14 +512,18 @@ class TestIterSlidingWindows:
             _create_mock_request_interaction_model(0),
             _create_mock_request_interaction_model(0),
         ]
-        windows = list(iter_sliding_windows(models, batch_size=10, batch_interval_size=5))
+        windows = list(
+            iter_sliding_windows(models, batch_size=10, batch_interval_size=5)
+        )
 
         assert windows == []
 
     def test_window_indices_are_sequential(self):
         """Test that window indices are sequential starting from 0."""
         models = [_create_mock_request_interaction_model(10) for _ in range(5)]
-        windows = list(iter_sliding_windows(models, batch_size=10, batch_interval_size=10))
+        windows = list(
+            iter_sliding_windows(models, batch_size=10, batch_interval_size=10)
+        )
 
         indices = [w[0] for w in windows]
         assert indices == list(range(5))

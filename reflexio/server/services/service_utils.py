@@ -540,9 +540,7 @@ def _format_tool_calls(tool_calls: list[Any]) -> list[str]:
         elif isinstance(tc, dict):
             fn_dict = tc.get("function", {}) or {}
             name = fn_dict.get("name") if isinstance(fn_dict, dict) else None
-            args_raw = (
-                fn_dict.get("arguments") if isinstance(fn_dict, dict) else None
-            )
+            args_raw = fn_dict.get("arguments") if isinstance(fn_dict, dict) else None
         else:
             name = None
             args_raw = None

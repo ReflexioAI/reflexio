@@ -136,7 +136,6 @@ class TestInMemoryCache:
         for thread_id, result in results:
             assert result == f"value_{thread_id}"  # noqa: S101
 
-
     def test_clear_removes_all_entries(self):
         """Test that clear() removes all cached entries."""
         cache = InMemoryCache()
@@ -395,7 +394,12 @@ class TestReflexioClientCache:
         client = ReflexioClient(api_key="test_key")
 
         # Populate cache
-        request = {"user_id": "user1", "start_time": None, "end_time": None, "top_k": 30}
+        request = {
+            "user_id": "user1",
+            "start_time": None,
+            "end_time": None,
+            "top_k": 30,
+        }
         client.get_profiles(request)
         assert mock_session.request.call_count == 1  # noqa: S101
 
@@ -434,7 +438,9 @@ class TestReflexioClientCache:
         client = ReflexioClient(api_key="test_key")
 
         # Populate both caches
-        client.get_profiles({"user_id": "u1", "start_time": None, "end_time": None, "top_k": 30})
+        client.get_profiles(
+            {"user_id": "u1", "start_time": None, "end_time": None, "top_k": 30}
+        )
         client.get_agent_playbooks({"limit": 100})
         assert mock_session.request.call_count == 2  # noqa: S101
 
@@ -443,7 +449,9 @@ class TestReflexioClientCache:
         assert mock_session.request.call_count == 3  # noqa: S101
 
         # Both caches should miss
-        client.get_profiles({"user_id": "u1", "start_time": None, "end_time": None, "top_k": 30})
+        client.get_profiles(
+            {"user_id": "u1", "start_time": None, "end_time": None, "top_k": 30}
+        )
         client.get_agent_playbooks({"limit": 100})
         assert mock_session.request.call_count == 5  # noqa: S101
 
