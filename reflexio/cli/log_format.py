@@ -194,19 +194,24 @@ def print_startup_banner(
         status = colorize("ready", "32")
         lines.append(f"{label}{url:<26}{status}")
 
+    home = str(Path.home())
+
+    def _collapse_home(path: str) -> str:
+        # Collapse HOME to ~ for readability; absolute paths stay absolute
+        # so log scrapers and copy-paste still work when outside HOME.
+        return "~" + path[len(home) :] if path.startswith(home) else path
+
     if config_paths:
         lines.append(f"{'-' * width}")
         for label, path in config_paths.items():
-            # Collapse HOME to ~ for readability; absolute paths stay absolute
-            # so log scrapers and copy-paste still work.
-            display = str(path)
-            home = str(Path.home())
-            if display.startswith(home):
-                display = "~" + display[len(home) :]
-            lines.append(f"  {label:<11}{display}")
+            lines.append(f"  {label:<11}{_collapse_home(str(path))}")
 
     lines.append(f"{'-' * width}")
-    lines.append(f"  Logs       {log_file}")
+    # Logs section — surface both the general dev log and the LLM I/O log.
+    # LLM_IO_LOG_FILE is the one operators hit first when debugging prompt /
+    # tool-call issues; it's opaque without this pointer.
+    lines.append(f"  Dev log    {_collapse_home(log_file)}")
+    lines.append(f"  LLM I/O    {_collapse_home(LLM_IO_LOG_FILE)}")
     lines.append(f"{'=' * width}\n")
 
     # Print all at once to avoid interleaving
