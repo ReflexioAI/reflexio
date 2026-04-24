@@ -247,6 +247,51 @@ def test_apply_plan_op_delete_user_profile_removes_record(seeded_storage, ctx):
     assert "p_10" not in remaining
 
 
+def test_apply_plan_op_create_profile_computes_expiration_from_ttl(tmp_path):
+    """Bug regression: profile_time_to_live must be consistent with expiration_timestamp."""
+    from reflexio.models.api_schema.domain.entities import NEVER_EXPIRES_TIMESTAMP
+    from reflexio.models.api_schema.domain.enums import ProfileTimeToLive
+    from reflexio.server.services.extraction.plan import (
+        CreateUserProfileOp,
+        ExtractionCtx,
+    )
+    from reflexio.server.services.extraction.tools import apply_plan_op
+    from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
+
+    storage = SQLiteStorage(org_id="test-org", db_path=str(tmp_path / "t.db"))
+    ctx = ExtractionCtx(user_id="u_1", agent_version="v1")
+
+    op = CreateUserProfileOp(content="x", ttl="one_week", source_span="y")
+    apply_plan_op(op, storage, ctx)
+
+    profiles = storage.get_user_profile("u_1")
+    assert len(profiles) == 1
+    p = profiles[0]
+    assert p.profile_time_to_live == ProfileTimeToLive.ONE_WEEK
+    assert p.expiration_timestamp != NEVER_EXPIRES_TIMESTAMP
+    assert p.expiration_timestamp > p.last_modified_timestamp
+    # one_week is 7 days = 604800 seconds
+    assert p.expiration_timestamp - p.last_modified_timestamp == 604800
+
+
+def test_apply_plan_op_create_profile_infinity_ttl_uses_sentinel(tmp_path):
+    """An 'infinity' TTL should still produce NEVER_EXPIRES_TIMESTAMP."""
+    from reflexio.models.api_schema.domain.entities import NEVER_EXPIRES_TIMESTAMP
+    from reflexio.server.services.extraction.plan import (
+        CreateUserProfileOp,
+        ExtractionCtx,
+    )
+    from reflexio.server.services.extraction.tools import apply_plan_op
+    from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
+
+    storage = SQLiteStorage(org_id="test-org", db_path=str(tmp_path / "t.db"))
+    ctx = ExtractionCtx(user_id="u_1", agent_version="v1")
+    op = CreateUserProfileOp(content="x", ttl="infinity", source_span="y")
+    apply_plan_op(op, storage, ctx)
+    p = storage.get_user_profile("u_1")[0]
+    assert p.expiration_timestamp == NEVER_EXPIRES_TIMESTAMP
+
+
 # ====================================================================
 # Registry tests
 # ====================================================================

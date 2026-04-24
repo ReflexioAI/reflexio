@@ -41,6 +41,9 @@ from reflexio.server.services.extraction.plan import (
     PlaybookStrength,
     ProfileTTL,
 )
+from reflexio.server.services.profile.profile_generation_service_utils import (
+    calculate_expiration_timestamp,
+)
 
 TOP_K_CAP = 25
 
@@ -550,6 +553,7 @@ def apply_plan_op(op: Any, storage: Any, ctx: ExtractionCtx) -> None:
     """
     if isinstance(op, CreateUserProfileOp):
         now_ts = int(datetime.now(UTC).timestamp())
+        ttl = ProfileTimeToLive(op.ttl)
         storage.add_user_profile(
             ctx.user_id,
             [
@@ -557,9 +561,9 @@ def apply_plan_op(op: Any, storage: Any, ctx: ExtractionCtx) -> None:
                     user_id=ctx.user_id,
                     profile_id=str(uuid.uuid4()),
                     content=op.content,
-                    profile_time_to_live=ProfileTimeToLive(op.ttl),
+                    profile_time_to_live=ttl,
                     last_modified_timestamp=now_ts,
-                    # expiration_timestamp defaults to NEVER_EXPIRES_TIMESTAMP
+                    expiration_timestamp=calculate_expiration_timestamp(now_ts, ttl),
                     source=f"agentic_v2/{ctx.extractor_name or 'default'}",
                     source_span=op.source_span,
                     generated_from_request_id="",  # filled by runner if available
