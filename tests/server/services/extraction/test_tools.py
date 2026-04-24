@@ -359,3 +359,79 @@ def test_search_registry_is_read_only():
     # No mutations allowed in search
     assert "create_user_profile" not in specs
     assert "delete_user_profile" not in specs
+
+
+# ====================================================================
+# Query-embedding plumbing for HYBRID search mode
+# ====================================================================
+
+from unittest.mock import MagicMock  # noqa: E402
+
+from reflexio.server.services.extraction.tools import _maybe_embed_query  # noqa: E402
+
+
+def test_maybe_embed_query_returns_none_when_storage_has_no_embedder():
+    """Disk/local storage backends that don't expose _get_embedding should
+    gracefully produce None rather than raising."""
+    assert _maybe_embed_query(object(), "anything") is None
+
+
+def test_maybe_embed_query_returns_none_when_embedder_raises():
+    """Embedder failures must not break search — fall back to FTS via None."""
+    storage = MagicMock()
+    storage._get_embedding.side_effect = RuntimeError("provider down")
+    assert _maybe_embed_query(storage, "anything") is None
+
+
+def test_maybe_embed_query_returns_embedding_when_supported():
+    storage = MagicMock()
+    storage._get_embedding.return_value = [0.1, 0.2, 0.3]
+    assert _maybe_embed_query(storage, "sushi") == [0.1, 0.2, 0.3]
+    storage._get_embedding.assert_called_once_with("sushi")
+
+
+def test_search_user_profiles_passes_query_embedding():
+    """Profile search handler must compute + pass a query embedding so
+    storage doesn't downgrade HYBRID to FTS (regression for the
+    'no query embedding provided — falling back to FTS' warning)."""
+    storage = MagicMock()
+    storage._get_embedding.return_value = [0.1, 0.2, 0.3]
+    storage.search_user_profile.return_value = []
+    ctx = ExtractionCtx(user_id="u_1", agent_version="v1")
+    args = SearchUserProfilesArgs(query="sushi", top_k=5)
+
+    _handle_search_user_profiles(args, storage, ctx)
+
+    storage._get_embedding.assert_called_once_with("sushi")
+    _, kwargs = storage.search_user_profile.call_args
+    assert kwargs["query_embedding"] == [0.1, 0.2, 0.3]
+
+
+def test_search_user_playbooks_passes_query_embedding_via_options():
+    """Playbook search handler wraps the embedding in SearchOptions."""
+    storage = MagicMock()
+    storage._get_embedding.return_value = [0.4, 0.5]
+    storage.search_user_playbooks.return_value = []
+    ctx = ExtractionCtx(user_id="u_1", agent_version="v1")
+    args = SearchUserPlaybooksArgs(query="code review", top_k=5, status="current")
+
+    _handle_search_user_playbooks(args, storage, ctx)
+
+    storage._get_embedding.assert_called_once_with("code review")
+    _, kwargs = storage.search_user_playbooks.call_args
+    assert kwargs["options"].query_embedding == [0.4, 0.5]
+
+
+def test_search_agent_playbooks_passes_query_embedding_via_options():
+    """Agent-playbook search handler wraps the embedding in SearchOptions."""
+    storage = MagicMock()
+    storage._get_embedding.return_value = [0.6, 0.7]
+    storage.search_agent_playbooks.return_value = []
+    ctx = ExtractionCtx(user_id="u_1", agent_version="v1")
+    args = SearchAgentPlaybooksArgs(query="debug approach", top_k=5, status="current")
+
+    _handle_search_agent_playbooks(args, storage, ctx)
+
+    storage._get_embedding.assert_called_once_with("debug approach")
+    _, kwargs = storage.search_agent_playbooks.call_args
+    assert kwargs["options"].query_embedding == [0.6, 0.7]

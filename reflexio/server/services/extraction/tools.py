@@ -32,6 +32,7 @@ from reflexio.models.api_schema.retriever_schema import (
     SearchUserPlaybookRequest,
     SearchUserProfileRequest,
 )
+from reflexio.models.config_schema import SearchOptions
 from reflexio.server.services.extraction.plan import (
     CreateUserPlaybookOp,
     CreateUserProfileOp,
@@ -151,6 +152,30 @@ def _cap_top_k(k: int) -> int:
     return min(max(1, k), TOP_K_CAP)
 
 
+def _maybe_embed_query(storage: Any, query: str) -> list[float] | None:
+    """Compute a query embedding via the storage backend's embedder.
+
+    Returns ``None`` on any failure (backend doesn't expose ``_get_embedding``,
+    embedding provider unavailable, or embed call raises). Without an embedding,
+    storage downgrades HYBRID/VECTOR search to FTS-only — the classic search
+    path (``unified_search_service.py:151-158``) uses the same helper pattern.
+
+    Args:
+        storage (Any): BaseStorage instance.
+        query (str): The search query to embed.
+
+    Returns:
+        list[float] | None: The embedding vector, or ``None`` when unavailable.
+    """
+    embed_fn = getattr(storage, "_get_embedding", None)
+    if embed_fn is None:
+        return None
+    try:
+        return embed_fn(query)
+    except Exception:  # noqa: BLE001 — embedder failures must not break search
+        return None
+
+
 def _status_from_str(s: str) -> Status | None:
     return {"current": None, "pending": Status.PENDING, "archived": Status.ARCHIVED}[s]
 
@@ -209,7 +234,10 @@ def _handle_search_user_profiles(
         user_id=ctx.user_id,
         top_k=_cap_top_k(args.top_k),
     )
-    hits = storage.search_user_profile(request)
+    hits = storage.search_user_profile(
+        request,
+        query_embedding=_maybe_embed_query(storage, args.query),
+    )
     ctx.search_count += 1
     for h in hits:
         pid = getattr(h, "profile_id", "") or ""
@@ -263,7 +291,10 @@ def _handle_search_user_playbooks(
     )
     if ctx.extractor_name:
         request.playbook_name = ctx.extractor_name
-    hits = storage.search_user_playbooks(request)
+    hits = storage.search_user_playbooks(
+        request,
+        options=SearchOptions(query_embedding=_maybe_embed_query(storage, args.query)),
+    )
     ctx.search_count += 1
     for h in hits:
         ctx.known_ids.add(str(h.user_playbook_id))
@@ -316,7 +347,10 @@ def _handle_search_agent_playbooks(
     )
     if ctx.extractor_name:
         request.playbook_name = ctx.extractor_name
-    hits = storage.search_agent_playbooks(request)
+    hits = storage.search_agent_playbooks(
+        request,
+        options=SearchOptions(query_embedding=_maybe_embed_query(storage, args.query)),
+    )
     ctx.search_count += 1
     for h in hits:
         ctx.known_ids.add(str(h.agent_playbook_id))
