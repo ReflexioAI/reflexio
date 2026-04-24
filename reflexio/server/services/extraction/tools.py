@@ -133,6 +133,12 @@ class FinishArgs(BaseModel):
     """Terminate the loop."""
 
 
+class SearchFinishArgs(BaseModel):
+    """Terminate the search loop with a final answer."""
+
+    answer: str = ""
+
+
 # ====================================================================
 # Helpers
 # ====================================================================
@@ -503,6 +509,27 @@ def _handle_finish(
     return {"finished": True}
 
 
+def _handle_search_finish(
+    args: SearchFinishArgs,
+    storage: Any,  # noqa: ARG001
+    ctx: ExtractionCtx,
+) -> dict[str, Any]:
+    """Terminate the search loop and stash the answer on ctx.
+
+    Args:
+        args (SearchFinishArgs): Contains the final answer string.
+        storage (Any): BaseStorage instance (unused).
+        ctx (ExtractionCtx): Per-run state; ``finished`` set True and
+            ``_search_answer`` attached for retrieval by SearchAgent.
+
+    Returns:
+        dict[str, Any]: ``{"finished": True, "answer": str}``.
+    """
+    ctx.finished = True
+    ctx._search_answer = args.answer  # type: ignore[attr-defined]
+    return {"finished": True, "answer": args.answer}
+
+
 # ====================================================================
 # Commit-stage: apply a PlanOp to storage
 # ====================================================================
@@ -686,8 +713,8 @@ SEARCH_TOOLS = ToolRegistry(
         ),
         Tool(
             name="finish",
-            args_model=FinishArgs,
-            handler=_bundle_handler(_handle_finish),
+            args_model=SearchFinishArgs,
+            handler=_bundle_handler(_handle_search_finish),
         ),
     ]
 )
