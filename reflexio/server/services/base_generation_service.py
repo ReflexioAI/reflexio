@@ -5,6 +5,7 @@ Base class for generation services
 import contextvars
 import logging
 import os
+import re
 import time
 import uuid
 from abc import ABC, abstractmethod
@@ -60,6 +61,23 @@ _EXTRACTOR_PROMPT_PREFIXES = (
     "you are a signal detection",
     "you are an extractor",
 )
+# Matches a single slash-command token at the start of a message. The
+# ``:`` allows plugin-namespaced commands like ``/claude-smart:tag``.
+_SLASH_COMMAND_TOKEN_RE = re.compile(r"^/[A-Za-z0-9_:-]+\s*")
+
+
+def _is_pure_slash_command(content: str) -> bool:
+    """Whether ``content`` is a bare slash command with no substantive text.
+
+    ``/learn`` and ``/claude-smart:tag`` return True. ``/btw some note``
+    and ``/claude-smart:tag fix the foo`` return False because the text
+    after the command token carries user signal the extractors should see.
+    """
+    stripped = content.lstrip()
+    if not stripped.startswith("/"):
+        return False
+    remainder = _SLASH_COMMAND_TOKEN_RE.sub("", stripped, count=1)
+    return not remainder.strip()
 
 
 def _iter_user_contents(
@@ -87,8 +105,10 @@ def _cheap_should_run_reject(
     Rejection rules:
         - No user message at least ``_MIN_USER_CONTENT_LEN`` chars long
           (purely short commands / confirmations).
-        - Every user message starts with ``/`` (slash-command-only
-          batch; e.g. ``/commit``, ``/review``).
+        - Every user message is a bare slash-command dispatch with no
+          substantive trailing text (e.g. ``/commit``, ``/review``,
+          ``/claude-smart:tag``). Slash commands that carry user text
+          after the token (e.g. ``/btw some note``) are kept.
         - Any user message begins with a known extractor-prompt prefix
           (reflexio talking to itself via the claude-code LLM provider).
 
@@ -111,10 +131,11 @@ def _cheap_should_run_reject(
     if not any(len(c.strip()) >= _MIN_USER_CONTENT_LEN for c in user_contents):
         return "all_user_turns_too_short"
 
-    if all(c.lstrip().startswith("/") for c in user_contents):
+    if all(_is_pure_slash_command(c) for c in user_contents):
         return "all_slash_commands"
 
     return None
+
 
 # Timeout for individual extractor execution (safety net if LLM provider ignores its own timeout)
 EXTRACTOR_TIMEOUT_SECONDS = 300

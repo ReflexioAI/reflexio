@@ -28,6 +28,7 @@ from reflexio.server.llm.image_utils import (
     encode_image_to_base64 as _encode_image_to_base64,
 )
 from reflexio.server.llm.llm_utils import is_pydantic_model
+from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
 from reflexio.server.llm.providers.claude_code_provider import (
     register_if_enabled as _register_claude_code,
 )
@@ -269,6 +270,11 @@ class LiteLLMClient:
         # Pre-resolve API key configuration for the main model
         self._api_key, self._api_base, self._api_version = self._resolve_api_key()
 
+        # Lazily-resolved default embedding model. Populated on first call to
+        # _resolve_default_embedding_model so a client built with no embedding
+        # use case never pays the auto-detection cost.
+        self._default_embedding_model: str | None = None
+
         # Enable Braintrust observability when API key is configured
         if os.environ.get("BRAINTRUST_API_KEY") and "braintrust" not in (
             litellm.callbacks or []
@@ -453,6 +459,32 @@ class LiteLLMClient:
 
         return self._make_request(final_messages, **kwargs)
 
+    def _resolve_default_embedding_model(self) -> str:
+        """
+        Resolve the embedding model to use when callers do not specify one.
+
+        Routes through the same auto-detection chain as the rest of reflexio
+        (``resolve_model_name`` for ``ModelRole.EMBEDDING``) so a session that
+        has the local ONNX embedder enabled — or any non-OpenAI provider —
+        does not silently fall back to ``text-embedding-3-small`` and produce
+        OpenAI 401s. Higher-precedence org config and site-var overrides are
+        the caller's responsibility to resolve and pass via ``model=``; this
+        helper handles only the auto-detect tier.
+
+        Returns:
+            str: The auto-detected embedding model name (cached after first call).
+
+        Raises:
+            RuntimeError: Propagated from ``resolve_model_name`` when no
+                embedding-capable provider is available.
+        """
+        if self._default_embedding_model is None:
+            self._default_embedding_model = resolve_model_name(
+                ModelRole.EMBEDDING,
+                api_key_config=self.config.api_key_config,
+            )
+        return self._default_embedding_model
+
     def get_embedding(
         self, text: str, model: str | None = None, dimensions: int | None = None
     ) -> list[float]:
@@ -461,7 +493,10 @@ class LiteLLMClient:
 
         Args:
             text: The text to get embedding for.
-            model: Optional embedding model (defaults to 'text-embedding-3-small').
+            model: Optional embedding model. When omitted, the model is
+                auto-detected via ``resolve_model_name(ModelRole.EMBEDDING)``
+                so callers inherit the local-embedder gate and any non-OpenAI
+                provider configured for this client.
             dimensions: Optional number of dimensions for the embedding vector.
 
         Returns:
@@ -470,7 +505,7 @@ class LiteLLMClient:
         Raises:
             LiteLLMClientError: If embedding generation fails.
         """
-        embedding_model = model or "text-embedding-3-small"
+        embedding_model = model or self._resolve_default_embedding_model()
 
         # local/* models route through the in-process ONNX embedder — no
         # network call, no litellm API, no tiktoken truncation (the embedder
@@ -517,7 +552,10 @@ class LiteLLMClient:
 
         Args:
             texts: List of texts to get embeddings for.
-            model: Optional embedding model (defaults to 'text-embedding-3-small').
+            model: Optional embedding model. When omitted, the model is
+                auto-detected via ``resolve_model_name(ModelRole.EMBEDDING)``
+                so callers inherit the local-embedder gate and any non-OpenAI
+                provider configured for this client.
             dimensions: Optional number of dimensions for the embedding vectors.
 
         Returns:
@@ -529,7 +567,7 @@ class LiteLLMClient:
         if not texts:
             return []
 
-        embedding_model = model or "text-embedding-3-small"
+        embedding_model = model or self._resolve_default_embedding_model()
 
         # See matching short-circuit in get_embedding above.
         if embedding_model.startswith("local/") and _local_embedder_enabled():

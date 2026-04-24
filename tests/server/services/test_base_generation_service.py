@@ -11,6 +11,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from reflexio.models.api_schema.domain.entities import Request
+from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
 from reflexio.models.api_schema.service_schemas import (
     Interaction,
     Status,
@@ -21,6 +23,8 @@ from reflexio.server.services.base_generation_service import (
     BaseGenerationService,
     ExtractorExecutionError,
     StatusChangeOperation,
+    _cheap_should_run_reject,
+    _is_pure_slash_command,
 )
 
 # ===============================
@@ -1974,6 +1978,89 @@ class TestSequentialExecution:
         assert service._process_calls[0] == [{"name": "fast"}]
         assert service._last_extractor_run_stats["failed"] == 1
         assert service._last_extractor_run_stats["timed_out"] == 1
+
+
+class TestPureSlashCommand:
+    """Cases for the ``_is_pure_slash_command`` helper."""
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            "/learn",
+            "  /tag ",
+            "/claude-smart:tag",
+            "/commit",
+            "/review",
+        ],
+    )
+    def test_bare_dispatch_is_pure(self, content):
+        assert _is_pure_slash_command(content) is True
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            "/btw this is a side note I want recorded",
+            "/claude-smart:tag the previous turn was wrong because X",
+            "/commit fix the foo in bar",
+            "not a slash command at all",
+            "",
+            "   ",
+        ],
+    )
+    def test_non_pure_returns_false(self, content):
+        assert _is_pure_slash_command(content) is False
+
+    def test_handles_bare_slash_with_no_body(self):
+        """A lone ``/`` has no command-name token; treat as non-pure.
+
+        Pins the edge-case behavior after the switch from
+        ``startswith("/")`` to the token-regex approach — the old rule
+        would have flagged this as a slash command, the new rule does
+        not, and we want regressions here to be loud.
+        """
+        assert _is_pure_slash_command("/") is False
+        assert _is_pure_slash_command("  /  ") is False
+
+
+class TestCheapShouldRunReject:
+    """Regression tests for the ``all_slash_commands`` rule after the /btw fix."""
+
+    @staticmethod
+    def _batch(*contents: str) -> list[RequestInteractionDataModel]:
+        return [
+            RequestInteractionDataModel(
+                session_id="s",
+                request=Request(request_id="r", user_id="u"),
+                interactions=[
+                    Interaction(user_id="u", request_id="r", role="User", content=c)
+                    for c in contents
+                ],
+            )
+        ]
+
+    def test_btw_with_note_is_not_rejected(self):
+        batch = self._batch("/btw some side note with real content from the user")
+        assert _cheap_should_run_reject(batch) is None
+
+    def test_namespaced_tag_with_note_is_not_rejected(self):
+        batch = self._batch(
+            "/claude-smart:tag the last turn misunderstood what I was asking"
+        )
+        assert _cheap_should_run_reject(batch) is None
+
+    def test_bare_slash_command_still_rejected(self):
+        # Bare `/learn` also trips the length rule first; either rejection
+        # reason is fine — the contract is that it must be dropped.
+        batch = self._batch("/learn")
+        assert _cheap_should_run_reject(batch) is not None
+
+    def test_mixed_bare_slash_commands_still_rejected(self):
+        batch = self._batch("/learn", "/claude-smart:tag", "/review")
+        assert _cheap_should_run_reject(batch) is not None
+
+    def test_mixed_bare_and_content_bearing_passes(self):
+        batch = self._batch("/learn", "/btw actually keep this whole batch around")
+        assert _cheap_should_run_reject(batch) is None
 
 
 if __name__ == "__main__":

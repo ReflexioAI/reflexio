@@ -617,6 +617,17 @@ class TestIsNonRetryableError:
 class TestGetEmbedding:
     """Tests for the single-text embedding endpoint."""
 
+    @pytest.fixture(autouse=True)
+    def _pin_default_model(self, monkeypatch):
+        # These tests exercise the litellm-backed default. Auto-detection
+        # in the test environment may resolve to local/* (LocalEmbedder)
+        # which short-circuits past the mocked litellm.embedding call.
+        monkeypatch.setattr(
+            LiteLLMClient,
+            "_resolve_default_embedding_model",
+            lambda _: "text-embedding-3-small",
+        )
+
     @patch("reflexio.server.llm.litellm_client.litellm.embedding")
     def test_valid_text(self, mock_embedding):
         mock_embedding.return_value = _make_embedding_response([0.1, 0.2, 0.3])
@@ -678,6 +689,17 @@ class TestGetEmbedding:
 class TestGetEmbeddings:
     """Tests for the batch embedding endpoint."""
 
+    @pytest.fixture(autouse=True)
+    def _pin_default_model(self, monkeypatch):
+        # See TestGetEmbedding._pin_default_model — these tests assert against
+        # the litellm-backed default and must not be intercepted by the
+        # local-embedder short-circuit.
+        monkeypatch.setattr(
+            LiteLLMClient,
+            "_resolve_default_embedding_model",
+            lambda _: "text-embedding-3-small",
+        )
+
     @patch("reflexio.server.llm.litellm_client.litellm.embedding")
     def test_batch_embeddings(self, mock_embedding):
         mock_embedding.return_value = _make_batch_embedding_response(
@@ -724,6 +746,72 @@ class TestGetEmbeddings:
 
 
 # ===================================================================
+# Default embedding-model resolution tests
+# ===================================================================
+
+
+class TestEmbeddingDefaultResolution:
+    """Tests for the caching and routing behavior of the embedding default."""
+
+    def test_resolve_default_embedding_model_is_cached(self, monkeypatch):
+        """``_resolve_default_embedding_model`` must hit resolve_model_name once.
+
+        The per-instance cache (``self._default_embedding_model``) is the
+        contract documented on ``LiteLLMClient`` — auto-detection is not free
+        (it probes env vars and provider registries), so repeated
+        ``get_embedding`` / ``get_embeddings`` calls on the same client must
+        not re-resolve.
+        """
+        call_count = {"n": 0}
+
+        def _fake_resolve(*args, **kwargs):
+            call_count["n"] += 1
+            return "text-embedding-3-small"
+
+        monkeypatch.setattr(
+            "reflexio.server.llm.litellm_client.resolve_model_name",
+            _fake_resolve,
+        )
+
+        client = _build_client()
+        with patch("reflexio.server.llm.litellm_client.litellm.embedding") as mock_emb:
+            mock_emb.return_value = _make_embedding_response([0.1, 0.2])
+            client.get_embedding("a")
+            client.get_embedding("b")
+            client.get_embeddings(["c", "d"])
+
+        assert call_count["n"] == 1
+
+    def test_get_embedding_routes_to_local_when_default_is_local(self, monkeypatch):
+        """When the auto-detected default is ``local/…``, ``get_embedding``
+        must take the LocalEmbedder branch and never call ``litellm.embedding``.
+        """
+        monkeypatch.setattr(
+            LiteLLMClient,
+            "_resolve_default_embedding_model",
+            lambda _: "local/minilm-l6-v2",
+        )
+        monkeypatch.setattr(
+            "reflexio.server.llm.litellm_client._local_embedder_enabled",
+            lambda: True,
+        )
+        fake_embedder = MagicMock()
+        fake_embedder.embed.return_value = [[0.9, 0.8, 0.7]]
+        monkeypatch.setattr(
+            "reflexio.server.llm.litellm_client.LocalEmbedder.get",
+            classmethod(lambda _cls: fake_embedder),
+        )
+
+        client = _build_client()
+        with patch("reflexio.server.llm.litellm_client.litellm.embedding") as mock_emb:
+            result = client.get_embedding("hello")
+
+        assert result == [0.9, 0.8, 0.7]
+        fake_embedder.embed.assert_called_once_with(["hello"])
+        mock_emb.assert_not_called()
+
+
+# ===================================================================
 # Embedding input truncation tests
 # ===================================================================
 
@@ -746,6 +834,15 @@ class TestEmbeddingTruncation:
         _get_embedding_limit.cache_clear()
         _get_embedding_encoding.cache_clear()
         _TRUNCATION_WARNED_MODELS.clear()
+
+    @pytest.fixture(autouse=True)
+    def _pin_default_model(self, monkeypatch):
+        # See TestGetEmbedding._pin_default_model.
+        monkeypatch.setattr(
+            LiteLLMClient,
+            "_resolve_default_embedding_model",
+            lambda _: "text-embedding-3-small",
+        )
 
     def test_get_embedding_limit_openai_family(self):
         """Known OpenAI embedding models resolve to the 8191 cap."""
