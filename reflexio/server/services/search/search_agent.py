@@ -8,8 +8,7 @@ from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.llm.model_defaults import ModelRole
 from reflexio.server.llm.tools import run_tool_loop
 from reflexio.server.prompt.prompt_manager import PromptManager
-from reflexio.server.services.extraction.extraction_agent import _ExtractionBundle
-from reflexio.server.services.extraction.plan import ExtractionCtx
+from reflexio.server.services.extraction.plan import ExtractionCtx, HandlerBundle
 from reflexio.server.services.extraction.tools import SEARCH_TOOLS
 
 logger = logging.getLogger(__name__)
@@ -54,7 +53,7 @@ class SearchAgent:
             dict: ``{"answer": str, "outcome": str, "budget_exceeded": bool}``.
         """
         ctx = ExtractionCtx(user_id=user_id, agent_version=agent_version)
-        bundle = _ExtractionBundle(storage=self.storage, ctx=ctx)
+        bundle = HandlerBundle(storage=self.storage, ctx=ctx)
 
         prompt = self.prompt_manager.render_prompt(
             "search_agent", variables={"query": query}
@@ -71,7 +70,7 @@ class SearchAgent:
             log_label="search_agent",
         )
 
-        answer = getattr(ctx, "_search_answer", "no answer")
+        answer = ctx.search_answer if ctx.search_answer is not None else "no answer"
         return {
             "answer": answer,
             "outcome": result.finished_reason,

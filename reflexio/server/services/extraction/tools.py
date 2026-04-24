@@ -520,13 +520,13 @@ def _handle_search_finish(
         args (SearchFinishArgs): Contains the final answer string.
         storage (Any): BaseStorage instance (unused).
         ctx (ExtractionCtx): Per-run state; ``finished`` set True and
-            ``_search_answer`` attached for retrieval by SearchAgent.
+            ``search_answer`` populated for retrieval by SearchAgent.
 
     Returns:
         dict[str, Any]: ``{"finished": True, "answer": str}``.
     """
     ctx.finished = True
-    ctx._search_answer = args.answer  # type: ignore[attr-defined]
+    ctx.search_answer = args.answer
     return {"finished": True, "answer": args.answer}
 
 
@@ -604,8 +604,8 @@ def _bundle_handler(
 ) -> Callable[[Any, Any], dict[str, Any]]:
     """Adapt a (args, storage, ctx)-style handler to (args, bundle) for run_tool_loop.
 
-    Task 10 will build the _ExtractionBundle with .storage and .ctx attributes;
-    for this task we just provide the adapter so the registry accepts our
+    ExtractionAgent and SearchAgent build a HandlerBundle with .storage and
+    .ctx attributes; this adapter unpacks them so the registry accepts our
     3-arg handlers.
 
     Args:

@@ -78,3 +78,23 @@ def test_search_agent_reads_agent_playbooks(temp_storage, prompt_manager, llm_cl
     )
     r = agent.run(user_id="u_1", agent_version="v1", query="x")
     assert r["answer"] == "fallback answer"
+
+
+def test_search_agent_reports_budget_exceeded_on_max_steps(
+    temp_storage, prompt_manager, llm_client
+):
+    """Loop hits max_steps without ever calling finish — budget_exceeded is True."""
+    llm_client.generate_chat_response.side_effect = [
+        _mk_resp([_mk_tc(f"c{i}", "search_user_profiles", {"query": "x", "top_k": 10})])
+        for i in range(5)
+    ]
+    agent = SearchAgent(
+        client=llm_client,
+        storage=temp_storage,
+        prompt_manager=prompt_manager,
+        max_steps=2,
+    )
+    r = agent.run(user_id="u_1", agent_version="v1", query="x")
+    assert r["outcome"] == "max_steps"
+    assert r["budget_exceeded"] is True
+    assert r["answer"] == "no answer"

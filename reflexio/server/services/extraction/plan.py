@@ -1,4 +1,4 @@
-"""Plan-op types, ExtractionCtx, and commit-result types for the agentic-v2 pipeline.
+"""Plan-op types, ExtractionCtx, HandlerBundle, and commit-result types for the agentic-v2 pipeline.
 
 Tool handlers append PlanOp instances to ``ctx.plan`` rather than hitting
 storage directly. A deterministic commit stage at ``finish`` (or on
@@ -85,6 +85,25 @@ class ExtractionCtx:
     known_ids: set[str] = field(default_factory=set)
     search_count: int = 0
     finished: bool = False
+    search_answer: str | None = None
+
+
+@dataclass(slots=True)
+class HandlerBundle:
+    """Glue so tool handlers can access both storage and ctx through one param.
+
+    The run_tool_loop primitive passes a single ``ctx`` param to tool handlers;
+    handlers in tools.py need both a BaseStorage handle and an ExtractionCtx.
+    Both ExtractionAgent and SearchAgent build one of these before driving
+    the loop.
+
+    Args:
+        storage: BaseStorage handle.
+        ctx: ExtractionCtx with per-run state.
+    """
+
+    storage: object
+    ctx: ExtractionCtx
 
 
 class Violation(BaseModel):

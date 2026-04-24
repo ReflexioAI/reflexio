@@ -13,7 +13,11 @@ from reflexio.server.llm.model_defaults import ModelRole
 from reflexio.server.llm.tools import run_tool_loop
 from reflexio.server.prompt.prompt_manager import PromptManager
 from reflexio.server.services.extraction.invariants import commit_plan
-from reflexio.server.services.extraction.plan import CommitResult, ExtractionCtx
+from reflexio.server.services.extraction.plan import (
+    CommitResult,
+    ExtractionCtx,
+    HandlerBundle,
+)
 from reflexio.server.services.extraction.tools import EXTRACTION_TOOLS
 
 logger = logging.getLogger(__name__)
@@ -74,7 +78,7 @@ class ExtractionAgent:
             agent_version=agent_version,
             extractor_name=extractor_name,
         )
-        bundle = _ExtractionBundle(storage=self.storage, ctx=ctx)
+        bundle = HandlerBundle(storage=self.storage, ctx=ctx)
 
         prompt = self.prompt_manager.render_prompt(
             "extraction_agent",
@@ -96,21 +100,3 @@ class ExtractionAgent:
         )
 
         return commit_plan(ctx, self.storage, outcome=result.finished_reason)
-
-
-class _ExtractionBundle:
-    """Glue so tool handlers can access both storage and ctx through one param.
-
-    ``_bundle_handler`` in ``tools.py`` unpacks ``bundle.storage`` and
-    ``bundle.ctx`` and forwards them to the underlying 3-arg handler.
-
-    Args:
-        storage: BaseStorage instance for read and commit operations.
-        ctx (ExtractionCtx): Per-run state accumulator.
-    """
-
-    __slots__ = ("storage", "ctx")
-
-    def __init__(self, storage: object, ctx: ExtractionCtx) -> None:
-        self.storage = storage
-        self.ctx = ctx
