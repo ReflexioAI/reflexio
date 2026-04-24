@@ -57,3 +57,30 @@ class TestUvicornLogConfig:
     def test_loggers_wire_uvicorn_names(self) -> None:
         names = set(UVICORN_LOG_CONFIG["loggers"])
         assert {"uvicorn", "uvicorn.error", "uvicorn.access"}.issubset(names)
+
+    @pytest.mark.usefixtures("isolate_logging_state")
+    def test_access_formatter_emits_without_keyerror(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Regression: stdlib ``logging.Formatter`` doesn't know the
+        uvicorn-specific ``client_addr`` / ``request_line`` / ``status_code``
+        fields; the access formatter must be wired to
+        ``uvicorn.logging.AccessFormatter`` via the ``()`` factory key or
+        every request raises ``KeyError: 'client_addr'`` at emit time.
+        """
+        logging.config.dictConfig(UVICORN_LOG_CONFIG)
+        access = logging.getLogger("uvicorn.access")
+        # Shape matches uvicorn's real access-log emission — positional args
+        # consumed by AccessFormatter to derive client_addr / request_line / status_code.
+        access.info(
+            '%s - "%s %s HTTP/%s" %d',
+            "127.0.0.1:12345",
+            "POST",
+            "/api/ping",
+            "1.1",
+            200,
+        )
+        out = capsys.readouterr().out
+        assert "127.0.0.1:12345" in out
+        assert "POST /api/ping HTTP/1.1" in out
+        assert "200" in out

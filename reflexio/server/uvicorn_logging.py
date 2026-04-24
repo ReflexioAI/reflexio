@@ -29,17 +29,24 @@ LEVEL_FORMAT = "%(levelname)s: %(message)s"
 
 # Access-log fields mirror uvicorn's built-in AccessFormatter message shape,
 # minus the padded level prefix.
-ACCESS_FORMAT = (
-    '%(levelname)s: %(client_addr)s - "%(request_line)s" %(status_code)s'
-)
+ACCESS_FORMAT = '%(levelname)s: %(client_addr)s - "%(request_line)s" %(status_code)s'
 
 
 UVICORN_LOG_CONFIG: dict[str, Any] = {
     "version": 1,
     "disable_existing_loggers": False,
     "formatters": {
+        # Access format references uvicorn-specific fields (client_addr,
+        # request_line, status_code) that only ``uvicorn.logging.AccessFormatter``
+        # knows how to populate from the log record's ``args`` tuple. The
+        # stdlib ``logging.Formatter`` raises ``KeyError: 'client_addr'`` on
+        # every request. Default formatter stays on stdlib because it uses
+        # only ``levelname`` / ``message``.
         "default": {"format": LEVEL_FORMAT},
-        "access": {"format": ACCESS_FORMAT},
+        "access": {
+            "()": "uvicorn.logging.AccessFormatter",
+            "fmt": ACCESS_FORMAT,
+        },
     },
     "handlers": {
         "default": {
