@@ -218,6 +218,18 @@ max-complexity = 20
 quote-style = "double"
 indent-style = "space"
 
+[tool.pyright]
+include = ["reflexio", "tests"]
+exclude = [
+    "reflexio/integrations/langchain",
+    "tests/test_scripts",
+    "**/__pycache__",
+    "**/.venv",
+    "benchmark",
+    "notebooks",
+]
+reportMissingImports = "warning"
+
 [tool.mutmut]
 paths_to_mutate = [
     "reflexio/server/services/service_utils.py",

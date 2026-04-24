@@ -1,14 +1,19 @@
 {
-    "include": ["reflexio"],
+    "include": ["reflexio", "tests"],
     "exclude": [
         "reflexio/website", "reflexio/tests", "reflexio/data",
         "reflexio/public_docs", "**/__pycache__",
         "reflexio/reflexio_commons/tests",
         "reflexio/reflexio_client/tests",
-        "reflexio/scripts", "notebooks", "demo"
+        "reflexio/scripts", "notebooks", "demo",
+        "reflexio/integrations/langchain",
+        "tests/test_scripts",
+        "**/.venv",
+        "benchmark"
     ],
     "extraPaths": ["."],
     "pythonVersion": "3.14",
     "typeCheckingMode": "basic",
-    "reportMissingTypeStubs": false
+    "reportMissingTypeStubs": false,
+    "reportMissingImports": "warning"
 }
