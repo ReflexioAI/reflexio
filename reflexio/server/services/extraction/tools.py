@@ -600,7 +600,7 @@ def apply_plan_op(op: Any, storage: Any, ctx: ExtractionCtx) -> None:
                     expiration_timestamp=calculate_expiration_timestamp(now_ts, ttl),
                     source=f"agentic_v2/{ctx.extractor_name or 'default'}",
                     source_span=op.source_span,
-                    generated_from_request_id="",  # filled by runner if available
+                    generated_from_request_id=ctx.request_id,
                 )
             ],
         )
@@ -613,7 +613,7 @@ def apply_plan_op(op: Any, storage: Any, ctx: ExtractionCtx) -> None:
                     user_playbook_id=0,  # storage assigns
                     user_id=ctx.user_id,
                     agent_version=ctx.agent_version,
-                    request_id="",
+                    request_id=ctx.request_id,
                     playbook_name=ctx.extractor_name or "default",
                     content=op.content,
                     trigger=op.trigger,

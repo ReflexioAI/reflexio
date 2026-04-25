@@ -114,6 +114,7 @@ class ExtractionAgent:
         extraction_criteria: str,
         sessions_text: str,
         extraction_kind: Literal["UserProfile", "UserPlaybook"] = "UserProfile",
+        request_id: str = "",
     ) -> CommitResult:
         """Run one extraction loop over the given session text.
 
@@ -129,6 +130,10 @@ class ExtractionAgent:
                 kind this run targets.  Rendered into the prompt to scope the
                 LLM's narrative.  Defaults to ``"UserProfile"`` for backward
                 compat with existing test callers that omit this argument.
+            request_id (str): Source publish_interaction UUID; embedded into
+                every profile/playbook this run creates so callers can trace
+                back to the originating publish. Defaults to "" for test
+                callers that don't have a publish request in scope.
 
         Returns:
             CommitResult: Includes applied ops, violations, and outcome.
@@ -137,6 +142,7 @@ class ExtractionAgent:
             user_id=user_id,
             agent_version=agent_version,
             extractor_name=extractor_name,
+            request_id=request_id,
         )
         bundle = HandlerBundle(storage=self.storage, ctx=ctx)
 

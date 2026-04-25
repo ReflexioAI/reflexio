@@ -75,7 +75,7 @@ class AgenticExtractionRunner:
         self,
         *,
         publish_request: PublishUserInteractionRequest,
-        request_id: str,  # noqa: ARG002 — kept for GenerationService.run contract parity
+        request_id: str,
         new_interactions: list[Interaction],
         new_request: Request,
         config: Config,
@@ -150,6 +150,7 @@ class AgenticExtractionRunner:
                     extraction_criteria=extraction_criteria,
                     sessions_text=sessions_str,
                     extraction_kind=kind,  # type: ignore[arg-type]
+                    request_id=request_id,
                 )
                 logger.info(
                     "extraction_agent[%s] kind=%s outcome=%s applied=%d violations=%d",

@@ -184,11 +184,27 @@ def test_e2e_agentic_v2_full_flow(tmp_path):
             f"expected a sushi profile; got: {[p.content for p in profiles]}"
         )
 
+        # Provenance: agentic-extracted profiles must carry the publish
+        # request_id so retrieval can trace back to the source publish (this
+        # is what LongMemEval-style recall@K depends on).
+        for p in profiles:
+            assert p.generated_from_request_id == result.request_id, (
+                f"profile {p.profile_id} has stale generated_from_request_id "
+                f"{p.generated_from_request_id!r}, expected {result.request_id!r}"
+            )
+
         # --- playbook assertion ---
         playbooks = request_context.storage.get_user_playbooks(user_id=user_id)
         assert any("sushi" in (pb.content or "").lower() for pb in playbooks), (
             f"expected a sushi playbook; got: {[pb.content for pb in playbooks]}"
         )
+
+        # Mirror provenance assertion for playbooks.
+        for pb in playbooks:
+            assert pb.request_id == result.request_id, (
+                f"playbook {pb.user_playbook_id} has stale request_id "
+                f"{pb.request_id!r}, expected {result.request_id!r}"
+            )
 
         # --- aggregator triggered ---
         assert mock_agg.run.call_count >= 1, (

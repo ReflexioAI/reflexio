@@ -307,3 +307,154 @@ def test_extraction_agent_emits_summary_info_line(
     assert "applied=" in msg
     assert "violations=" in msg
     assert "usage={" in msg
+
+
+def test_extraction_agent_threads_request_id_into_profile(
+    temp_storage, prompt_manager, llm_client
+):
+    """request_id passed to agent.run lands in stored UserProfile.generated_from_request_id.
+
+    Recall@K-style downstream consumers depend on this thread to translate
+    retrieved profiles back to their source publish_interaction request.
+    A regression here silently breaks per-session provenance for the agentic
+    backend.
+    """
+    llm_client.generate_chat_response.side_effect = [
+        _mk_tool_response(
+            [
+                _mk_tool_call(
+                    "c1",
+                    "search_user_profiles",
+                    {"query": "food", "top_k": 10},
+                )
+            ]
+        ),
+        _mk_tool_response(
+            [
+                _mk_tool_call(
+                    "c2",
+                    "create_user_profile",
+                    {
+                        "content": "user likes sushi",
+                        "ttl": "infinity",
+                        "source_span": "I love sushi",
+                    },
+                )
+            ]
+        ),
+        _mk_tool_response([_mk_tool_call("c3", "finish", {})]),
+    ]
+
+    agent = ExtractionAgent(
+        client=llm_client, storage=temp_storage, prompt_manager=prompt_manager
+    )
+    agent.run(
+        user_id="u_rid",
+        agent_version="v1",
+        extractor_name="default",
+        extraction_criteria="x",
+        sessions_text="User: I love sushi",
+        request_id="test-rid-abc",
+    )
+
+    profiles = temp_storage.get_user_profile("u_rid")
+    assert len(profiles) == 1
+    assert profiles[0].generated_from_request_id == "test-rid-abc"
+
+
+def test_extraction_agent_threads_request_id_into_playbook(
+    temp_storage, prompt_manager, llm_client
+):
+    """request_id also lands on UserPlaybook.request_id (mirror of profile thread)."""
+    llm_client.generate_chat_response.side_effect = [
+        _mk_tool_response(
+            [
+                _mk_tool_call(
+                    "c1",
+                    "search_user_playbooks",
+                    {"query": "rules", "top_k": 10},
+                )
+            ]
+        ),
+        _mk_tool_response(
+            [
+                _mk_tool_call(
+                    "c2",
+                    "create_user_playbook",
+                    {
+                        "trigger": "When user asks about food",
+                        "content": "- Note that user likes sushi.",
+                        "rationale": "User preference",
+                        "source_span": "I love sushi",
+                    },
+                )
+            ]
+        ),
+        _mk_tool_response([_mk_tool_call("c3", "finish", {})]),
+    ]
+
+    from reflexio.server.services.extraction.tools import PLAYBOOK_EXTRACTION_TOOLS
+
+    agent = ExtractionAgent(
+        client=llm_client,
+        storage=temp_storage,
+        prompt_manager=prompt_manager,
+        registry=PLAYBOOK_EXTRACTION_TOOLS,
+    )
+    agent.run(
+        user_id="u_rid_pb",
+        agent_version="v1",
+        extractor_name="default",
+        extraction_criteria="Extract behavioural rules.",
+        sessions_text="User: I love sushi",
+        extraction_kind="UserPlaybook",
+        request_id="test-rid-pb",
+    )
+
+    playbooks = temp_storage.get_user_playbooks(user_id="u_rid_pb")
+    assert len(playbooks) == 1
+    assert playbooks[0].request_id == "test-rid-pb"
+
+
+def test_extraction_agent_request_id_default_is_empty_string(
+    temp_storage, prompt_manager, llm_client
+):
+    """Backward compat: callers that omit request_id get '' on the profile.
+
+    Existing test callers (and any historical deployments) must keep
+    working without code changes.
+    """
+    llm_client.generate_chat_response.side_effect = [
+        _mk_tool_response(
+            [_mk_tool_call("c1", "search_user_profiles", {"query": "x", "top_k": 10})]
+        ),
+        _mk_tool_response(
+            [
+                _mk_tool_call(
+                    "c2",
+                    "create_user_profile",
+                    {
+                        "content": "fact",
+                        "ttl": "infinity",
+                        "source_span": "x",
+                    },
+                )
+            ]
+        ),
+        _mk_tool_response([_mk_tool_call("c3", "finish", {})]),
+    ]
+
+    agent = ExtractionAgent(
+        client=llm_client, storage=temp_storage, prompt_manager=prompt_manager
+    )
+    agent.run(
+        user_id="u_default",
+        agent_version="v1",
+        extractor_name="default",
+        extraction_criteria="x",
+        sessions_text="User: x",
+    )
+
+    profiles = temp_storage.get_user_profile("u_default")
+    assert len(profiles) == 1
+    assert profiles[0].generated_from_request_id == ""

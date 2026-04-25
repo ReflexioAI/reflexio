@@ -69,6 +69,10 @@ class ExtractionCtx:
         user_id: Authenticated user the run is scoped to.
         agent_version: Agent version from the active config.
         extractor_name: Optional per-extractor scope filter.
+        request_id: Source publish_interaction request UUID — embedded into
+            every profile/playbook this run creates so retrieval can trace
+            back to the originating session. Empty string when called from
+            test contexts that don't have a publish request.
         plan: Accumulated PlanOps awaiting commit.
         known_ids: Ids the agent has legitimately seen (from search/get/create
             handlers). Invariant B checks delete ids against this set.
@@ -79,6 +83,7 @@ class ExtractionCtx:
     user_id: str
     agent_version: str
     extractor_name: str | None = None
+    request_id: str = ""
     plan: list = field(
         default_factory=list
     )  # list[PlanOp] — type-erased to avoid forward-ref issues
