@@ -132,9 +132,25 @@ class SearchMixin(ReflexioBase):
         if isinstance(request, dict):
             request = UnifiedSearchRequest(**request)
 
+        config = self.request_context.configurator.get_config()
+
+        # Dispatch on Config.search_backend. Without this branch, the agentic
+        # SearchAgent (server/services/search/agentic_search_service.py) is
+        # implemented but unreachable from the public /api/search path —
+        # setting search_backend="agentic" was a no-op pre-fix.
+        if config and config.search_backend == "agentic":
+            from reflexio.server.services.search.agentic_search_service import (
+                AgenticSearchService,
+            )
+
+            agentic_svc = AgenticSearchService(
+                llm_client=self.llm_client,
+                request_context=self.request_context,
+            )
+            return agentic_svc.search(request)
+
         from reflexio.server.services.unified_search_service import run_unified_search
 
-        config = self.request_context.configurator.get_config()
         config_llm_config = config.llm_config if config else None
 
         # Resolve pre_retrieval_model_name: config override → site var → auto-detect

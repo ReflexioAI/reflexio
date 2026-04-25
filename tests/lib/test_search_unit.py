@@ -198,6 +198,7 @@ class TestUnifiedSearch:
         mixin.llm_client = MagicMock()
         mock_config = MagicMock()
         mock_config.llm_config = None
+        mock_config.search_backend = "classic"
         mixin.request_context.configurator.get_config.return_value = mock_config
 
         expected_response = UnifiedSearchResponse(success=True)
@@ -225,3 +226,73 @@ class TestUnifiedSearch:
 
         assert response.success is True
         assert response.msg is not None
+
+    def test_dispatches_to_agentic_when_search_backend_agentic(self):
+        """When config.search_backend == 'agentic', AgenticSearchService.search runs.
+
+        Pre-fix bug: lib/_search.py hardcoded run_unified_search regardless of
+        config — agentic SearchAgent was implemented but unreachable from the
+        public /api/search path. This test pins the dispatch.
+        """
+        mixin = _make_mixin()
+        mixin.llm_client = MagicMock()
+        mock_config = MagicMock()
+        mock_config.llm_config = None
+        mock_config.search_backend = "agentic"
+        mixin.request_context.configurator.get_config.return_value = mock_config
+
+        expected_response = UnifiedSearchResponse(success=True, agent_answer="hi")
+
+        with (
+            patch(
+                "reflexio.server.services.search.agentic_search_service.AgenticSearchService"
+            ) as mock_agentic_cls,
+            patch(
+                "reflexio.server.services.unified_search_service.run_unified_search"
+            ) as mock_run_unified,
+        ):
+            mock_agentic_inst = MagicMock()
+            mock_agentic_inst.search.return_value = expected_response
+            mock_agentic_cls.return_value = mock_agentic_inst
+
+            request = UnifiedSearchRequest(query="test query")
+            response = mixin.unified_search(request, org_id="org_1")
+
+        assert response is expected_response
+        mock_agentic_cls.assert_called_once_with(
+            llm_client=mixin.llm_client,
+            request_context=mixin.request_context,
+        )
+        mock_agentic_inst.search.assert_called_once_with(request)
+        mock_run_unified.assert_not_called()
+
+    def test_dispatches_to_classic_when_search_backend_classic(self):
+        """When config.search_backend == 'classic', run_unified_search runs.
+
+        Belt-and-suspenders: ensures the agentic branch doesn't accidentally
+        capture the classic path on the default value.
+        """
+        mixin = _make_mixin()
+        mixin.llm_client = MagicMock()
+        mock_config = MagicMock()
+        mock_config.llm_config = None
+        mock_config.search_backend = "classic"
+        mixin.request_context.configurator.get_config.return_value = mock_config
+
+        expected_response = UnifiedSearchResponse(success=True)
+
+        with (
+            patch(
+                "reflexio.server.services.unified_search_service.run_unified_search",
+                return_value=expected_response,
+            ) as mock_run_unified,
+            patch(
+                "reflexio.server.services.search.agentic_search_service.AgenticSearchService"
+            ) as mock_agentic_cls,
+        ):
+            request = UnifiedSearchRequest(query="test query")
+            response = mixin.unified_search(request, org_id="org_1")
+
+        assert response is expected_response
+        mock_run_unified.assert_called_once()
+        mock_agentic_cls.assert_not_called()
