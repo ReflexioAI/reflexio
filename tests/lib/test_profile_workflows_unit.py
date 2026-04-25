@@ -250,7 +250,7 @@ def test_search_profiles_current_only(reflexio_with_config):
         user_id=user_id, query_text="sushi", top_k=10
     )
 
-    response = reflexio.search_profiles(search_request)
+    response = reflexio.search_user_profiles(search_request)
 
     assert response.success is True
     # Default status_filter is [None] which means current profiles only
@@ -278,7 +278,7 @@ def test_search_profiles_with_status_filter(reflexio_with_config):
         user_id=user_id, query_text="test", top_k=10
     )
 
-    response = reflexio.search_profiles(
+    response = reflexio.search_user_profiles(
         search_request, status_filter=[None, Status.PENDING]
     )
 

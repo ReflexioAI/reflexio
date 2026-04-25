@@ -249,7 +249,7 @@ client.publish_interaction(
 )
 
 # Search profiles
-profiles = client.search_profiles(
+profiles = client.search_user_profiles(
     reflexio.SearchUserProfileRequest(query="deployment region preference")
 )
 

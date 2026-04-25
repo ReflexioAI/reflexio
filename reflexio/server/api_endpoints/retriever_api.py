@@ -51,7 +51,7 @@ def search_user_profiles(
         SearchUserProfileResponse: Response containing matching user profiles
     """
     reflexio = get_reflexio(org_id=org_id)
-    return reflexio.search_profiles(request)
+    return reflexio.search_user_profiles(request)
 
 
 def search_interactions(

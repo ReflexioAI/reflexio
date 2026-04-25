@@ -85,7 +85,9 @@ class _TZAwareFormatter(logging.Formatter):
         # ISO 8601 extended form: "-0700" -> "-07:00" — the colon separator
         # reads more clearly as a UTC offset to humans skimming logs.
         raw_offset = time.strftime("%z", ct) or "+0000"
-        offset = f"{raw_offset[:3]}:{raw_offset[3:]}" if len(raw_offset) >= 5 else raw_offset
+        offset = (
+            f"{raw_offset[:3]}:{raw_offset[3:]}" if len(raw_offset) >= 5 else raw_offset
+        )
         # Append the local TZ abbreviation (PDT / UTC / etc.) when available.
         # Some minimal containers without tzdata return "" here; the offset
         # alone stays machine-parseable regardless.

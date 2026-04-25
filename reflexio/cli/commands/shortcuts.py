@@ -250,7 +250,9 @@ def register_shortcuts(app: typer.Typer) -> None:
         )
 
         profiles = []
-        resp = client.search_profiles(user_id=resolved_user_id, query=query, top_k=5)
+        resp = client.search_user_profiles(
+            user_id=resolved_user_id, query=query, top_k=5
+        )
         if resp.success:
             profiles = resp.user_profiles
 

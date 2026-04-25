@@ -494,7 +494,7 @@ class ReflexioClient:
         )
         return SearchInteractionsViewResponse(**response)
 
-    def search_profiles(
+    def search_user_profiles(
         self,
         request: SearchUserProfileRequest | dict | None = None,
         *,
@@ -547,7 +547,7 @@ class ReflexioClient:
             search_mode=search_mode,
         )
         response = self._make_request(
-            "POST", "/api/search_profiles", json=req.model_dump()
+            "POST", "/api/search_user_profiles", json=req.model_dump()
         )
         return SearchProfilesViewResponse(**response)
 

@@ -45,7 +45,7 @@ class BackendHandle:
 
     Attributes:
         name (str): Short backend identifier, e.g. ``"sqlite"``.
-        reflexio (Reflexio): Service-layer facade — call ``search_profiles``
+        reflexio (Reflexio): Service-layer facade — call ``search_user_profiles``
             etc. directly on this for the service layer benchmark.
         storage (BaseStorage): Underlying storage instance, needed for
             swapping ``_get_embedding`` during seeding and the timed loop.

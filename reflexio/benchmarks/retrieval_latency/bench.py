@@ -177,7 +177,7 @@ def _service_call(
     """
     match retrieval:
         case "profile":
-            reflexio.search_profiles(_build_profile_request(query_idx))
+            reflexio.search_user_profiles(_build_profile_request(query_idx))
         case "user_playbook":
             reflexio.search_user_playbooks(_build_user_playbook_request(query_idx))
         case "agent_playbook":
@@ -188,7 +188,7 @@ def _service_call(
 
 # Map retrieval type to (HTTP path, request builder) for the http layer.
 _HTTP_ROUTES: dict[RetrievalType, tuple[str, Callable[[int], Any]]] = {
-    "profile": ("/api/search_profiles", _build_profile_request),
+    "profile": ("/api/search_user_profiles", _build_profile_request),
     "user_playbook": ("/api/search_user_playbooks", _build_user_playbook_request),
     "agent_playbook": ("/api/search_agent_playbooks", _build_agent_playbook_request),
     "unified": ("/api/search", _build_unified_request),

@@ -27,14 +27,14 @@ def mock_reflexio():
 
 
 class TestSearchUserProfiles:
-    def test_delegates_to_search_profiles(self, mock_reflexio):
+    def test_delegates_to_search_user_profiles(self, mock_reflexio):
         request = MagicMock()
         expected = MagicMock()
-        mock_reflexio.search_profiles.return_value = expected
+        mock_reflexio.search_user_profiles.return_value = expected
 
         result = search_user_profiles("org-1", request)
 
-        mock_reflexio.search_profiles.assert_called_once_with(request)
+        mock_reflexio.search_user_profiles.assert_called_once_with(request)
         assert result is expected
 
 

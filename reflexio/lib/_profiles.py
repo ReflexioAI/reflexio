@@ -38,7 +38,7 @@ from reflexio.server.services.profile.profile_generation_service import (
 
 
 class ProfilesMixin(ReflexioBase):
-    def search_profiles(
+    def search_user_profiles(
         self,
         request: SearchUserProfileRequest | dict,
         status_filter: list[Status | None] | None = None,
@@ -69,7 +69,7 @@ class ProfilesMixin(ReflexioBase):
             request.query, request.search_mode
         )
         logger.info(
-            "search_profiles: query=%r, search_mode=%s, embedding_generated=%s",
+            "search_user_profiles: query=%r, search_mode=%s, embedding_generated=%s",
             request.query,
             request.search_mode,
             query_embedding is not None,

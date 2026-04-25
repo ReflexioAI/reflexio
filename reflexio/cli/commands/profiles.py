@@ -91,7 +91,7 @@ def list_profiles(
 
 @app.command()
 @handle_errors
-def search(
+def search_user_profiles(
     ctx: typer.Context,
     query: Annotated[
         str,
@@ -110,7 +110,7 @@ def search(
         typer.Option("--threshold", help="Similarity threshold"),
     ] = None,
 ) -> None:
-    """Search profiles by semantic query.
+    """Search user profiles by semantic query.
 
     Args:
         ctx: Typer context with CliState in ctx.obj
@@ -135,7 +135,7 @@ def search(
     if threshold is not None:
         kwargs["threshold"] = threshold
 
-    resp = client.search_profiles(**kwargs)
+    resp = client.search_user_profiles(**kwargs)
     profiles = resp.user_profiles or []
 
     json_mode: bool = ctx.obj.json_mode

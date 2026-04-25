@@ -300,7 +300,7 @@ def test_dict_input_handling_end_to_end(
         "query": search_words,  # Use actual profile content for search
         "top_k": 5,
     }
-    profile_response = reflexio_instance.search_profiles(profile_search_dict)
+    profile_response = reflexio_instance.search_user_profiles(profile_search_dict)
     assert profile_response.success is True
     assert len(profile_response.user_profiles) > 0
     # Verify all returned profiles have CURRENT status (default search filter)

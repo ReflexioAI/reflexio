@@ -59,10 +59,7 @@ class TestHighlightLogLevelNonTty:
 
     def test_no_color_when_not_tty(self) -> None:
         with patch("reflexio.cli.log_format.sys.stdout.isatty", return_value=False):
-            assert (
-                highlight_log_level("ERROR: boom")
-                == "ERROR: boom"
-            )
+            assert highlight_log_level("ERROR: boom") == "ERROR: boom"
 
 
 class TestFormatServiceLine:

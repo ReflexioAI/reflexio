@@ -113,7 +113,7 @@ def test_complete_workflow_end_to_end(
     # Step 5: Search profiles (use actual profile content for reliable search)
     profile_content = get_profiles_response.user_profiles[0].content
     search_words = " ".join(profile_content.split()[:4])
-    search_profile_response = reflexio_instance.search_profiles(
+    search_profile_response = reflexio_instance.search_user_profiles(
         SearchUserProfileRequest(user_id=user_id, query=search_words, top_k=5)
     )
     assert search_profile_response.success is True
@@ -176,7 +176,7 @@ def test_error_handling_end_to_end(
     assert len(search_response.interactions) == 0
 
     # Test with invalid profile search
-    profile_response = reflexio_instance.search_profiles(
+    profile_response = reflexio_instance.search_user_profiles(
         SearchUserProfileRequest(user_id="nonexistent_user", query="test", top_k=5)
     )
     assert profile_response.success is True
@@ -290,7 +290,7 @@ def test_profile_status_filtering(
     sample_interaction_requests: list[InteractionData],
     cleanup_after_test: Callable[[], None],
 ):
-    """Test profile status filtering in search_profiles and get_profiles."""
+    """Test profile status filtering in search_user_profiles and get_profiles."""
     user_id = "test_user_status"
 
     # Publish interactions to generate profiles
@@ -320,10 +320,10 @@ def test_profile_status_filtering(
     assert current_explicit.success is True
     assert len(current_explicit.user_profiles) == current_count
 
-    # Test search_profiles with default filter (use actual profile content for reliable search)
+    # Test search_user_profiles with default filter (use actual profile content for reliable search)
     profile_content = current_profiles.user_profiles[0].content
     search_words = " ".join(profile_content.split()[:4])
-    search_current = reflexio_instance.search_profiles(
+    search_current = reflexio_instance.search_user_profiles(
         SearchUserProfileRequest(user_id=user_id, query=search_words, top_k=10)
     )
     assert search_current.success is True
@@ -746,7 +746,7 @@ def test_full_workflow_with_all_features(
     # Search profiles (use actual profile content for reliable search)
     profile_content = stored_profiles[0].content
     search_words = " ".join(profile_content.split()[:4])
-    search_profile_response = reflexio_instance.search_profiles(
+    search_profile_response = reflexio_instance.search_user_profiles(
         SearchUserProfileRequest(user_id=user_id, query=search_words, top_k=5)
     )
     assert search_profile_response.success is True

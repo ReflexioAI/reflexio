@@ -98,7 +98,7 @@ print(response.success, response.message)
 
 ```python
 # Semantic search for profiles
-results = client.search_profiles(user_id="user-123", query="password preferences")
+results = client.search_user_profiles(user_id="user-123", query="password preferences")
 for profile in results.profiles:
     print(profile.profile_name, profile.profile_content)
 
@@ -313,7 +313,7 @@ In async contexts (e.g., FastAPI), fire-and-forget uses the existing event loop.
 
 | Method | Description |
 |--------|-------------|
-| `search_profiles()` | Semantic search for profiles |
+| `search_user_profiles()` | Semantic search for profiles |
 | `get_profiles()` | Get profiles for a user |
 | `get_all_profiles()` | Get all profiles across users |
 | `delete_profile()` | Delete profiles by ID or search query |

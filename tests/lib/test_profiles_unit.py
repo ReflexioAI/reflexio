@@ -1,6 +1,6 @@
 """Unit tests for ProfilesMixin.
 
-Tests get_profiles, get_all_profiles, search_profiles, delete_profile,
+Tests get_profiles, get_all_profiles, search_user_profiles, delete_profile,
 delete_all_profiles_bulk, delete_profiles_by_ids, get_profile_change_logs,
 get_profile_statistics, upgrade_all_profiles, and downgrade_all_profiles
 with mocked storage and services.
@@ -217,7 +217,7 @@ class TestGetAllProfiles:
 
 
 # ---------------------------------------------------------------------------
-# search_profiles
+# search_user_profiles
 # ---------------------------------------------------------------------------
 
 
@@ -229,7 +229,7 @@ class TestSearchProfiles:
         _get_storage(mixin).search_user_profile.return_value = [sample]
 
         request = SearchUserProfileRequest(user_id="user1", query="sushi")
-        response = mixin.search_profiles(request)
+        response = mixin.search_user_profiles(request)
 
         assert response.success is True
         assert len(response.user_profiles) == 1
@@ -240,7 +240,7 @@ class TestSearchProfiles:
         mixin = _make_mixin(storage_configured=False)
 
         request = SearchUserProfileRequest(user_id="user1", query="sushi")
-        response = mixin.search_profiles(request)
+        response = mixin.search_user_profiles(request)
 
         assert response.success is True
         assert response.user_profiles == []
@@ -251,7 +251,7 @@ class TestSearchProfiles:
         mixin = _make_mixin()
         _get_storage(mixin).search_user_profile.return_value = []
 
-        response = mixin.search_profiles({"user_id": "user1", "query": "test"})
+        response = mixin.search_user_profiles({"user_id": "user1", "query": "test"})
 
         assert response.success is True
 
@@ -261,7 +261,7 @@ class TestSearchProfiles:
         _get_storage(mixin).search_user_profile.return_value = []
 
         request = SearchUserProfileRequest(user_id="user1", query="test")
-        mixin.search_profiles(request)
+        mixin.search_user_profiles(request)
 
         call_kwargs = _get_storage(mixin).search_user_profile.call_args
         assert call_kwargs[1]["status_filter"] == [None]
@@ -272,7 +272,7 @@ class TestSearchProfiles:
         _get_storage(mixin).search_user_profile.return_value = []
 
         request = SearchUserProfileRequest(user_id="user1", query="test")
-        mixin.search_profiles(request, status_filter=[Status.PENDING])
+        mixin.search_user_profiles(request, status_filter=[Status.PENDING])
 
         call_kwargs = _get_storage(mixin).search_user_profile.call_args
         assert call_kwargs[1]["status_filter"] == [Status.PENDING]

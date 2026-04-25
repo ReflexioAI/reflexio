@@ -123,7 +123,7 @@ def test_search_profiles_end_to_end(
         top_k=5,
     )
 
-    response = reflexio_instance_profile_only.search_profiles(search_request)
+    response = reflexio_instance_profile_only.search_user_profiles(search_request)
 
     # Verify search results
     assert response.success is True
@@ -575,12 +575,12 @@ def test_status_filter_in_get_all_profiles(
 
 @skip_in_precommit
 @skip_low_priority
-def test_status_filter_in_search_profiles(
+def test_status_filter_in_search_user_profiles(
     reflexio_instance_profile_only: Reflexio,
     sample_interaction_requests: list[InteractionData],
     cleanup_profile_only: Callable[[], None],
 ):
-    """Test status filtering in search_profiles method."""
+    """Test status filtering in search_user_profiles method."""
     user_id = "test_user_search_status"
 
     # Publish interactions to create current profiles
@@ -606,19 +606,19 @@ def test_status_filter_in_search_profiles(
         top_k=10,
     )
 
-    default_search = reflexio_instance_profile_only.search_profiles(search_request)
+    default_search = reflexio_instance_profile_only.search_user_profiles(search_request)
     assert default_search.success is True
     assert all(p.status is None for p in default_search.user_profiles)
 
     # Test search with pending filter
-    pending_search = reflexio_instance_profile_only.search_profiles(
+    pending_search = reflexio_instance_profile_only.search_user_profiles(
         search_request, status_filter=[Status.PENDING]
     )
     assert pending_search.success is True
     assert all(p.status == Status.PENDING for p in pending_search.user_profiles)
 
     # Test search with both statuses
-    all_search = reflexio_instance_profile_only.search_profiles(
+    all_search = reflexio_instance_profile_only.search_user_profiles(
         search_request, status_filter=[None, Status.PENDING]
     )
     assert all_search.success is True

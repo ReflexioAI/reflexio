@@ -428,12 +428,12 @@ def add_user_profile_endpoint(
 
 
 @core_router.post(
-    "/api/search_profiles",
+    "/api/search_user_profiles",
     response_model=SearchProfilesViewResponse,
     response_model_exclude_none=True,
 )
 @limiter.limit("120/minute")  # Rate limit for read operations
-def search_profiles(
+def search_user_profiles(
     request: Request,
     payload: SearchUserProfileRequest,
     org_id: str = Depends(default_get_org_id),

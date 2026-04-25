@@ -271,7 +271,7 @@ def test_e2e_one_rule_produces_exactly_one_playbook(tmp_path):
     org_id = "e2e_org3"
 
     # 6 scripted turns:
-    # profile extractor (3): search_profiles → create_profile → finish
+    # profile extractor (3): search_user_profiles → create_profile → finish
     # playbook extractor (3): search_playbooks → create_playbook → finish
     scripted = [
         # --- profile extractor: only emits a profile ---
