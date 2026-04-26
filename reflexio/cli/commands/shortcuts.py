@@ -59,7 +59,8 @@ def _build_publish_args(
         file: Path to a JSON/JSONL payload file.
         stdin: When True, read JSON payload from stdin.
         skip_aggregation: When True, skip post-extract aggregation.
-        force_extraction: When True, bypass batch interval checks.
+        force_extraction: When True, bypass all extraction gates
+            (batch_interval, cheap pre-filter, LLM should_run).
 
     Returns:
         list[str]: argv list ready to hand to ``interactions_app(...)``.

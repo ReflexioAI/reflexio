@@ -602,6 +602,26 @@ class TestShouldRunBeforeExtraction:
         config = Config(storage_config={"type": "sqlite"})
         assert config.skip_should_run_check is False
 
+    def test_should_run_before_extraction_returns_true_when_force_extraction(
+        self, llm_client, request_context
+    ):
+        """force_extraction=True bypasses cheap pre-filter and LLM should_run vote."""
+        service = ConcreteGenerationService(llm_client, request_context)
+        service.service_config = MockServiceConfig(auto_run=True, force_extraction=True)
+
+        precheck_spy = MagicMock()
+        service._collect_scoped_interactions_for_precheck = precheck_spy  # type: ignore[method-assign]
+        llm_call_spy = MagicMock()
+        llm_client.generate_chat_response = llm_call_spy
+
+        result = service._should_run_before_extraction(
+            [MockExtractorConfig(extractor_name="test")]
+        )
+
+        assert result is True
+        precheck_spy.assert_not_called()
+        llm_call_spy.assert_not_called()
+
 
 # ===============================
 # Test: run()

@@ -188,7 +188,7 @@ class PlaybookGenerationRequest(BaseModel):
     auto_run: bool = (
         True  # True for regular flow (checks batch_interval), False for rerun/manual
     )
-    force_extraction: bool = False  # when True, bypass batch_interval checks
+    force_extraction: bool = False  # when True, bypass all extraction gates (batch_interval, cheap pre-filter, LLM should_run)
 
 
 class PlaybookAggregatorRequest(BaseModel):

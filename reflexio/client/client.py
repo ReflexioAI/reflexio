@@ -412,8 +412,9 @@ class ReflexioClient:
                 in both cases.
             skip_aggregation: If True, extract profiles/playbooks but
                 skip aggregation to agent playbooks.
-            force_extraction: If True, bypass batch_interval checks
-                and always run extractors.
+            force_extraction: If True, bypass all extraction gates
+                (batch_interval, cheap pre-filter, LLM should_run) and
+                always run extractors.
 
         Returns:
             PublishUserInteractionResponse: Server response. In

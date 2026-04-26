@@ -697,9 +697,11 @@ class BaseGenerationService(
 
         Template method that:
         1. Skips for non-auto runs and mock mode
-        2. Collects scoped interactions via _collect_scoped_interactions_for_precheck
-        3. Delegates prompt building to _build_should_run_prompt (subclass hook)
-        4. Makes a single LLM call to determine if extraction should proceed
+        2. Returns True immediately when service_config.force_extraction=True
+           (bypasses cheap pre-filter and LLM should_run vote)
+        3. Collects scoped interactions via _collect_scoped_interactions_for_precheck
+        4. Delegates prompt building to _build_should_run_prompt (subclass hook)
+        5. Makes a single LLM call to determine if extraction should proceed
 
         Override _build_should_run_prompt in subclasses to provide service-specific
         criteria and prompt construction. Default returns True (always run) when
@@ -717,6 +719,13 @@ class BaseGenerationService(
 
         # Skip for mock mode
         if os.getenv("MOCK_LLM_RESPONSE", "").lower() == "true":
+            return True
+
+        # `force_extraction=True` is the caller's explicit "no gates" signal —
+        # corrections, manual /learn, anything time-sensitive. Bypass the
+        # cheap pre-filter (slash-only / too-short rejects) and the LLM
+        # should_run vote so the extractor always runs on this batch.
+        if getattr(self.service_config, "force_extraction", False):
             return True
 
         # Skip if org config disables the pre-extraction check
