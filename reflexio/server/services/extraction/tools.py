@@ -422,6 +422,28 @@ def _next_tentative_id(ctx: ExtractionCtx, kind: str) -> str:
     return f"tentative::{kind}::{len(ctx.plan)}"
 
 
+def new_profile_id() -> str:
+    """Generate a short (12-char hex) profile id.
+
+    Format chosen for LLM tool-call reliability: full ``str(uuid.uuid4())``
+    is 36 characters of hex+dashes, error-prone for smaller LLMs to copy
+    verbatim from a search result back into a delete/update tool arg.
+    Twelve hex chars is short enough for high-fidelity copy and long enough
+    that birthday-paradox collision probability is vanishingly small at any
+    realistic per-user scale (16^12 ≈ 2.8e14 unique values; PRIMARY KEY
+    constraint catches the rare collision).
+
+    Profile ids are LLM-facing because the agent receives them in
+    ``search_user_profiles`` results and must echo them back when calling
+    ``delete_user_profile`` / ``update_user_profile``. Playbook ids are
+    INTEGER autoincrements and don't have this problem.
+
+    Returns:
+        str: 12 lowercase hex characters, e.g. ``"b8a3f74e2c91"``.
+    """
+    return uuid.uuid4().hex[:12]
+
+
 # ====================================================================
 # Mutating handlers — append to ctx.plan, no storage writes
 # ====================================================================
@@ -593,7 +615,7 @@ def apply_plan_op(op: Any, storage: Any, ctx: ExtractionCtx) -> None:
             [
                 UserProfile(
                     user_id=ctx.user_id,
-                    profile_id=str(uuid.uuid4()),
+                    profile_id=new_profile_id(),
                     content=op.content,
                     profile_time_to_live=ttl,
                     last_modified_timestamp=now_ts,

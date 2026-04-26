@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 import os
 import time
-import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
@@ -14,6 +13,7 @@ from reflexio.models.api_schema.service_schemas import (
 from reflexio.models.config_schema import ProfileExtractorConfig
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient
+from reflexio.server.services.extraction.tools import new_profile_id
 from reflexio.server.services.extractor_interaction_utils import (
     get_effective_source_filter,
     get_extractor_window_params,
@@ -278,7 +278,7 @@ class ProfileExtractor:
             ttl = ProfileTimeToLive(profile_content.get("time_to_live", "infinity"))
 
             added_profile = UserProfile(
-                profile_id=str(uuid.uuid4()),
+                profile_id=new_profile_id(),
                 user_id=user_id,
                 content=profile_content["content"],
                 last_modified_timestamp=now_ts,
