@@ -262,7 +262,7 @@ def publish(
         bool,
         typer.Option(
             "--force-extraction",
-            help="Bypass batch_interval checks and always run extractors",
+            help="Bypass all extraction gates (batch_interval, cheap pre-filter, LLM should_run) and always run extractors",
         ),
     ] = False,
 ) -> None:
