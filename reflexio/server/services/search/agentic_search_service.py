@@ -173,6 +173,10 @@ class AgenticSearchService:
             client=self.client,
             storage=self.storage,
             prompt_manager=self.prompt_manager,
+            # Tight budget for benchmark throughput; default is 10.
+            # Floor is 2 (one search → finish); 3 leaves room for one
+            # follow-up reformulation when the first call is empty.
+            max_steps=3,
         )
         result = agent.run(
             user_id=request.user_id or "",

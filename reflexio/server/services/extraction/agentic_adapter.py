@@ -142,6 +142,10 @@ class AgenticExtractionRunner:
                     storage=self.storage,
                     prompt_manager=self.request_context.prompt_manager,
                     registry=registry,  # type: ignore[arg-type]
+                    # Tight budget for benchmark throughput; default is 12.
+                    # Floor is 3 (search → batch creates → finish); 4 leaves
+                    # room for one follow-up search when needed.
+                    max_steps=4,
                 )
                 result = agent.run(
                     user_id=publish_request.user_id,

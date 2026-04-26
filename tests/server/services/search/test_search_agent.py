@@ -150,7 +150,8 @@ def test_search_agent_prompt_frames_agent_improvement(prompt_manager):
     """Sanity: search prompt opening must frame retrieval around informing
     the agent's next action, not 'memory query'."""
     out = prompt_manager.render_prompt(
-        "search_agent", variables={"query": "what does user like?"}
+        "search_agent",
+        variables={"query": "what does user like?", "max_steps": "3"},
     )
     assert "helping an AI agent" in out or "inform" in out
     assert "memory query agent" not in out.lower()

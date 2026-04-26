@@ -152,6 +152,7 @@ class ExtractionAgent:
                 "sessions": sessions_text,
                 "extraction_criteria": extraction_criteria,
                 "extraction_kind": extraction_kind,
+                "max_steps": str(self.max_steps),
             },
         )
 

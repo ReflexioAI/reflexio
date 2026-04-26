@@ -188,6 +188,7 @@ def test_extraction_agent_prompt_frames_self_improvement(prompt_manager):
             "sessions": "User: hi",
             "extraction_criteria": "extract facts",
             "extraction_kind": "UserProfile",
+            "max_steps": "4",
         },
     )
     assert "improve over time" in out or "self-improv" in out
@@ -204,6 +205,7 @@ def test_extraction_agent_prompt_forbids_profile_rule_overlap(prompt_manager):
             "sessions": "User: hi",
             "extraction_criteria": "extract facts",
             "extraction_kind": "UserProfile",
+            "max_steps": "4",
         },
     )
     # One-fact-per-profile rule must be present.
@@ -224,6 +226,7 @@ def test_extraction_agent_prompt_specifies_playbook_format(prompt_manager):
             "sessions": "User: hi",
             "extraction_criteria": "extract rules",
             "extraction_kind": "UserPlaybook",
+            "max_steps": "4",
         },
     )
     # The Playbook format section must be present.

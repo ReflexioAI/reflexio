@@ -106,7 +106,8 @@ class SearchAgent:
         bundle = HandlerBundle(storage=self.storage, ctx=ctx)
 
         prompt = self.prompt_manager.render_prompt(
-            "search_agent", variables={"query": query}
+            "search_agent",
+            variables={"query": query, "max_steps": str(self.max_steps)},
         )
 
         t0 = time.monotonic()
