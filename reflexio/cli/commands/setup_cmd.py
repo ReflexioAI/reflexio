@@ -1078,3 +1078,119 @@ def claude_code_setup(
         typer.echo(
             "The skill will guide Claude to check and start the Reflexio server automatically."
         )
+
+
+@app.command("openai-codex")
+def openai_codex_setup(
+    no_browser: Annotated[
+        bool,
+        typer.Option(
+            "--no-browser",
+            help="Don't auto-open the browser; print the URL to copy/paste instead.",
+        ),
+    ] = False,
+    timeout: Annotated[
+        int,
+        typer.Option(
+            "--timeout",
+            help="Seconds to wait for the OAuth callback before failing.",
+        ),
+    ] = 300,
+    show: Annotated[
+        bool,
+        typer.Option(
+            "--show",
+            help="Print currently saved Codex token metadata and exit (no login).",
+        ),
+    ] = False,
+    logout: Annotated[
+        bool,
+        typer.Option(
+            "--logout",
+            help="Delete the saved Codex token file and exit.",
+        ),
+    ] = False,
+) -> None:
+    """Sign in to OpenAI via your ChatGPT subscription (Codex OAuth).
+
+    Stores access + refresh tokens at ``~/.reflexio/auth/openai-codex.json``.
+    The codex proxy and any other reflexio component that needs OpenAI auth
+    reads from this file directly — no dependency on OpenClaw or any other
+    CLI. The proxy auto-refreshes the access token when it nears expiry.
+
+    Run this once, then start the codex proxy with::
+
+        ./reflexio_ext/scripts/start_with_codex_proxy.sh
+
+    Re-run this command if your subscription tier changes or the
+    refresh_token gets revoked (rare).
+    """
+    # Imported here so plain `reflexio --help` doesn't require the OAuth
+    # module to load (slight startup speedup; mostly cosmetic).
+    from reflexio.cli.codex_auth import (
+        REFLEXIO_CODEX_TOKENS_PATH,
+        get_fresh_tokens,
+        load_tokens_raw,
+        login_interactive,
+    )
+
+    if logout:
+        if REFLEXIO_CODEX_TOKENS_PATH.exists():
+            REFLEXIO_CODEX_TOKENS_PATH.unlink()
+            typer.echo(f"Removed {REFLEXIO_CODEX_TOKENS_PATH}")
+        else:
+            typer.echo("No saved Codex tokens to remove.")
+        return
+
+    if show:
+        tokens = load_tokens_raw()
+        if tokens is None:
+            typer.echo(f"No tokens at {REFLEXIO_CODEX_TOKENS_PATH}.")
+            typer.echo("Run `reflexio setup openai-codex` to sign in.")
+            raise typer.Exit(1)
+        typer.echo(f"  path:      {REFLEXIO_CODEX_TOKENS_PATH}")
+        typer.echo(f"  email:     {tokens.email}")
+        typer.echo(f"  plan_type: {tokens.plan_type}")
+        typer.echo(
+            f"  account_id ...{tokens.account_id[-8:]}"
+            if tokens.account_id
+            else "  account_id (empty)"
+        )
+        typer.echo(f"  expires_at: {tokens.expires_at} (unix epoch)")
+        typer.echo(f"  expired:   {tokens.is_expired()}")
+        return
+
+    typer.echo("Starting OpenAI Codex OAuth flow...")
+    try:
+        tokens = login_interactive(
+            open_browser=not no_browser,
+            timeout_s=timeout,
+        )
+    except TimeoutError as e:
+        typer.echo(f"Timed out: {e}")
+        raise typer.Exit(1) from e
+    except ValueError as e:
+        typer.echo(f"Login failed: {e}")
+        raise typer.Exit(1) from e
+
+    typer.echo("")
+    typer.echo("Sign-in successful.")
+    typer.echo(f"  saved to:  {REFLEXIO_CODEX_TOKENS_PATH}")
+    if tokens.email:
+        typer.echo(f"  email:     {tokens.email}")
+    typer.echo(f"  plan_type: {tokens.plan_type}")
+    typer.echo("")
+    typer.echo(
+        "Verify the token resolves cleanly via the proxy's health endpoint:"
+    )
+    typer.echo("  curl -s http://127.0.0.1:11435/health | jq")
+    typer.echo("")
+    typer.echo(
+        "If the saved plan_type doesn't match what you expect (e.g. shows "
+        "'plus' instead of 'max-x20'), wait a minute for OpenAI to propagate "
+        "the subscription change and re-run this command — the JWT is issued "
+        "at sign-in time."
+    )
+    # Exercise the refresh path immediately so any clock skew between the
+    # JWT's `exp` claim and our local clock is caught now, not at first use.
+    _ = get_fresh_tokens()
