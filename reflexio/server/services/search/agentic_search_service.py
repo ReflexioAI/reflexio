@@ -167,6 +167,21 @@ class AgenticSearchService:
             ``reformulated_query`` carries the (possibly rewritten) query used
             for the search.
         """
+        # Reject requests missing the auth-scoped identifiers rather than
+        # silently coercing to empty strings. An empty user_id flows into
+        # storage operations (storage.get_user_profile, storage.add_user_profile)
+        # and would either return cross-user data on SqliteStorage or write
+        # to an unintended path on DiskStorage. Surface the bug at the
+        # boundary instead.
+        if not request.user_id:
+            raise ValueError(
+                "agentic search requires a non-empty user_id; got empty"
+            )
+        if not request.agent_version:
+            raise ValueError(
+                "agentic search requires a non-empty agent_version; got empty"
+            )
+
         query = self._reformulate(request)
 
         agent = SearchAgent(
@@ -179,8 +194,8 @@ class AgenticSearchService:
             max_steps=3,
         )
         result = agent.run(
-            user_id=request.user_id or "",
-            agent_version=request.agent_version or "",
+            user_id=request.user_id,
+            agent_version=request.agent_version,
             query=query,
         )
 
