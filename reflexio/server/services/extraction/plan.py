@@ -31,7 +31,7 @@ class CreateUserProfileOp(_BasePlanOp):
     content: Annotated[str, Field(min_length=1)]
     ttl: ProfileTTL
     source_span: Annotated[str, Field(min_length=1)]
-    dates: tuple[str, ...] = ()
+    date: str = ""
 
 
 class DeleteUserProfileOp(_BasePlanOp):
@@ -46,7 +46,7 @@ class CreateUserPlaybookOp(_BasePlanOp):
     rationale: str = ""
     strength: PlaybookStrength = "soft"
     source_span: Annotated[str, Field(min_length=1)]
-    dates: tuple[str, ...] = ()
+    date: str = ""
 
 
 class DeleteUserPlaybookOp(_BasePlanOp):

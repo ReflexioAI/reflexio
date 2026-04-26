@@ -285,9 +285,9 @@ def test_user_playbook_searchable_by_when_condition(storage):
 
 
 def test_fts_finds_profile_by_date_string():
-    """``dates_mentioned`` is appended to the FTS body so date queries match.
+    """``date_mentioned`` is appended to the FTS body so date queries match.
 
-    Without this, T-R retrieval has no signal to filter on dates that aren't
+    Without this, T-R retrieval has no signal to filter on a date that isn't
     present in ``content`` itself. Verified via SQLite's FTS-only path so we
     isolate this from any vector-search behaviour.
     """
@@ -304,7 +304,7 @@ def test_fts_finds_profile_by_date_string():
                         last_modified_timestamp=100,
                         generated_from_request_id="req_1",
                         profile_time_to_live=ProfileTimeToLive.INFINITY,
-                        dates_mentioned=["2024-01-15"],
+                        date_mentioned="2024-01-15",
                     ),
                     UserProfile(
                         user_id="u1",
@@ -329,19 +329,19 @@ def test_fts_finds_profile_by_date_string():
         assert "p_dated" in ids
 
 
-def test_dates_mentioned_migration_on_pre_migration_db():
-    """SQLite startup migration adds the ``dates_mentioned`` column idempotently.
+def test_date_mentioned_migration_on_pre_migration_db():
+    """SQLite startup migration adds the ``date_mentioned`` column idempotently.
 
     Simulates a database file written before the field existed: the schema is
     created without the column, then a fresh ``SQLiteStorage()`` opens it and
     must auto-add the column without raising. Existing rows must read back
-    with ``dates_mentioned=[]``.
+    with ``date_mentioned=""``.
     """
     import sqlite3
 
     with tempfile.TemporaryDirectory() as temp_dir:
         db_path = f"{temp_dir}/legacy.db"
-        # Hand-craft a profiles table missing dates_mentioned.
+        # Hand-craft a profiles table missing date_mentioned.
         conn = sqlite3.connect(db_path)
         conn.execute(
             """
@@ -375,11 +375,11 @@ def test_dates_mentioned_migration_on_pre_migration_db():
             # Migration ran during __init__; column should exist.
             cur = storage.conn.execute("PRAGMA table_info(profiles)")
             cols = {row[1] for row in cur.fetchall()}
-            assert "dates_mentioned" in cols
+            assert "date_mentioned" in cols
 
             profiles = storage.get_user_profile("u_legacy")
             assert len(profiles) == 1
-            assert profiles[0].dates_mentioned == []
+            assert profiles[0].date_mentioned == ""
 
 
 def test_search_user_profile_queryless_respects_time_window():

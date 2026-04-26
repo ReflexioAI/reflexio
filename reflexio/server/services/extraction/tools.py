@@ -109,7 +109,7 @@ class CreateUserProfileArgs(BaseModel):
     content: Annotated[str, Field(min_length=1)]
     ttl: ProfileTTL
     source_span: Annotated[str, Field(min_length=1)]
-    dates: list[str] = Field(default_factory=list)
+    date: str = ""
 
 
 class DeleteUserProfileArgs(BaseModel):
@@ -126,7 +126,7 @@ class CreateUserPlaybookArgs(BaseModel):
     rationale: str = ""
     strength: PlaybookStrength = "soft"
     source_span: Annotated[str, Field(min_length=1)]
-    dates: list[str] = Field(default_factory=list)
+    date: str = ""
 
 
 class DeleteUserPlaybookArgs(BaseModel):
@@ -479,7 +479,7 @@ def _handle_create_user_profile(
         content=args.content,
         ttl=args.ttl,
         source_span=args.source_span,
-        dates=tuple(args.dates),
+        date=args.date,
     )
     ctx.plan.append(op)
     ctx.known_ids.add(tid)
@@ -532,7 +532,7 @@ def _handle_create_user_playbook(
         rationale=args.rationale,
         strength=args.strength,
         source_span=args.source_span,
-        dates=tuple(args.dates),
+        date=args.date,
     )
     ctx.plan.append(op)
     ctx.known_ids.add(tid)
@@ -636,7 +636,7 @@ def apply_plan_op(op: Any, storage: Any, ctx: ExtractionCtx) -> None:
                     source=f"agentic_v2/{ctx.extractor_name or 'default'}",
                     source_span=op.source_span,
                     generated_from_request_id=ctx.request_id,
-                    dates_mentioned=list(op.dates),
+                    date_mentioned=op.date,
                 )
             ],
         )
@@ -655,7 +655,7 @@ def apply_plan_op(op: Any, storage: Any, ctx: ExtractionCtx) -> None:
                     trigger=op.trigger,
                     rationale=op.rationale,
                     source_span=op.source_span,
-                    dates_mentioned=list(op.dates),
+                    date_mentioned=op.date,
                 )
             ]
         )

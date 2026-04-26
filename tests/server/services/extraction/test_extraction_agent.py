@@ -460,13 +460,13 @@ def test_extraction_agent_request_id_default_is_empty_string(
     assert profiles[0].generated_from_request_id == ""
 
 
-def test_extraction_agent_threads_dates_into_profile(
+def test_extraction_agent_threads_date_into_profile(
     temp_storage, prompt_manager, llm_client
 ):
-    """`dates` argument on create_user_profile lands in stored UserProfile.dates_mentioned.
+    """`date` argument on create_user_profile lands in stored UserProfile.date_mentioned.
 
     Temporal-reasoning retrieval downstream filters on this typed field. A
-    regression here silently drops dates from the agentic backend, breaking
+    regression here silently drops the date from the agentic backend, breaking
     the date-anchor signal for T-R questions.
     """
     llm_client.generate_chat_response.side_effect = [
@@ -482,7 +482,7 @@ def test_extraction_agent_threads_dates_into_profile(
                         "content": "user visited MoMA on 2024-08-23 (session date)",
                         "ttl": "infinity",
                         "source_span": "I visited MoMA on Aug 23",
-                        "dates": ["2024-08-23"],
+                        "date": "2024-08-23",
                     },
                 )
             ]
@@ -494,26 +494,26 @@ def test_extraction_agent_threads_dates_into_profile(
         client=llm_client, storage=temp_storage, prompt_manager=prompt_manager
     )
     agent.run(
-        user_id="u_dates",
+        user_id="u_date",
         agent_version="v1",
         extractor_name="default",
         extraction_criteria="x",
         sessions_text="User: I visited MoMA on Aug 23",
-        request_id="rid-dates",
+        request_id="rid-date",
     )
 
-    profiles = temp_storage.get_user_profile("u_dates")
+    profiles = temp_storage.get_user_profile("u_date")
     assert len(profiles) == 1
-    assert profiles[0].dates_mentioned == ["2024-08-23"]
+    assert profiles[0].date_mentioned == "2024-08-23"
 
 
-def test_extraction_agent_threads_dates_into_playbook(
+def test_extraction_agent_threads_date_into_playbook(
     temp_storage, prompt_manager, llm_client
 ):
-    """`dates` argument on create_user_playbook lands in stored UserPlaybook.dates_mentioned.
+    """`date` argument on create_user_playbook lands in stored UserPlaybook.date_mentioned.
 
     Mirror of the profile thread; verifies the playbook commit path also
-    propagates the canonical date list end-to-end.
+    propagates the canonical date end-to-end.
     """
     llm_client.generate_chat_response.side_effect = [
         _mk_tool_response(
@@ -529,7 +529,7 @@ def test_extraction_agent_threads_dates_into_playbook(
                         "content": "- Reference the 2024-08-23 visit.",
                         "rationale": "Anchor on the known date.",
                         "source_span": "I visited MoMA on Aug 23",
-                        "dates": ["2024-08-23"],
+                        "date": "2024-08-23",
                     },
                 )
             ]
@@ -546,24 +546,24 @@ def test_extraction_agent_threads_dates_into_playbook(
         registry=PLAYBOOK_EXTRACTION_TOOLS,
     )
     agent.run(
-        user_id="u_dates_pb",
+        user_id="u_date_pb",
         agent_version="v1",
         extractor_name="default",
         extraction_criteria="Extract behavioural rules.",
         sessions_text="User: I visited MoMA on Aug 23",
         extraction_kind="UserPlaybook",
-        request_id="rid-dates-pb",
+        request_id="rid-date-pb",
     )
 
-    playbooks = temp_storage.get_user_playbooks(user_id="u_dates_pb")
+    playbooks = temp_storage.get_user_playbooks(user_id="u_date_pb")
     assert len(playbooks) == 1
-    assert playbooks[0].dates_mentioned == ["2024-08-23"]
+    assert playbooks[0].date_mentioned == "2024-08-23"
 
 
-def test_extraction_agent_dates_default_is_empty_list(
+def test_extraction_agent_date_default_is_empty_string(
     temp_storage, prompt_manager, llm_client
 ):
-    """Backward compat: callers that omit ``dates`` get [] on the profile."""
+    """Backward compat: callers that omit ``date`` get "" on the profile."""
     llm_client.generate_chat_response.side_effect = [
         _mk_tool_response(
             [_mk_tool_call("c1", "search_user_profiles", {"query": "x", "top_k": 10})]
@@ -574,7 +574,7 @@ def test_extraction_agent_dates_default_is_empty_list(
                     "c2",
                     "create_user_profile",
                     {
-                        "content": "no dates here",
+                        "content": "no date here",
                         "ttl": "infinity",
                         "source_span": "x",
                     },
@@ -588,13 +588,13 @@ def test_extraction_agent_dates_default_is_empty_list(
         client=llm_client, storage=temp_storage, prompt_manager=prompt_manager
     )
     agent.run(
-        user_id="u_no_dates",
+        user_id="u_no_date",
         agent_version="v1",
         extractor_name="default",
         extraction_criteria="x",
         sessions_text="User: no event",
     )
 
-    profiles = temp_storage.get_user_profile("u_no_dates")
+    profiles = temp_storage.get_user_profile("u_no_date")
     assert len(profiles) == 1
-    assert profiles[0].dates_mentioned == []
+    assert profiles[0].date_mentioned == ""
