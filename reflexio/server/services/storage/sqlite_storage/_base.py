@@ -337,6 +337,7 @@ def _row_to_profile(row: sqlite3.Row) -> UserProfile:
         source_span=d.get("source_span"),
         notes=d.get("notes"),
         reader_angle=d.get("reader_angle"),
+        dates_mentioned=_json_loads(d.get("dates_mentioned")) or [],
     )
 
 
@@ -406,6 +407,7 @@ def _row_to_user_playbook(
         source_span=d.get("source_span"),
         notes=d.get("notes"),
         reader_angle=d.get("reader_angle"),
+        dates_mentioned=_json_loads(d.get("dates_mentioned")) or [],
     )
 
 
@@ -606,6 +608,7 @@ class SQLiteStorageBase(BaseStorage):
         # Run after DDL so tables exist on fresh databases
         self._migrate_expanded_terms()
         self._migrate_agentic_signals()
+        self._migrate_dates_mentioned()
         return True
 
     def _try_load_sqlite_vec(self) -> bool:
@@ -867,6 +870,24 @@ class SQLiteStorageBase(BaseStorage):
                     logger.info("Added %s column to %s", col, table)
         self.conn.commit()
 
+    def _migrate_dates_mentioned(self) -> None:
+        """Add ``dates_mentioned`` JSON-text column if missing.
+
+        Stores the list of canonicalised dates (e.g., ``["2024-01-15"]``) the
+        extraction agent associated with the row, so retrieval can filter or
+        boost on temporal anchors. Backfill-safe: NULL on legacy rows reads
+        back as ``[]``.
+        """
+        for table in ("profiles", "user_playbooks"):
+            cols = {
+                row["name"]
+                for row in self.conn.execute(f"PRAGMA table_info({table})").fetchall()
+            }
+            if "dates_mentioned" not in cols:
+                self.conn.execute(f"ALTER TABLE {table} ADD COLUMN dates_mentioned TEXT")  # noqa: S608
+                logger.info("Added dates_mentioned column to %s", table)
+        self.conn.commit()
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
@@ -1076,6 +1097,7 @@ CREATE TABLE IF NOT EXISTS profiles (
     source_span TEXT,
     notes TEXT,
     reader_angle TEXT,
+    dates_mentioned TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 CREATE INDEX IF NOT EXISTS idx_profiles_user_id ON profiles(user_id);
@@ -1130,7 +1152,8 @@ CREATE TABLE IF NOT EXISTS user_playbooks (
     expanded_terms TEXT,
     source_span TEXT,
     notes TEXT,
-    reader_angle TEXT
+    reader_angle TEXT,
+    dates_mentioned TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_user_playbooks_playbook_name ON user_playbooks(playbook_name);
 CREATE INDEX IF NOT EXISTS idx_user_playbooks_agent_version ON user_playbooks(agent_version);

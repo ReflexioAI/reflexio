@@ -284,6 +284,104 @@ def test_user_playbook_searchable_by_when_condition(storage):
 # ---------------------------------------------------------------------------
 
 
+def test_fts_finds_profile_by_date_string():
+    """``dates_mentioned`` is appended to the FTS body so date queries match.
+
+    Without this, T-R retrieval has no signal to filter on dates that aren't
+    present in ``content`` itself. Verified via SQLite's FTS-only path so we
+    isolate this from any vector-search behaviour.
+    """
+    with tempfile.TemporaryDirectory() as temp_dir:
+        with patch.object(SQLiteStorage, "_get_embedding", return_value=[0.0] * 512):
+            storage = SQLiteStorage(org_id="0", db_path=f"{temp_dir}/reflexio.db")
+            storage.add_user_profile(
+                "u1",
+                [
+                    UserProfile(
+                        user_id="u1",
+                        profile_id="p_dated",
+                        content="Met Alice for coffee.",
+                        last_modified_timestamp=100,
+                        generated_from_request_id="req_1",
+                        profile_time_to_live=ProfileTimeToLive.INFINITY,
+                        dates_mentioned=["2024-01-15"],
+                    ),
+                    UserProfile(
+                        user_id="u1",
+                        profile_id="p_undated",
+                        content="Met Alice for coffee.",
+                        last_modified_timestamp=100,
+                        generated_from_request_id="req_2",
+                        profile_time_to_live=ProfileTimeToLive.INFINITY,
+                    ),
+                ],
+            )
+
+            search_request = SearchUserProfileRequest(
+                user_id="u1",
+                query="2024-01-15",
+                top_k=10,
+            )
+
+            profiles = storage.search_user_profile(search_request)
+
+        ids = [p.profile_id for p in profiles]
+        assert "p_dated" in ids
+
+
+def test_dates_mentioned_migration_on_pre_migration_db():
+    """SQLite startup migration adds the ``dates_mentioned`` column idempotently.
+
+    Simulates a database file written before the field existed: the schema is
+    created without the column, then a fresh ``SQLiteStorage()`` opens it and
+    must auto-add the column without raising. Existing rows must read back
+    with ``dates_mentioned=[]``.
+    """
+    import sqlite3
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        db_path = f"{temp_dir}/legacy.db"
+        # Hand-craft a profiles table missing dates_mentioned.
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """
+            CREATE TABLE profiles (
+                profile_id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                content TEXT NOT NULL DEFAULT '',
+                last_modified_timestamp INTEGER NOT NULL,
+                generated_from_request_id TEXT NOT NULL DEFAULT '',
+                profile_time_to_live TEXT NOT NULL DEFAULT 'infinity',
+                expiration_timestamp INTEGER NOT NULL DEFAULT 4102444800,
+                custom_features TEXT,
+                embedding TEXT,
+                source TEXT DEFAULT '',
+                status TEXT,
+                extractor_names TEXT,
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO profiles (profile_id, user_id, content, last_modified_timestamp) "
+            "VALUES (?, ?, ?, ?)",
+            ("p_legacy", "u_legacy", "legacy fact", 100),
+        )
+        conn.commit()
+        conn.close()
+
+        with patch.object(SQLiteStorage, "_get_embedding", return_value=[0.0] * 512):
+            storage = SQLiteStorage(org_id="0", db_path=db_path)
+            # Migration ran during __init__; column should exist.
+            cur = storage.conn.execute("PRAGMA table_info(profiles)")
+            cols = {row[1] for row in cur.fetchall()}
+            assert "dates_mentioned" in cols
+
+            profiles = storage.get_user_profile("u_legacy")
+            assert len(profiles) == 1
+            assert profiles[0].dates_mentioned == []
+
+
 def test_search_user_profile_queryless_respects_time_window():
     with tempfile.TemporaryDirectory() as temp_dir:
         with patch.object(SQLiteStorage, "_get_embedding", return_value=[0.0] * 512):

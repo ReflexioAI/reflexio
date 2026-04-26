@@ -458,3 +458,143 @@ def test_extraction_agent_request_id_default_is_empty_string(
     profiles = temp_storage.get_user_profile("u_default")
     assert len(profiles) == 1
     assert profiles[0].generated_from_request_id == ""
+
+
+def test_extraction_agent_threads_dates_into_profile(
+    temp_storage, prompt_manager, llm_client
+):
+    """`dates` argument on create_user_profile lands in stored UserProfile.dates_mentioned.
+
+    Temporal-reasoning retrieval downstream filters on this typed field. A
+    regression here silently drops dates from the agentic backend, breaking
+    the date-anchor signal for T-R questions.
+    """
+    llm_client.generate_chat_response.side_effect = [
+        _mk_tool_response(
+            [_mk_tool_call("c1", "search_user_profiles", {"query": "moma", "top_k": 10})]
+        ),
+        _mk_tool_response(
+            [
+                _mk_tool_call(
+                    "c2",
+                    "create_user_profile",
+                    {
+                        "content": "user visited MoMA on 2024-08-23 (session date)",
+                        "ttl": "infinity",
+                        "source_span": "I visited MoMA on Aug 23",
+                        "dates": ["2024-08-23"],
+                    },
+                )
+            ]
+        ),
+        _mk_tool_response([_mk_tool_call("c3", "finish", {})]),
+    ]
+
+    agent = ExtractionAgent(
+        client=llm_client, storage=temp_storage, prompt_manager=prompt_manager
+    )
+    agent.run(
+        user_id="u_dates",
+        agent_version="v1",
+        extractor_name="default",
+        extraction_criteria="x",
+        sessions_text="User: I visited MoMA on Aug 23",
+        request_id="rid-dates",
+    )
+
+    profiles = temp_storage.get_user_profile("u_dates")
+    assert len(profiles) == 1
+    assert profiles[0].dates_mentioned == ["2024-08-23"]
+
+
+def test_extraction_agent_threads_dates_into_playbook(
+    temp_storage, prompt_manager, llm_client
+):
+    """`dates` argument on create_user_playbook lands in stored UserPlaybook.dates_mentioned.
+
+    Mirror of the profile thread; verifies the playbook commit path also
+    propagates the canonical date list end-to-end.
+    """
+    llm_client.generate_chat_response.side_effect = [
+        _mk_tool_response(
+            [_mk_tool_call("c1", "search_user_playbooks", {"query": "x", "top_k": 10})]
+        ),
+        _mk_tool_response(
+            [
+                _mk_tool_call(
+                    "c2",
+                    "create_user_playbook",
+                    {
+                        "trigger": "When user asks about MoMA visit",
+                        "content": "- Reference the 2024-08-23 visit.",
+                        "rationale": "Anchor on the known date.",
+                        "source_span": "I visited MoMA on Aug 23",
+                        "dates": ["2024-08-23"],
+                    },
+                )
+            ]
+        ),
+        _mk_tool_response([_mk_tool_call("c3", "finish", {})]),
+    ]
+
+    from reflexio.server.services.extraction.tools import PLAYBOOK_EXTRACTION_TOOLS
+
+    agent = ExtractionAgent(
+        client=llm_client,
+        storage=temp_storage,
+        prompt_manager=prompt_manager,
+        registry=PLAYBOOK_EXTRACTION_TOOLS,
+    )
+    agent.run(
+        user_id="u_dates_pb",
+        agent_version="v1",
+        extractor_name="default",
+        extraction_criteria="Extract behavioural rules.",
+        sessions_text="User: I visited MoMA on Aug 23",
+        extraction_kind="UserPlaybook",
+        request_id="rid-dates-pb",
+    )
+
+    playbooks = temp_storage.get_user_playbooks(user_id="u_dates_pb")
+    assert len(playbooks) == 1
+    assert playbooks[0].dates_mentioned == ["2024-08-23"]
+
+
+def test_extraction_agent_dates_default_is_empty_list(
+    temp_storage, prompt_manager, llm_client
+):
+    """Backward compat: callers that omit ``dates`` get [] on the profile."""
+    llm_client.generate_chat_response.side_effect = [
+        _mk_tool_response(
+            [_mk_tool_call("c1", "search_user_profiles", {"query": "x", "top_k": 10})]
+        ),
+        _mk_tool_response(
+            [
+                _mk_tool_call(
+                    "c2",
+                    "create_user_profile",
+                    {
+                        "content": "no dates here",
+                        "ttl": "infinity",
+                        "source_span": "x",
+                    },
+                )
+            ]
+        ),
+        _mk_tool_response([_mk_tool_call("c3", "finish", {})]),
+    ]
+
+    agent = ExtractionAgent(
+        client=llm_client, storage=temp_storage, prompt_manager=prompt_manager
+    )
+    agent.run(
+        user_id="u_no_dates",
+        agent_version="v1",
+        extractor_name="default",
+        extraction_criteria="x",
+        sessions_text="User: no event",
+    )
+
+    profiles = temp_storage.get_user_profile("u_no_dates")
+    assert len(profiles) == 1
+    assert profiles[0].dates_mentioned == []

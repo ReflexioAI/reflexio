@@ -109,6 +109,7 @@ class CreateUserProfileArgs(BaseModel):
     content: Annotated[str, Field(min_length=1)]
     ttl: ProfileTTL
     source_span: Annotated[str, Field(min_length=1)]
+    dates: list[str] = Field(default_factory=list)
 
 
 class DeleteUserProfileArgs(BaseModel):
@@ -125,6 +126,7 @@ class CreateUserPlaybookArgs(BaseModel):
     rationale: str = ""
     strength: PlaybookStrength = "soft"
     source_span: Annotated[str, Field(min_length=1)]
+    dates: list[str] = Field(default_factory=list)
 
 
 class DeleteUserPlaybookArgs(BaseModel):
@@ -138,9 +140,15 @@ class FinishArgs(BaseModel):
 
 
 class SearchFinishArgs(BaseModel):
-    """Terminate the search loop with a final answer."""
+    """Terminate the search loop, optionally with a final answer.
 
-    answer: str = ""
+    ``answer`` is opt-in: when the host runs the agent in search-only mode
+    (``enable_agent_answer=False``) the agent is instructed to call ``finish()``
+    without an answer; the host synthesizes the final response itself from the
+    entities the agent harvested.
+    """
+
+    answer: str | None = None
 
 
 # ====================================================================
@@ -468,7 +476,10 @@ def _handle_create_user_profile(
     """
     tid = _next_tentative_id(ctx, "profile")
     op = CreateUserProfileOp(
-        content=args.content, ttl=args.ttl, source_span=args.source_span
+        content=args.content,
+        ttl=args.ttl,
+        source_span=args.source_span,
+        dates=tuple(args.dates),
     )
     ctx.plan.append(op)
     ctx.known_ids.add(tid)
@@ -521,6 +532,7 @@ def _handle_create_user_playbook(
         rationale=args.rationale,
         strength=args.strength,
         source_span=args.source_span,
+        dates=tuple(args.dates),
     )
     ctx.plan.append(op)
     ctx.known_ids.add(tid)
@@ -573,16 +585,17 @@ def _handle_search_finish(
     storage: Any,  # noqa: ARG001
     ctx: ExtractionCtx,
 ) -> dict[str, Any]:
-    """Terminate the search loop and stash the answer on ctx.
+    """Terminate the search loop and stash the optional answer on ctx.
 
     Args:
-        args (SearchFinishArgs): Contains the final answer string.
+        args (SearchFinishArgs): Contains the optional final answer string. When
+            None (search-only mode) only the termination signal is emitted.
         storage (Any): BaseStorage instance (unused).
         ctx (ExtractionCtx): Per-run state; ``finished`` set True and
             ``search_answer`` populated for retrieval by SearchAgent.
 
     Returns:
-        dict[str, Any]: ``{"finished": True, "answer": str}``.
+        dict[str, Any]: ``{"finished": True, "answer": str | None}``.
     """
     ctx.finished = True
     ctx.search_answer = args.answer
@@ -623,6 +636,7 @@ def apply_plan_op(op: Any, storage: Any, ctx: ExtractionCtx) -> None:
                     source=f"agentic_v2/{ctx.extractor_name or 'default'}",
                     source_span=op.source_span,
                     generated_from_request_id=ctx.request_id,
+                    dates_mentioned=list(op.dates),
                 )
             ],
         )
@@ -641,6 +655,7 @@ def apply_plan_op(op: Any, storage: Any, ctx: ExtractionCtx) -> None:
                     trigger=op.trigger,
                     rationale=op.rationale,
                     source_span=op.source_span,
+                    dates_mentioned=list(op.dates),
                 )
             ]
         )

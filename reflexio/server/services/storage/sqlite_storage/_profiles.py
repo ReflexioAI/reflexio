@@ -109,8 +109,8 @@ class ProfileMixin:
                     generated_from_request_id, profile_time_to_live,
                     expiration_timestamp, custom_features, embedding, source,
                     status, extractor_names, expanded_terms,
-                    source_span, notes, reader_angle, created_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    source_span, notes, reader_angle, dates_mentioned, created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     profile.profile_id,
                     profile.user_id,
@@ -128,6 +128,9 @@ class ProfileMixin:
                     profile.source_span,
                     profile.notes,
                     profile.reader_angle,
+                    _json_dumps(profile.dates_mentioned)
+                    if profile.dates_mentioned
+                    else None,
                     _iso_now(),
                 ),
             )
@@ -136,6 +139,8 @@ class ProfileMixin:
                 fts_parts.extend(str(v) for v in profile.custom_features.values() if v)
             if profile.expanded_terms:
                 fts_parts.append(profile.expanded_terms)
+            if profile.dates_mentioned:
+                fts_parts.extend(profile.dates_mentioned)
             self._fts_upsert_profile(profile.profile_id, " ".join(fts_parts))
             # Sync vec table — look up implicit rowid via primary key
             row = self._fetchone(
@@ -169,7 +174,7 @@ class ProfileMixin:
                generated_from_request_id=?, profile_time_to_live=?,
                expiration_timestamp=?, custom_features=?, embedding=?,
                source=?, status=?, extractor_names=?, expanded_terms=?,
-               source_span=?, notes=?, reader_angle=?
+               source_span=?, notes=?, reader_angle=?, dates_mentioned=?
                WHERE profile_id=?""",
             (
                 new_profile.content,
@@ -186,6 +191,9 @@ class ProfileMixin:
                 new_profile.source_span,
                 new_profile.notes,
                 new_profile.reader_angle,
+                _json_dumps(new_profile.dates_mentioned)
+                if new_profile.dates_mentioned
+                else None,
                 profile_id,
             ),
         )
@@ -194,6 +202,8 @@ class ProfileMixin:
             fts_parts.extend(str(v) for v in new_profile.custom_features.values() if v)
         if new_profile.expanded_terms:
             fts_parts.append(new_profile.expanded_terms)
+        if new_profile.dates_mentioned:
+            fts_parts.extend(new_profile.dates_mentioned)
         self._fts_upsert_profile(profile_id, " ".join(fts_parts))
         rowid_row = self._fetchone(
             "SELECT rowid FROM profiles WHERE profile_id = ?", (profile_id,)

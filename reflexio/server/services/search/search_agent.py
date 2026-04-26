@@ -84,11 +84,13 @@ class SearchAgent:
         storage: object,
         prompt_manager: PromptManager,
         max_steps: int = 10,
+        enable_agent_answer: bool = False,
     ) -> None:
         self.client = client
         self.storage = storage
         self.prompt_manager = prompt_manager
         self.max_steps = max_steps
+        self.enable_agent_answer = enable_agent_answer
 
     def run(self, *, user_id: str, agent_version: str, query: str) -> SearchResult:
         """Run one search loop for the given query.
@@ -107,7 +109,11 @@ class SearchAgent:
 
         prompt = self.prompt_manager.render_prompt(
             "search_agent",
-            variables={"query": query, "max_steps": str(self.max_steps)},
+            variables={
+                "query": query,
+                "max_steps": str(self.max_steps),
+                "enable_agent_answer": "true" if self.enable_agent_answer else "false",
+            },
         )
 
         t0 = time.monotonic()
@@ -122,7 +128,16 @@ class SearchAgent:
             log_label="search_agent",
         )
 
-        answer = ctx.search_answer if ctx.search_answer is not None else "no answer"
+        # In search-only mode the agent is told to call finish() with no answer;
+        # we surface None so callers can distinguish "agent declined to answer"
+        # from "agent failed". Tests that exercised the answer path keep working
+        # because they default-construct SearchAgent with enable_agent_answer=False
+        # but populate ctx.search_answer via the mocked finish() call — when off,
+        # we deliberately drop whatever the agent wrote so the contract is clear.
+        if not self.enable_agent_answer:
+            answer: str | None = None
+        else:
+            answer = ctx.search_answer if ctx.search_answer is not None else "no answer"
         elapsed_ms = int((time.monotonic() - t0) * 1000)
 
         logger.info(
@@ -133,7 +148,7 @@ class SearchAgent:
             self.max_steps,
             _summarise_tool_calls(result.trace),
             result.finished_reason,
-            len(answer),
+            len(answer) if answer is not None else 0,
             _summarise_usage(result.trace),
         )
         return SearchResult(

@@ -86,6 +86,7 @@ def test_agentic_search_populates_profiles_from_trace(temp_storage):
             user_id="u_1",
             agent_version="v1",
             top_k=5,
+            enable_agent_answer=True,
         )
         response = svc.search(request)
 
@@ -126,6 +127,7 @@ def test_agentic_search_empty_when_agent_searches_nothing(temp_storage):
             user_id="u_nobody",
             agent_version="v1",
             top_k=5,
+            enable_agent_answer=True,
         )
         response = svc.search(request)
 

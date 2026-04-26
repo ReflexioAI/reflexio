@@ -77,6 +77,7 @@ def to_profile_view(profile: UserProfile) -> ProfileView:
         source=profile.source,
         status=profile.status,
         extractor_names=profile.extractor_names,
+        dates_mentioned=profile.dates_mentioned,
     )
 
 
@@ -103,6 +104,7 @@ def to_user_playbook_view(rf: UserPlaybook) -> UserPlaybookView:
         status=rf.status,
         source=rf.source,
         source_interaction_ids=rf.source_interaction_ids,
+        dates_mentioned=rf.dates_mentioned,
     )
 
 

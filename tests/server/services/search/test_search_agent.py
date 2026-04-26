@@ -58,7 +58,10 @@ def test_search_agent_returns_answer_from_finish(
     ]
 
     agent = SearchAgent(
-        client=llm_client, storage=temp_storage, prompt_manager=prompt_manager
+        client=llm_client,
+        storage=temp_storage,
+        prompt_manager=prompt_manager,
+        enable_agent_answer=True,
     )
     result = agent.run(
         user_id="u_1", agent_version="v1", query="what do I like to eat?"
@@ -74,7 +77,10 @@ def test_search_agent_reads_agent_playbooks(temp_storage, prompt_manager, llm_cl
         _mk_resp([_mk_tc("c3", "finish", {"answer": "fallback answer"})]),
     ]
     agent = SearchAgent(
-        client=llm_client, storage=temp_storage, prompt_manager=prompt_manager
+        client=llm_client,
+        storage=temp_storage,
+        prompt_manager=prompt_manager,
+        enable_agent_answer=True,
     )
     r = agent.run(user_id="u_1", agent_version="v1", query="x")
     assert r.answer == "fallback answer"
@@ -93,11 +99,63 @@ def test_search_agent_reports_budget_exceeded_on_max_steps(
         storage=temp_storage,
         prompt_manager=prompt_manager,
         max_steps=2,
+        enable_agent_answer=True,
     )
     r = agent.run(user_id="u_1", agent_version="v1", query="x")
     assert r.outcome == "max_steps"
     assert r.budget_exceeded is True
     assert r.answer == "no answer"
+
+
+def test_search_agent_search_only_mode_returns_none_answer(
+    temp_storage, prompt_manager, llm_client
+):
+    """When ``enable_agent_answer=False`` (default), the agent's answer is
+    forced to None even if the LLM produced one. Callers (the host) synthesize
+    the final response from the entities harvested by the search agent.
+    """
+    llm_client.generate_chat_response.side_effect = [
+        _mk_resp([_mk_tc("c1", "search_user_profiles", {"query": "x", "top_k": 10})]),
+        # LLM still emits an answer in the mock; the agent must drop it.
+        _mk_resp([_mk_tc("c2", "finish", {"answer": "ignored"})]),
+    ]
+    agent = SearchAgent(
+        client=llm_client, storage=temp_storage, prompt_manager=prompt_manager
+    )
+    r = agent.run(user_id="u_so", agent_version="v1", query="anything?")
+    assert r.answer is None
+    # Search-only mode must still let the agent finish cleanly.
+    assert r.outcome == "finish_tool"
+
+
+def test_search_agent_prompt_includes_search_only_block_when_disabled(prompt_manager):
+    """Rendered prompt carries the search-only mode flag verbatim so the LLM
+    can branch its finish() call accordingly.
+    """
+    rendered = prompt_manager.render_prompt(
+        "search_agent",
+        variables={
+            "query": "x",
+            "max_steps": "3",
+            "enable_agent_answer": "false",
+        },
+    )
+    assert "enable_agent_answer = false" in rendered
+    assert "Search-only output rule" in rendered
+
+
+def test_search_agent_prompt_includes_answer_block_when_enabled(prompt_manager):
+    """Rendered prompt carries the synthesis flag when the host opts in."""
+    rendered = prompt_manager.render_prompt(
+        "search_agent",
+        variables={
+            "query": "x",
+            "max_steps": "3",
+            "enable_agent_answer": "true",
+        },
+    )
+    assert "enable_agent_answer = true" in rendered
+    assert "Expected answer format" in rendered
 
 
 def test_search_agent_trace_captures_harvested_ids(
@@ -134,7 +192,10 @@ def test_search_agent_trace_captures_harvested_ids(
     ]
 
     agent = SearchAgent(
-        client=llm_client, storage=temp_storage, prompt_manager=prompt_manager
+        client=llm_client,
+        storage=temp_storage,
+        prompt_manager=prompt_manager,
+        enable_agent_answer=True,
     )
     result = agent.run(user_id="u_1", agent_version="v1", query="what does user like?")
 
@@ -151,7 +212,11 @@ def test_search_agent_prompt_frames_agent_improvement(prompt_manager):
     the agent's next action, not 'memory query'."""
     out = prompt_manager.render_prompt(
         "search_agent",
-        variables={"query": "what does user like?", "max_steps": "3"},
+        variables={
+            "query": "what does user like?",
+            "max_steps": "3",
+            "enable_agent_answer": "false",
+        },
     )
     assert "helping an AI agent" in out or "inform" in out
     assert "memory query agent" not in out.lower()
@@ -172,7 +237,10 @@ def test_search_agent_emits_summary_info_line(
     ]
 
     agent = SearchAgent(
-        client=llm_client, storage=temp_storage, prompt_manager=prompt_manager
+        client=llm_client,
+        storage=temp_storage,
+        prompt_manager=prompt_manager,
+        enable_agent_answer=True,
     )
 
     with caplog.at_level(

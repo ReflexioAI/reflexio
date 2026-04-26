@@ -463,6 +463,7 @@ class UnifiedSearchRequest(BaseModel):
     user_id: str | None = None
     conversation_history: list[ConversationTurn] | None = None
     enable_reformulation: bool | None = False
+    enable_agent_answer: bool | None = False
     search_mode: SearchMode = SearchMode.HYBRID
 
 

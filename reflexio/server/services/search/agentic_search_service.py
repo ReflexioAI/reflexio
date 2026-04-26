@@ -190,6 +190,7 @@ class AgenticSearchService:
             # Floor is 2 (one search → finish); 3 leaves room for one
             # follow-up reformulation when the first call is empty.
             max_steps=3,
+            enable_agent_answer=bool(request.enable_agent_answer),
         )
         result = agent.run(
             user_id=request.user_id,

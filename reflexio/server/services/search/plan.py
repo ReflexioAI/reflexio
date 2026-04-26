@@ -13,7 +13,9 @@ class SearchResult(BaseModel):
     """Outcome of one SearchAgent run.
 
     Args:
-        answer (str): The LLM-synthesised answer from finish(answer).
+        answer (str | None): The LLM-synthesised answer from finish(answer); None
+            when the agent ran in search-only mode (``enable_agent_answer=False``)
+            and deliberately did not synthesize a free-text answer.
         outcome (str): How the loop terminated.
         budget_exceeded (bool): True when outcome == "max_steps".
         trace (ToolLoopTrace): Full tool-loop trace — ids harvested by callers for entity fetch.
@@ -21,7 +23,7 @@ class SearchResult(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    answer: str
+    answer: str | None
     outcome: Literal["finish_tool", "max_steps", "error"]
     budget_exceeded: bool
     trace: ToolLoopTrace
