@@ -53,7 +53,7 @@ PROMPT_VERSION_MAP: dict[str, tuple[str, str | None]] = {
     "query_reformulation": ("v1.0.0", None),
     "document_expansion": ("v1.0.0", None),
     # Agentic extraction pipeline — Phase 3 (v2 single-loop)
-    "extraction_agent": ("v1.5.0", None),
+    "extraction_agent": ("v1.4.0", None),
     # Agentic search pipeline — agentic-v2 single-loop agent
     "search_agent": ("v1.3.0", None),
 }

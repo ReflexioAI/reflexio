@@ -82,8 +82,8 @@ class PlaybookMixin:
                         content, trigger, rationale, blocking_issue,
                         source_interaction_ids,
                         status, source, embedding, expanded_terms,
-                        source_span, notes, reader_angle, date_mentioned)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        source_span, notes, reader_angle)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         up.user_id,
                         up.playbook_name,
@@ -104,7 +104,6 @@ class PlaybookMixin:
                         up.source_span,
                         up.notes,
                         up.reader_angle,
-                        up.date_mentioned or None,
                     ),
                 )
                 upid = cur.lastrowid or 0
@@ -114,8 +113,6 @@ class PlaybookMixin:
             fts_parts = [up.trigger or "", up.content or ""]
             if up.expanded_terms:
                 fts_parts.append(up.expanded_terms)
-            if up.date_mentioned:
-                fts_parts.append(up.date_mentioned)
             self._fts_upsert(
                 "user_playbooks_fts",
                 upid,

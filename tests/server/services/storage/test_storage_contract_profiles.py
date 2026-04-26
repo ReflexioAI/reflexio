@@ -129,29 +129,6 @@ class TestProfileCRUD:
         )
         assert storage.count_all_profiles() == 2
 
-    def test_date_mentioned_round_trip(self, storage: BaseStorage) -> None:
-        """Stored ``date_mentioned`` survives the storage round-trip."""
-        profile = _make_profile("u1", "p1", "user visited MoMA on 2024-08-23")
-        profile.date_mentioned = "2024-08-23"
-        storage.add_user_profile("u1", [profile])
-
-        result = storage.get_user_profile("u1")
-        assert len(result) == 1
-        assert result[0].date_mentioned == "2024-08-23"
-
-    def test_date_mentioned_default_empty_string(self, storage: BaseStorage) -> None:
-        """Profiles created without ``date_mentioned`` read back as ``""``.
-
-        Backward-compat: legacy code paths that don't pass a date must keep
-        producing usable profiles.
-        """
-        profile = _make_profile("u1", "p1", "no date here")
-        storage.add_user_profile("u1", [profile])
-
-        result = storage.get_user_profile("u1")
-        assert len(result) == 1
-        assert result[0].date_mentioned == ""
-
 
 class TestInteractionCRUD:
     def test_add_and_get_interaction(self, storage: BaseStorage) -> None:

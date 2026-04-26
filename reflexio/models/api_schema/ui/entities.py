@@ -64,7 +64,6 @@ class ProfileView(BaseModel):
     source: str | None = None
     status: Status | None = None
     extractor_names: list[str] | None = None
-    date_mentioned: str = ""
 
 
 class UserPlaybookView(BaseModel):
@@ -83,7 +82,6 @@ class UserPlaybookView(BaseModel):
     status: Status | None = None
     source: str | None = None
     source_interaction_ids: list[int] = Field(default_factory=list)
-    date_mentioned: str = ""
 
 
 class AgentPlaybookView(BaseModel):

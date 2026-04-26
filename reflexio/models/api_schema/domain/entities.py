@@ -167,7 +167,6 @@ class UserProfile(BaseModel):
     source_span: str | None = None
     notes: str | None = None
     reader_angle: str | None = None
-    date_mentioned: str = ""
 
 
 # user playbook for agents
@@ -192,7 +191,6 @@ class UserPlaybook(BaseModel):
     source_span: str | None = None
     notes: str | None = None
     reader_angle: str | None = None
-    date_mentioned: str = ""
 
 
 class ProfileChangeLog(BaseModel):
