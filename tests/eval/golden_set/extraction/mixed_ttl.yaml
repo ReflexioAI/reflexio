@@ -5,10 +5,10 @@ sessions:
     content: "I'm a senior backend engineer. This week I'm on-call so please avoid scheduling reviews before 10am."
 expected_profiles:
   - content: "User is a senior backend engineer."
-    time_to_live: "persistent"
+    time_to_live: "infinity"
     reader_angle: "facts"
   - content: "User is on-call this week."
-    time_to_live: "short_term"
+    time_to_live: "one_week"
     reader_angle: "context"
 expected_playbooks:
   - trigger: "scheduling a review during user's on-call week"

@@ -69,9 +69,14 @@ def _make_agentic_config() -> Config:
 
 
 def _make_scripted_client(responses: list) -> LiteLLMClient:
-    """Build a real LiteLLMClient whose generate_chat_response is scripted."""
-    os.environ.setdefault("OPENAI_API_KEY", "test-key")
-    client = LiteLLMClient(LiteLLMConfig(model="gpt-4o-mini"))
+    """Build a real LiteLLMClient whose generate_chat_response is scripted.
+
+    Scopes ``OPENAI_API_KEY`` to client construction via ``patch.dict`` so
+    the env mutation does not leak into other tests in the same process
+    (which would make test ordering matter).
+    """
+    with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}, clear=False):
+        client = LiteLLMClient(LiteLLMConfig(model="gpt-4o-mini"))
     client.generate_chat_response = MagicMock(side_effect=responses)  # type: ignore[method-assign]
     return client
 

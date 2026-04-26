@@ -221,25 +221,33 @@ def run_tool_loop(
         # Expect the schema's first field to be a list of items whose
         # ``model_dump_json()`` matches the fallback tool's args model.
         items = getattr(parsed, next(iter(type(parsed).model_fields)))
-        for item in items:
-            t0 = time.monotonic()
+        # Respect the configured max_steps budget even on the fallback path
+        # — otherwise a non-tool-calling provider could blow past the loop
+        # cap when the structured response includes more items than expected.
+        bounded_items = items[:max_steps]
+        for item in bounded_items:
+            tool_t0 = time.monotonic()
             res = registry.handle(fallback_tool_name, item.model_dump_json(), ctx)
             trace.turns.append(
                 ToolLoopTurn(
                     tool_name=fallback_tool_name,
                     args=item.model_dump(),
                     result=res,
-                    latency_ms=int((time.monotonic() - t0) * 1000),
+                    latency_ms=int((time.monotonic() - tool_t0) * 1000),
                 )
             )
-        trace.finished = True
-        return ToolLoopResult(ctx=ctx, trace=trace, finished_reason="finish_tool")
+        exceeded = len(items) > max_steps
+        trace.finished = not exceeded
+        return ToolLoopResult(
+            ctx=ctx,
+            trace=trace,
+            finished_reason="max_steps" if exceeded else "finish_tool",
+        )
 
     # ---- Native tool loop ---------------------------------------------
     local_msgs = list(messages)
     try:
         for _step in range(max_steps):
-            t0 = time.monotonic()
             if log_label:
                 log_llm_messages(logger, f"{log_label} (turn {_step + 1})", local_msgs)
             resp = client.generate_chat_response(
@@ -280,6 +288,10 @@ def run_tool_loop(
             # A single response's usage is attached to every turn it produced —
             # the summary helpers dedup by (model, prompt_tokens, completion_tokens).
             for tc in tool_calls:
+                # Time each tool individually — using the turn-start clock
+                # would inflate later tools' latencies with model time and
+                # earlier tools' work, masking the actual per-tool cost.
+                tool_t0 = time.monotonic()
                 name = tc.function.name
                 args_json = tc.function.arguments
                 result = registry.handle(name, args_json, ctx)
@@ -292,7 +304,7 @@ def run_tool_loop(
                         tool_name=name,
                         args=args_dict,
                         result=result,
-                        latency_ms=int((time.monotonic() - t0) * 1000),
+                        latency_ms=int((time.monotonic() - tool_t0) * 1000),
                         model=model,
                         prompt_tokens=turn_prompt_tokens,
                         completion_tokens=turn_completion_tokens,

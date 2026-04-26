@@ -82,7 +82,10 @@ def test_agentic_search_populates_profiles_from_trace(temp_storage):
         svc = AgenticSearchService(llm_client=client, request_context=rc)
 
         request = UnifiedSearchRequest(
-            query="what does user like?", user_id="u_1", top_k=5
+            query="what does user like?",
+            user_id="u_1",
+            agent_version="v1",
+            top_k=5,
         )
         response = svc.search(request)
 
@@ -109,7 +112,7 @@ def test_agentic_search_empty_when_agent_searches_nothing(temp_storage):
     from reflexio.server.api_endpoints.request_context import RequestContext
 
     with tempfile.TemporaryDirectory() as d:
-        rc = RequestContext(org_id="svc-test2", storage_base_dir=d)
+        rc = RequestContext(org_id="svc-test", storage_base_dir=d)
         rc.storage = temp_storage  # type: ignore[attr-defined]
 
         from reflexio.server.services.search.agentic_search_service import (
@@ -118,7 +121,12 @@ def test_agentic_search_empty_when_agent_searches_nothing(temp_storage):
 
         svc = AgenticSearchService(llm_client=client, request_context=rc)
 
-        request = UnifiedSearchRequest(query="anything?", user_id="u_nobody", top_k=5)
+        request = UnifiedSearchRequest(
+            query="anything?",
+            user_id="u_nobody",
+            agent_version="v1",
+            top_k=5,
+        )
         response = svc.search(request)
 
     assert response.success is True

@@ -558,7 +558,14 @@ def _format_tool_calls(tool_calls: list[Any]) -> list[str]:
 
         lines.append(f"    - id: {tc_id}")
         lines.append(f"      name: {name}")
-        lines.append(f"      arguments: {json.dumps(parsed_args)}")
+        # Logging path must never raise — fall back to repr() on
+        # non-serializable argument objects (datetime, sets, custom
+        # types, etc.) so a logging call can't take down a request.
+        try:
+            rendered_args = json.dumps(parsed_args)
+        except (TypeError, ValueError):
+            rendered_args = repr(parsed_args)
+        lines.append(f"      arguments: {rendered_args}")
     return lines
 
 

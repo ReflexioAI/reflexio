@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import polars as pl
+import pytest
 
 from tests.eval.aggregate import aggregate_eval_results
 
@@ -40,9 +41,9 @@ def test_aggregate_means_are_correct(tmp_path):
     out = aggregate_eval_results(_write_fixture(tmp_path))
 
     agentic = out.filter(pl.col("backend") == "agentic").row(0, named=True)
-    assert agentic["mean_f1"] == 0.75
-    assert agentic["mean_correctness"] == 0.75
-    assert agentic["mean_cost"] == 0.01
+    assert agentic["mean_f1"] == pytest.approx(0.75)
+    assert agentic["mean_correctness"] == pytest.approx(0.75)
+    assert agentic["mean_cost"] == pytest.approx(0.01)
 
 
 def test_aggregate_p95_latency_is_tail(tmp_path):
@@ -52,4 +53,6 @@ def test_aggregate_p95_latency_is_tail(tmp_path):
     classic = out.filter(pl.col("backend") == "classic").row(0, named=True)
     agentic = out.filter(pl.col("backend") == "agentic").row(0, named=True)
     assert classic["p95_latency"] >= 1000
+    assert classic["p95_latency"] <= 1100
     assert agentic["p95_latency"] >= 2500
+    assert agentic["p95_latency"] <= 2700

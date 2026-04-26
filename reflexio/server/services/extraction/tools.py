@@ -645,7 +645,13 @@ def apply_plan_op(op: Any, storage: Any, ctx: ExtractionCtx) -> None:
             ]
         )
     elif isinstance(op, DeleteUserPlaybookOp):
-        storage.delete_user_playbooks_by_ids([int(op.id)])
+        try:
+            playbook_id = int(op.id)
+        except (TypeError, ValueError) as e:
+            raise TypeError(
+                f"DeleteUserPlaybookOp.id must be a numeric string, got {op.id!r}"
+            ) from e
+        storage.delete_user_playbooks_by_ids([playbook_id])
     else:
         raise TypeError(f"Unknown PlanOp: {type(op).__name__}")
 

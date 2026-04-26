@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
     from reflexio.server.llm.litellm_client import LiteLLMClient
@@ -28,9 +28,9 @@ class JudgeScore(BaseModel):
         rationale (str): One-paragraph explanation of the scores.
     """
 
-    signal_f1: float
-    answer_correctness: float
-    grounded_rate: float
+    signal_f1: float = Field(ge=0.0, le=1.0)
+    answer_correctness: float = Field(ge=0.0, le=1.0)
+    grounded_rate: float = Field(ge=0.0, le=1.0)
     rationale: str
 
 

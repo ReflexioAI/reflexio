@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-import pytest
-
 from reflexio.models.config_schema import Config, StorageConfigSQLite
 from reflexio.server.services.generation_service import (
     build_extraction_service,
@@ -62,14 +60,14 @@ def test_build_search_service_picks_classic_by_default() -> None:
 
 
 def test_build_search_service_picks_agentic_when_configured() -> None:
-    try:
-        from reflexio.server.services.search.agentic_search_service import (  # noqa: F401  # type: ignore[import-not-found]
-            AgenticSearchService,
-        )
-    except ImportError:
-        pytest.skip("AgenticSearchService not yet implemented (Phase 4)")
+    # AgenticSearchService now lives alongside the dispatcher; if the import
+    # fails the dispatcher itself is broken — fail fast instead of skipping.
+    from reflexio.server.services.search.agentic_search_service import (
+        AgenticSearchService,
+    )
+
     config = _make_config(search_backend="agentic")
     svc = build_search_service(
         config, llm_client=MagicMock(), request_context=MagicMock()
     )
-    assert svc.__class__.__name__ == "AgenticSearchService"
+    assert isinstance(svc, AgenticSearchService)

@@ -27,6 +27,8 @@ def test_user_profile_accepts_optional_fields() -> None:
         notes="n",
         reader_angle="facts",
     )
+    assert p.source_span == "q"
+    assert p.notes == "n"
     assert p.reader_angle == "facts"
 
 
@@ -54,4 +56,6 @@ def test_user_playbook_accepts_optional_fields() -> None:
         notes="n",
         reader_angle="behavior",
     )
+    assert pb.source_span == "q"
+    assert pb.notes == "n"
     assert pb.reader_angle == "behavior"

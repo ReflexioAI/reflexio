@@ -69,10 +69,13 @@ class _LLMPromptOnly(logging.Filter):
 class _TZAwareFormatter(logging.Formatter):
     """Formatter that appends the local UTC offset to every timestamp.
 
-    Renders ``2026-04-24 10:20:51.238 -0700`` so readers in any timezone
-    can compute the instant unambiguously. Offset comes from the local
-    system zoneinfo via ``time.strftime('%z')``; falls back to ``+0000``
-    on systems without a configured timezone.
+    Renders ``2026-04-24 10:20:51.238 -07:00 PDT`` (TZ abbreviation is
+    optional and only appended on systems with tzdata available) so
+    readers in any timezone can compute the instant unambiguously.
+    Offset comes from the local system zoneinfo via
+    ``time.strftime('%z')`` and is rewritten to ISO 8601 extended form
+    (``-0700`` → ``-07:00``); falls back to ``+00:00`` on systems
+    without a configured timezone.
     """
 
     default_time_format = "%Y-%m-%d %H:%M:%S"

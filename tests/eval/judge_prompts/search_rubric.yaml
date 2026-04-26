@@ -5,11 +5,13 @@ prompt: |
   expected answer:
 
     - answer_correctness: does the top-1 (or top-3 if the case allows)
-      candidate contain the expected_answer?
+      candidate contain the expected_answer? When any
+      must_NOT_rank_first item ranks first, set answer_correctness=0
+      (the must-not-rank constraint is folded into this score rather than
+      scored separately, since the JudgeScore response schema has no
+      dedicated must_not_violated field).
     - grounded_rate: do ranked items actually exist in seeded_profiles or
       seeded_playbooks (no hallucinated IDs)?
-    - must_not_violated: -1.0 if any must_NOT_rank_first item ranks first,
-      else 0.0.
 
   Respond ONLY with JSON:
     {"signal_f1": 0, "answer_correctness": float, "grounded_rate": float, "rationale": str}

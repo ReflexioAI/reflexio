@@ -517,7 +517,11 @@ def test_runner_soft_violation_does_not_surface_as_warning():
     )
 
     soft_violation = Violation(
-        code="B",
+        # E (`inv_E_no_duplicate_creates`) is genuinely a soft invariant per
+        # invariants.py — using "B" here mismatched its real severity ("hard")
+        # and would have hidden a regression where soft violations were
+        # mistakenly upgraded to hard.
+        code="E",
         severity="soft",
         affected_op_indices=[0],
         msg="soft warning",

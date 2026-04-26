@@ -23,10 +23,23 @@ _RUBRICS = Path(__file__).parent / "judge_prompts"
 
 
 def _load(kind: str) -> list[dict[str, Any]]:
-    """Load every YAML golden file under ``golden_set/<kind>/`` sorted by id."""
-    return [
-        yaml.safe_load(p.read_text()) for p in sorted((_GOLDEN / kind).glob("*.yaml"))
-    ]
+    """Load every YAML golden file under ``golden_set/<kind>/`` sorted by id.
+
+    The previous implementation sorted by filename, which silently produces
+    unstable parametrization ids if a file is renamed without updating its
+    YAML ``id`` (or vice-versa). Sort by the YAML ``id`` so the test ordering
+    matches what pytest reports.
+
+    Raises:
+        ValueError: If a golden YAML file is missing an ``id`` key.
+    """
+    cases: list[dict[str, Any]] = []
+    for path in (_GOLDEN / kind).glob("*.yaml"):
+        case = yaml.safe_load(path.read_text())
+        if "id" not in case:
+            raise ValueError(f"Golden case {path} is missing required 'id' key")
+        cases.append(case)
+    return sorted(cases, key=lambda c: c["id"])
 
 
 def pytest_generate_tests(metafunc):

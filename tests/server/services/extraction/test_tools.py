@@ -69,6 +69,11 @@ def test_search_user_profiles_populates_known_ids(seeded_storage, ctx):
     )
     assert "hits" in result
     assert ctx.search_count == 1
+    # Every hit's id must be added to ctx.known_ids — that's the side
+    # effect this test name claims to validate.
+    hit_ids = {hit["id"] for hit in result["hits"]}
+    assert hit_ids, "expected at least one hit from seeded storage"
+    assert hit_ids.issubset(ctx.known_ids)
 
 
 def test_search_user_profiles_empty_result(seeded_storage, ctx):
@@ -108,6 +113,9 @@ def test_search_user_playbooks_populates_known_ids(seeded_storage, ctx):
     )
     assert "hits" in result
     assert ctx.search_count == 1
+    hit_ids = {hit["id"] for hit in result["hits"]}
+    assert hit_ids, "expected at least one hit from seeded storage"
+    assert hit_ids.issubset(ctx.known_ids)
 
 
 def test_search_agent_playbooks_bumps_search_count(seeded_storage, ctx):
