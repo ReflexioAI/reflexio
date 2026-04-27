@@ -7,6 +7,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
 from reflexio.cli.log_format import LLM_IO_LOG_FILE, next_llm_entry_id
@@ -268,8 +269,36 @@ def format_sessions_to_history_string(
 
     formatted_groups = []
     for group_name in sorted_group_names:
-        # Format header with session name
-        group_header = f"=== Session: {group_name} ==="
+        # Format header with session name AND its earliest interaction date.
+        # Without the date, downstream extraction agents have no anchor for
+        # resolving relative-time references in the conversation
+        # ("X weeks ago", "yesterday", "two days before the wedding") —
+        # they fall back to real-world `now()` and encode every event as
+        # today's date, breaking temporal-reasoning queries.
+        #
+        # We use the earliest *interaction* timestamp, not request.created_at,
+        # because Request.created_at defaults to `now()` on construction —
+        # only interactions reliably carry the conversation's true wall-clock
+        # time when the publisher provides it.
+        all_ts: list[int] = [
+            i.created_at
+            for ri in grouped_by_name[group_name]
+            for i in ri.interactions
+            if i.created_at
+        ]
+        first_ts = min(all_ts) if all_ts else 0
+        if first_ts:
+            try:
+                session_date_iso = datetime.fromtimestamp(
+                    first_ts, tz=UTC
+                ).strftime("%Y-%m-%d")
+                group_header = (
+                    f"=== Session: {group_name} (date: {session_date_iso}) ==="
+                )
+            except (OverflowError, OSError, ValueError):
+                group_header = f"=== Session: {group_name} ==="
+        else:
+            group_header = f"=== Session: {group_name} ==="
 
         # Combine all interactions from all requests in this session
         all_interactions = []

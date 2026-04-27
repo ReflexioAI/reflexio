@@ -235,8 +235,13 @@ def test_format_sessions_to_history_string_empty():
 
 
 def test_format_sessions_to_history_string_single_group():
-    """Test formatting a single session."""
+    """Test formatting a single session.
+
+    Header includes the session date so downstream extraction agents have
+    a temporal anchor for relative-time references in the conversation.
+    """
     base_time = int(datetime.now(UTC).timestamp())
+    iso = datetime.fromtimestamp(base_time, tz=UTC).strftime("%Y-%m-%d")
 
     session_data = RequestInteractionDataModel(
         session_id="group_1",
@@ -248,7 +253,10 @@ def test_format_sessions_to_history_string_single_group():
     )
 
     result = format_sessions_to_history_string([session_data])
-    expected = "=== Session: group_1 ===\nuser: ```Hello```\nassistant: ```Hi there!```"
+    expected = (
+        f"=== Session: group_1 (date: {iso}) ===\n"
+        "user: ```Hello```\nassistant: ```Hi there!```"
+    )
     assert result == expected
 
 
@@ -288,9 +296,10 @@ def test_format_sessions_to_history_string_consolidates_same_group():
         [session_id_1, session_id_2, session_id_3]
     )
 
+    iso = datetime.fromtimestamp(base_time, tz=UTC).strftime("%Y-%m-%d")
     # All interactions should be under a single header
     expected = (
-        "=== Session: group_1 ===\n"
+        f"=== Session: group_1 (date: {iso}) ===\n"
         "user: ```First message```\n"
         "assistant: ```First response```\n"
         "user: ```Second message```\n"
@@ -322,10 +331,12 @@ def test_format_sessions_to_history_string_multiple_groups():
     )
 
     result = format_sessions_to_history_string([group_a, group_b])
+    iso_a = datetime.fromtimestamp(base_time, tz=UTC).strftime("%Y-%m-%d")
+    iso_b = datetime.fromtimestamp(base_time + 100, tz=UTC).strftime("%Y-%m-%d")
     expected = (
-        "=== Session: session_a ===\n"
+        f"=== Session: session_a (date: {iso_a}) ===\n"
         "user: ```Message A```\n\n"
-        "=== Session: session_b ===\n"
+        f"=== Session: session_b (date: {iso_b}) ===\n"
         "user: ```Message B```"
     )
     assert result == expected
@@ -365,13 +376,15 @@ def test_format_sessions_to_history_string_mixed_groups():
         [group_1_req_1, group_2_req, group_1_req_2]
     )
 
+    iso_1 = datetime.fromtimestamp(base_time, tz=UTC).strftime("%Y-%m-%d")
+    iso_2 = datetime.fromtimestamp(base_time + 50, tz=UTC).strftime("%Y-%m-%d")
     # Groups should be sorted by earliest request timestamp
     # group_1 (base_time) should come before group_2 (base_time + 50)
     expected = (
-        "=== Session: group_1 ===\n"
+        f"=== Session: group_1 (date: {iso_1}) ===\n"
         "user: ```Group 1 - Request 1```\n"
         "user: ```Group 1 - Request 2```\n\n"
-        "=== Session: group_2 ===\n"
+        f"=== Session: group_2 (date: {iso_2}) ===\n"
         "user: ```Group 2 - Request 1```"
     )
     assert result == expected
@@ -411,9 +424,10 @@ def test_format_sessions_to_history_string_preserves_order_within_group():
         [late_request, early_request, middle_request]
     )
 
+    iso = datetime.fromtimestamp(base_time, tz=UTC).strftime("%Y-%m-%d")
     # Should be sorted by created_at within the group
     expected = (
-        "=== Session: group_1 ===\n"
+        f"=== Session: group_1 (date: {iso}) ===\n"
         "user: ```Early message```\n"
         "user: ```Middle message```\n"
         "user: ```Late message```"
