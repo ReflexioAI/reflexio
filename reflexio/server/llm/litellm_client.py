@@ -41,14 +41,27 @@ from reflexio.server.llm.providers.local_embedding_provider import (
 from reflexio.server.llm.providers.local_embedding_provider import (
     register_if_enabled as _register_local_embedder,
 )
+from reflexio.server.llm.providers.nomic_embedding_provider import (
+    NomicEmbedder,
+)
+from reflexio.server.llm.providers.nomic_embedding_provider import (
+    is_enabled as _nomic_embedder_enabled,
+)
+from reflexio.server.llm.providers.nomic_embedding_provider import (
+    is_nomic_model as _is_nomic_model,
+)
+from reflexio.server.llm.providers.nomic_embedding_provider import (
+    register_if_enabled as _register_nomic_embedder,
+)
 
 # Suppress LiteLLM's verbose logging
 litellm.suppress_debug_info = True
 
-# Opt-in registration of claude-smart's local providers. Both are
-# no-ops unless the matching env var is set. Safe to call at import.
+# Opt-in registration of claude-smart's local providers. All no-ops
+# unless the matching env var is set. Safe to call at import.
 _register_claude_code()
 _register_local_embedder()
+_register_nomic_embedder()
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -560,6 +573,18 @@ class LiteLLMClient:
         """
         embedding_model = model or self._resolve_default_embedding_model()
 
+        # local/nomic-embed-* routes to the sentence-transformers Nomic
+        # provider (137M params, 768d Matryoshka-truncated to 512). Higher
+        # quality than the chromadb MiniLM fallback below; preferred when
+        # the dep is installed.
+        if _is_nomic_model(embedding_model) and _nomic_embedder_enabled():
+            try:
+                return NomicEmbedder.get().embed([text])[0]
+            except Exception as e:
+                raise LiteLLMClientError(
+                    f"Nomic embedding generation failed: {str(e)}"
+                ) from e
+
         # local/* models route through the in-process ONNX embedder — no
         # network call, no litellm API, no tiktoken truncation (the embedder
         # applies its own token cap).
@@ -622,7 +647,15 @@ class LiteLLMClient:
 
         embedding_model = model or self._resolve_default_embedding_model()
 
-        # See matching short-circuit in get_embedding above.
+        # See matching short-circuits in get_embedding above.
+        if _is_nomic_model(embedding_model) and _nomic_embedder_enabled():
+            try:
+                return NomicEmbedder.get().embed(list(texts))
+            except Exception as e:
+                raise LiteLLMClientError(
+                    f"Nomic batch embedding generation failed: {str(e)}"
+                ) from e
+
         if embedding_model.startswith("local/") and _local_embedder_enabled():
             try:
                 return LocalEmbedder.get().embed(list(texts))
