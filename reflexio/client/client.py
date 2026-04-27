@@ -28,6 +28,7 @@ from reflexio.models.api_schema.retriever_schema import (
     GetUserPlaybooksViewResponse,
     GetUserProfilesRequest,
     ProfileChangeLogViewResponse,
+    RerankUserProfilesRequest,
     SearchAgentPlaybookRequest,
     SearchAgentPlaybooksViewResponse,
     SearchInteractionRequest,
@@ -36,6 +37,7 @@ from reflexio.models.api_schema.retriever_schema import (
     SearchUserPlaybookRequest,
     SearchUserPlaybooksViewResponse,
     SearchUserProfileRequest,
+    StorageStatsResponse,
     UnifiedSearchRequest,
     UnifiedSearchViewResponse,
     UpdateAgentPlaybookRequest,
@@ -550,6 +552,66 @@ class ReflexioClient:
             "POST", "/api/search_user_profiles", json=req.model_dump()
         )
         return SearchProfilesViewResponse(**response)
+
+    def rerank_user_profiles(
+        self,
+        request: RerankUserProfilesRequest | dict | None = None,
+        *,
+        user_id: str | None = None,
+        query: str | None = None,
+        profile_ids: list[str] | None = None,
+        top_k: int | None = None,
+    ) -> SearchProfilesViewResponse:
+        """Rerank a list of profile ids by query relevance using a cross-encoder.
+
+        The server fetches each candidate's full content (filtered by
+        ``user_id``), scores ``(query, content)`` pairs with a CPU
+        cross-encoder, and returns the top_k profiles sorted by descending
+        score. Profile ids that don't exist for the user are silently dropped.
+
+        Args:
+            request (Optional[RerankUserProfilesRequest]): The rerank request
+                object (alternative to kwargs)
+            user_id (Optional[str]): The user whose profiles to rerank
+            query (Optional[str]): The reranking query
+            profile_ids (Optional[list[str]]): Candidate profile ids to score
+            top_k (Optional[int]): Maximum profiles to return (default: 10)
+
+        Returns:
+            SearchProfilesViewResponse: Reranked profiles, top_k entries
+        """
+        req = self._build_request(
+            request,
+            RerankUserProfilesRequest,
+            user_id=user_id,
+            query=query,
+            profile_ids=profile_ids,
+            top_k=top_k,
+        )
+        response = self._make_request(
+            "POST", "/api/rerank_user_profiles", json=req.model_dump()
+        )
+        return SearchProfilesViewResponse(**response)
+
+    def storage_stats(
+        self,
+        user_id: str,
+    ) -> StorageStatsResponse:
+        """Get a quick count of how many profiles/playbooks the user has.
+
+        Returns counts and the modified-time range across every status —
+        useful for sizing ``top_k`` before retrieval.
+
+        Args:
+            user_id (str): The user to inspect.
+
+        Returns:
+            StorageStatsResponse: Counts and timestamp range for the user.
+        """
+        response = self._make_request(
+            "GET", "/api/storage_stats", params={"user_id": user_id}
+        )
+        return StorageStatsResponse(**response)
 
     def search_user_playbooks(
         self,

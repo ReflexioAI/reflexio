@@ -81,6 +81,84 @@ class SearchUserProfileResponse(BaseModel):
     msg: str | None = None
 
 
+class RerankUserProfilesRequest(BaseModel):
+    """Cross-encoder rerank for a list of profile ids.
+
+    Use after ``search_user_profiles`` (or any other source of candidate ids)
+    when initial results are noisy. The server fetches each candidate's full
+    content, scores ``(query, content)`` pairs with a CPU cross-encoder, and
+    returns the top_k profiles sorted by descending score.
+
+    Args:
+        user_id (str): The user whose profiles to rerank.
+        query (str): The reranking query.
+        profile_ids (list[str]): Candidate profile ids; ids that don't belong
+            to ``user_id`` (or don't exist) are silently dropped.
+        top_k (int): Maximum number of profiles to return. Defaults to 10.
+    """
+
+    user_id: NonEmptyStr
+    query: NonEmptyStr
+    profile_ids: list[str]
+    top_k: int = Field(default=10, gt=0)
+
+
+class RerankUserProfilesResponse(BaseModel):
+    """Response from :class:`RerankUserProfilesRequest`.
+
+    Args:
+        success (bool): Whether the rerank call succeeded.
+        user_profiles (list[UserProfile]): Profiles sorted by descending
+            cross-encoder score, capped at ``top_k``.
+        msg (str, optional): Diagnostic message (e.g. how many ids were
+            silently dropped because they didn't resolve).
+    """
+
+    success: bool
+    user_profiles: list[UserProfile]
+    msg: str | None = None
+
+
+class StorageStatsRequest(BaseModel):
+    """Request lightweight metadata about a user's stored profiles + playbooks.
+
+    Useful before deciding ``top_k`` for retrieval — sized counts and
+    timestamp ranges let the agent pick a sensible cap rather than a fixed
+    constant.
+
+    Args:
+        user_id (str): The user to inspect.
+    """
+
+    user_id: NonEmptyStr
+
+
+class StorageStatsResponse(BaseModel):
+    """Response from :class:`StorageStatsRequest`.
+
+    Args:
+        profile_count (int): Total number of profiles for the user across
+            all statuses.
+        playbook_count (int): Total number of user playbooks for the user
+            across all statuses.
+        oldest_profile_modified (datetime, optional): UTC timestamp of the
+            oldest profile's ``last_modified_timestamp``; None when the user
+            has no profiles.
+        newest_profile_modified (datetime, optional): UTC timestamp of the
+            newest profile's ``last_modified_timestamp``; None when the user
+            has no profiles.
+        success (bool): Whether the lookup succeeded.
+        msg (str, optional): Diagnostic message.
+    """
+
+    profile_count: int = Field(default=0, ge=0)
+    playbook_count: int = Field(default=0, ge=0)
+    oldest_profile_modified: datetime | None = None
+    newest_profile_modified: datetime | None = None
+    success: bool
+    msg: str | None = None
+
+
 class GetInteractionsRequest(BaseModel):
     user_id: NonEmptyStr
     start_time: datetime | None = None

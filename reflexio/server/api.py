@@ -35,6 +35,7 @@ from reflexio.models.api_schema.retriever_schema import (
     GetUserProfilesRequest,
     ProfileChangeLogViewResponse,
     RequestDataView,
+    RerankUserProfilesRequest,
     SearchAgentPlaybookRequest,
     SearchAgentPlaybooksViewResponse,
     SearchInteractionRequest,
@@ -45,6 +46,8 @@ from reflexio.models.api_schema.retriever_schema import (
     SearchUserProfileRequest,
     SessionView,
     SetConfigResponse,
+    StorageStatsRequest,
+    StorageStatsResponse,
     UnifiedSearchRequest,
     UnifiedSearchViewResponse,
     UpdateAgentPlaybookRequest,
@@ -443,6 +446,62 @@ def search_user_profiles(
         success=response.success,
         user_profiles=[to_profile_view(p) for p in response.user_profiles],
         msg=response.msg,
+    )
+
+
+@core_router.post(
+    "/api/rerank_user_profiles",
+    response_model=SearchProfilesViewResponse,
+    response_model_exclude_none=True,
+)
+@limiter.limit("120/minute")  # Rate limit for read operations
+def rerank_user_profiles(
+    request: Request,
+    payload: RerankUserProfilesRequest,
+    org_id: str = Depends(default_get_org_id),
+) -> SearchProfilesViewResponse:
+    """Rerank a list of profile ids by query relevance using a cross-encoder.
+
+    Args:
+        request (Request): The HTTP request object (for rate limiting)
+        payload (RerankUserProfilesRequest): The rerank request
+        org_id (str): Organization ID
+
+    Returns:
+        SearchProfilesViewResponse: Reranked profiles, top_k entries.
+    """
+    response = retriever_api.rerank_user_profiles(org_id=org_id, request=payload)
+    return SearchProfilesViewResponse(
+        success=response.success,
+        user_profiles=[to_profile_view(p) for p in response.user_profiles],
+        msg=response.msg,
+    )
+
+
+@core_router.get(
+    "/api/storage_stats",
+    response_model=StorageStatsResponse,
+    response_model_exclude_none=True,
+)
+@limiter.limit("120/minute")  # Rate limit for read operations
+def storage_stats(
+    request: Request,
+    user_id: str,
+    org_id: str = Depends(default_get_org_id),
+) -> StorageStatsResponse:
+    """Return lightweight metadata about a user's profiles and playbooks.
+
+    Args:
+        request (Request): The HTTP request object (for rate limiting)
+        user_id (str): Target user id, passed as a query parameter so this is
+            a cacheable, idempotent GET.
+        org_id (str): Organization ID
+
+    Returns:
+        StorageStatsResponse: Counts and timestamp range for the user.
+    """
+    return retriever_api.storage_stats(
+        org_id=org_id, request=StorageStatsRequest(user_id=user_id)
     )
 
 

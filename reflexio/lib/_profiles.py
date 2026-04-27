@@ -13,8 +13,12 @@ from reflexio.models.api_schema.retriever_schema import (
     GetProfileStatisticsResponse,
     GetUserProfilesRequest,
     GetUserProfilesResponse,
+    RerankUserProfilesRequest,
+    RerankUserProfilesResponse,
     SearchUserProfileRequest,
     SearchUserProfileResponse,
+    StorageStatsRequest,
+    StorageStatsResponse,
     UpdateUserProfileRequest,
     UpdateUserProfileResponse,
 )
@@ -81,6 +85,109 @@ class ProfilesMixin(ReflexioBase):
             success=True,
             user_profiles=profiles,
             msg=f"Found {len(profiles)} matching profile(s)",
+        )
+
+    def rerank_user_profiles(
+        self,
+        request: RerankUserProfilesRequest | dict,
+    ) -> RerankUserProfilesResponse:
+        """Rerank a list of profile ids by query relevance using a cross-encoder.
+
+        Fetches each profile's full content (filtered by ``user_id``), scores
+        ``(query, content)`` pairs with ``cross-encoder/ms-marco-MiniLM-L-6-v2``,
+        and returns the top_k profiles sorted by descending score. Profile ids
+        that don't exist for the user are silently dropped.
+
+        Args:
+            request (Union[RerankUserProfilesRequest, dict]): The rerank
+                request — must contain ``user_id``, ``query``, and
+                ``profile_ids``.
+
+        Returns:
+            RerankUserProfilesResponse: Profiles sorted by descending
+                relevance score, capped at ``request.top_k``.
+        """
+        if not self._is_storage_configured():
+            return RerankUserProfilesResponse(
+                success=True, user_profiles=[], msg=STORAGE_NOT_CONFIGURED_MSG
+            )
+        if isinstance(request, dict):
+            request = RerankUserProfilesRequest(**request)
+        if not request.profile_ids:
+            return RerankUserProfilesResponse(
+                success=True, user_profiles=[], msg="No profile_ids provided"
+            )
+
+        # Fetch every profile for the user — including PENDING and ARCHIVED —
+        # because callers may want to rerank historical context, not just
+        # the currently-published set.
+        all_profiles = self._get_storage().get_user_profile(
+            request.user_id, status_filter=[None, Status.PENDING, Status.ARCHIVED]
+        )
+        wanted = set(request.profile_ids)
+        candidates = [p for p in all_profiles if p.profile_id in wanted]
+        dropped = len(request.profile_ids) - len(candidates)
+
+        # Lazy import keeps test collection fast; the cross-encoder pulls in
+        # torch + sentence-transformers on first call.
+        from reflexio.server.llm.rerank import score_pairs
+
+        scores = score_pairs(request.query, [p.content for p in candidates])
+        ranked = sorted(
+            zip(candidates, scores, strict=True),
+            key=lambda pair: pair[1],
+            reverse=True,
+        )
+        top = [profile for profile, _score in ranked[: request.top_k]]
+        msg = f"Reranked {len(candidates)} profile(s); dropped {dropped} unknown id(s)"
+        return RerankUserProfilesResponse(success=True, user_profiles=top, msg=msg)
+
+    def storage_stats(
+        self,
+        request: StorageStatsRequest | dict,
+    ) -> StorageStatsResponse:
+        """Return lightweight metadata about a user's stored profiles + playbooks.
+
+        Provides counts and the last-modified timestamp range across every
+        status, suitable for sizing ``top_k`` before retrieval.
+
+        Args:
+            request (Union[StorageStatsRequest, dict]): The stats request —
+                must contain ``user_id``.
+
+        Returns:
+            StorageStatsResponse: Counts and timestamp range for the user.
+        """
+        if not self._is_storage_configured():
+            return StorageStatsResponse(
+                success=True,
+                profile_count=0,
+                playbook_count=0,
+                msg=STORAGE_NOT_CONFIGURED_MSG,
+            )
+        if isinstance(request, dict):
+            request = StorageStatsRequest(**request)
+        storage = self._get_storage()
+        # Walk every status — agent callers care about total surface area,
+        # not just CURRENT entries.
+        all_statuses: list[Status | None] = [None, Status.PENDING, Status.ARCHIVED]
+        profiles = storage.get_user_profile(request.user_id, status_filter=all_statuses)
+        oldest_ts: datetime | None = None
+        newest_ts: datetime | None = None
+        if profiles:
+            timestamps = [p.last_modified_timestamp for p in profiles]
+            oldest_ts = datetime.fromtimestamp(min(timestamps), tz=UTC)
+            newest_ts = datetime.fromtimestamp(max(timestamps), tz=UTC)
+        playbook_count = storage.count_user_playbooks(
+            user_id=request.user_id, status_filter=all_statuses
+        )
+        return StorageStatsResponse(
+            success=True,
+            profile_count=len(profiles),
+            playbook_count=playbook_count,
+            oldest_profile_modified=oldest_ts,
+            newest_profile_modified=newest_ts,
+            msg=f"Found {len(profiles)} profile(s) and {playbook_count} playbook(s)",
         )
 
     def get_profile_change_logs(self) -> ProfileChangeLogResponse:

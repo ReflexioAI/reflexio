@@ -102,6 +102,25 @@ class GetSessionExcerptArgs(BaseModel):
     span: Annotated[str, Field(min_length=1)]
 
 
+class RerankUserProfilesArgs(BaseModel):
+    """Rerank a list of profile ids by query relevance using a cross-encoder.
+
+    Use after `search_user_profiles` when the initial results are noisy and
+    you need to surface the most semantically relevant ones to the question.
+    """
+
+    query: Annotated[str, Field(min_length=1)]
+    profile_ids: list[str]
+    top_k: int = 10
+
+
+class StorageStatsArgs(BaseModel):
+    """Get a quick count of how many profiles/playbooks the user has and the date range.
+
+    Useful for sizing search top_k appropriately before retrieval.
+    """
+
+
 # Mutating arg models (handlers in Task 5)
 class CreateUserProfileArgs(BaseModel):
     """Propose creating a new UserProfile record."""
@@ -410,6 +429,90 @@ def _handle_get_session_excerpt(
     if not matches:
         return {"error": "span not found"}
     return {"excerpt": matches[0]}
+
+
+def _handle_rerank_user_profiles(
+    args: RerankUserProfilesArgs, storage: Any, ctx: ExtractionCtx
+) -> dict[str, Any]:
+    """Rerank known profile ids with a local cross-encoder.
+
+    Fetches the candidate profiles (scoped to ``ctx.user_id``), scores
+    ``(query, content)`` pairs, and returns the top_k by descending score.
+    Bumps ``search_count`` so reranking still counts against the search
+    budget enforced by invariant A.
+
+    Args:
+        args (RerankUserProfilesArgs): Query, candidate ids, and top_k.
+        storage (Any): BaseStorage instance.
+        ctx (ExtractionCtx): Per-run state; ``search_count`` and
+            ``known_ids`` updated in place.
+
+    Returns:
+        dict[str, Any]: ``{"hits": [...]}`` with LLM-facing profile
+            projections sorted by descending relevance.
+    """
+    if not args.profile_ids:
+        ctx.search_count += 1
+        return {"hits": []}
+    all_profiles = storage.get_user_profile(ctx.user_id)
+    wanted = set(args.profile_ids)
+    candidates = [
+        p for p in all_profiles if (getattr(p, "profile_id", "") or "") in wanted
+    ]
+    ctx.search_count += 1
+    if not candidates:
+        return {"hits": []}
+    # Lazy import — keeps unit-test collection fast and avoids loading
+    # torch when no rerank tool call is made in a given run.
+    from reflexio.server.llm.rerank import score_pairs
+
+    scores = score_pairs(args.query, [p.content for p in candidates])
+    ranked = sorted(
+        zip(candidates, scores, strict=True),
+        key=lambda pair: pair[1],
+        reverse=True,
+    )
+    top = [profile for profile, _score in ranked[: _cap_top_k(args.top_k)]]
+    for h in top:
+        pid = getattr(h, "profile_id", "") or ""
+        if pid:
+            ctx.known_ids.add(pid)
+    return {"hits": [_project_profile_for_llm(h) for h in top]}
+
+
+def _handle_storage_stats(
+    args: StorageStatsArgs,  # noqa: ARG001
+    storage: Any,
+    ctx: ExtractionCtx,
+) -> dict[str, Any]:
+    """Return profile/playbook counts and modified-time range for ``ctx.user_id``.
+
+    Does not bump ``search_count`` — this is metadata, not retrieval.
+
+    Args:
+        args (StorageStatsArgs): No fields (sentinel call).
+        storage (Any): BaseStorage instance.
+        ctx (ExtractionCtx): Per-run state; only ``user_id`` is read.
+
+    Returns:
+        dict[str, Any]: Counts and ISO 8601 timestamps. Timestamps are
+            ``None`` when the user has no profiles.
+    """
+    profiles = storage.get_user_profile(ctx.user_id)
+    if profiles:
+        timestamps = [p.last_modified_timestamp for p in profiles]
+        oldest_ts = datetime.fromtimestamp(min(timestamps), tz=UTC).isoformat()
+        newest_ts = datetime.fromtimestamp(max(timestamps), tz=UTC).isoformat()
+    else:
+        oldest_ts = None
+        newest_ts = None
+    playbook_count = storage.count_user_playbooks(user_id=ctx.user_id)
+    return {
+        "profile_count": len(profiles),
+        "playbook_count": playbook_count,
+        "oldest_profile_modified": oldest_ts,
+        "newest_profile_modified": newest_ts,
+    }
 
 
 def _next_tentative_id(ctx: ExtractionCtx, kind: str) -> str:
@@ -816,6 +919,16 @@ SEARCH_TOOLS = ToolRegistry(
             name="get_user_profile",
             args_model=GetUserProfileArgs,
             handler=_bundle_handler(_handle_get_user_profile),
+        ),
+        Tool(
+            name="rerank_user_profiles",
+            args_model=RerankUserProfilesArgs,
+            handler=_bundle_handler(_handle_rerank_user_profiles),
+        ),
+        Tool(
+            name="storage_stats",
+            args_model=StorageStatsArgs,
+            handler=_bundle_handler(_handle_storage_stats),
         ),
         Tool(
             name="search_user_playbooks",

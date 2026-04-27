@@ -41,6 +41,10 @@ dependencies = [
     "typer>=0.15.0",
     "rich>=13.0.0",
     "chromadb>=1.5.8",
+    # Cross-encoder reranker + local embedding providers — chromadb pulls
+    # ``sentence-transformers`` transitively, but we depend on it directly
+    # so the CrossEncoder/SentenceTransformer surface is guaranteed.
+    "sentence-transformers>=3.0",
 ]
 
 [project.optional-dependencies]

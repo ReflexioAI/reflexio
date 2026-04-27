@@ -9,6 +9,8 @@ from reflexio.models.api_schema.retriever_schema import (
     GetRequestsResponse,
     GetUserProfilesRequest,
     GetUserProfilesResponse,
+    RerankUserProfilesRequest,
+    RerankUserProfilesResponse,
     SearchAgentPlaybookRequest,
     SearchAgentPlaybookResponse,
     SearchInteractionRequest,
@@ -17,6 +19,8 @@ from reflexio.models.api_schema.retriever_schema import (
     SearchUserPlaybookResponse,
     SearchUserProfileRequest,
     SearchUserProfileResponse,
+    StorageStatsRequest,
+    StorageStatsResponse,
     UnifiedSearchRequest,
     UnifiedSearchResponse,
 )
@@ -52,6 +56,42 @@ def search_user_profiles(
     """
     reflexio = get_reflexio(org_id=org_id)
     return reflexio.search_user_profiles(request)
+
+
+def rerank_user_profiles(
+    org_id: str,
+    request: RerankUserProfilesRequest,
+) -> RerankUserProfilesResponse:
+    """Rerank a list of profile ids by query relevance using a cross-encoder.
+
+    Args:
+        org_id (str): Organization ID
+        request (RerankUserProfilesRequest): The rerank request containing
+            user_id, query, profile_ids and top_k.
+
+    Returns:
+        RerankUserProfilesResponse: Profiles sorted by descending cross-encoder
+            score, capped at ``request.top_k``.
+    """
+    reflexio = get_reflexio(org_id=org_id)
+    return reflexio.rerank_user_profiles(request)
+
+
+def storage_stats(
+    org_id: str,
+    request: StorageStatsRequest,
+) -> StorageStatsResponse:
+    """Return lightweight metadata about a user's stored profiles and playbooks.
+
+    Args:
+        org_id (str): Organization ID
+        request (StorageStatsRequest): The stats request containing user_id.
+
+    Returns:
+        StorageStatsResponse: Counts and timestamp range for the user.
+    """
+    reflexio = get_reflexio(org_id=org_id)
+    return reflexio.storage_stats(request)
 
 
 def search_interactions(

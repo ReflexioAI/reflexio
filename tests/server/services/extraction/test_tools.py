@@ -357,6 +357,8 @@ def test_search_registry_is_read_only():
     assert specs == {
         "search_user_profiles",
         "get_user_profile",
+        "rerank_user_profiles",
+        "storage_stats",
         "search_user_playbooks",
         "get_user_playbook",
         "search_agent_playbooks",
