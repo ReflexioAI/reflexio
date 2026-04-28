@@ -217,6 +217,12 @@ class PlaybookMixin:
         return results
 
     def archive_user_playbook_by_id(self, user_id: str, user_playbook_id: int) -> bool:
+        # The file is rewritten in place, not unlinked: archived rows
+        # must remain readable for ``get_user_playbooks_by_ids(
+        # status_filter=[Status.ARCHIVED])``. The embedding sidecar is
+        # dropped so QMD vector search stops surfacing this row; FTS
+        # still indexes the body (mitigated by overfetch in
+        # ``search_user_playbooks``).
         with self._lock:
             path = self._entity_path(
                 self._user_playbooks_dir(),
@@ -229,7 +235,7 @@ class PlaybookMixin:
                 return False
             up.status = Status.ARCHIVED
             self._write_entity(path, up)
-            self._write_embedding(path, up.embedding)
+            self._delete_embedding(path)
             return True
 
     def delete_all_user_playbooks_by_status(
@@ -376,7 +382,12 @@ class PlaybookMixin:
 
         # QMD-accelerated search when SearchOptions are provided with a query
         if options and query:
-            qmd_results = self._qmd.search(query, options.search_mode, match_count)
+            # Overfetch from QMD: archived rows whose embedding has been
+            # dropped still appear in FTS, plus user_id / agent_version
+            # / playbook_name / time / status post-filters strip more
+            # candidates after retrieval. Mirrors SQLite's pattern.
+            qmd_top_k = max(match_count * 5, 20)
+            qmd_results = self._qmd.search(query, options.search_mode, qmd_top_k)
 
             results: list[UserPlaybook] = []
             for qmd_r in qmd_results:

@@ -80,6 +80,9 @@ def test_run_invokes_maybe_run_reflection(request_context, llm_client, publish_r
     kwargs = mock_reflect.call_args.kwargs
     assert kwargs.get("user_id") == "u1"
     assert kwargs.get("source") == "cli"
+    # agent_version must be threaded through so reflected playbooks
+    # inherit the publish's resolved version, not "".
+    assert kwargs.get("agent_version") == "v1"
 
 
 def test_reflection_failure_does_not_break_publish(
