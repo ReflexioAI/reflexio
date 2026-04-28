@@ -135,6 +135,162 @@ def supports_tool_calling(model: str) -> bool:
         return True
 
 
+# Cap on tool-result payload size injected back into the message history
+# in multi-stage mode. Without this, a single fat search response could
+# blow the model's context window in two or three turns.
+_MULTI_STAGE_RESULT_CHAR_CAP = 4000
+
+
+def _serialize_tool_result_for_history(result: dict[str, Any]) -> str:
+    """Render a tool result dict as a JSON string capped at a fixed size.
+
+    Args:
+        result (dict[str, Any]): The tool handler's return value.
+
+    Returns:
+        str: A JSON string truncated to ``_MULTI_STAGE_RESULT_CHAR_CAP``
+            characters with a ``... [truncated]`` marker on overflow.
+    """
+    payload = json.dumps(result, default=str)
+    if len(payload) <= _MULTI_STAGE_RESULT_CHAR_CAP:
+        return payload
+    return f"{payload[:_MULTI_STAGE_RESULT_CHAR_CAP]}... [truncated]"
+
+
+def _run_multi_stage_fallback(
+    *,
+    client: LiteLLMClient,
+    messages: list[dict[str, Any]],
+    registry: ToolRegistry,
+    model_role: ModelRole,
+    max_steps: int,
+    ctx: Any,
+    finish_tool_name: str,
+    multi_stage_schema: type[BaseModel],
+    log_label: str | None,
+    trace: ToolLoopTrace,
+) -> ToolLoopResult:
+    """Drive a multi-turn tool loop using one structured-output call per turn.
+
+    Used when the configured model lacks native tool-calling but the
+    caller wants observe-decide-act semantics (e.g. the search agent on
+    ``minimax/MiniMax-M2.7``). Each turn:
+
+    1. Asks the model for a ``multi_stage_schema`` instance whose
+       ``next_call`` field carries a discriminator literal naming the
+       desired tool.
+    2. Dispatches that call against the registry.
+    3. Appends the agent's plan as an assistant message and the tool
+       result as a user message, so the next turn's model call sees both.
+
+    Loop terminates when ``next_call.tool == finish_tool_name`` or
+    ``max_steps`` is exhausted.
+
+    Args:
+        client (LiteLLMClient): Configured client.
+        messages (list[dict]): Seed message list; extended in place.
+        registry (ToolRegistry): Tools exposed to the LLM.
+        model_role (ModelRole): Role used to resolve the target model.
+        max_steps (int): Cap on tool-calling turns.
+        ctx (Any): Per-run context passed to each tool handler.
+        finish_tool_name (str): Sentinel literal that ends the loop.
+        multi_stage_schema (type[BaseModel]): Schema with a ``next_call``
+            discriminated-union field.
+        log_label (str | None): Optional llm_io.log label.
+        trace (ToolLoopTrace): Trace to extend with per-turn entries.
+
+    Returns:
+        ToolLoopResult: ``ctx``, trace, and the terminator reason.
+    """
+    if log_label:
+        from reflexio.server.services.service_utils import (
+            log_llm_messages,
+            log_model_response,
+        )
+
+    for turn_idx in range(max_steps):
+        turn_label = f"(multi-stage turn {turn_idx + 1})"
+        if log_label:
+            log_llm_messages(logger, f"{log_label} {turn_label}", messages)
+        tool_t0 = time.monotonic()
+        parsed = client.generate_chat_response(
+            messages=messages,
+            response_format=multi_stage_schema,
+            model_role=model_role,
+        )
+        if log_label:
+            log_model_response(logger, f"{log_label} {turn_label}", parsed)
+        if not isinstance(parsed, BaseModel):
+            raise RuntimeError(
+                f"Multi-stage structured call returned unexpected type {type(parsed)}"
+            )
+
+        next_call = getattr(parsed, "next_call", None)
+        if next_call is None:
+            raise RuntimeError(
+                "Multi-stage schema must expose a 'next_call' field; "
+                f"got {type(parsed).__name__}"
+            )
+        tool_name = getattr(next_call, "tool", None)
+        if not isinstance(tool_name, str):
+            raise RuntimeError(
+                "Multi-stage next_call must carry a 'tool' discriminator literal; "
+                f"got {type(next_call).__name__}"
+            )
+
+        reasoning = getattr(parsed, "reasoning", "") or ""
+        args_dict = next_call.model_dump(exclude={"tool"})
+        args_json = next_call.model_dump_json(exclude={"tool"})
+
+        # Echo the agent's plan back into history so subsequent turns can
+        # reason about what was tried already.
+        messages.append(
+            {
+                "role": "assistant",
+                "content": (
+                    f"Reasoning: {reasoning}\nNext call: {tool_name}({args_json})"
+                ),
+            }
+        )
+
+        if tool_name == finish_tool_name:
+            # Dispatch finish through the registry so any ctx-side
+            # bookkeeping (e.g. stashing the answer) still runs.
+            result = registry.handle(tool_name, args_json, ctx)
+            trace.turns.append(
+                ToolLoopTurn(
+                    tool_name=tool_name,
+                    args=args_dict,
+                    result=result,
+                    latency_ms=int((time.monotonic() - tool_t0) * 1000),
+                )
+            )
+            trace.finished = True
+            return ToolLoopResult(ctx=ctx, trace=trace, finished_reason="finish_tool")
+
+        result = registry.handle(tool_name, args_json, ctx)
+        trace.turns.append(
+            ToolLoopTurn(
+                tool_name=tool_name,
+                args=args_dict,
+                result=result,
+                latency_ms=int((time.monotonic() - tool_t0) * 1000),
+            )
+        )
+        messages.append(
+            {
+                "role": "user",
+                "content": (
+                    f"Tool {tool_name} returned: "
+                    f"{_serialize_tool_result_for_history(result)}"
+                ),
+            }
+        )
+
+    trace.finished = False
+    return ToolLoopResult(ctx=ctx, trace=trace, finished_reason="max_steps")
+
+
 def run_tool_loop(
     client: LiteLLMClient,
     messages: list[dict[str, Any]],
@@ -146,18 +302,29 @@ def run_tool_loop(
     finish_tool_name: str = "finish",
     fallback_schema: type[BaseModel] | None = None,
     fallback_tool_name: str | None = None,
+    multi_stage_schema: type[BaseModel] | None = None,
     log_label: str | None = None,
 ) -> ToolLoopResult:
     """Drive an LLM through a tool-calling loop until ``finish_tool_name`` or ``max_steps``.
 
-    For providers that lack native tool-calling, falls back to a single
-    structured-output call whose parsed schema is converted into synthetic
-    tool calls.
+    For providers that lack native tool-calling there are two fallback
+    modes (in priority order):
+
+    1. **Multi-stage** (``multi_stage_schema`` set): one structured-output
+       call per turn whose parsed schema carries a ``next_call``
+       discriminated-union. The server dispatches ``next_call`` against
+       the registry, appends the result to the message history, and asks
+       for the next turn — preserving observe-decide-act semantics.
+    2. **Single-shot** (``fallback_schema`` + ``fallback_tool_name``):
+       one structured-output call whose parsed list is converted into
+       synthetic tool calls dispatched against ``fallback_tool_name``.
+       All calls are planned upfront so the agent never observes any
+       tool result.
 
     Args:
         client (LiteLLMClient): Configured client — ``generate_chat_response``
             is invoked with ``tools=`` in native mode and with
-            ``response_format=`` in fallback mode.
+            ``response_format=`` in either fallback mode.
         messages (list[dict]): Seed message list; extended in place per turn.
         registry (ToolRegistry): Tools exposed to the LLM.
         model_role (ModelRole): Role used to resolve the target model.
@@ -165,20 +332,29 @@ def run_tool_loop(
         ctx (Any): Caller-supplied context object passed to each tool handler.
         finish_tool_name (str): Name of the sentinel tool that terminates the loop.
         fallback_schema (type[BaseModel] | None): Pydantic schema for the
-            capability-fallback path; required when tool-calling is unsupported.
-        fallback_tool_name (str | None): Name of the tool each fallback item
-            is dispatched against.
+            single-shot fallback path. Used only if ``multi_stage_schema``
+            is None.
+        fallback_tool_name (str | None): Name of the tool each single-shot
+            fallback item is dispatched against.
+        multi_stage_schema (type[BaseModel] | None): Pydantic schema for
+            the multi-stage fallback path. The schema must expose a
+            ``next_call`` field whose value is a Pydantic model carrying a
+            ``tool`` discriminator literal — that literal names the tool
+            to dispatch, all other fields become its args. Takes priority
+            over ``fallback_schema``.
         log_label (str | None): When set, each LLM call in the loop is
             mirrored into ``~/.reflexio/logs/llm_io.log`` using this label
-            (suffixed with ``(turn N)`` or ``(fallback)``). Matches classic
-            per-call logging parity. Leave unset (default) to suppress
-            file-level logging for tool-loop callers like unit tests.
+            (suffixed with ``(turn N)``, ``(fallback)``, or
+            ``(multi-stage turn N)``). Matches classic per-call logging
+            parity. Leave unset (default) to suppress file-level logging
+            for tool-loop callers like unit tests.
 
     Returns:
         ToolLoopResult: ``ctx``, trace, and the terminator reason.
 
     Raises:
-        RuntimeError: If the model lacks tool-calling AND no fallback schema is provided.
+        RuntimeError: If the model lacks tool-calling AND no fallback
+            (multi-stage or single-shot) is provided.
     """
     model = resolve_model_name(
         role=model_role,
@@ -198,6 +374,19 @@ def run_tool_loop(
 
     # ---- Capability fallback ------------------------------------------
     if not supports_tool_calling(model):
+        if multi_stage_schema is not None:
+            return _run_multi_stage_fallback(
+                client=client,
+                messages=messages,
+                registry=registry,
+                model_role=model_role,
+                max_steps=max_steps,
+                ctx=ctx,
+                finish_tool_name=finish_tool_name,
+                multi_stage_schema=multi_stage_schema,
+                log_label=log_label,
+                trace=trace,
+            )
         if fallback_schema is None or fallback_tool_name is None:
             raise RuntimeError(
                 f"Model {model} lacks tool-calling and no fallback_schema provided"

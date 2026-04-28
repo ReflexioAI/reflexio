@@ -908,6 +908,134 @@ EXTRACTION_TOOLS = ToolRegistry(
 )
 
 
+# ====================================================================
+# Multi-stage fallback schema for non-tool-calling models
+# ====================================================================
+#
+# When the search-agent model lacks native tool-calling (e.g.
+# minimax/MiniMax-M2.7), `run_tool_loop` drives one structured-output
+# call per turn using `SearchAgentTurnPlan` as the response_format. The
+# server parses the result, dispatches `next_call` against `SEARCH_TOOLS`,
+# appends the tool result to the message history, and loops until
+# `next_call.tool == "finish"` or `max_steps` is exhausted. This
+# preserves observe-decide-act semantics that single-shot fallback
+# (which planned all calls upfront) could not.
+#
+# The discriminated union mirrors the `args_model` of every tool in
+# `SEARCH_TOOLS`. Field names match the existing tool args so we can
+# convert each variant directly to the dispatch JSON via
+# `model_dump(exclude={"tool"})`.
+
+
+class _CallSearchUserProfiles(BaseModel):
+    """Multi-stage variant: call `search_user_profiles`."""
+
+    tool: Literal["search_user_profiles"]
+    query: Annotated[str, Field(min_length=1)]
+    top_k: int = 10
+
+
+class _CallSearchUserPlaybooks(BaseModel):
+    """Multi-stage variant: call `search_user_playbooks`."""
+
+    tool: Literal["search_user_playbooks"]
+    query: Annotated[str, Field(min_length=1)]
+    top_k: int = 10
+    status: Literal["current", "pending", "archived"] = "current"
+
+
+class _CallSearchAgentPlaybooks(BaseModel):
+    """Multi-stage variant: call `search_agent_playbooks`."""
+
+    tool: Literal["search_agent_playbooks"]
+    query: Annotated[str, Field(min_length=1)]
+    top_k: int = 10
+    status: Literal["current", "pending", "archived"] = "current"
+
+
+class _CallGetUserProfile(BaseModel):
+    """Multi-stage variant: call `get_user_profile`."""
+
+    tool: Literal["get_user_profile"]
+    id: Annotated[str, Field(min_length=1)]
+
+
+class _CallGetUserPlaybook(BaseModel):
+    """Multi-stage variant: call `get_user_playbook`."""
+
+    tool: Literal["get_user_playbook"]
+    id: Annotated[str, Field(min_length=1)]
+
+
+class _CallGetAgentPlaybook(BaseModel):
+    """Multi-stage variant: call `get_agent_playbook`."""
+
+    tool: Literal["get_agent_playbook"]
+    id: Annotated[str, Field(min_length=1)]
+
+
+class _CallGetSessionExcerpt(BaseModel):
+    """Multi-stage variant: call `get_session_excerpt`."""
+
+    tool: Literal["get_session_excerpt"]
+    session_id: Annotated[str, Field(min_length=1)]
+    span: Annotated[str, Field(min_length=1)]
+
+
+class _CallRerankUserProfiles(BaseModel):
+    """Multi-stage variant: call `rerank_user_profiles`."""
+
+    tool: Literal["rerank_user_profiles"]
+    query: Annotated[str, Field(min_length=1)]
+    profile_ids: list[str]
+    top_k: int = 10
+
+
+class _CallStorageStats(BaseModel):
+    """Multi-stage variant: call `storage_stats` (no args)."""
+
+    tool: Literal["storage_stats"]
+
+
+class _CallFinish(BaseModel):
+    """Multi-stage variant: call `finish` to terminate the loop."""
+
+    tool: Literal["finish"]
+    answer: str | None = None
+
+
+_SearchToolCall = Annotated[
+    _CallSearchUserProfiles
+    | _CallSearchUserPlaybooks
+    | _CallSearchAgentPlaybooks
+    | _CallGetUserProfile
+    | _CallGetUserPlaybook
+    | _CallGetAgentPlaybook
+    | _CallGetSessionExcerpt
+    | _CallRerankUserProfiles
+    | _CallStorageStats
+    | _CallFinish,
+    Field(discriminator="tool"),
+]
+
+
+class SearchAgentTurnPlan(BaseModel):
+    """One turn of the search agent's multi-stage fallback plan.
+
+    The agent emits one ``SearchAgentTurnPlan`` per turn. The server parses
+    it, dispatches ``next_call`` against ``SEARCH_TOOLS``, appends the tool
+    result to the message history, and asks for the next turn — until
+    ``next_call.tool == "finish"`` or ``max_steps`` is exhausted.
+
+    Used by ``run_tool_loop`` when the configured model lacks native
+    tool-calling but should still run a multi-turn observe-decide-act loop
+    (e.g. ``minimax/MiniMax-M2.7``).
+    """
+
+    reasoning: Annotated[str, Field(min_length=1)]
+    next_call: _SearchToolCall
+
+
 SEARCH_TOOLS = ToolRegistry(
     [
         Tool(

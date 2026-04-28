@@ -11,7 +11,10 @@ from reflexio.server.llm.model_defaults import ModelRole
 from reflexio.server.llm.tools import ToolLoopTrace, run_tool_loop
 from reflexio.server.prompt.prompt_manager import PromptManager
 from reflexio.server.services.extraction.plan import ExtractionCtx, HandlerBundle
-from reflexio.server.services.extraction.tools import SEARCH_TOOLS
+from reflexio.server.services.extraction.tools import (
+    SEARCH_TOOLS,
+    SearchAgentTurnPlan,
+)
 from reflexio.server.services.search.plan import SearchResult
 
 logger = logging.getLogger(__name__)
@@ -125,6 +128,7 @@ class SearchAgent:
             max_steps=self.max_steps,
             ctx=bundle,
             finish_tool_name="finish",
+            multi_stage_schema=SearchAgentTurnPlan,
             log_label="search_agent",
         )
 
