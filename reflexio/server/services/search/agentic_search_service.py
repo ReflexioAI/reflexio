@@ -187,9 +187,11 @@ class AgenticSearchService:
             storage=self.storage,
             prompt_manager=self.prompt_manager,
             # Tight budget for benchmark throughput; default is 10.
-            # Floor is 2 (one search → finish); 3 leaves room for one
-            # follow-up reformulation when the first call is empty.
-            max_steps=3,
+            # Floor is 2 (one search → finish); 5 accommodates the
+            # rehydration-mandated patterns (search → reformulate →
+            # rehydrate → finish = 4) plus one optional rerank step,
+            # while still bounding wasted work on simple questions.
+            max_steps=5,
             enable_agent_answer=bool(request.enable_agent_answer),
         )
         result = agent.run(
