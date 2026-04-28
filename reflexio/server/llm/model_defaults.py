@@ -195,7 +195,14 @@ _PROVIDER_DEFAULTS: dict[str, ProviderDefaults] = {
         pre_retrieval="gpt-5-nano",
         embedding="text-embedding-3-small",
         extraction_agent="gpt-5-mini",
-        search_agent="gpt-5-mini",
+        # search_agent uses MiniMax-M2.7 (cross-provider routing via litellm).
+        # gpt-5-mini was the prior default; with the agentic-v2 search prompt's
+        # multi-step orchestration (pattern dispatch, mandatory rehydration in
+        # E/G, narration), gpt-5-mini reliably defaults to single-search-finish
+        # for ~90% of questions. MiniMax-M2.7 is a capable instruction-follower
+        # at lower cost than gpt-5.5; the cross-provider override here keeps
+        # other roles on OpenAI while the search agent moves to MiniMax.
+        search_agent="minimax/MiniMax-M2.7",
     ),
     "anthropic": ProviderDefaults(
         generation="claude-sonnet-4-6",
