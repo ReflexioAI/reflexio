@@ -33,6 +33,7 @@ __all__ = [
     "BlockingIssue",
     "BlockingIssueKind",
     "ToolUsed",
+    "Citation",
     "Interaction",
     "Request",
     "UserProfile",
@@ -115,6 +116,32 @@ __all__ = [
 # ===============================
 
 
+class Citation(BaseModel):
+    """A playbook or profile item the agent cited as influential.
+
+    Carried inline on an Assistant ``InteractionData`` row to mark
+    which previously-injected playbook rule or user-profile row
+    materially shaped that response. The server uses these to drive
+    reflection (does the cited rule still look right after seeing how
+    it was applied?).
+
+    Attributes:
+        kind (Literal["playbook", "profile"]): Which kind of cited
+            item this references.
+        real_id (str): Stable storage id — ``user_playbook_id`` for
+            playbooks, ``profile_id`` for profiles.
+        tag (str): Injection-time rank tag (e.g. ``"r1-301"``,
+            ``"p1-0f37"``). Per-injection, not stable across sessions;
+            kept as a debug aid.
+        title (str): Short human-readable label for logs and UI.
+    """
+
+    kind: Literal["playbook", "profile"]
+    real_id: str
+    tag: str = ""
+    title: str = ""
+
+
 # information about the user interaction sent by the client
 class Interaction(BaseModel):
     interaction_id: int = 0  # 0 = placeholder for DB auto-increment
@@ -130,6 +157,7 @@ class Interaction(BaseModel):
     shadow_content: str = ""
     expert_content: str = ""
     tools_used: list[ToolUsed] = Field(default_factory=list)
+    citations: list[Citation] = Field(default_factory=list)
     embedding: EmbeddingVector = []
 
     @field_validator("interacted_image_url", mode="after")
@@ -364,6 +392,7 @@ class InteractionData(BaseModel):
     interacted_image_url: str = ""
     image_encoding: str = ""  # base64 encoded image
     tools_used: list[ToolUsed] = Field(default_factory=list)
+    citations: list[Citation] = Field(default_factory=list)
 
     @field_validator("interacted_image_url", mode="after")
     @classmethod

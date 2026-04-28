@@ -170,6 +170,46 @@ class ProfileMixin:
             )
             return updated_count
 
+    def get_profiles_by_ids(
+        self,
+        user_id: str,
+        profile_ids: list[str],
+        status_filter: list[Status | None] | None = None,
+    ) -> list[UserProfile]:
+        if not profile_ids:
+            return []
+        if status_filter is None:
+            status_filter = [None]
+
+        user_dir = self._user_dir(self._profiles_dir(), user_id)
+        results: list[UserProfile] = []
+        with self._lock:
+            for pid in profile_ids:
+                path = self._entity_path(user_dir, pid)
+                if not path.exists():
+                    continue
+                profile_obj = self._read_entity(path, UserProfile)
+                if matches_status_filter(profile_obj.status, status_filter):
+                    results.append(profile_obj)
+        return results
+
+    def archive_profile_by_id(self, user_id: str, profile_id: str) -> bool:
+        with self._lock:
+            path = self._entity_path(
+                self._user_dir(self._profiles_dir(), user_id),
+                profile_id,
+            )
+            if not path.exists():
+                return False
+            profile_obj = self._read_entity(path, UserProfile)
+            if profile_obj.status is not None:
+                return False
+            profile_obj.status = Status.ARCHIVED
+            profile_obj.last_modified_timestamp = int(datetime.now(UTC).timestamp())
+            self._write_entity(path, profile_obj)
+            self._write_embedding(path, profile_obj.embedding)
+            return True
+
     def delete_all_profiles_by_status(self, status: Status) -> int:
         with self._lock:
             deleted_count = 0

@@ -191,6 +191,47 @@ class PlaybookMixin:
             )
             return updated_count
 
+    def get_user_playbooks_by_ids(
+        self,
+        user_id: str,
+        user_playbook_ids: list[int],
+        status_filter: list[Status | None] | None = None,
+    ) -> list[UserPlaybook]:
+        if not user_playbook_ids:
+            return []
+        if status_filter is None:
+            status_filter = [None]
+
+        up_dir = self._user_playbooks_dir()
+        results: list[UserPlaybook] = []
+        with self._lock:
+            for upid in user_playbook_ids:
+                path = self._entity_path(up_dir, str(upid))
+                if not path.exists():
+                    continue
+                up = self._read_entity(path, UserPlaybook)
+                if up.user_id != user_id:
+                    continue
+                if matches_status_filter(up.status, status_filter):
+                    results.append(up)
+        return results
+
+    def archive_user_playbook_by_id(self, user_id: str, user_playbook_id: int) -> bool:
+        with self._lock:
+            path = self._entity_path(
+                self._user_playbooks_dir(),
+                str(user_playbook_id),
+            )
+            if not path.exists():
+                return False
+            up = self._read_entity(path, UserPlaybook)
+            if up.user_id != user_id or up.status is not None:
+                return False
+            up.status = Status.ARCHIVED
+            self._write_entity(path, up)
+            self._write_embedding(path, up.embedding)
+            return True
+
     def delete_all_user_playbooks_by_status(
         self,
         status: Status,

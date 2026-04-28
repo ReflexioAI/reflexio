@@ -25,6 +25,7 @@ from reflexio.models.api_schema.service_schemas import (
     AgentPlaybookSnapshot,
     AgentPlaybookUpdateEntry,
     AgentSuccessEvaluationResult,
+    Citation,
     Interaction,
     PlaybookAggregationChangeLog,
     PlaybookStatus,
@@ -345,6 +346,12 @@ def _row_to_interaction(row: sqlite3.Row) -> Interaction:
         if tools_used_raw and isinstance(tools_used_raw, list)
         else []
     )
+    citations_raw = _json_loads(d.get("citations"))
+    citations = (
+        [Citation(**c) for c in citations_raw if isinstance(c, dict)]
+        if citations_raw and isinstance(citations_raw, list)
+        else []
+    )
     return Interaction(
         interaction_id=d["interaction_id"],
         user_id=d["user_id"],
@@ -358,6 +365,7 @@ def _row_to_interaction(row: sqlite3.Row) -> Interaction:
         shadow_content=d.get("shadow_content") or "",
         expert_content=d.get("expert_content") or "",
         tools_used=tools_used,
+        citations=citations,
     )
 
 
@@ -678,6 +686,12 @@ class SQLiteStorageBase(BaseStorage):
                 self.conn.execute(
                     "ALTER TABLE interactions ADD COLUMN expert_content TEXT NOT NULL DEFAULT ''"
                 )
+                self.conn.commit()
+
+        if "citations" not in columns:
+            logger.info("Adding citations column to interactions table.")
+            with self._lock:
+                self.conn.execute("ALTER TABLE interactions ADD COLUMN citations TEXT")
                 self.conn.commit()
 
     def _migrate_feedback_schema(self) -> None:
@@ -1066,6 +1080,7 @@ CREATE TABLE IF NOT EXISTS interactions (
     shadow_content TEXT NOT NULL DEFAULT '',
     expert_content TEXT NOT NULL DEFAULT '',
     tools_used TEXT,
+    citations TEXT,
     embedding TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_interactions_user_id ON interactions(user_id);

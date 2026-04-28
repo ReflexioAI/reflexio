@@ -324,6 +324,35 @@ class PlaybookMixin:
         return cur.rowcount
 
     @SQLiteStorageBase.handle_exceptions
+    def get_user_playbooks_by_ids(
+        self,
+        user_id: str,
+        user_playbook_ids: list[int],
+        status_filter: list[Status | None] | None = None,
+    ) -> list[UserPlaybook]:
+        if not user_playbook_ids:
+            return []
+        if status_filter is None:
+            status_filter = [None]
+        frag, sparams = _build_status_sql(status_filter)
+        ph = ",".join("?" for _ in user_playbook_ids)
+        sql = (
+            f"SELECT * FROM user_playbooks "
+            f"WHERE user_id = ? AND user_playbook_id IN ({ph}) AND {frag}"
+        )
+        params: list[Any] = [user_id, *user_playbook_ids, *sparams]
+        return [_row_to_user_playbook(r) for r in self._fetchall(sql, params)]
+
+    @SQLiteStorageBase.handle_exceptions
+    def archive_user_playbook_by_id(self, user_id: str, user_playbook_id: int) -> bool:
+        cur = self._execute(
+            "UPDATE user_playbooks SET status = ? "
+            "WHERE user_playbook_id = ? AND user_id = ? AND status IS NULL",
+            (Status.ARCHIVED.value, user_playbook_id, user_id),
+        )
+        return cur.rowcount > 0
+
+    @SQLiteStorageBase.handle_exceptions
     def has_user_playbooks_with_status(
         self,
         status: Status | None,

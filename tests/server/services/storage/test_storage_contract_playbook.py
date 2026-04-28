@@ -2,6 +2,7 @@
 
 import pytest
 
+from reflexio.models.api_schema.domain.enums import Status
 from reflexio.models.api_schema.service_schemas import AgentPlaybook, UserPlaybook
 
 pytestmark = pytest.mark.integration
@@ -120,6 +121,111 @@ class TestUserPlaybookCRUD:
 
         assert storage.count_user_playbooks(playbook_name="alpha") == 0
         assert storage.count_user_playbooks(playbook_name="beta") == 1
+
+
+class TestGetUserPlaybooksByIds:
+    """Contract tests for get_user_playbooks_by_ids (used by ReflectionService)."""
+
+    def test_returns_only_requested_ids(self, storage):
+        storage.save_user_playbooks(
+            [
+                _make_user_playbook(1, "u1", "fb", "v1"),
+                _make_user_playbook(2, "u1", "fb", "v1"),
+                _make_user_playbook(3, "u1", "fb", "v1"),
+            ]
+        )
+        # Storage assigns ids on insert; round-trip to discover them.
+        ids = sorted(
+            p.user_playbook_id
+            for p in storage.get_user_playbooks(user_id="u1", status_filter=[None])
+        )
+        target = [ids[0], ids[2]]
+        result = storage.get_user_playbooks_by_ids("u1", target)
+        assert {p.user_playbook_id for p in result} == set(target)
+
+    def test_empty_ids_returns_empty_list(self, storage):
+        storage.save_user_playbooks([_make_user_playbook(1, "u1", "fb", "v1")])
+        assert storage.get_user_playbooks_by_ids("u1", []) == []
+
+    def test_unknown_ids_silently_skipped(self, storage):
+        storage.save_user_playbooks([_make_user_playbook(1, "u1", "fb", "v1")])
+        existing_id = storage.get_user_playbooks(user_id="u1", status_filter=[None])[
+            0
+        ].user_playbook_id
+        result = storage.get_user_playbooks_by_ids("u1", [existing_id, 99_999])
+        assert {p.user_playbook_id for p in result} == {existing_id}
+
+    def test_filters_by_user_id(self, storage):
+        storage.save_user_playbooks(
+            [
+                _make_user_playbook(1, "u1", "fb", "v1"),
+                _make_user_playbook(2, "u2", "fb", "v1"),
+            ]
+        )
+        u2_id = storage.get_user_playbooks(user_id="u2", status_filter=[None])[
+            0
+        ].user_playbook_id
+        # Asking u1 for u2's playbook id returns nothing.
+        assert storage.get_user_playbooks_by_ids("u1", [u2_id]) == []
+
+    def test_default_status_filter_excludes_archived(self, storage):
+        storage.save_user_playbooks(
+            [
+                _make_user_playbook(1, "u1", "fb", "v1"),
+                _make_user_playbook(2, "u1", "fb", "v1"),
+            ]
+        )
+        ids = sorted(
+            p.user_playbook_id
+            for p in storage.get_user_playbooks(user_id="u1", status_filter=[None])
+        )
+        storage.archive_user_playbook_by_id("u1", ids[1])
+        result = storage.get_user_playbooks_by_ids("u1", ids)
+        assert {p.user_playbook_id for p in result} == {ids[0]}
+
+    def test_explicit_status_filter_includes_archived(self, storage):
+        storage.save_user_playbooks([_make_user_playbook(1, "u1", "fb", "v1")])
+        upid = storage.get_user_playbooks(user_id="u1", status_filter=[None])[
+            0
+        ].user_playbook_id
+        storage.archive_user_playbook_by_id("u1", upid)
+        result = storage.get_user_playbooks_by_ids(
+            "u1", [upid], status_filter=[Status.ARCHIVED]
+        )
+        assert len(result) == 1
+        assert result[0].user_playbook_id == upid
+
+
+class TestArchiveUserPlaybookById:
+    """Contract tests for archive_user_playbook_by_id (used by ReflectionService)."""
+
+    def test_archives_current_playbook(self, storage):
+        storage.save_user_playbooks([_make_user_playbook(1, "u1", "fb", "v1")])
+        assert storage.archive_user_playbook_by_id("u1", 1) is True
+
+        # Status filter excludes archived rows.
+        current = storage.get_user_playbooks(user_id="u1", status_filter=[None])
+        assert current == []
+        archived = storage.get_user_playbooks(
+            user_id="u1", status_filter=[Status.ARCHIVED]
+        )
+        assert len(archived) == 1
+        assert archived[0].user_playbook_id == 1
+
+    def test_returns_false_for_missing_playbook(self, storage):
+        assert storage.archive_user_playbook_by_id("u1", 999) is False
+
+    def test_returns_false_when_already_archived(self, storage):
+        storage.save_user_playbooks([_make_user_playbook(1, "u1", "fb", "v1")])
+        assert storage.archive_user_playbook_by_id("u1", 1) is True
+        assert storage.archive_user_playbook_by_id("u1", 1) is False
+
+    def test_returns_false_for_wrong_user(self, storage):
+        storage.save_user_playbooks([_make_user_playbook(1, "u1", "fb", "v1")])
+        assert storage.archive_user_playbook_by_id("u2", 1) is False
+        # u1's row untouched.
+        current = storage.get_user_playbooks(user_id="u1", status_filter=[None])
+        assert len(current) == 1
 
 
 # ---------------------------------------------------------------------------

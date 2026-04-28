@@ -262,6 +262,37 @@ class ProfileMixin:
         return cur.rowcount
 
     @SQLiteStorageBase.handle_exceptions
+    def get_profiles_by_ids(
+        self,
+        user_id: str,
+        profile_ids: list[str],
+        status_filter: list[Status | None] | None = None,
+    ) -> list[UserProfile]:
+        if not profile_ids:
+            return []
+        if status_filter is None:
+            status_filter = [None]
+        current_ts = _epoch_now()
+        frag, sparams = _build_status_sql(status_filter)
+        ph = ",".join("?" for _ in profile_ids)
+        sql = (
+            f"SELECT * FROM profiles "
+            f"WHERE user_id = ? AND profile_id IN ({ph}) "
+            f"AND expiration_timestamp >= ? AND {frag}"
+        )
+        params: list[Any] = [user_id, *profile_ids, current_ts, *sparams]
+        return [_row_to_profile(r) for r in self._fetchall(sql, params)]
+
+    @SQLiteStorageBase.handle_exceptions
+    def archive_profile_by_id(self, user_id: str, profile_id: str) -> bool:
+        cur = self._execute(
+            "UPDATE profiles SET status = ?, last_modified_timestamp = ? "
+            "WHERE profile_id = ? AND user_id = ? AND status IS NULL",
+            (Status.ARCHIVED.value, _epoch_now(), profile_id, user_id),
+        )
+        return cur.rowcount > 0
+
+    @SQLiteStorageBase.handle_exceptions
     def delete_all_profiles_by_status(self, status: Status) -> int:
         # Clean up FTS for profiles being deleted
         pids = [
@@ -335,8 +366,8 @@ class ProfileMixin:
                        (interaction_id, user_id, content, request_id, created_at,
                         role, user_action, user_action_description,
                         interacted_image_url, shadow_content, expert_content,
-                        tools_used, embedding)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        tools_used, citations, embedding)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         interaction.interaction_id,
                         interaction.user_id,
@@ -350,6 +381,7 @@ class ProfileMixin:
                         interaction.shadow_content,
                         interaction.expert_content,
                         _json_dumps([t.model_dump() for t in interaction.tools_used]),
+                        _json_dumps([c.model_dump() for c in interaction.citations]),
                         _json_dumps(interaction.embedding),
                     ),
                 )
@@ -360,8 +392,8 @@ class ProfileMixin:
                        (user_id, content, request_id, created_at,
                         role, user_action, user_action_description,
                         interacted_image_url, shadow_content, expert_content,
-                        tools_used, embedding)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        tools_used, citations, embedding)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         interaction.user_id,
                         interaction.content,
@@ -374,6 +406,7 @@ class ProfileMixin:
                         interaction.shadow_content,
                         interaction.expert_content,
                         _json_dumps([t.model_dump() for t in interaction.tools_used]),
+                        _json_dumps([c.model_dump() for c in interaction.citations]),
                         _json_dumps(interaction.embedding),
                     ),
                 )

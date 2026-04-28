@@ -4,7 +4,9 @@ from datetime import UTC, datetime
 
 import pytest
 
+from reflexio.models.api_schema.domain.enums import Status
 from reflexio.models.api_schema.service_schemas import (
+    Citation,
     DeleteUserInteractionRequest,
     DeleteUserProfileRequest,
     Interaction,
@@ -130,6 +132,94 @@ class TestProfileCRUD:
         assert storage.count_all_profiles() == 2
 
 
+class TestGetProfilesByIds:
+    """Contract tests for get_profiles_by_ids (used by ReflectionService)."""
+
+    def test_returns_only_requested_ids(self, storage: BaseStorage) -> None:
+        storage.add_user_profile(
+            "u1",
+            [
+                _make_profile("u1", "p1", "a"),
+                _make_profile("u1", "p2", "b"),
+                _make_profile("u1", "p3", "c"),
+            ],
+        )
+        result = storage.get_profiles_by_ids("u1", ["p1", "p3"])
+        assert {p.profile_id for p in result} == {"p1", "p3"}
+
+    def test_empty_ids_returns_empty_list(self, storage: BaseStorage) -> None:
+        storage.add_user_profile("u1", [_make_profile("u1", "p1", "a")])
+        assert storage.get_profiles_by_ids("u1", []) == []
+
+    def test_unknown_ids_silently_skipped(self, storage: BaseStorage) -> None:
+        storage.add_user_profile("u1", [_make_profile("u1", "p1", "a")])
+        result = storage.get_profiles_by_ids("u1", ["p1", "missing"])
+        assert len(result) == 1
+        assert result[0].profile_id == "p1"
+
+    def test_filters_by_user_id(self, storage: BaseStorage) -> None:
+        storage.add_user_profile("u1", [_make_profile("u1", "p1", "a")])
+        storage.add_user_profile("u2", [_make_profile("u2", "p2", "b")])
+        # Asking u1 for u2's profile_id returns nothing.
+        assert storage.get_profiles_by_ids("u1", ["p2"]) == []
+
+    def test_default_status_filter_excludes_archived(
+        self, storage: BaseStorage
+    ) -> None:
+        storage.add_user_profile(
+            "u1",
+            [
+                _make_profile("u1", "p1", "current"),
+                _make_profile("u1", "p2", "to-archive"),
+            ],
+        )
+        storage.archive_profile_by_id("u1", "p2")
+        # Default status_filter = [None] → CURRENT only.
+        result = storage.get_profiles_by_ids("u1", ["p1", "p2"])
+        assert {p.profile_id for p in result} == {"p1"}
+
+    def test_explicit_status_filter_includes_archived(
+        self, storage: BaseStorage
+    ) -> None:
+        storage.add_user_profile("u1", [_make_profile("u1", "p1", "x")])
+        storage.archive_profile_by_id("u1", "p1")
+        result = storage.get_profiles_by_ids(
+            "u1", ["p1"], status_filter=[Status.ARCHIVED]
+        )
+        assert len(result) == 1
+        assert result[0].profile_id == "p1"
+
+
+class TestArchiveProfileById:
+    """Contract tests for archive_profile_by_id (used by ReflectionService)."""
+
+    def test_archives_current_profile(self, storage: BaseStorage) -> None:
+        storage.add_user_profile("u1", [_make_profile("u1", "p1", "old content")])
+        assert storage.archive_profile_by_id("u1", "p1") is True
+
+        # Status filter [None] excludes ARCHIVED rows.
+        assert storage.get_user_profile("u1", status_filter=[None]) == []
+        archived = storage.get_user_profile("u1", status_filter=[Status.ARCHIVED])
+        assert len(archived) == 1
+        assert archived[0].profile_id == "p1"
+
+    def test_returns_false_for_missing_profile(self, storage: BaseStorage) -> None:
+        assert storage.archive_profile_by_id("u1", "does-not-exist") is False
+
+    def test_returns_false_when_already_archived(self, storage: BaseStorage) -> None:
+        storage.add_user_profile("u1", [_make_profile("u1", "p1", "old content")])
+        assert storage.archive_profile_by_id("u1", "p1") is True
+        # Second call: row exists but status != None.
+        assert storage.archive_profile_by_id("u1", "p1") is False
+
+    def test_returns_false_for_wrong_user(self, storage: BaseStorage) -> None:
+        storage.add_user_profile("u1", [_make_profile("u1", "p1", "old content")])
+        assert storage.archive_profile_by_id("u2", "p1") is False
+        # u1's row is untouched.
+        current = storage.get_user_profile("u1", status_filter=[None])
+        assert len(current) == 1
+
+
 class TestInteractionCRUD:
     def test_add_and_get_interaction(self, storage: BaseStorage) -> None:
         interaction = _make_interaction("u1", 1, "clicked item", "req1")
@@ -212,3 +302,47 @@ class TestInteractionCRUD:
         deleted = storage.delete_oldest_interactions(2)
         assert deleted == 2
         assert storage.count_all_interactions() == 3
+
+    def test_interaction_citations_round_trip(self, storage: BaseStorage) -> None:
+        """Citations attached to an Interaction must round-trip through storage.
+
+        Covers both INSERT branches (with and without an assigned interaction_id)
+        and the JSON serialization in ``_profiles.py`` plus the deserialization
+        in ``_row_to_interaction``.
+        """
+        interaction = _make_interaction("u1", 1, "answered with cite", "req1")
+        interaction.citations = [
+            Citation(
+                kind="playbook",
+                real_id="pb_42",
+                tag="r1-ab12",
+                title="rule X",
+            ),
+            Citation(
+                kind="profile",
+                real_id="prof_7",
+                tag="p1-cd34",
+                title="user role",
+            ),
+        ]
+        storage.add_user_interaction("u1", interaction)
+
+        result = storage.get_user_interaction("u1")
+        assert len(result) == 1
+        assert result[0].citations == interaction.citations
+
+    def test_interaction_with_no_citations_round_trips_as_empty(
+        self, storage: BaseStorage
+    ) -> None:
+        """An Interaction without citations comes back with ``citations=[]``.
+
+        Pre-migration rows have ``citations IS NULL`` in SQLite; verify
+        ``_row_to_interaction`` parses that as an empty list rather than
+        raising or surfacing ``None``.
+        """
+        interaction = _make_interaction("u1", 1, "no citations", "req1")
+        storage.add_user_interaction("u1", interaction)
+
+        result = storage.get_user_interaction("u1")
+        assert len(result) == 1
+        assert result[0].citations == []
