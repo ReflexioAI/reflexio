@@ -95,7 +95,7 @@ class GetAgentPlaybookArgs(BaseModel):
     id: Annotated[str, Field(min_length=1)]
 
 
-class GetSessionExcerptArgs(BaseModel):
+class ReadSessionTextArgs(BaseModel):
     """Retrieve a verbatim excerpt from a session by matching a span."""
 
     session_id: Annotated[str, Field(min_length=1)]
@@ -403,15 +403,15 @@ def _handle_get_agent_playbook(
     return {"error": "not found"}
 
 
-def _handle_get_session_excerpt(
-    args: GetSessionExcerptArgs,
+def _handle_read_session_text(
+    args: ReadSessionTextArgs,
     storage: Any,
     ctx: ExtractionCtx,  # noqa: ARG001
 ) -> dict[str, Any]:
     """Return the closest verbatim match of ``span`` inside ``session_id``.
 
     Args:
-        args (GetSessionExcerptArgs): Session id and span string to match.
+        args (ReadSessionTextArgs): Session id and span string to match.
         storage (Any): BaseStorage instance; must have ``get_interactions_by_session``.
         ctx (ExtractionCtx): Per-run state (unused for reads, present for consistency).
 
@@ -422,7 +422,7 @@ def _handle_get_session_excerpt(
     try:
         interactions = storage.get_interactions_by_session(args.session_id)
     except AttributeError:
-        return {"error": "get_session_excerpt requires get_interactions_by_session"}
+        return {"error": "read_session_text requires get_interactions_by_session"}
     matches = [
         i.content for i in interactions if args.span.strip() in (i.content or "")
     ]
@@ -831,9 +831,9 @@ _READ_TOOLS = [
         handler=_bundle_handler(_handle_get_agent_playbook),
     ),
     Tool(
-        name="get_session_excerpt",
-        args_model=GetSessionExcerptArgs,
-        handler=_bundle_handler(_handle_get_session_excerpt),
+        name="read_session_text",
+        args_model=ReadSessionTextArgs,
+        handler=_bundle_handler(_handle_read_session_text),
     ),
 ]
 
@@ -974,10 +974,10 @@ class _CallGetAgentPlaybook(BaseModel):
     id: Annotated[str, Field(min_length=1)]
 
 
-class _CallGetSessionExcerpt(BaseModel):
-    """Multi-stage variant: call `get_session_excerpt`."""
+class _CallReadSessionText(BaseModel):
+    """Multi-stage variant: call `read_session_text`."""
 
-    tool: Literal["get_session_excerpt"]
+    tool: Literal["read_session_text"]
     session_id: Annotated[str, Field(min_length=1)]
     span: Annotated[str, Field(min_length=1)]
 
@@ -1011,7 +1011,7 @@ _SearchToolCall = Annotated[
     | _CallGetUserProfile
     | _CallGetUserPlaybook
     | _CallGetAgentPlaybook
-    | _CallGetSessionExcerpt
+    | _CallReadSessionText
     | _CallRerankUserProfiles
     | _CallStorageStats
     | _CallFinish,
@@ -1079,9 +1079,9 @@ SEARCH_TOOLS = ToolRegistry(
             handler=_bundle_handler(_handle_get_agent_playbook),
         ),
         Tool(
-            name="get_session_excerpt",
-            args_model=GetSessionExcerptArgs,
-            handler=_bundle_handler(_handle_get_session_excerpt),
+            name="read_session_text",
+            args_model=ReadSessionTextArgs,
+            handler=_bundle_handler(_handle_read_session_text),
         ),
         Tool(
             name="finish",

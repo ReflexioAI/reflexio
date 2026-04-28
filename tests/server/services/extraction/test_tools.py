@@ -6,12 +6,12 @@ from reflexio.models.api_schema.domain.entities import UserPlaybook, UserProfile
 from reflexio.models.api_schema.domain.enums import ProfileTimeToLive
 from reflexio.server.services.extraction.plan import ExtractionCtx
 from reflexio.server.services.extraction.tools import (
-    GetSessionExcerptArgs,
+    ReadSessionTextArgs,
     GetUserProfileArgs,
     SearchAgentPlaybooksArgs,
     SearchUserPlaybooksArgs,
     SearchUserProfilesArgs,
-    _handle_get_session_excerpt,
+    _handle_read_session_text,
     _handle_get_user_profile,
     _handle_search_agent_playbooks,
     _handle_search_user_playbooks,
@@ -138,7 +138,7 @@ def test_top_k_capped_server_side(seeded_storage, ctx):
     assert "hits" in result
 
 
-def test_get_session_excerpt_returns_error_when_api_missing():
+def test_read_session_text_returns_error_when_api_missing():
     """If storage doesn't have get_interactions_by_session, handler returns error."""
     from unittest.mock import MagicMock
 
@@ -148,8 +148,8 @@ def test_get_session_excerpt_returns_error_when_api_missing():
     # Purposefully does NOT have get_interactions_by_session attr
     del mock_storage.get_interactions_by_session  # ensure AttributeError on access
     ctx = ExtractionCtx(user_id="u", agent_version="v")
-    result = _handle_get_session_excerpt(
-        GetSessionExcerptArgs(session_id="s", span="x"),
+    result = _handle_read_session_text(
+        ReadSessionTextArgs(session_id="s", span="x"),
         mock_storage,
         ctx,
     )
@@ -327,7 +327,7 @@ def test_extraction_registry_has_all_tools():
         "delete_user_playbook",
         "search_agent_playbooks",
         "get_agent_playbook",
-        "get_session_excerpt",
+        "read_session_text",
         "finish",
     }
 
@@ -363,7 +363,7 @@ def test_search_registry_is_read_only():
         "get_user_playbook",
         "search_agent_playbooks",
         "get_agent_playbook",
-        "get_session_excerpt",
+        "read_session_text",
         "finish",
     }
     # No mutations allowed in search
