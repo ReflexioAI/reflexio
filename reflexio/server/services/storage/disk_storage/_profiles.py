@@ -183,12 +183,15 @@ class ProfileMixin:
 
         user_dir = self._user_dir(self._profiles_dir(), user_id)
         results: list[UserProfile] = []
+        now_ts = int(datetime.now(UTC).timestamp())
         with self._lock:
             for pid in profile_ids:
                 path = self._entity_path(user_dir, pid)
                 if not path.exists():
                     continue
                 profile_obj = self._read_entity(path, UserProfile)
+                if profile_obj.expiration_timestamp < now_ts:
+                    continue
                 if matches_status_filter(profile_obj.status, status_filter):
                     results.append(profile_obj)
         return results

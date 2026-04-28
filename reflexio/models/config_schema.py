@@ -493,7 +493,7 @@ class Config(BaseModel):
         """
         data = _migrate_dict(data, _CONFIG_FIELD_MIGRATION)
         if isinstance(data, dict):
-            for key in ("batch_size", "batch_interval"):
+            for key in ("batch_size", "batch_interval", "reflection_config"):
                 if key in data and data[key] is None:
                     del data[key]
         return data
