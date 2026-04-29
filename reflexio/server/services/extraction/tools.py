@@ -55,10 +55,24 @@ TOP_K_CAP = 25
 
 
 class SearchUserProfilesArgs(BaseModel):
-    """Semantic/keyword search the current user's profiles."""
+    """Semantic/keyword search the current user's profiles, with optional
+    second-stage rerank (pipe-equivalent of search → rerank).
+
+    One-stage usage (the common case): supply ``query`` and ``top_k``. The
+    server runs hybrid retrieval (BM25 + vector via RRF) over-fetches a wider
+    candidate pool, then cross-encoder reranks by ``query`` and returns the
+    top ``top_k``.
+
+    Two-stage refinement: also supply ``refine_with``. The server runs the
+    same broad retrieval by ``query``, then reranks the candidates by
+    ``refine_with`` instead. Lets you broadly fetch ("bike maintenance") then
+    narrow on a specific facet of interest ("dollar amounts spent") without
+    transcribing candidate ids back through the model.
+    """
 
     query: Annotated[str, Field(min_length=1)]
     top_k: int = 10
+    refine_with: str | None = None
 
 
 class GetUserProfileArgs(BaseModel):
@@ -246,6 +260,16 @@ def _handle_search_user_profiles(
 ) -> dict[str, Any]:
     """Search the current user's profiles and bump search_count.
 
+    Two-stage retrieval: hybrid (BM25 + vector via RRF) over-fetches a wider
+    candidate pool, then a cross-encoder rerank scores ``(query, content)``
+    pairs and returns the top ``args.top_k`` by descending rerank score.
+
+    The over-fetch + rerank pattern fixes a class of failures where the
+    bi-encoder ranks the right profile at #2-#15 by cosine but the top-1
+    is a near-duplicate that the answer LLM picks first. Cross-encoders
+    model query-document interaction (e.g. matching a numeric question to
+    the profile that contains a number, not just topic similarity).
+
     Args:
         args (SearchUserProfilesArgs): Query and top_k.
         storage (Any): BaseStorage instance.
@@ -254,16 +278,48 @@ def _handle_search_user_profiles(
     Returns:
         dict[str, Any]: ``{"hits": [...]}`` with LLM-facing profile projections.
     """
+    final_k = _cap_top_k(args.top_k)
+    # When `refine_with` is set, over-fetch for rerank headroom. Otherwise
+    # we trust the hybrid retrieval ranking — empirically (held-out #10 vs
+    # #12) always-on cross-encoder rerank slightly hurt T-R: the rerank
+    # model was trained on MS MARCO web passages and ranks declarative
+    # facts differently from temporal-arithmetic reasoning needs. Making
+    # rerank opt-in via `refine_with` matches the agent's intent: rerank
+    # only when the agent has something specific to refine on.
+    use_rerank = args.refine_with is not None
+    fetch_k = (
+        min(max(final_k * 3, 30), 50) if use_rerank else final_k
+    )
+
     request = SearchUserProfileRequest(
         query=args.query,
         user_id=ctx.user_id,
-        top_k=_cap_top_k(args.top_k),
+        top_k=fetch_k,
     )
     hits = storage.search_user_profile(
         request,
         query_embedding=_maybe_embed_query(storage, args.query),
     )
     ctx.search_count += 1
+
+    # Two-stage refinement when `refine_with` is supplied — server-side pipe
+    # of `search → rerank` without round-tripping candidate ids back through
+    # the agent. Lazy import so unit-test collection stays fast; the model
+    # is module-cached after first load.
+    if use_rerank and len(hits) > final_k:
+        try:
+            from reflexio.server.llm.rerank import score_pairs
+
+            scores = score_pairs(args.refine_with, [h.content for h in hits])  # type: ignore[arg-type]
+            ranked = sorted(
+                zip(hits, scores, strict=True),
+                key=lambda pair: pair[1],
+                reverse=True,
+            )
+            hits = [h for h, _ in ranked[:final_k]]
+        except Exception:  # noqa: BLE001 — fall back to hybrid order on failure
+            hits = hits[:final_k]
+
     for h in hits:
         pid = getattr(h, "profile_id", "") or ""
         if pid:
@@ -933,6 +989,7 @@ class _CallSearchUserProfiles(BaseModel):
     tool: Literal["search_user_profiles"]
     query: Annotated[str, Field(min_length=1)]
     top_k: int = 10
+    refine_with: str | None = None
 
 
 class _CallSearchUserPlaybooks(BaseModel):
@@ -982,15 +1039,6 @@ class _CallReadSessionText(BaseModel):
     span: Annotated[str, Field(min_length=1)]
 
 
-class _CallRerankUserProfiles(BaseModel):
-    """Multi-stage variant: call `rerank_user_profiles`."""
-
-    tool: Literal["rerank_user_profiles"]
-    query: Annotated[str, Field(min_length=1)]
-    profile_ids: list[str]
-    top_k: int = 10
-
-
 class _CallStorageStats(BaseModel):
     """Multi-stage variant: call `storage_stats` (no args)."""
 
@@ -1012,7 +1060,6 @@ _SearchToolCall = Annotated[
     | _CallGetUserPlaybook
     | _CallGetAgentPlaybook
     | _CallReadSessionText
-    | _CallRerankUserProfiles
     | _CallStorageStats
     | _CallFinish,
     Field(discriminator="tool"),
@@ -1048,11 +1095,14 @@ SEARCH_TOOLS = ToolRegistry(
             args_model=GetUserProfileArgs,
             handler=_bundle_handler(_handle_get_user_profile),
         ),
-        Tool(
-            name="rerank_user_profiles",
-            args_model=RerankUserProfilesArgs,
-            handler=_bundle_handler(_handle_rerank_user_profiles),
-        ),
+        # rerank_user_profiles intentionally removed from the agent palette:
+        # `search_user_profiles` now does deterministic cross-encoder rerank
+        # internally and accepts an optional `refine_with` for two-stage
+        # query refinement. The standalone rerank tool required the agent
+        # to round-trip profile_ids back through the model, which was both
+        # cognitively expensive and a hallucination risk on long lists.
+        # The handler `_handle_rerank_user_profiles` is preserved in this
+        # module for any non-agent caller that needs explicit rerank.
         Tool(
             name="storage_stats",
             args_model=StorageStatsArgs,
