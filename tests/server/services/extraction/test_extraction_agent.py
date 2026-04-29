@@ -179,67 +179,62 @@ def test_extraction_agent_max_steps_still_commits_valid_ops(
     assert len(result.applied) >= 1
 
 
-def test_extraction_agent_prompt_frames_self_improvement(prompt_manager):
-    """Sanity: extraction prompt opening must frame extraction around agent
-    self-improvement, not 'memory storage'."""
+_PROFILE_PROMPT_VARS = {
+    "sessions": "User: hi",
+    "extraction_criteria": "extract facts",
+    "max_steps": "4",
+}
+_PLAYBOOK_PROMPT_VARS = {
+    "sessions": "User: hi",
+    "extraction_criteria": "extract rules",
+    "max_steps": "4",
+}
+
+
+def test_extraction_user_profile_prompt_frames_self_improvement(prompt_manager):
+    """Sanity: profile-extraction prompt opening must frame extraction around
+    agent self-improvement, not 'memory storage'."""
     out = prompt_manager.render_prompt(
-        "extraction_agent",
-        variables={
-            "sessions": "User: hi",
-            "extraction_criteria": "extract facts",
-            "extraction_kind": "UserProfile",
-            "max_steps": "4",
-        },
+        "extraction_user_profile", variables=_PROFILE_PROMPT_VARS
     )
     assert "improve over time" in out or "self-improv" in out
     assert "memory extractor" not in out.lower()
 
 
-def test_extraction_agent_prompt_forbids_profile_rule_overlap(prompt_manager):
-    """Sanity (v1.3.0): prompt must carry the anti-pattern examples for
-    rule-shaped profile content and the 'no overlap' rule. Guards against
-    regression to the earlier bundled-fact / rule-in-profile behaviour."""
+def test_extraction_user_playbook_prompt_frames_self_improvement(prompt_manager):
+    """Sanity: playbook-extraction prompt opening must frame extraction around
+    agent self-improvement, not 'memory storage'."""
     out = prompt_manager.render_prompt(
-        "extraction_agent",
-        variables={
-            "sessions": "User: hi",
-            "extraction_criteria": "extract facts",
-            "extraction_kind": "UserProfile",
-            "max_steps": "4",
-        },
+        "extraction_user_playbook", variables=_PLAYBOOK_PROMPT_VARS
     )
-    # One-fact-per-profile rule must be present.
+    assert "improve over time" in out or "self-improv" in out
+    assert "memory extractor" not in out.lower()
+
+
+def test_extraction_user_profile_prompt_restricts_to_facts(prompt_manager):
+    """The profile prompt must enforce one-fact-per-profile and explicitly
+    direct rule-shaped content to the separate playbook extractor."""
+    out = prompt_manager.render_prompt(
+        "extraction_user_profile", variables=_PROFILE_PROMPT_VARS
+    )
     assert "One fact per profile" in out
-    # No-overlap rule between profile and playbook.
-    assert "No overlap between profile and playbook" in out
-    # The prompt must include some anti-pattern guidance distinguishing
-    # rule-shaped from fact-shaped content. The specific example string
-    # is allowed to evolve via Phase 27 tuning, so we check for structural
-    # markers (the rule wording) rather than a single example.
+    # Cross-axis guard: rules must be redirected to the playbook extractor.
+    assert "playbook extractor" in out.lower()
 
 
-def test_extraction_agent_prompt_specifies_playbook_format(prompt_manager):
-    """Sanity (v1.4.0): prompt must carry the Agent-Skills-inspired format
-    guidance for UserPlaybook trigger + content + rationale. Guards against
-    regression to the earlier unstructured semicolon-delimited shape."""
+def test_extraction_user_playbook_prompt_specifies_playbook_format(prompt_manager):
+    """The playbook prompt must carry the trigger / content / rationale
+    format guidance and explicitly redirect fact-shaped content to the
+    profile extractor."""
     out = prompt_manager.render_prompt(
-        "extraction_agent",
-        variables={
-            "sessions": "User: hi",
-            "extraction_criteria": "extract rules",
-            "extraction_kind": "UserPlaybook",
-            "max_steps": "4",
-        },
+        "extraction_user_playbook", variables=_PLAYBOOK_PROMPT_VARS
     )
-    # The Playbook format section must be present.
     assert "Playbook format" in out
-    # Trigger guidance — imperative conditional phrasing must be required;
-    # the proposer is allowed to evolve specific examples.
     assert "imperative conditional phrasing" in out
-    # Content guidance — markdown bullet list for independent instructions.
     assert "markdown bullet list" in out
-    # Rationale guidance — one sentence explaining WHY, not what.
     assert "one sentence" in out.lower()
+    # Cross-axis guard: facts must be redirected to the profile extractor.
+    assert "profile extractor" in out.lower()
 
 
 def test_extraction_agent_emits_summary_info_line(

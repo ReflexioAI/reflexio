@@ -25,6 +25,11 @@ from reflexio.server.services.extraction.tools import EXTRACTION_TOOLS
 
 logger = logging.getLogger(__name__)
 
+_PROMPT_ID_BY_KIND: dict[str, str] = {
+    "UserProfile": "extraction_user_profile",
+    "UserPlaybook": "extraction_user_playbook",
+}
+
 
 def _summarise_tool_calls(trace: ToolLoopTrace) -> str:
     """Return a compact 'tool_a:2, tool_b:1' string from a ToolLoopTrace.
@@ -82,7 +87,9 @@ class ExtractionAgent:
     Args:
         client (LiteLLMClient): LLM client for the underlying tool loop.
         storage: BaseStorage handle (read + commit targets).
-        prompt_manager (PromptManager): Renders the ``extraction_agent`` prompt.
+        prompt_manager (PromptManager): Renders the per-kind extraction
+            prompt — ``extraction_user_profile`` for ``UserProfile`` runs and
+            ``extraction_user_playbook`` for ``UserPlaybook`` runs.
         max_steps (int): Cap on tool-calling turns (default 12; see spec §7.2).
         registry (ToolRegistry | None): Tool registry to use.  Defaults to
             ``EXTRACTION_TOOLS`` (backward-compat union of all tools).  Production
@@ -147,11 +154,10 @@ class ExtractionAgent:
         bundle = HandlerBundle(storage=self.storage, ctx=ctx)
 
         prompt = self.prompt_manager.render_prompt(
-            "extraction_agent",
+            _PROMPT_ID_BY_KIND[extraction_kind],
             variables={
                 "sessions": sessions_text,
                 "extraction_criteria": extraction_criteria,
-                "extraction_kind": extraction_kind,
                 "max_steps": str(self.max_steps),
             },
         )
