@@ -157,7 +157,7 @@ class ReadSessionTextArgs(BaseModel):
 
     session_ids: Annotated[list[str], Field(min_length=1, max_length=4)]
     query: str = ""
-    max_chars_per_session: int = 8000
+    max_chars_per_session: int = 16000
 
 
 class RerankUserProfilesArgs(BaseModel):
@@ -643,7 +643,13 @@ def _compress_raw_turns(
     Returns:
         str | None: Compressed transcript, or None to indicate fallback.
     """
-    try:
+    # Diagnostic: hard-disable compression to measure its net impact vs raw
+    # turns. r60 measured working v1.2.0 cost ~4pp; r65 confirmed v1.3.0
+    # near-pass-through still cost. Returning None here forces the raw-turns
+    # fallback path — same behavior as the original 5s-timeout era at r45.
+    return None
+
+    try:  # noqa  pragma: no cover — disabled compression path
         prompt = prompt_manager.render_prompt(
             _COMPRESS_PROMPT_ID,
             variables={"query": query, "raw_turns": raw_turns},
@@ -713,8 +719,14 @@ def _handle_read_session_text(
             continue
         by_session.setdefault(sid, []).append(i)
 
+    # Clamp agent-supplied max_chars_per_session to a 16000 floor: agents
+    # have been observed to pick values as low as 3000-4000 inconsistently,
+    # which truncates Pattern G (recall-prior-statement) sessions before the
+    # answer turn appears. The handler enforces the floor regardless of the
+    # arg.
+    effective_max_chars = max(args.max_chars_per_session, 16000)
     raw_text = _format_raw_turns(
-        args.session_ids, by_session, args.max_chars_per_session
+        args.session_ids, by_session, effective_max_chars
     )
 
     # Skip compression on empty query or missing wiring; raw turns are still useful.
@@ -1316,7 +1328,7 @@ class _CallReadSessionText(BaseModel):
     tool: Literal["read_session_text"]
     session_ids: Annotated[list[str], Field(min_length=1, max_length=4)]
     query: str = ""
-    max_chars_per_session: int = 8000
+    max_chars_per_session: int = 16000
 
 
 class _CallStorageStats(BaseModel):
