@@ -139,7 +139,12 @@ class DuplicateFilter(logging.Filter):
 
     def filter(self, record: logging.LogRecord) -> bool:
         """Return False to suppress duplicate messages within the time window."""
-        key = (record.name, record.msg)
+        # record.msg can be any object (callers sometimes pass a list/dict
+        # directly to logger.warning). Stringify so the key is always
+        # hashable — otherwise this filter raises TypeError and crashes
+        # whatever was being logged. Surfaced via the Nomic embedder
+        # pre-warm path that calls logger.warning(load_return_list).
+        key = (record.name, str(record.msg))
         now = time.monotonic()
 
         with self._lock:
