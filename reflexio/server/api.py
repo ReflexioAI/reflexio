@@ -621,6 +621,7 @@ def unified_search_endpoint(
         user_playbooks=[to_user_playbook_view(rf) for rf in response.user_playbooks],
         reformulated_query=response.reformulated_query,
         msg=response.msg,
+        agent_trace=response.agent_trace,
     )
 
 

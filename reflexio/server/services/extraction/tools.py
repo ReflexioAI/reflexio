@@ -56,22 +56,31 @@ TOP_K_CAP = 25
 
 class SearchUserProfilesArgs(BaseModel):
     """Semantic/keyword search the current user's profiles, with optional
-    second-stage rerank (pipe-equivalent of search → rerank).
+    cross-encoder rerank.
 
-    One-stage usage (the common case): supply ``query`` and ``top_k``. The
-    server runs hybrid retrieval (BM25 + vector via RRF) over-fetches a wider
-    candidate pool, then cross-encoder reranks by ``query`` and returns the
-    top ``top_k``.
+    Default behaviour (``rerank=False``): hybrid retrieval (BM25 + vector
+    via RRF) only, return top ``top_k``. Cheap.
 
-    Two-stage refinement: also supply ``refine_with``. The server runs the
-    same broad retrieval by ``query``, then reranks the candidates by
-    ``refine_with`` instead. Lets you broadly fetch ("bike maintenance") then
-    narrow on a specific facet of interest ("dollar amounts spent") without
-    transcribing candidate ids back through the model.
+    Set ``rerank=True`` to add a cross-encoder reranking pass on top of the
+    hybrid retrieval. The server over-fetches a wider candidate pool, scores
+    each (query, content) pair with the cross-encoder, and returns the top
+    ``top_k`` by descending rerank score. More accurate ranking when the
+    bi-encoder near-duplicate confuses the LLM, but adds ~5-15 ms latency
+    and the encoder may not weight all facets the same as the LLM would.
+
+    Optional ``refine_with``: when set, used as the rerank query INSTEAD of
+    ``query``. Only takes effect when ``rerank=True``. Lets you broadly
+    fetch ("bike maintenance") then narrow on a specific facet ("dollar
+    amounts spent") without round-tripping candidate ids through the agent.
+
+    Each hit includes a ``session_id`` field — pass that to
+    ``read_session_text`` if you need the verbatim source turns behind a
+    profile.
     """
 
     query: Annotated[str, Field(min_length=1)]
     top_k: int = 10
+    rerank: bool = False
     refine_with: str | None = None
 
 
@@ -82,11 +91,15 @@ class GetUserProfileArgs(BaseModel):
 
 
 class SearchUserPlaybooksArgs(BaseModel):
-    """Search the current user's playbooks."""
+    """Search the current user's playbooks. See SearchUserProfilesArgs for
+    the rerank semantics — same toggles, same handler shape.
+    """
 
     query: Annotated[str, Field(min_length=1)]
     top_k: int = 10
     status: Literal["current", "pending", "archived"] = "current"
+    rerank: bool = False
+    refine_with: str | None = None
 
 
 class GetUserPlaybookArgs(BaseModel):
@@ -96,11 +109,15 @@ class GetUserPlaybookArgs(BaseModel):
 
 
 class SearchAgentPlaybooksArgs(BaseModel):
-    """Search agent-version-scoped playbooks (read-only; search pipeline only)."""
+    """Search agent-version-scoped playbooks (read-only; search pipeline only).
+    See SearchUserProfilesArgs for the rerank semantics.
+    """
 
     query: Annotated[str, Field(min_length=1)]
     top_k: int = 10
     status: Literal["current", "pending", "archived"] = "current"
+    rerank: bool = False
+    refine_with: str | None = None
 
 
 class GetAgentPlaybookArgs(BaseModel):
@@ -110,10 +127,20 @@ class GetAgentPlaybookArgs(BaseModel):
 
 
 class ReadSessionTextArgs(BaseModel):
-    """Retrieve a verbatim excerpt from a session by matching a span."""
+    """Retrieve the verbatim turns of a session by id.
+
+    Returns the full conversation under ``session_id`` as a single string,
+    one turn per line, prefixed by role. Use after ``search_user_profiles``
+    when the profile content compresses away detail you need (multi-action
+    structure, exact dates buried in narrative, prior assistant statements).
+
+    The ``session_id`` field comes from a profile hit's ``session_id`` (the
+    same value the search response exposes). ``max_chars`` bounds the worst
+    case — typical sessions are well under it.
+    """
 
     session_id: Annotated[str, Field(min_length=1)]
-    span: Annotated[str, Field(min_length=1)]
+    max_chars: int = 8000
 
 
 class RerankUserProfilesArgs(BaseModel):
@@ -219,10 +246,87 @@ def _status_from_str(s: str) -> Status | None:
     return {"current": None, "pending": Status.PENDING, "archived": Status.ARCHIVED}[s]
 
 
+RERANK_POOL_SIZE = 30
+"""How many candidates we hand the cross-encoder when ``rerank=True``.
+
+Single principled value (vs prior ad-hoc ``max(final_k * 3, 30) capped at 50``):
+- Cross-encoder cost scales roughly linearly with candidate count; 30 pairs
+  is ~10 ms on the local MiniLM model, which fits inside a typical agent
+  step's latency budget.
+- The class of failures rerank fixes is "right answer at rank 11-20 of
+  hybrid retrieval"; 30 candidates covers that window with margin.
+- It's easy to remember, audit, and tune in one place.
+
+If ``final_k`` exceeds this constant (e.g. an agent asks for top_k=50 with
+rerank=True), we still fetch ``final_k`` so we have a full set to return.
+"""
+
+
+def _fetch_k_for_rerank(final_k: int, rerank: bool) -> int:
+    """Pick the initial-fetch size given whether rerank is enabled.
+
+    Without rerank: trust the hybrid retrieval order, fetch exactly final_k.
+    With rerank: fetch ``RERANK_POOL_SIZE`` candidates so the cross-encoder
+    has headroom to reorder. If ``final_k`` already exceeds the pool size,
+    use ``final_k`` (the agent asked for more than we'd otherwise fetch).
+    """
+    if not rerank:
+        return final_k
+    return max(final_k, RERANK_POOL_SIZE)
+
+
+def _maybe_rerank_hits(
+    hits: list[Any],
+    rerank: bool,
+    rerank_query: str,
+    final_k: int,
+) -> list[Any]:
+    """Apply cross-encoder rerank if ``rerank`` is True and we have headroom.
+
+    Falls back to hybrid order on any failure (lazy import error, model
+    load error, scoring failure). The cross-encoder model is module-cached
+    in ``reflexio.server.llm.rerank`` after first load.
+
+    Args:
+        hits: Candidates from the initial hybrid retrieval. Each must expose
+            a ``content`` attribute (profile, playbook, etc).
+        rerank: Toggle from the agent's tool args.
+        rerank_query: The string to score candidates against. The caller
+            decides whether this is the original query or a refinement
+            (e.g. ``args.refine_with or args.query``).
+        final_k: Number of hits to return after reranking.
+
+    Returns:
+        The re-ordered hits, capped at ``final_k``. If ``rerank`` is False
+        or ``len(hits) <= final_k``, returns ``hits[:final_k]`` unchanged.
+    """
+    if not rerank or len(hits) <= final_k:
+        return hits[:final_k]
+    try:
+        from reflexio.server.llm.rerank import score_pairs
+
+        scores = score_pairs(rerank_query, [h.content for h in hits])
+        ranked = sorted(
+            zip(hits, scores, strict=True),
+            key=lambda pair: pair[1],
+            reverse=True,
+        )
+        return [h for h, _ in ranked[:final_k]]
+    except Exception:  # noqa: BLE001 — fall back to hybrid order on failure
+        return hits[:final_k]
+
+
 def _project_profile_for_llm(p: Any) -> dict[str, Any]:
+    # ``session_id`` is the agent-facing name for the storage-internal
+    # ``generated_from_request_id``. Exposing it lets the agent chain
+    # ``search_user_profiles`` → ``read_session_text(session_id, span)``
+    # without needing a separate lookup. The internal field name stays as
+    # ``generated_from_request_id`` everywhere else (storage, schemas);
+    # the rename is purely a cognitive affordance for the LLM.
     return {
         "id": getattr(p, "profile_id", "") or "",
         "content": p.content,
+        "session_id": getattr(p, "generated_from_request_id", "") or "",
         "ttl": p.profile_time_to_live,
         "last_modified": p.last_modified_timestamp,
         "source_span": getattr(p, "source_span", None),
@@ -279,17 +383,7 @@ def _handle_search_user_profiles(
         dict[str, Any]: ``{"hits": [...]}`` with LLM-facing profile projections.
     """
     final_k = _cap_top_k(args.top_k)
-    # When `refine_with` is set, over-fetch for rerank headroom. Otherwise
-    # we trust the hybrid retrieval ranking — empirically (held-out #10 vs
-    # #12) always-on cross-encoder rerank slightly hurt T-R: the rerank
-    # model was trained on MS MARCO web passages and ranks declarative
-    # facts differently from temporal-arithmetic reasoning needs. Making
-    # rerank opt-in via `refine_with` matches the agent's intent: rerank
-    # only when the agent has something specific to refine on.
-    use_rerank = args.refine_with is not None
-    fetch_k = (
-        min(max(final_k * 3, 30), 50) if use_rerank else final_k
-    )
+    fetch_k = _fetch_k_for_rerank(final_k, args.rerank)
 
     request = SearchUserProfileRequest(
         query=args.query,
@@ -302,23 +396,12 @@ def _handle_search_user_profiles(
     )
     ctx.search_count += 1
 
-    # Two-stage refinement when `refine_with` is supplied — server-side pipe
-    # of `search → rerank` without round-tripping candidate ids back through
-    # the agent. Lazy import so unit-test collection stays fast; the model
-    # is module-cached after first load.
-    if use_rerank and len(hits) > final_k:
-        try:
-            from reflexio.server.llm.rerank import score_pairs
-
-            scores = score_pairs(args.refine_with, [h.content for h in hits])  # type: ignore[arg-type]
-            ranked = sorted(
-                zip(hits, scores, strict=True),
-                key=lambda pair: pair[1],
-                reverse=True,
-            )
-            hits = [h for h, _ in ranked[:final_k]]
-        except Exception:  # noqa: BLE001 — fall back to hybrid order on failure
-            hits = hits[:final_k]
+    hits = _maybe_rerank_hits(
+        hits=hits,
+        rerank=args.rerank,
+        rerank_query=args.refine_with or args.query,
+        final_k=final_k,
+    )
 
     for h in hits:
         pid = getattr(h, "profile_id", "") or ""
@@ -354,18 +437,20 @@ def _handle_search_user_playbooks(
     """Search the current user's playbooks and bump search_count.
 
     Args:
-        args (SearchUserPlaybooksArgs): Query, top_k, and status filter.
+        args (SearchUserPlaybooksArgs): Query, top_k, status filter, and rerank toggles.
         storage (Any): BaseStorage instance.
         ctx (ExtractionCtx): Per-run state; search_count and known_ids updated.
 
     Returns:
         dict[str, Any]: ``{"hits": [...]}`` with LLM-facing playbook projections.
     """
+    final_k = _cap_top_k(args.top_k)
+    fetch_k = _fetch_k_for_rerank(final_k, args.rerank)
     request = SearchUserPlaybookRequest(
         query=args.query,
         user_id=ctx.user_id,
         agent_version=ctx.agent_version,
-        top_k=_cap_top_k(args.top_k),
+        top_k=fetch_k,
         status_filter=[_status_from_str(args.status)],
         search_mode=SearchMode.HYBRID,
         threshold=0.4,
@@ -377,6 +462,12 @@ def _handle_search_user_playbooks(
         options=SearchOptions(query_embedding=_maybe_embed_query(storage, args.query)),
     )
     ctx.search_count += 1
+    hits = _maybe_rerank_hits(
+        hits=hits,
+        rerank=args.rerank,
+        rerank_query=args.refine_with or args.query,
+        final_k=final_k,
+    )
     for h in hits:
         ctx.known_ids.add(str(h.user_playbook_id))
     return {"hits": [_project_user_playbook_for_llm(h) for h in hits]}
@@ -411,17 +502,19 @@ def _handle_search_agent_playbooks(
     """Search agent-version-scoped playbooks and bump search_count.
 
     Args:
-        args (SearchAgentPlaybooksArgs): Query, top_k, and status filter.
+        args (SearchAgentPlaybooksArgs): Query, top_k, status filter, rerank toggles.
         storage (Any): BaseStorage instance.
         ctx (ExtractionCtx): Per-run state; search_count and known_ids updated.
 
     Returns:
         dict[str, Any]: ``{"hits": [...]}`` with LLM-facing agent playbook projections.
     """
+    final_k = _cap_top_k(args.top_k)
+    fetch_k = _fetch_k_for_rerank(final_k, args.rerank)
     request = SearchAgentPlaybookRequest(
         query=args.query,
         agent_version=ctx.agent_version,
-        top_k=_cap_top_k(args.top_k),
+        top_k=fetch_k,
         status_filter=[_status_from_str(args.status)],
         search_mode=SearchMode.HYBRID,
         threshold=0.4,
@@ -433,6 +526,12 @@ def _handle_search_agent_playbooks(
         options=SearchOptions(query_embedding=_maybe_embed_query(storage, args.query)),
     )
     ctx.search_count += 1
+    hits = _maybe_rerank_hits(
+        hits=hits,
+        rerank=args.rerank,
+        rerank_query=args.refine_with or args.query,
+        final_k=final_k,
+    )
     for h in hits:
         ctx.known_ids.add(str(h.agent_playbook_id))
     return {"hits": [_project_agent_playbook_for_llm(h) for h in hits]}
@@ -464,27 +563,33 @@ def _handle_read_session_text(
     storage: Any,
     ctx: ExtractionCtx,  # noqa: ARG001
 ) -> dict[str, Any]:
-    """Return the closest verbatim match of ``span`` inside ``session_id``.
+    """Return the verbatim conversation turns of ``session_id`` as one string.
 
     Args:
-        args (ReadSessionTextArgs): Session id and span string to match.
+        args (ReadSessionTextArgs): Session id and max_chars cap.
         storage (Any): BaseStorage instance; must have ``get_interactions_by_session``.
         ctx (ExtractionCtx): Per-run state (unused for reads, present for consistency).
 
     Returns:
-        dict[str, Any]: ``{"excerpt": str}`` on hit, ``{"error": str}`` on miss or
-            when the storage backend doesn't support this method.
+        dict[str, Any]: ``{"text": str}`` with role-prefixed turns concatenated by
+            newline, or ``{"error": str}`` when the storage backend doesn't
+            support this method or no interactions exist for the session.
     """
     try:
         interactions = storage.get_interactions_by_session(args.session_id)
     except AttributeError:
         return {"error": "read_session_text requires get_interactions_by_session"}
-    matches = [
-        i.content for i in interactions if args.span.strip() in (i.content or "")
+    if not interactions:
+        return {"error": "no interactions found for session"}
+    lines = [
+        f"[{getattr(i, 'role', '?')}] {i.content}"
+        for i in interactions
+        if getattr(i, "content", None)
     ]
-    if not matches:
-        return {"error": "span not found"}
-    return {"excerpt": matches[0]}
+    text = "\n".join(lines)
+    if len(text) > args.max_chars:
+        text = text[: args.max_chars] + "…"
+    return {"text": text}
 
 
 def _handle_rerank_user_profiles(
@@ -989,6 +1094,7 @@ class _CallSearchUserProfiles(BaseModel):
     tool: Literal["search_user_profiles"]
     query: Annotated[str, Field(min_length=1)]
     top_k: int = 10
+    rerank: bool = False
     refine_with: str | None = None
 
 
@@ -999,6 +1105,8 @@ class _CallSearchUserPlaybooks(BaseModel):
     query: Annotated[str, Field(min_length=1)]
     top_k: int = 10
     status: Literal["current", "pending", "archived"] = "current"
+    rerank: bool = False
+    refine_with: str | None = None
 
 
 class _CallSearchAgentPlaybooks(BaseModel):
@@ -1008,6 +1116,8 @@ class _CallSearchAgentPlaybooks(BaseModel):
     query: Annotated[str, Field(min_length=1)]
     top_k: int = 10
     status: Literal["current", "pending", "archived"] = "current"
+    rerank: bool = False
+    refine_with: str | None = None
 
 
 class _CallGetUserProfile(BaseModel):
@@ -1036,7 +1146,7 @@ class _CallReadSessionText(BaseModel):
 
     tool: Literal["read_session_text"]
     session_id: Annotated[str, Field(min_length=1)]
-    span: Annotated[str, Field(min_length=1)]
+    max_chars: int = 8000
 
 
 class _CallStorageStats(BaseModel):

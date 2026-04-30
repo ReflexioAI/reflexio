@@ -56,7 +56,11 @@ PROMPT_VERSION_MAP: dict[str, tuple[str, str | None]] = {
     "extraction_user_profile": ("v1.0.0", None),
     "extraction_user_playbook": ("v1.0.0", None),
     # Agentic search pipeline — agentic-v2 single-loop agent
-    "search_agent": ("v1.4.0", None),
+    "search_agent": ("v1.6.0", None),
+    # In-tool denoising for read_session_text (rehydration compression)
+    "compress_session_for_query": ("v1.2.0", None),
+    # Answer-LLM system prompt for the longmemeval benchmark
+    "answer_synthesis": ("v1.0.0", None),
 }
 
 

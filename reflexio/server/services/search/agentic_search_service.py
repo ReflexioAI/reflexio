@@ -24,7 +24,10 @@ from reflexio.models.api_schema.retriever_schema import (
 )
 from reflexio.server.services.pre_retrieval import QueryReformulator
 from reflexio.server.services.search.plan import SearchResult
-from reflexio.server.services.search.search_agent import SearchAgent
+from reflexio.server.services.search.search_agent import (
+    SearchAgent,
+    _summarise_tool_calls,
+)
 
 if TYPE_CHECKING:
     from reflexio.server.api_endpoints.request_context import RequestContext
@@ -210,6 +213,7 @@ class AgenticSearchService:
                 reformulated_query=query,
                 msg=f"agent error: {result.answer or 'unknown'}",
                 agent_answer=None,
+                agent_trace=_summarise_tool_calls(result.trace),
             )
 
         if result.budget_exceeded:
@@ -227,6 +231,7 @@ class AgenticSearchService:
             reformulated_query=query,
             msg=None,
             agent_answer=result.answer,
+            agent_trace=_summarise_tool_calls(result.trace),
         )
 
     # ------------------------------------------------------------------ #

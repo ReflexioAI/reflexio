@@ -195,16 +195,16 @@ _PROVIDER_DEFAULTS: dict[str, ProviderDefaults] = {
         pre_retrieval="gpt-5-nano",
         embedding="text-embedding-3-small",
         extraction_agent="gpt-5-mini",
-        # search_agent uses gpt-5.5: the multi-step orchestration (pattern
-        # dispatch, mandatory rehydration in E/G, narration) was being
-        # ignored by gpt-5-mini, which defaulted to single-search-finish for
-        # ~90% of questions. minimax/MiniMax-M2.7 doesn't reliably honor
-        # response_format for the multi-stage fallback path, blocking that
-        # cheaper option (multi-stage infrastructure stays in place for
-        # future non-tool-calling models). gpt-5.5 supports native tool
-        # calling and reliably follows multi-step recipes; per-question
-        # cost increase is small compared to the answer LLM.
-        search_agent="gpt-5.5",
+        # search_agent uses gpt-5-mini: paired with the v1.4.0 prompt's
+        # explicit pattern dispatch + per-pattern Rerank: guidance + mandatory
+        # E/G recipes, mini reliably follows the multi-step orchestration that
+        # earlier prompt revisions couldn't drive. On LongMemEval-oracle this
+        # cuts search wall latency from ~9.4s mean (gpt-5.5) to ~4.5s (-52%)
+        # while matching or slightly exceeding gpt-5.5's accuracy on tune
+        # (74% vs 72%) and holding ~84% on held-out. Compliance with the
+        # mandatory recipes is observable via the agent_trace tool-call
+        # summary surfaced on UnifiedSearchViewResponse.
+        search_agent="gpt-5-mini",
     ),
     "anthropic": ProviderDefaults(
         generation="claude-sonnet-4-6",
