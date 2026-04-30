@@ -14,9 +14,12 @@ invariants pass.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
+
+logger = logging.getLogger(__name__)
 
 from pydantic import BaseModel, Field
 
@@ -127,20 +130,34 @@ class GetAgentPlaybookArgs(BaseModel):
 
 
 class ReadSessionTextArgs(BaseModel):
-    """Retrieve the verbatim turns of a session by id.
+    """Retrieve and compress the verbatim turns of one or more sessions.
 
-    Returns the full conversation under ``session_id`` as a single string,
-    one turn per line, prefixed by role. Use after ``search_user_profiles``
-    when the profile content compresses away detail you need (multi-action
-    structure, exact dates buried in narrative, prior assistant statements).
+    Fetches raw interactions for each ``session_id`` and runs an in-tool
+    compression pass against ``query`` so the returned text is a denoised
+    excerpt focused on the question — not the full transcript. Sessions are
+    concatenated with ``=== session <id> ===`` headers. Falls back to
+    role-prefixed raw turns (truncated at ``max_chars_per_session``) when
+    compression is unavailable or fails.
 
-    The ``session_id`` field comes from a profile hit's ``session_id`` (the
-    same value the search response exposes). ``max_chars`` bounds the worst
-    case — typical sessions are well under it.
+    Use after ``search_user_profiles`` when the profile content compresses
+    away detail you need (multi-action structure, exact dates buried in
+    narrative, prior assistant statements). Pass 1–4 session_ids in a single
+    call when the question requires data from multiple sessions (e.g.
+    ordering 4 events, summing per-event amounts across 3 transactions).
+
+    The ``query`` field is what compression scores against — typically the
+    user's question or a focused subquery. Pass an empty string to skip
+    compression and receive raw role-prefixed turns instead.
+
+    The ``session_ids`` come from profile hits' ``session_id`` field (the
+    same value the search response exposes). ``max_chars_per_session``
+    bounds the raw-fallback output; compressed output is bounded by the
+    compressor's own discretion (typically much smaller).
     """
 
-    session_id: Annotated[str, Field(min_length=1)]
-    max_chars: int = 8000
+    session_ids: Annotated[list[str], Field(min_length=1, max_length=4)]
+    query: str = ""
+    max_chars_per_session: int = 8000
 
 
 class RerankUserProfilesArgs(BaseModel):
@@ -319,7 +336,7 @@ def _maybe_rerank_hits(
 def _project_profile_for_llm(p: Any) -> dict[str, Any]:
     # ``session_id`` is the agent-facing name for the storage-internal
     # ``generated_from_request_id``. Exposing it lets the agent chain
-    # ``search_user_profiles`` → ``read_session_text(session_id, span)``
+    # ``search_user_profiles`` → ``read_session_text(session_ids=[...])``
     # without needing a separate lookup. The internal field name stays as
     # ``generated_from_request_id`` everywhere else (storage, schemas);
     # the rename is purely a cognitive affordance for the LLM.
@@ -558,38 +575,157 @@ def _handle_get_agent_playbook(
     return {"error": "not found"}
 
 
+_COMPRESS_PROMPT_ID = "compress_session_for_query"
+# 5s was far too aggressive: under 10-worker benchmark concurrency every
+# gpt-5-mini compression call timed out, silently degrading every
+# rehydration to raw turns. 30s gives gpt-5-mini room under load while
+# still failing fast on genuine model outages (the raw-turns fallback
+# kicks in beyond that).
+_COMPRESS_LLM_TIMEOUT = 30
+_COMPRESS_LLM_MAX_RETRIES = 1
+
+
+def _format_raw_turns(
+    session_ids: list[str],
+    by_session: dict[str, list[Any]],
+    max_chars_per_session: int,
+) -> str:
+    """Format role-prefixed raw turns with per-session caps.
+
+    Used both as the compressor's input and as the fallback output when
+    compression is unavailable or fails.
+
+    Args:
+        session_ids (list[str]): Session ids in the order requested by the agent.
+        by_session (dict[str, list[Any]]): Interactions grouped by session id.
+        max_chars_per_session (int): Per-session truncation cap (chars).
+
+    Returns:
+        str: Concatenated ``=== session <id> ===\\n[role] content`` blocks.
+    """
+    blocks: list[str] = []
+    for sid in session_ids:
+        sess_interactions = by_session.get(sid, [])
+        if not sess_interactions:
+            blocks.append(f"=== session {sid} ===\n(no interactions found)")
+            continue
+        lines = [
+            f"[{getattr(i, 'role', '?')}] {i.content}"
+            for i in sess_interactions
+            if getattr(i, "content", None)
+        ]
+        body = "\n".join(lines)
+        if len(body) > max_chars_per_session:
+            body = body[:max_chars_per_session] + "…"
+        blocks.append(f"=== session {sid} ===\n{body}")
+    return "\n\n".join(blocks)
+
+
+def _compress_raw_turns(
+    raw_turns: str,
+    query: str,
+    llm_client: Any,
+    prompt_manager: Any,
+) -> str | None:
+    """Run the compress_session_for_query prompt against raw_turns + query.
+
+    Returns the compressed text on success, or ``None`` on any failure
+    (timeout, exception, empty/whitespace output). Caller falls back to
+    raw_turns when ``None`` is returned.
+
+    Args:
+        raw_turns (str): The role-prefixed raw transcript (output of
+            ``_format_raw_turns``).
+        query (str): The query the compressor scores against.
+        llm_client (Any): LiteLLMClient with a ``generate_response`` method.
+        prompt_manager (Any): PromptManager with a ``render_prompt`` method.
+
+    Returns:
+        str | None: Compressed transcript, or None to indicate fallback.
+    """
+    try:
+        prompt = prompt_manager.render_prompt(
+            _COMPRESS_PROMPT_ID,
+            variables={"query": query, "raw_turns": raw_turns},
+        )
+        result = llm_client.generate_response(
+            prompt,
+            timeout=_COMPRESS_LLM_TIMEOUT,
+            max_retries=_COMPRESS_LLM_MAX_RETRIES,
+        )
+    except Exception as e:  # noqa: BLE001 — broad: LLM stack raises diverse exception types
+        logger.warning("read_session_text compression failed, using raw fallback: %s", e)
+        return None
+
+    if not isinstance(result, str) or not result.strip():
+        logger.warning("read_session_text compression returned empty, using raw fallback")
+        return None
+    return result.strip()
+
+
 def _handle_read_session_text(
     args: ReadSessionTextArgs,
     storage: Any,
-    ctx: ExtractionCtx,  # noqa: ARG001
+    ctx: ExtractionCtx,
+    llm_client: Any = None,
+    prompt_manager: Any = None,
 ) -> dict[str, Any]:
-    """Return the verbatim conversation turns of ``session_id`` as one string.
+    """Return a denoised excerpt of one or more sessions, scored against ``query``.
+
+    Fetches raw interactions for ``session_ids`` and — when ``query`` is
+    non-empty and the compression layer is wired — runs an in-tool LLM call
+    that compresses the raw turns into the smallest excerpt preserving every
+    operand relevant to the query. Falls back to role-prefixed raw turns
+    (truncated at ``max_chars_per_session``) on:
+
+    - empty ``query``
+    - no ``llm_client`` / ``prompt_manager`` available (test paths or
+      backends that don't pass them through ``HandlerBundle``)
+    - any compression-LLM exception
+    - empty/whitespace compression output
 
     Args:
-        args (ReadSessionTextArgs): Session id and max_chars cap.
-        storage (Any): BaseStorage instance; must have ``get_interactions_by_session``.
+        args (ReadSessionTextArgs): Session ids (1–4), query, and per-session char cap.
+        storage (Any): BaseStorage instance; must implement
+            ``get_interactions_by_request_ids(request_ids: list[str])``.
         ctx (ExtractionCtx): Per-run state (unused for reads, present for consistency).
+        llm_client (Any | None): LiteLLMClient for compression. Defaults to None
+            so callers that don't enable compression still get raw turns.
+        prompt_manager (Any | None): PromptManager for rendering the compression
+            prompt. Defaults to None.
 
     Returns:
-        dict[str, Any]: ``{"text": str}`` with role-prefixed turns concatenated by
-            newline, or ``{"error": str}`` when the storage backend doesn't
-            support this method or no interactions exist for the session.
+        dict[str, Any]: ``{"text": str}`` with compressed-or-raw session text,
+            or ``{"error": str}`` when the storage backend doesn't support batch
+            fetch or no interactions exist for any of the requested sessions.
     """
     try:
-        interactions = storage.get_interactions_by_session(args.session_id)
+        interactions = storage.get_interactions_by_request_ids(args.session_ids)
     except AttributeError:
-        return {"error": "read_session_text requires get_interactions_by_session"}
+        return {"error": "read_session_text requires get_interactions_by_request_ids"}
     if not interactions:
-        return {"error": "no interactions found for session"}
-    lines = [
-        f"[{getattr(i, 'role', '?')}] {i.content}"
-        for i in interactions
-        if getattr(i, "content", None)
-    ]
-    text = "\n".join(lines)
-    if len(text) > args.max_chars:
-        text = text[: args.max_chars] + "…"
-    return {"text": text}
+        return {"error": "no interactions found for any of the requested sessions"}
+
+    by_session: dict[str, list[Any]] = {}
+    for i in interactions:
+        sid = getattr(i, "request_id", None)
+        if sid is None:
+            continue
+        by_session.setdefault(sid, []).append(i)
+
+    raw_text = _format_raw_turns(
+        args.session_ids, by_session, args.max_chars_per_session
+    )
+
+    # Skip compression on empty query or missing wiring; raw turns are still useful.
+    if not args.query.strip() or llm_client is None or prompt_manager is None:
+        ctx.rehydrated_excerpts.append(raw_text)
+        return {"text": raw_text}
+
+    compressed = _compress_raw_turns(raw_text, args.query, llm_client, prompt_manager)
+    final_text = raw_text if compressed is None else compressed
+    ctx.rehydrated_excerpts.append(final_text)
+    return {"text": final_text}
 
 
 def _handle_rerank_user_profiles(
@@ -960,6 +1096,39 @@ def _bundle_handler(
     return wrapped
 
 
+def _bundle_handler_with_llm(
+    inner: Callable[..., dict[str, Any]],
+) -> Callable[[Any, Any], dict[str, Any]]:
+    """Adapter variant for handlers that also need ``llm_client`` and
+    ``prompt_manager`` from the bundle (e.g., the compression-enabled
+    rehydration tool).
+
+    The inner handler signature is
+    ``(args, storage, ctx, llm_client=None, prompt_manager=None) -> dict``.
+    Both LLM-side fields default to ``None`` so the handler degrades to a
+    no-LLM path when callers don't wire them through.
+
+    Args:
+        inner (Callable[..., dict[str, Any]]): Handler accepting
+            ``(args, storage, ctx, llm_client, prompt_manager)``.
+
+    Returns:
+        Callable[[Any, Any], dict[str, Any]]: A 2-arg callable compatible
+            with ``Tool.handler``.
+    """
+
+    def wrapped(args: Any, bundle: Any) -> dict[str, Any]:
+        return inner(
+            args,
+            bundle.storage,
+            bundle.ctx,
+            llm_client=getattr(bundle, "llm_client", None),
+            prompt_manager=getattr(bundle, "prompt_manager", None),
+        )
+
+    return wrapped
+
+
 _READ_TOOLS = [
     Tool(
         name="search_user_profiles",
@@ -994,7 +1163,7 @@ _READ_TOOLS = [
     Tool(
         name="read_session_text",
         args_model=ReadSessionTextArgs,
-        handler=_bundle_handler(_handle_read_session_text),
+        handler=_bundle_handler_with_llm(_handle_read_session_text),
     ),
 ]
 
@@ -1145,8 +1314,9 @@ class _CallReadSessionText(BaseModel):
     """Multi-stage variant: call `read_session_text`."""
 
     tool: Literal["read_session_text"]
-    session_id: Annotated[str, Field(min_length=1)]
-    max_chars: int = 8000
+    session_ids: Annotated[list[str], Field(min_length=1, max_length=4)]
+    query: str = ""
+    max_chars_per_session: int = 8000
 
 
 class _CallStorageStats(BaseModel):
@@ -1241,7 +1411,7 @@ SEARCH_TOOLS = ToolRegistry(
         Tool(
             name="read_session_text",
             args_model=ReadSessionTextArgs,
-            handler=_bundle_handler(_handle_read_session_text),
+            handler=_bundle_handler_with_llm(_handle_read_session_text),
         ),
         Tool(
             name="finish",
