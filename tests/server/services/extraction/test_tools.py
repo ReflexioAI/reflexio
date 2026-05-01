@@ -702,12 +702,12 @@ def test_fetch_k_no_rerank_uses_final_k():
 
 def test_fetch_k_cross_encoder_pads_to_pool_size():
     """Cross-encoder rerank pads pool to RERANK_POOL_SIZE for headroom."""
-    assert _fetch_k_for_rerank(10, rerank=True, llm_rerank=False) == 20
+    assert _fetch_k_for_rerank(10, rerank=True, llm_rerank=False) == 30
 
 
 def test_fetch_k_llm_rerank_pads_to_pool_size():
     """LLM rerank uses the same headroom; same downstream reorder cost shape."""
-    assert _fetch_k_for_rerank(10, rerank=False, llm_rerank=True) == 20
+    assert _fetch_k_for_rerank(10, rerank=False, llm_rerank=True) == 30
 
 
 def test_fetch_k_large_final_k_overrides_pool():
@@ -819,10 +819,10 @@ def test_search_user_profiles_passes_llm_rerank_flag_through(monkeypatch):
     result = _handle_search_user_profiles(
         args, storage, ctx, llm_client=sentinel_client, prompt_manager=sentinel_pm
     )
-    # Storage call uses RERANK_POOL_SIZE (20) for the candidate fetch.
+    # Storage call uses RERANK_POOL_SIZE (30) for the candidate fetch.
     _, kwargs = storage.search_user_profile.call_args
     args_to_storage, _ = storage.search_user_profile.call_args
-    assert args_to_storage[0].top_k == 20
+    assert args_to_storage[0].top_k == 30
     # Score function got the full hit pool (15 in this stub).
     assert captured["n_docs"] == 15
     # Final hits are the top-5 by descending score (reversed order = last 5).

@@ -277,19 +277,9 @@ def _status_from_str(s: str) -> Status | None:
     return {"current": None, "pending": Status.PENDING, "archived": Status.ARCHIVED}[s]
 
 
-RERANK_POOL_SIZE = 20
+RERANK_POOL_SIZE = 30
 """How many candidates we hand the reranker when ``rerank=True`` or
 ``llm_rerank=True``.
-
-Reduced from 30 to 20 (Step 5 of the constrained plan): the LLM
-relevance judge gave inconsistent scores when faced with 30 candidates
-(token budget pressure on per-item scoring + alignment drift on a
-30-element JSON array). 20 keeps coverage of the rank 11-20 failure
-window while letting the LLM spend more attention per item — tighter
-scores empirically.
-
-For the cross-encoder path, 20 vs 30 is a sub-100ms latency reduction;
-immaterial. The relevant failure window is still covered.
 
 If ``final_k`` exceeds this constant (e.g. agent asks for top_k=50 with
 rerank=True), we still fetch ``final_k`` so we have a full set to return.
