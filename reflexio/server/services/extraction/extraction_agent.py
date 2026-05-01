@@ -26,7 +26,8 @@ from reflexio.server.services.extraction.tools import EXTRACTION_TOOLS
 logger = logging.getLogger(__name__)
 
 _PROMPT_ID_BY_KIND: dict[str, str] = {
-    "UserProfile": "extraction_user_profile",
+    "UserProfile": "extraction_user_profile",  # user-side facts only as of v1.2.0
+    "UserProfileAgentRec": "extraction_user_profile_agent_rec",  # agent-named-answer axis (parallel to UserProfile)
     "UserPlaybook": "extraction_user_playbook",
 }
 
@@ -120,7 +121,7 @@ class ExtractionAgent:
         extractor_name: str,
         extraction_criteria: str,
         sessions_text: str,
-        extraction_kind: Literal["UserProfile", "UserPlaybook"] = "UserProfile",
+        extraction_kind: Literal["UserProfile", "UserProfileAgentRec", "UserPlaybook"] = "UserProfile",
         request_id: str = "",
     ) -> CommitResult:
         """Run one extraction loop over the given session text.

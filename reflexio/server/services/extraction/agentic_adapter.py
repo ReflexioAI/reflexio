@@ -119,11 +119,20 @@ class AgenticExtractionRunner:
 
         # Phase 3 — build typed extractor config list (profile then playbook).
         # Each tuple carries: (entity_kind, extractor_config, tool_registry).
+        # Profile extraction now runs as TWO parallel passes per config:
+        #   1. UserProfile  — user-side facts only (extraction_user_profile v1.2.0+)
+        #   2. UserProfileAgentRec — agent-named-answer axis (extraction_user_profile_agent_rec)
+        # The split addresses the agentic-loop variance where a single combined
+        # prompt would stochastically crowd out one axis or the other.
         profile_configs = list(config.profile_extractor_configs or [])
         playbook_configs = list(config.user_playbook_extractor_configs or [])
         typed_configs: list[tuple[str, object, object]] = [
             *[
                 ("UserProfile", cfg, PROFILE_EXTRACTION_TOOLS)
+                for cfg in profile_configs
+            ],
+            *[
+                ("UserProfileAgentRec", cfg, PROFILE_EXTRACTION_TOOLS)
                 for cfg in profile_configs
             ],
             *[
