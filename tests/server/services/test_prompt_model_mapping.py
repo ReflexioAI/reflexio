@@ -58,8 +58,8 @@ PROMPT_VERSION_MAP: dict[str, tuple[str, str | None]] = {
     "extraction_user_playbook": ("v1.0.0", None),
     # Cross-axis unification — drops duplicates among the three parallel passes.
     "extraction_unify": ("v1.0.0", None),
-    # Self-critique — adds operand-bearing facts the parallel passes missed.
-    "extraction_self_critique": ("v1.0.0", None),
+    # Self-critique — adds aggregation-operand facts the parallel passes missed.
+    "extraction_self_critique": ("v1.1.0", None),  # v1.1.0 narrows scope to count/price/percentage/hours; v1.0.0 deactivated
     # Agentic search pipeline — agentic-v2 single-loop agent
     "search_agent": ("v1.10.3", None),  # v1.10.3 active for r114 (Pattern F widen kept; benchmark-specific examples removed)
     # In-tool denoising for read_session_text (rehydration compression)
