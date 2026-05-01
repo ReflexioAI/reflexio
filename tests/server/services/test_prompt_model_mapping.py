@@ -57,13 +57,13 @@ PROMPT_VERSION_MAP: dict[str, tuple[str, str | None]] = {
     "extraction_user_profile_agent_rec": ("v1.0.2", None),  # v1.0.2 DEACTIVATED; v1.0.1 is active
     "extraction_user_playbook": ("v1.0.0", None),
     # Agentic search pipeline — agentic-v2 single-loop agent
-    "search_agent": ("v1.10.0", None),
+    "search_agent": ("v1.10.1", None),
     # In-tool denoising for read_session_text (rehydration compression)
     "compress_session_for_query": ("v1.3.0", None),
     # In-tool LLM-as-reranker (brand→category world-knowledge gap)
     "rerank_relevance": ("v1.0.0", None),
     # Answer-LLM system prompt for the longmemeval benchmark
-    "answer_synthesis": ("v1.5.0", None),
+    "answer_synthesis": ("v1.6.0", None),
 }
 
 
