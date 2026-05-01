@@ -53,8 +53,8 @@ PROMPT_VERSION_MAP: dict[str, tuple[str, str | None]] = {
     "query_reformulation": ("v1.0.0", None),
     "document_expansion": ("v1.0.0", None),
     # Agentic extraction pipeline — split per axis (was extraction_agent)
-    "extraction_user_profile": ("v1.3.3", None),  # v1.3.3 active for r116 (operand atomicity rule 11 dropped)
-    "extraction_user_profile_agent_rec": ("v1.1.3", None),  # v1.1.3 active for r116 (operand atomicity rule 8 dropped)
+    "extraction_user_profile": ("v1.3.4", None),  # v1.3.4 active for r117 (rule 11 ON + synthetic-concrete examples)
+    "extraction_user_profile_agent_rec": ("v1.1.4", None),  # v1.1.4 active for r117 (rule 8 ON + synthetic-concrete examples)
     "extraction_user_playbook": ("v1.0.0", None),
     # Cross-axis unification — drops duplicates among the three parallel passes.
     "extraction_unify": ("v1.0.0", None),
