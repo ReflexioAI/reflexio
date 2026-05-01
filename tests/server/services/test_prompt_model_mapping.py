@@ -53,19 +53,19 @@ PROMPT_VERSION_MAP: dict[str, tuple[str, str | None]] = {
     "query_reformulation": ("v1.0.0", None),
     "document_expansion": ("v1.0.0", None),
     # Agentic extraction pipeline — split per axis (was extraction_agent)
-    "extraction_user_profile": ("v1.3.0", None),  # v1.3.0 active for r113 (operand atomicity rule 11)
-    "extraction_user_profile_agent_rec": ("v1.1.0", None),  # v1.1.0 active for r113 (operand atomicity rule 8)
+    "extraction_user_profile": ("v1.3.1", None),  # v1.3.1 active for r114 (operand atomicity, abstract examples)
+    "extraction_user_profile_agent_rec": ("v1.1.1", None),  # v1.1.1 active for r114 (operand atomicity, abstract examples)
     "extraction_user_playbook": ("v1.0.0", None),
     # Cross-axis unification — drops duplicates among the three parallel passes.
     "extraction_unify": ("v1.0.0", None),
     # Agentic search pipeline — agentic-v2 single-loop agent
-    "search_agent": ("v1.10.2", None),  # v1.10.2 active for r113 (Pattern F llm_rerank widened to total-over-category sums)
+    "search_agent": ("v1.10.3", None),  # v1.10.3 active for r114 (Pattern F widen kept; benchmark-specific examples removed)
     # In-tool denoising for read_session_text (rehydration compression)
     "compress_session_for_query": ("v1.3.0", None),
     # In-tool LLM-as-reranker (brand→category world-knowledge gap)
-    "rerank_relevance": ("v1.0.0", None),
+    "rerank_relevance": ("v1.1.0", None),
     # Answer-LLM system prompt for the longmemeval benchmark
-    "answer_synthesis": ("v1.6.0", None),
+    "answer_synthesis": ("v1.6.0", None),  # v1.6.0 latest in repo but DEACTIVATED; v1.5.1 is active
 }
 
 
