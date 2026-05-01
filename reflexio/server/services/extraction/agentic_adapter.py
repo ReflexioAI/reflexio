@@ -22,6 +22,7 @@ This module provides ``AgenticExtractionRunner`` — a thin wrapper that:
 from __future__ import annotations
 
 import logging
+import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TYPE_CHECKING
 
@@ -32,6 +33,7 @@ from reflexio.server.services.extraction.extraction_agent import (
     DeferredExtractionRun,
     ExtractionAgent,
 )
+from reflexio.server.services.extraction.self_critique import SelfCritiqueAgent
 from reflexio.server.services.extraction.tools import (
     PLAYBOOK_EXTRACTION_TOOLS,
     PROFILE_EXTRACTION_TOOLS,
@@ -161,6 +163,24 @@ class AgenticExtractionRunner:
         )
         warnings.extend(run_warnings)
 
+        # Phase 4a' — opt-in self-critique pass.
+        # TEST B: self-critique ON
+        _SELF_CRITIQUE_TEST = True
+        if _SELF_CRITIQUE_TEST and len(deferred_runs) >= 1:
+            try:
+                added = SelfCritiqueAgent(
+                    client=self.client,
+                    prompt_manager=self.request_context.prompt_manager,
+                ).run(deferred_runs, transcript=sessions_str)
+                logger.info("self_critique added=%d", added)
+            except Exception as e:  # noqa: BLE001 — keep current ops on failure
+                logger.warning(
+                    "self_critique failed: %s: %s — proceeding without",
+                    type(e).__name__,
+                    e,
+                )
+                warnings.append(f"self_critique failed: {e}")
+
         # Phase 4b — single LLM call adjudicates cross-axis duplicates.
         # Mutates each deferred run's plan in place; never invents ops.
         if len(deferred_runs) >= 2:
@@ -242,12 +262,8 @@ class AgenticExtractionRunner:
                     storage=self.storage,
                     prompt_manager=self.request_context.prompt_manager,
                     registry=registry,  # type: ignore[arg-type]
-                    # r118: lifted from 4 to 8. Tight budget terminated the
-                    # extraction loop before all operands (prices, counts,
-                    # named places) were captured on operand-dense sessions.
-                    # 8 doubles the search-then-batch-create cycles per axis;
-                    # default is 12. Cost: ~2× extraction LLM calls per session.
-                    max_steps=8,
+                    # r119: max_steps=4 (locked baseline) + self-critique ON
+                    max_steps=4,
                 )
                 # Stash the agent so commit_deferred can reuse the same
                 # storage handle / prompt manager bindings later.
