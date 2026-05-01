@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import time
 from collections import Counter
+from dataclasses import dataclass
 from typing import Literal
 
 from reflexio.server.llm.litellm_client import LiteLLMClient
@@ -24,6 +25,25 @@ from reflexio.server.services.extraction.plan import (
 from reflexio.server.services.extraction.tools import EXTRACTION_TOOLS
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(slots=True)
+class DeferredExtractionRun:
+    """Output of ExtractionAgent.run_no_commit — plan is not yet committed.
+
+    The parallel-then-unify pipeline collects one of these per axis,
+    feeds them all to ``UnifyAgent`` for cross-axis dedup, then calls
+    ``ExtractionAgent.commit_deferred`` on the (possibly pruned) plan.
+
+    Attributes:
+        ctx: ExtractionCtx with the populated plan, search_count, known_ids.
+        outcome: How the loop terminated.
+        kind: Extraction axis label ("UserProfile" | "UserProfileAgentRec" | "UserPlaybook").
+    """
+
+    ctx: ExtractionCtx
+    outcome: str
+    kind: str
 
 _PROMPT_ID_BY_KIND: dict[str, str] = {
     "UserProfile": "extraction_user_profile",  # user-side facts only as of v1.2.0
@@ -124,7 +144,7 @@ class ExtractionAgent:
         extraction_kind: Literal["UserProfile", "UserProfileAgentRec", "UserPlaybook"] = "UserProfile",
         request_id: str = "",
     ) -> CommitResult:
-        """Run one extraction loop over the given session text.
+        """Run one extraction loop and commit the resulting plan.
 
         Args:
             user_id (str): Authenticated user scope.
@@ -145,6 +165,36 @@ class ExtractionAgent:
 
         Returns:
             CommitResult: Includes applied ops, violations, and outcome.
+        """
+        deferred = self.run_no_commit(
+            user_id=user_id,
+            agent_version=agent_version,
+            extractor_name=extractor_name,
+            extraction_criteria=extraction_criteria,
+            sessions_text=sessions_text,
+            extraction_kind=extraction_kind,
+            request_id=request_id,
+        )
+        return self.commit_deferred(deferred)
+
+    def run_no_commit(
+        self,
+        *,
+        user_id: str,
+        agent_version: str,
+        extractor_name: str,
+        extraction_criteria: str,
+        sessions_text: str,
+        extraction_kind: Literal["UserProfile", "UserProfileAgentRec", "UserPlaybook"] = "UserProfile",
+        request_id: str = "",
+    ) -> DeferredExtractionRun:
+        """Run the agent loop but do NOT commit the plan.
+
+        Used by the parallel-then-unify pipeline so the unify pass can prune
+        cross-axis duplicates before any storage write.
+
+        Args/returns mirror :meth:`run`, except the return value is a
+        ``DeferredExtractionRun`` carrying the populated ctx and outcome.
         """
         ctx = ExtractionCtx(
             user_id=user_id,
@@ -179,22 +229,42 @@ class ExtractionAgent:
             finish_tool_name="finish",
             log_label=f"extraction_agent[{extractor_name}]",
         )
-
-        commit = commit_plan(ctx, self.storage, outcome=result.finished_reason)
         elapsed_ms = int((time.monotonic() - t0) * 1000)
 
         logger.info(
-            "extraction_agent[%s] kind=%s elapsed_ms=%d turns=%d/%d tools={%s} "
-            "outcome=%s applied=%d violations=%s usage={%s}",
+            "extraction_agent[%s] kind=%s loop_done elapsed_ms=%d turns=%d/%d "
+            "tools={%s} outcome=%s plan_size=%d usage={%s}",
             extractor_name,
             extraction_kind,
             elapsed_ms,
             len(result.trace.turns),
             self.max_steps,
             _summarise_tool_calls(result.trace),
-            commit.outcome,
+            result.finished_reason,
+            len(ctx.plan),
+            _summarise_usage(result.trace),
+        )
+        return DeferredExtractionRun(
+            ctx=ctx, outcome=result.finished_reason, kind=extraction_kind
+        )
+
+    def commit_deferred(self, deferred: DeferredExtractionRun) -> CommitResult:
+        """Apply invariants and commit a deferred run's plan.
+
+        The unify pass may have mutated ``deferred.ctx.plan`` in place to drop
+        cross-axis duplicates; this still respects per-axis invariants because
+        ``ctx.search_count`` and ``ctx.known_ids`` came from the agent's own
+        loop and remain valid for the surviving ops.
+        """
+        commit = commit_plan(
+            deferred.ctx, self.storage, outcome=deferred.outcome
+        )
+        logger.info(
+            "extraction_agent[%s] kind=%s committed applied=%d violations=%s outcome=%s",
+            deferred.ctx.extractor_name,
+            deferred.kind,
             len(commit.applied),
             sorted({v.code for v in commit.violations}) or "[]",
-            _summarise_usage(result.trace),
+            commit.outcome,
         )
         return commit

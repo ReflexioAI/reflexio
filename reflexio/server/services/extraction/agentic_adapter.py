@@ -22,16 +22,21 @@ This module provides ``AgenticExtractionRunner`` — a thin wrapper that:
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TYPE_CHECKING
 
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
 from reflexio.models.api_schema.service_schemas import Request
 from reflexio.server.services.base_generation_service import _cheap_should_run_reject
-from reflexio.server.services.extraction.extraction_agent import ExtractionAgent
+from reflexio.server.services.extraction.extraction_agent import (
+    DeferredExtractionRun,
+    ExtractionAgent,
+)
 from reflexio.server.services.extraction.tools import (
     PLAYBOOK_EXTRACTION_TOOLS,
     PROFILE_EXTRACTION_TOOLS,
 )
+from reflexio.server.services.extraction.unify import UnifyAgent
 from reflexio.server.services.playbook.playbook_aggregator import PlaybookAggregator
 from reflexio.server.services.playbook.playbook_service_utils import (
     PlaybookAggregatorRequest,
@@ -141,51 +146,57 @@ class AgenticExtractionRunner:
             ],
         ]
 
-        # Phase 4 — run ExtractionAgent once per enabled extractor config.
-        for kind, cfg, registry in typed_configs:
-            extractor_name: str = cfg.extractor_name  # type: ignore[union-attr]
-            extraction_criteria: str = cfg.extraction_definition_prompt  # type: ignore[union-attr]
+        # Phase 4 — run all enabled extractor configs IN PARALLEL with
+        # commit deferred. Three axes (UserProfile, UserProfileAgentRec,
+        # UserPlaybook) examine the same transcript without seeing each
+        # other's in-flight writes; this removes the cross-axis dedup
+        # contention the sequential pipeline had.
+        agents_by_kind: dict[str, ExtractionAgent] = {}
+        deferred_runs, run_warnings = self._run_passes_in_parallel(
+            typed_configs=typed_configs,
+            sessions_str=sessions_str,
+            publish_request=publish_request,
+            request_id=request_id,
+            agents_by_kind=agents_by_kind,
+        )
+        warnings.extend(run_warnings)
+
+        # Phase 4b — single LLM call adjudicates cross-axis duplicates.
+        # Mutates each deferred run's plan in place; never invents ops.
+        if len(deferred_runs) >= 2:
             try:
-                agent = ExtractionAgent(
+                dropped = UnifyAgent(
                     client=self.client,
-                    storage=self.storage,
                     prompt_manager=self.request_context.prompt_manager,
-                    registry=registry,  # type: ignore[arg-type]
-                    # Tight budget for benchmark throughput; default is 12.
-                    # Floor is 3 (search → batch creates → finish); 4 leaves
-                    # room for one follow-up search when needed.
-                    max_steps=4,
-                )
-                result = agent.run(
-                    user_id=publish_request.user_id,
-                    agent_version=publish_request.agent_version,
-                    extractor_name=extractor_name,
-                    extraction_criteria=extraction_criteria,
-                    sessions_text=sessions_str,
-                    extraction_kind=kind,  # type: ignore[arg-type]
-                    request_id=request_id,
-                )
-                logger.info(
-                    "extraction_agent[%s] kind=%s outcome=%s applied=%d violations=%d",
-                    extractor_name,
-                    kind,
-                    result.outcome,
-                    len(result.applied),
-                    len(result.violations),
-                )
-                warnings.extend(
-                    f"extraction_agent[{extractor_name}] violation {v.code}: {v.msg}"
-                    for v in result.violations
-                    if v.severity == "hard"
-                )
-            except Exception as e:  # noqa: BLE001 - degrade gracefully per extractor
+                ).run(deferred_runs)
+                logger.info("unify_agent dropped=%d", dropped)
+            except Exception as e:  # noqa: BLE001 — keep all ops on failure
                 logger.warning(
-                    "extraction_agent[%s] failed: %s: %s",
-                    extractor_name,
+                    "unify_agent failed: %s: %s — committing without unify",
                     type(e).__name__,
                     e,
                 )
-                warnings.append(f"extraction_agent[{extractor_name}] failed: {e}")
+                warnings.append(f"unify_agent failed: {e}")
+
+        # Phase 4c — commit each axis's (possibly pruned) plan.
+        for run in deferred_runs:
+            try:
+                commit = agents_by_kind[run.kind].commit_deferred(run)
+                warnings.extend(
+                    f"extraction_agent[{run.ctx.extractor_name}] violation {v.code}: {v.msg}"
+                    for v in commit.violations
+                    if v.severity == "hard"
+                )
+            except Exception as e:  # noqa: BLE001 — one axis failing must not block others
+                logger.warning(
+                    "extraction_agent[%s] commit failed: %s: %s",
+                    run.ctx.extractor_name,
+                    type(e).__name__,
+                    e,
+                )
+                warnings.append(
+                    f"extraction_agent[{run.ctx.extractor_name}] commit failed: {e}"
+                )
 
         # Phase 5 — playbook aggregation: mirrors classic per-config loop.
         if not publish_request.skip_aggregation:
@@ -198,6 +209,73 @@ class AgenticExtractionRunner:
     # ------------------------------------------------------------------
     # helpers
     # ------------------------------------------------------------------
+
+    def _run_passes_in_parallel(
+        self,
+        *,
+        typed_configs: list[tuple[str, object, object]],
+        sessions_str: str,
+        publish_request: PublishUserInteractionRequest,
+        request_id: str,
+        agents_by_kind: dict[str, ExtractionAgent],
+    ) -> tuple[list[DeferredExtractionRun], list[str]]:
+        """Drive every typed_config through ``ExtractionAgent.run_no_commit`` in parallel.
+
+        Returns the deferred runs (one per pass that succeeded) plus any
+        per-extractor warnings. Failures are logged + appended as warnings;
+        they do not block the surviving passes from committing.
+        """
+        deferred: list[DeferredExtractionRun] = []
+        warnings: list[str] = []
+        # max_workers tracks the number of axes; len(typed_configs) is
+        # already small (3 with the default config).
+        with ThreadPoolExecutor(
+            max_workers=max(1, len(typed_configs)),
+            thread_name_prefix="extraction-pass",
+        ) as executor:
+            future_to_meta = {}
+            for kind, cfg, registry in typed_configs:
+                extractor_name: str = cfg.extractor_name  # type: ignore[union-attr]
+                extraction_criteria: str = cfg.extraction_definition_prompt  # type: ignore[union-attr]
+                agent = ExtractionAgent(
+                    client=self.client,
+                    storage=self.storage,
+                    prompt_manager=self.request_context.prompt_manager,
+                    registry=registry,  # type: ignore[arg-type]
+                    # Tight budget for benchmark throughput; default is 12.
+                    max_steps=4,
+                )
+                # Stash the agent so commit_deferred can reuse the same
+                # storage handle / prompt manager bindings later.
+                agents_by_kind[kind] = agent
+                future = executor.submit(
+                    agent.run_no_commit,
+                    user_id=publish_request.user_id,
+                    agent_version=publish_request.agent_version,
+                    extractor_name=extractor_name,
+                    extraction_criteria=extraction_criteria,
+                    sessions_text=sessions_str,
+                    extraction_kind=kind,  # type: ignore[arg-type]
+                    request_id=request_id,
+                )
+                future_to_meta[future] = (kind, extractor_name)
+
+            for future in as_completed(future_to_meta):
+                kind, extractor_name = future_to_meta[future]
+                try:
+                    deferred.append(future.result())
+                except Exception as e:  # noqa: BLE001 — degrade gracefully per pass
+                    logger.warning(
+                        "extraction_agent[%s] kind=%s failed: %s: %s",
+                        extractor_name,
+                        kind,
+                        type(e).__name__,
+                        e,
+                    )
+                    warnings.append(
+                        f"extraction_agent[{extractor_name}] failed: {e}"
+                    )
+        return deferred, warnings
 
     @staticmethod
     def _build_session_data_models(

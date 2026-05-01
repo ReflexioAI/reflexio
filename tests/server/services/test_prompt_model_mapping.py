@@ -56,6 +56,8 @@ PROMPT_VERSION_MAP: dict[str, tuple[str, str | None]] = {
     "extraction_user_profile": ("v1.2.2", None),  # v1.2.2 latest in repo but DEACTIVATED after r104 regression; v1.2.1 is active
     "extraction_user_profile_agent_rec": ("v1.0.2", None),  # v1.0.2 DEACTIVATED; v1.0.1 is active
     "extraction_user_playbook": ("v1.0.0", None),
+    # Cross-axis unification — drops duplicates among the three parallel passes.
+    "extraction_unify": ("v1.0.0", None),
     # Agentic search pipeline — agentic-v2 single-loop agent
     "search_agent": ("v1.10.1", None),  # v1.10.1 latest in repo but DEACTIVATED after r109 regression; v1.10.0 is active
     # In-tool denoising for read_session_text (rehydration compression)
