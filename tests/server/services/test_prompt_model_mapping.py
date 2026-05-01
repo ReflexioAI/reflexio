@@ -53,13 +53,13 @@ PROMPT_VERSION_MAP: dict[str, tuple[str, str | None]] = {
     "query_reformulation": ("v1.0.0", None),
     "document_expansion": ("v1.0.0", None),
     # Agentic extraction pipeline — split per axis (was extraction_agent)
-    "extraction_user_profile": ("v1.2.2", None),  # v1.2.2 latest in repo but DEACTIVATED after r104 regression; v1.2.1 is active
-    "extraction_user_profile_agent_rec": ("v1.0.2", None),  # v1.0.2 DEACTIVATED; v1.0.1 is active
+    "extraction_user_profile": ("v1.3.0", None),  # v1.3.0 active for r113 (operand atomicity rule 11)
+    "extraction_user_profile_agent_rec": ("v1.1.0", None),  # v1.1.0 active for r113 (operand atomicity rule 8)
     "extraction_user_playbook": ("v1.0.0", None),
     # Cross-axis unification — drops duplicates among the three parallel passes.
     "extraction_unify": ("v1.0.0", None),
     # Agentic search pipeline — agentic-v2 single-loop agent
-    "search_agent": ("v1.10.1", None),  # v1.10.1 latest in repo but DEACTIVATED after r109 regression; v1.10.0 is active
+    "search_agent": ("v1.10.2", None),  # v1.10.2 active for r113 (Pattern F llm_rerank widened to total-over-category sums)
     # In-tool denoising for read_session_text (rehydration compression)
     "compress_session_for_query": ("v1.3.0", None),
     # In-tool LLM-as-reranker (brand→category world-knowledge gap)
