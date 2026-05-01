@@ -151,7 +151,12 @@ class ExtractionAgent:
             extractor_name=extractor_name,
             request_id=request_id,
         )
-        bundle = HandlerBundle(storage=self.storage, ctx=ctx)
+        bundle = HandlerBundle(
+            storage=self.storage,
+            ctx=ctx,
+            llm_client=self.client,
+            prompt_manager=self.prompt_manager,
+        )
 
         prompt = self.prompt_manager.render_prompt(
             _PROMPT_ID_BY_KIND[extraction_kind],

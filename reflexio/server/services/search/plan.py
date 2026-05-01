@@ -19,6 +19,12 @@ class SearchResult(BaseModel):
         outcome (str): How the loop terminated.
         budget_exceeded (bool): True when outcome == "max_steps".
         trace (ToolLoopTrace): Full tool-loop trace — ids harvested by callers for entity fetch.
+        rehydrated_excerpts (list[str]): Verbatim outputs of every
+            ``read_session_text`` call during the run (compressed when
+            compression was wired, raw otherwise). Surfaced by callers as
+            ``rehydrated_text`` on the response so downstream context can
+            include the evidence without going through the agent's
+            natural-language synthesis.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -27,3 +33,4 @@ class SearchResult(BaseModel):
     outcome: Literal["finish_tool", "max_steps", "error"]
     budget_exceeded: bool
     trace: ToolLoopTrace
+    rehydrated_excerpts: list[str] = []

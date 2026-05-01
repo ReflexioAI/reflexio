@@ -622,6 +622,7 @@ def unified_search_endpoint(
         reformulated_query=response.reformulated_query,
         msg=response.msg,
         agent_trace=response.agent_trace,
+        rehydrated_text=response.rehydrated_text,
     )
 
 

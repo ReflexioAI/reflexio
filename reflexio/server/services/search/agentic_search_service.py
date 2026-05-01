@@ -223,6 +223,11 @@ class AgenticSearchService:
             request, result
         )
 
+        rehydrated_text = (
+            "\n\n".join(result.rehydrated_excerpts)
+            if result.rehydrated_excerpts
+            else None
+        )
         return UnifiedSearchResponse(
             success=True,
             profiles=profiles,
@@ -232,6 +237,7 @@ class AgenticSearchService:
             msg=None,
             agent_answer=result.answer,
             agent_trace=_summarise_tool_calls(result.trace),
+            rehydrated_text=rehydrated_text,
         )
 
     # ------------------------------------------------------------------ #

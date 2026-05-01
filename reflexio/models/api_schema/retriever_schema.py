@@ -567,6 +567,7 @@ class UnifiedSearchResponse(BaseModel):
     msg: str | None = None
     agent_answer: str | None = None
     agent_trace: str | None = None
+    rehydrated_text: str | None = None
 
 
 # ===============================
@@ -654,6 +655,7 @@ class UnifiedSearchViewResponse(BaseModel):
     reformulated_query: str | None = None
     msg: str | None = None
     agent_trace: str | None = None
+    rehydrated_text: str | None = None
 
 
 class GetUserPlaybooksViewResponse(BaseModel):

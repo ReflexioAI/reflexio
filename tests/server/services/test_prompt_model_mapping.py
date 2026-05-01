@@ -53,23 +53,36 @@ PROMPT_VERSION_MAP: dict[str, tuple[str, str | None]] = {
     "query_reformulation": ("v1.0.0", None),
     "document_expansion": ("v1.0.0", None),
     # Agentic extraction pipeline — split per axis (was extraction_agent)
-    "extraction_user_profile": ("v1.0.0", None),
+    "extraction_user_profile": ("v1.1.2", None),
     "extraction_user_playbook": ("v1.0.0", None),
     # Agentic search pipeline — agentic-v2 single-loop agent
-    "search_agent": ("v1.9.0", None),
+    "search_agent": ("v1.10.0", None),
     # In-tool denoising for read_session_text (rehydration compression)
     "compress_session_for_query": ("v1.3.0", None),
+    # In-tool LLM-as-reranker (brand→category world-knowledge gap)
+    "rerank_relevance": ("v1.0.0", None),
     # Answer-LLM system prompt for the longmemeval benchmark
-    "answer_synthesis": ("v1.2.0", None),
+    "answer_synthesis": ("v1.4.0", None),
 }
 
 
 def _get_latest_prompt_version(prompt_id: str) -> str:
-    """Scan prompt_bank/<prompt_id>/ for the latest v*.prompt.md file."""
+    """Scan prompt_bank/<prompt_id>/ for the latest v*.prompt.md file.
+
+    Sorted by semver tuple, not lexically — without this v1.10.0 would
+    sort BEFORE v1.9.0 and the trip-wire would lock to a stale version.
+    """
     prompt_dir = _PROMPT_BANK_DIR / prompt_id
     if not prompt_dir.is_dir():
         pytest.fail(f"Prompt directory not found: {prompt_dir}")
-    versions = sorted(prompt_dir.glob("v*.prompt.md"))
+
+    def _semver_key(p: Path) -> tuple[int, ...]:
+        try:
+            return tuple(int(x) for x in p.stem.removeprefix("v").removesuffix(".prompt").split("."))
+        except ValueError:
+            return (0,)
+
+    versions = sorted(prompt_dir.glob("v*.prompt.md"), key=_semver_key)
     if not versions:
         pytest.fail(f"No version files found in {prompt_dir}")
     return versions[-1].stem.split(".prompt")[0]

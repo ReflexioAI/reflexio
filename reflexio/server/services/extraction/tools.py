@@ -72,9 +72,20 @@ class SearchUserProfilesArgs(BaseModel):
     and the encoder may not weight all facets the same as the LLM would.
 
     Optional ``refine_with``: when set, used as the rerank query INSTEAD of
-    ``query``. Only takes effect when ``rerank=True``. Lets you broadly
-    fetch ("bike maintenance") then narrow on a specific facet ("dollar
-    amounts spent") without round-tripping candidate ids through the agent.
+    ``query``. Only takes effect when ``rerank=True`` or ``llm_rerank=True``.
+    Lets you broadly fetch ("bike maintenance") then narrow on a specific
+    facet ("dollar amounts spent") without round-tripping candidate ids
+    through the agent.
+
+    Set ``llm_rerank=True`` to use an LLM relevance-judge instead of the
+    cross-encoder. The LLM brings world knowledge that lexical/semantic
+    cross-encoders lack — bridges brand→category gaps (e.g. "Thrive Market"
+    = grocery service, "Italian designer boots" = luxury footwear) that
+    sink the relevant profile under literal-keyword matches. Costs ~1 s
+    of latency and one LLM call per search; use it on the FIRST pass when
+    the query is brand/category/synonym-prone, NOT as a refinement step.
+    Mutually exclusive with ``rerank``: when both are True, ``llm_rerank``
+    wins.
 
     Each hit includes a ``session_id`` field — pass that to
     ``read_session_text`` if you need the verbatim source turns behind a
@@ -84,6 +95,7 @@ class SearchUserProfilesArgs(BaseModel):
     query: Annotated[str, Field(min_length=1)]
     top_k: int = 10
     rerank: bool = False
+    llm_rerank: bool = False
     refine_with: str | None = None
 
 
@@ -102,6 +114,7 @@ class SearchUserPlaybooksArgs(BaseModel):
     top_k: int = 10
     status: Literal["current", "pending", "archived"] = "current"
     rerank: bool = False
+    llm_rerank: bool = False
     refine_with: str | None = None
 
 
@@ -120,6 +133,7 @@ class SearchAgentPlaybooksArgs(BaseModel):
     top_k: int = 10
     status: Literal["current", "pending", "archived"] = "current"
     rerank: bool = False
+    llm_rerank: bool = False
     refine_with: str | None = None
 
 
@@ -264,7 +278,8 @@ def _status_from_str(s: str) -> Status | None:
 
 
 RERANK_POOL_SIZE = 30
-"""How many candidates we hand the cross-encoder when ``rerank=True``.
+"""How many candidates we hand the reranker when ``rerank=True`` or
+``llm_rerank=True``.
 
 Single principled value (vs prior ad-hoc ``max(final_k * 3, 30) capped at 50``):
 - Cross-encoder cost scales roughly linearly with candidate count; 30 pairs
@@ -279,15 +294,24 @@ rerank=True), we still fetch ``final_k`` so we have a full set to return.
 """
 
 
-def _fetch_k_for_rerank(final_k: int, rerank: bool) -> int:
-    """Pick the initial-fetch size given whether rerank is enabled.
+def _fetch_k_for_rerank(final_k: int, rerank: bool, llm_rerank: bool = False) -> int:
+    """Pick the initial-fetch size given whether any rerank stage is enabled.
 
-    Without rerank: trust the hybrid retrieval order, fetch exactly final_k.
-    With rerank: fetch ``RERANK_POOL_SIZE`` candidates so the cross-encoder
-    has headroom to reorder. If ``final_k`` already exceeds the pool size,
-    use ``final_k`` (the agent asked for more than we'd otherwise fetch).
+    Without rerank: trust the hybrid retrieval order, fetch exactly ``final_k``.
+    With rerank (cross-encoder OR LLM): fetch ``RERANK_POOL_SIZE`` candidates
+    so the reranker has headroom to reorder. If ``final_k`` already exceeds
+    the pool size, use ``final_k`` (agent asked for more than we'd otherwise
+    fetch).
+
+    Args:
+        final_k (int): Number of hits the agent asked for.
+        rerank (bool): Whether the cross-encoder rerank stage is enabled.
+        llm_rerank (bool): Whether the LLM rerank stage is enabled.
+
+    Returns:
+        int: The initial-fetch size for hybrid retrieval.
     """
-    if not rerank:
+    if not (rerank or llm_rerank):
         return final_k
     return max(final_k, RERANK_POOL_SIZE)
 
@@ -297,36 +321,106 @@ def _maybe_rerank_hits(
     rerank: bool,
     rerank_query: str,
     final_k: int,
+    llm_rerank: bool = False,
+    llm_client: Any | None = None,
+    prompt_manager: Any | None = None,
 ) -> list[Any]:
-    """Apply cross-encoder rerank if ``rerank`` is True and we have headroom.
+    """Apply rerank if any rerank flag is set and we have headroom.
 
-    Falls back to hybrid order on any failure (lazy import error, model
-    load error, scoring failure). The cross-encoder model is module-cached
-    in ``reflexio.server.llm.rerank`` after first load.
+    Dispatch order: ``llm_rerank`` (if True and infra available) takes
+    precedence over ``rerank`` (cross-encoder). Both fall back to hybrid
+    order on any failure. ``llm_rerank`` further falls back to the
+    cross-encoder if the LLM call fails AND ``rerank`` was also requested.
 
     Args:
         hits: Candidates from the initial hybrid retrieval. Each must expose
             a ``content`` attribute (profile, playbook, etc).
-        rerank: Toggle from the agent's tool args.
+        rerank: Cross-encoder toggle from the agent's tool args.
         rerank_query: The string to score candidates against. The caller
             decides whether this is the original query or a refinement
             (e.g. ``args.refine_with or args.query``).
         final_k: Number of hits to return after reranking.
+        llm_rerank: LLM-rerank toggle. When True (and ``llm_client`` and
+            ``prompt_manager`` are wired in), the LLM judges relevance.
+            Use this for synonym/brand/category-knowledge gaps where the
+            cross-encoder misses semantic equivalents.
+        llm_client: A ``LiteLLMClient`` for the LLM rerank call. Required
+            when ``llm_rerank=True``.
+        prompt_manager: A ``PromptManager`` for rendering the rerank prompt.
+            Required when ``llm_rerank=True``.
 
     Returns:
-        The re-ordered hits, capped at ``final_k``. If ``rerank`` is False
+        The re-ordered hits, capped at ``final_k``. If neither flag is set
         or ``len(hits) <= final_k``, returns ``hits[:final_k]`` unchanged.
     """
-    if not rerank or len(hits) <= final_k:
+    if not (rerank or llm_rerank) or len(hits) <= final_k:
         return hits[:final_k]
+
+    if llm_rerank:
+        ordered = _try_llm_rerank(hits, rerank_query, final_k, llm_client, prompt_manager)
+        if ordered is not None:
+            return ordered
+        # LLM rerank failed — fall through to cross-encoder ONLY if also requested.
+        if not rerank:
+            return hits[:final_k]
+
+    return _try_cross_encoder_rerank(hits, rerank_query, final_k)
+
+
+def _try_llm_rerank(
+    hits: list[Any],
+    rerank_query: str,
+    final_k: int,
+    llm_client: Any | None,
+    prompt_manager: Any | None,
+) -> list[Any] | None:
+    """Run the LLM rerank stage; return ``None`` on any failure.
+
+    Args:
+        hits: Candidate hits to rerank.
+        rerank_query: Query to score against.
+        final_k: How many to return.
+        llm_client: ``LiteLLMClient`` instance, or ``None``.
+        prompt_manager: ``PromptManager`` instance, or ``None``.
+
+    Returns:
+        Re-ordered top-``final_k`` on success; ``None`` on failure so the
+        caller can chain to the cross-encoder fallback.
+    """
+    try:
+        from reflexio.server.llm.rerank import score_pairs_llm
+    except ImportError:
+        return None
+    scores = score_pairs_llm(
+        rerank_query, [h.content for h in hits], llm_client, prompt_manager
+    )
+    if scores is None:
+        return None
+    ranked = sorted(
+        zip(hits, scores, strict=True), key=lambda pair: pair[1], reverse=True
+    )
+    return [h for h, _ in ranked[:final_k]]
+
+
+def _try_cross_encoder_rerank(
+    hits: list[Any], rerank_query: str, final_k: int
+) -> list[Any]:
+    """Run the cross-encoder rerank stage; fall back to hybrid order on failure.
+
+    Args:
+        hits: Candidate hits to rerank.
+        rerank_query: Query to score against.
+        final_k: How many to return.
+
+    Returns:
+        Re-ordered top-``final_k`` on success; ``hits[:final_k]`` on failure.
+    """
     try:
         from reflexio.server.llm.rerank import score_pairs
 
         scores = score_pairs(rerank_query, [h.content for h in hits])
         ranked = sorted(
-            zip(hits, scores, strict=True),
-            key=lambda pair: pair[1],
-            reverse=True,
+            zip(hits, scores, strict=True), key=lambda pair: pair[1], reverse=True
         )
         return [h for h, _ in ranked[:final_k]]
     except Exception:  # noqa: BLE001 — fall back to hybrid order on failure
@@ -377,30 +471,38 @@ def _project_agent_playbook_for_llm(pb: Any) -> dict[str, Any]:
 
 
 def _handle_search_user_profiles(
-    args: SearchUserProfilesArgs, storage: Any, ctx: ExtractionCtx
+    args: SearchUserProfilesArgs,
+    storage: Any,
+    ctx: ExtractionCtx,
+    llm_client: Any | None = None,
+    prompt_manager: Any | None = None,
 ) -> dict[str, Any]:
     """Search the current user's profiles and bump search_count.
 
     Two-stage retrieval: hybrid (BM25 + vector via RRF) over-fetches a wider
-    candidate pool, then a cross-encoder rerank scores ``(query, content)``
-    pairs and returns the top ``args.top_k`` by descending rerank score.
+    candidate pool, then an optional rerank scores ``(query, content)`` pairs
+    and returns the top ``args.top_k``. ``args.rerank`` selects the local
+    cross-encoder; ``args.llm_rerank`` selects an LLM relevance-judge that
+    has world knowledge for brand→category gaps the cross-encoder can't
+    bridge. ``llm_rerank`` wins when both are set.
 
-    The over-fetch + rerank pattern fixes a class of failures where the
+    The over-fetch + rerank pattern fixes the class of failures where the
     bi-encoder ranks the right profile at #2-#15 by cosine but the top-1
-    is a near-duplicate that the answer LLM picks first. Cross-encoders
-    model query-document interaction (e.g. matching a numeric question to
-    the profile that contains a number, not just topic similarity).
+    is a near-duplicate or literal-keyword match that the answer LLM picks
+    first.
 
     Args:
-        args (SearchUserProfilesArgs): Query and top_k.
+        args (SearchUserProfilesArgs): Query, top_k, rerank toggles, refine_with.
         storage (Any): BaseStorage instance.
         ctx (ExtractionCtx): Per-run state; search_count incremented in place.
+        llm_client (Any | None): ``LiteLLMClient`` for ``llm_rerank=True``.
+        prompt_manager (Any | None): ``PromptManager`` for ``llm_rerank=True``.
 
     Returns:
         dict[str, Any]: ``{"hits": [...]}`` with LLM-facing profile projections.
     """
     final_k = _cap_top_k(args.top_k)
-    fetch_k = _fetch_k_for_rerank(final_k, args.rerank)
+    fetch_k = _fetch_k_for_rerank(final_k, args.rerank, args.llm_rerank)
 
     request = SearchUserProfileRequest(
         query=args.query,
@@ -418,6 +520,9 @@ def _handle_search_user_profiles(
         rerank=args.rerank,
         rerank_query=args.refine_with or args.query,
         final_k=final_k,
+        llm_rerank=args.llm_rerank,
+        llm_client=llm_client,
+        prompt_manager=prompt_manager,
     )
 
     for h in hits:
@@ -449,20 +554,26 @@ def _handle_get_user_profile(
 
 
 def _handle_search_user_playbooks(
-    args: SearchUserPlaybooksArgs, storage: Any, ctx: ExtractionCtx
+    args: SearchUserPlaybooksArgs,
+    storage: Any,
+    ctx: ExtractionCtx,
+    llm_client: Any | None = None,
+    prompt_manager: Any | None = None,
 ) -> dict[str, Any]:
     """Search the current user's playbooks and bump search_count.
 
     Args:
-        args (SearchUserPlaybooksArgs): Query, top_k, status filter, and rerank toggles.
+        args (SearchUserPlaybooksArgs): Query, top_k, status filter, rerank toggles.
         storage (Any): BaseStorage instance.
         ctx (ExtractionCtx): Per-run state; search_count and known_ids updated.
+        llm_client (Any | None): ``LiteLLMClient`` for ``llm_rerank=True``.
+        prompt_manager (Any | None): ``PromptManager`` for ``llm_rerank=True``.
 
     Returns:
         dict[str, Any]: ``{"hits": [...]}`` with LLM-facing playbook projections.
     """
     final_k = _cap_top_k(args.top_k)
-    fetch_k = _fetch_k_for_rerank(final_k, args.rerank)
+    fetch_k = _fetch_k_for_rerank(final_k, args.rerank, args.llm_rerank)
     request = SearchUserPlaybookRequest(
         query=args.query,
         user_id=ctx.user_id,
@@ -484,6 +595,9 @@ def _handle_search_user_playbooks(
         rerank=args.rerank,
         rerank_query=args.refine_with or args.query,
         final_k=final_k,
+        llm_rerank=args.llm_rerank,
+        llm_client=llm_client,
+        prompt_manager=prompt_manager,
     )
     for h in hits:
         ctx.known_ids.add(str(h.user_playbook_id))
@@ -514,7 +628,11 @@ def _handle_get_user_playbook(
 
 
 def _handle_search_agent_playbooks(
-    args: SearchAgentPlaybooksArgs, storage: Any, ctx: ExtractionCtx
+    args: SearchAgentPlaybooksArgs,
+    storage: Any,
+    ctx: ExtractionCtx,
+    llm_client: Any | None = None,
+    prompt_manager: Any | None = None,
 ) -> dict[str, Any]:
     """Search agent-version-scoped playbooks and bump search_count.
 
@@ -522,12 +640,14 @@ def _handle_search_agent_playbooks(
         args (SearchAgentPlaybooksArgs): Query, top_k, status filter, rerank toggles.
         storage (Any): BaseStorage instance.
         ctx (ExtractionCtx): Per-run state; search_count and known_ids updated.
+        llm_client (Any | None): ``LiteLLMClient`` for ``llm_rerank=True``.
+        prompt_manager (Any | None): ``PromptManager`` for ``llm_rerank=True``.
 
     Returns:
         dict[str, Any]: ``{"hits": [...]}`` with LLM-facing agent playbook projections.
     """
     final_k = _cap_top_k(args.top_k)
-    fetch_k = _fetch_k_for_rerank(final_k, args.rerank)
+    fetch_k = _fetch_k_for_rerank(final_k, args.rerank, args.llm_rerank)
     request = SearchAgentPlaybookRequest(
         query=args.query,
         agent_version=ctx.agent_version,
@@ -548,6 +668,9 @@ def _handle_search_agent_playbooks(
         rerank=args.rerank,
         rerank_query=args.refine_with or args.query,
         final_k=final_k,
+        llm_rerank=args.llm_rerank,
+        llm_client=llm_client,
+        prompt_manager=prompt_manager,
     )
     for h in hits:
         ctx.known_ids.add(str(h.agent_playbook_id))
@@ -1145,7 +1268,7 @@ _READ_TOOLS = [
     Tool(
         name="search_user_profiles",
         args_model=SearchUserProfilesArgs,
-        handler=_bundle_handler(_handle_search_user_profiles),
+        handler=_bundle_handler_with_llm(_handle_search_user_profiles),
     ),
     Tool(
         name="get_user_profile",
@@ -1155,7 +1278,7 @@ _READ_TOOLS = [
     Tool(
         name="search_user_playbooks",
         args_model=SearchUserPlaybooksArgs,
-        handler=_bundle_handler(_handle_search_user_playbooks),
+        handler=_bundle_handler_with_llm(_handle_search_user_playbooks),
     ),
     Tool(
         name="get_user_playbook",
@@ -1165,7 +1288,7 @@ _READ_TOOLS = [
     Tool(
         name="search_agent_playbooks",
         args_model=SearchAgentPlaybooksArgs,
-        handler=_bundle_handler(_handle_search_agent_playbooks),
+        handler=_bundle_handler_with_llm(_handle_search_agent_playbooks),
     ),
     Tool(
         name="get_agent_playbook",
@@ -1380,7 +1503,7 @@ SEARCH_TOOLS = ToolRegistry(
         Tool(
             name="search_user_profiles",
             args_model=SearchUserProfilesArgs,
-            handler=_bundle_handler(_handle_search_user_profiles),
+            handler=_bundle_handler_with_llm(_handle_search_user_profiles),
         ),
         Tool(
             name="get_user_profile",
@@ -1403,7 +1526,7 @@ SEARCH_TOOLS = ToolRegistry(
         Tool(
             name="search_user_playbooks",
             args_model=SearchUserPlaybooksArgs,
-            handler=_bundle_handler(_handle_search_user_playbooks),
+            handler=_bundle_handler_with_llm(_handle_search_user_playbooks),
         ),
         Tool(
             name="get_user_playbook",
@@ -1413,7 +1536,7 @@ SEARCH_TOOLS = ToolRegistry(
         Tool(
             name="search_agent_playbooks",
             args_model=SearchAgentPlaybooksArgs,
-            handler=_bundle_handler(_handle_search_agent_playbooks),
+            handler=_bundle_handler_with_llm(_handle_search_agent_playbooks),
         ),
         Tool(
             name="get_agent_playbook",

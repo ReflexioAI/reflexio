@@ -108,7 +108,12 @@ class SearchAgent:
                 and the full tool-loop trace for entity harvesting by callers.
         """
         ctx = ExtractionCtx(user_id=user_id, agent_version=agent_version)
-        bundle = HandlerBundle(storage=self.storage, ctx=ctx)
+        bundle = HandlerBundle(
+            storage=self.storage,
+            ctx=ctx,
+            llm_client=self.client,
+            prompt_manager=self.prompt_manager,
+        )
 
         prompt = self.prompt_manager.render_prompt(
             "search_agent",
@@ -160,4 +165,5 @@ class SearchAgent:
             outcome=result.finished_reason,
             budget_exceeded=result.finished_reason == "max_steps",
             trace=result.trace,
+            rehydrated_excerpts=list(ctx.rehydrated_excerpts),
         )

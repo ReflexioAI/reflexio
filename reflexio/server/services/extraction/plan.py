@@ -91,24 +91,39 @@ class ExtractionCtx:
     search_count: int = 0
     finished: bool = False
     search_answer: str | None = None
+    # Compressed rehydration excerpts captured by `read_session_text` calls
+    # during the agent loop. Surfaced verbatim on the response so callers can
+    # include them in downstream context without going through the search
+    # agent's natural-language `finish(answer=…)` synthesis (which paraphrases
+    # operands and loses fidelity).
+    rehydrated_excerpts: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
 class HandlerBundle:
-    """Glue so tool handlers can access both storage and ctx through one param.
+    """Glue so tool handlers can access shared services through one param.
 
     The run_tool_loop primitive passes a single ``ctx`` param to tool handlers;
-    handlers in tools.py need both a BaseStorage handle and an ExtractionCtx.
-    Both ExtractionAgent and SearchAgent build one of these before driving
-    the loop.
+    handlers in tools.py need access to BaseStorage and an ExtractionCtx. A few
+    handlers (e.g., the rehydration tool) additionally call back into the LLM
+    layer for in-tool denoising — those receive ``llm_client`` and
+    ``prompt_manager`` here. Both ExtractionAgent and SearchAgent build one of
+    these before driving the loop.
 
     Args:
         storage: BaseStorage handle.
         ctx: ExtractionCtx with per-run state.
+        llm_client: Optional LiteLLMClient for in-tool LLM calls (e.g.
+            compression). ``None`` in test paths that don't exercise tools
+            requiring LLM completions.
+        prompt_manager: Optional PromptManager for rendering in-tool prompts.
+            Same ``None`` semantics as ``llm_client``.
     """
 
     storage: object
     ctx: ExtractionCtx
+    llm_client: object | None = None
+    prompt_manager: object | None = None
 
 
 class Violation(BaseModel):

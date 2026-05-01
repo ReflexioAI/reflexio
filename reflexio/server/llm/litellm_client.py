@@ -753,9 +753,10 @@ class LiteLLMClient:
         # Determinism knob: if REFLEXIO_LLM_SEED is set in the environment,
         # inject it as seed + force temperature=0 on non-restricted models so
         # repeated extraction calls produce stable outputs on providers that
-        # honor `seed`. Current-gen reasoning models (gpt-5-*) do not honor
-        # seed or temperature, so the knob is best-effort only on those.
-        seed_env = os.environ.get("REFLEXIO_LLM_SEED") or ""
+        # honor `seed`. Default to "42" so LongMemEval rounds are reproducible
+        # without requiring the env var to be set. Current-gen reasoning models
+        # (gpt-5-*) do not honor seed or temperature; the knob is best-effort.
+        seed_env = os.environ.get("REFLEXIO_LLM_SEED") or "42"
         if seed_env:
             try:
                 params["seed"] = int(seed_env)
