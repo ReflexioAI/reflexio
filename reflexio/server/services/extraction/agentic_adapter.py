@@ -242,8 +242,12 @@ class AgenticExtractionRunner:
                     storage=self.storage,
                     prompt_manager=self.request_context.prompt_manager,
                     registry=registry,  # type: ignore[arg-type]
-                    # Tight budget for benchmark throughput; default is 12.
-                    max_steps=4,
+                    # r118: lifted from 4 to 8. Tight budget terminated the
+                    # extraction loop before all operands (prices, counts,
+                    # named places) were captured on operand-dense sessions.
+                    # 8 doubles the search-then-batch-create cycles per axis;
+                    # default is 12. Cost: ~2× extraction LLM calls per session.
+                    max_steps=8,
                 )
                 # Stash the agent so commit_deferred can reuse the same
                 # storage handle / prompt manager bindings later.
