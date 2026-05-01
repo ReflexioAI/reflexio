@@ -62,7 +62,7 @@ PROMPT_VERSION_MAP: dict[str, tuple[str, str | None]] = {
     # In-tool LLM-as-reranker (brand→category world-knowledge gap)
     "rerank_relevance": ("v1.0.0", None),
     # Answer-LLM system prompt for the longmemeval benchmark
-    "answer_synthesis": ("v1.4.0", None),
+    "answer_synthesis": ("v1.5.0", None),
 }
 
 
