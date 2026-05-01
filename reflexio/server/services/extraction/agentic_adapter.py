@@ -163,10 +163,14 @@ class AgenticExtractionRunner:
         )
         warnings.extend(run_warnings)
 
-        # Phase 4a' — opt-in self-critique pass.
-        # TEST B: self-critique ON
-        _SELF_CRITIQUE_TEST = True
-        if _SELF_CRITIQUE_TEST and len(deferred_runs) >= 1:
+        # Phase 4a' — self-critique pass (default ON, opt-out via
+        # EXTRACTION_SELF_CRITIQUE=0). r119 validated +1pt heldout macro
+        # vs r116 baseline; primarily K-U +25pt via supersession of
+        # operand-bearing facts; cost ~+30% latency and LLM spend.
+        if (
+            os.getenv("EXTRACTION_SELF_CRITIQUE", "1") == "1"
+            and len(deferred_runs) >= 1
+        ):
             try:
                 added = SelfCritiqueAgent(
                     client=self.client,
@@ -262,7 +266,10 @@ class AgenticExtractionRunner:
                     storage=self.storage,
                     prompt_manager=self.request_context.prompt_manager,
                     registry=registry,  # type: ignore[arg-type]
-                    # r119: max_steps=4 (locked baseline) + self-critique ON
+                    # max_steps=4 is the locked baseline. r118 tested 8 and
+                    # was net-negative (over-elaboration drops operands).
+                    # 4 keeps tight extraction and lets self-critique recover
+                    # missed operands.
                     max_steps=4,
                 )
                 # Stash the agent so commit_deferred can reuse the same
