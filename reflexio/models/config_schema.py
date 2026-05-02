@@ -547,16 +547,18 @@ class Config(BaseModel):
     # don't fit UserProfileAgentRec's agent-named-answer axis). Each skipped
     # axis saves ~33% of agentic extraction LLM cost and reduces storage
     # noise. Only applies when extraction_backend='agentic'.
-    skip_extraction_axes: set[
+    skip_extraction_axes: list[
         Literal["UserProfile", "UserProfileAgentRec", "UserPlaybook"]
     ] = Field(
-        default_factory=set,
+        default_factory=list,
         description=(
             "Extraction axes to skip in the agentic backend. Each axis in "
-            "this set will not run during agentic extraction, reducing "
+            "this list will not run during agentic extraction, reducing "
             "extraction LLM cost (~33% saved per skipped axis) and storage "
             "noise. Only applies when extraction_backend='agentic'. "
-            "Default: empty (all three axes run)."
+            "Default: empty (all three axes run). Stored as list (not set) "
+            "for JSON serializability over the HTTP wire — the consumer "
+            "deduplicates internally."
         ),
     )
 

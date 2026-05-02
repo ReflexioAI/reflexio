@@ -140,7 +140,7 @@ class AgenticExtractionRunner:
         typed_configs = self._build_typed_configs(
             profile_configs=profile_configs,
             playbook_configs=playbook_configs,
-            skip_axes=set(config.skip_extraction_axes or set()),
+            skip_axes=set(config.skip_extraction_axes or []),
         )
 
         # Phase 4 — run all enabled extractor configs IN PARALLEL with
