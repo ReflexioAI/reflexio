@@ -17,7 +17,7 @@ def test_load_fixtures_group1_returns_12():
 
 
 def test_load_fixtures_group2_returns_18():
-    fixtures = load_fixtures(group="group2_supermemory")
+    fixtures = load_fixtures(group="group2_retrieval")
     assert len(fixtures) == 18
 
 

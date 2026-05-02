@@ -1,6 +1,6 @@
 {
   "id": "multi_hop_location_and_pref",
-  "group": "group2_supermemory",
+  "group": "group2_retrieval",
   "category": "multi_hop_search",
   "existing_storage": [
     {"type": "profile", "id": "p_502", "content": "user lives in San Francisco", "ttl": "infinity"},

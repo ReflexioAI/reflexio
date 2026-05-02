@@ -1,6 +1,6 @@
 {
   "id": "temporal_supersede_role_change",
-  "group": "group2_supermemory",
+  "group": "group2_retrieval",
   "category": "temporal_supersede",
   "existing_storage": [
     {"type": "profile", "id": "p_402", "content": "user is a senior SWE at Acme", "ttl": "infinity"}

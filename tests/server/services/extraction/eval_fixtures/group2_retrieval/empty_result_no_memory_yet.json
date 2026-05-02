@@ -1,6 +1,6 @@
 {
   "id": "empty_result_no_memory_yet",
-  "group": "group2_supermemory",
+  "group": "group2_retrieval",
   "category": "empty_result_no_confab",
   "existing_storage": [],
   "query": "What's the user's favorite color?",

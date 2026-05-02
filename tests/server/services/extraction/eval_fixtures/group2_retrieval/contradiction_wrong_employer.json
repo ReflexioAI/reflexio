@@ -1,6 +1,6 @@
 {
   "id": "contradiction_wrong_employer",
-  "group": "group2_supermemory",
+  "group": "group2_retrieval",
   "category": "contradiction_resolution",
   "existing_storage": [
     {"type": "profile", "id": "p_411", "content": "user works at Google", "ttl": "infinity"}

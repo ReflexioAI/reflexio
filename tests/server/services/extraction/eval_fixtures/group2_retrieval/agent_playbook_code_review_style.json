@@ -1,6 +1,6 @@
 {
   "id": "agent_playbook_code_review_style",
-  "group": "group2_supermemory",
+  "group": "group2_retrieval",
   "category": "agent_playbook_fallback",
   "existing_storage": [
     {"type": "agent_playbook", "id": "ab_601",

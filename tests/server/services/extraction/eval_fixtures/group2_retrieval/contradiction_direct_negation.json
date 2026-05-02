@@ -1,6 +1,6 @@
 {
   "id": "contradiction_direct_negation",
-  "group": "group2_supermemory",
+  "group": "group2_retrieval",
   "category": "contradiction_resolution",
   "existing_storage": [
     {"type": "profile", "id": "p_410", "content": "user is a vegetarian", "ttl": "infinity"}
