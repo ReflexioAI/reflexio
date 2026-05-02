@@ -381,6 +381,28 @@ class AgentSuccessConfig(BaseModel):
         return _migrate_dict(data, _EXTRACTOR_OVERRIDE_MIGRATION)
 
 
+class ReflectionConfig(BaseModel):
+    """Configuration for the sliding-window reflection step.
+
+    Reflection runs inside ``GenerationService.run`` as its own
+    sliding-window step (window = global ``batch_size``, stride = global
+    ``batch_interval``, bookmark via ``OperationStateManager``). When
+    the gate opens and at least one Assistant interaction in the window
+    cites a current user playbook / user profile row, the LLM is asked
+    whether any cited rows should be replaced. When ``enabled`` is
+    False the step short-circuits.
+
+    Args:
+        enabled (bool): Master switch. When False, no LLM call is made.
+        model (str | None): Optional model name override. Falls back to
+            ``LLMConfig.generation_model_name`` and then the site
+            default for ``ModelRole.GENERATION`` when None.
+    """
+
+    enabled: bool = True
+    model: str | None = None
+
+
 class LLMConfig(BaseModel):
     """
     LLM model configuration overrides.
@@ -453,6 +475,8 @@ class Config(BaseModel):
     api_key_config: APIKeyConfig | None = None
     # LLM model configuration overrides
     llm_config: LLMConfig | None = None
+    # Post-publish reflection service configuration
+    reflection_config: ReflectionConfig = Field(default_factory=ReflectionConfig)
     # Skip the LLM pre-extraction eligibility check (always run extraction)
     skip_should_run_check: bool = False
     # Enable storage-time document expansion for improved FTS recall
@@ -479,6 +503,7 @@ class Config(BaseModel):
                 "batch_interval",
                 "extraction_backend",
                 "search_backend",
+                "reflection_config",
             ):
                 if key in data and data[key] is None:
                     del data[key]

@@ -151,6 +151,51 @@ class ProfileMixin:
         raise NotImplementedError
 
     @abstractmethod
+    def get_profiles_by_ids(
+        self,
+        user_id: str,
+        profile_ids: list[str],
+        status_filter: list[Status | None] | None = None,
+    ) -> list[UserProfile]:
+        """Fetch the subset of a user's profiles whose ids are in the list.
+
+        Server-side filter on (``user_id``, ``profile_id IN (...)``) so
+        callers (e.g. the reflection service resolving a small set of
+        cited profile ids) avoid scanning every profile for the user.
+
+        Args:
+            user_id (str): Owning user id.
+            profile_ids (list[str]): Profile ids to fetch. Empty list
+                returns ``[]`` without hitting storage.
+            status_filter (list[Status | None] | None): Statuses to
+                include. ``None`` (default) means CURRENT only — same
+                default as ``get_user_profile`` for consistency.
+
+        Returns:
+            list[UserProfile]: Matching profiles. Order is unspecified.
+                Ids that do not exist (or do not match the user / status
+                filter) are silently omitted.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def archive_profile_by_id(self, user_id: str, profile_id: str) -> bool:
+        """Atomically archive a single profile by id, only if currently CURRENT.
+
+        Flips the row's ``status`` from ``None`` (CURRENT) to
+        ``Status.ARCHIVED``. No-op when the profile does not exist or is
+        already non-current.
+
+        Args:
+            user_id (str): Owning user id.
+            profile_id (str): The profile id to archive.
+
+        Returns:
+            bool: True if a row was archived; False otherwise.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     def delete_all_profiles_by_status(self, status: Status) -> int:
         """Delete all profiles with the given status atomically.
 

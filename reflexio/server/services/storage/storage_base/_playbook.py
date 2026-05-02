@@ -173,6 +173,52 @@ class PlaybookMixin:
         raise NotImplementedError
 
     @abstractmethod
+    def get_user_playbooks_by_ids(
+        self,
+        user_id: str,
+        user_playbook_ids: list[int],
+        status_filter: list[Status | None] | None = None,
+    ) -> list[UserPlaybook]:
+        """Fetch the subset of a user's playbooks whose ids are in the list.
+
+        Server-side filter on (``user_id``, ``user_playbook_id IN (...)``)
+        so callers (e.g. the reflection service resolving a small set of
+        cited playbook ids) avoid scanning every playbook for the user.
+
+        Args:
+            user_id (str): Owning user id.
+            user_playbook_ids (list[int]): Playbook ids to fetch. Empty
+                list returns ``[]`` without hitting storage.
+            status_filter (list[Status | None] | None): Statuses to
+                include. ``None`` (default) means CURRENT only — same
+                default as ``get_user_playbooks`` for consistency.
+
+        Returns:
+            list[UserPlaybook]: Matching playbooks. Order is unspecified.
+                Ids that do not exist (or do not match the user / status
+                filter) are silently omitted.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def archive_user_playbook_by_id(self, user_id: str, user_playbook_id: int) -> bool:
+        """Atomically archive a single user playbook by id, only if CURRENT.
+
+        Flips the row's ``status`` from ``None`` (CURRENT) to
+        ``Status.ARCHIVED``. No-op when the playbook does not exist, has
+        a different ``user_id``, or is already non-current.
+
+        Args:
+            user_id (str): Owning user id; used as a guard so callers
+                cannot accidentally archive another user's playbook.
+            user_playbook_id (int): The user_playbook_id to archive.
+
+        Returns:
+            bool: True if a row was archived; False otherwise.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     def has_user_playbooks_with_status(
         self,
         status: Status | None,

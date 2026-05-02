@@ -170,6 +170,59 @@ class ProfileMixin:
             )
             return updated_count
 
+    def get_profiles_by_ids(
+        self,
+        user_id: str,
+        profile_ids: list[str],
+        status_filter: list[Status | None] | None = None,
+    ) -> list[UserProfile]:
+        if not profile_ids:
+            return []
+        if status_filter is None:
+            status_filter = [None]
+
+        user_dir = self._user_dir(self._profiles_dir(), user_id)
+        results: list[UserProfile] = []
+        now_ts = int(datetime.now(UTC).timestamp())
+        with self._lock:
+            for pid in profile_ids:
+                path = self._entity_path(user_dir, pid)
+                if not path.exists():
+                    continue
+                profile_obj = self._read_entity(path, UserProfile)
+                if profile_obj.expiration_timestamp < now_ts:
+                    continue
+                if matches_status_filter(profile_obj.status, status_filter):
+                    results.append(profile_obj)
+        return results
+
+    def archive_profile_by_id(self, user_id: str, profile_id: str) -> bool:
+        # The file is rewritten in place, not unlinked: archived rows
+        # must remain readable for ``get_profiles_by_ids(status_filter=
+        # [Status.ARCHIVED])``. QMD has no per-file deindex, so the row
+        # stays in the search corpus and would crowd out current rows
+        # if returned in QMD's top_k. ``search_user_profile`` overfetches
+        # to compensate (parallel to SQLite's overfetch).
+        with self._lock:
+            path = self._entity_path(
+                self._user_dir(self._profiles_dir(), user_id),
+                profile_id,
+            )
+            if not path.exists():
+                return False
+            profile_obj = self._read_entity(path, UserProfile)
+            if profile_obj.status is not None:
+                return False
+            profile_obj.status = Status.ARCHIVED
+            profile_obj.last_modified_timestamp = int(datetime.now(UTC).timestamp())
+            self._write_entity(path, profile_obj)
+            # Drop the embedding sidecar so QMD vector search stops
+            # surfacing this row. The body file stays for archived-status
+            # reads; FTS still indexes it (mitigated by overfetch in
+            # ``search_user_profile``).
+            self._delete_embedding(path)
+            return True
+
     def delete_all_profiles_by_status(self, status: Status) -> int:
         with self._lock:
             deleted_count = 0
@@ -434,10 +487,15 @@ class ProfileMixin:
 
         # Try QMD search when a query is provided
         if query:
+            # Overfetch from QMD to compensate for post-filter loss
+            # (status / generated_from_request_id / time range strip
+            # candidates after retrieval). Mirrors SQLite's pattern.
+            requested_top_k = search_user_profile_request.top_k or 10
+            qmd_top_k = max(requested_top_k * 5, 20)
             qmd_results = self._qmd.search(
                 query,
                 mode=search_user_profile_request.search_mode,
-                top_k=search_user_profile_request.top_k or 10,
+                top_k=qmd_top_k,
             )
             if qmd_results:
                 profiles_dir = self._profiles_dir()

@@ -33,6 +33,7 @@ from reflexio.models.api_schema.service_schemas import (
     BlockingIssue,
     BlockingIssueKind,
     BulkDeleteResponse,
+    Citation,
     DeleteAgentPlaybooksByIdsRequest,
     DeleteProfilesByIdsRequest,
     DeleteRequestsByIdsRequest,
@@ -99,6 +100,7 @@ __all__ = [
     "BlockingIssue",
     "BlockingIssueKind",
     "ToolUsed",
+    "Citation",
     "Status",
     "PlaybookStatus",
     # View models (user-facing, without embeddings)
