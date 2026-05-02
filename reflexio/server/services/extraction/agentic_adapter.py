@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TYPE_CHECKING
 
@@ -131,22 +132,16 @@ class AgenticExtractionRunner:
         #   2. UserProfileAgentRec — agent-named-answer axis (extraction_user_profile_agent_rec)
         # The split addresses the agentic-loop variance where a single combined
         # prompt would stochastically crowd out one axis or the other.
+        #
+        # ``config.skip_extraction_axes`` may suppress any subset of axes by
+        # name. Default is an empty set, so all three axes run unchanged.
         profile_configs = list(config.profile_extractor_configs or [])
         playbook_configs = list(config.user_playbook_extractor_configs or [])
-        typed_configs: list[tuple[str, object, object]] = [
-            *[
-                ("UserProfile", cfg, PROFILE_EXTRACTION_TOOLS)
-                for cfg in profile_configs
-            ],
-            *[
-                ("UserProfileAgentRec", cfg, PROFILE_EXTRACTION_TOOLS)
-                for cfg in profile_configs
-            ],
-            *[
-                ("UserPlaybook", cfg, PLAYBOOK_EXTRACTION_TOOLS)
-                for cfg in playbook_configs
-            ],
-        ]
+        typed_configs = self._build_typed_configs(
+            profile_configs=profile_configs,
+            playbook_configs=playbook_configs,
+            skip_axes=set(config.skip_extraction_axes or set()),
+        )
 
         # Phase 4 — run all enabled extractor configs IN PARALLEL with
         # commit deferred. Three axes (UserProfile, UserProfileAgentRec,
@@ -234,6 +229,48 @@ class AgenticExtractionRunner:
     # helpers
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _build_typed_configs(
+        *,
+        profile_configs: Sequence[object],
+        playbook_configs: Sequence[object],
+        skip_axes: set[str],
+    ) -> list[tuple[str, object, object]]:
+        """Materialise the (axis, config, tool_registry) triples to run.
+
+        Each axis declared in ``skip_axes`` is dropped from the result; if no
+        axes are skipped, the output matches the historical hardcoded layout
+        (UserProfile then UserProfileAgentRec then UserPlaybook).
+
+        Args:
+            profile_configs (Sequence[object]): Resolved profile extractor configs.
+            playbook_configs (Sequence[object]): Resolved playbook extractor configs.
+            skip_axes (set[str]): Axis names to suppress. Unknown axis names
+                are silently no-ops (the axis simply won't appear in the
+                axis_specs table to filter against), so callers can rename
+                or retire axes without breaking persisted Configs.
+
+        Returns:
+            list[tuple[str, object, object]]: One tuple per (axis, config) pair
+                that survived the filter, in axis-then-config order.
+        """
+        # Each entry: (axis_name, configs_for_this_axis, tools_for_this_axis).
+        axis_specs: list[tuple[str, Sequence[object], object]] = [
+            ("UserProfile", profile_configs, PROFILE_EXTRACTION_TOOLS),
+            ("UserProfileAgentRec", profile_configs, PROFILE_EXTRACTION_TOOLS),
+            ("UserPlaybook", playbook_configs, PLAYBOOK_EXTRACTION_TOOLS),
+        ]
+        typed_configs: list[tuple[str, object, object]] = []
+        for axis_name, configs_for_axis, tools in axis_specs:
+            if axis_name in skip_axes:
+                logger.info(
+                    "Skipping extraction axis %s (config.skip_extraction_axes)",
+                    axis_name,
+                )
+                continue
+            typed_configs.extend((axis_name, cfg, tools) for cfg in configs_for_axis)
+        return typed_configs
+
     def _run_passes_in_parallel(
         self,
         *,
@@ -299,9 +336,7 @@ class AgenticExtractionRunner:
                         type(e).__name__,
                         e,
                     )
-                    warnings.append(
-                        f"extraction_agent[{extractor_name}] failed: {e}"
-                    )
+                    warnings.append(f"extraction_agent[{extractor_name}] failed: {e}")
         return deferred, warnings
 
     @staticmethod

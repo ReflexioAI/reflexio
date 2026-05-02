@@ -229,15 +229,24 @@ def test_agentic_adapter_triggers_playbook_aggregator():
         ],
     )
 
-    # Stub ExtractionAgent.run to return empty CommitResult (no LLM calls needed)
-    empty_result = CommitResult(applied=[], violations=[], outcome="finish_tool")
+    # The runner calls run_no_commit + commit_deferred (NOT .run); patch both
+    # so no real LLM activity is required.
+    empty_commit = CommitResult(applied=[], violations=[], outcome="finish_tool")
     fake_agg_cls = MagicMock()
     fake_agg_cls.return_value.run.return_value = {}
 
+    def fake_run_no_commit(self, *, extraction_kind, extractor_name, **_kw):
+        return _stub_run_no_commit(kind=extraction_kind, extractor_name=extractor_name)
+
     with (
         patch(
-            "reflexio.server.services.extraction.agentic_adapter.ExtractionAgent.run",
-            return_value=empty_result,
+            "reflexio.server.services.extraction.agentic_adapter.ExtractionAgent.run_no_commit",
+            autospec=True,
+            side_effect=fake_run_no_commit,
+        ),
+        patch(
+            "reflexio.server.services.extraction.agentic_adapter.ExtractionAgent.commit_deferred",
+            return_value=empty_commit,
         ),
         patch(
             "reflexio.server.services.extraction.agentic_adapter.PlaybookAggregator",
@@ -327,12 +336,22 @@ def test_runner_force_extraction_bypasses_pre_filter():
         ],
     )
 
-    empty_result = CommitResult(applied=[], violations=[], outcome="finish_tool")
+    empty_commit = CommitResult(applied=[], violations=[], outcome="finish_tool")
 
-    with patch(
-        "reflexio.server.services.extraction.agentic_adapter.ExtractionAgent.run",
-        return_value=empty_result,
-    ) as mock_agent_run:
+    def fake_run_no_commit(self, *, extraction_kind, extractor_name, **_kw):
+        return _stub_run_no_commit(kind=extraction_kind, extractor_name=extractor_name)
+
+    with (
+        patch(
+            "reflexio.server.services.extraction.agentic_adapter.ExtractionAgent.run_no_commit",
+            autospec=True,
+            side_effect=fake_run_no_commit,
+        ) as mock_run_no_commit,
+        patch(
+            "reflexio.server.services.extraction.agentic_adapter.ExtractionAgent.commit_deferred",
+            return_value=empty_commit,
+        ),
+    ):
         runner.run(
             publish_request=_make_publish_request(force_extraction=True),
             request_id="req_force",
@@ -341,8 +360,11 @@ def test_runner_force_extraction_bypasses_pre_filter():
             config=cfg,
         )
 
-    # 1 profile + 1 playbook config = 2 total agent calls; pre-filter was bypassed
-    assert mock_agent_run.call_count == 2
+    # 1 profile cfg drives 2 axes (UserProfile + UserProfileAgentRec) and
+    # 1 playbook cfg drives 1 (UserPlaybook) = 3 total agent calls. The
+    # pre-filter would have rejected this single-Agent-turn session, but
+    # force_extraction=True bypasses it.
+    assert mock_run_no_commit.call_count == 3
 
 
 def test_runner_iterates_all_extractor_configs():
@@ -369,12 +391,22 @@ def test_runner_iterates_all_extractor_configs():
         ],
     )
 
-    empty_result = CommitResult(applied=[], violations=[], outcome="finish_tool")
+    empty_commit = CommitResult(applied=[], violations=[], outcome="finish_tool")
 
-    with patch(
-        "reflexio.server.services.extraction.agentic_adapter.ExtractionAgent.run",
-        return_value=empty_result,
-    ) as mock_agent_run:
+    def fake_run_no_commit(self, *, extraction_kind, extractor_name, **_kw):
+        return _stub_run_no_commit(kind=extraction_kind, extractor_name=extractor_name)
+
+    with (
+        patch(
+            "reflexio.server.services.extraction.agentic_adapter.ExtractionAgent.run_no_commit",
+            autospec=True,
+            side_effect=fake_run_no_commit,
+        ) as mock_run_no_commit,
+        patch(
+            "reflexio.server.services.extraction.agentic_adapter.ExtractionAgent.commit_deferred",
+            return_value=empty_commit,
+        ),
+    ):
         runner.run(
             publish_request=_make_publish_request(force_extraction=True),
             request_id="req_multi",
@@ -383,9 +415,12 @@ def test_runner_iterates_all_extractor_configs():
             config=cfg,
         )
 
-    # 2 profile configs + 1 playbook config = 3 total agent calls
-    assert mock_agent_run.call_count == 3
-    called_names = {c.kwargs["extractor_name"] for c in mock_agent_run.call_args_list}
+    # 2 profile configs × 2 axes (UserProfile, UserProfileAgentRec) +
+    # 1 playbook config × 1 axis (UserPlaybook) = 5 total agent calls.
+    assert mock_run_no_commit.call_count == 5
+    called_names = {
+        c.kwargs["extractor_name"] for c in mock_run_no_commit.call_args_list
+    }
     assert called_names == {"profile_one", "profile_two", "playbook_one"}
 
 
@@ -405,13 +440,21 @@ def test_runner_skip_aggregation_short_circuits():
         ],
     )
 
-    empty_result = CommitResult(applied=[], violations=[], outcome="finish_tool")
+    empty_commit = CommitResult(applied=[], violations=[], outcome="finish_tool")
     fake_agg_cls = MagicMock()
+
+    def fake_run_no_commit(self, *, extraction_kind, extractor_name, **_kw):
+        return _stub_run_no_commit(kind=extraction_kind, extractor_name=extractor_name)
 
     with (
         patch(
-            "reflexio.server.services.extraction.agentic_adapter.ExtractionAgent.run",
-            return_value=empty_result,
+            "reflexio.server.services.extraction.agentic_adapter.ExtractionAgent.run_no_commit",
+            autospec=True,
+            side_effect=fake_run_no_commit,
+        ),
+        patch(
+            "reflexio.server.services.extraction.agentic_adapter.ExtractionAgent.commit_deferred",
+            return_value=empty_commit,
         ),
         patch(
             "reflexio.server.services.extraction.agentic_adapter.PlaybookAggregator",
@@ -447,7 +490,7 @@ def test_runner_agent_failure_becomes_warning():
     )
 
     with patch(
-        "reflexio.server.services.extraction.agentic_adapter.ExtractionAgent.run",
+        "reflexio.server.services.extraction.agentic_adapter.ExtractionAgent.run_no_commit",
         side_effect=RuntimeError("LLM timeout"),
     ):
         warnings = runner.run(
@@ -486,9 +529,19 @@ def test_runner_hard_violation_surfaces_as_warning():
         applied=[], violations=[violation], outcome="finish_tool"
     )
 
-    with patch(
-        "reflexio.server.services.extraction.agentic_adapter.ExtractionAgent.run",
-        return_value=result_with_violation,
+    def fake_run_no_commit(self, *, extraction_kind, extractor_name, **_kw):
+        return _stub_run_no_commit(kind=extraction_kind, extractor_name=extractor_name)
+
+    with (
+        patch(
+            "reflexio.server.services.extraction.agentic_adapter.ExtractionAgent.run_no_commit",
+            autospec=True,
+            side_effect=fake_run_no_commit,
+        ),
+        patch(
+            "reflexio.server.services.extraction.agentic_adapter.ExtractionAgent.commit_deferred",
+            return_value=result_with_violation,
+        ),
     ):
         warnings = runner.run(
             publish_request=_make_publish_request(force_extraction=True),
@@ -530,9 +583,19 @@ def test_runner_soft_violation_does_not_surface_as_warning():
         applied=[], violations=[soft_violation], outcome="finish_tool"
     )
 
-    with patch(
-        "reflexio.server.services.extraction.agentic_adapter.ExtractionAgent.run",
-        return_value=result_with_soft,
+    def fake_run_no_commit(self, *, extraction_kind, extractor_name, **_kw):
+        return _stub_run_no_commit(kind=extraction_kind, extractor_name=extractor_name)
+
+    with (
+        patch(
+            "reflexio.server.services.extraction.agentic_adapter.ExtractionAgent.run_no_commit",
+            autospec=True,
+            side_effect=fake_run_no_commit,
+        ),
+        patch(
+            "reflexio.server.services.extraction.agentic_adapter.ExtractionAgent.commit_deferred",
+            return_value=result_with_soft,
+        ),
     ):
         warnings = runner.run(
             publish_request=_make_publish_request(force_extraction=True),
@@ -775,3 +838,213 @@ def test_runner_playbook_extractor_cannot_emit_profile_ops(tmp_path):
     # The forbidden create_user_profile was rejected — zero profiles in storage.
     profiles = store.get_user_profile(user_id)
     assert profiles == [], f"Playbook extractor must not emit profiles; got: {profiles}"
+
+
+# ---------------------------------------------------------------------------
+# skip_extraction_axes — Config-driven axis suppression
+# ---------------------------------------------------------------------------
+
+
+def _profile_cfg() -> ProfileExtractorConfig:
+    return ProfileExtractorConfig(
+        extractor_name="profile_x",
+        extraction_definition_prompt="Extract profile facts.",
+    )
+
+
+def _playbook_cfg() -> UserPlaybookExtractorConfig:
+    return UserPlaybookExtractorConfig(
+        extractor_name="playbook_x",
+        extraction_definition_prompt="Extract playbook rules.",
+    )
+
+
+def test_build_typed_configs_default_runs_all_three_axes():
+    """Default skip_extraction_axes (empty set) preserves the historical layout.
+
+    Expected order: UserProfile (per profile cfg) → UserProfileAgentRec
+    (per profile cfg) → UserPlaybook (per playbook cfg).
+    """
+    typed = AgenticExtractionRunner._build_typed_configs(
+        profile_configs=[_profile_cfg()],
+        playbook_configs=[_playbook_cfg()],
+        skip_axes=set(),
+    )
+    axes = [kind for kind, _, _ in typed]
+    assert axes == ["UserProfile", "UserProfileAgentRec", "UserPlaybook"]
+
+
+def test_build_typed_configs_skip_user_profile_agent_rec():
+    """Skipping UserProfileAgentRec leaves the other two axes intact.
+
+    LoCoMo's two-human-speaker conversations don't fit the agent-named-answer
+    axis, so this is the primary motivating use case.
+    """
+    typed = AgenticExtractionRunner._build_typed_configs(
+        profile_configs=[_profile_cfg()],
+        playbook_configs=[_playbook_cfg()],
+        skip_axes={"UserProfileAgentRec"},
+    )
+    axes = [kind for kind, _, _ in typed]
+    assert axes == ["UserProfile", "UserPlaybook"]
+    assert "UserProfileAgentRec" not in axes
+
+
+def test_build_typed_configs_skip_all_three_returns_empty():
+    """Skipping every axis yields an empty typed_configs list."""
+    typed = AgenticExtractionRunner._build_typed_configs(
+        profile_configs=[_profile_cfg()],
+        playbook_configs=[_playbook_cfg()],
+        skip_axes={"UserProfile", "UserProfileAgentRec", "UserPlaybook"},
+    )
+    assert typed == []
+
+
+def test_build_typed_configs_unknown_axis_is_silent_noop():
+    """Unknown axis names in skip_axes are ignored — no exception, no effect.
+
+    This keeps persisted Configs forward-compatible: future axes can be
+    renamed or retired without invalidating user-supplied skip lists.
+    """
+    typed = AgenticExtractionRunner._build_typed_configs(
+        profile_configs=[_profile_cfg()],
+        playbook_configs=[_playbook_cfg()],
+        skip_axes={"NotAnAxis"},
+    )
+    axes = [kind for kind, _, _ in typed]
+    assert axes == ["UserProfile", "UserProfileAgentRec", "UserPlaybook"]
+
+
+def _stub_run_no_commit(*, kind: str, extractor_name: str = "stub"):
+    """Build a ``DeferredExtractionRun`` carrying an empty plan for the given axis.
+
+    ``AgenticExtractionRunner._run_passes_in_parallel`` calls
+    ``ExtractionAgent.run_no_commit`` (NOT ``ExtractionAgent.run``), so tests
+    that want to count axis invocations must patch ``run_no_commit`` and
+    return one of these stubs.
+    """
+    from reflexio.server.services.extraction.extraction_agent import (
+        DeferredExtractionRun,
+    )
+    from reflexio.server.services.extraction.plan import ExtractionCtx
+
+    ctx = ExtractionCtx(
+        user_id="u_test",
+        agent_version="v1",
+        extractor_name=extractor_name,
+        request_id="req_stub",
+    )
+    return DeferredExtractionRun(ctx=ctx, outcome="finish_tool", kind=kind)
+
+
+def test_runner_skip_extraction_axes_wires_into_run():
+    """End-to-end through ``runner.run``: skipping UserProfileAgentRec halves
+    the per-config profile passes (1 profile cfg → 1 profile call instead of 2).
+    """
+    runner = _make_runner()
+
+    cfg = Config(
+        storage_config=StorageConfigSQLite(),
+        profile_extractor_configs=[
+            ProfileExtractorConfig(
+                extractor_name="solo_profile",
+                extraction_definition_prompt="Extract facts.",
+            )
+        ],
+        user_playbook_extractor_configs=[
+            UserPlaybookExtractorConfig(
+                extractor_name="solo_playbook",
+                extraction_definition_prompt="Extract rules.",
+            )
+        ],
+        skip_extraction_axes={"UserProfileAgentRec"},
+    )
+
+    empty_commit = CommitResult(applied=[], violations=[], outcome="finish_tool")
+
+    def fake_run_no_commit(self, *, extraction_kind, extractor_name, **_kw):
+        return _stub_run_no_commit(kind=extraction_kind, extractor_name=extractor_name)
+
+    with (
+        patch(
+            "reflexio.server.services.extraction.agentic_adapter.ExtractionAgent.run_no_commit",
+            autospec=True,
+            side_effect=fake_run_no_commit,
+        ) as mock_run_no_commit,
+        patch(
+            "reflexio.server.services.extraction.agentic_adapter.ExtractionAgent.commit_deferred",
+            return_value=empty_commit,
+        ),
+    ):
+        runner.run(
+            publish_request=_make_publish_request(force_extraction=True),
+            request_id="req_skip_axis",
+            new_interactions=[_make_interaction("User", "test")],
+            new_request=_make_request(),
+            config=cfg,
+        )
+
+    # Default would be 3 axes × 1 cfg = 3 calls; skipping UserProfileAgentRec drops to 2.
+    assert mock_run_no_commit.call_count == 2
+    seen_kinds = {
+        c.kwargs["extraction_kind"] for c in mock_run_no_commit.call_args_list
+    }
+    assert seen_kinds == {"UserProfile", "UserPlaybook"}
+
+
+def test_runner_skip_all_axes_runs_no_agents_but_still_aggregates():
+    """Skipping every axis yields zero ExtractionAgent.run_no_commit calls.
+
+    Phase 5 (aggregation) still runs unless skip_aggregation is set —
+    skip_extraction_axes is orthogonal to aggregation.
+    """
+    runner = _make_runner()
+
+    cfg = Config(
+        storage_config=StorageConfigSQLite(),
+        profile_extractor_configs=[_profile_cfg()],
+        user_playbook_extractor_configs=[
+            UserPlaybookExtractorConfig(
+                extractor_name="agg_playbook",
+                extraction_definition_prompt="p",
+                aggregation_config=PlaybookAggregatorConfig(),
+            ),
+        ],
+        skip_extraction_axes={
+            "UserProfile",
+            "UserProfileAgentRec",
+            "UserPlaybook",
+        },
+    )
+
+    fake_agg_cls = MagicMock()
+    fake_agg_cls.return_value.run.return_value = {}
+
+    with (
+        patch(
+            "reflexio.server.services.extraction.agentic_adapter.ExtractionAgent.run_no_commit",
+        ) as mock_run_no_commit,
+        patch(
+            "reflexio.server.services.extraction.agentic_adapter.PlaybookAggregator",
+            fake_agg_cls,
+        ),
+    ):
+        runner.run(
+            publish_request=_make_publish_request(force_extraction=True),
+            request_id="req_skip_all",
+            new_interactions=[_make_interaction("User", "test")],
+            new_request=_make_request(),
+            config=cfg,
+        )
+
+    assert mock_run_no_commit.call_count == 0
+    # Aggregator still runs for the playbook with aggregation_config.
+    assert fake_agg_cls.return_value.run.call_count == 1
+
+
+def test_config_default_skip_extraction_axes_is_empty():
+    """Backward compatibility: every Config built without the new field has
+    an empty skip_extraction_axes set, so existing behaviour is unchanged.
+    """
+    cfg = Config(storage_config=StorageConfigSQLite())
+    assert cfg.skip_extraction_axes == set()
