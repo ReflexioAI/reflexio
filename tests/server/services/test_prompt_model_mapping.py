@@ -62,7 +62,7 @@ PROMPT_VERSION_MAP: dict[str, tuple[str, str | None]] = {
     "extraction_unify": ("v1.0.0", None),
     "extraction_self_critique": ("v1.0.0", None),
     # Agentic search pipeline — single-loop agent with cross-encoder + LLM rerank
-    "search_agent": ("v1.10.3", None),
+    "search_agent": ("v1.10.4", None),
     "compress_session_for_query": ("v1.3.0", None),
     "rerank_relevance": ("v1.1.0", None),
     # Answer-LLM system prompt for memory-grounded user questions

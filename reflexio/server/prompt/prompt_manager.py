@@ -222,9 +222,19 @@ class PromptManager:
             return None
 
         def _semver_key(p: Path) -> tuple[int, ...]:
-            """Parse 'vX.Y.Z.prompt.md' into a comparable tuple."""
+            """Parse 'vX.Y.Z.prompt.md' into a comparable tuple.
+
+            Strips the leading 'v' before int parsing so versions sort by
+            their numeric semver tuple rather than collapsing to a single
+            fallback key. Without the prefix strip every version evaluates
+            to the (0,) fallback (because ``int('v1')`` raises) and the
+            "latest active" search becomes order-of-glob-dependent.
+            """
             try:
-                return tuple(int(x) for x in p.stem.removesuffix(".prompt").split("."))
+                return tuple(
+                    int(x)
+                    for x in p.stem.removeprefix("v").removesuffix(".prompt").split(".")
+                )
             except ValueError:
                 return (0,)
 
