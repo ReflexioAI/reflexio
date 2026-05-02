@@ -88,3 +88,16 @@ def is_invitation_only_enabled() -> bool:
     if invitation_config is None:
         return False
     return invitation_config.get("enabled", False)
+
+
+def is_deduplicator_enabled(org_id: str) -> bool:
+    """
+    Convenience check for whether the deduplicator is enabled for an org.
+
+    Args:
+        org_id (str): The organization ID to check
+
+    Returns:
+        bool: True if deduplicator is enabled
+    """
+    return is_feature_enabled(org_id, "deduplicator")

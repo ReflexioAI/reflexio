@@ -33,9 +33,15 @@ def _build_registry() -> dict[str, ModelRegistryEntry]:
         AgentSuccessEvaluationOutput,
         AgentSuccessEvaluationWithComparisonOutput,
     )
+    from reflexio.server.services.playbook.playbook_deduplicator import (
+        PlaybookDeduplicationOutput,
+    )
     from reflexio.server.services.playbook.playbook_service_utils import (
         PlaybookAggregationOutput,
         StructuredPlaybookList,
+    )
+    from reflexio.server.services.profile.profile_deduplicator import (
+        ProfileDeduplicationOutput,
     )
     from reflexio.server.services.profile.profile_generation_service_utils import (
         ProfileUpdateOutput,
@@ -63,6 +69,13 @@ def _build_registry() -> dict[str, ModelRegistryEntry]:
                 },
             },
         ),
+        "playbook_deduplication": ModelRegistryEntry(
+            model_class=PlaybookDeduplicationOutput,
+            minimal_valid={
+                "duplicate_groups": [],
+                "unique_ids": ["NEW-0"],
+            },
+        ),
         "profile_extraction": ModelRegistryEntry(
             model_class=StructuredProfilesOutput,
             minimal_valid={
@@ -79,6 +92,13 @@ def _build_registry() -> dict[str, ModelRegistryEntry]:
                 ],
                 "delete": [],
                 "mention": [],
+            },
+        ),
+        "profile_deduplication": ModelRegistryEntry(
+            model_class=ProfileDeduplicationOutput,
+            minimal_valid={
+                "duplicate_groups": [],
+                "unique_ids": ["NEW-0"],
             },
         ),
         "agent_success_evaluation": ModelRegistryEntry(

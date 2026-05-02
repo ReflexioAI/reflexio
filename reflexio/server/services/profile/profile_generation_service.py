@@ -156,6 +156,28 @@ class ProfileGenerationService(
         existing_ids_to_delete: list[str] = []
         superseded_profiles: list[UserProfile] = []
 
+        # Always run deduplicator when enabled and there are new profiles
+        if all_new_profiles:
+            from reflexio.server.site_var.feature_flags import is_deduplicator_enabled
+
+            if is_deduplicator_enabled(self.org_id):
+                from reflexio.server.services.profile.profile_deduplicator import (
+                    ProfileDeduplicator,
+                )
+
+                deduplicator = ProfileDeduplicator(
+                    request_context=self.request_context,
+                    llm_client=self.client,
+                )
+                all_new_profiles, existing_ids_to_delete, superseded_profiles = (
+                    deduplicator.deduplicate(all_new_profiles, user_id, request_id)
+                )
+                logger.info(
+                    "Profile updates after deduplication: %d profiles, %d existing to delete",
+                    len(all_new_profiles),
+                    len(existing_ids_to_delete),
+                )
+
         # Set source and status for all profiles
         for profile in all_new_profiles:
             profile.source = source

@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 from reflexio.server.site_var.feature_flags import (
     get_all_feature_flags,
+    is_deduplicator_enabled,
     is_feature_enabled,
 )
 
@@ -119,6 +120,31 @@ class TestFeatureFlags(unittest.TestCase):
         """get_all_feature_flags with empty config should return empty dict."""
         result = get_all_feature_flags("org-123")
         self.assertEqual(result, {})
+
+    @patch(
+        "reflexio.server.site_var.feature_flags._get_feature_flags_config",
+        return_value=MOCK_CONFIG,
+    )
+    def test_is_deduplicator_enabled_for_enabled_org(self, _mock):
+        """is_deduplicator_enabled should return True for orgs in enabled_org_ids."""
+        self.assertTrue(is_deduplicator_enabled("org-dedup"))
+
+    @patch(
+        "reflexio.server.site_var.feature_flags._get_feature_flags_config",
+        return_value=MOCK_CONFIG,
+    )
+    def test_is_deduplicator_disabled_for_other_org(self, _mock):
+        """is_deduplicator_enabled should return False for orgs not in enabled_org_ids."""
+        self.assertFalse(is_deduplicator_enabled("org-123"))
+        self.assertFalse(is_deduplicator_enabled("org-999"))
+
+    @patch(
+        "reflexio.server.site_var.feature_flags._get_feature_flags_config",
+        return_value={},
+    )
+    def test_is_deduplicator_enabled_unknown_defaults_enabled(self, _mock):
+        """is_deduplicator_enabled with empty config should default to enabled."""
+        self.assertTrue(is_deduplicator_enabled("org-123"))
 
 
 if __name__ == "__main__":
