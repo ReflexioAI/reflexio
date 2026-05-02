@@ -52,22 +52,18 @@ PROMPT_VERSION_MAP: dict[str, tuple[str, str | None]] = {
     "shadow_content_evaluation": ("v1.0.0", None),
     "query_reformulation": ("v1.0.0", None),
     "document_expansion": ("v1.0.0", None),
-    # Agentic extraction pipeline — split per axis (was extraction_agent)
-    "extraction_user_profile": ("v1.3.5", None),  # v1.3.5 latest in repo but DEACTIVATED after r117 regression; v1.3.3 is active (r116 locked baseline)
-    "extraction_user_profile_agent_rec": ("v1.1.5", None),  # v1.1.5 latest in repo but DEACTIVATED after r117 regression; v1.1.3 is active (r116 locked baseline)
+    # Agentic extraction pipeline — three parallel axes + unify + self-critique
+    "extraction_user_profile": ("v1.3.3", None),
+    "extraction_user_profile_agent_rec": ("v1.1.3", None),
     "extraction_user_playbook": ("v1.0.0", None),
-    # Cross-axis unification — drops duplicates among the three parallel passes.
     "extraction_unify": ("v1.0.0", None),
-    # Self-critique — adds operand-bearing facts the parallel passes missed.
-    "extraction_self_critique": ("v1.1.0", None),  # v1.1.0 latest in repo but DEACTIVATED after r120 regression; v1.0.0 is active (r119 baseline)
-    # Agentic search pipeline — agentic-v2 single-loop agent
-    "search_agent": ("v1.10.3", None),  # v1.10.3 active for r114 (Pattern F widen kept; benchmark-specific examples removed)
-    # In-tool denoising for read_session_text (rehydration compression)
+    "extraction_self_critique": ("v1.0.0", None),
+    # Agentic search pipeline — single-loop agent with cross-encoder + LLM rerank
+    "search_agent": ("v1.10.3", None),
     "compress_session_for_query": ("v1.3.0", None),
-    # In-tool LLM-as-reranker (brand→category world-knowledge gap)
     "rerank_relevance": ("v1.1.0", None),
-    # Answer-LLM system prompt for the longmemeval benchmark
-    "answer_synthesis": ("v1.6.0", None),  # v1.6.0 latest in repo but DEACTIVATED; v1.5.1 is active
+    # Answer-LLM system prompt for memory-grounded user questions
+    "answer_synthesis": ("v1.5.2", None),
 }
 
 
