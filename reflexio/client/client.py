@@ -3,6 +3,7 @@ import logging
 import os
 import time
 import uuid
+import warnings
 from collections.abc import Callable, Coroutine, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
@@ -553,6 +554,47 @@ class ReflexioClient:
             "POST", "/api/search_user_profiles", json=req.model_dump()
         )
         return SearchProfilesViewResponse(**response)
+
+    # NOTE: keep signature in sync with search_user_profiles
+    def search_profiles(
+        self,
+        request: SearchUserProfileRequest | dict | None = None,
+        *,
+        user_id: str | None = None,
+        generated_from_request_id: str | None = None,
+        query: str | None = None,
+        start_time: datetime | None = None,
+        end_time: datetime | None = None,
+        top_k: int | None = None,
+        source: str | None = None,
+        custom_feature: str | None = None,
+        extractor_name: str | None = None,
+        threshold: float | None = None,
+        enable_reformulation: bool | None = None,
+        search_mode: SearchMode | None = None,
+    ) -> SearchProfilesViewResponse:
+        """Deprecated alias for :meth:`search_user_profiles`. Will be removed in a future release."""
+        warnings.warn(
+            "ReflexioClient.search_profiles() is deprecated; use "
+            "search_user_profiles() instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.search_user_profiles(
+            request,
+            user_id=user_id,
+            generated_from_request_id=generated_from_request_id,
+            query=query,
+            start_time=start_time,
+            end_time=end_time,
+            top_k=top_k,
+            source=source,
+            custom_feature=custom_feature,
+            extractor_name=extractor_name,
+            threshold=threshold,
+            enable_reformulation=enable_reformulation,
+            search_mode=search_mode,
+        )
 
     def rerank_user_profiles(
         self,
