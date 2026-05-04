@@ -100,7 +100,7 @@ class TestSearchEndpoints:
             return_value=mock_response,
         ):
             response = client.post(
-                "/api/search_user_profiles",
+                "/api/search_profiles",
                 json={"user_id": "user-1", "query": "test user"},
             )
         assert response.status_code == 200
@@ -129,7 +129,7 @@ class TestSearchEndpoints:
         assert data["interactions"] == []
 
     def test_search_profiles_missing_body_returns_422(self, client):
-        response = client.post("/api/search_user_profiles")
+        response = client.post("/api/search_profiles")
         assert response.status_code == 422
 
 

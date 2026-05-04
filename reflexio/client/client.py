@@ -551,7 +551,7 @@ class ReflexioClient:
             search_mode=search_mode,
         )
         response = self._make_request(
-            "POST", "/api/search_user_profiles", json=req.model_dump()
+            "POST", "/api/search_profiles", json=req.model_dump()
         )
         return SearchProfilesViewResponse(**response)
 

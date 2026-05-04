@@ -431,7 +431,7 @@ def add_user_profile_endpoint(
 
 
 @core_router.post(
-    "/api/search_user_profiles",
+    "/api/search_profiles",
     response_model=SearchProfilesViewResponse,
     response_model_exclude_none=True,
 )
