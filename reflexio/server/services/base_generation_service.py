@@ -29,6 +29,7 @@ from reflexio.server.services.extractor_interaction_utils import (
 )
 from reflexio.server.services.operation_state_utils import OperationStateManager
 from reflexio.server.services.service_utils import log_llm_messages, log_model_response
+from reflexio.server.usage_metrics import record_usage_event
 
 
 class StatusChangeOperation(StrEnum):
@@ -196,6 +197,60 @@ class BaseGenerationService(
             "failed": 0,
             "timed_out": 0,
         }
+
+    def _usage_pipeline(self) -> str | None:
+        service_name = self._get_service_name()
+        if "profile" in service_name:
+            return "profile"
+        if "playbook" in service_name:
+            return "playbook"
+        if "evaluation" in service_name:
+            return "evaluation"
+        return None
+
+    def _usage_context(self) -> dict[str, Any]:
+        service_config = self.service_config
+        return {
+            "org_id": self.org_id,
+            "user_id": getattr(service_config, "user_id", None),
+            "request_id": getattr(service_config, "request_id", None),
+            "source": getattr(service_config, "source", None),
+            "agent_version": getattr(service_config, "agent_version", None),
+            "pipeline": self._usage_pipeline(),
+        }
+
+    def _record_generation_event(
+        self,
+        *,
+        event_name: str,
+        outcome: str,
+        count_value: int = 1,
+        duration_ms: int | None = None,
+        error_kind: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        root_config = self.request_context.configurator.get_config()
+        record_usage_event(
+            **self._usage_context(),
+            event_name=event_name,
+            event_category="generation",
+            backend=getattr(root_config, "extraction_backend", None),
+            outcome=outcome,
+            count_value=count_value,
+            duration_ms=duration_ms,
+            error_kind=error_kind,
+            metadata=metadata,
+        )
+
+    @staticmethod
+    def _count_generated_results(results: list) -> int:
+        count = 0
+        for result in results:
+            if isinstance(result, list):
+                count += len(result)
+            elif result:
+                count += 1
+        return count
 
     @abstractmethod
     def _load_extractor_configs(self) -> list[TExtractorConfig]:
@@ -513,19 +568,45 @@ class BaseGenerationService(
             logger.error("Received None request for %s", self._get_service_name())
             return
 
+        generation_start = time.perf_counter()
         try:
             extractor_configs, identifier = self._prepare_generation_run(request)
             if extractor_configs is None:
                 return
 
+            self._record_generation_event(
+                event_name="generation_started",
+                outcome="started",
+                count_value=len(extractor_configs),
+                metadata={"identifier": identifier},
+            )
             all_results = self._execute_extractors(
                 extractor_configs, request, identifier
             )
+            generated_count = self._count_generated_results(all_results)
 
             if all_results:
                 self._process_results(all_results)
 
+            self._record_generation_event(
+                event_name="generation_succeeded",
+                outcome="success",
+                count_value=generated_count,
+                duration_ms=int((time.perf_counter() - generation_start) * 1000),
+                metadata={
+                    "identifier": identifier,
+                    "extractor_count": len(extractor_configs),
+                    "extractor_run_stats": self._last_extractor_run_stats,
+                },
+            )
+
         except Exception as e:
+            self._record_generation_event(
+                event_name="generation_failed",
+                outcome="failed",
+                duration_ms=int((time.perf_counter() - generation_start) * 1000),
+                error_kind=type(e).__name__,
+            )
             logger.error(
                 "Failed to run %s due to %s, exception type: %s",
                 self._get_service_name(),
@@ -585,7 +666,20 @@ class BaseGenerationService(
             self.service_config, "request_id", "unknown"
         )
 
-        if not self._should_run_before_extraction(extractor_configs):
+        should_run = self._should_run_before_extraction(extractor_configs)
+        self._record_generation_event(
+            event_name="generation_gate_evaluated",
+            outcome="should_run" if should_run else "should_skip",
+            count_value=len(extractor_configs),
+            metadata={
+                "identifier": identifier,
+                "extractor_names": [
+                    get_extractor_name(config) for config in extractor_configs
+                ],
+            },
+        )
+
+        if not should_run:
             logger.info(
                 "Pre-extraction check returned False for %s identifier=%s, skipping",
                 self._get_service_name(),

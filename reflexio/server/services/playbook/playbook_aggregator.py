@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import time
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -32,6 +33,7 @@ from reflexio.server.services.playbook.playbook_service_utils import (
     ensure_playbook_content,
 )
 from reflexio.server.services.service_utils import log_model_response
+from reflexio.server.usage_metrics import record_usage_event
 
 logger = logging.getLogger(__name__)
 
@@ -572,6 +574,7 @@ class PlaybookAggregator:
         Returns:
             dict: Aggregation stats with keys: clusters_found, user_playbooks_processed, playbooks_generated, skipped (optional)
         """
+        aggregation_start = time.perf_counter()
         _empty_stats = {
             "clusters_found": 0,
             "user_playbooks_processed": 0,
@@ -586,6 +589,17 @@ class PlaybookAggregator:
             not playbook_aggregator_config
             or playbook_aggregator_config.min_cluster_size < 2
         ):
+            skip_reason = "no aggregator config or min_cluster_size < 2"
+            record_usage_event(
+                org_id=self.request_context.org_id,
+                event_name="aggregation_gate_evaluated",
+                event_category="aggregation",
+                pipeline="playbook",
+                playbook_name=playbook_aggregator_request.playbook_name,
+                agent_version=self.agent_version,
+                outcome="should_skip",
+                metadata={"skip_reason": skip_reason},
+            )
             logger.info(
                 "Skipping user playbook aggregation for '%s' (agent_version=%s): no aggregator config or min_cluster_size < 2, config: %s",
                 playbook_aggregator_request.playbook_name,
@@ -594,7 +608,7 @@ class PlaybookAggregator:
             )
             return {
                 **_empty_stats,
-                "skipped": "no aggregator config or min_cluster_size < 2",
+                "skipped": skip_reason,
             }
 
         # Check if we should run aggregation based on new playbooks count
@@ -620,11 +634,43 @@ class PlaybookAggregator:
                 new_count,
                 trigger_count,
             )
+            record_usage_event(
+                org_id=self.request_context.org_id,
+                event_name="aggregation_gate_evaluated",
+                event_category="aggregation",
+                pipeline="playbook",
+                playbook_name=playbook_aggregator_request.playbook_name,
+                agent_version=self.agent_version,
+                outcome="should_skip",
+                count_value=new_count,
+                metadata={
+                    "new_user_playbooks": new_count,
+                    "trigger_count": trigger_count,
+                },
+            )
             return {
                 **_empty_stats,
                 "skipped": f"not enough new playbooks ({new_count} < {trigger_count})",
             }
 
+        record_usage_event(
+            org_id=self.request_context.org_id,
+            event_name="aggregation_gate_evaluated",
+            event_category="aggregation",
+            pipeline="playbook",
+            playbook_name=playbook_aggregator_request.playbook_name,
+            agent_version=self.agent_version,
+            outcome="should_run",
+        )
+        record_usage_event(
+            org_id=self.request_context.org_id,
+            event_name="aggregation_started",
+            event_category="aggregation",
+            pipeline="playbook",
+            playbook_name=playbook_aggregator_request.playbook_name,
+            agent_version=self.agent_version,
+            outcome="started",
+        )
         logger.info(
             "Running user playbook aggregation for '%s' (agent_version=%s)",
             playbook_aggregator_request.playbook_name,
@@ -701,6 +747,20 @@ class PlaybookAggregator:
                     )
                     # Still update bookmark
                     self._update_operation_state(playbook_name, user_playbooks)
+                    record_usage_event(
+                        org_id=self.request_context.org_id,
+                        event_name="aggregation_succeeded",
+                        event_category="aggregation",
+                        pipeline="playbook",
+                        playbook_name=playbook_name,
+                        agent_version=self.agent_version,
+                        outcome="success",
+                        count_value=0,
+                        duration_ms=int(
+                            (time.perf_counter() - aggregation_start) * 1000
+                        ),
+                        metadata={"skipped": "no cluster changes detected"},
+                    )
                     return {**_empty_stats, "skipped": "no cluster changes detected"}
 
                 logger.info(
@@ -836,13 +896,37 @@ class PlaybookAggregator:
             elif archived_playbook_ids:
                 self.storage.delete_agent_playbooks_by_ids(archived_playbook_ids)  # type: ignore[reportOptionalMemberAccess]
 
-            return {
+            stats = {
                 "clusters_found": len(clusters),
                 "user_playbooks_processed": len(user_playbooks),
                 "playbooks_generated": len(saved_playbook_list),
             }
+            record_usage_event(
+                org_id=self.request_context.org_id,
+                event_name="aggregation_succeeded",
+                event_category="aggregation",
+                pipeline="playbook",
+                playbook_name=playbook_name,
+                agent_version=self.agent_version,
+                outcome="success",
+                count_value=len(saved_playbook_list),
+                duration_ms=int((time.perf_counter() - aggregation_start) * 1000),
+                metadata=stats,
+            )
+            return stats
 
         except Exception as e:
+            record_usage_event(
+                org_id=self.request_context.org_id,
+                event_name="aggregation_failed",
+                event_category="aggregation",
+                pipeline="playbook",
+                playbook_name=playbook_aggregator_request.playbook_name,
+                agent_version=self.agent_version,
+                outcome="failed",
+                duration_ms=int((time.perf_counter() - aggregation_start) * 1000),
+                error_kind=type(e).__name__,
+            )
             # Restore archived playbooks if any error occurs during aggregation
             logger.error(
                 "Error during playbook aggregation for '%s': %s. Restoring archived playbooks.",
@@ -854,9 +938,9 @@ class PlaybookAggregator:
                     playbook_name, agent_version=self.agent_version
                 )
             elif archived_playbook_ids:
-                self.storage.restore_archived_agent_playbooks_by_ids(
+                self.storage.restore_archived_agent_playbooks_by_ids(  # type: ignore[reportOptionalMemberAccess]
                     archived_playbook_ids
-                )  # type: ignore[reportOptionalMemberAccess]
+                )
             # Re-raise the exception after restoring
             raise
 

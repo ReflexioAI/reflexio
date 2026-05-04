@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextvars
 import logging
+import time
 import uuid
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -41,6 +42,7 @@ from reflexio.server.services.reflection.reflection_service import ReflectionSer
 from reflexio.server.services.reflection.reflection_service_utils import (
     ReflectionServiceRequest,
 )
+from reflexio.server.usage_metrics import record_usage_event
 
 if TYPE_CHECKING:
     from reflexio.server.services.search.agentic_search_service import (
@@ -141,6 +143,7 @@ class GenerationService:
         self._cleanup_old_interactions_if_needed()
 
         try:
+            publish_start = time.perf_counter()
             # Always generate a new UUID for request_id
             request_id = str(uuid.uuid4())
             result.request_id = request_id
@@ -162,6 +165,19 @@ class GenerationService:
             # Resolve agent_version: explicit > env var > default
             agent_version = resolve_agent_version(
                 publish_user_interaction_request.agent_version
+            )
+
+            record_usage_event(
+                org_id=self.org_id,
+                user_id=user_id,
+                request_id=request_id,
+                session_id=publish_user_interaction_request.session_id or None,
+                source=publish_user_interaction_request.source,
+                agent_version=agent_version,
+                event_name="publish_request_received",
+                event_category="publish",
+                outcome="received",
+                count_value=len(new_interactions),
             )
 
             # Store Request
@@ -215,6 +231,21 @@ class GenerationService:
                         new_request=new_request,
                         config=root_config,
                     )
+                )
+                record_usage_event(
+                    org_id=self.org_id,
+                    user_id=user_id,
+                    request_id=request_id,
+                    session_id=new_request.session_id,
+                    source=source,
+                    agent_version=agent_version,
+                    backend="agentic",
+                    event_name="publish_request_succeeded",
+                    event_category="publish",
+                    outcome="success",
+                    count_value=len(new_interactions),
+                    duration_ms=int((time.perf_counter() - publish_start) * 1000),
+                    metadata={"warning_count": len(result.warnings)},
                 )
                 return result
 
@@ -327,9 +358,36 @@ class GenerationService:
                     ),
                 )
 
+            record_usage_event(
+                org_id=self.org_id,
+                user_id=user_id,
+                request_id=request_id,
+                session_id=new_request.session_id,
+                source=source,
+                agent_version=agent_version,
+                backend="classic",
+                event_name="publish_request_succeeded",
+                event_category="publish",
+                outcome="success",
+                count_value=len(new_interactions),
+                duration_ms=int((time.perf_counter() - publish_start) * 1000),
+                metadata={"warning_count": len(result.warnings)},
+            )
             return result
 
         except Exception as e:
+            record_usage_event(
+                org_id=self.org_id,
+                user_id=user_id,
+                request_id=result.request_id,
+                session_id=publish_user_interaction_request.session_id or None,
+                source=publish_user_interaction_request.source,
+                agent_version=publish_user_interaction_request.agent_version,
+                event_name="publish_request_failed",
+                event_category="publish",
+                outcome="failed",
+                error_kind=type(e).__name__,
+            )
             # log exception
             logger.error(
                 "Failed to refresh user profile for user id: %s due to %s, exception type: %s",
