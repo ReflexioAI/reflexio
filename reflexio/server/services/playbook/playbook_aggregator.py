@@ -662,15 +662,6 @@ class PlaybookAggregator:
             agent_version=self.agent_version,
             outcome="should_run",
         )
-        record_usage_event(
-            org_id=self.request_context.org_id,
-            event_name="aggregation_started",
-            event_category="aggregation",
-            pipeline="playbook",
-            playbook_name=playbook_aggregator_request.playbook_name,
-            agent_version=self.agent_version,
-            outcome="started",
-        )
         logger.info(
             "Running user playbook aggregation for '%s' (agent_version=%s)",
             playbook_aggregator_request.playbook_name,
@@ -774,6 +765,17 @@ class PlaybookAggregator:
                     self.storage.archive_agent_playbooks_by_ids(archived_playbook_ids)  # type: ignore[reportOptionalMemberAccess]
 
         try:
+            # Emit the started event inside the protected block so any failure
+            # from here on is paired with an aggregation_failed event.
+            record_usage_event(
+                org_id=self.request_context.org_id,
+                event_name="aggregation_started",
+                event_category="aggregation",
+                pipeline="playbook",
+                playbook_name=playbook_aggregator_request.playbook_name,
+                agent_version=self.agent_version,
+                outcome="started",
+            )
             # Generate new playbooks only for changed clusters
             new_playbooks = self._generate_playbooks_from_clusters(
                 changed_clusters,

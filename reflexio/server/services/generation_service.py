@@ -142,8 +142,14 @@ class GenerationService:
         # Check if cleanup is needed before adding new interactions
         self._cleanup_old_interactions_if_needed()
 
+        publish_start = time.perf_counter()
+        # Resolve agent_version: explicit > env var > default. Resolved here
+        # (before the try) so success and failure telemetry share the same value.
+        agent_version = resolve_agent_version(
+            publish_user_interaction_request.agent_version
+        )
+
         try:
-            publish_start = time.perf_counter()
             # Always generate a new UUID for request_id
             request_id = str(uuid.uuid4())
             result.request_id = request_id
@@ -161,11 +167,6 @@ class GenerationService:
                     user_id,
                 )
                 return result
-
-            # Resolve agent_version: explicit > env var > default
-            agent_version = resolve_agent_version(
-                publish_user_interaction_request.agent_version
-            )
 
             record_usage_event(
                 org_id=self.org_id,
@@ -382,10 +383,11 @@ class GenerationService:
                 request_id=result.request_id,
                 session_id=publish_user_interaction_request.session_id or None,
                 source=publish_user_interaction_request.source,
-                agent_version=publish_user_interaction_request.agent_version,
+                agent_version=agent_version,
                 event_name="publish_request_failed",
                 event_category="publish",
                 outcome="failed",
+                duration_ms=int((time.perf_counter() - publish_start) * 1000),
                 error_kind=type(e).__name__,
             )
             # log exception
