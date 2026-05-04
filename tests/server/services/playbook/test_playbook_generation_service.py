@@ -96,7 +96,7 @@ def test_generate_playbook(mock_chat_completion):
             request_context=RequestContext(org_id=org_id, storage_base_dir=temp_dir),
         )
 
-        # Set up playbook config with batch_size
+        # Set up playbook config with window_size
         playbook_config = PlaybookConfig(
             extractor_name="test_playbook",
             extraction_definition_prompt="test",
@@ -107,7 +107,7 @@ def test_generate_playbook(mock_chat_completion):
         playbook_generation_service.configurator.set_config_by_name(
             "user_playbook_extractor_configs", [playbook_config]
         )
-        playbook_generation_service.configurator.set_config_by_name("batch_size", 100)
+        playbook_generation_service.configurator.set_config_by_name("window_size", 100)
 
         # Store interactions in storage first
         request_obj = Request(
@@ -276,7 +276,7 @@ def test_error_handling(mock_chat_completion):
 
 
 def test_run_manual_regular_no_window_size(mock_chat_completion):
-    """Test run_manual_regular works even without batch_size configured.
+    """Test run_manual_regular works even without window_size configured.
 
     Since extractors handle window size at their level, the manual flow no longer
     validates window_size upfront. Extractors use a fallback of 1000 interactions
@@ -307,7 +307,7 @@ def test_run_manual_regular_no_window_size(mock_chat_completion):
         playbook_generation_service.configurator.set_config_by_name(
             "user_playbook_extractor_configs", [playbook_config]
         )
-        # batch_size is not configured
+        # window_size is not configured
 
         # Add some interactions to storage
         interaction = Interaction(
@@ -364,7 +364,7 @@ def test_run_manual_regular_no_interactions(mock_chat_completion):
         playbook_generation_service.configurator.set_config_by_name(
             "user_playbook_extractor_configs", [playbook_config]
         )
-        playbook_generation_service.configurator.set_config_by_name("batch_size", 100)
+        playbook_generation_service.configurator.set_config_by_name("window_size", 100)
 
         from reflexio.models.api_schema.service_schemas import (
             ManualPlaybookGenerationRequest,
@@ -407,7 +407,7 @@ def test_run_manual_regular_with_interactions(mock_chat_completion):
         playbook_generation_service.configurator.set_config_by_name(
             "user_playbook_extractor_configs", [playbook_config]
         )
-        playbook_generation_service.configurator.set_config_by_name("batch_size", 100)
+        playbook_generation_service.configurator.set_config_by_name("window_size", 100)
 
         # First, add some interactions to storage
         interaction = Interaction(
@@ -468,7 +468,7 @@ def test_run_manual_regular_with_source_filter(mock_chat_completion):
         playbook_generation_service.configurator.set_config_by_name(
             "user_playbook_extractor_configs", [playbook_config]
         )
-        playbook_generation_service.configurator.set_config_by_name("batch_size", 100)
+        playbook_generation_service.configurator.set_config_by_name("window_size", 100)
 
         # Add interactions with source_a
         interaction_a = Interaction(
@@ -551,7 +551,7 @@ def test_run_manual_regular_output_pending_status_false(mock_chat_completion):
         playbook_generation_service.configurator.set_config_by_name(
             "user_playbook_extractor_configs", [playbook_config]
         )
-        playbook_generation_service.configurator.set_config_by_name("batch_size", 100)
+        playbook_generation_service.configurator.set_config_by_name("window_size", 100)
 
         # Add interaction
         interaction = Interaction(
@@ -778,7 +778,7 @@ def test_collect_scoped_interactions_for_precheck_uses_extractor_scope():
             request_context=RequestContext(org_id=org_id, storage_base_dir=temp_dir),
         )
 
-        service.configurator.set_config_by_name("batch_size", 200)
+        service.configurator.set_config_by_name("window_size", 200)
         service.service_config = service._load_generation_service_config(
             PlaybookGenerationRequest(
                 request_id="request-1",
@@ -812,14 +812,14 @@ def test_collect_scoped_interactions_for_precheck_uses_extractor_scope():
                 extractor_name="api_playbook",
                 extraction_definition_prompt="extract api-related playbook",
                 request_sources_enabled=["api"],
-                batch_size_override=120,
+                window_size_override=120,
                 aggregation_config=PlaybookAggregatorConfig(min_cluster_size=2),
             ),
             PlaybookConfig(
                 extractor_name="web_playbook",
                 extraction_definition_prompt="extract web-related playbook",
                 request_sources_enabled=["web"],
-                batch_size_override=80,
+                window_size_override=80,
                 aggregation_config=PlaybookAggregatorConfig(min_cluster_size=2),
             ),
         ]

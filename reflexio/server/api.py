@@ -1373,7 +1373,7 @@ def manual_profile_generation_endpoint(
 ) -> ManualProfileGenerationResponse:
     """Manually trigger profile generation with window-sized interactions and CURRENT output.
 
-    This behaves like regular generation (uses batch_size from config,
+    This behaves like regular generation (uses window_size from config,
     outputs CURRENT profiles) but only runs profile extraction.
 
     Args:
@@ -1439,7 +1439,7 @@ def manual_playbook_generation_endpoint(
 ) -> ManualPlaybookGenerationResponse:
     """Manually trigger playbook generation with window-sized interactions and CURRENT output.
 
-    This behaves like regular generation (uses batch_size from config,
+    This behaves like regular generation (uses window_size from config,
     outputs CURRENT playbooks) but only runs playbook extraction.
 
     Args:

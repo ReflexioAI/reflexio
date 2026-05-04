@@ -99,7 +99,7 @@ export function AgentContextSection({
   );
 }
 
-export function BatchingSection({
+export function WindowingSection({
   config,
   setConfig,
 }: {
@@ -111,13 +111,13 @@ export function BatchingSection({
 
   return (
     <Section
-      title="Batching & presets"
+      title="Windowing & presets"
       description="Controls how many interactions are processed per extraction run."
     >
       <FieldRow
         label="Extraction preset"
         htmlFor="extraction-preset"
-        hint="Presets bundle batch size and interval. Pick 'Custom' to set values manually."
+        hint="Presets bundle window size and stride. Pick 'Custom' to set values manually."
       >
         <Select
           value={preset ?? "custom"}
@@ -129,8 +129,8 @@ export function BatchingSection({
               return {
                 ...prev,
                 extraction_preset: next,
-                batch_size: bs,
-                batch_interval: bi,
+                window_size: bs,
+                stride_size: bi,
               };
             });
           }}
@@ -155,30 +155,30 @@ export function BatchingSection({
 
       <div className="grid grid-cols-2 gap-3">
         <FieldRow
-          label="Batch size"
-          htmlFor="batch-size"
+          label="Window size"
+          htmlFor="window-size"
           hint="Messages per extraction run."
         >
           <NumberField
-            id="batch-size"
-            value={config.batch_size}
+            id="window-size"
+            value={config.window_size}
             onChange={(v) =>
-              setConfig((prev) => ({ ...prev, batch_size: v ?? 1 }))
+              setConfig((prev) => ({ ...prev, window_size: v ?? 1 }))
             }
             min={1}
             disabled={usingPreset}
           />
         </FieldRow>
         <FieldRow
-          label="Batch interval"
-          htmlFor="batch-interval"
-          hint="Must be ≤ batch size."
+          label="Stride"
+          htmlFor="stride-size"
+          hint="Must be ≤ window size."
         >
           <NumberField
-            id="batch-interval"
-            value={config.batch_interval}
+            id="stride-size"
+            value={config.stride_size}
             onChange={(v) =>
-              setConfig((prev) => ({ ...prev, batch_interval: v ?? 1 }))
+              setConfig((prev) => ({ ...prev, stride_size: v ?? 1 }))
             }
             min={1}
             disabled={usingPreset}
@@ -373,7 +373,7 @@ const LLM_FIELDS: {
   {
     key: "should_run_model_name",
     label: "Should-run model",
-    hint: "Model that decides whether to run extraction on a batch.",
+    hint: "Model that decides whether to run extraction on a window.",
   },
   {
     key: "generation_model_name",
@@ -554,19 +554,19 @@ export function ProfileExtractorsSection({
             onCheckedChange={(c) => updateAt(idx, { manual_trigger: c })}
           />
           <div className="grid grid-cols-2 gap-3">
-            <FieldRow label="Batch size override">
+            <FieldRow label="Window size override">
               <NumberField
-                value={item.batch_size_override}
-                onChange={(v) => updateAt(idx, { batch_size_override: v })}
+                value={item.window_size_override}
+                onChange={(v) => updateAt(idx, { window_size_override: v })}
                 min={1}
                 allowNull
                 placeholder="(inherit)"
               />
             </FieldRow>
-            <FieldRow label="Batch interval override">
+            <FieldRow label="Stride override">
               <NumberField
-                value={item.batch_interval_override}
-                onChange={(v) => updateAt(idx, { batch_interval_override: v })}
+                value={item.stride_size_override}
+                onChange={(v) => updateAt(idx, { stride_size_override: v })}
                 min={1}
                 allowNull
                 placeholder="(inherit)"

@@ -216,8 +216,8 @@ class TestOperationStateKey:
 class TestGetInteractions:
     """Tests for interaction collection logic (not user-scoped).
 
-    Note: Batch interval checking is handled upstream by BaseGenerationService._filter_configs_by_batch_interval()
-    before the extractor is created, so batch_interval tests are at the service level.
+    Note: Stride checking is handled upstream by BaseGenerationService._filter_configs_by_stride()
+    before the extractor is created, so stride_size tests are at the service level.
     """
 
     def test_passes_none_user_id_to_storage(
@@ -296,7 +296,7 @@ class TestGetInteractions:
         config = PlaybookConfig(
             extractor_name="quality_playbook",
             extraction_definition_prompt="Evaluate agent quality",
-            batch_size_override=50,
+            window_size_override=50,
         )
 
         request_context.storage.get_last_k_interactions_grouped.return_value = (

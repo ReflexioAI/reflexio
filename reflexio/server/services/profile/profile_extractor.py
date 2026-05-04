@@ -124,7 +124,7 @@ class ProfileExtractor:
         - Source filtering based on extractor config
         - Time range filtering for rerun flows
 
-        Note: Batch interval checking is handled upstream by BaseGenerationService._filter_configs_by_batch_interval()
+        Note: Stride checking is handled upstream by BaseGenerationService._filter_configs_by_stride()
         before the extractor is created.
 
         Returns:
@@ -132,16 +132,14 @@ class ProfileExtractor:
         """
         # Get global config values
         config = self.request_context.configurator.get_config()
-        global_batch_size = getattr(config, "batch_size", None) if config else None
-        global_batch_interval = (
-            getattr(config, "batch_interval", None) if config else None
-        )
+        global_window_size = getattr(config, "window_size", None) if config else None
+        global_stride_size = getattr(config, "stride_size", None) if config else None
 
-        # Get effective batch_size for this extractor
-        batch_size, _ = get_extractor_window_params(
+        # Get effective window_size for this extractor
+        window_size, _ = get_extractor_window_params(
             self.config,
-            global_batch_size,
-            global_batch_interval,
+            global_window_size,
+            global_stride_size,
         )
 
         # Get effective source filter (None = get ALL sources)
@@ -157,7 +155,7 @@ class ProfileExtractor:
         # Get window interactions with time range filter
         session_data_models, _ = storage.get_last_k_interactions_grouped(  # type: ignore[reportOptionalMemberAccess]
             user_id=self.service_config.user_id,
-            k=batch_size,
+            k=window_size,
             sources=effective_source,
             start_time=self.service_config.rerun_start_time,
             end_time=self.service_config.rerun_end_time,
@@ -197,7 +195,7 @@ class ProfileExtractor:
         Returns:
             Optional[list[UserProfile]]: List of extracted profiles, or None if no profiles found
         """
-        # Collect interactions using extractor's own batch_size/batch_interval settings
+        # Collect interactions using extractor's own window_size/stride_size settings
         request_interaction_data_models = self._get_interactions()
         if not request_interaction_data_models:
             return None

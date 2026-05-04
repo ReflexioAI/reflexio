@@ -190,7 +190,7 @@ def show_config(config: Config) -> None:
 | **Playbook Configs** | {len(playbook_configs)} configured |
 | **Tools Registered** | {len(tools)} tools |
 | **Success Evaluators** | {len(success_configs)} configured |
-| **Extraction Window** | size={config.batch_size}, stride={config.batch_interval} |"""
+| **Extraction Window** | size={config.window_size}, stride={config.stride_size} |"""
 
     if extractors:
         names = ", ".join(f"`{e.extractor_name}`" for e in extractors)

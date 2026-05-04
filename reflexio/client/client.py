@@ -416,7 +416,7 @@ class ReflexioClient:
             skip_aggregation: If True, extract profiles/playbooks but
                 skip aggregation to agent playbooks.
             force_extraction: If True, bypass all extraction gates
-                (batch_interval, cheap pre-filter, LLM should_run) and
+                (stride_size, cheap pre-filter, LLM should_run) and
                 always run extractors.
 
         Returns:
@@ -1884,7 +1884,7 @@ class ReflexioClient:
         """Manually trigger profile generation with window-sized interactions (fire-and-forget).
 
         Unlike rerun_profile_generation which uses ALL interactions and outputs PENDING status,
-        this method uses window-sized interactions (from batch_size config) and
+        this method uses window-sized interactions (from window_size config) and
         outputs profiles with CURRENT status.
 
         This is a fire-and-forget operation that runs asynchronously in the background.
@@ -2019,7 +2019,7 @@ class ReflexioClient:
         """Manually trigger playbook generation with window-sized interactions (fire-and-forget).
 
         Unlike rerun_playbook_generation which uses ALL interactions and outputs PENDING status,
-        this method uses window-sized interactions (from batch_size config) and
+        this method uses window-sized interactions (from window_size config) and
         outputs playbooks with CURRENT status.
 
         This is a fire-and-forget operation that runs asynchronously in the background.

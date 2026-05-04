@@ -2,8 +2,8 @@
 
 Invoked from ``GenerationService.run`` after the publish has saved its
 interactions and before the extractor pool spins up. Mirrors the
-extractor pattern: window of size ``batch_size`` (global), advanced
-every ``batch_interval`` interactions per ``OperationStateManager``
+extractor pattern: window of size ``window_size`` (global), advanced
+every ``stride_size`` interactions per ``OperationStateManager``
 bookmark. When the gate is open and at least one Assistant interaction
 in the window cites a *current* user playbook / user profile row, the
 service asks an LLM whether any of those cited rows should be replaced
@@ -91,8 +91,8 @@ class ReflectionService:
         if storage is None:
             return result
 
-        batch_size = config.batch_size if config else 10
-        batch_interval = config.batch_interval if config else 5
+        window_size = config.window_size if config else 10
+        stride_size = config.stride_size if config else 5
         sources = [request.source] if request.source else None
 
         mgr = OperationStateManager(
@@ -108,14 +108,14 @@ class ReflectionService:
             sources=sources,
         )
         new_count = sum(len(m.interactions) for m in new_models)
-        if new_count < batch_interval:
+        if new_count < stride_size:
             return result
         result.gate_open = True
 
-        # Pull window of last batch_size interactions for the user.
+        # Pull window of last window_size interactions for the user.
         window_models, _flat = storage.get_last_k_interactions_grouped(
             user_id=request.user_id,
-            k=batch_size,
+            k=window_size,
             sources=sources,
         )
         window_interactions = _flatten(window_models)

@@ -203,7 +203,7 @@ class TestOpenClawMultiUser:
         attributed to the correct user, and user playbooks (seeded directly)
         are isolated per user_id.
 
-        Note: extraction is batch-gated (requires batch_interval interactions),
+        Note: extraction is stride-gated (requires stride_size interactions),
         so we verify interaction storage scoping and seed playbooks directly
         to test playbook isolation.
         """

@@ -17,12 +17,16 @@ from .api_schema.validators import (
 EMBEDDING_DIMENSIONS = 512
 
 # Default sliding window parameters for extraction
-DEFAULT_BATCH_SIZE = 10
-DEFAULT_BATCH_INTERVAL = 5
+DEFAULT_WINDOW_SIZE = 10
+DEFAULT_STRIDE_SIZE = 5
+
+# Deprecated aliases kept for older imports.
+DEFAULT_BATCH_SIZE = DEFAULT_WINDOW_SIZE
+DEFAULT_BATCH_INTERVAL = DEFAULT_STRIDE_SIZE
 
 
 class ExtractionPreset(StrEnum):
-    """Named extraction presets that bundle batch_size and batch_interval.
+    """Named extraction presets that bundle window_size and stride_size.
 
     Each preset targets a specific conversation pattern:
     - quick_chat: Short conversations (support bots, quick Q&A)
@@ -37,10 +41,10 @@ class ExtractionPreset(StrEnum):
     HIGH_VOLUME = "high_volume"
 
 
-# Preset parameter values: (batch_size, batch_interval)
+# Preset parameter values: (window_size, stride_size)
 _PRESET_VALUES: dict[ExtractionPreset, tuple[int, int]] = {
     ExtractionPreset.QUICK_CHAT: (5, 3),
-    ExtractionPreset.STANDARD: (DEFAULT_BATCH_SIZE, DEFAULT_BATCH_INTERVAL),
+    ExtractionPreset.STANDARD: (DEFAULT_WINDOW_SIZE, DEFAULT_STRIDE_SIZE),
     ExtractionPreset.LONG_FORM: (25, 10),
     ExtractionPreset.HIGH_VOLUME: (15, 8),
 }
@@ -50,8 +54,10 @@ _PRESET_VALUES: dict[ExtractionPreset, tuple[int, int]] = {
 # Field migration maps (old stored JSON name → new Python attr name)
 # ---------------------------------------------------------------------------
 _CONFIG_FIELD_MIGRATION: dict[str, str] = {
-    "extraction_window_size": "batch_size",
-    "extraction_window_stride": "batch_interval",
+    "batch_size": "window_size",
+    "batch_interval": "stride_size",
+    "extraction_window_size": "window_size",
+    "extraction_window_stride": "stride_size",
     "playbook_configs": "user_playbook_extractor_configs",
     "agent_feedback_configs": "user_playbook_extractor_configs",
 }
@@ -63,8 +69,10 @@ _AGGREGATOR_FIELD_MIGRATION: dict[str, str] = {
 }
 
 _EXTRACTOR_OVERRIDE_MIGRATION: dict[str, str] = {
-    "extraction_window_size_override": "batch_size_override",
-    "extraction_window_stride_override": "batch_interval_override",
+    "batch_size_override": "window_size_override",
+    "batch_interval_override": "stride_size_override",
+    "extraction_window_size_override": "window_size_override",
+    "extraction_window_stride_override": "stride_size_override",
 }
 
 _PROFILE_CONFIG_FIELD_MIGRATION: dict[str, str] = {
@@ -92,6 +100,26 @@ def _migrate_dict(data: Any, mapping: dict[str, str]) -> Any:
             if old in data and new not in data:
                 data[new] = data.pop(old)
     return data
+
+
+class _ExtractorWindowOverrideCompatMixin:
+    @property
+    def batch_size_override(self) -> int | None:
+        """Deprecated alias for window_size_override."""
+        return self.window_size_override  # type: ignore[attr-defined]
+
+    @batch_size_override.setter
+    def batch_size_override(self, value: int | None) -> None:
+        self.window_size_override = value  # type: ignore[attr-defined]
+
+    @property
+    def batch_interval_override(self) -> int | None:
+        """Deprecated alias for stride_size_override."""
+        return self.stride_size_override  # type: ignore[attr-defined]
+
+    @batch_interval_override.setter
+    def batch_interval_override(self, value: int | None) -> None:
+        self.stride_size_override = value  # type: ignore[attr-defined]
 
 
 class SearchMode(StrEnum):
@@ -293,7 +321,7 @@ class DeduplicationConfig(BaseModel):
     )
 
 
-class ProfileExtractorConfig(BaseModel):
+class ProfileExtractorConfig(_ExtractorWindowOverrideCompatMixin, BaseModel):
     extractor_name: NonEmptyStr
     extraction_definition_prompt: SanitizedNonEmptyStr
     context_prompt: str | None = None
@@ -303,8 +331,8 @@ class ProfileExtractorConfig(BaseModel):
         None  # default enabled for all sources, if set, only extract profiles from the enabled request sources
     )
     manual_trigger: bool = False  # require manual triggering (rerun) to run extraction and skip auto extraction if set to True
-    batch_size_override: int | None = Field(default=None, gt=0)
-    batch_interval_override: int | None = Field(default=None, gt=0)
+    window_size_override: int | None = Field(default=None, gt=0)
+    stride_size_override: int | None = Field(default=None, gt=0)
 
     @model_validator(mode="before")
     @classmethod
@@ -335,7 +363,7 @@ class PlaybookAggregatorConfig(BaseModel):
         return _migrate_dict(data, _AGGREGATOR_FIELD_MIGRATION)
 
 
-class UserPlaybookExtractorConfig(BaseModel):
+class UserPlaybookExtractorConfig(_ExtractorWindowOverrideCompatMixin, BaseModel):
     extractor_name: NonEmptyStr
     extraction_definition_prompt: SanitizedNonEmptyStr
     context_prompt: str | None = None
@@ -345,8 +373,8 @@ class UserPlaybookExtractorConfig(BaseModel):
     request_sources_enabled: list[str] | None = (
         None  # default enabled for all sources, if set, only extract user playbooks from the enabled request sources
     )
-    batch_size_override: int | None = Field(default=None, gt=0)
-    batch_interval_override: int | None = Field(default=None, gt=0)
+    window_size_override: int | None = Field(default=None, gt=0)
+    stride_size_override: int | None = Field(default=None, gt=0)
 
     @model_validator(mode="before")
     @classmethod
@@ -365,15 +393,15 @@ class ToolUseConfig(BaseModel):
 
 
 # define what success looks like for agent
-class AgentSuccessConfig(BaseModel):
+class AgentSuccessConfig(_ExtractorWindowOverrideCompatMixin, BaseModel):
     evaluation_name: NonEmptyStr
     success_definition_prompt: SanitizedNonEmptyStr
     metadata_definition_prompt: str | None = None
     sampling_rate: float = Field(
         default=1.0, ge=0.0, le=1.0
-    )  # fraction of batch of interactions to be sampled for success evaluation
-    batch_size_override: int | None = Field(default=None, gt=0)
-    batch_interval_override: int | None = Field(default=None, gt=0)
+    )  # fraction of window of interactions to be sampled for success evaluation
+    window_size_override: int | None = Field(default=None, gt=0)
+    stride_size_override: int | None = Field(default=None, gt=0)
 
     @model_validator(mode="before")
     @classmethod
@@ -385,8 +413,8 @@ class ReflectionConfig(BaseModel):
     """Configuration for the sliding-window reflection step.
 
     Reflection runs inside ``GenerationService.run`` as its own
-    sliding-window step (window = global ``batch_size``, stride = global
-    ``batch_interval``, bookmark via ``OperationStateManager``). When
+    sliding-window step (window = global ``window_size``, stride = global
+    ``stride_size``, bookmark via ``OperationStateManager``). When
     the gate opens and at least one Assistant interaction in the window
     cites a current user playbook / user profile row, the LLM is asked
     whether any cited rows should be replaced. When ``enabled`` is
@@ -466,11 +494,11 @@ class Config(BaseModel):
     )
     # agent level success
     agent_success_configs: list[AgentSuccessConfig] | None = None
-    # extraction preset — selects bundled batch_size/batch_interval values
+    # extraction preset — selects bundled window_size/stride_size values
     extraction_preset: ExtractionPreset | None = None
     # extraction parameters
-    batch_size: int = Field(default=DEFAULT_BATCH_SIZE, gt=0)
-    batch_interval: int = Field(default=DEFAULT_BATCH_INTERVAL, gt=0)
+    window_size: int = Field(default=DEFAULT_WINDOW_SIZE, gt=0)
+    stride_size: int = Field(default=DEFAULT_STRIDE_SIZE, gt=0)
     # API key configuration for LLM providers
     api_key_config: APIKeyConfig | None = None
     # LLM model configuration overrides
@@ -499,8 +527,8 @@ class Config(BaseModel):
         data = _migrate_dict(data, _CONFIG_FIELD_MIGRATION)
         if isinstance(data, dict):
             for key in (
-                "batch_size",
-                "batch_interval",
+                "window_size",
+                "stride_size",
                 "extraction_backend",
                 "search_backend",
                 "reflection_config",
@@ -511,10 +539,10 @@ class Config(BaseModel):
 
     @model_validator(mode="after")
     def apply_extraction_preset(self) -> Self:
-        """Apply preset values when batch_size/batch_interval are at defaults.
+        """Apply preset values when window_size/stride_size are at defaults.
 
-        If a preset is selected but the user also explicitly set batch_size or
-        batch_interval, the explicit values win (checked via model_fields_set).
+        If a preset is selected but the user also explicitly set window_size or
+        stride_size, the explicit values win (checked via model_fields_set).
         """
         if self.extraction_preset is None:
             return self
@@ -523,20 +551,38 @@ class Config(BaseModel):
         if preset_values is None:
             return self
 
-        preset_batch_size, preset_batch_interval = preset_values
-        if "batch_size" not in self.model_fields_set:
-            self.batch_size = preset_batch_size
-        if "batch_interval" not in self.model_fields_set:
-            self.batch_interval = preset_batch_interval
+        preset_window_size, preset_stride_size = preset_values
+        if "window_size" not in self.model_fields_set:
+            self.window_size = preset_window_size
+        if "stride_size" not in self.model_fields_set:
+            self.stride_size = preset_stride_size
 
         return self
 
     @model_validator(mode="after")
-    def check_batch_interval_le_batch_size(self) -> Self:
-        """Validate that batch_interval <= batch_size."""
-        if self.batch_interval > self.batch_size:
-            raise ValueError("batch_interval must be <= batch_size")
+    def check_stride_size_le_window_size(self) -> Self:
+        """Validate that stride_size <= window_size."""
+        if self.stride_size > self.window_size:
+            raise ValueError("stride_size must be <= window_size")
         return self
+
+    @property
+    def batch_size(self) -> int:
+        """Deprecated alias for window_size."""
+        return self.window_size
+
+    @batch_size.setter
+    def batch_size(self, value: int) -> None:
+        self.window_size = value
+
+    @property
+    def batch_interval(self) -> int:
+        """Deprecated alias for stride_size."""
+        return self.stride_size
+
+    @batch_interval.setter
+    def batch_interval(self, value: int) -> None:
+        self.stride_size = value
 
     @model_validator(mode="after")
     def ensure_default_extractors(self) -> Self:

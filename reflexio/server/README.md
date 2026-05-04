@@ -209,7 +209,7 @@ Main orchestrator flow:
 - **Extractor level**: `EXTRACTOR_TIMEOUT_SECONDS = 300` (5 min) — per-extractor safety net in `base_generation_service.py`
 - If one service/extractor times out, others continue unaffected
 
-**Batch Interval Processing**: Each extractor independently checks if it should run based on its configured batch_interval size and tracks its own operation state.
+**Stride Size Processing**: Each extractor independently checks if it should run based on its configured stride_size size and tracks its own operation state.
 
 Called by API endpoints via `Reflexio`
 
@@ -226,7 +226,7 @@ Called by API endpoints via `Reflexio`
 
 - `base_generation_service.py`: Abstract base for all services (parallel extractor execution via ThreadPoolExecutor, `EXTRACTOR_TIMEOUT_SECONDS = 300` per-extractor safety timeout)
 - `extractor_config_utils.py`: Shared utility for filtering extractor configs by source, `allow_manual_trigger`, and extractor names
-- `extractor_interaction_utils.py`: Per-extractor utilities for batch_interval checking and source filtering
+- `extractor_interaction_utils.py`: Per-extractor utilities for stride_size checking and source filtering
 - `operation_state_utils.py`: Centralized `OperationStateManager` for all `_operation_state` table interactions (progress tracking, concurrency locks, extractor/aggregator bookmarks, simple locks)
 - `deduplication_utils.py`: Shared utilities for LLM-based deduplication (used by ProfileDeduplicator and PlaybookDeduplicator)
 - `service_utils.py`: Utilities (`construct_messages_from_interactions()`, `format_interactions_to_history_string()` (prepends tool usage info when `tools_used` is present), `extract_json_from_string()`, `log_model_response()` for colored LLM response logging)
@@ -270,7 +270,7 @@ Key files:
 | **Scope** | Single user | Batch (all matching users, with progress) | Batch (all/single user, with progress) |
 | **Use Case** | Normal operation | Test prompt changes | Force regeneration |
 
-**Note**: All modes use `batch_size` (per-extractor override or global). The key difference is that Regular checks batch_interval before running, while Rerun/Manual always run. When no window is configured, rerun/manual falls back to `k=1000`.
+**Note**: All modes use `window_size` (per-extractor override or global). The key difference is that Regular checks stride_size before running, while Rerun/Manual always run. When no window is configured, rerun/manual falls back to `k=1000`.
 
 **Constructor Flags** (`ProfileGenerationService`):
 - `allow_manual_trigger`: Include `manual_trigger=True` extractors (default: False)
@@ -361,7 +361,7 @@ Aggregation clusters user playbooks by embedding similarity, then calls LLM per 
 | **Scope** | Single user | Batch (all matching users, with progress) | Batch (all/single user, with progress) |
 | **Use Case** | Normal operation | Test prompt changes | Force regeneration |
 
-**Note**: All modes use `batch_size` (per-extractor override or global). The key difference is that Regular checks batch_interval before running, while Rerun/Manual always run. When no window is configured, rerun/manual falls back to `k=1000`.
+**Note**: All modes use `window_size` (per-extractor override or global). The key difference is that Regular checks stride_size before running, while Rerun/Manual always run. When no window is configured, rerun/manual falls back to `k=1000`.
 
 **Constructor Flags** (`PlaybookGenerationService`):
 - `allow_manual_trigger`: Include `manual_trigger=True` extractors (default: False)
@@ -553,14 +553,14 @@ All services follow BaseGenerationService:
 - Receives **ExtractorConfig** (from YAML): Static configuration like prompts and settings
 - Receives **GenerationServiceConfig** (from request): Runtime parameters like user_id, source
 - **Collects its own interactions** using `extractor_interaction_utils.py`:
-  - Gets per-extractor batch_size/batch_interval parameters (override or global fallback)
+  - Gets per-extractor window_size/stride_size parameters (override or global fallback)
   - Applies source filtering based on `request_sources_enabled`
-  - Checks batch_interval threshold before running
+  - Checks stride_size threshold before running
   - Updates per-extractor bookmark state after processing (via `OperationStateManager`)
 
 **Per-Extractor Window Overrides**: Each extractor config can override global window settings:
-- `batch_size_override`: Override global `batch_size` for this extractor
-- `batch_interval_override`: Override global `batch_interval` for this extractor
+- `window_size_override`: Override global `window_size` for this extractor
+- `stride_size_override`: Override global `stride_size` for this extractor
 - Each extractor applies its own override or falls back to global values
 
 ### Key Rules

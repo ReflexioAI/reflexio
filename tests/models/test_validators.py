@@ -44,7 +44,7 @@ from reflexio.models.api_schema.service_schemas import (
     UserProfile,
 )
 from reflexio.models.config_schema import (
-    DEFAULT_BATCH_INTERVAL,
+    DEFAULT_STRIDE_SIZE,
     AgentSuccessConfig,
     AnthropicConfig,
     AzureOpenAIConfig,
@@ -483,21 +483,21 @@ class TestNumericConstraints:
             ProfileExtractorConfig(
                 extractor_name="test",
                 extraction_definition_prompt="test",
-                batch_size_override=0,
+                window_size_override=0,
             )
         with pytest.raises(ValidationError):
             ProfileExtractorConfig(
                 extractor_name="test",
                 extraction_definition_prompt="test",
-                batch_interval_override=-1,
+                stride_size_override=-1,
             )
         # None is allowed (use global setting)
         config = ProfileExtractorConfig(
             extractor_name="test",
             extraction_definition_prompt="test",
-            batch_size_override=None,
+            window_size_override=None,
         )
-        assert config.batch_size_override is None
+        assert config.window_size_override is None
 
 
 # =============================================================================
@@ -625,30 +625,30 @@ class TestCrossFieldValidators:
         assert config.azure_config is not None
 
     def test_config_stride_le_window(self):
-        """Config: batch_interval must be <= batch_size."""
-        with pytest.raises(ValidationError, match="batch_interval"):
+        """Config: stride_size must be <= window_size."""
+        with pytest.raises(ValidationError, match="stride_size"):
             Config(
                 storage_config=StorageConfigSQLite(),
-                batch_size=10,
-                batch_interval=20,
+                window_size=10,
+                stride_size=20,
             )
 
     def test_config_stride_equal_window_ok(self):
-        """Config: batch_interval == batch_size is OK."""
+        """Config: stride_size == window_size is OK."""
         config = Config(
             storage_config=StorageConfigSQLite(),
-            batch_size=10,
-            batch_interval=10,
+            window_size=10,
+            stride_size=10,
         )
-        assert config.batch_interval == 10
+        assert config.stride_size == 10
 
     def test_config_stride_default_ok(self):
-        """Config: omitting batch_interval uses DEFAULT_BATCH_INTERVAL."""
+        """Config: omitting stride_size uses DEFAULT_STRIDE_SIZE."""
         config = Config(
             storage_config=StorageConfigSQLite(),
-            batch_size=10,
+            window_size=10,
         )
-        assert config.batch_interval == DEFAULT_BATCH_INTERVAL
+        assert config.stride_size == DEFAULT_STRIDE_SIZE
 
     def test_config_defaults_extractors_when_omitted(self):
         """Config: omitted extractor lists still get the default extractors."""
@@ -724,18 +724,65 @@ class TestBackwardCompatibility:
             extraction_window_size=15,
             extraction_window_stride=7,
         )
-        assert config.batch_size == 15
-        assert config.batch_interval == 7
+        assert config.window_size == 15
+        assert config.stride_size == 7
 
-    def test_config_new_names_preferred(self):
-        """Config: new field names batch_size/batch_interval work directly."""
+    def test_config_accepts_current_legacy_names(self):
+        """Config: batch_size/batch_interval still accepted as aliases."""
         config = Config(
             storage_config=StorageConfigSQLite(),
             batch_size=20,
             batch_interval=8,
         )
-        assert config.batch_size == 20
-        assert config.batch_interval == 8
+        assert config.window_size == 20
+        assert config.stride_size == 8
+
+    def test_config_new_names_preferred(self):
+        """Config: new field names window_size/stride_size work directly."""
+        config = Config(
+            storage_config=StorageConfigSQLite(),
+            window_size=20,
+            stride_size=8,
+        )
+        assert config.window_size == 20
+        assert config.stride_size == 8
+
+    def test_config_prefers_new_names_when_both_present(self):
+        """Config: new names win if old and new field names are both present."""
+        config = Config(
+            storage_config=StorageConfigSQLite(),
+            window_size=20,
+            stride_size=8,
+            batch_size=10,
+            batch_interval=5,
+            extraction_window_size=2,
+            extraction_window_stride=1,
+        )
+        assert config.window_size == 20
+        assert config.stride_size == 8
+
+    def test_config_model_dump_uses_only_new_names(self):
+        """Config: serialization emits window_size/stride_size only."""
+        config = Config(
+            storage_config=StorageConfigSQLite(),
+            batch_size=20,
+            batch_interval=8,
+        )
+        dumped = config.model_dump()
+        assert dumped["window_size"] == 20
+        assert dumped["stride_size"] == 8
+        assert "batch_size" not in dumped
+        assert "batch_interval" not in dumped
+
+    def test_config_deprecated_properties_read_write_new_fields(self):
+        """Config: deprecated Python properties still read/write canonical fields."""
+        config = Config(storage_config=StorageConfigSQLite())
+        config.batch_size = 22
+        config.batch_interval = 11
+        assert config.window_size == 22
+        assert config.stride_size == 11
+        assert config.batch_size == 22
+        assert config.batch_interval == 11
 
     def test_profile_extractor_old_override_names(self):
         """ProfileExtractorConfig: old extraction_window_*_override names still work."""
@@ -745,8 +792,35 @@ class TestBackwardCompatibility:
             extraction_window_size_override=30,
             extraction_window_stride_override=10,
         )
+        assert config.window_size_override == 30
+        assert config.stride_size_override == 10
+
+    def test_profile_extractor_current_legacy_override_names(self):
+        """ProfileExtractorConfig: batch_*_override names still work."""
+        config = ProfileExtractorConfig(
+            extractor_name="test",
+            extraction_definition_prompt="test",
+            batch_size_override=30,
+            batch_interval_override=10,
+        )
+        assert config.window_size_override == 30
+        assert config.stride_size_override == 10
         assert config.batch_size_override == 30
         assert config.batch_interval_override == 10
+
+    def test_profile_extractor_override_model_dump_uses_only_new_names(self):
+        """ProfileExtractorConfig: serialization emits window/stride override names."""
+        config = ProfileExtractorConfig(
+            extractor_name="test",
+            extraction_definition_prompt="test",
+            batch_size_override=30,
+            batch_interval_override=10,
+        )
+        dumped = config.model_dump()
+        assert dumped["window_size_override"] == 30
+        assert dumped["stride_size_override"] == 10
+        assert "batch_size_override" not in dumped
+        assert "batch_interval_override" not in dumped
 
     def test_playbook_config_old_override_names(self):
         """PlaybookConfig: old extraction_window_*_override names still work."""
@@ -756,8 +830,19 @@ class TestBackwardCompatibility:
             extraction_window_size_override=25,
             extraction_window_stride_override=5,
         )
-        assert config.batch_size_override == 25
-        assert config.batch_interval_override == 5
+        assert config.window_size_override == 25
+        assert config.stride_size_override == 5
+
+    def test_playbook_config_current_legacy_override_names(self):
+        """PlaybookConfig: batch_*_override names still work."""
+        config = PlaybookConfig(
+            extractor_name="test",
+            extraction_definition_prompt="test",
+            batch_size_override=25,
+            batch_interval_override=5,
+        )
+        assert config.window_size_override == 25
+        assert config.stride_size_override == 5
 
     def test_success_config_old_override_names(self):
         """AgentSuccessConfig: old extraction_window_*_override names still work."""
@@ -767,8 +852,19 @@ class TestBackwardCompatibility:
             extraction_window_size_override=40,
             extraction_window_stride_override=15,
         )
-        assert config.batch_size_override == 40
-        assert config.batch_interval_override == 15
+        assert config.window_size_override == 40
+        assert config.stride_size_override == 15
+
+    def test_success_config_current_legacy_override_names(self):
+        """AgentSuccessConfig: batch_*_override names still work."""
+        config = AgentSuccessConfig(
+            evaluation_name="test",
+            success_definition_prompt="test",
+            batch_size_override=40,
+            batch_interval_override=15,
+        )
+        assert config.window_size_override == 40
+        assert config.stride_size_override == 15
 
     def test_aggregator_config_old_field_names(self):
         """PlaybookAggregatorConfig: old field names still work via AliasChoices."""

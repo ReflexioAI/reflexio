@@ -2,7 +2,7 @@
 
 Reflection runs as its own sliding-window step inside the publish flow,
 mirroring the existing profile / playbook extractor pattern: a window
-of size ``batch_size`` (global) advanced every ``batch_interval``
+of size ``window_size`` (global) advanced every ``stride_size``
 interactions. When the gate passes and at least one Assistant
 interaction in the window carries citations, the service asks an LLM
 whether any cited user playbook / user profile rows should be replaced
@@ -89,7 +89,7 @@ class ReflectionResult(BaseModel):
         ran (bool): True iff the LLM was actually called. False when
             reflection short-circuited (disabled, gate not yet open, no
             citations in window, no current cited rows, LLM error).
-        gate_open (bool): True when the batch_interval bookmark gate
+        gate_open (bool): True when the stride_size bookmark gate
             permitted this run (regardless of whether citations existed).
         cited_count (int): Distinct citations seen on Assistant
             interactions in the window.

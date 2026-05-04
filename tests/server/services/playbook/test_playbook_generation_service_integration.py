@@ -85,8 +85,8 @@ def mock_request_context():
             ),
         )
     ]
-    # Mock batch_size for extractor
-    context.configurator.get_config.return_value.batch_size = 100
+    # Mock window_size for extractor
+    context.configurator.get_config.return_value.window_size = 100
     context.prompt_manager = PromptManager()
     return context
 

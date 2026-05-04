@@ -45,9 +45,9 @@ class ProfileGenerationRequest(BaseModel):
     rerun_start_time: int | None = None  # Unix timestamp for rerun flows
     rerun_end_time: int | None = None  # Unix timestamp for rerun flows
     auto_run: bool = (
-        True  # True for regular flow (checks batch_interval), False for rerun/manual
+        True  # True for regular flow (checks stride_size), False for rerun/manual
     )
-    force_extraction: bool = False  # when True, bypass all extraction gates (batch_interval, cheap pre-filter, LLM should_run)
+    force_extraction: bool = False  # when True, bypass all extraction gates (stride_size, cheap pre-filter, LLM should_run)
 
 
 @dataclass(frozen=True)

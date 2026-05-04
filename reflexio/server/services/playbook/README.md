@@ -33,7 +33,7 @@ Interactions
 ### Playbook Extraction (`playbook_extractor.py`)
 
 Extends `BaseGenerationService` extractor pattern. Each extractor:
-1. Checks batch_interval threshold before running
+1. Checks stride_size threshold before running
 2. Constructs messages from interactions (via `service_utils.py`)
 3. Runs LLM with `playbook_extraction_main` prompt
 4. Parses `StructuredPlaybookContent` output (trigger, instruction, pitfall, blocking_issue)

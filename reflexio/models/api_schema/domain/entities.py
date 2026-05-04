@@ -418,7 +418,7 @@ class PublishUserInteractionRequest(BaseModel):
     skip_aggregation: bool = (
         False  # when True, extract profiles/playbooks but skip aggregation
     )
-    force_extraction: bool = False  # when True, bypass all extraction gates (batch_interval, cheap pre-filter, LLM should_run) and always run extractors
+    force_extraction: bool = False  # when True, bypass all extraction gates (stride_size, cheap pre-filter, LLM should_run) and always run extractors
 
 
 # publish user interaction response

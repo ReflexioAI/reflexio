@@ -1167,10 +1167,10 @@ def test_manual_playbook_generation_no_window_size(
     sample_interaction_requests: list[InteractionData],
     cleanup_playbook_only: Callable[[], None],
 ):
-    """Test manual_playbook_generation works without batch_size.
+    """Test manual_playbook_generation works without window_size.
 
     This test verifies:
-    1. Manual generation works when batch_size is not configured
+    1. Manual generation works when window_size is not configured
        (it defaults to fetching all available interactions with a reasonable limit)
     """
     user_id = "test_user_no_window"

@@ -2,13 +2,13 @@
 Utility functions for per-extractor interaction data collection.
 
 These functions are shared across ProfileExtractor, PlaybookExtractor, and AgentSuccessEvaluator
-to handle per-extractor batch_interval checking, source filtering, and sliding window iteration.
+to handle per-extractor stride checking, source filtering, and sliding window iteration.
 """
 
 import logging
 
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
-from reflexio.models.config_schema import DEFAULT_BATCH_INTERVAL, DEFAULT_BATCH_SIZE
+from reflexio.models.config_schema import DEFAULT_STRIDE_SIZE, DEFAULT_WINDOW_SIZE
 from reflexio.server.services.extractor_config_utils import get_extractor_name
 
 logger = logging.getLogger(__name__)
@@ -16,44 +16,46 @@ logger = logging.getLogger(__name__)
 
 def get_extractor_window_params[TExtractorConfig](
     extractor_config: TExtractorConfig,
-    global_batch_size: int | None,
-    global_batch_interval: int | None,
+    global_window_size: int | None,
+    global_stride_size: int | None,
 ) -> tuple[int, int]:
     """
-    Get effective batch_size and batch_interval for a specific extractor.
+    Get effective window_size and stride_size for a specific extractor.
 
     Uses extractor's override values if set, otherwise falls back to global values,
-    then to defaults (batch_size=10, batch_interval=5).
+    then to defaults (window_size=10, stride_size=5).
 
     Args:
         extractor_config: Extractor configuration object
-        global_batch_size: Global batch_size from config
-        global_batch_interval: Global batch_interval from config
+        global_window_size: Global window_size from config
+        global_stride_size: Global stride_size from config
 
     Returns:
-        Tuple of (batch_size, batch_interval_size) for this extractor
+        Tuple of (window_size, stride_size) for this extractor
     """
-    batch_size_override = getattr(extractor_config, "batch_size_override", None)
-    batch_interval_override = getattr(extractor_config, "batch_interval_override", None)
+    window_size_override = getattr(extractor_config, "window_size_override", None)
+    stride_size_override = getattr(extractor_config, "stride_size_override", None)
 
-    batch_size = (
-        batch_size_override
-        if batch_size_override is not None
+    window_size = (
+        window_size_override
+        if window_size_override is not None
         else (
-            global_batch_size if global_batch_size is not None else DEFAULT_BATCH_SIZE
+            global_window_size
+            if global_window_size is not None
+            else DEFAULT_WINDOW_SIZE
         )
     )
-    batch_interval_size = (
-        batch_interval_override
-        if batch_interval_override is not None
+    stride_size = (
+        stride_size_override
+        if stride_size_override is not None
         else (
-            global_batch_interval
-            if global_batch_interval is not None
-            else DEFAULT_BATCH_INTERVAL
+            global_stride_size
+            if global_stride_size is not None
+            else DEFAULT_STRIDE_SIZE
         )
     )
 
-    return batch_size, batch_interval_size
+    return window_size, stride_size
 
 
 def get_effective_source_filter[TExtractorConfig](
@@ -109,16 +111,16 @@ def get_effective_source_filter[TExtractorConfig](
     return (False, [triggering_source])
 
 
-def should_extractor_run_by_batch_interval(
+def should_extractor_run_by_stride(
     new_interaction_count: int,
-    batch_interval_size: int | None,
+    stride_size: int | None,
 ) -> bool:
     """
-    Determine if an extractor should run based on its batch_interval configuration.
+    Determine if an extractor should run based on its stride_size configuration.
 
     Args:
         new_interaction_count: Number of new interactions since last run
-        batch_interval_size: Configured batch_interval size for this extractor
+        stride_size: Configured stride_size for this extractor
 
     Returns:
         True if extractor should run, False otherwise
@@ -126,10 +128,10 @@ def should_extractor_run_by_batch_interval(
     if new_interaction_count <= 0:
         return False
 
-    if batch_interval_size is None or batch_interval_size <= 0:
-        return True  # No batch_interval configured, always run
+    if stride_size is None or stride_size <= 0:
+        return True  # No stride configured, always run
 
-    return new_interaction_count >= batch_interval_size
+    return new_interaction_count >= stride_size
 
 
 def filter_interactions_by_source(
@@ -169,8 +171,8 @@ from collections.abc import Iterator
 
 def iter_sliding_windows(
     request_interaction_data_models: list[RequestInteractionDataModel],
-    batch_size: int,
-    batch_interval_size: int | None,
+    window_size: int,
+    stride_size: int | None,
 ) -> Iterator[tuple[int, list[RequestInteractionDataModel]]]:
     """
     Yield sliding windows of RequestInteractionDataModel based on interaction count.
@@ -180,30 +182,28 @@ def iter_sliding_windows(
 
     Args:
         request_interaction_data_models: List of RequestInteractionDataModel to window over
-        batch_size: Target number of interactions per window
-        batch_interval_size: Step size in interactions between window starts (must be >= 1)
+        window_size: Target number of interactions per window
+        stride_size: Step size in interactions between window starts (must be >= 1)
 
     Yields:
         Tuples of (window_index, list_of_request_interaction_data_models)
 
     Example:
-        With 3 models having [10, 20, 15] interactions, batch_size=25, batch_interval_size=15:
+        With 3 models having [10, 20, 15] interactions, window_size=25, stride_size=15:
         - Window 0: models[0], models[1] (30 interactions, starts at 0)
         - Window 1: models[1], models[2] (35 interactions, starts at 15)
     """
     if not request_interaction_data_models:
         return
 
-    if batch_size <= 0:
-        # Invalid batch_size, yield single window with all data
+    if window_size <= 0:
+        # Invalid window_size, yield single window with all data
         yield (0, request_interaction_data_models)
         return
 
-    # Default batch_interval to batch_size if not valid
-    effective_batch_interval = (
-        batch_interval_size
-        if batch_interval_size and batch_interval_size > 0
-        else batch_size
+    # Default stride_size to window_size if not valid
+    effective_stride_size = (
+        stride_size if stride_size and stride_size > 0 else window_size
     )
 
     # Build cumulative interaction counts for each model
@@ -218,7 +218,7 @@ def iter_sliding_windows(
         return
 
     # If all data fits in one window, yield single window
-    if total_interactions <= batch_size:
+    if total_interactions <= window_size:
         yield (0, request_interaction_data_models)
         return
 
@@ -226,7 +226,7 @@ def iter_sliding_windows(
     window_start = 0  # Starting interaction index
 
     while window_start < total_interactions:
-        window_end = window_start + batch_size
+        window_end = window_start + window_size
 
         # Find models that overlap with [window_start, window_end)
         # A model overlaps if its start < window_end AND its end > window_start
@@ -244,8 +244,8 @@ def iter_sliding_windows(
             yield (window_idx, selected_models)
 
         window_idx += 1
-        window_start += effective_batch_interval
+        window_start += effective_stride_size
 
-        # Prevent infinite loop if batch_interval is 0 (shouldn't happen with validation above)
-        if effective_batch_interval <= 0:
+        # Prevent infinite loop if stride_size is 0 (shouldn't happen with validation above)
+        if effective_stride_size <= 0:
             break

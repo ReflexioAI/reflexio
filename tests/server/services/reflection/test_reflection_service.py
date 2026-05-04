@@ -152,8 +152,8 @@ def _set_config(request_context, **overrides):
     cfg = Config.model_validate(
         {
             "storage_config": {"db_path": None},
-            "batch_size": 5,
-            "batch_interval": 2,
+            "window_size": 5,
+            "stride_size": 2,
             "reflection_config": ReflectionConfig().model_dump(),
             **overrides,
         }
@@ -192,11 +192,11 @@ class TestGate:
         assert result.gate_open is False
         llm_client.generate_chat_response.assert_not_called()
 
-    def test_gate_closed_when_below_batch_interval(
+    def test_gate_closed_when_below_stride_size(
         self, request_context, service, llm_client
     ):
-        _set_config(request_context, batch_size=10, batch_interval=5)
-        # Seed only 2 interactions; batch_interval=5.
+        _set_config(request_context, window_size=10, stride_size=5)
+        # Seed only 2 interactions; stride_size=5.
         _seed_request_with_interactions(
             request_context.storage,
             "u1",
@@ -217,7 +217,7 @@ class TestNoCitations:
     def test_window_without_citations_advances_bookmark(
         self, request_context, service, llm_client
     ):
-        _set_config(request_context, batch_size=5, batch_interval=2)
+        _set_config(request_context, window_size=5, stride_size=2)
         _seed_request_with_interactions(
             request_context.storage,
             "u1",

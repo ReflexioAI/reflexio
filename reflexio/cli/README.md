@@ -131,7 +131,7 @@ Apply to all three modes:
 | `--agent-version`   | Tag the interaction with an agent version (used by playbook filtering). |
 | `--source`          | Free-form source tag (defaults to `cli`).                                |
 | `--skip-aggregation`| Extract profiles/playbooks but skip playbook aggregation.                |
-| `--force-extraction`| Bypass `batch_interval` gating and always run extractors.                |
+| `--force-extraction`| Bypass `stride_size` gating and always run extractors.                |
 
 Full options via `uv run reflexio interactions publish --help`.
 

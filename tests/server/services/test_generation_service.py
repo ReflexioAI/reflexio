@@ -118,7 +118,7 @@ def test_empty_session_id_allows_multiple_requests(mock_llm_responses):
 
 
 # NOTE: TestWindowSizeStrideOverrides class was removed because the global
-# _get_extraction_window_size() and _get_stride_size() methods were removed
-# from GenerationService. Each extractor now handles its own window/stride
+# _get_window_size() and _get_stride_size() methods were removed
+# from GenerationService. Each extractor now handles its own window_size/stride_size
 # calculation using the get_extractor_window_params() utility function.
 # See: reflexio/server/services/extractor_interaction_utils.py

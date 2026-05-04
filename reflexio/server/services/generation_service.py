@@ -116,7 +116,7 @@ class GenerationService:
 
         Each generation service (profile, playbook) handles its own:
         - Data collection based on extractor-specific configs
-        - Batch interval checking based on extractor-specific settings
+        - Stride checking based on extractor-specific settings
         - Operation state tracking per extractor
 
         Args:

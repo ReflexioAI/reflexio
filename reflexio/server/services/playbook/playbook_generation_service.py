@@ -56,7 +56,7 @@ class PlaybookGenerationServiceConfig:
         allow_manual_trigger: Whether to allow extractors with manual_trigger=True
         rerun_start_time: Optional start time filter for rerun flows (Unix timestamp)
         rerun_end_time: Optional end time filter for rerun flows (Unix timestamp)
-        auto_run: True for regular flow (checks batch_interval), False for rerun/manual (skips batch_interval)
+        auto_run: True for regular flow (checks stride_size), False for rerun/manual (skips stride_size)
         extractor_names: Optional list of extractor names to run (derived from playbook_name)
     """
 
@@ -353,10 +353,10 @@ class PlaybookGenerationService(
 
     def _get_extractor_state_service_name(self) -> str:
         """
-        Get the service name for batch_interval bookmark lookups.
+        Get the service name for stride_size bookmark lookups.
 
         Returns:
-            str: "playbook_extractor" for OperationStateManager batch_interval checks
+            str: "playbook_extractor" for OperationStateManager stride_size checks
         """
         return "playbook_extractor"
 
@@ -598,7 +598,7 @@ class PlaybookGenerationService(
         Run playbook generation with window-sized interactions and CURRENT output.
 
         Processes entries per-user. Each extractor collects its own data
-        using its configured batch_size.
+        using its configured window_size.
         Uses progress tracking via OperationStateManager.
 
         Args:

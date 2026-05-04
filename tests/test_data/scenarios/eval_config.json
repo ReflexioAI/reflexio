@@ -5,8 +5,8 @@
       "extractor_name": "default_profile_extractor",
       "extraction_definition_prompt": "Extract key user information: name, location, occupation, preferences, constraints, family details, technical setup, communication preferences, or any personal facts.",
       "context_prompt": "Multi-user conversation between customers and a support agent.",
-      "batch_size_override": 20,
-      "batch_interval_override": 1
+      "window_size_override": 20,
+      "stride_size_override": 1
     }
   ],
   "user_playbook_extractor_configs": [
@@ -16,8 +16,8 @@
       "aggregation_config": {
         "min_cluster_size": 2
       },
-      "batch_size_override": 20,
-      "batch_interval_override": 1
+      "window_size_override": 20,
+      "stride_size_override": 1
     }
   ]
 }

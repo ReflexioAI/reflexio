@@ -56,14 +56,14 @@ class TestConfigStorageContract:
     def test_save_and_load_round_trip(self, config_storage: ConfigStorage) -> None:
         """A saved config can be loaded back with key fields intact."""
         original = config_storage.get_default_config()
-        original.batch_size = 20
-        original.batch_interval = 10
+        original.window_size = 20
+        original.stride_size = 10
 
         config_storage.save_config(original)
         loaded = config_storage.load_config()
 
-        assert loaded.batch_size == original.batch_size
-        assert loaded.batch_interval == original.batch_interval
+        assert loaded.window_size == original.window_size
+        assert loaded.stride_size == original.stride_size
         assert loaded.storage_config == original.storage_config
 
     def test_load_without_save_returns_default(
@@ -75,4 +75,4 @@ class TestConfigStorageContract:
 
         assert isinstance(loaded, Config)
         assert loaded.storage_config == default.storage_config
-        assert loaded.batch_size == default.batch_size
+        assert loaded.window_size == default.window_size

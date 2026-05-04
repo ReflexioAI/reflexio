@@ -12,7 +12,7 @@ import {
 import {
   StorageSection,
   AgentContextSection,
-  BatchingSection,
+  WindowingSection,
   APIKeysSection,
   LLMModelsSection,
   ProfileExtractorsSection,
@@ -122,7 +122,7 @@ export function ConfigEditor() {
             value={config.agent_context_prompt}
             setConfig={setConfig}
           />
-          <BatchingSection config={config} setConfig={setConfig} />
+          <WindowingSection config={config} setConfig={setConfig} />
           <APIKeysSection value={config.api_key_config} setConfig={setConfig} />
           <LLMModelsSection value={config.llm_config} setConfig={setConfig} />
           <ProfileExtractorsSection

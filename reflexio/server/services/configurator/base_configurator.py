@@ -14,6 +14,13 @@ from reflexio.server.services.storage.storage_base import BaseStorage
 
 logger = logging.getLogger(__name__)
 
+_CONFIG_NAME_ALIASES = {
+    "batch_size": "window_size",
+    "batch_interval": "stride_size",
+    "extraction_window_size": "window_size",
+    "extraction_window_stride": "stride_size",
+}
+
 
 class BaseConfigurator(ABC):
     """Abstract base for organization configurators.
@@ -81,7 +88,8 @@ class BaseConfigurator(ABC):
         config_name: str,
         config_value: str | int | float | bool | list | dict | BaseModel,
     ) -> None:
-        if config_name not in self.config.model_fields:
+        config_name = _CONFIG_NAME_ALIASES.get(config_name, config_name)
+        if config_name not in type(self.config).model_fields:
             raise ValueError(f"Invalid config name: {config_name}")
 
         setattr(self.config, config_name, config_value)

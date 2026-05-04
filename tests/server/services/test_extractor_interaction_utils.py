@@ -20,7 +20,7 @@ from reflexio.server.services.extractor_interaction_utils import (
     get_effective_source_filter,
     get_extractor_window_params,
     iter_sliding_windows,
-    should_extractor_run_by_batch_interval,
+    should_extractor_run_by_stride,
 )
 
 # ===============================
@@ -33,8 +33,8 @@ class MockExtractorConfig:
     """Mock extractor config for testing."""
 
     extractor_name: str
-    batch_size_override: int | None = None
-    batch_interval_override: int | None = None
+    window_size_override: int | None = None
+    stride_size_override: int | None = None
     request_sources_enabled: list[str] | None = None
 
 
@@ -43,8 +43,8 @@ class MockPlaybookConfig:
     """Mock playbook config with playbook_name."""
 
     playbook_name: str
-    batch_size: int | None = None
-    batch_interval: int | None = None
+    window_size: int | None = None
+    stride_size: int | None = None
     request_sources_enabled: list[str] | None = None
 
 
@@ -60,14 +60,14 @@ class TestGetExtractorWindowParams:
         """Test that extractor-level overrides take precedence over globals."""
         config = MockExtractorConfig(
             extractor_name="test",
-            batch_size_override=50,
-            batch_interval_override=10,
+            window_size_override=50,
+            stride_size_override=10,
         )
 
         window, stride = get_extractor_window_params(
             config,
-            global_batch_size=100,
-            global_batch_interval=20,
+            global_window_size=100,
+            global_stride_size=20,
         )
 
         assert window == 50
@@ -79,8 +79,8 @@ class TestGetExtractorWindowParams:
 
         window, stride = get_extractor_window_params(
             config,
-            global_batch_size=100,
-            global_batch_interval=20,
+            global_window_size=100,
+            global_stride_size=20,
         )
 
         assert window == 100
@@ -90,13 +90,13 @@ class TestGetExtractorWindowParams:
         """Test partial override - only window size set on extractor."""
         config = MockExtractorConfig(
             extractor_name="test",
-            batch_size_override=50,
+            window_size_override=50,
         )
 
         window, stride = get_extractor_window_params(
             config,
-            global_batch_size=100,
-            global_batch_interval=20,
+            global_window_size=100,
+            global_stride_size=20,
         )
 
         assert window == 50
@@ -108,8 +108,8 @@ class TestGetExtractorWindowParams:
 
         window, stride = get_extractor_window_params(
             config,
-            global_batch_size=None,
-            global_batch_interval=None,
+            global_window_size=None,
+            global_stride_size=None,
         )
 
         assert window == 10
@@ -119,14 +119,14 @@ class TestGetExtractorWindowParams:
         """Test that zero values ARE respected (0 is a valid override value)."""
         config = MockExtractorConfig(
             extractor_name="test",
-            batch_size_override=0,
-            batch_interval_override=0,
+            window_size_override=0,
+            stride_size_override=0,
         )
 
         window, stride = get_extractor_window_params(
             config,
-            global_batch_size=100,
-            global_batch_interval=20,
+            global_window_size=100,
+            global_stride_size=20,
         )
 
         # 0 should be treated as a valid override value (not None)
@@ -222,59 +222,53 @@ class TestGetEffectiveSourceFilter:
 
 
 # ===============================
-# Test: should_extractor_run_by_batch_interval
+# Test: should_extractor_run_by_stride
 # ===============================
 
 
-class TestShouldExtractorRunByBatchInterval:
-    """Tests for batch_interval-based execution checking."""
+class TestShouldExtractorRunByStride:
+    """Tests for stride_size-based execution checking."""
 
-    def test_run_when_count_equals_batch_interval(self):
-        """Test that extractor runs when count equals batch_interval."""
-        result = should_extractor_run_by_batch_interval(
-            new_interaction_count=10, batch_interval_size=10
+    def test_run_when_count_equals_stride_size(self):
+        """Test that extractor runs when count equals stride_size."""
+        result = should_extractor_run_by_stride(
+            new_interaction_count=10, stride_size=10
         )
         assert result is True
 
-    def test_run_when_count_exceeds_batch_interval(self):
-        """Test that extractor runs when count exceeds batch_interval."""
-        result = should_extractor_run_by_batch_interval(
-            new_interaction_count=15, batch_interval_size=10
+    def test_run_when_count_exceeds_stride_size(self):
+        """Test that extractor runs when count exceeds stride_size."""
+        result = should_extractor_run_by_stride(
+            new_interaction_count=15, stride_size=10
         )
         assert result is True
 
-    def test_skip_when_count_below_batch_interval(self):
-        """Test that extractor skips when count is below batch_interval."""
-        result = should_extractor_run_by_batch_interval(
-            new_interaction_count=5, batch_interval_size=10
-        )
+    def test_skip_when_count_below_stride_size(self):
+        """Test that extractor skips when count is below stride_size."""
+        result = should_extractor_run_by_stride(new_interaction_count=5, stride_size=10)
         assert result is False
 
-    def test_run_when_batch_interval_is_none(self):
-        """Test that extractor always runs when batch_interval is None."""
-        result = should_extractor_run_by_batch_interval(
-            new_interaction_count=1, batch_interval_size=None
+    def test_run_when_stride_size_is_none(self):
+        """Test that extractor always runs when stride_size is None."""
+        result = should_extractor_run_by_stride(
+            new_interaction_count=1, stride_size=None
         )
         assert result is True
 
-    def test_run_when_batch_interval_is_zero(self):
-        """Test that extractor always runs when batch_interval is 0."""
-        result = should_extractor_run_by_batch_interval(
-            new_interaction_count=1, batch_interval_size=0
-        )
+    def test_run_when_stride_size_is_zero(self):
+        """Test that extractor always runs when stride_size is 0."""
+        result = should_extractor_run_by_stride(new_interaction_count=1, stride_size=0)
         assert result is True
 
     def test_skip_when_zero_interactions(self):
         """Test skip when there are no new interactions."""
-        result = should_extractor_run_by_batch_interval(
-            new_interaction_count=0, batch_interval_size=10
-        )
+        result = should_extractor_run_by_stride(new_interaction_count=0, stride_size=10)
         assert result is False
 
-    def test_skip_with_zero_interactions_even_without_batch_interval(self):
-        """Test that zero interactions skips even without batch_interval configured."""
-        result = should_extractor_run_by_batch_interval(
-            new_interaction_count=0, batch_interval_size=None
+    def test_skip_with_zero_interactions_even_without_stride_size(self):
+        """Test that zero interactions skips even without stride_size configured."""
+        result = should_extractor_run_by_stride(
+            new_interaction_count=0, stride_size=None
         )
         # No interactions means nothing to process - always skip
         assert result is False
@@ -315,15 +309,13 @@ class TestIterSlidingWindows:
 
     def test_empty_list_yields_nothing(self):
         """Test that empty input yields nothing."""
-        windows = list(iter_sliding_windows([], batch_size=10, batch_interval_size=5))
+        windows = list(iter_sliding_windows([], window_size=10, stride_size=5))
         assert windows == []
 
     def test_single_model_fits_in_window(self):
         """Test single model that fits in window yields one window."""
         models = [_create_mock_request_interaction_model(5)]
-        windows = list(
-            iter_sliding_windows(models, batch_size=10, batch_interval_size=5)
-        )
+        windows = list(iter_sliding_windows(models, window_size=10, stride_size=5))
 
         assert len(windows) == 1
         assert windows[0][0] == 0  # window index
@@ -335,9 +327,7 @@ class TestIterSlidingWindows:
             _create_mock_request_interaction_model(3),
             _create_mock_request_interaction_model(4),
         ]
-        windows = list(
-            iter_sliding_windows(models, batch_size=10, batch_interval_size=5)
-        )
+        windows = list(iter_sliding_windows(models, window_size=10, stride_size=5))
 
         assert len(windows) == 1
         assert windows[0][0] == 0
@@ -347,7 +337,7 @@ class TestIterSlidingWindows:
         """Test basic sliding window with multiple windows needed."""
         # 3 models with 10 interactions each = 30 total
         # Model boundaries: [0-9], [10-19], [20-29]
-        # batch_size=15, stride=10 should yield 3 windows:
+        # window_size=15, stride=10 should yield 3 windows:
         # Window 0: covers [0-14] → models[0] and models[1] (overlaps both)
         # Window 1: covers [10-24] → models[1] and models[2] (model[0] ends at 10, exclusive)
         # Window 2: covers [20-34] → models[2] only (model[1] ends at 20, exclusive)
@@ -356,9 +346,7 @@ class TestIterSlidingWindows:
             _create_mock_request_interaction_model(10),
             _create_mock_request_interaction_model(10),
         ]
-        windows = list(
-            iter_sliding_windows(models, batch_size=15, batch_interval_size=10)
-        )
+        windows = list(iter_sliding_windows(models, window_size=15, stride_size=10))
 
         assert len(windows) == 3
         # Window 0: covers [0-14], includes models[0] and models[1]
@@ -378,9 +366,7 @@ class TestIterSlidingWindows:
             _create_mock_request_interaction_model(10),
             _create_mock_request_interaction_model(10),
         ]
-        windows = list(
-            iter_sliding_windows(models, batch_size=10, batch_interval_size=10)
-        )
+        windows = list(iter_sliding_windows(models, window_size=10, stride_size=10))
 
         assert len(windows) == 3
         # Each window should contain exactly one model
@@ -395,10 +381,8 @@ class TestIterSlidingWindows:
             _create_mock_request_interaction_model(10),
             _create_mock_request_interaction_model(10),
         ]
-        # batch_size=5, stride=15 means windows at positions 0-4, 15-19
-        windows = list(
-            iter_sliding_windows(models, batch_size=5, batch_interval_size=15)
-        )
+        # window_size=5, stride=15 means windows at positions 0-4, 15-19
+        windows = list(iter_sliding_windows(models, window_size=5, stride_size=15))
 
         assert len(windows) == 2
         # Window 0: covers 0-4, only models[0]
@@ -409,11 +393,9 @@ class TestIterSlidingWindows:
         assert len(windows[1][1]) == 1
 
     def test_invalid_window_size_zero(self):
-        """Test that batch_size=0 yields single window with all data."""
+        """Test that window_size=0 yields single window with all data."""
         models = [_create_mock_request_interaction_model(10)]
-        windows = list(
-            iter_sliding_windows(models, batch_size=0, batch_interval_size=5)
-        )
+        windows = list(iter_sliding_windows(models, window_size=0, stride_size=5))
 
         assert len(windows) == 1
         assert windows[0][1] == models
@@ -421,9 +403,7 @@ class TestIterSlidingWindows:
     def test_invalid_window_size_negative(self):
         """Test that negative window_size yields single window with all data."""
         models = [_create_mock_request_interaction_model(10)]
-        windows = list(
-            iter_sliding_windows(models, batch_size=-5, batch_interval_size=5)
-        )
+        windows = list(iter_sliding_windows(models, window_size=-5, stride_size=5))
 
         assert len(windows) == 1
         assert windows[0][1] == models
@@ -434,10 +414,8 @@ class TestIterSlidingWindows:
             _create_mock_request_interaction_model(10),
             _create_mock_request_interaction_model(10),
         ]
-        # stride=0 should default to batch_size=10, yielding 2 non-overlapping windows
-        windows = list(
-            iter_sliding_windows(models, batch_size=10, batch_interval_size=0)
-        )
+        # stride=0 should default to window_size=10, yielding 2 non-overlapping windows
+        windows = list(iter_sliding_windows(models, window_size=10, stride_size=0))
 
         assert len(windows) == 2
 
@@ -447,10 +425,8 @@ class TestIterSlidingWindows:
             _create_mock_request_interaction_model(10),
             _create_mock_request_interaction_model(10),
         ]
-        # stride=None should default to batch_size=10
-        windows = list(
-            iter_sliding_windows(models, batch_size=10, batch_interval_size=None)
-        )
+        # stride=None should default to window_size=10
+        windows = list(iter_sliding_windows(models, window_size=10, stride_size=None))
 
         assert len(windows) == 2
 
@@ -463,10 +439,8 @@ class TestIterSlidingWindows:
             _create_mock_request_interaction_model(5),  # interactions 25-29
         ]
         # Total: 30 interactions
-        # batch_size=15, stride=10
-        windows = list(
-            iter_sliding_windows(models, batch_size=15, batch_interval_size=10)
-        )
+        # window_size=15, stride=10
+        windows = list(iter_sliding_windows(models, window_size=15, stride_size=10))
 
         assert len(windows) == 3
         # Window 0: covers [0-14], models[0] (0-4) and models[1] (5-24) overlap
@@ -484,9 +458,7 @@ class TestIterSlidingWindows:
             _create_mock_request_interaction_model(5),
             _create_mock_request_interaction_model(5),
         ]
-        windows = list(
-            iter_sliding_windows(models, batch_size=10, batch_interval_size=5)
-        )
+        windows = list(iter_sliding_windows(models, window_size=10, stride_size=5))
 
         # First window should have models[0] and models[1] in order
         assert windows[0][1][0] is models[0]
@@ -500,9 +472,7 @@ class TestIterSlidingWindows:
             _create_mock_request_interaction_model(10),
         ]
         # Total: 20 interactions, empty model at position 10
-        windows = list(
-            iter_sliding_windows(models, batch_size=15, batch_interval_size=10)
-        )
+        windows = list(iter_sliding_windows(models, window_size=15, stride_size=10))
 
         assert len(windows) == 2
 
@@ -512,18 +482,14 @@ class TestIterSlidingWindows:
             _create_mock_request_interaction_model(0),
             _create_mock_request_interaction_model(0),
         ]
-        windows = list(
-            iter_sliding_windows(models, batch_size=10, batch_interval_size=5)
-        )
+        windows = list(iter_sliding_windows(models, window_size=10, stride_size=5))
 
         assert windows == []
 
     def test_window_indices_are_sequential(self):
         """Test that window indices are sequential starting from 0."""
         models = [_create_mock_request_interaction_model(10) for _ in range(5)]
-        windows = list(
-            iter_sliding_windows(models, batch_size=10, batch_interval_size=10)
-        )
+        windows = list(iter_sliding_windows(models, window_size=10, stride_size=10))
 
         indices = [w[0] for w in windows]
         assert indices == list(range(5))

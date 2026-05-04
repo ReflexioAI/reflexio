@@ -198,9 +198,9 @@ class PlaybookGenerationRequest(BaseModel):
     rerun_end_time: int | None = None  # Unix timestamp for rerun flows
     playbook_name: str | None = None  # Filter to run only specific extractor
     auto_run: bool = (
-        True  # True for regular flow (checks batch_interval), False for rerun/manual
+        True  # True for regular flow (checks stride_size), False for rerun/manual
     )
-    force_extraction: bool = False  # when True, bypass all extraction gates (batch_interval, cheap pre-filter, LLM should_run)
+    force_extraction: bool = False  # when True, bypass all extraction gates (stride_size, cheap pre-filter, LLM should_run)
 
 
 class PlaybookAggregatorRequest(BaseModel):

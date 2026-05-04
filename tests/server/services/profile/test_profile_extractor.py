@@ -194,8 +194,8 @@ class TestOperationStateKey:
 class TestGetInteractions:
     """Tests for interaction collection logic.
 
-    Note: Batch interval checking is handled upstream by BaseGenerationService._filter_configs_by_batch_interval()
-    before the extractor is created, so batch_interval tests are at the service level.
+    Note: Stride checking is handled upstream by BaseGenerationService._filter_configs_by_stride()
+    before the extractor is created, so stride_size tests are at the service level.
     """
 
     def test_returns_interactions(
@@ -241,7 +241,7 @@ class TestGetInteractions:
         config = ProfileExtractorConfig(
             extractor_name="test_extractor",
             extraction_definition_prompt="Extract user preferences",
-            batch_size_override=50,
+            window_size_override=50,
         )
 
         # Mock storage

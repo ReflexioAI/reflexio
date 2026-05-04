@@ -25,7 +25,7 @@ from reflexio.server.services.extractor_config_utils import (
 from reflexio.server.services.extractor_interaction_utils import (
     get_effective_source_filter,
     get_extractor_window_params,
-    should_extractor_run_by_batch_interval,
+    should_extractor_run_by_stride,
 )
 from reflexio.server.services.operation_state_utils import OperationStateManager
 from reflexio.server.services.service_utils import log_llm_messages, log_model_response
@@ -326,35 +326,35 @@ class BaseGenerationService(
 
     def _get_extractor_state_service_name(self) -> str | None:
         """
-        Get the service name used for extractor state (batch_interval bookmark) lookups.
+        Get the service name used for extractor state (stride_size bookmark) lookups.
 
-        Override in subclasses that support batch_interval-based pre-filtering to return
+        Override in subclasses that support stride_size-based pre-filtering to return
         the OperationStateManager service name (e.g., "profile_extractor", "playbook_extractor").
-        Returns None by default, meaning batch_interval pre-filtering is skipped.
+        Returns None by default, meaning stride_size pre-filtering is skipped.
 
         Returns:
-            Optional[str]: Service name for OperationStateManager, or None to skip batch_interval pre-filtering
+            Optional[str]: Service name for OperationStateManager, or None to skip stride_size pre-filtering
         """
         return None
 
-    def _filter_configs_by_batch_interval(
+    def _filter_configs_by_stride(
         self, extractor_configs: list[TExtractorConfig]
     ) -> list[TExtractorConfig]:
         """
-        Filter extractor configs by batch_interval check before the should_run LLM call.
+        Filter extractor configs by stride_size check before the should_run LLM call.
 
         Skips filtering when:
-        - _get_extractor_state_service_name() returns None (service doesn't support batch_interval)
-        - auto_run is False (rerun/manual flows skip batch_interval)
+        - _get_extractor_state_service_name() returns None (service doesn't support stride_size)
+        - auto_run is False (rerun/manual flows skip stride_size)
 
-        For each config, resolves batch_size/batch_interval params and checks if enough new
-        interactions exist since the last run. Only configs that pass batch_interval are returned.
+        For each config, resolves window_size/stride_size params and checks if enough new
+        interactions exist since the last run. Only configs that pass stride_size are returned.
 
         Args:
             extractor_configs: List of extractor configs after source/manual_trigger filtering
 
         Returns:
-            List of extractor configs that pass the batch_interval check
+            List of extractor configs that pass the stride_size check
         """
         state_service_name = self._get_extractor_state_service_name()
         if state_service_name is None:
@@ -367,11 +367,11 @@ class BaseGenerationService(
             return extractor_configs
 
         root_config = self.request_context.configurator.get_config()
-        global_batch_size = (
-            getattr(root_config, "batch_size", None) if root_config else None
+        global_window_size = (
+            getattr(root_config, "window_size", None) if root_config else None
         )
-        global_batch_interval = (
-            getattr(root_config, "batch_interval", None) if root_config else None
+        global_stride_size = (
+            getattr(root_config, "stride_size", None) if root_config else None
         )
 
         state_manager = OperationStateManager(
@@ -383,8 +383,8 @@ class BaseGenerationService(
         passing_configs: list[TExtractorConfig] = []
         for config in extractor_configs:
             name = get_extractor_name(config)
-            _, batch_interval_size = get_extractor_window_params(
-                config, global_batch_size, global_batch_interval
+            _, stride_size = get_extractor_window_params(
+                config, global_window_size, global_stride_size
             )
 
             # Resolve effective source filter for this extractor
@@ -404,14 +404,14 @@ class BaseGenerationService(
             )
             new_count = sum(len(ri.interactions) for ri in new_interactions)
 
-            if should_extractor_run_by_batch_interval(new_count, batch_interval_size):
+            if should_extractor_run_by_stride(new_count, stride_size):
                 passing_configs.append(config)
             else:
                 logger.info(
-                    "Batch interval pre-filter: skipping extractor '%s' (new=%d, batch_interval=%s)",
+                    "Stride pre-filter: skipping extractor '%s' (new=%d, stride_size=%s)",
                     name,
                     new_count,
-                    batch_interval_size,
+                    stride_size,
                 )
 
         return passing_configs
@@ -542,7 +542,7 @@ class BaseGenerationService(
         Validate request, load config, filter extractor configs, and run pre-extraction checks.
 
         Loads the generation service config from the request, loads and filters extractor
-        configs by source, manual trigger, and batch_interval, then runs the pre-extraction gate.
+        configs by source, manual trigger, and stride_size, then runs the pre-extraction gate.
 
         Args:
             request: The request object containing parameters
@@ -573,10 +573,10 @@ class BaseGenerationService(
             )
             return None, ""
 
-        extractor_configs = self._filter_configs_by_batch_interval(extractor_configs)
+        extractor_configs = self._filter_configs_by_stride(extractor_configs)
         if not extractor_configs:
             logger.info(
-                "No extractor configs passed batch_interval check for %s",
+                "No extractor configs passed stride_size check for %s",
                 self._get_service_name(),
             )
             return None, ""
@@ -849,11 +849,11 @@ class BaseGenerationService(
             tuple: (deduplicated session data models, extractor configs that had scoped interactions)
         """
         root_config = self.request_context.configurator.get_config()
-        global_batch_size = (
-            getattr(root_config, "batch_size", None) if root_config else None
+        global_window_size = (
+            getattr(root_config, "window_size", None) if root_config else None
         )
-        global_batch_interval = (
-            getattr(root_config, "batch_interval", None) if root_config else None
+        global_stride_size = (
+            getattr(root_config, "stride_size", None) if root_config else None
         )
 
         deduped_sessions: dict[str, RequestInteractionDataModel] = {}
@@ -867,10 +867,10 @@ class BaseGenerationService(
             if should_skip:
                 continue
 
-            batch_size, _ = get_extractor_window_params(
-                config, global_batch_size, global_batch_interval
+            window_size, _ = get_extractor_window_params(
+                config, global_window_size, global_stride_size
             )
-            fetch_k = batch_size
+            fetch_k = window_size
             session_data_models, _ = self.storage.get_last_k_interactions_grouped(  # type: ignore[reportOptionalMemberAccess]
                 user_id=getattr(self.service_config, "user_id", None),
                 k=fetch_k,
@@ -1048,7 +1048,7 @@ class BaseGenerationService(
 
         Override this method to enable rerun functionality for the service.
         Returns a list of user IDs that have interactions matching the request filters.
-        Each extractor collects its own data using its configured batch_size.
+        Each extractor collects its own data using its configured window_size.
 
         Args:
             request: The rerun request object
@@ -1075,7 +1075,7 @@ class BaseGenerationService(
         """Create the request object to pass to self.run() for a single user.
 
         Override this method to enable rerun functionality for the service.
-        Each extractor collects its own data using its configured batch_size.
+        Each extractor collects its own data using its configured window_size.
 
         Args:
             user_id: The user ID to process

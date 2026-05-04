@@ -56,7 +56,7 @@ class ProfileGenerationServiceConfig:
         extractor_names: Optional list of extractor names to filter which extractors run
         rerun_start_time: Optional start time filter for rerun flows (Unix timestamp)
         rerun_end_time: Optional end time filter for rerun flows (Unix timestamp)
-        auto_run: True for regular flow (checks batch_interval), False for rerun/manual (skips batch_interval)
+        auto_run: True for regular flow (checks stride_size), False for rerun/manual (skips stride_size)
     """
 
     user_id: str
@@ -334,10 +334,10 @@ class ProfileGenerationService(
 
     def _get_extractor_state_service_name(self) -> str:
         """
-        Get the service name for batch_interval bookmark lookups.
+        Get the service name for stride_size bookmark lookups.
 
         Returns:
-            str: "profile_extractor" for OperationStateManager batch_interval checks
+            str: "profile_extractor" for OperationStateManager stride_size checks
         """
         return "profile_extractor"
 
@@ -649,10 +649,10 @@ class ProfileGenerationService(
         Run profile generation with window-sized interactions and CURRENT output.
 
         This is a manual trigger that behaves like regular generation
-        (uses batch_size, outputs CURRENT profiles) but only runs
+        (uses window_size, outputs CURRENT profiles) but only runs
         profile extraction (not feedback or agent success).
 
-        Each extractor collects its own data using its configured batch_size.
+        Each extractor collects its own data using its configured window_size.
         Uses progress tracking via OperationStateManager.
 
         Args:

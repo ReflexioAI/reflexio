@@ -58,8 +58,8 @@ export interface ProfileExtractorConfig {
   context_prompt: string | null;
   metadata_definition_prompt: string | null;
   manual_trigger: boolean;
-  batch_size_override: number | null;
-  batch_interval_override: number | null;
+  window_size_override: number | null;
+  stride_size_override: number | null;
 }
 
 export interface PlaybookAggregatorConfig {
@@ -81,8 +81,8 @@ export interface UserPlaybookExtractorConfig {
   metadata_definition_prompt: string | null;
   aggregation_config: PlaybookAggregatorConfig | null;
   deduplication_config: DeduplicationConfig | null;
-  batch_size_override: number | null;
-  batch_interval_override: number | null;
+  window_size_override: number | null;
+  stride_size_override: number | null;
 }
 
 export interface AgentSuccessConfig {
@@ -90,8 +90,8 @@ export interface AgentSuccessConfig {
   success_definition_prompt: string;
   metadata_definition_prompt: string | null;
   sampling_rate: number;
-  batch_size_override: number | null;
-  batch_interval_override: number | null;
+  window_size_override: number | null;
+  stride_size_override: number | null;
 }
 
 export interface ToolUseConfig {
@@ -107,14 +107,14 @@ export interface ReflexioConfig {
   user_playbook_extractor_configs: UserPlaybookExtractorConfig[] | null;
   agent_success_configs: AgentSuccessConfig[] | null;
   extraction_preset: ExtractionPreset | null;
-  batch_size: number;
-  batch_interval: number;
+  window_size: number;
+  stride_size: number;
   api_key_config: APIKeyConfig | null;
   llm_config: LLMConfig | null;
   enable_document_expansion: boolean;
 }
 
-// Preset → (batch_size, batch_interval). Mirrors _PRESET_VALUES in
+// Preset → (window_size, stride_size). Mirrors _PRESET_VALUES in
 // config_schema.py so the UI can preview what a preset will set.
 export const PRESET_VALUES: Record<ExtractionPreset, [number, number]> = {
   quick_chat: [5, 3],
@@ -139,8 +139,8 @@ export function defaultConfig(): ReflexioConfig {
     user_playbook_extractor_configs: [],
     agent_success_configs: null,
     extraction_preset: null,
-    batch_size: 10,
-    batch_interval: 5,
+    window_size: 10,
+    stride_size: 5,
     api_key_config: null,
     llm_config: null,
     enable_document_expansion: false,
@@ -154,8 +154,8 @@ export function defaultProfileExtractor(): ProfileExtractorConfig {
     context_prompt: null,
     metadata_definition_prompt: null,
     manual_trigger: false,
-    batch_size_override: null,
-    batch_interval_override: null,
+    window_size_override: null,
+    stride_size_override: null,
   };
 }
 
@@ -167,8 +167,8 @@ export function defaultPlaybookExtractor(): UserPlaybookExtractorConfig {
     metadata_definition_prompt: null,
     aggregation_config: null,
     deduplication_config: null,
-    batch_size_override: null,
-    batch_interval_override: null,
+    window_size_override: null,
+    stride_size_override: null,
   };
 }
 
@@ -178,8 +178,8 @@ export function defaultAgentSuccess(): AgentSuccessConfig {
     success_definition_prompt: "",
     metadata_definition_prompt: null,
     sampling_rate: 1.0,
-    batch_size_override: null,
-    batch_interval_override: null,
+    window_size_override: null,
+    stride_size_override: null,
   };
 }
 
@@ -264,8 +264,8 @@ export function serializeConfig(config: ReflexioConfig): unknown {
       ? config.agent_success_configs
       : null,
     extraction_preset: config.extraction_preset,
-    batch_size: config.batch_size,
-    batch_interval: config.batch_interval,
+    window_size: config.window_size,
+    stride_size: config.stride_size,
     api_key_config: cleanApiKeys(config.api_key_config),
     llm_config: cleanLlm(config.llm_config),
     enable_document_expansion: config.enable_document_expansion,

@@ -430,13 +430,13 @@ def reflexio_instance_manual_profile(
     """Create an Reflexio instance with manual profile generation config.
 
     This config has:
-    - batch_size set (required for manual generation)
+    - window_size set (required for manual generation)
     - allow_manual_trigger=True on the extractor
     """
     config = Config(
         storage_config=sqlite_storage_config,
         agent_context_prompt="this is a sales agent",
-        batch_size=10,  # Required for manual generation
+        window_size=10,  # Required for manual generation
         profile_extractor_configs=[
             ProfileExtractorConfig(
                 extractor_name="manual_trigger_extractor",
@@ -472,13 +472,13 @@ def reflexio_instance_manual_playbook(
     """Create an Reflexio instance with manual playbook generation config.
 
     This config has:
-    - batch_size set (required for manual generation)
+    - window_size set (required for manual generation)
     - allow_manual_trigger=True on the extractor
     """
     config = Config(
         storage_config=sqlite_storage_config,
         agent_context_prompt="this is a sales agent",
-        batch_size=10,  # Required for manual generation
+        window_size=10,  # Required for manual generation
         user_playbook_extractor_configs=[
             PlaybookConfig(
                 extractor_name="manual_trigger_playbook",
@@ -516,7 +516,7 @@ def reflexio_instance_multiple_profile_extractors(
     config = Config(
         storage_config=sqlite_storage_config,
         agent_context_prompt="this is a sales agent",
-        batch_size=20,
+        window_size=20,
         profile_extractor_configs=[
             ProfileExtractorConfig(
                 extractor_name="extractor_basic_info",
@@ -566,7 +566,7 @@ def reflexio_instance_multiple_playbook_extractors(
     config = Config(
         storage_config=sqlite_storage_config,
         agent_context_prompt="this is a sales agent",
-        batch_size=20,
+        window_size=20,
         user_playbook_extractor_configs=[
             PlaybookConfig(
                 extractor_name="api_only_playbook",
