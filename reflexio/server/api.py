@@ -1373,8 +1373,10 @@ def manual_profile_generation_endpoint(
 ) -> ManualProfileGenerationResponse:
     """Manually trigger profile generation with window-sized interactions and CURRENT output.
 
-    This behaves like regular generation (uses window_size from config,
-    outputs CURRENT profiles) but only runs profile extraction.
+    Runs with auto_run=False, which bypasses the regular stride/should_run
+    gates. Only profile extraction is triggered. Each extractor uses its own
+    window_size_override when present, falling back to the global window_size.
+    Output is CURRENT profiles only.
 
     Args:
         request (Request): The HTTP request object (for rate limiting)
@@ -1439,8 +1441,10 @@ def manual_playbook_generation_endpoint(
 ) -> ManualPlaybookGenerationResponse:
     """Manually trigger playbook generation with window-sized interactions and CURRENT output.
 
-    This behaves like regular generation (uses window_size from config,
-    outputs CURRENT playbooks) but only runs playbook extraction.
+    Runs with auto_run=False, which bypasses the regular stride/should_run
+    gates. Only playbook extraction is triggered. Each extractor uses its own
+    window_size_override when present, falling back to the global window_size.
+    Output is CURRENT playbooks only.
 
     Args:
         request (Request): The HTTP request object (for rate limiting)

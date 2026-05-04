@@ -237,7 +237,7 @@ class TestOpenClawMultiUser:
         all_interactions = storage.get_all_interactions()
         assert len(all_interactions) == len(alpha_turns) + len(beta_turns)
 
-        # Seed user playbooks directly (bypassing extraction batch gate)
+        # Seed user playbooks directly (bypassing extraction stride gate)
         # to verify playbook scoping by user_id
         from reflexio.models.api_schema.service_schemas import UserPlaybook
 
@@ -286,7 +286,7 @@ class TestOpenClawMultiUser:
     ) -> None:
         """Profiles stored for one user_id are not visible to another.
 
-        Seeds profiles directly (bypassing extraction batch gate) and verifies
+        Seeds profiles directly (bypassing extraction stride gate) and verifies
         that get_user_profile scopes correctly by user_id.
         """
         instance = openclaw_profile_instance
@@ -339,7 +339,7 @@ class TestAgentPlaybookAggregation:
         instance = openclaw_playbook_instance
         storage = instance.request_context.storage
 
-        # Seed user playbooks directly (bypassing extraction batch gate)
+        # Seed user playbooks directly (bypassing extraction stride gate)
         # to test aggregation scoping across multiple users
         from reflexio.models.api_schema.service_schemas import UserPlaybook
 
