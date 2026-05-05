@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import os
+from typing import Any, cast
 
 from reflexio.lib._storage_labels import describe_storage
 from reflexio.models.api_schema.service_schemas import (
@@ -113,9 +114,8 @@ def my_config(org_id: str) -> MyConfigResponse:
             message=_GENERIC_STORAGE_LOAD_FAILURE,
         )
 
-    storage_config = (
-        reflexio.request_context.configurator.get_current_storage_configuration()
-    )
+    configurator = reflexio.request_context.configurator
+    storage_config = configurator.get_current_storage_configuration()
     if storage_config is None:
         return MyConfigResponse(
             success=False,
@@ -131,8 +131,13 @@ def my_config(org_id: str) -> MyConfigResponse:
         org_id,
         storage_type,
     )
+    storage_config_payload: dict[str, Any] = storage_config.model_dump()
+    redact = getattr(configurator, "redact_storage_config_for_response", None)
+    if callable(redact):
+        storage_config_payload = cast(dict[str, Any], redact(storage_config))
+
     return MyConfigResponse(
         success=True,
-        storage_config=storage_config.model_dump(),
+        storage_config=storage_config_payload,
         storage_type=storage_type,
     )

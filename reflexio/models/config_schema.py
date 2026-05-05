@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from enum import IntEnum, StrEnum
 from typing import Any, Literal, Self
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .api_schema.validators import (
     NonEmptyStr,
@@ -161,9 +161,19 @@ class StorageConfigSQLite(BaseModel):
 
 
 class StorageConfigSupabase(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, serialize_by_alias=True)
+
     url: NonEmptyStr
     key: NonEmptyStr
     db_url: NonEmptyStr
+    schema_name: str | None = Field(default=None, alias="schema")
+
+
+class StorageConfigManagedSupabase(BaseModel):
+    """Redacted API response for platform-managed Supabase storage."""
+
+    managed_by: Literal["platform"]
+    schema_present: bool = True
 
 
 class StorageConfigDisk(BaseModel):
@@ -173,7 +183,13 @@ class StorageConfigDisk(BaseModel):
     qmd_binary: str = "qmd"
 
 
-StorageConfig = StorageConfigSQLite | StorageConfigSupabase | StorageConfigDisk | None
+StorageConfig = (
+    StorageConfigSQLite
+    | StorageConfigSupabase
+    | StorageConfigManagedSupabase
+    | StorageConfigDisk
+    | None
+)
 
 
 class AzureOpenAIConfig(BaseModel):

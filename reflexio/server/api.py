@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from collections.abc import Callable
+from typing import Any
 
 from fastapi import (
     APIRouter,
@@ -120,7 +121,6 @@ from reflexio.models.api_schema.ui.converters import (
     to_profile_view,
     to_user_playbook_view,
 )
-from reflexio.models.config_schema import Config
 from reflexio.server.api_endpoints import account_api, publisher_api, retriever_api
 from reflexio.server.cache.reflexio_cache import (
     get_reflexio,
@@ -1088,7 +1088,7 @@ def run_playbook_aggregation(
 
 @core_router.post("/api/set_config")
 def set_config(
-    config: Config,
+    config: dict[str, Any],
     org_id: str = Depends(default_get_org_id),
 ) -> SetConfigResponse:
     """Set configuration for the organization.
@@ -1113,10 +1113,10 @@ def set_config(
     return response
 
 
-@core_router.get("/api/get_config", response_model=Config)
+@core_router.get("/api/get_config")
 def get_config(
     org_id: str = Depends(default_get_org_id),
-) -> Config:
+) -> dict[str, Any]:
     """Get configuration for the organization.
 
     Args:
@@ -1128,8 +1128,7 @@ def get_config(
     # Create Reflexio instance to access the configurator through request_context
     reflexio = get_reflexio(org_id=org_id)
 
-    # Get the config using Reflexio's get_config method
-    return reflexio.get_config()
+    return reflexio.request_context.configurator.get_config_for_response()
 
 
 @core_router.post(

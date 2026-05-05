@@ -73,6 +73,14 @@ class BaseConfigurator(ABC):
     def get_config(self) -> Config:
         return self.config
 
+    def get_config_for_response(self) -> dict[str, Any]:
+        """Return config serialized for API responses."""
+        return self.config.model_dump(mode="json")
+
+    def normalize_config_payload(self, config: dict[str, Any]) -> dict[str, Any]:
+        """Normalize raw API config payloads before Pydantic validation."""
+        return config
+
     def get_agent_context(self) -> str:
         context = self.get_config().agent_context_prompt
         if not context:
