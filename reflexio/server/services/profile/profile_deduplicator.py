@@ -79,7 +79,6 @@ class ProfileDuplicateGroup(BaseModel):
         item_ids: List of item IDs matching prompt format (e.g., 'NEW-0', 'EXISTING-1')
         merged_content: The consolidated profile content combining information from all duplicates
         merged_time_to_live: The chosen time_to_live for the merged profile
-        reasoning: Brief explanation of why these profiles are duplicates and how they were merged
     """
 
     item_ids: list[str] = Field(
@@ -91,7 +90,6 @@ class ProfileDuplicateGroup(BaseModel):
     merged_time_to_live: str = Field(
         description="Time to live for merged profile: one_day, one_week, one_month, one_quarter, one_year, infinity"
     )
-    reasoning: str = Field(description="Brief explanation of the merge decision")
 
     model_config = ConfigDict(
         extra="allow",

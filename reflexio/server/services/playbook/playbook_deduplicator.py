@@ -45,7 +45,6 @@ class PlaybookDeduplicationDuplicateGroup(BaseModel):
     merged_content: StructuredPlaybookContent = Field(
         description="Consolidated playbook entry in structured format (trigger, rationale, blocking_issue)"
     )
-    reasoning: str = Field(description="Brief explanation of the merge decision")
 
     model_config = ConfigDict(
         extra="allow",

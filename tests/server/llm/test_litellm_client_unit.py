@@ -1036,6 +1036,26 @@ class TestMaybeParseStructuredOutput:
         assert isinstance(result, SampleResponse)
         assert result.answer == "ok"
 
+    def test_complete_malformed_json_repaired(self, client):
+        """Complete JSON-shaped output with minor syntax errors is repaired."""
+        content = '{"answer": "ok" "score": 5}'
+        result = client._maybe_parse_structured_output(content, SampleResponse, True)
+        assert isinstance(result, SampleResponse)
+        assert result.answer == "ok"
+        assert result.score == 5
+
+    def test_truncated_json_not_repaired(self, client):
+        """Incomplete JSON raises so the structured-output retry loop can retry."""
+        content = '{"answer": "ok", "score": 5'
+        with pytest.raises(StructuredOutputParseError):
+            client._maybe_parse_structured_output(content, SampleResponse, True)
+
+    def test_prefixed_truncated_json_not_repaired(self, client):
+        """Truncation is detected even if the model prefixes the JSON with prose."""
+        content = 'Here is the result:\n{"answer": "ok", "score": 5'
+        with pytest.raises(StructuredOutputParseError):
+            client._maybe_parse_structured_output(content, SampleResponse, True)
+
     def test_unparseable_raises_structured_output_parse_error(self, client):
         with pytest.raises(StructuredOutputParseError):
             client._maybe_parse_structured_output(
@@ -1256,7 +1276,9 @@ class TestTemperatureRestriction:
         assert call_kwargs["temperature"] == 1.0
 
     @patch("reflexio.server.llm.litellm_client.litellm.completion")
-    def test_non_restricted_model_includes_temperature(self, mock_completion):
+    def test_non_restricted_model_defaults_to_deterministic_temperature(
+        self, mock_completion
+    ):
         mock_completion.return_value = _make_completion_response("ok")
         config = LiteLLMConfig(model="gpt-4o", temperature=0.3)
         client = LiteLLMClient(config)
@@ -1264,7 +1286,8 @@ class TestTemperatureRestriction:
         client.generate_response("hi")
 
         call_kwargs = mock_completion.call_args.kwargs
-        assert call_kwargs["temperature"] == 0.3
+        assert call_kwargs["seed"] == 42
+        assert call_kwargs["temperature"] == 0.0
 
 
 # ===================================================================

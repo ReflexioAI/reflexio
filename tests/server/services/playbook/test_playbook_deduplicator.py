@@ -270,7 +270,6 @@ class TestBuildDeduplicatedResults:
                     merged_content=StructuredPlaybookContent(
                         content="merged do", trigger="merged when"
                     ),
-                    reasoning="Same topic",
                 )
             ],
             unique_ids=[],
@@ -321,7 +320,6 @@ class TestBuildDeduplicatedResults:
                     merged_content=StructuredPlaybookContent(
                         content="merged", trigger="when merged"
                     ),
-                    reasoning="Duplicate",
                 )
             ],
             unique_ids=[],
@@ -396,7 +394,6 @@ class TestDeduplicateHappyPath:
                         merged_content=StructuredPlaybookContent(
                             content="do X", trigger="when Y"
                         ),
-                        reasoning="Same instruction",
                     )
                 ],
                 unique_ids=["NEW-2"],
@@ -471,7 +468,6 @@ class TestDeduplicateHappyPath:
                         merged_content=StructuredPlaybookContent(
                             content="do X", trigger="when Y"
                         ),
-                        reasoning="Same instruction as existing",
                     )
                 ],
                 unique_ids=[],
@@ -518,7 +514,6 @@ class TestBuildDeduplicatedResultsEdgeCases:
                     merged_content=StructuredPlaybookContent(
                         content="merged do", trigger="merged when"
                     ),
-                    reasoning="Existing-only group",
                 )
             ],
             unique_ids=[],
@@ -546,7 +541,6 @@ class TestBuildDeduplicatedResultsEdgeCases:
                     merged_content=StructuredPlaybookContent(
                         content="merged do", trigger="merged when"
                     ),
-                    reasoning="Bad index",
                 )
             ],
             unique_ids=[],
@@ -582,7 +576,6 @@ class TestBuildDeduplicatedResultsEdgeCases:
                     merged_content=StructuredPlaybookContent(
                         content="merged", trigger="merged condition"
                     ),
-                    reasoning="Combined",
                 )
             ],
             unique_ids=[],
@@ -614,7 +607,6 @@ class TestBuildDeduplicatedResultsEdgeCases:
                     merged_content=StructuredPlaybookContent(
                         content="merged", trigger="merged cond"
                     ),
-                    reasoning="Overlap IDs",
                 )
             ],
             unique_ids=[],

@@ -125,7 +125,6 @@ class TestPydanticModels:
             item_ids=["NEW-0", "NEW-1", "EXISTING-0"],
             merged_content="User prefers dark mode",
             merged_time_to_live="one_month",
-            reasoning="Both profiles are about dark mode preferences",
         )
         assert group.item_ids == ["NEW-0", "NEW-1", "EXISTING-0"]
         assert group.merged_content == "User prefers dark mode"
@@ -139,7 +138,6 @@ class TestPydanticModels:
             item_ids=["NEW-0"],
             merged_content="test",
             merged_time_to_live="one_day",
-            reasoning="test",
             extra_field="not allowed",
         )
         assert group.item_ids == ["NEW-0"]
@@ -155,7 +153,6 @@ class TestPydanticModels:
                     item_ids=["NEW-0", "NEW-1"],
                     merged_content="merged",
                     merged_time_to_live="one_week",
-                    reasoning="duplicates",
                 )
             ],
             unique_ids=["NEW-2", "NEW-3"],
@@ -227,7 +224,6 @@ class TestPydanticModels:
                     "item_ids": ["NEW-0", "NEW-1", "EXISTING-0"],
                     "merged_content": "test",
                     "merged_time_to_live": "one_day",
-                    "reasoning": "reason",
                 }
             ],
             "unique_ids": ["NEW-2"],
@@ -581,7 +577,6 @@ class TestBuildDeduplicatedResults:
                     item_ids=["NEW-0", "NEW-1"],
                     merged_content="User prefers dark mode in their IDE",
                     merged_time_to_live="one_month",
-                    reasoning="Both about dark mode preferences",
                 )
             ],
             unique_ids=["NEW-2"],
@@ -660,7 +655,6 @@ class TestBuildDeduplicatedResults:
                     item_ids=["NEW-0", "NEW-1"],
                     merged_content="merged content",
                     merged_time_to_live="invalid_ttl",
-                    reasoning="test",
                 )
             ],
             unique_ids=["NEW-2"],
@@ -701,7 +695,6 @@ class TestBuildDeduplicatedResults:
                     item_ids=["NEW-0", "NEW-1"],
                     merged_content="merged",
                     merged_time_to_live="one_week",
-                    reasoning="test",
                 )
             ],
             unique_ids=[],  # LLM forgot to mention index 2
@@ -745,7 +738,6 @@ class TestBuildDeduplicatedResults:
                     item_ids=["NEW-0", "EXISTING-0"],
                     merged_content="User prefers dark mode (updated)",
                     merged_time_to_live="one_month",
-                    reasoning="New profile supersedes existing",
                 )
             ],
             unique_ids=["NEW-1", "NEW-2"],
@@ -982,7 +974,6 @@ class TestDeduplicate:
                         item_ids=["NEW-0", "NEW-1"],
                         merged_content="User prefers dark mode",
                         merged_time_to_live="one_month",
-                        reasoning="Both about dark mode",
                     )
                 ],
                 unique_ids=["NEW-2"],
@@ -1032,7 +1023,6 @@ class TestDeduplicate:
                         item_ids=["NEW-0", "EXISTING-0"],
                         merged_content="User prefers dark mode (updated)",
                         merged_time_to_live="one_month",
-                        reasoning="New supersedes existing",
                     )
                 ],
                 unique_ids=["NEW-1", "NEW-2"],
@@ -1284,16 +1274,17 @@ class TestIntegration:
             ),
         ]
 
-        mock_llm_client.generate_chat_response.return_value = ProfileDeduplicationOutput(
-            duplicate_groups=[
-                ProfileDuplicateGroup(
-                    item_ids=["NEW-0", "NEW-1"],
-                    merged_content="User works in the financial services industry",
-                    merged_time_to_live="one_year",
-                    reasoning="Both profiles describe the user's industry as finance/financial services",
-                )
-            ],
-            unique_ids=["NEW-2"],
+        mock_llm_client.generate_chat_response.return_value = (
+            ProfileDeduplicationOutput(
+                duplicate_groups=[
+                    ProfileDuplicateGroup(
+                        item_ids=["NEW-0", "NEW-1"],
+                        merged_content="User works in the financial services industry",
+                        merged_time_to_live="one_year",
+                    )
+                ],
+                unique_ids=["NEW-2"],
+            )
         )
 
         deduplicator = ProfileDeduplicator(

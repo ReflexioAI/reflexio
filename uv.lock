@@ -2094,6 +2094,15 @@ wheels = [
 ]
 
 [[package]]
+name = "json-repair"
+version = "0.59.5"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/b7/67/eba7fad54ff6f5cce6db4e01f596fc68156b5c7e864af0aa07ad48e880a1/json_repair-0.59.5.tar.gz", hash = "sha256:bb886ee054e99066be8a337b67a986b6a50d79be9a5ad37ae81966e698990784", size = 48632, upload-time = "2026-04-24T11:41:38.133Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/3e/aa/0529dee460b745b93f6abc97b56b7527314c5167ba29ab7a5bd5c08de01f/json_repair-0.59.5-py3-none-any.whl", hash = "sha256:6869965bd1cc1aaaa04dc85865c26fbb76d9a2d83a20010f5eae2563b1567827", size = 47282, upload-time = "2026-04-24T11:41:36.653Z" },
+]
+
+[[package]]
 name = "json5"
 version = "0.14.0"
 source = { registry = "https://pypi.org/simple" }
@@ -5069,6 +5078,7 @@ dependencies = [
     { name = "fastapi" },
     { name = "hdbscan" },
     { name = "httpx" },
+    { name = "json-repair" },
     { name = "litellm" },
     { name = "nltk" },
     { name = "openai" },
@@ -5159,6 +5169,7 @@ requires-dist = [
     { name = "fpdf2", marker = "extra == 'benchmark'", specifier = ">=2.8.7" },
     { name = "hdbscan", specifier = ">=0.8.40" },
     { name = "httpx", specifier = ">=0.28.1" },
+    { name = "json-repair", specifier = ">=0.30.0" },
     { name = "langchain-core", marker = "extra == 'langchain'", specifier = ">=1.2.28" },
     { name = "litellm", specifier = ">=1.80.11" },
     { name = "markdown", marker = "extra == 'benchmark'", specifier = ">=3.10.2" },

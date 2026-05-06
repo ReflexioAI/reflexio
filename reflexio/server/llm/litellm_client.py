@@ -1203,15 +1203,32 @@ class LiteLLMClient:
                 sanitized = self._sanitize_json_string(json_str)
                 parsed = json.loads(sanitized)
                 return response_format.model_validate(parsed)
-            except Exception as e:
-                model = self.config.model
-                snippet = (
-                    content[:200] if isinstance(content, str) else repr(content)[:200]
-                )
-                raise StructuredOutputParseError(
-                    f"Structured output parse failed for model={model!r}: {e}. "
-                    f"Content snippet: {snippet!r}"
-                ) from e
+            except Exception:
+                # Last resort: json-repair can recover complete responses with
+                # small syntax glitches, such as missing commas. Do not repair
+                # likely truncation: the retry loop should request a fresh
+                # complete response instead of accepting invented tail content.
+                try:
+                    from json_repair import repair_json
+
+                    if self._looks_truncated_json(json_str):
+                        raise StructuredOutputParseError(
+                            "Structured output appears truncated"
+                        )
+
+                    repaired = repair_json(json_str, return_objects=True)
+                    return response_format.model_validate(repaired)
+                except Exception as e:
+                    model = self.config.model
+                    snippet = (
+                        content[:200]
+                        if isinstance(content, str)
+                        else repr(content)[:200]
+                    )
+                    raise StructuredOutputParseError(
+                        f"Structured output parse failed for model={model!r}: {e}. "
+                        f"Content snippet: {snippet!r}"
+                    ) from e
 
     def _extract_json_from_string(self, content: str) -> str:
         """
@@ -1239,6 +1256,52 @@ class LiteLLMClient:
                 return content[start_idx : end_idx + 1]
 
         return content
+
+    def _looks_truncated_json(self, json_str: str) -> bool:
+        """
+        Return True when a JSON-like string appears to end before it is complete.
+
+        This intentionally only treats content with a JSON container opener as
+        truncation. Plain text that is not JSON should proceed to the normal
+        parse failure path.
+
+        Args:
+            json_str: Extracted JSON-like response text.
+
+        Returns:
+            True if the response has unclosed containers or strings.
+        """
+        stripped = json_str.strip()
+        start_indices = [
+            idx for idx in (stripped.find("{"), stripped.find("[")) if idx != -1
+        ]
+        if not stripped or not start_indices:
+            return False
+        stripped = stripped[min(start_indices) :]
+
+        stack: list[str] = []
+        in_str = False
+        escape = False
+        pairs = {"{": "}", "[": "]"}
+
+        for ch in stripped:
+            if escape:
+                escape = False
+                continue
+            if ch == "\\" and in_str:
+                escape = True
+                continue
+            if ch == '"':
+                in_str = not in_str
+                continue
+            if in_str:
+                continue
+            if ch in pairs:
+                stack.append(pairs[ch])
+            elif ch in ("}", "]") and (not stack or stack.pop() != ch):
+                return False
+
+        return in_str or bool(stack)
 
     def _sanitize_json_string(self, json_str: str) -> str:
         """
