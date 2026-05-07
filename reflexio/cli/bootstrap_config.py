@@ -14,7 +14,7 @@ import typer
 
 logger = logging.getLogger(__name__)
 
-_VALID_STORAGE_BACKENDS = frozenset({"sqlite", "supabase", "disk"})
+_VALID_STORAGE_BACKENDS = frozenset({"sqlite", "supabase", "postgres", "disk"})
 _DEFAULT_ORG_ID = "self-host-org"
 _DEFAULT_STORAGE = "sqlite"
 
@@ -28,6 +28,7 @@ def _ensure_type_map() -> dict[type, str]:
     if not _TYPE_TO_BACKEND:
         from reflexio.models.config_schema import (
             StorageConfigDisk,
+            StorageConfigPostgres,
             StorageConfigSQLite,
             StorageConfigSupabase,
         )
@@ -36,6 +37,7 @@ def _ensure_type_map() -> dict[type, str]:
             {
                 StorageConfigSQLite: "sqlite",
                 StorageConfigSupabase: "supabase",
+                StorageConfigPostgres: "postgres",
                 StorageConfigDisk: "disk",
             }
         )
@@ -121,6 +123,7 @@ def save_storage_to_config(
     """
     from reflexio.models.config_schema import (
         StorageConfigDisk,
+        StorageConfigPostgres,
         StorageConfigSQLite,
         StorageConfigSupabase,
     )
@@ -149,6 +152,22 @@ def save_storage_to_config(
                     "Supabase storage requested but credentials are missing "
                     "(SUPABASE_URL, SUPABASE_KEY, SUPABASE_DB_URL). "
                     "Keeping existing storage config."
+                )
+        case "postgres":
+            db_url = os.environ.get("REFLEXIO_POSTGRES_DB_URL", "")
+            schema = os.environ.get("REFLEXIO_POSTGRES_SCHEMA", "").strip()
+            pool_size_raw = os.environ.get("REFLEXIO_POSTGRES_POOL_SIZE", "").strip()
+            pool_size = int(pool_size_raw) if pool_size_raw.isdigit() else 5
+            if db_url:
+                config.storage_config = StorageConfigPostgres(
+                    db_url=db_url,
+                    schema=schema or None,
+                    pool_size=pool_size,
+                )
+            else:
+                logger.warning(
+                    "Postgres storage requested but REFLEXIO_POSTGRES_DB_URL "
+                    "is missing. Keeping existing storage config."
                 )
         case "disk":
             env_dir = os.environ.get("LOCAL_STORAGE_PATH", "").strip()

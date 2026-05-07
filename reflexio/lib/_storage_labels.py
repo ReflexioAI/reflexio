@@ -47,6 +47,9 @@ def describe_storage(
     if cls_name == "StorageConfigSupabase":
         url = getattr(storage_config, "url", None)
         return "supabase", mask_url(url) if url else "<supabase>"
+    if cls_name == "StorageConfigPostgres":
+        db_url = getattr(storage_config, "db_url", None)
+        return "postgres", mask_url(db_url) if db_url else "<postgres>"
     if cls_name == "StorageConfigLocal":
         return "local_dir", getattr(storage_config, "dir_path", None) or "<local>"
 

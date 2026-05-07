@@ -169,6 +169,15 @@ class StorageConfigSupabase(BaseModel):
     schema_name: str | None = Field(default=None, alias="schema")
 
 
+class StorageConfigPostgres(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, serialize_by_alias=True)
+
+    storage_type: Literal["postgres"] = Field(default="postgres", alias="type")
+    db_url: NonEmptyStr
+    schema_name: str | None = Field(default=None, alias="schema")
+    pool_size: int = 5
+
+
 class StorageConfigManagedSupabase(BaseModel):
     """Redacted API response for platform-managed Supabase storage."""
 
@@ -186,6 +195,7 @@ class StorageConfigDisk(BaseModel):
 StorageConfig = (
     StorageConfigSQLite
     | StorageConfigSupabase
+    | StorageConfigPostgres
     | StorageConfigManagedSupabase
     | StorageConfigDisk
     | None
