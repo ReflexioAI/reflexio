@@ -36,7 +36,7 @@ class TestResolveStorage:
     def test_cli_flag_wins_over_env_and_config(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setenv("REFLEXIO_STORAGE", "supabase")
+        monkeypatch.setenv("REFLEXIO_STORAGE", "postgres")
         _write_config(str(tmp_path), "self-host-org", "disk")
         # Patch home to use tmp_path for config lookup
         with patch(
@@ -48,12 +48,12 @@ class TestResolveStorage:
     def test_env_var_wins_over_config(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setenv("REFLEXIO_STORAGE", "supabase")
+        monkeypatch.setenv("REFLEXIO_STORAGE", "postgres")
         with patch(
             "reflexio.cli.bootstrap_config.load_storage_from_config",
             return_value="sqlite",
         ):
-            assert resolve_storage(None) == "supabase"
+            assert resolve_storage(None) == "postgres"
 
     def test_config_wins_over_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("REFLEXIO_STORAGE", raising=False)
@@ -73,11 +73,12 @@ class TestResolveStorage:
 
     def test_invalid_storage_raises(self) -> None:
         with pytest.raises(typer.BadParameter, match="Invalid storage backend"):
-            resolve_storage("postgres")
+            resolve_storage("redis")
 
     def test_case_insensitive_flag(self) -> None:
         assert resolve_storage("SQLite") == "sqlite"
         assert resolve_storage("SUPABASE") == "supabase"
+        assert resolve_storage("POSTGRES") == "postgres"
         assert resolve_storage("Disk") == "disk"
 
     def test_env_var_case_insensitive(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -130,9 +131,9 @@ class TestSaveAndLoadStorage:
     def test_round_trip_supabase_with_creds(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setenv("SUPABASE_URL", "https://example.supabase.co")
-        monkeypatch.setenv("SUPABASE_KEY", "test-key-123")
-        monkeypatch.setenv("SUPABASE_DB_URL", "postgresql://localhost/test")
+        monkeypatch.setenv("DATA_SUPABASE_URL", "https://example.supabase.co")
+        monkeypatch.setenv("DATA_SUPABASE_KEY", "test-key-123")
+        monkeypatch.setenv("DATA_SUPABASE_DB_URL", "postgresql://localhost/test")
         save_storage_to_config("supabase", org_id="test-org", base_dir=str(tmp_path))
         result = load_storage_from_config(org_id="test-org", base_dir=str(tmp_path))
         assert result == "supabase"
@@ -140,21 +141,18 @@ class TestSaveAndLoadStorage:
     def test_supabase_without_creds_preserves_existing(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """When supabase creds are missing, save_storage_to_config keeps existing storage_config."""
-        # First save sqlite
         save_storage_to_config("sqlite", org_id="test-org", base_dir=str(tmp_path))
         assert (
             load_storage_from_config(org_id="test-org", base_dir=str(tmp_path))
             == "sqlite"
         )
 
-        # Now try saving supabase without creds — should preserve sqlite
-        monkeypatch.delenv("SUPABASE_URL", raising=False)
-        monkeypatch.delenv("SUPABASE_KEY", raising=False)
-        monkeypatch.delenv("SUPABASE_DB_URL", raising=False)
+        monkeypatch.delenv("DATA_SUPABASE_URL", raising=False)
+        monkeypatch.delenv("DATA_SUPABASE_KEY", raising=False)
+        monkeypatch.delenv("DATA_SUPABASE_DB_URL", raising=False)
         save_storage_to_config("supabase", org_id="test-org", base_dir=str(tmp_path))
         result = load_storage_from_config(org_id="test-org", base_dir=str(tmp_path))
-        assert result == "sqlite"  # preserved, not overwritten
+        assert result == "sqlite"
 
     def test_preserves_existing_config_fields(self, tmp_path: Path) -> None:
         """Updating storage_config must not clobber extractors or other fields."""
@@ -187,6 +185,7 @@ class TestSaveAndLoadStorage:
         # Verify extractor and context are preserved
         reloaded = storage_obj.load_config()
         assert reloaded.agent_context_prompt == "test context"
+        assert reloaded.profile_extractor_configs is not None
         assert len(reloaded.profile_extractor_configs) == 1
         assert (
             reloaded.profile_extractor_configs[0].extractor_name == "custom_extractor"
@@ -220,13 +219,13 @@ class TestEnvFileWriteBack:
         from reflexio.cli.env_loader import set_env_var
 
         env_file = tmp_path / ".env"
-        env_file.write_text('REFLEXIO_STORAGE="supabase"\n')
+        env_file.write_text('REFLEXIO_STORAGE="postgres"\n')
 
         set_env_var(env_file, "REFLEXIO_STORAGE", "sqlite")
 
         content = env_file.read_text()
         assert 'REFLEXIO_STORAGE="sqlite"' in content
-        assert "supabase" not in content
+        assert "postgres" not in content
 
     def test_set_env_var_preserves_other_vars(self, tmp_path: Path) -> None:
         """set_env_var should only modify the target variable."""
@@ -235,7 +234,7 @@ class TestEnvFileWriteBack:
         env_file = tmp_path / ".env"
         env_file.write_text(
             'OPENAI_API_KEY="sk-test"\n'
-            'REFLEXIO_STORAGE="supabase"\n'
+            'REFLEXIO_STORAGE="postgres"\n'
             'JWT_SECRET_KEY="secret"\n'
         )
 
@@ -274,7 +273,7 @@ class TestLayerConsistency:
         from reflexio.cli.env_loader import set_env_var
 
         env_file = tmp_path / ".env"
-        env_file.write_text('REFLEXIO_STORAGE="supabase"\n')
+        env_file.write_text('REFLEXIO_STORAGE="postgres"\n')
 
         # Simulate the start() flow when storage="sqlite" (explicit flag)
         resolved = resolve_storage("sqlite")
@@ -293,16 +292,16 @@ class TestLayerConsistency:
     def test_env_override_does_not_modify_env_file(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """REFLEXIO_STORAGE=supabase (no flag) -> config updated, .env unchanged."""
+        """REFLEXIO_STORAGE=postgres (no flag) -> config updated, .env unchanged."""
         env_file = tmp_path / ".env"
-        env_file.write_text('REFLEXIO_STORAGE="supabase"\n')
+        env_file.write_text('REFLEXIO_STORAGE="postgres"\n')
         original_content = env_file.read_text()
 
-        monkeypatch.setenv("REFLEXIO_STORAGE", "supabase")
+        monkeypatch.setenv("REFLEXIO_STORAGE", "postgres")
 
         # Simulate start() with storage=None (no flag)
         resolved = resolve_storage(None)
-        assert resolved == "supabase"
+        assert resolved == "postgres"
 
         # Config updated, but .env NOT modified
         save_storage_to_config(
@@ -319,7 +318,7 @@ class TestLayerConsistency:
         from reflexio.cli.env_loader import set_env_var
 
         env_file = tmp_path / ".env"
-        env_file.write_text('REFLEXIO_STORAGE="supabase"\n')
+        env_file.write_text('REFLEXIO_STORAGE="postgres"\n')
 
         # Run 1: explicit --storage sqlite
         resolved1 = resolve_storage("sqlite")

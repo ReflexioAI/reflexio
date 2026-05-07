@@ -5,8 +5,8 @@ Exposes two read-only endpoints that power CLI observability:
 - ``whoami``: masked summary of the caller's resolved storage routing.
   Safe to call without special permission — never returns raw secrets.
 - ``my_config``: raw storage credentials for the caller's org.
-  Token-gated and intended for operators pulling their own config down
-  to a fresh machine via ``reflexio config pull``.
+  Token-gated and rendered by ``reflexio config storage`` so operators
+  can inspect (and with ``--reveal``, copy) their own config.
 
 Both call through the cached ``Reflexio`` instance so per-org config
 lookups honour the same configurator that data reads/writes use.

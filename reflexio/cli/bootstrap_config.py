@@ -79,7 +79,7 @@ def load_storage_from_config(
         base_dir: Override base directory (for testing). If None, uses ~/.reflexio/.
 
     Returns:
-        Storage backend string ("sqlite", "supabase", "disk") or None if
+        Storage backend string ("sqlite", "supabase", "postgres", "disk") or None if
         no config file exists or storage_config is unset.
     """
     config_path = _config_dir(base_dir) / f"config_{org_id}.json"
@@ -117,7 +117,7 @@ def save_storage_to_config(
     All other fields (extractors, api_keys, etc.) are preserved.
 
     Args:
-        storage_type: Backend name ("sqlite", "supabase", "disk").
+        storage_type: Backend name ("sqlite", "supabase", "postgres", "disk").
         org_id: Organization ID for the config file name.
         base_dir: Override base directory (for testing).
     """
@@ -138,19 +138,17 @@ def save_storage_to_config(
         case "sqlite":
             config.storage_config = StorageConfigSQLite()
         case "supabase":
-            url = os.environ.get("SUPABASE_URL", "")
-            key = os.environ.get("SUPABASE_KEY", "")
-            db_url = os.environ.get("SUPABASE_DB_URL", "")
+            url = os.environ.get("DATA_SUPABASE_URL", "")
+            key = os.environ.get("DATA_SUPABASE_KEY", "")
+            db_url = os.environ.get("DATA_SUPABASE_DB_URL", "")
             if url and key and db_url:
                 config.storage_config = StorageConfigSupabase(
                     url=url, key=key, db_url=db_url
                 )
             else:
-                # Creds missing — keep existing storage_config (don't overwrite
-                # a valid StorageConfigSupabase with empty strings).
                 logger.warning(
                     "Supabase storage requested but credentials are missing "
-                    "(SUPABASE_URL, SUPABASE_KEY, SUPABASE_DB_URL). "
+                    "(DATA_SUPABASE_URL, DATA_SUPABASE_KEY, DATA_SUPABASE_DB_URL). "
                     "Keeping existing storage config."
                 )
         case "postgres":
