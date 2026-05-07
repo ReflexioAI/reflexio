@@ -68,7 +68,7 @@ PROMPT_VERSION_MAP: dict[str, tuple[str, str | None]] = {
     "search_agent/patterns/a": ("v1.0.0", None),
     "search_agent/patterns/b": ("v1.0.0", None),
     "search_agent/patterns/c": ("v1.0.0", None),
-    "search_agent/patterns/d": ("v1.1.0", None),  # latest semver on disk; v1.0.2 is active
+    "search_agent/patterns/d": ("v1.0.0", None),
     "search_agent/patterns/e": ("v1.0.0", None),
     "search_agent/patterns/f": ("v1.0.0", None),
     "search_agent/patterns/g": ("v1.0.0", None),
@@ -76,7 +76,7 @@ PROMPT_VERSION_MAP: dict[str, tuple[str, str | None]] = {
     "compress_session_for_query": ("v1.3.0", None),
     "rerank_relevance": ("v1.1.0", None),
     # Answer-LLM system prompt for memory-grounded user questions
-    "answer_synthesis": ("v1.5.3", None),
+    "answer_synthesis": ("v1.5.2", None),
 }
 
 
