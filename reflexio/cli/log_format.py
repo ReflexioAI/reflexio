@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import itertools
 import logging
+import os
 import re
 import sys
 import threading
@@ -37,10 +38,32 @@ _LEVEL_COLORS: dict[str, str] = {
 # "ERROR - msg" style used by Next.js / some custom loggers.
 _LEVEL_RE = re.compile(r"^(?:\[)?(ERROR|CRITICAL|WARNING|WARN)(?:\])?(?::|\s+-\s+|\s+)")
 
-# Canonical log file paths — stored in ~/.reflexio/logs/ (not the project directory)
-_LOG_DIR = str(Path.home() / ".reflexio" / "logs")
-DEV_LOG_FILE = str(Path(_LOG_DIR) / "dev_server.log")
-LLM_IO_LOG_FILE = str(Path(_LOG_DIR) / "llm_io.log")
+
+# Canonical log file paths.
+# Default: ~/.reflexio/logs/. The REFLEXIO_LOG_DIR env var overrides only the
+# base directory (the ~ part) — the .reflexio/logs suffix is preserved so the
+# on-disk layout stays consistent regardless of where the base points.
+def _resolve_log_dir() -> Path:
+    """Return the directory log files are written to.
+
+    The ``REFLEXIO_LOG_DIR`` env var overrides the base directory only — the
+    ``.reflexio/logs`` suffix is preserved so the on-disk layout matches the
+    default home-relative layout. Resolved at module import time so the
+    public ``DEV_LOG_FILE`` / ``LLM_IO_LOG_FILE`` constants are stable across
+    a server's lifetime — change requires a restart.
+
+    Returns:
+        Path: Resolved log directory. Not created here; the rotating file
+            handlers create it on first write.
+    """
+    base = os.environ.get("REFLEXIO_LOG_DIR")
+    base_path = Path(base).expanduser() if base else Path.home()
+    return base_path / ".reflexio" / "logs"
+
+
+LOG_DIR: Path = _resolve_log_dir()
+DEV_LOG_FILE: str = str(LOG_DIR / "dev_server.log")
+LLM_IO_LOG_FILE: str = str(LOG_DIR / "llm_io.log")
 
 # Thread-safe sequential entry counter for LLM prompt/response entries
 _llm_entry_counter = itertools.count(1)
