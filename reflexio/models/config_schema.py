@@ -175,7 +175,7 @@ class StorageConfigPostgres(BaseModel):
     storage_type: Literal["postgres"] = Field(default="postgres", alias="type")
     db_url: NonEmptyStr
     schema_name: str | None = Field(default=None, alias="schema")
-    pool_size: int = 5
+    pool_size: int = Field(default=5, ge=1)
 
 
 class StorageConfigManagedSupabase(BaseModel):
