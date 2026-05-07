@@ -57,7 +57,13 @@ def _resolve_log_dir() -> Path:
             handlers create it on first write.
     """
     base = os.environ.get("REFLEXIO_LOG_DIR")
-    base_path = Path(base).expanduser() if base else Path.home()
+    if base:
+        base_path = Path(base).expanduser()
+        if not base_path.is_absolute():
+            base_path = Path.home() / base_path
+        base_path = base_path.resolve()
+    else:
+        base_path = Path.home()
     return base_path / ".reflexio" / "logs"
 
 
