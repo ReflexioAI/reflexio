@@ -56,17 +56,27 @@ PROMPT_VERSION_MAP: dict[str, tuple[str, str | None]] = {
     "query_reformulation": ("v1.0.0", None),
     "document_expansion": ("v1.0.0", None),
     # Agentic extraction pipeline — three parallel axes + unify + self-critique
-    "extraction_user_profile": ("v1.3.3", None),
+    "extraction_user_profile": ("v1.4.11", None),
     "extraction_user_profile_agent_rec": ("v1.1.3", None),
     "extraction_user_playbook": ("v1.0.0", None),
-    "extraction_unify": ("v1.0.0", None),
+    "extraction_unify": ("v1.1.3", None),
     "extraction_self_critique": ("v1.0.0", None),
     # Agentic search pipeline — single-loop agent with cross-encoder + LLM rerank
-    "search_agent": ("v1.10.4", None),
+    "search_agent": ("v1.25.0", None),
+    # Per-pattern recipes loaded by render_search_prompt. Each can be iterated
+    # independently without bleeding into the others.
+    "search_agent/patterns/a": ("v1.0.0", None),
+    "search_agent/patterns/b": ("v1.0.0", None),
+    "search_agent/patterns/c": ("v1.0.0", None),
+    "search_agent/patterns/d": ("v1.1.0", None),
+    "search_agent/patterns/e": ("v1.0.0", None),
+    "search_agent/patterns/f": ("v1.0.0", None),
+    "search_agent/patterns/g": ("v1.0.0", None),
+    "search_agent/patterns/h": ("v1.0.0", None),
     "compress_session_for_query": ("v1.3.0", None),
     "rerank_relevance": ("v1.1.0", None),
     # Answer-LLM system prompt for memory-grounded user questions
-    "answer_synthesis": ("v1.5.2", None),
+    "answer_synthesis": ("v1.5.3", None),
 }
 
 
@@ -121,12 +131,16 @@ class TestPromptVersionMapping:
         )
 
     def test_all_prompt_dirs_are_mapped(self):
-        """Every prompt_bank directory should appear in PROMPT_VERSION_MAP."""
-        prompt_dirs = {
-            p.name
-            for p in _PROMPT_BANK_DIR.iterdir()
-            if p.is_dir() and not p.name.startswith(".") and any(p.glob("v*.prompt.md"))
-        }
+        """Every prompt_bank directory containing v*.prompt.md files should
+        appear in PROMPT_VERSION_MAP. Walks recursively so nested sub-prompts
+        (e.g. search_agent/patterns/a/) are caught.
+        """
+        prompt_dirs: set[str] = set()
+        for prompt_md in _PROMPT_BANK_DIR.rglob("v*.prompt.md"):
+            rel = prompt_md.parent.relative_to(_PROMPT_BANK_DIR)
+            if any(part.startswith(".") for part in rel.parts):
+                continue
+            prompt_dirs.add(str(rel))
         mapped = set(PROMPT_VERSION_MAP.keys())
         unmapped = prompt_dirs - mapped
         assert not unmapped, (

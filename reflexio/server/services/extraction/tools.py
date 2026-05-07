@@ -199,7 +199,21 @@ class CreateUserProfileArgs(BaseModel):
 
     content: Annotated[str, Field(min_length=1)]
     ttl: ProfileTTL
-    source_span: Annotated[str, Field(min_length=1)]
+    source_span: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description=(
+                "Verbatim excerpt from the source conversation that most "
+                "directly supports this profile item. Quote the original turn "
+                "verbatim — do NOT paraphrase, summarise, or copy the value of "
+                "the `content` field. Include enough surrounding words for the "
+                "quote to stand on its own (one sentence is usually enough); "
+                "preserve any temporal qualifiers, names, numbers, or exact "
+                "phrases from the original."
+            ),
+        ),
+    ]
 
 
 class DeleteUserProfileArgs(BaseModel):
@@ -215,7 +229,21 @@ class CreateUserPlaybookArgs(BaseModel):
     content: Annotated[str, Field(min_length=1)]
     rationale: str = ""
     strength: PlaybookStrength = "soft"
-    source_span: Annotated[str, Field(min_length=1)]
+    source_span: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description=(
+                "Verbatim excerpt from the source conversation that most "
+                "directly supports this playbook entry. Quote the original "
+                "turn verbatim — do NOT paraphrase, summarise, or copy the "
+                "value of the `content` field. Include enough surrounding "
+                "words for the quote to stand on its own (one sentence is "
+                "usually enough); preserve any temporal qualifiers, names, "
+                "numbers, or exact phrases from the original."
+            ),
+        ),
+    ]
 
 
 class DeleteUserPlaybookArgs(BaseModel):
@@ -724,6 +752,24 @@ def _format_raw_turns(
         if not sess_interactions:
             blocks.append(f"=== session {sid} ===\n(no interactions found)")
             continue
+        # Derive the session date from the earliest interaction timestamp.
+        # Including this in the header lets the downstream answer LLM resolve
+        # relative-time phrases ("yesterday", "last week", "X days ago") in
+        # the raw turns against an absolute anchor — without it, the LLM ends
+        # up quoting the relative phrase verbatim instead of computing the
+        # date (the multi-hop temporal failure pattern).
+        timestamps = [
+            getattr(i, "created_at", 0)
+            for i in sess_interactions
+            if getattr(i, "created_at", 0)
+        ]
+        date_suffix = ""
+        if timestamps:
+            try:
+                date_iso = datetime.fromtimestamp(min(timestamps), tz=UTC).strftime("%Y-%m-%d")
+                date_suffix = f" (date: {date_iso})"
+            except (OverflowError, OSError, ValueError):
+                pass
         lines = [
             f"[{getattr(i, 'role', '?')}] {i.content}"
             for i in sess_interactions
@@ -732,7 +778,7 @@ def _format_raw_turns(
         body = "\n".join(lines)
         if len(body) > max_chars_per_session:
             body = body[:max_chars_per_session] + "…"
-        blocks.append(f"=== session {sid} ===\n{body}")
+        blocks.append(f"=== session {sid}{date_suffix} ===\n{body}")
     return "\n\n".join(blocks)
 
 

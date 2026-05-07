@@ -64,6 +64,7 @@ class ProfileView(BaseModel):
     source: str | None = None
     status: Status | None = None
     extractor_names: list[str] | None = None
+    source_span: str | None = None
 
 
 class UserPlaybookView(BaseModel):
@@ -82,6 +83,7 @@ class UserPlaybookView(BaseModel):
     status: Status | None = None
     source: str | None = None
     source_interaction_ids: list[int] = Field(default_factory=list)
+    source_span: str | None = None
 
 
 class AgentPlaybookView(BaseModel):

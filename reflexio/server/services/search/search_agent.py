@@ -115,13 +115,10 @@ class SearchAgent:
             prompt_manager=self.prompt_manager,
         )
 
-        prompt = self.prompt_manager.render_prompt(
-            "search_agent",
-            variables={
-                "query": query,
-                "max_steps": str(self.max_steps),
-                "enable_agent_answer": "true" if self.enable_agent_answer else "false",
-            },
+        prompt = self.prompt_manager.render_search_prompt(
+            query=query,
+            max_steps=str(self.max_steps),
+            enable_agent_answer="true" if self.enable_agent_answer else "false",
         )
 
         t0 = time.monotonic()
