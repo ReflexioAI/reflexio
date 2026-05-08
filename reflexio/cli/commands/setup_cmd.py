@@ -657,6 +657,17 @@ def openclaw(
             "--uninstall", help="Remove the Reflexio integration from OpenClaw"
         ),
     ] = False,
+    embedding: Annotated[
+        str,
+        typer.Option(
+            "--embedding",
+            help=(
+                "Embedding provider: 'local' (in-process MiniLM), 'openai', "
+                "'gemini', or 'auto' (default — let runtime auto-detection "
+                "pick). Skips the interactive prompt."
+            ),
+        ),
+    ] = "auto",
 ) -> None:
     """Set up (or remove) the Reflexio integration for OpenClaw."""
     if uninstall:
@@ -672,10 +683,14 @@ def openclaw(
         raise typer.Exit(1)
 
     # Step 2: LLM provider
-    display_name, model, provider_key = _prompt_llm_provider(env_path)
+    display_name, model, _provider_key = _prompt_llm_provider(env_path)
 
-    # Step 2.5: Embedding provider (if LLM provider lacks embedding support)
-    embedding_label = _prompt_embedding_provider(env_path, provider_key)
+    # Step 2.5: Upfront embedding-provider step. Local is the default when
+    # chromadb is importable; the choice persists to org config so it
+    # survives later cloud-key changes.
+    embedding_label = _choose_embedding_provider(
+        env_path, embedding_flag=embedding
+    )
 
     # Step 3: Storage
     storage_label = _prompt_storage(env_path)
@@ -1197,6 +1212,18 @@ def claude_code_setup(
             help="Install to ~/.claude/ (user-level, applies to all projects)",
         ),
     ] = False,
+    embedding: Annotated[
+        str,
+        typer.Option(
+            "--embedding",
+            help=(
+                "Embedding provider: 'local' (in-process MiniLM), 'openai', "
+                "'gemini', or 'auto' (default — let runtime auto-detection "
+                "pick). Skips the interactive prompt. Ignored in remote "
+                "storage modes (the server handles embeddings)."
+            ),
+        ),
+    ] = "auto",
 ) -> None:
     """Set up (or remove) the Reflexio integration for Claude Code."""
     # Resolve install location
@@ -1247,8 +1274,13 @@ def claude_code_setup(
             "\nSkipping LLM provider — the remote Reflexio server handles extraction."
         )
     else:
-        display_name, model, provider_key = _prompt_llm_provider(env_path)
-        embedding_label = _prompt_embedding_provider(env_path, provider_key)
+        display_name, model, _provider_key = _prompt_llm_provider(env_path)
+        # Upfront embedding-provider step. Local is the default when chromadb
+        # is importable; the choice persists to org config so it survives
+        # later cloud-key changes.
+        embedding_label = _choose_embedding_provider(
+            env_path, embedding_flag=embedding
+        )
 
     # Step 3.5: Seed user_id for Claude Code (only if not already set)
     if not os.environ.get("REFLEXIO_USER_ID"):
