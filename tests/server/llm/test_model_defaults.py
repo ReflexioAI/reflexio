@@ -420,3 +420,47 @@ class TestAgenticV2Roles:
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
         name = resolve_model_name(role=ModelRole.SEARCH_AGENT)
         assert name == "gpt-5-mini"
+
+
+
+class TestMinimaxAgenticRoles:
+    """MiniMax must expose extraction_agent + search_agent so agentic-v2
+    pipelines work for MiniMax-only configurations.
+
+    Surfaced by an e2e run where publish on a MiniMax-only VPS emitted
+    'No provider in [\'minimax\'] supports role=extraction_agent' and
+    silently skipped profile creation.
+    """
+
+    def test_minimax_has_extraction_agent(self):
+        from reflexio.server.llm.model_defaults import _PROVIDER_DEFAULTS
+
+        assert _PROVIDER_DEFAULTS["minimax"].extraction_agent is not None
+        assert _PROVIDER_DEFAULTS["minimax"].extraction_agent.startswith("minimax/")
+
+    def test_minimax_has_search_agent(self):
+        from reflexio.server.llm.model_defaults import _PROVIDER_DEFAULTS
+
+        assert _PROVIDER_DEFAULTS["minimax"].search_agent is not None
+        assert _PROVIDER_DEFAULTS["minimax"].search_agent.startswith("minimax/")
+
+    def test_minimax_only_resolves_extraction_agent(self):
+        """Auto-detect must return a MiniMax model when only MINIMAX_API_KEY
+        is configured and the role is extraction_agent."""
+        from reflexio.server.llm.model_defaults import (
+            ModelRole,
+            _auto_detect_model,
+        )
+
+        result = _auto_detect_model(ModelRole.EXTRACTION_AGENT, providers=["minimax"])
+        assert result == "minimax/MiniMax-M2.7"
+
+    def test_minimax_only_resolves_search_agent(self):
+        """Same for search_agent role."""
+        from reflexio.server.llm.model_defaults import (
+            ModelRole,
+            _auto_detect_model,
+        )
+
+        result = _auto_detect_model(ModelRole.SEARCH_AGENT, providers=["minimax"])
+        assert result == "minimax/MiniMax-M2.7"

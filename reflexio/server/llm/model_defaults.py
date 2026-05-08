@@ -243,6 +243,13 @@ _PROVIDER_DEFAULTS: dict[str, ProviderDefaults] = {
         should_run="minimax/MiniMax-M2.7",
         pre_retrieval="minimax/MiniMax-M2.7",
         embedding=None,
+        # Same M2.7 model handles agentic extraction + search. Surfaced by an
+        # e2e run on a MiniMax-only VPS where publish printed
+        # "No provider in ['minimax'] supports role=extraction_agent"
+        # warnings and silently skipped profile creation. Without these,
+        # MiniMax-only users can publish but get zero profiles.
+        extraction_agent="minimax/MiniMax-M2.7",
+        search_agent="minimax/MiniMax-M2.7",
     ),
     "dashscope": ProviderDefaults(
         generation="dashscope/qwen-plus",
