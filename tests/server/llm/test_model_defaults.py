@@ -190,9 +190,16 @@ class TestResolveModelName:
         # Generation should use anthropic
         result = resolve_model_name(ModelRole.GENERATION)
         assert result == _PROVIDER_DEFAULTS["anthropic"].generation
-        # Embedding should fail (no embedding-capable provider)
-        with pytest.raises(RuntimeError, match="embedding-capable"):
+        # Embedding falls back to local when chromadb is importable.
+        from reflexio.server.llm.providers import local_embedding_provider as lep
+
+        monkeypatch.setattr(
+            lep.importlib.util, "find_spec", lambda _name: object()
+        )
+        assert (
             resolve_model_name(ModelRole.EMBEDDING)
+            == _PROVIDER_DEFAULTS["local"].embedding
+        )
 
     def test_no_keys_raises(self) -> None:
         with pytest.raises(RuntimeError, match="No LLM provider available"):
@@ -227,6 +234,58 @@ class TestResolveModelName:
         result = resolve_model_name(ModelRole.EMBEDDING)
         assert result == _PROVIDER_DEFAULTS["gemini"].embedding
 
+    def test_embedding_fallback_to_local_when_no_cloud(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Anthropic key + chromadb available → fall back to local embedder."""
+        from reflexio.server.llm.providers import local_embedding_provider as lep
+
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "ant-test")
+        monkeypatch.setattr(
+            lep.importlib.util, "find_spec", lambda _name: object()
+        )
+        result = resolve_model_name(ModelRole.EMBEDDING)
+        assert result == _PROVIDER_DEFAULTS["local"].embedding
+
+    def test_embedding_fallback_skipped_when_cloud_available(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Cloud embedder beats local fallback when both are available."""
+        from reflexio.server.llm.providers import local_embedding_provider as lep
+
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "ant-test")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        monkeypatch.setattr(
+            lep.importlib.util, "find_spec", lambda _name: object()
+        )
+        result = resolve_model_name(ModelRole.EMBEDDING)
+        assert result == _PROVIDER_DEFAULTS["openai"].embedding
+
+    def test_embedding_explicit_opt_in_beats_cloud(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """CLAUDE_SMART_USE_LOCAL_EMBEDDING=1 forces local even with cloud keys."""
+        from reflexio.server.llm.providers import local_embedding_provider as lep
+
+        monkeypatch.setenv("CLAUDE_SMART_USE_LOCAL_EMBEDDING", "1")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        monkeypatch.setattr(
+            lep.importlib.util, "find_spec", lambda _name: object()
+        )
+        result = resolve_model_name(ModelRole.EMBEDDING)
+        assert result == _PROVIDER_DEFAULTS["local"].embedding
+
+    def test_embedding_no_chromadb_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Anthropic only + chromadb missing → RuntimeError with install hint."""
+        from reflexio.server.llm.providers import local_embedding_provider as lep
+
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "ant-test")
+        monkeypatch.setattr(lep.importlib.util, "find_spec", lambda _name: None)
+        with pytest.raises(RuntimeError, match="chromadb"):
+            resolve_model_name(ModelRole.EMBEDDING)
+
 
 # ---------------------------------------------------------------------------
 # validate_llm_availability
@@ -238,11 +297,27 @@ class TestValidateLlmAvailability:
         with pytest.raises(RuntimeError, match="No LLM provider available"):
             validate_llm_availability()
 
-    def test_no_embedding_provider_raises(
+    def test_no_embedding_provider_falls_back_to_local(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """Anthropic key + chromadb importable → local fallback, no raise."""
+        from reflexio.server.llm.providers import local_embedding_provider as lep
+
         monkeypatch.setenv("ANTHROPIC_API_KEY", "ant-test")
-        with pytest.raises(RuntimeError, match="embedding-capable"):
+        monkeypatch.setattr(
+            lep.importlib.util, "find_spec", lambda _name: object()
+        )
+        validate_llm_availability()  # should not raise
+
+    def test_no_embedding_provider_no_chromadb_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Anthropic key + chromadb missing → raise with install hint."""
+        from reflexio.server.llm.providers import local_embedding_provider as lep
+
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "ant-test")
+        monkeypatch.setattr(lep.importlib.util, "find_spec", lambda _name: None)
+        with pytest.raises(RuntimeError, match="chromadb"):
             validate_llm_availability()
 
     def test_openai_only_passes(self, monkeypatch: pytest.MonkeyPatch) -> None:

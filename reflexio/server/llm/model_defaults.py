@@ -25,11 +25,12 @@ if TYPE_CHECKING:
 _CLAUDE_CODE_ENABLE_ENV = "CLAUDE_SMART_USE_LOCAL_CLI"
 _CLAUDE_CODE_PROVIDER = "claude-code"
 
-# Companion env var opting into the local ONNX embedder (registered in
-# reflexio.server.llm.providers.local_embedding_provider). Requires the
-# `chromadb` package to be importable — we detect that at runtime rather
-# than making it a hard dep of reflexio itself.
-_LOCAL_EMBEDDING_ENABLE_ENV = "CLAUDE_SMART_USE_LOCAL_EMBEDDING"
+# Companion provider key for the local ONNX embedder (registered in
+# reflexio.server.llm.providers.local_embedding_provider). Surfaces in
+# ``providers`` only when ``CLAUDE_SMART_USE_LOCAL_EMBEDDING=1`` is set
+# (claude-smart's explicit opt-in); otherwise the embedding role still
+# silently falls back to "local" when chromadb is importable but no
+# cloud embedder is configured — see Path 3 in ``_auto_detect_model``.
 _LOCAL_EMBEDDING_PROVIDER = "local"
 
 logger = logging.getLogger(__name__)
@@ -326,16 +327,30 @@ def _auto_detect_model(
         )
 
     if role == ModelRole.EMBEDDING:
-        # Search for first provider with embedding support
+        # Path 1+2: explicit claude-smart opt-in or a cloud embedder. The
+        # priority list places `local` at position 2, so when the env var is
+        # set ``providers`` already contains "local" and this loop returns it
+        # before any cloud provider. When the env var is unset, only cloud
+        # providers can hit here (local is filtered out by
+        # ``is_local_embedder_available``).
         for provider in providers:
             defaults = _PROVIDER_DEFAULTS[provider]
             if defaults.embedding:
                 return defaults.embedding
+        # Path 3: no embedding-capable provider in `providers`, but chromadb
+        # is importable — silently fall back to the local ONNX embedder so
+        # users with only a non-embedding LLM key (Anthropic, MiniMax, etc.)
+        # are not blocked at startup.
+        from reflexio.server.llm.providers.local_embedding_provider import (
+            is_chromadb_importable,
+        )
+
+        if is_chromadb_importable():
+            return _PROVIDER_DEFAULTS[_LOCAL_EMBEDDING_PROVIDER].embedding  # type: ignore[return-value]
         raise RuntimeError(
-            "No embedding-capable LLM provider found. "
-            f"Set OPENAI_API_KEY or GEMINI_API_KEY, or set "
-            f"{_LOCAL_EMBEDDING_ENABLE_ENV}=1 with `chromadb` installed "
-            "to use the local ONNX embedder."
+            "No embedding-capable provider configured and chromadb is not "
+            "importable. Set OPENAI_API_KEY or GEMINI_API_KEY, or "
+            "`pip install chromadb`."
         )
 
     # Non-embedding roles: fall through to the first provider whose slot
@@ -414,15 +429,29 @@ def validate_llm_availability(
     else:
         logger.info("No generation-capable provider available")
 
-    # Validate embedding availability
+    # Validate embedding availability. When no embedding-capable provider
+    # is configured, fall back to the in-process local ONNX embedder if
+    # chromadb is importable — this keeps users with only a non-embedding
+    # LLM key (Anthropic, MiniMax, etc.) from being blocked at startup.
     embedding_provider = next(
         (p for p in providers if _PROVIDER_DEFAULTS[p].embedding), None
     )
-    if not embedding_provider:
-        raise RuntimeError(
-            "No embedding-capable LLM provider found. "
-            f"Set OPENAI_API_KEY or GEMINI_API_KEY, or set "
-            f"{_LOCAL_EMBEDDING_ENABLE_ENV}=1 with `chromadb` installed "
-            "to use the local ONNX embedder."
+    if embedding_provider:
+        logger.info("Embedding provider: %s", embedding_provider)
+        return
+
+    from reflexio.server.llm.providers.local_embedding_provider import (
+        is_chromadb_importable,
+    )
+
+    if is_chromadb_importable():
+        logger.info(
+            "Embedding provider: %s (fallback — no cloud embedder configured)",
+            _LOCAL_EMBEDDING_PROVIDER,
         )
-    logger.info("Embedding provider: %s", embedding_provider)
+        return
+    raise RuntimeError(
+        "No embedding-capable provider configured and chromadb is not "
+        "importable. Set OPENAI_API_KEY or GEMINI_API_KEY, or "
+        "`pip install chromadb`."
+    )
