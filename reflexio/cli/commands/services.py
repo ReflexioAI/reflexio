@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import sys
 from pathlib import Path
@@ -13,6 +14,8 @@ import typer
 from reflexio.cli import run_services as run_mod
 from reflexio.cli import stop_services as stop_mod
 from reflexio.cli.bootstrap_config import _VALID_STORAGE_BACKENDS
+
+_logger = logging.getLogger(__name__)
 
 app = typer.Typer(help="Start and stop Reflexio services.")
 
@@ -27,11 +30,16 @@ def _ensure_llm_configured(env_path: Path) -> None:
     Behaviour matrix:
         - At least one LLM key AND an embedding-capable provider in env →
           return silently, startup continues.
+        - At least one LLM key but no cloud embedder, and ``chromadb`` is
+          importable → log "Using local embedder as fallback" and return;
+          runtime auto-detection (Layer A) will pick ``local/minilm-l6-v2``
+          for the EMBEDDING role. No prompt, no blocking.
         - No LLM key, interactive TTY → prompt for a provider + key, then
           (conditionally) prompt for an embedding key, re-load the .env so
           the new values land in ``os.environ``, and return.
         - Missing only an embedding key (e.g. user set ANTHROPIC_API_KEY
-          manually) → prompt only for an embedding provider.
+          manually) AND chromadb is unavailable → prompt only for an
+          embedding provider.
         - No LLM key, non-interactive stdin (CI, nohup, container) → print a
           clean pointer to the .env file and raise ``typer.Exit(1)`` so the
           user never sees the uvicorn/starlette traceback.
@@ -54,10 +62,23 @@ def _ensure_llm_configured(env_path: Path) -> None:
         EMBEDDING_CAPABLE_PROVIDERS,
         detect_available_providers,
     )
+    from reflexio.server.llm.providers.local_embedding_provider import (
+        is_chromadb_importable,
+    )
 
     providers = detect_available_providers()
     has_embedding = any(p in EMBEDDING_CAPABLE_PROVIDERS for p in providers)
     if providers and has_embedding:
+        return
+
+    # Path 3 of the embedding auto-detection: if at least one LLM key is
+    # present but no cloud embedder is configured, and chromadb is importable,
+    # the runtime will silently fall back to the local MiniLM embedder
+    # (see ``_auto_detect_model`` in model_defaults.py). No need to prompt
+    # or block startup. We don't apply this when ``providers`` is empty —
+    # that case still needs the user to pick an LLM key.
+    if providers and is_chromadb_importable():
+        _logger.info("Using local embedder as fallback (no cloud embedder configured)")
         return
 
     if not sys.stdin.isatty():

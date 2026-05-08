@@ -237,7 +237,7 @@ class TestValidateStorageBackend:
 
     def test_invalid_raises_bad_parameter(self) -> None:
         with pytest.raises(typer.BadParameter, match="Invalid storage backend"):
-            validate_storage_backend("postgres")
+            validate_storage_backend("not-a-real-backend")
 
 
 # ---------------------------------------------------------------------------

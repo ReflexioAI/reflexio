@@ -110,13 +110,23 @@ class TestEnsureLlmConfigured:
     def test_prompts_only_for_embedding_when_llm_exists_without_embedding(
         self, tmp_path: Path
     ) -> None:
-        """Anthropic-only env → skip LLM prompt, run embedding prompt with anthropic."""
+        """Anthropic-only env + no chromadb → embedding prompt fires.
+
+        With chromadb available the helper takes the local-fallback path and
+        skips the prompt entirely (covered by
+        ``test_services_start_proceeds_without_cloud_embedder_when_chromadb_present``).
+        """
         env = tmp_path / ".env"
         env.write_text("")
         with (
             patch(
                 "reflexio.server.llm.model_defaults.detect_available_providers",
                 return_value=["anthropic"],
+            ),
+            patch(
+                "reflexio.server.llm.providers.local_embedding_provider"
+                ".is_chromadb_importable",
+                return_value=False,
             ),
             patch("sys.stdin.isatty", return_value=True),
             patch("reflexio.cli.commands.setup_cmd._prompt_llm_provider") as mock_llm,
@@ -129,3 +139,42 @@ class TestEnsureLlmConfigured:
             _ensure_llm_configured(env)
         mock_llm.assert_not_called()
         mock_emb.assert_called_once_with(env, "anthropic")
+
+    def test_services_start_proceeds_without_cloud_embedder_when_chromadb_present(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Anthropic-only env + chromadb importable → no prompt, no exit.
+
+        The runtime auto-detection (Layer A path 3) picks the local embedder,
+        so ``services start`` should log the fallback note and continue
+        without involving the user.
+        """
+        env = tmp_path / ".env"
+        env.write_text("")
+        import logging
+
+        with (
+            patch(
+                "reflexio.server.llm.model_defaults.detect_available_providers",
+                return_value=["anthropic"],
+            ),
+            patch(
+                "reflexio.server.llm.providers.local_embedding_provider"
+                ".is_chromadb_importable",
+                return_value=True,
+            ),
+            patch("reflexio.cli.commands.setup_cmd._prompt_llm_provider") as mock_llm,
+            patch(
+                "reflexio.cli.commands.setup_cmd._prompt_embedding_provider"
+            ) as mock_emb,
+            caplog.at_level(logging.INFO, logger="reflexio.cli.commands.services"),
+        ):
+            # Should return cleanly; no prompts, no exit.
+            _ensure_llm_configured(env)
+
+        mock_llm.assert_not_called()
+        mock_emb.assert_not_called()
+        assert any(
+            "Using local embedder as fallback" in record.message
+            for record in caplog.records
+        )
