@@ -4,6 +4,7 @@ import hashlib
 import logging
 import os
 import time
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -777,11 +778,12 @@ class PlaybookAggregator:
                 outcome="started",
             )
             # Generate new playbooks only for changed clusters
-            new_playbooks = self._generate_playbooks_from_clusters(
+            generated_pairs = self._generate_playbooks_with_source_clusters(
                 changed_clusters,
                 existing_playbooks,
                 direction_overlap_threshold=playbook_aggregator_config.direction_overlap_threshold,
             )
+            new_playbooks = [playbook for playbook, _ in generated_pairs]
 
             # Lazy archive: only full-archive when the LLM produced replacements.
             # Skipping the archive when new_playbooks is empty preserves existing
@@ -848,28 +850,22 @@ class PlaybookAggregator:
                     "user_playbook_ids": raw_ids,
                 }
 
-            # Now assign playbook_ids from saved playbooks to fingerprints
-            # Since both iterate in cluster order, match by position
             saved_playbook_list = list(saved_playbooks)
-            fp_keys_from_changed = [
-                self._compute_cluster_fingerprint(cluster_playbooks)
-                for cluster_playbooks in changed_clusters.values()
-            ]
 
-            # saved_playbooks only contains non-None results, so we just
-            # assign playbook_ids to fingerprints that got valid playbooks
-            for saved_fb in saved_playbook_list:
+            # Assign saved playbook ids to the exact source cluster that generated them.
+            for saved_fb, (_, cluster_playbooks) in zip(
+                saved_playbook_list, generated_pairs, strict=False
+            ):
                 if saved_fb and saved_fb.agent_playbook_id:
-                    # Find matching fingerprint by trigger/content matching
-                    for fp_key in fp_keys_from_changed:
-                        if (
-                            fp_key in new_fingerprints
-                            and new_fingerprints[fp_key]["agent_playbook_id"] is None
-                        ):
-                            new_fingerprints[fp_key]["agent_playbook_id"] = (
-                                saved_fb.agent_playbook_id
-                            )
-                            break
+                    fp_key = self._compute_cluster_fingerprint(cluster_playbooks)
+                    raw_ids = sorted(fb.user_playbook_id for fb in cluster_playbooks)
+                    new_fingerprints[fp_key] = {
+                        "agent_playbook_id": saved_fb.agent_playbook_id,
+                        "user_playbook_ids": raw_ids,
+                    }
+                    self.storage.set_source_user_playbook_ids_for_agent_playbook(  # type: ignore[reportOptionalMemberAccess]
+                        saved_fb.agent_playbook_id, raw_ids
+                    )
 
             # Store fingerprints in operation state
             mgr.update_cluster_fingerprints(
@@ -913,6 +909,8 @@ class PlaybookAggregator:
                 )
             elif archived_playbook_ids:
                 self.storage.delete_agent_playbooks_by_ids(archived_playbook_ids)  # type: ignore[reportOptionalMemberAccess]
+
+            self._enqueue_playbook_optimization(saved_playbook_list)
 
             stats = {
                 "clusters_found": len(clusters),
@@ -1172,6 +1170,22 @@ class PlaybookAggregator:
         Returns:
             list[AgentPlaybook]: List of newly generated playbooks (excludes duplicates)
         """
+        return [
+            playbook
+            for playbook, _ in self._generate_playbooks_with_source_clusters(
+                clusters,
+                existing_approved_playbooks,
+                direction_overlap_threshold=direction_overlap_threshold,
+            )
+        ]
+
+    def _generate_playbooks_with_source_clusters(
+        self,
+        clusters: dict[int, list[UserPlaybook]],
+        existing_approved_playbooks: list[AgentPlaybook],
+        direction_overlap_threshold: float = 0.6,
+    ) -> list[tuple[AgentPlaybook, list[UserPlaybook]]]:
+        """Generate agent playbooks while preserving their exact source cluster."""
         # Format existing approved playbooks for the prompt
         approved_playbooks_str = (
             "\n".join([f"- {fb.content}" for fb in existing_approved_playbooks])
@@ -1179,7 +1193,7 @@ class PlaybookAggregator:
             else "None"
         )
 
-        new_playbooks = []
+        new_playbooks: list[tuple[AgentPlaybook, list[UserPlaybook]]] = []
         for cluster_playbooks in clusters.values():
             playbook = self._generate_playbook_from_cluster(
                 cluster_playbooks,
@@ -1187,8 +1201,47 @@ class PlaybookAggregator:
                 direction_overlap_threshold=direction_overlap_threshold,
             )
             if playbook is not None:
-                new_playbooks.append(playbook)
+                new_playbooks.append((playbook, cluster_playbooks))
         return new_playbooks
+
+    def _enqueue_playbook_optimization(
+        self, saved_playbooks: Sequence[AgentPlaybook | None]
+    ) -> None:
+        config = self.configurator.get_config().playbook_optimizer_config
+        if (
+            not config.enabled
+            or not config.optimize_agent_playbooks
+            or not saved_playbooks
+        ):
+            return
+        from reflexio.server.services.playbook_optimizer import (
+            PlaybookOptimizationScheduler,
+            PlaybookOptimizationTarget,
+            PlaybookOptimizer,
+        )
+
+        scheduler = PlaybookOptimizationScheduler.get_instance()
+        for playbook in saved_playbooks:
+            if (
+                playbook is None
+                or not playbook.agent_playbook_id
+                or playbook.status is not None
+                or playbook.playbook_status != PlaybookStatus.PENDING
+            ):
+                continue
+            target = PlaybookOptimizationTarget(
+                kind="agent_playbook", target_id=playbook.agent_playbook_id
+            )
+            scheduler.enqueue(
+                org_id=self.request_context.org_id,
+                target=target,
+                callback=lambda target=target: PlaybookOptimizer(
+                    self.request_context, self.client
+                ).optimize(target),
+                jitter_seconds=config.scheduler_jitter_seconds,
+                abort_cooldown_threshold=config.abort_cooldown_threshold,
+                cooldown_after_aborts_seconds=config.cooldown_after_aborts_seconds,
+            )
 
     def _generate_playbook_from_cluster(
         self,

@@ -84,6 +84,10 @@ __all__ = [
     "AgentPlaybookUpdateEntry",
     "PlaybookAggregationChangeLog",
     "PlaybookAggregationChangeLogResponse",
+    "PlaybookOptimizationJob",
+    "PlaybookOptimizationCandidate",
+    "PlaybookOptimizationEvaluation",
+    "PlaybookOptimizationEvent",
     "agent_playbook_to_snapshot",
     "RunPlaybookAggregationRequest",
     "RunPlaybookAggregationResponse",
@@ -247,6 +251,86 @@ class AgentPlaybook(BaseModel):
     status: Status | None = (
         None  # used for tracking intermediate states during playbook aggregation. Status.ARCHIVED for playbooks during aggregation process, None for current playbooks
     )
+
+
+class PlaybookOptimizationJob(BaseModel):
+    """One end-to-end optimizer run for a single playbook target.
+
+    Lifecycle: ``pending`` → ``running`` → ``completed`` | ``failed`` |
+    ``skipped``. ``best_candidate_id`` and ``successor_target_id`` are set
+    when the run produces a winner or commits a successor playbook.
+    """
+
+    job_id: int = 0
+    target_kind: Literal["agent_playbook", "user_playbook"]
+    target_id: int
+    status: Literal["pending", "running", "completed", "skipped", "failed"] = "pending"
+    best_candidate_id: int | None = None
+    successor_target_id: int | None = None
+    decision_reason: str = ""
+    metadata_json: str = "{}"
+    created_at: int = Field(default_factory=lambda: int(datetime.now(UTC).timestamp()))
+    updated_at: int = Field(default_factory=lambda: int(datetime.now(UTC).timestamp()))
+
+
+class PlaybookOptimizationCandidate(BaseModel):
+    """A playbook content variant proposed by GEPA during a job.
+
+    Multiple proposals with identical content collapse to one row (deduped
+    by ``content`` inside the GEPA adapter). ``aggregate_score`` and
+    ``is_winner`` are populated only for the run's chosen winner.
+    """
+
+    candidate_id: int = 0
+    job_id: int
+    candidate_index: int = 0
+    content: str
+    parent_candidate_ids: list[int] = Field(default_factory=list)
+    aggregate_score: float | None = None
+    is_winner: bool = False
+    created_at: int = Field(default_factory=lambda: int(datetime.now(UTC).timestamp()))
+
+
+class PlaybookOptimizationEvaluation(BaseModel):
+    """Pairwise judgement of one candidate vs. the incumbent on one window.
+
+    Both rollouts are stored as JSON for offline reproducibility.
+    ``verdict='aborted'`` means the assistant backend failed and the row
+    carries no useful signal — the optimizer treats any aborted evaluation
+    as fatal for the run.
+    """
+
+    evaluation_id: int = 0
+    job_id: int
+    candidate_id: int
+    target_kind: Literal["agent_playbook", "user_playbook"]
+    target_id: int
+    scenario_user_playbook_id: int | None = None
+    source_interaction_ids: list[int] = Field(default_factory=list)
+    score: float = 0.0
+    verdict: Literal["candidate", "incumbent", "tie", "aborted"] = "tie"
+    likert: int = Field(default=0, ge=0, le=5)
+    rationale: str = ""
+    asi_json: str = "{}"
+    incumbent_rollout_json: str = "[]"
+    candidate_rollout_json: str = "[]"
+    created_at: int = Field(default_factory=lambda: int(datetime.now(UTC).timestamp()))
+
+
+class PlaybookOptimizationEvent(BaseModel):
+    """One GEPA callback (``on_*``) event captured for offline inspection.
+
+    The optimizer's ``_GEPAStorageCallback`` forwards every dispatched
+    callback into a row of this type. ``event_type`` is the callback name
+    minus the ``on_`` prefix; ``payload_json`` is a depth-bounded
+    serialization of the callback's argument.
+    """
+
+    event_id: int = 0
+    job_id: int
+    event_type: str
+    payload_json: str = "{}"
+    created_at: int = Field(default_factory=lambda: int(datetime.now(UTC).timestamp()))
 
 
 class AgentSuccessEvaluationResult(BaseModel):

@@ -1,4 +1,6 @@
+import json
 import logging
+import time
 from pathlib import Path
 
 from reflexio.models.api_schema.common import BlockingIssue
@@ -9,6 +11,10 @@ from reflexio.models.api_schema.retriever_schema import (
 from reflexio.models.api_schema.service_schemas import (
     AgentPlaybook,
     AgentSuccessEvaluationResult,
+    PlaybookOptimizationCandidate,
+    PlaybookOptimizationEvaluation,
+    PlaybookOptimizationEvent,
+    PlaybookOptimizationJob,
     PlaybookStatus,
     Request,
     Status,
@@ -214,6 +220,30 @@ class PlaybookMixin:
                     continue
                 if matches_status_filter(up.status, status_filter):
                     results.append(up)
+        return results
+
+    def get_user_playbook_by_id(self, user_playbook_id: int) -> UserPlaybook | None:
+        path = self._entity_path(self._user_playbooks_dir(), str(user_playbook_id))
+        if not path.exists():
+            return None
+        return self._read_entity(path, UserPlaybook)
+
+    def get_user_playbooks_by_ids_any_user(
+        self,
+        user_playbook_ids: list[int],
+        status_filter: list[Status | None] | None = None,
+    ) -> list[UserPlaybook]:
+        if not user_playbook_ids:
+            return []
+        results: list[UserPlaybook] = []
+        with self._lock:
+            for upid in user_playbook_ids:
+                playbook = self.get_user_playbook_by_id(upid)
+                if playbook and (
+                    status_filter is None
+                    or matches_status_filter(playbook.status, status_filter)
+                ):
+                    results.append(playbook)
         return results
 
     def archive_user_playbook_by_id(self, user_id: str, user_playbook_id: int) -> bool:
@@ -559,6 +589,12 @@ class PlaybookMixin:
                 break
         return playbooks
 
+    def get_agent_playbook_by_id(self, agent_playbook_id: int) -> AgentPlaybook | None:
+        path = self._entity_path(self._agent_playbooks_dir(), str(agent_playbook_id))
+        if not path.exists():
+            return None
+        return self._read_entity(path, AgentPlaybook)
+
     def update_agent_playbook_status(
         self, agent_playbook_id: int, playbook_status: PlaybookStatus
     ) -> None:
@@ -754,6 +790,148 @@ class PlaybookMixin:
                 if self._should_delete_playbook(ap, playbook_name, agent_version):
                     self._delete_embedding(p)
                     p.unlink()
+
+    # ------------------------------------------------------------------
+    # Playbook optimizer methods
+    # ------------------------------------------------------------------
+
+    def set_source_user_playbook_ids_for_agent_playbook(
+        self, agent_playbook_id: int, user_playbook_ids: list[int]
+    ) -> None:
+        path = self._entity_path(
+            self._agent_playbook_source_map_dir(), str(agent_playbook_id)
+        )
+        path.write_text(
+            json.dumps({"user_playbook_ids": user_playbook_ids}, indent=2),
+            encoding="utf-8",
+        )
+
+    def get_source_user_playbook_ids_for_agent_playbook(
+        self, agent_playbook_id: int
+    ) -> list[int]:
+        path = self._entity_path(
+            self._agent_playbook_source_map_dir(), str(agent_playbook_id)
+        )
+        if not path.exists():
+            return []
+        data = json.loads(path.read_text(encoding="utf-8") or "{}")
+        return [int(v) for v in data.get("user_playbook_ids", [])]
+
+    def create_playbook_optimization_job(
+        self, job: PlaybookOptimizationJob
+    ) -> PlaybookOptimizationJob:
+        with self._lock:
+            if job.job_id == 0:
+                job.job_id = self._next_id(self._playbook_opt_jobs_dir())
+            self._write_entity(
+                self._entity_path(self._playbook_opt_jobs_dir(), str(job.job_id)),
+                job,
+            )
+        return job
+
+    def update_playbook_optimization_job(
+        self,
+        job_id: int,
+        *,
+        status: str | None = None,
+        best_candidate_id: int | None = None,
+        successor_target_id: int | None = None,
+        decision_reason: str | None = None,
+        metadata_json: str | None = None,
+    ) -> None:
+        path = self._entity_path(self._playbook_opt_jobs_dir(), str(job_id))
+        if not path.exists():
+            return
+        job = self._read_entity(path, PlaybookOptimizationJob)
+        if status is not None:
+            job.status = status
+        if best_candidate_id is not None:
+            job.best_candidate_id = best_candidate_id
+        if successor_target_id is not None:
+            job.successor_target_id = successor_target_id
+        if decision_reason is not None:
+            job.decision_reason = decision_reason
+        if metadata_json is not None:
+            job.metadata_json = metadata_json
+        job.updated_at = int(time.time())
+        self._write_entity(path, job)
+
+    def insert_playbook_optimization_candidate(
+        self, candidate: PlaybookOptimizationCandidate
+    ) -> PlaybookOptimizationCandidate:
+        with self._lock:
+            if candidate.candidate_id == 0:
+                candidate.candidate_id = self._next_id(
+                    self._playbook_opt_candidates_dir()
+                )
+            self._write_entity(
+                self._entity_path(
+                    self._playbook_opt_candidates_dir(), str(candidate.candidate_id)
+                ),
+                candidate,
+            )
+        return candidate
+
+    def list_playbook_optimization_candidates(
+        self, job_id: int
+    ) -> list[PlaybookOptimizationCandidate]:
+        candidates = self._list_entities(
+            self._playbook_opt_candidates_dir(), PlaybookOptimizationCandidate
+        )
+        return [c for c in candidates if c.job_id == job_id]
+
+    def update_playbook_optimization_candidate(
+        self,
+        candidate_id: int,
+        *,
+        aggregate_score: float | None = None,
+        is_winner: bool | None = None,
+    ) -> None:
+        path = self._entity_path(self._playbook_opt_candidates_dir(), str(candidate_id))
+        if not path.exists():
+            return
+        candidate = self._read_entity(path, PlaybookOptimizationCandidate)
+        if aggregate_score is not None:
+            candidate.aggregate_score = aggregate_score
+        if is_winner is not None:
+            candidate.is_winner = is_winner
+        self._write_entity(path, candidate)
+
+    def insert_playbook_optimization_evaluation(
+        self, evaluation: PlaybookOptimizationEvaluation
+    ) -> PlaybookOptimizationEvaluation:
+        with self._lock:
+            if evaluation.evaluation_id == 0:
+                evaluation.evaluation_id = self._next_id(
+                    self._playbook_opt_evaluations_dir()
+                )
+            self._write_entity(
+                self._entity_path(
+                    self._playbook_opt_evaluations_dir(), str(evaluation.evaluation_id)
+                ),
+                evaluation,
+            )
+        return evaluation
+
+    def list_playbook_optimization_evaluations(
+        self, job_id: int
+    ) -> list[PlaybookOptimizationEvaluation]:
+        evaluations = self._list_entities(
+            self._playbook_opt_evaluations_dir(), PlaybookOptimizationEvaluation
+        )
+        return [e for e in evaluations if e.job_id == job_id]
+
+    def insert_playbook_optimization_event(
+        self, event: PlaybookOptimizationEvent
+    ) -> PlaybookOptimizationEvent:
+        with self._lock:
+            if event.event_id == 0:
+                event.event_id = self._next_id(self._playbook_opt_events_dir())
+            self._write_entity(
+                self._entity_path(self._playbook_opt_events_dir(), str(event.event_id)),
+                event,
+            )
+        return event
 
     # ------------------------------------------------------------------
     # Agent Success Evaluation methods

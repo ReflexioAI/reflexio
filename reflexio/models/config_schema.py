@@ -457,6 +457,71 @@ class ReflectionConfig(BaseModel):
     model: str | None = None
 
 
+class PlaybookOptimizerConfig(BaseModel):
+    """Configuration for GEPA-backed playbook content optimization.
+
+    The optimizer is opt-in (``enabled=False`` by default) and requires
+    *exactly one* assistant backend to actually do anything. The two
+    backends are mutually exclusive — see ``check_single_assistant_backend``
+    below.
+    """
+
+    # --- gating ------------------------------------------------------------
+    enabled: bool = False
+    optimize_agent_playbooks: bool = False
+    optimize_user_playbooks: bool = False
+    auto_update_pending_agent_playbooks: bool = True
+    auto_update_user_playbooks: bool = False
+    # If only one source window is available, a "win" is more likely to be
+    # noise than a real improvement. Default off.
+    allow_single_window_commit: bool = False
+
+    # --- GEPA budget -------------------------------------------------------
+    max_metric_calls: int = Field(default=40, gt=0)
+    max_turns: int = Field(default=5, gt=0)
+    reflection_minibatch_size: int = Field(default=3, gt=0)
+    min_commit_windows: int = Field(default=2, gt=0)
+    min_commit_score: float = Field(default=0.75, ge=0.0, le=1.0)
+    min_commit_likert: int = Field(default=4, ge=1, le=5)
+    use_merge: bool = True
+    max_merge_invocations: int = Field(default=5, ge=0)
+    reflection_model: str | None = None
+
+    # --- assistant backend: webhook ---------------------------------------
+    webhook_url: str | None = None
+    webhook_auth_header: str | None = None
+    # The webhook_* timeout/retry/backoff fields apply to BOTH backends —
+    # the prefix is preserved purely to avoid a config-schema migration.
+    webhook_timeout_seconds: int = Field(default=60, gt=0)
+    webhook_max_retries: int = Field(default=3, ge=0)
+    webhook_backoff_base_seconds: float = Field(default=1.0, ge=0.0)
+
+    # --- assistant backend: local script ----------------------------------
+    # Absolute path to the executable. The optimizer spawns
+    # [assistant_script_path, *assistant_script_args] per turn, hands the
+    # rollout payload over stdin, and reads {"content": "..."} from stdout.
+    # See playbook_optimizer/assistant_webhook.py::LocalScriptAssistant.
+    assistant_script_path: str | None = None
+    assistant_script_args: list[str] = Field(default_factory=list)
+
+    # --- scheduler --------------------------------------------------------
+    scheduler_jitter_seconds: float = Field(default=1.0, ge=0.0)
+    cooldown_after_aborts_seconds: int = Field(default=3600, ge=0)
+    abort_cooldown_threshold: int = Field(default=2, ge=1)
+
+    @model_validator(mode="after")
+    def check_single_assistant_backend(self) -> Self:
+        # Two backends configured at once would create ambiguous behavior
+        # (which one wins?), so reject at load time rather than picking one
+        # silently in _create_assistant.
+        if self.webhook_url and self.assistant_script_path:
+            raise ValueError(
+                "Configure only one playbook optimizer assistant backend: "
+                "webhook_url or assistant_script_path"
+            )
+        return self
+
+
 class LLMConfig(BaseModel):
     """
     LLM model configuration overrides.
@@ -531,6 +596,10 @@ class Config(BaseModel):
     llm_config: LLMConfig | None = None
     # Post-publish reflection service configuration
     reflection_config: ReflectionConfig = Field(default_factory=ReflectionConfig)
+    # Optional GEPA-backed playbook content optimizer
+    playbook_optimizer_config: PlaybookOptimizerConfig = Field(
+        default_factory=PlaybookOptimizerConfig
+    )
     # Skip the LLM pre-extraction eligibility check (always run extraction)
     skip_should_run_check: bool = False
     # Enable storage-time document expansion for improved FTS recall
@@ -579,6 +648,7 @@ class Config(BaseModel):
                 "extraction_backend",
                 "search_backend",
                 "reflection_config",
+                "playbook_optimizer_config",
             ):
                 if key in data and data[key] is None:
                     del data[key]

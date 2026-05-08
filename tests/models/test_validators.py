@@ -53,6 +53,7 @@ from reflexio.models.config_schema import (
     OpenAIConfig,
     PlaybookAggregatorConfig,
     PlaybookConfig,
+    PlaybookOptimizerConfig,
     ProfileExtractorConfig,
     StorageConfigSQLite,
     ToolUseConfig,
@@ -683,6 +684,38 @@ class TestCrossFieldValidators:
             config.user_playbook_extractor_configs[0].extractor_name
             == "default_playbook_extractor"
         )
+
+    def test_playbook_optimizer_accepts_webhook_backend(self):
+        """PlaybookOptimizerConfig: webhook-only assistant backend is valid."""
+        config = PlaybookOptimizerConfig(webhook_url="https://assistant.example.test")
+
+        assert config.webhook_url == "https://assistant.example.test"
+        assert config.assistant_script_path is None
+
+    def test_playbook_optimizer_accepts_script_backend(self):
+        """PlaybookOptimizerConfig: script-only assistant backend is valid."""
+        config = PlaybookOptimizerConfig(
+            assistant_script_path="/usr/bin/python3",
+            assistant_script_args=["assistant.py"],
+        )
+
+        assert config.assistant_script_path == "/usr/bin/python3"
+        assert config.assistant_script_args == ["assistant.py"]
+
+    def test_playbook_optimizer_accepts_no_assistant_backend(self):
+        """PlaybookOptimizerConfig: no backend is valid so optimizer can skip."""
+        config = PlaybookOptimizerConfig()
+
+        assert config.webhook_url is None
+        assert config.assistant_script_path is None
+
+    def test_playbook_optimizer_rejects_multiple_assistant_backends(self):
+        """PlaybookOptimizerConfig: webhook and script are mutually exclusive."""
+        with pytest.raises(ValidationError, match="only one"):
+            PlaybookOptimizerConfig(
+                webhook_url="https://assistant.example.test",
+                assistant_script_path="/usr/bin/python3",
+            )
 
 
 # =============================================================================

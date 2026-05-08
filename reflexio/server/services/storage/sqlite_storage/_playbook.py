@@ -13,6 +13,10 @@ from reflexio.models.api_schema.retriever_schema import (
 from reflexio.models.api_schema.service_schemas import (
     AgentPlaybook,
     AgentSuccessEvaluationResult,
+    PlaybookOptimizationCandidate,
+    PlaybookOptimizationEvaluation,
+    PlaybookOptimizationEvent,
+    PlaybookOptimizationJob,
     PlaybookStatus,
     Status,
     UserPlaybook,
@@ -25,6 +29,7 @@ from ._base import (
     _effective_search_mode,
     _epoch_to_iso,
     _json_dumps,
+    _json_loads,
     _row_to_agent_playbook,
     _row_to_eval_result,
     _row_to_user_playbook,
@@ -32,6 +37,43 @@ from ._base import (
     _true_rrf_merge,
     _vector_rank_rows,
 )
+
+
+def _row_to_playbook_optimization_candidate(
+    row: sqlite3.Row,
+) -> PlaybookOptimizationCandidate:
+    return PlaybookOptimizationCandidate(
+        candidate_id=row["candidate_id"],
+        job_id=row["job_id"],
+        candidate_index=row["candidate_index"],
+        content=row["content"],
+        parent_candidate_ids=_json_loads(row["parent_candidate_ids"]) or [],
+        aggregate_score=row["aggregate_score"],
+        is_winner=bool(row["is_winner"]),
+        created_at=row["created_at"],
+    )
+
+
+def _row_to_playbook_optimization_evaluation(
+    row: sqlite3.Row,
+) -> PlaybookOptimizationEvaluation:
+    return PlaybookOptimizationEvaluation(
+        evaluation_id=row["evaluation_id"],
+        job_id=row["job_id"],
+        candidate_id=row["candidate_id"],
+        target_kind=row["target_kind"],
+        target_id=row["target_id"],
+        scenario_user_playbook_id=row["scenario_user_playbook_id"],
+        source_interaction_ids=_json_loads(row["source_interaction_ids"]) or [],
+        score=row["score"],
+        verdict=row["verdict"],
+        likert=row["likert"],
+        rationale=row["rationale"],
+        asi_json=row["asi_json"],
+        incumbent_rollout_json=row["incumbent_rollout_json"],
+        candidate_rollout_json=row["candidate_rollout_json"],
+        created_at=row["created_at"],
+    )
 
 
 class PlaybookMixin:
@@ -488,6 +530,36 @@ class PlaybookMixin:
         rows = self._fetchall(sql, params)
         return [_row_to_user_playbook(r) for r in rows]
 
+    @SQLiteStorageBase.handle_exceptions
+    def get_user_playbook_by_id(self, user_playbook_id: int) -> UserPlaybook | None:
+        row = self._fetchone(
+            "SELECT * FROM user_playbooks WHERE user_playbook_id = ?",
+            (user_playbook_id,),
+        )
+        return _row_to_user_playbook(row) if row else None
+
+    @SQLiteStorageBase.handle_exceptions
+    def get_user_playbooks_by_ids_any_user(
+        self,
+        user_playbook_ids: list[int],
+        status_filter: list[Status | None] | None = None,
+    ) -> list[UserPlaybook]:
+        if not user_playbook_ids:
+            return []
+        ph = ",".join("?" for _ in user_playbook_ids)
+        sql = f"SELECT * FROM user_playbooks WHERE user_playbook_id IN ({ph})"  # noqa: S608
+        params: list[Any] = list(user_playbook_ids)
+        if status_filter is not None:
+            frag, sparams = _build_status_sql(status_filter)
+            sql += f" AND {frag}"
+            params.extend(sparams)
+        rows = self._fetchall(sql, params)
+        by_id = {
+            _row_to_user_playbook(row).user_playbook_id: _row_to_user_playbook(row)
+            for row in rows
+        }
+        return [by_id[upid] for upid in user_playbook_ids if upid in by_id]
+
     # ------------------------------------------------------------------
     # Agent Playbook methods
     # ------------------------------------------------------------------
@@ -590,6 +662,14 @@ class PlaybookMixin:
         params.append(limit)
         rows = self._fetchall(sql, params)
         return [_row_to_agent_playbook(r) for r in rows]
+
+    @SQLiteStorageBase.handle_exceptions
+    def get_agent_playbook_by_id(self, agent_playbook_id: int) -> AgentPlaybook | None:
+        row = self._fetchone(
+            "SELECT * FROM agent_playbooks WHERE agent_playbook_id = ?",
+            (agent_playbook_id,),
+        )
+        return _row_to_agent_playbook(row) if row else None
 
     @SQLiteStorageBase.handle_exceptions
     def delete_all_agent_playbooks(self) -> None:
@@ -790,6 +870,216 @@ class PlaybookMixin:
             f"UPDATE agent_playbooks SET status = NULL WHERE agent_playbook_id IN ({ph}) AND status = 'archived'",
             agent_playbook_ids,
         )
+
+    # ------------------------------------------------------------------
+    # Playbook optimizer methods
+    # ------------------------------------------------------------------
+
+    @SQLiteStorageBase.handle_exceptions
+    def set_source_user_playbook_ids_for_agent_playbook(
+        self, agent_playbook_id: int, user_playbook_ids: list[int]
+    ) -> None:
+        with self._lock:
+            self.conn.execute(
+                "DELETE FROM agent_playbook_source_user_playbooks WHERE agent_playbook_id = ?",
+                (agent_playbook_id,),
+            )
+            self.conn.executemany(
+                """INSERT OR IGNORE INTO agent_playbook_source_user_playbooks
+                   (agent_playbook_id, user_playbook_id) VALUES (?, ?)""",
+                [(agent_playbook_id, upid) for upid in user_playbook_ids],
+            )
+            self.conn.commit()
+
+    @SQLiteStorageBase.handle_exceptions
+    def get_source_user_playbook_ids_for_agent_playbook(
+        self, agent_playbook_id: int
+    ) -> list[int]:
+        rows = self._fetchall(
+            """SELECT user_playbook_id
+               FROM agent_playbook_source_user_playbooks
+               WHERE agent_playbook_id = ?
+               ORDER BY user_playbook_id ASC""",
+            (agent_playbook_id,),
+        )
+        return [int(row["user_playbook_id"]) for row in rows]
+
+    @SQLiteStorageBase.handle_exceptions
+    def create_playbook_optimization_job(
+        self, job: PlaybookOptimizationJob
+    ) -> PlaybookOptimizationJob:
+        with self._lock:
+            cur = self.conn.execute(
+                """INSERT INTO playbook_optimization_jobs
+                   (target_kind, target_id, status, best_candidate_id,
+                    successor_target_id, decision_reason, metadata_json,
+                    created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    job.target_kind,
+                    job.target_id,
+                    job.status,
+                    job.best_candidate_id,
+                    job.successor_target_id,
+                    job.decision_reason,
+                    job.metadata_json,
+                    job.created_at,
+                    job.updated_at,
+                ),
+            )
+            job.job_id = cur.lastrowid or 0
+            self.conn.commit()
+        return job
+
+    @SQLiteStorageBase.handle_exceptions
+    def update_playbook_optimization_job(
+        self,
+        job_id: int,
+        *,
+        status: str | None = None,
+        best_candidate_id: int | None = None,
+        successor_target_id: int | None = None,
+        decision_reason: str | None = None,
+        metadata_json: str | None = None,
+    ) -> None:
+        updates: list[str] = ["updated_at = strftime('%s','now')"]
+        params: list[Any] = []
+        if status is not None:
+            updates.append("status = ?")
+            params.append(status)
+        if best_candidate_id is not None:
+            updates.append("best_candidate_id = ?")
+            params.append(best_candidate_id)
+        if successor_target_id is not None:
+            updates.append("successor_target_id = ?")
+            params.append(successor_target_id)
+        if decision_reason is not None:
+            updates.append("decision_reason = ?")
+            params.append(decision_reason)
+        if metadata_json is not None:
+            updates.append("metadata_json = ?")
+            params.append(metadata_json)
+        params.append(job_id)
+        self._execute(
+            f"UPDATE playbook_optimization_jobs SET {', '.join(updates)} WHERE job_id = ?",  # noqa: S608
+            tuple(params),
+        )
+
+    @SQLiteStorageBase.handle_exceptions
+    def insert_playbook_optimization_candidate(
+        self, candidate: PlaybookOptimizationCandidate
+    ) -> PlaybookOptimizationCandidate:
+        with self._lock:
+            cur = self.conn.execute(
+                """INSERT INTO playbook_optimization_candidates
+                   (job_id, candidate_index, content, parent_candidate_ids,
+                    aggregate_score, is_winner, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    candidate.job_id,
+                    candidate.candidate_index,
+                    candidate.content,
+                    _json_dumps(candidate.parent_candidate_ids) or "[]",
+                    candidate.aggregate_score,
+                    1 if candidate.is_winner else 0,
+                    candidate.created_at,
+                ),
+            )
+            candidate.candidate_id = cur.lastrowid or 0
+            self.conn.commit()
+        return candidate
+
+    @SQLiteStorageBase.handle_exceptions
+    def list_playbook_optimization_candidates(
+        self, job_id: int
+    ) -> list[PlaybookOptimizationCandidate]:
+        rows = self._fetchall(
+            "SELECT * FROM playbook_optimization_candidates WHERE job_id = ? ORDER BY candidate_id ASC",
+            (job_id,),
+        )
+        return [_row_to_playbook_optimization_candidate(row) for row in rows]
+
+    @SQLiteStorageBase.handle_exceptions
+    def update_playbook_optimization_candidate(
+        self,
+        candidate_id: int,
+        *,
+        aggregate_score: float | None = None,
+        is_winner: bool | None = None,
+    ) -> None:
+        updates: list[str] = []
+        params: list[Any] = []
+        if aggregate_score is not None:
+            updates.append("aggregate_score = ?")
+            params.append(aggregate_score)
+        if is_winner is not None:
+            updates.append("is_winner = ?")
+            params.append(1 if is_winner else 0)
+        if not updates:
+            return
+        params.append(candidate_id)
+        self._execute(
+            f"UPDATE playbook_optimization_candidates SET {', '.join(updates)} WHERE candidate_id = ?",  # noqa: S608
+            tuple(params),
+        )
+
+    @SQLiteStorageBase.handle_exceptions
+    def insert_playbook_optimization_evaluation(
+        self, evaluation: PlaybookOptimizationEvaluation
+    ) -> PlaybookOptimizationEvaluation:
+        with self._lock:
+            cur = self.conn.execute(
+                """INSERT INTO playbook_optimization_evaluations
+                   (job_id, candidate_id, target_kind, target_id,
+                    scenario_user_playbook_id, source_interaction_ids, score,
+                    verdict, likert, rationale, asi_json, incumbent_rollout_json,
+                    candidate_rollout_json, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    evaluation.job_id,
+                    evaluation.candidate_id,
+                    evaluation.target_kind,
+                    evaluation.target_id,
+                    evaluation.scenario_user_playbook_id,
+                    _json_dumps(evaluation.source_interaction_ids) or "[]",
+                    evaluation.score,
+                    evaluation.verdict,
+                    evaluation.likert,
+                    evaluation.rationale,
+                    evaluation.asi_json,
+                    evaluation.incumbent_rollout_json,
+                    evaluation.candidate_rollout_json,
+                    evaluation.created_at,
+                ),
+            )
+            evaluation.evaluation_id = cur.lastrowid or 0
+            self.conn.commit()
+        return evaluation
+
+    @SQLiteStorageBase.handle_exceptions
+    def list_playbook_optimization_evaluations(
+        self, job_id: int
+    ) -> list[PlaybookOptimizationEvaluation]:
+        rows = self._fetchall(
+            "SELECT * FROM playbook_optimization_evaluations WHERE job_id = ? ORDER BY evaluation_id ASC",
+            (job_id,),
+        )
+        return [_row_to_playbook_optimization_evaluation(row) for row in rows]
+
+    @SQLiteStorageBase.handle_exceptions
+    def insert_playbook_optimization_event(
+        self, event: PlaybookOptimizationEvent
+    ) -> PlaybookOptimizationEvent:
+        with self._lock:
+            cur = self.conn.execute(
+                """INSERT INTO playbook_optimization_events
+                   (job_id, event_type, payload_json, created_at)
+                   VALUES (?, ?, ?, ?)""",
+                (event.job_id, event.event_type, event.payload_json, event.created_at),
+            )
+            event.event_id = cur.lastrowid or 0
+            self.conn.commit()
+        return event
 
     @SQLiteStorageBase.handle_exceptions
     def delete_archived_agent_playbooks_by_playbook_name(

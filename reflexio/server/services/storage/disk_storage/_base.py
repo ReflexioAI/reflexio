@@ -11,7 +11,7 @@ import threading
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TypeVar
+from typing import TypeVar, cast
 
 from pydantic import BaseModel
 
@@ -88,6 +88,11 @@ class DiskStorageBase(BaseStorage):
     _OPERATION_STATES = "operation_states"
     _CHANGE_LOGS_PROFILE = "change_logs/profile"
     _CHANGE_LOGS_PLAYBOOK_AGG = "change_logs/playbook_aggregation"
+    _AGENT_PLAYBOOK_SOURCE_MAP = "playbook_optimizer/source_map"
+    _PLAYBOOK_OPT_JOBS = "playbook_optimizer/jobs"
+    _PLAYBOOK_OPT_CANDIDATES = "playbook_optimizer/candidates"
+    _PLAYBOOK_OPT_EVALUATIONS = "playbook_optimizer/evaluations"
+    _PLAYBOOK_OPT_EVENTS = "playbook_optimizer/events"
     _EMBEDDINGS = ".embeddings"
 
     def __init__(
@@ -157,6 +162,11 @@ class DiskStorageBase(BaseStorage):
             self._OPERATION_STATES,
             self._CHANGE_LOGS_PROFILE,
             self._CHANGE_LOGS_PLAYBOOK_AGG,
+            self._AGENT_PLAYBOOK_SOURCE_MAP,
+            self._PLAYBOOK_OPT_JOBS,
+            self._PLAYBOOK_OPT_CANDIDATES,
+            self._PLAYBOOK_OPT_EVALUATIONS,
+            self._PLAYBOOK_OPT_EVENTS,
             self._EMBEDDINGS,
         ):
             (self._org_dir / subdir).mkdir(parents=True, exist_ok=True)
@@ -199,7 +209,7 @@ class DiskStorageBase(BaseStorage):
         deserializer = _DESERIALIZERS.get(path.suffix)
         if not deserializer:
             raise StorageError(f"Unsupported file format: {path.suffix}")
-        entity = deserializer(path.read_text(encoding="utf-8"), model_class)
+        entity = cast(T, deserializer(path.read_text(encoding="utf-8"), model_class))
         # Load sidecar embedding if present
         if "embedding" in model_class.model_fields and (
             embedding := self._read_embedding(path)
@@ -413,6 +423,21 @@ class DiskStorageBase(BaseStorage):
 
     def _playbook_agg_change_logs_dir(self) -> Path:
         return self._org_dir / self._CHANGE_LOGS_PLAYBOOK_AGG
+
+    def _agent_playbook_source_map_dir(self) -> Path:
+        return self._org_dir / self._AGENT_PLAYBOOK_SOURCE_MAP
+
+    def _playbook_opt_jobs_dir(self) -> Path:
+        return self._org_dir / self._PLAYBOOK_OPT_JOBS
+
+    def _playbook_opt_candidates_dir(self) -> Path:
+        return self._org_dir / self._PLAYBOOK_OPT_CANDIDATES
+
+    def _playbook_opt_evaluations_dir(self) -> Path:
+        return self._org_dir / self._PLAYBOOK_OPT_EVALUATIONS
+
+    def _playbook_opt_events_dir(self) -> Path:
+        return self._org_dir / self._PLAYBOOK_OPT_EVENTS
 
     def _clear_dir(self, directory: Path) -> None:
         """Remove all contents of a directory and recreate it."""

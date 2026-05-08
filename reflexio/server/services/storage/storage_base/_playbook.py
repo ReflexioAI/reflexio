@@ -4,6 +4,10 @@ from reflexio.models.api_schema.common import BlockingIssue
 from reflexio.models.api_schema.domain import (
     AgentPlaybook,
     AgentSuccessEvaluationResult,
+    PlaybookOptimizationCandidate,
+    PlaybookOptimizationEvaluation,
+    PlaybookOptimizationEvent,
+    PlaybookOptimizationJob,
     PlaybookStatus,
     Status,
     UserPlaybook,
@@ -201,6 +205,20 @@ class PlaybookMixin:
         raise NotImplementedError
 
     @abstractmethod
+    def get_user_playbook_by_id(self, user_playbook_id: int) -> UserPlaybook | None:
+        """Fetch one user playbook by id, regardless of owner."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_user_playbooks_by_ids_any_user(
+        self,
+        user_playbook_ids: list[int],
+        status_filter: list[Status | None] | None = None,
+    ) -> list[UserPlaybook]:
+        """Fetch user playbooks by ids without requiring a single owner id."""
+        raise NotImplementedError
+
+    @abstractmethod
     def archive_user_playbook_by_id(self, user_id: str, user_playbook_id: int) -> bool:
         """Atomically archive a single user playbook by id, only if CURRENT.
 
@@ -277,6 +295,11 @@ class PlaybookMixin:
         Returns:
             list[AgentPlaybook]: List of agent playbook objects
         """
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_agent_playbook_by_id(self, agent_playbook_id: int) -> AgentPlaybook | None:
+        """Fetch one agent playbook by id."""
         raise NotImplementedError
 
     @abstractmethod
@@ -417,6 +440,91 @@ class PlaybookMixin:
         Args:
             agent_playbook_ids (list[int]): List of agent playbook IDs to restore
         """
+        raise NotImplementedError
+
+    # ==============================
+    # Playbook optimization methods
+    # ==============================
+
+    @abstractmethod
+    def set_source_user_playbook_ids_for_agent_playbook(
+        self, agent_playbook_id: int, user_playbook_ids: list[int]
+    ) -> None:
+        """Persist the source user playbook ids that produced an agent playbook."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_source_user_playbook_ids_for_agent_playbook(
+        self, agent_playbook_id: int
+    ) -> list[int]:
+        """Return source user playbook ids for an agent playbook."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def create_playbook_optimization_job(
+        self, job: PlaybookOptimizationJob
+    ) -> PlaybookOptimizationJob:
+        """Persist a playbook optimization job and return it with id populated."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def update_playbook_optimization_job(
+        self,
+        job_id: int,
+        *,
+        status: str | None = None,
+        best_candidate_id: int | None = None,
+        successor_target_id: int | None = None,
+        decision_reason: str | None = None,
+        metadata_json: str | None = None,
+    ) -> None:
+        """Update mutable fields on a playbook optimization job."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def insert_playbook_optimization_candidate(
+        self, candidate: PlaybookOptimizationCandidate
+    ) -> PlaybookOptimizationCandidate:
+        """Persist an optimizer candidate and return it with id populated."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def list_playbook_optimization_candidates(
+        self, job_id: int
+    ) -> list[PlaybookOptimizationCandidate]:
+        """List optimizer candidates for a job."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def update_playbook_optimization_candidate(
+        self,
+        candidate_id: int,
+        *,
+        aggregate_score: float | None = None,
+        is_winner: bool | None = None,
+    ) -> None:
+        """Update mutable optimizer candidate result fields."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def insert_playbook_optimization_evaluation(
+        self, evaluation: PlaybookOptimizationEvaluation
+    ) -> PlaybookOptimizationEvaluation:
+        """Persist an optimizer evaluation and return it with id populated."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def list_playbook_optimization_evaluations(
+        self, job_id: int
+    ) -> list[PlaybookOptimizationEvaluation]:
+        """List optimizer evaluations for a job."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def insert_playbook_optimization_event(
+        self, event: PlaybookOptimizationEvent
+    ) -> PlaybookOptimizationEvent:
+        """Persist an optimizer callback/event and return it with id populated."""
         raise NotImplementedError
 
     @abstractmethod
