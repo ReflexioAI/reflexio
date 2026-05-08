@@ -9,6 +9,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 from enum import Enum
 from pathlib import Path
 from typing import Annotated
@@ -153,20 +154,71 @@ def _prompt_install_location() -> InstallLocation:
     raise typer.Exit(1)
 
 
-_EMBEDDING_CHOICES: list[tuple[str, str, str]] = [
-    (
-        "openai",
-        "OPENAI_API_KEY",
-        "OpenAI  (text-embedding-3-small — recommended, lowest cost)",
-    ),
-    ("gemini", "GEMINI_API_KEY", "Gemini  (text-embedding-004)"),
-]
+# Map embedding provider keys to their canonical model names. Used by both
+# the interactive prompt (writes the choice to org config) and the
+# ``--embedding`` flag (skips the prompt entirely for CI). Kept here so the
+# two call sites can't drift on what e.g. "gemini" actually means.
+_EMBEDDING_MODEL_NAMES: dict[str, str] = {
+    "local": "local/minilm-l6-v2",
+    "openai": "text-embedding-3-small",
+    "gemini": "text-embedding-004",
+}
+
+
+def _build_embedding_choices() -> list[tuple[str, str | None, str]]:
+    """Build the interactive embedding-provider menu at call time.
+
+    The local option is included only when ``chromadb`` is importable; built
+    dynamically so the menu always reflects the current Python environment
+    rather than a snapshot frozen at module load.
+
+    Returns:
+        list[tuple[str, str | None, str]]: ``(provider_key, env_var_name,
+        display_label)`` rows. ``env_var_name`` is ``None`` for the local
+        provider (no API key needed).
+    """
+    from reflexio.server.llm.providers.local_embedding_provider import (
+        is_chromadb_importable,
+    )
+
+    choices: list[tuple[str, str | None, str]] = []
+    if is_chromadb_importable():
+        choices.append(
+            (
+                "local",
+                None,
+                "Local (in-process MiniLM-L6-v2; ~25 MB; no API key needed)",
+            )
+        )
+    choices.extend(
+        [
+            ("openai", "OPENAI_API_KEY", "OpenAI (text-embedding-3-small)"),
+            ("gemini", "GEMINI_API_KEY", "Gemini (text-embedding-004)"),
+        ]
+    )
+    return choices
+
+
+def _is_non_interactive() -> bool:
+    """Return True when prompts must be skipped (CI / scripted use).
+
+    Two triggers:
+
+    - stdin is not a TTY (``nohup``, container, pipe-fed shell)
+    - ``REFLEXIO_NONINTERACTIVE=1`` in the environment (explicit opt-out)
+    """
+    if os.environ.get("REFLEXIO_NONINTERACTIVE") == "1":
+        return True
+    return not sys.stdin.isatty()
 
 
 def _prompt_embedding_provider(env_path: Path, llm_provider_key: str) -> str | None:
     """Prompt for an embedding-capable API key if the LLM provider lacks embedding support.
 
-    Skips the prompt only when the LLM provider already supports embeddings.
+    Skips the prompt when the LLM provider already supports embeddings, or
+    when the environment is non-interactive (no TTY or
+    ``REFLEXIO_NONINTERACTIVE=1``). In the non-interactive case the first
+    available choice is returned without writing to ``.env``.
 
     Args:
         env_path (Path): Path to the .env file for writing the key.
@@ -179,26 +231,159 @@ def _prompt_embedding_provider(env_path: Path, llm_provider_key: str) -> str | N
     if llm_provider_key in _EMBEDDING_PROVIDERS:
         return None
 
+    choices = _build_embedding_choices()
+    if not choices:
+        return None
+
+    # Non-interactive: pick the first available option without prompting. When
+    # chromadb is importable that's local (no key required); otherwise it's
+    # OpenAI or Gemini, which still won't have an API key but at least the
+    # caller knows the wizard didn't block.
+    if _is_non_interactive():
+        provider_key, env_var, _ = choices[0]
+        if env_var is None:
+            # Local needs no key — nothing to write.
+            return _provider_display(provider_key)
+        return _provider_display(provider_key)
+
     llm_display = _PROVIDERS[llm_provider_key]["display"]
     typer.echo(f"\nYour LLM provider ({llm_display}) doesn't support text embeddings.")
     typer.echo("Reflexio needs an embedding model for semantic search.\n")
     typer.echo("Which provider for embeddings?")
-    for idx, (_, _, label) in enumerate(_EMBEDDING_CHOICES, 1):
+    for idx, (_, _, label) in enumerate(choices, 1):
         typer.echo(f"  [{idx}] {label}")
 
     choice = typer.prompt("Choice", type=int, default=1)
-    if not 1 <= choice <= len(_EMBEDDING_CHOICES):
-        typer.echo(f"Error: choice must be between 1 and {len(_EMBEDDING_CHOICES)}")
+    if not 1 <= choice <= len(choices):
+        typer.echo(f"Error: choice must be between 1 and {len(choices)}")
         raise typer.Exit(1)
 
-    _, env_var, _ = _EMBEDDING_CHOICES[choice - 1]
+    provider_key, env_var, _ = choices[choice - 1]
+    if env_var is None:
+        # Local: no API key needed.
+        return _provider_display(provider_key)
+
     api_key = typer.prompt(f"Enter your {env_var}")
     if not api_key.strip():
         typer.echo("Error: API key cannot be empty")
         raise typer.Exit(1)
     _set_env_var(env_path, env_var, api_key)
 
-    return _PROVIDERS[_EMBEDDING_CHOICES[choice - 1][0]]["display"]
+    return _provider_display(provider_key)
+
+
+def _provider_display(provider_key: str) -> str:
+    """Return the user-facing display name for a provider key.
+
+    The local provider isn't in ``_PROVIDERS`` (which only lists LLM
+    providers), so this helper centralizes the special case.
+    """
+    if provider_key == "local":
+        return "Local (MiniLM-L6-v2)"
+    return _PROVIDERS[provider_key]["display"]
+
+
+def _write_embedding_model_to_org_config(model_name: str) -> None:
+    """Persist the user's embedding choice to the default-org config file.
+
+    Loads the existing config, updates ``llm_config.embedding_model_name``,
+    and writes it back. All other fields are preserved. Reuses the same
+    ``LocalFileConfigStorage`` round-trip pattern as ``save_storage_to_config``.
+
+    Args:
+        model_name: Canonical model name to persist
+            (e.g. ``"local/minilm-l6-v2"``).
+    """
+    from reflexio.models.config_schema import LLMConfig
+    from reflexio.server.services.configurator.local_file_config_storage import (
+        LocalFileConfigStorage,
+    )
+
+    storage = LocalFileConfigStorage("self-host-org")
+    config = storage.load_config()
+    if config.llm_config is None:
+        config.llm_config = LLMConfig(embedding_model_name=model_name)
+    else:
+        config.llm_config.embedding_model_name = model_name
+    storage.save_config(config)
+
+
+def _choose_embedding_provider(env_path: Path, *, embedding_flag: str) -> str | None:
+    """Run the upfront embedding-provider step for ``setup init``.
+
+    Behaviour matrix:
+
+    +-----------------+----------------+-------------------------------------+
+    | ``embedding``   | TTY?           | What happens                        |
+    +=================+================+=====================================+
+    | ``"local"`` /   | (any)          | Write the matching model to org     |
+    | ``"openai"`` /  |                | config; no prompt.                  |
+    | ``"gemini"``    |                |                                     |
+    +-----------------+----------------+-------------------------------------+
+    | ``"auto"``      | non-interactive| No prompt, no org-config write —    |
+    |                 |                | runtime auto-detection (Layer A)    |
+    |                 |                | picks the embedder.                 |
+    +-----------------+----------------+-------------------------------------+
+    | ``"auto"``      | interactive    | Show the menu (default = local      |
+    |                 |                | when chromadb is importable). Write |
+    |                 |                | the choice to org config; for       |
+    |                 |                | OpenAI / Gemini also collect the    |
+    |                 |                | API key inline.                     |
+    +-----------------+----------------+-------------------------------------+
+
+    Args:
+        env_path: Path to the user's .env file. Used to write the cloud
+            embedding API key when the user picks OpenAI / Gemini in the
+            interactive prompt.
+        embedding_flag: Value of the ``--embedding`` flag. ``"auto"`` is
+            the default and means "ask interactively, or fall back to
+            runtime auto-detection if there's no TTY."
+
+    Returns:
+        str | None: Display name of the chosen embedding provider, or None
+            when no override was written (auto + non-interactive, or no
+            choices available).
+    """
+    if embedding_flag in _EMBEDDING_MODEL_NAMES:
+        # Explicit non-default flag wins over interactive / auto-detection.
+        _write_embedding_model_to_org_config(_EMBEDDING_MODEL_NAMES[embedding_flag])
+        return _provider_display(embedding_flag)
+
+    # embedding_flag == "auto" from here on.
+    if _is_non_interactive():
+        # No TTY → runtime auto-detection picks the embedder. No write.
+        return None
+
+    choices = _build_embedding_choices()
+    if not choices:
+        # No providers available (chromadb not importable AND no cloud
+        # embedders in scope). Defer to runtime auto-detection, which will
+        # raise a clear error if nothing matches.
+        return None
+
+    typer.echo("\nChoose embedding provider:")
+    for idx, (_, _, label) in enumerate(choices, 1):
+        suffix = " — recommended" if idx == 1 else ""
+        typer.echo(f"  [{idx}] {label}{suffix}")
+
+    choice = typer.prompt("Choice", type=int, default=1)
+    if not 1 <= choice <= len(choices):
+        typer.echo(f"Error: choice must be between 1 and {len(choices)}")
+        raise typer.Exit(1)
+
+    provider_key, env_var, _ = choices[choice - 1]
+    _write_embedding_model_to_org_config(_EMBEDDING_MODEL_NAMES[provider_key])
+
+    # For cloud embedders the user clearly wants that provider, so collect
+    # the API key inline if it isn't already set. Local has env_var=None.
+    if env_var is not None and not os.environ.get(env_var):
+        api_key = typer.prompt(f"Enter your {env_var}")
+        if not api_key.strip():
+            typer.echo("Error: API key cannot be empty")
+            raise typer.Exit(1)
+        _set_env_var(env_path, env_var, api_key)
+
+    return _provider_display(provider_key)
 
 
 _LOCAL_SERVER_URL = "http://localhost:8081"
@@ -522,6 +707,11 @@ def openclaw(
 # ---------------------------------------------------------------------------
 
 
+_VALID_EMBEDDING_FLAGS: frozenset[str] = frozenset(
+    {"auto", "local", "openai", "gemini"}
+)
+
+
 @app.command("init")
 def init(
     skip_llm: Annotated[
@@ -535,6 +725,17 @@ def init(
             ),
         ),
     ] = False,
+    embedding: Annotated[
+        str,
+        typer.Option(
+            "--embedding",
+            help=(
+                "Embedding provider: 'local' (in-process MiniLM), 'openai', "
+                "'gemini', or 'auto' (default — let runtime auto-detection "
+                "pick). Skips the interactive prompt."
+            ),
+        ),
+    ] = "auto",
 ) -> None:
     """Configure Reflexio without installing any integration.
 
@@ -553,7 +754,21 @@ def init(
         skip_llm: When True, skip the LLM provider prompt. Useful if
             you're only going to point the CLI at a managed Reflexio
             server, which handles extraction with its own LLM keys.
+        embedding: Embedding-provider selector for non-interactive use.
+            ``"auto"`` (default) leaves the choice to runtime
+            auto-detection. ``"local"`` / ``"openai"`` / ``"gemini"``
+            persist the corresponding model to org config and skip the
+            prompt. Honors ``REFLEXIO_NONINTERACTIVE=1`` (skips the
+            prompt and behaves as ``"auto"`` when the flag is left at
+            its default).
     """
+    if embedding not in _VALID_EMBEDDING_FLAGS:
+        typer.echo(
+            f"Error: --embedding must be one of "
+            f"{sorted(_VALID_EMBEDDING_FLAGS)}, got {embedding!r}"
+        )
+        raise typer.Exit(1)
+
     from reflexio.cli.env_loader import load_reflexio_env
 
     env_path = load_reflexio_env()
@@ -579,8 +794,18 @@ def init(
     elif skip_llm:
         typer.echo("\nSkipping LLM provider per --skip-llm.")
     else:
-        display_name, model, provider_key = _prompt_llm_provider(env_path)
-        embedding_label = _prompt_embedding_provider(env_path, provider_key)
+        display_name, model, _ = _prompt_llm_provider(env_path)
+
+    # Step 2.5: Upfront embedding-provider step. Local is the default when
+    # chromadb is importable; the choice is persisted to org config so it
+    # survives later cloud-key changes. Skipped for managed mode (the remote
+    # server handles embeddings server-side). Replaces the legacy
+    # ``_prompt_embedding_provider`` call here — that helper still exists
+    # for the ``services start`` first-run wizard.
+    if not is_managed:
+        embedding_label = _choose_embedding_provider(
+            env_path, embedding_flag=embedding
+        )
 
     # Step 3: Summary — no integration to print
     typer.echo("")
@@ -1180,9 +1405,7 @@ def openai_codex_setup(
         typer.echo(f"  email:     {tokens.email}")
     typer.echo(f"  plan_type: {tokens.plan_type}")
     typer.echo("")
-    typer.echo(
-        "Verify the token resolves cleanly via the proxy's health endpoint:"
-    )
+    typer.echo("Verify the token resolves cleanly via the proxy's health endpoint:")
     typer.echo("  curl -s http://127.0.0.1:11435/health | jq")
     typer.echo("")
     typer.echo(

@@ -505,3 +505,234 @@ class TestClaudeCodeSetupFlags:
                 project_dir=Path("/tmp"),
                 global_install=True,
             )
+
+
+# ---------------------------------------------------------------------------
+# Embedding-provider step (Layer B): non-TTY behaviour, --embedding flag,
+# org-config persistence
+# ---------------------------------------------------------------------------
+
+
+def _read_org_config(home: Path, org_id: str = "self-host-org") -> dict | None:
+    """Read the JSON config file for an org under a fake ``$HOME``.
+
+    Returns None when the file doesn't exist so tests can assert
+    "no override was written" cleanly.
+    """
+    config_path = home / ".reflexio" / "configs" / f"config_{org_id}.json"
+    if not config_path.exists():
+        return None
+    return json.loads(config_path.read_text())
+
+
+class TestPromptEmbeddingProviderNonInteractive:
+    """``_prompt_embedding_provider`` short-circuits when stdin is not a TTY."""
+
+    def test_prompt_embedding_provider_non_tty_picks_local(
+        self, tmp_path: Path
+    ) -> None:
+        """No TTY → return local default without ever calling ``typer.prompt``."""
+        from reflexio.cli.commands.setup_cmd import _prompt_embedding_provider
+
+        env = tmp_path / ".env"
+        env.write_text("")
+        with (
+            patch("sys.stdin.isatty", return_value=False),
+            patch(
+                "reflexio.server.llm.providers.local_embedding_provider"
+                ".is_chromadb_importable",
+                return_value=True,
+            ),
+            patch("typer.prompt") as mock_prompt,
+        ):
+            # 'anthropic' has no embedding support, so the prompt path runs.
+            result = _prompt_embedding_provider(env, "anthropic")
+        mock_prompt.assert_not_called()
+        # Local was the first choice when chromadb is importable.
+        assert result == "Local (MiniLM-L6-v2)"
+
+
+class TestSetupInitEmbeddingStep:
+    """``setup init`` includes the new embedding step and writes org config."""
+
+    def _patch_home_and_chromadb(
+        self, monkeypatch: pytest.MonkeyPatch, fake_home: Path
+    ) -> None:
+        """Redirect ``~`` to a tmp dir and force chromadb to look importable.
+
+        ``LocalFileConfigStorage`` resolves its config path through
+        ``Path.home() / ".reflexio" / "configs"`` when ``base_dir`` is None,
+        so this is enough to keep the test from touching the real home dir.
+        """
+        fake_home.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
+        # ``setup init`` queries chromadb importability via the module-level
+        # helper. Force True so the local option appears as choice [1].
+        monkeypatch.setattr(
+            "reflexio.server.llm.providers.local_embedding_provider"
+            ".is_chromadb_importable",
+            lambda: True,
+        )
+
+    def test_setup_init_includes_embedding_step(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The wizard renders the new "Choose embedding provider:" prompt."""
+        from reflexio.cli.commands.setup_cmd import init
+
+        fake_home = tmp_path / "home"
+        self._patch_home_and_chromadb(monkeypatch, fake_home)
+        env_path = fake_home / ".reflexio" / ".env"
+        env_path.parent.mkdir(parents=True, exist_ok=True)
+        env_path.write_text("")
+        monkeypatch.setattr(
+            "reflexio.cli.env_loader.load_reflexio_env",
+            lambda: env_path,
+        )
+
+        captured: list[str] = []
+
+        def _echo(msg: str = "", *_: object, **__: object) -> None:
+            captured.append(msg)
+
+        # Prompts in order:
+        #   1. Storage choice → 1 (SQLite)
+        #   2. LLM provider → 2 (Anthropic — no embedding support)
+        #   3. LLM API key
+        #   4. New upfront embedding step in ``_choose_embedding_provider`` → 1
+        with (
+            patch("sys.stdin.isatty", return_value=True),
+            patch("typer.prompt", side_effect=[1, 2, "sk-ant-test", 1]),
+            patch("typer.echo", side_effect=_echo),
+        ):
+            init(skip_llm=False, embedding="auto")
+
+        assert any("Choose embedding provider:" in line for line in captured)
+
+    def test_setup_init_local_is_default(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Pressing Enter at the embedding prompt picks local (chromadb available)."""
+        from reflexio.cli.commands.setup_cmd import init
+
+        fake_home = tmp_path / "home"
+        self._patch_home_and_chromadb(monkeypatch, fake_home)
+        env_path = fake_home / ".reflexio" / ".env"
+        env_path.parent.mkdir(parents=True, exist_ok=True)
+        env_path.write_text("")
+        monkeypatch.setattr(
+            "reflexio.cli.env_loader.load_reflexio_env",
+            lambda: env_path,
+        )
+
+        # Storage 1, LLM provider 2, API key, embedding step (Enter → default
+        # 1). typer.prompt with ``default=1`` returns 1 when the user presses
+        # Enter — we model that by feeding the default value as the response.
+        with (
+            patch("sys.stdin.isatty", return_value=True),
+            patch("typer.prompt", side_effect=[1, 2, "sk-ant-test", 1]),
+            patch("typer.echo"),
+        ):
+            init(skip_llm=False, embedding="auto")
+
+        cfg = _read_org_config(fake_home)
+        assert cfg is not None
+        assert cfg["llm_config"]["embedding_model_name"] == "local/minilm-l6-v2"
+
+    def test_setup_init_local_choice_writes_org_config(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Picking local writes ``embedding_model_name`` to the org config file."""
+        from reflexio.cli.commands.setup_cmd import init
+
+        fake_home = tmp_path / "home"
+        self._patch_home_and_chromadb(monkeypatch, fake_home)
+        env_path = fake_home / ".reflexio" / ".env"
+        env_path.parent.mkdir(parents=True, exist_ok=True)
+        env_path.write_text("")
+        monkeypatch.setattr(
+            "reflexio.cli.env_loader.load_reflexio_env",
+            lambda: env_path,
+        )
+
+        with (
+            patch("sys.stdin.isatty", return_value=True),
+            patch("typer.prompt", side_effect=[1, 2, "sk-ant-test", 1]),
+            patch("typer.echo"),
+        ):
+            init(skip_llm=False, embedding="auto")
+
+        cfg_path = fake_home / ".reflexio" / "configs" / "config_self-host-org.json"
+        assert cfg_path.exists()
+        cfg = json.loads(cfg_path.read_text())
+        assert cfg["llm_config"]["embedding_model_name"] == "local/minilm-l6-v2"
+
+    def test_setup_init_embedding_flag_local(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``--embedding local`` writes org config without prompting."""
+        from reflexio.cli.commands.setup_cmd import init
+
+        fake_home = tmp_path / "home"
+        self._patch_home_and_chromadb(monkeypatch, fake_home)
+        env_path = fake_home / ".reflexio" / ".env"
+        env_path.parent.mkdir(parents=True, exist_ok=True)
+        env_path.write_text("")
+        monkeypatch.setattr(
+            "reflexio.cli.env_loader.load_reflexio_env",
+            lambda: env_path,
+        )
+
+        # Only storage + LLM provider prompts should fire — no embedding step.
+        # We supply exactly 3 responses; if the wizard asked a 4th time
+        # (i.e. the embedding step ran), ``side_effect`` would raise
+        # ``StopIteration`` and the test would fail loudly.
+        prompt_mock = patch("typer.prompt", side_effect=[1, 2, "sk-ant-test"])
+        with (
+            patch("sys.stdin.isatty", return_value=True),
+            prompt_mock as mp,
+            patch("typer.echo"),
+        ):
+            init(skip_llm=False, embedding="local")
+
+        cfg = _read_org_config(fake_home)
+        assert cfg is not None
+        assert cfg["llm_config"]["embedding_model_name"] == "local/minilm-l6-v2"
+        # Only 3 prompts: storage, LLM provider, API key.
+        assert mp.call_count == 3
+
+    def test_setup_init_embedding_flag_auto_no_override(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``--embedding auto`` doesn't write ``embedding_model_name`` (non-TTY).
+
+        Auto-detection at runtime decides; setup-init stays out of the way.
+        """
+        from reflexio.cli.commands.setup_cmd import init
+
+        fake_home = tmp_path / "home"
+        self._patch_home_and_chromadb(monkeypatch, fake_home)
+        env_path = fake_home / ".reflexio" / ".env"
+        env_path.parent.mkdir(parents=True, exist_ok=True)
+        env_path.write_text("")
+        monkeypatch.setattr(
+            "reflexio.cli.env_loader.load_reflexio_env",
+            lambda: env_path,
+        )
+
+        # Non-TTY path: --embedding auto → no embedding-step prompt, no write.
+        with (
+            patch("sys.stdin.isatty", return_value=False),
+            patch("typer.prompt", side_effect=[1, 2, "sk-ant-test"]),
+            patch("typer.echo"),
+        ):
+            init(skip_llm=False, embedding="auto")
+
+        cfg = _read_org_config(fake_home)
+        # Either the file doesn't exist or llm_config is unset / has no
+        # embedding override — none of those count as "wrote an override".
+        if cfg is not None:
+            assert (
+                cfg.get("llm_config") is None
+                or cfg["llm_config"].get("embedding_model_name") is None
+            )
