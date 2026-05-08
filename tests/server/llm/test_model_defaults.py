@@ -193,9 +193,7 @@ class TestResolveModelName:
         # Embedding falls back to local when chromadb is importable.
         from reflexio.server.llm.providers import local_embedding_provider as lep
 
-        monkeypatch.setattr(
-            lep.importlib.util, "find_spec", lambda _name: object()
-        )
+        monkeypatch.setattr(lep.importlib.util, "find_spec", lambda _name: object())
         assert (
             resolve_model_name(ModelRole.EMBEDDING)
             == _PROVIDER_DEFAULTS["local"].embedding
@@ -241,9 +239,7 @@ class TestResolveModelName:
         from reflexio.server.llm.providers import local_embedding_provider as lep
 
         monkeypatch.setenv("ANTHROPIC_API_KEY", "ant-test")
-        monkeypatch.setattr(
-            lep.importlib.util, "find_spec", lambda _name: object()
-        )
+        monkeypatch.setattr(lep.importlib.util, "find_spec", lambda _name: object())
         result = resolve_model_name(ModelRole.EMBEDDING)
         assert result == _PROVIDER_DEFAULTS["local"].embedding
 
@@ -255,9 +251,7 @@ class TestResolveModelName:
 
         monkeypatch.setenv("ANTHROPIC_API_KEY", "ant-test")
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
-        monkeypatch.setattr(
-            lep.importlib.util, "find_spec", lambda _name: object()
-        )
+        monkeypatch.setattr(lep.importlib.util, "find_spec", lambda _name: object())
         result = resolve_model_name(ModelRole.EMBEDDING)
         assert result == _PROVIDER_DEFAULTS["openai"].embedding
 
@@ -269,9 +263,7 @@ class TestResolveModelName:
 
         monkeypatch.setenv("CLAUDE_SMART_USE_LOCAL_EMBEDDING", "1")
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
-        monkeypatch.setattr(
-            lep.importlib.util, "find_spec", lambda _name: object()
-        )
+        monkeypatch.setattr(lep.importlib.util, "find_spec", lambda _name: object())
         result = resolve_model_name(ModelRole.EMBEDDING)
         assert result == _PROVIDER_DEFAULTS["local"].embedding
 
@@ -304,9 +296,7 @@ class TestValidateLlmAvailability:
         from reflexio.server.llm.providers import local_embedding_provider as lep
 
         monkeypatch.setenv("ANTHROPIC_API_KEY", "ant-test")
-        monkeypatch.setattr(
-            lep.importlib.util, "find_spec", lambda _name: object()
-        )
+        monkeypatch.setattr(lep.importlib.util, "find_spec", lambda _name: object())
         validate_llm_availability()  # should not raise
 
     def test_no_embedding_provider_no_chromadb_raises(

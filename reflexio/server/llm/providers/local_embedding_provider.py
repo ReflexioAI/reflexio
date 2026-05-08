@@ -151,9 +151,7 @@ def register_if_chromadb_available() -> bool:
     if _REGISTERED:
         return True
     if not is_chromadb_importable():
-        _LOGGER.debug(
-            "Local embedder not registered: `chromadb` is not installed."
-        )
+        _LOGGER.debug("Local embedder not registered: `chromadb` is not installed.")
         return False
     _REGISTERED = True
     _LOGGER.info("Local embedding provider enabled (model=%s)", _MODEL_KEY)

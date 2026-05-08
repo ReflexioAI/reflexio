@@ -36,10 +36,10 @@ from reflexio.server.llm.providers.local_embedding_provider import (
     LocalEmbedder,
 )
 from reflexio.server.llm.providers.local_embedding_provider import (
-    is_enabled as _local_embedder_enabled,
+    is_chromadb_importable as _is_chromadb_importable,
 )
 from reflexio.server.llm.providers.local_embedding_provider import (
-    register_if_enabled as _register_local_embedder,
+    register_if_chromadb_available as _register_local_embedder,
 )
 from reflexio.server.llm.providers.nomic_embedding_provider import (
     NomicEmbedder,
@@ -587,8 +587,16 @@ class LiteLLMClient:
 
         # local/* models route through the in-process ONNX embedder — no
         # network call, no litellm API, no tiktoken truncation (the embedder
-        # applies its own token cap).
-        if embedding_model.startswith("local/") and _local_embedder_enabled():
+        # applies its own token cap). The dispatch is gated solely on
+        # ``chromadb`` being importable; the env-var opt-in (claude-smart's
+        # ``CLAUDE_SMART_USE_LOCAL_EMBEDDING``) is enforced earlier in the
+        # auto-detection layer (see ``model_defaults._auto_detect_model``).
+        if embedding_model.startswith("local/"):
+            if not _is_chromadb_importable():
+                raise LiteLLMClientError(
+                    f"Embedding model {embedding_model!r} requires chromadb. "
+                    "Run `pip install chromadb`."
+                )
             try:
                 return LocalEmbedder.get().embed([text])[0]
             except Exception as e:
@@ -656,7 +664,12 @@ class LiteLLMClient:
                     f"Nomic batch embedding generation failed: {str(e)}"
                 ) from e
 
-        if embedding_model.startswith("local/") and _local_embedder_enabled():
+        if embedding_model.startswith("local/"):
+            if not _is_chromadb_importable():
+                raise LiteLLMClientError(
+                    f"Embedding model {embedding_model!r} requires chromadb. "
+                    "Run `pip install chromadb`."
+                )
             try:
                 return LocalEmbedder.get().embed(list(texts))
             except Exception as e:

@@ -283,3 +283,65 @@ class TestLiteLLMClientShortCircuit:
             client.get_embedding("hello", model="text-embedding-3-small")
 
         mock_embedding.assert_called_once()
+
+    def test_get_embedding_routes_to_local_without_env_var(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Layer A path 3: chromadb available + env var UNSET still routes local/*."""
+        from reflexio.server.llm import litellm_client
+        from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
+
+        _install_fake_chroma(monkeypatch)
+        monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_EMBEDDING", raising=False)
+        monkeypatch.setattr(lep.importlib.util, "find_spec", lambda _name: MagicMock())
+
+        client = LiteLLMClient(LiteLLMConfig(model="claude-code/default"))
+
+        with patch.object(litellm_client.litellm, "embedding") as mock_embedding:
+            result = client.get_embedding("hello", model="local/minilm-l6-v2")
+
+        mock_embedding.assert_not_called()
+        assert len(result) == 512
+
+    def test_get_embeddings_routes_to_local_without_env_var(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Layer A path 3 on the batch path: chromadb only is enough."""
+        from reflexio.server.llm import litellm_client
+        from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
+
+        _install_fake_chroma(monkeypatch)
+        monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_EMBEDDING", raising=False)
+        monkeypatch.setattr(lep.importlib.util, "find_spec", lambda _name: MagicMock())
+
+        client = LiteLLMClient(LiteLLMConfig(model="claude-code/default"))
+
+        with patch.object(litellm_client.litellm, "embedding") as mock_embedding:
+            result = client.get_embeddings(["a", "b"], model="local/minilm-l6-v2")
+
+        mock_embedding.assert_not_called()
+        assert len(result) == 2
+        assert all(len(vec) == 512 for vec in result)
+
+    def test_get_embedding_local_without_chromadb_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When local/* is requested but chromadb is missing, raise a clear error."""
+        from reflexio.server.llm import litellm_client
+        from reflexio.server.llm.litellm_client import (
+            LiteLLMClient,
+            LiteLLMClientError,
+            LiteLLMConfig,
+        )
+
+        monkeypatch.setattr(lep.importlib.util, "find_spec", lambda _name: None)
+
+        client = LiteLLMClient(LiteLLMConfig(model="claude-code/default"))
+
+        with (
+            patch.object(litellm_client.litellm, "embedding") as mock_embedding,
+            pytest.raises((LiteLLMClientError, RuntimeError), match="chromadb"),
+        ):
+            client.get_embedding("hello", model="local/minilm-l6-v2")
+
+        mock_embedding.assert_not_called()
