@@ -116,29 +116,43 @@ def _pad(vec: Any) -> list[float]:
 _REGISTERED = False
 
 
-def register_if_enabled() -> bool:
-    """Make the local embedder available when env + deps allow it.
+def is_chromadb_importable() -> bool:
+    """Return True when the ``chromadb`` package is importable.
 
-    Called once from ``litellm_client`` at module import. Idempotent —
-    safe to call more than once per process. Returns ``True`` if the
-    embedder is usable after this call, ``False`` otherwise (e.g. env
-    flag off, or chromadb not installed).
+    Independent of :data:`_ENV_ENABLE` (``CLAUDE_SMART_USE_LOCAL_EMBEDDING``).
+    Used by callers that want to know whether the local fallback is
+    *possible* regardless of whether claude-smart has explicitly opted in.
+
+    Returns:
+        bool: True if ``importlib.util.find_spec("chromadb")`` finds the
+            package, False otherwise.
+    """
+    return importlib.util.find_spec("chromadb") is not None
+
+
+def register_if_chromadb_available() -> bool:
+    """Make the local embedder available whenever ``chromadb`` imports.
+
+    This is the env-var-independent companion to
+    :func:`register_if_enabled`. Called once from ``litellm_client`` at
+    module import so the local-embedder dispatch is wired up regardless
+    of whether claude-smart's opt-in env var is set. Idempotent — safe
+    to call more than once per process.
 
     The actual routing is done by a prefix check in
-    ``LiteLLMClient.get_embedding(s)`` — there is no global LiteLLM
-    registry to update here, so this function's job is just to
-    eagerly probe for problems and log a clear message.
+    ``LiteLLMClient.get_embedding(s)``; this function's job is to
+    eagerly probe for ``chromadb`` and log a clear message.
+
+    Returns:
+        bool: True if the embedder is usable after this call, False
+            when ``chromadb`` is not importable.
     """
     global _REGISTERED
     if _REGISTERED:
         return True
-    if os.environ.get(_ENV_ENABLE) not in {"1", "true", "True"}:
-        return False
-    if importlib.util.find_spec("chromadb") is None:
-        _LOGGER.warning(
-            "%s=1 is set but `chromadb` is not installed; local "
-            "embedder will not be available.",
-            _ENV_ENABLE,
+    if not is_chromadb_importable():
+        _LOGGER.debug(
+            "Local embedder not registered: `chromadb` is not installed."
         )
         return False
     _REGISTERED = True
@@ -146,8 +160,25 @@ def register_if_enabled() -> bool:
     return True
 
 
+def register_if_enabled() -> bool:
+    """Backwards-compatible alias for :func:`register_if_chromadb_available`.
+
+    Historically gated on ``CLAUDE_SMART_USE_LOCAL_EMBEDDING=1``; now
+    delegates to the chromadb-only check so the local embedder is also
+    available as a silent fallback when no cloud embedder is configured.
+    The claude-smart opt-in env var continues to drive
+    :func:`is_local_embedder_available` (provider-priority ordering),
+    which is the public contract the env var actually owns.
+
+    Returns:
+        bool: True if the embedder is usable after this call, False
+            otherwise.
+    """
+    return register_if_chromadb_available()
+
+
 def is_enabled() -> bool:
-    """Return True when a previous ``register_if_enabled`` has succeeded.
+    """Return True when a previous registration call has succeeded.
 
     Returns:
         bool: True if the provider is currently registered and usable in
@@ -170,13 +201,15 @@ def is_local_embedder_available() -> bool:
     """
     if os.environ.get(_ENV_ENABLE) not in {"1", "true", "True"}:
         return False
-    return importlib.util.find_spec("chromadb") is not None
+    return is_chromadb_importable()
 
 
 __all__ = [
     "LocalEmbedder",
     "LocalEmbedderError",
+    "is_chromadb_importable",
     "is_enabled",
     "is_local_embedder_available",
+    "register_if_chromadb_available",
     "register_if_enabled",
 ]
