@@ -309,6 +309,15 @@ def update_config(
     config — you only specify the fields you want to change. Useful for
     flipping a single backend without re-supplying ``storage_config``.
 
+    .. warning::
+       The merge is **top-level shallow only**. Nested objects (e.g.
+       ``storage_config``) and nested lists (e.g. ``playbook_configs``,
+       ``profile_configs``) are replaced wholesale -- to mutate a
+       single field inside ``playbook_configs[0]`` you must resend the
+       full ``playbook_configs`` list with that entry fully populated.
+       For surgical edits to nested-list fields prefer
+       ``reflexio config get`` -> edit JSON -> ``reflexio config set``.
+
     Args:
         ctx: Typer context with CliState in ctx.obj
         data: JSON string or ``@filepath`` with the partial config payload.

@@ -1124,17 +1124,30 @@ def update_config(
 ) -> SetConfigResponse:
     """Apply a partial update to the org's config (PATCH semantics).
 
-    Performs a top-level shallow merge of *partial* over the existing
+    Performs a **top-level shallow merge** of *partial* over the existing
     config and round-trips through ``Config(**merged)`` so Pydantic
-    validates the result and rejects bogus top-level fields. Nested
-    objects (e.g. ``storage_config``) are replaced wholesale — deep
-    merging is intentionally not supported.
+    validates the result and rejects bogus top-level fields.
+
+    .. warning::
+       Nested objects (e.g. ``storage_config``) and nested lists
+       (e.g. ``playbook_configs``, ``profile_configs``) are **replaced
+       wholesale**. Deep merging is intentionally not supported -- the
+       discriminator on ``storage_config`` would be lost on partial
+       updates, and merging list-of-dicts has ambiguous semantics
+       (replace by index? merge by key? insert?).
+
+       To update a single field inside ``playbook_configs[0]`` you must
+       resend the full ``playbook_configs`` list with that one entry
+       fully populated (including ``extractor_name``,
+       ``extraction_definition_prompt``, etc.). For one-off mutations
+       prefer ``GET /api/get_config`` followed by
+       ``POST /api/set_config`` with the modified full config.
 
     Unlike :func:`set_config`, callers do not need to re-send the full
     config (including required fields like ``storage_config``) just to
-    flip a single boolean. The merge happens server-side atomically
-    within the request, eliminating the read-modify-write race a client
-    would otherwise hit.
+    flip a single top-level boolean. The merge happens server-side
+    atomically within the request, eliminating the read-modify-write
+    race a client would otherwise hit.
 
     Args:
         partial: Top-level fields to overlay on the existing config.
@@ -1144,6 +1157,8 @@ def update_config(
         SetConfigResponse: Success status and message from
         :meth:`Reflexio.set_config`.
     """
+    from pydantic import ValidationError
+
     reflexio = get_reflexio(org_id=org_id)
     existing = reflexio.request_context.configurator.get_config().model_dump(
         mode="python"
@@ -1151,7 +1166,28 @@ def update_config(
     merged = {**existing, **partial}
     # Pydantic validates the merged shape and rejects unknown / malformed
     # fields here, before storage validation in reflexio.set_config.
-    response = reflexio.set_config(Config(**merged))
+    # Convert ValidationError into 422 so callers passing a partial that
+    # would replace a nested-list field with an incomplete dict (e.g.
+    # {"playbook_configs": [{"aggregation_config": {...}}]}) get a clean
+    # client-error response instead of a 500.
+    try:
+        merged_config = Config(**merged)
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={
+                "error": "Invalid partial config (top-level shallow merge)",
+                "hint": (
+                    "Nested objects and list-of-dict fields (e.g. "
+                    "playbook_configs) are replaced wholesale, not "
+                    "deep-merged. To mutate a single field inside a "
+                    "list entry, fetch the full config via /api/get_config, "
+                    "edit, and PUT it back via /api/set_config."
+                ),
+                "validation_errors": exc.errors(),
+            },
+        ) from exc
+    response = reflexio.set_config(merged_config)
     if response.success:
         invalidate_reflexio_cache(org_id=org_id)
     return response
