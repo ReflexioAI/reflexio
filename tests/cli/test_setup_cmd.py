@@ -736,3 +736,125 @@ class TestSetupInitEmbeddingStep:
                 cfg.get("llm_config") is None
                 or cfg["llm_config"].get("embedding_model_name") is None
             )
+
+
+class TestChooseEmbeddingProviderEdgeCases:
+    """Hardening cases for ``_choose_embedding_provider``: chromadb gating,
+    config-write ordering, and integration-command embedding-flag validation.
+    """
+
+    def test_local_flag_without_chromadb_exits(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``--embedding=local`` without chromadb fails fast and writes nothing."""
+        from reflexio.cli.commands.setup_cmd import _choose_embedding_provider
+
+        fake_home = tmp_path / "home"
+        fake_home.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
+        monkeypatch.setattr(
+            "reflexio.server.llm.providers.local_embedding_provider"
+            ".is_chromadb_importable",
+            lambda: False,
+        )
+        env_path = tmp_path / ".env"
+        env_path.write_text("")
+
+        with pytest.raises(typer.Exit) as exc:
+            _choose_embedding_provider(env_path, embedding_flag="local")
+        assert exc.value.exit_code == 1
+        # No org-config file written for the broken override.
+        assert _read_org_config(fake_home) is None
+
+    def test_blank_cloud_key_does_not_persist_org_config(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Submitting an empty API key for OpenAI/Gemini must not mutate org config."""
+        from reflexio.cli.commands.setup_cmd import _choose_embedding_provider
+
+        fake_home = tmp_path / "home"
+        fake_home.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
+        monkeypatch.setattr(
+            "reflexio.server.llm.providers.local_embedding_provider"
+            ".is_chromadb_importable",
+            lambda: True,
+        )
+        # Strip any existing OPENAI_API_KEY so the prompt path runs.
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        env_path = tmp_path / ".env"
+        env_path.write_text("")
+
+        # Choices when chromadb is importable: [local, openai, gemini].
+        # Pick choice 2 (openai), then submit an empty key.
+        with (
+            patch("sys.stdin.isatty", return_value=True),
+            patch("typer.prompt", side_effect=[2, "   "]),
+            patch("typer.echo"),
+            pytest.raises(typer.Exit),
+        ):
+            _choose_embedding_provider(env_path, embedding_flag="auto")
+
+        # No org-config file written when the key validation rejects.
+        assert _read_org_config(fake_home) is None
+
+    def test_setup_init_self_hosted_skips_embedding_step(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``setup init`` with Self-hosted Reflexio storage must NOT run the embedding step.
+
+        The remote server owns its embedding config; a local override
+        would just shadow whatever the operator picked there.
+        """
+        from reflexio.cli.commands.setup_cmd import init
+
+        fake_home = tmp_path / "home"
+        fake_home.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
+        monkeypatch.setattr(
+            "reflexio.server.llm.providers.local_embedding_provider"
+            ".is_chromadb_importable",
+            lambda: True,
+        )
+        env_path = fake_home / ".reflexio" / ".env"
+        env_path.parent.mkdir(parents=True, exist_ok=True)
+        env_path.write_text("")
+        monkeypatch.setattr(
+            "reflexio.cli.env_loader.load_reflexio_env",
+            lambda: env_path,
+        )
+
+        # Storage choice 3 (Self-hosted), default URL accept, API key.
+        # If the embedding step ran, side_effect would need a 4th value.
+        with (
+            patch("sys.stdin.isatty", return_value=True),
+            patch(
+                "typer.prompt",
+                side_effect=[3, "http://localhost:8081", "rflx-key", 1],
+            ),
+            patch("typer.echo"),
+        ):
+            init(skip_llm=True, embedding="auto")
+
+        # No embedding override persisted to org config.
+        cfg = _read_org_config(fake_home)
+        if cfg is not None:
+            assert (
+                cfg.get("llm_config") is None
+                or cfg["llm_config"].get("embedding_model_name") is None
+            )
+
+    def test_openclaw_invalid_embedding_flag_exits(self) -> None:
+        """``setup openclaw --embedding=opneai`` must fail fast on the typo."""
+        from reflexio.cli.commands.setup_cmd import openclaw
+
+        with pytest.raises(typer.Exit):
+            openclaw(uninstall=False, embedding="opneai")
+
+    def test_claude_code_invalid_embedding_flag_exits(self) -> None:
+        """``setup claude-code --embedding=opneai`` must fail fast on the typo."""
+        from reflexio.cli.commands.setup_cmd import claude_code_setup
+
+        with pytest.raises(typer.Exit):
+            claude_code_setup(uninstall=False, expert=False, embedding="opneai")

@@ -165,6 +165,14 @@ _EMBEDDING_MODEL_NAMES: dict[str, str] = {
 }
 
 
+# Valid values for the ``--embedding`` flag across every setup command.
+# Defined once here so a typo in one command surface (init, openclaw,
+# claude-code) doesn't silently fall through to "auto" in another.
+_VALID_EMBEDDING_FLAGS: frozenset[str] = frozenset(
+    {"auto", "local", "openai", "gemini"}
+)
+
+
 def _build_embedding_choices() -> list[tuple[str, str | None, str]]:
     """Build the interactive embedding-provider menu at call time.
 
@@ -346,6 +354,21 @@ def _choose_embedding_provider(env_path: Path, *, embedding_flag: str) -> str | 
     """
     if embedding_flag in _EMBEDDING_MODEL_NAMES:
         # Explicit non-default flag wins over interactive / auto-detection.
+        # ``--embedding=local`` requires chromadb at runtime, so refuse to
+        # persist a broken override the same way the interactive flow
+        # hides the option in that situation.
+        if embedding_flag == "local":
+            from reflexio.server.llm.providers.local_embedding_provider import (
+                is_chromadb_importable,
+            )
+
+            if not is_chromadb_importable():
+                typer.echo(
+                    "Error: --embedding=local requires chromadb. "
+                    "Install it with `pip install chromadb` or pick "
+                    "openai/gemini/auto."
+                )
+                raise typer.Exit(1)
         _write_embedding_model_to_org_config(_EMBEDDING_MODEL_NAMES[embedding_flag])
         return _provider_display(embedding_flag)
 
@@ -372,10 +395,12 @@ def _choose_embedding_provider(env_path: Path, *, embedding_flag: str) -> str | 
         raise typer.Exit(1)
 
     provider_key, env_var, _ = choices[choice - 1]
-    _write_embedding_model_to_org_config(_EMBEDDING_MODEL_NAMES[provider_key])
 
     # For cloud embedders the user clearly wants that provider, so collect
     # the API key inline if it isn't already set. Local has env_var=None.
+    # Validation runs BEFORE the org-config write so a blank API key
+    # leaves ``llm_config.embedding_model_name`` untouched rather than
+    # mutating it to a provider that still isn't configured.
     if env_var is not None and not os.environ.get(env_var):
         api_key = typer.prompt(f"Enter your {env_var}")
         if not api_key.strip():
@@ -383,6 +408,7 @@ def _choose_embedding_provider(env_path: Path, *, embedding_flag: str) -> str | 
             raise typer.Exit(1)
         _set_env_var(env_path, env_var, api_key)
 
+    _write_embedding_model_to_org_config(_EMBEDDING_MODEL_NAMES[provider_key])
     return _provider_display(provider_key)
 
 
@@ -674,6 +700,13 @@ def openclaw(
         _uninstall_openclaw()
         return
 
+    if embedding not in _VALID_EMBEDDING_FLAGS:
+        typer.echo(
+            f"Error: --embedding must be one of "
+            f"{sorted(_VALID_EMBEDDING_FLAGS)}, got {embedding!r}"
+        )
+        raise typer.Exit(1)
+
     # Step 1: Load .env path
     from reflexio.cli.env_loader import load_reflexio_env
 
@@ -685,15 +718,19 @@ def openclaw(
     # Step 2: LLM provider
     display_name, model, _provider_key = _prompt_llm_provider(env_path)
 
-    # Step 2.5: Upfront embedding-provider step. Local is the default when
-    # chromadb is importable; the choice persists to org config so it
-    # survives later cloud-key changes.
-    embedding_label = _choose_embedding_provider(
-        env_path, embedding_flag=embedding
-    )
-
-    # Step 3: Storage
+    # Step 3: Storage. Decided BEFORE the embedding step because Managed /
+    # Self-hosted modes own their own embedding config server-side, and a
+    # local override would just shadow the operator's choice.
     storage_label = _prompt_storage(env_path)
+
+    # Step 3.5: Upfront embedding-provider step. Local is the default when
+    # chromadb is importable; the choice persists to org config so it
+    # survives later cloud-key changes. Skipped for remote storage modes
+    # for the reason above.
+    is_remote = storage_label in {"Managed Reflexio", "Self-hosted Reflexio"}
+    embedding_label: str | None = None
+    if not is_remote:
+        embedding_label = _choose_embedding_provider(env_path, embedding_flag=embedding)
 
     # Step 4: Install OpenClaw integration
     typer.echo("")
@@ -720,11 +757,6 @@ def openclaw(
 # ---------------------------------------------------------------------------
 # Generic (integration-less) setup
 # ---------------------------------------------------------------------------
-
-
-_VALID_EMBEDDING_FLAGS: frozenset[str] = frozenset(
-    {"auto", "local", "openai", "gemini"}
-)
 
 
 @app.command("init")
@@ -798,6 +830,7 @@ def init(
     # handles extraction so the local .env doesn't need an LLM key).
     # Also skipped when the user explicitly passes --skip-llm.
     is_managed = storage_label == "Managed Reflexio"
+    is_remote = storage_label in {"Managed Reflexio", "Self-hosted Reflexio"}
     display_name: str | None = None
     model: str | None = None
     embedding_label: str | None = None
@@ -813,14 +846,13 @@ def init(
 
     # Step 2.5: Upfront embedding-provider step. Local is the default when
     # chromadb is importable; the choice is persisted to org config so it
-    # survives later cloud-key changes. Skipped for managed mode (the remote
-    # server handles embeddings server-side). Replaces the legacy
-    # ``_prompt_embedding_provider`` call here — that helper still exists
-    # for the ``services start`` first-run wizard.
-    if not is_managed:
-        embedding_label = _choose_embedding_provider(
-            env_path, embedding_flag=embedding
-        )
+    # survives later cloud-key changes. Skipped for both Managed and
+    # Self-hosted modes — the remote server owns its own model config and
+    # a local override would just shadow whatever the operator set there.
+    # Replaces the legacy ``_prompt_embedding_provider`` call here — that
+    # helper still exists for the ``services start`` first-run wizard.
+    if not is_remote:
+        embedding_label = _choose_embedding_provider(env_path, embedding_flag=embedding)
 
     # Step 3: Summary — no integration to print
     typer.echo("")
@@ -1231,6 +1263,13 @@ def claude_code_setup(
         typer.echo("Error: --global and --project-dir are mutually exclusive")
         raise typer.Exit(1)
 
+    if embedding not in _VALID_EMBEDDING_FLAGS:
+        typer.echo(
+            f"Error: --embedding must be one of "
+            f"{sorted(_VALID_EMBEDDING_FLAGS)}, got {embedding!r}"
+        )
+        raise typer.Exit(1)
+
     # Uninstall uses auto-detection — no need for the interactive location prompt
     if uninstall:
         target = (
@@ -1278,9 +1317,7 @@ def claude_code_setup(
         # Upfront embedding-provider step. Local is the default when chromadb
         # is importable; the choice persists to org config so it survives
         # later cloud-key changes.
-        embedding_label = _choose_embedding_provider(
-            env_path, embedding_flag=embedding
-        )
+        embedding_label = _choose_embedding_provider(env_path, embedding_flag=embedding)
 
     # Step 3.5: Seed user_id for Claude Code (only if not already set)
     if not os.environ.get("REFLEXIO_USER_ID"):
