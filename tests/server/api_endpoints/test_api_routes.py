@@ -5,6 +5,8 @@ schemas, and handle errors properly.  Uses the ``patched_reflexio``
 fixture from conftest to isolate tests from real storage/LLM calls.
 """
 
+import tempfile
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from reflexio.models.api_schema.retriever_schema import (
@@ -183,7 +185,12 @@ class TestUpdateConfigRoute:
 
     @staticmethod
     def _existing_config() -> Config:
-        return Config(storage_config=StorageConfigSQLite(db_path="/tmp/existing.db"))
+        # Platform-aware temp path — Ruff S108 flags hardcoded ``/tmp``.
+        # The path isn't read or written; we just need a valid string
+        # for the SQLite config so ``set_config`` round-trips through
+        # the merged Config without failing validation.
+        db_path = str(Path(tempfile.gettempdir()) / "existing.db")
+        return Config(storage_config=StorageConfigSQLite(db_path=db_path))
 
     def _wire_mock(self, mock_reflexio: MagicMock, existing: Config) -> None:
         configurator = MagicMock()
@@ -237,13 +244,16 @@ class TestUpdateConfigRoute:
         )
 
         # If the model later switches to extra='forbid', this becomes
-        # 5xx and we'd still want to assert set_config was not called.
+        # a 4xx (FastAPI rejects in request validation) and we'd still
+        # want to assert set_config was not called. Pin to client-error
+        # codes specifically so a 5xx regression here trips the test
+        # instead of silently passing the >= 400 check.
         if response.status_code == 200:
             merged = mock_reflexio.set_config.call_args.args[0]
             assert isinstance(merged, Config)
             assert not hasattr(merged, "definitely_not_a_field")
         else:
-            assert response.status_code >= 400
+            assert response.status_code in {400, 422}
             mock_reflexio.set_config.assert_not_called()
 
     def test_replaces_nested_object_wholesale(
