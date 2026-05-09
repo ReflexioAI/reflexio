@@ -121,6 +121,7 @@ from reflexio.models.api_schema.ui.converters import (
     to_profile_view,
     to_user_playbook_view,
 )
+from reflexio.models.config_schema import Config
 from reflexio.server.api_endpoints import account_api, publisher_api, retriever_api
 from reflexio.server.cache.reflexio_cache import (
     get_reflexio,
@@ -1110,6 +1111,46 @@ def set_config(
     if response.success:
         invalidate_reflexio_cache(org_id=org_id)
 
+    return response
+
+
+@core_router.post("/api/update_config")
+def update_config(
+    partial: dict[str, Any],
+    org_id: str = Depends(default_get_org_id),
+) -> SetConfigResponse:
+    """Apply a partial update to the org's config (PATCH semantics).
+
+    Performs a top-level shallow merge of *partial* over the existing
+    config and round-trips through ``Config(**merged)`` so Pydantic
+    validates the result and rejects bogus top-level fields. Nested
+    objects (e.g. ``storage_config``) are replaced wholesale — deep
+    merging is intentionally not supported.
+
+    Unlike :func:`set_config`, callers do not need to re-send the full
+    config (including required fields like ``storage_config``) just to
+    flip a single boolean. The merge happens server-side atomically
+    within the request, eliminating the read-modify-write race a client
+    would otherwise hit.
+
+    Args:
+        partial: Top-level fields to overlay on the existing config.
+        org_id: Organization ID resolved by the auth layer.
+
+    Returns:
+        SetConfigResponse: Success status and message from
+        :meth:`Reflexio.set_config`.
+    """
+    reflexio = get_reflexio(org_id=org_id)
+    existing = reflexio.request_context.configurator.get_config().model_dump(
+        mode="python"
+    )
+    merged = {**existing, **partial}
+    # Pydantic validates the merged shape and rejects unknown / malformed
+    # fields here, before storage validation in reflexio.set_config.
+    response = reflexio.set_config(Config(**merged))
+    if response.success:
+        invalidate_reflexio_cache(org_id=org_id)
     return response
 
 

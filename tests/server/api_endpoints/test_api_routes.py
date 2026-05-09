@@ -5,16 +5,18 @@ schemas, and handle errors properly.  Uses the ``patched_reflexio``
 fixture from conftest to isolate tests from real storage/LLM calls.
 """
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from reflexio.models.api_schema.retriever_schema import (
     SearchInteractionResponse,
     SearchUserProfileResponse,
+    SetConfigResponse,
     UpdateUserProfileResponse,
 )
 from reflexio.models.api_schema.service_schemas import (
     PublishUserInteractionResponse,
 )
+from reflexio.models.config_schema import Config, StorageConfigSQLite
 
 
 class TestHealthEndpoints:
@@ -167,3 +169,118 @@ class TestUpdateUserProfileRoute:
             json={"user_id": "user-1"},  # profile_id missing
         )
         assert response.status_code == 422
+
+
+class TestUpdateConfigRoute:
+    """Tests for POST /api/update_config (PATCH-style partial update).
+
+    The endpoint fetches the existing config, shallow-merges the partial
+    payload over it, and round-trips through ``Config(**merged)`` so
+    Pydantic rejects unknown fields. Storage validation lives in
+    ``reflexio.set_config``; we mock it out and assert the merged dict
+    that arrives there.
+    """
+
+    @staticmethod
+    def _existing_config() -> Config:
+        return Config(storage_config=StorageConfigSQLite(db_path="/tmp/existing.db"))
+
+    def _wire_mock(self, mock_reflexio: MagicMock, existing: Config) -> None:
+        configurator = MagicMock()
+        configurator.get_config.return_value = existing
+        mock_reflexio.request_context.configurator = configurator
+        mock_reflexio.set_config.return_value = SetConfigResponse(
+            success=True, msg="Configuration set successfully"
+        )
+
+    def test_partial_dict_succeeds(self, client, patched_reflexio, mock_reflexio):
+        existing = self._existing_config()
+        self._wire_mock(mock_reflexio, existing)
+
+        with patch("reflexio.server.api.invalidate_reflexio_cache") as mock_invalidate:
+            response = client.post(
+                "/api/update_config",
+                json={"extraction_backend": "agentic"},
+            )
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["success"] is True
+
+        # The reflexio.set_config call receives a merged Config with the
+        # new field flipped AND the existing storage_config preserved.
+        assert mock_reflexio.set_config.call_count == 1
+        merged = mock_reflexio.set_config.call_args.args[0]
+        assert isinstance(merged, Config)
+        assert merged.extraction_backend == "agentic"
+        assert merged.storage_config == existing.storage_config
+
+        # Cache invalidated on success.
+        mock_invalidate.assert_called_once_with(org_id="test-org")
+
+    def test_unknown_field_does_not_leak_to_set_config(
+        self, client, patched_reflexio, mock_reflexio
+    ):
+        """Unknown top-level keys never reach reflexio.set_config.
+
+        ``Config`` doesn't enable strict ``extra='forbid'`` validation,
+        so Pydantic silently drops unknown fields rather than raising —
+        but the merged ``Config`` instance handed to ``set_config`` must
+        not carry the bogus attribute either way.
+        """
+        existing = self._existing_config()
+        self._wire_mock(mock_reflexio, existing)
+
+        response = client.post(
+            "/api/update_config",
+            json={"definitely_not_a_field": 42},
+        )
+
+        # If the model later switches to extra='forbid', this becomes
+        # 5xx and we'd still want to assert set_config was not called.
+        if response.status_code == 200:
+            merged = mock_reflexio.set_config.call_args.args[0]
+            assert isinstance(merged, Config)
+            assert not hasattr(merged, "definitely_not_a_field")
+        else:
+            assert response.status_code >= 400
+            mock_reflexio.set_config.assert_not_called()
+
+    def test_replaces_nested_object_wholesale(
+        self, client, patched_reflexio, mock_reflexio
+    ):
+        existing = self._existing_config()
+        self._wire_mock(mock_reflexio, existing)
+
+        response = client.post(
+            "/api/update_config",
+            json={"storage_config": {"db_path": "/new/path.db"}},
+        )
+
+        assert response.status_code == 200, response.text
+        merged = mock_reflexio.set_config.call_args.args[0]
+        assert isinstance(merged, Config)
+        assert isinstance(merged.storage_config, StorageConfigSQLite)
+        assert merged.storage_config.db_path == "/new/path.db"
+
+    def test_does_not_invalidate_on_failure(
+        self, client, patched_reflexio, mock_reflexio
+    ):
+        """When reflexio.set_config returns success=False, cache stays warm."""
+        existing = self._existing_config()
+        configurator = MagicMock()
+        configurator.get_config.return_value = existing
+        mock_reflexio.request_context.configurator = configurator
+        mock_reflexio.set_config.return_value = SetConfigResponse(
+            success=False, msg="storage validation failed"
+        )
+
+        with patch("reflexio.server.api.invalidate_reflexio_cache") as mock_invalidate:
+            response = client.post(
+                "/api/update_config",
+                json={"extraction_backend": "agentic"},
+            )
+
+        assert response.status_code == 200
+        assert response.json()["success"] is False
+        mock_invalidate.assert_not_called()
