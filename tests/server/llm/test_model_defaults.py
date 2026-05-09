@@ -484,3 +484,107 @@ class TestMinimaxAgenticRoles:
 
         result = _auto_detect_model(ModelRole.SEARCH_AGENT, providers=["minimax"])
         assert result == "minimax/MiniMax-M2.7"
+
+
+# ---------------------------------------------------------------------------
+# Regression: MiniMax-only env must NOT silently resolve to OpenAI defaults
+# ---------------------------------------------------------------------------
+
+
+class TestMinimaxOnlyEnvRegression:
+    """Reproduces the e2e regression where a fresh setup-init with only
+    MINIMAX_API_KEY in env saw the extractor pick gpt-5-mini at runtime.
+
+    The contract this class locks in: when the only LLM env var in scope
+    is MINIMAX_API_KEY, every generation-family role (the slots that
+    profile_extractor / playbook_extractor / agent_success_evaluator
+    resolve at construction time) must resolve to ``minimax/MiniMax-M2.7``,
+    not to any OpenAI default. This is the runtime expectation the
+    setup-init wizard documents to MiniMax-only users.
+
+    Failure mode this guards against: a future provider-priority edit
+    that drops MiniMax below OpenAI in ``_PROVIDER_PRIORITY``, or a
+    rename of ``MINIMAX_API_KEY`` in ``_ENV_TO_PROVIDER`` that silently
+    falls through to the empty-key OpenAI default.
+    """
+
+    def test_generation_role_resolves_to_minimax(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``default_generation_model_name`` must be the MiniMax model."""
+        monkeypatch.setenv("MINIMAX_API_KEY", "mm-test")
+        result = resolve_model_name(ModelRole.GENERATION)
+        assert result == "minimax/MiniMax-M2.7", (
+            f"Expected minimax/MiniMax-M2.7, got {result!r}. If this fails, "
+            "MiniMax-only users will hit OpenAI auth errors at extraction time."
+        )
+
+    def test_should_run_role_resolves_to_minimax(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``should_run_model_name`` must also resolve to the MiniMax model."""
+        monkeypatch.setenv("MINIMAX_API_KEY", "mm-test")
+        result = resolve_model_name(ModelRole.SHOULD_RUN)
+        assert result == "minimax/MiniMax-M2.7"
+
+    def test_all_generation_roles_resolve_to_minimax(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Every non-embedding role must resolve to a MiniMax model.
+
+        Catches regressions where one of the agentic-v2 roles
+        (``extraction_agent`` / ``search_agent``) gets re-introduced
+        without MiniMax coverage — the exact bug PR #51 fixed.
+        """
+        monkeypatch.setenv("MINIMAX_API_KEY", "mm-test")
+        for role in (
+            ModelRole.GENERATION,
+            ModelRole.EVALUATION,
+            ModelRole.SHOULD_RUN,
+            ModelRole.PRE_RETRIEVAL,
+            ModelRole.EXTRACTION_AGENT,
+            ModelRole.SEARCH_AGENT,
+        ):
+            result = resolve_model_name(role)
+            assert result.startswith("minimax/"), (
+                f"Role {role.value} resolved to {result!r}, expected a "
+                "minimax/ model. MiniMax-only users would hit a "
+                "provider-mismatch error for this role."
+            )
+
+    def test_minimax_with_empty_openai_key_still_resolves_to_minimax(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An empty ``OPENAI_API_KEY=`` placeholder line must NOT promote OpenAI.
+
+        The bundled ``.env.example`` ships with ``OPENAI_API_KEY=`` (no
+        value); ``load_dotenv`` interprets this as
+        ``os.environ['OPENAI_API_KEY'] = ''``. ``detect_available_providers``
+        relies on truthiness, so an empty string must be treated as
+        "key not set" and the OpenAI provider must NOT appear in the
+        priority list.
+        """
+        monkeypatch.setenv("OPENAI_API_KEY", "")
+        monkeypatch.setenv("MINIMAX_API_KEY", "mm-test")
+        providers = detect_available_providers()
+        assert "openai" not in providers, (
+            f"Empty OPENAI_API_KEY must not promote OpenAI; got {providers}"
+        )
+        assert resolve_model_name(ModelRole.GENERATION) == "minimax/MiniMax-M2.7"
+
+    def test_minimax_with_chromadb_resolves_embedding_to_local(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Mirror of the e2e Mode A path: MiniMax + chromadb → local embedder.
+
+        MiniMax has no embedding endpoint, so the embedding role must
+        fall through to the local ONNX embedder via Path 3 of
+        ``_auto_detect_model``. This is the configuration the e2e
+        reproducer uses.
+        """
+        from reflexio.server.llm.providers import local_embedding_provider as lep
+
+        monkeypatch.setenv("MINIMAX_API_KEY", "mm-test")
+        monkeypatch.setattr(lep.importlib.util, "find_spec", lambda _name: object())
+        result = resolve_model_name(ModelRole.EMBEDDING)
+        assert result == "local/minilm-l6-v2"
