@@ -371,10 +371,17 @@ class PlaybookAggregatorConfig(BaseModel):
     min_cluster_size: int = Field(default=2, ge=1)
     reaggregation_trigger_count: int = Field(default=2, ge=1)
     clustering_similarity: float = Field(
-        default=0.5,
+        default=0.3,
         ge=0.0,
         le=1.0,
-        description="Cosine similarity threshold for clustering. Higher = tighter clusters.",
+        description=(
+            "Cosine similarity threshold for clustering. Higher = tighter clusters. "
+            "Default 0.3 is a compromise that works for both cloud embeddings "
+            "(OpenAI text-embedding-3-*, Gemini) and the local zero-padded "
+            "MiniLM-L6-v2 embedder. Cloud embeddings typically tolerate 0.4-0.6; "
+            "the local embedder's 384-dim vectors zero-padded to 512 produce "
+            "lower cosine similarities and need ~0.15-0.3 to cluster at all."
+        ),
     )
     direction_overlap_threshold: float = Field(
         default=0.6,

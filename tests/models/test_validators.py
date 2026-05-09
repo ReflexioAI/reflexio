@@ -995,3 +995,15 @@ class TestBackwardCompatibility:
         """PlaybookAggregatorConfig: direction_overlap_threshold defaults to 0.6."""
         config = PlaybookAggregatorConfig()
         assert config.direction_overlap_threshold == 0.6
+
+    def test_aggregator_config_clustering_similarity_default(self):
+        """PlaybookAggregatorConfig: clustering_similarity defaults to 0.3.
+
+        0.3 is a compromise that works for both cloud embeddings (OpenAI
+        text-embedding-3-*, Gemini) and the local zero-padded MiniLM-L6-v2
+        embedder. The previous default of 0.5 was tight enough that local
+        embeddings (which have lower spread due to 384->512 zero-padding)
+        produced 0 clusters even for thematically-related content.
+        """
+        config = PlaybookAggregatorConfig()
+        assert config.clustering_similarity == 0.3
