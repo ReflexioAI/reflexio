@@ -472,13 +472,10 @@ class PlaybookOptimizerConfig(BaseModel):
     optimize_user_playbooks: bool = False
     auto_update_pending_agent_playbooks: bool = True
     auto_update_user_playbooks: bool = False
-    # If only one source window is available, a "win" is more likely to be
-    # noise than a real improvement. Default off.
-    allow_single_window_commit: bool = False
 
     # --- GEPA budget -------------------------------------------------------
-    max_metric_calls: int = Field(default=40, gt=0)
-    max_turns: int = Field(default=5, gt=0)
+    max_metric_calls: int = Field(default=20, gt=0)
+    max_turns: int = Field(default=4, gt=0)
     reflection_minibatch_size: int = Field(default=2, gt=0)
     max_validation_windows: int = Field(default=2, gt=0)
     min_commit_windows: int = Field(default=2, gt=0)

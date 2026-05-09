@@ -746,6 +746,8 @@ class TestCrossFieldValidators:
 
         assert config.webhook_url is None
         assert config.assistant_script_path is None
+        assert config.max_metric_calls == 20
+        assert config.max_turns == 4
         assert config.max_validation_windows == 2
 
     def test_playbook_optimizer_rejects_invalid_max_validation_windows(self):
