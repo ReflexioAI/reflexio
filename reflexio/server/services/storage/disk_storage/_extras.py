@@ -31,6 +31,18 @@ class ExtrasMixin:
         )
         return [i for i in interactions if i.request_id in request_id_set]
 
+    def get_interactions_by_ids(self, interaction_ids: list[int]) -> list[Interaction]:
+        if not interaction_ids:
+            return []
+        id_set = set(interaction_ids)
+        interactions = self._list_entities_recursive(
+            self._interactions_dir(), Interaction
+        )
+        return sorted(
+            [i for i in interactions if i.interaction_id in id_set],
+            key=lambda i: i.created_at,
+        )
+
     # ------------------------------------------------------------------
     # Dashboard methods
     # ------------------------------------------------------------------

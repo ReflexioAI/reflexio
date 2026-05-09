@@ -47,6 +47,17 @@ class ExtrasMixin:
         )
         return [_row_to_interaction(r) for r in rows]
 
+    @SQLiteStorageBase.handle_exceptions
+    def get_interactions_by_ids(self, interaction_ids: list[int]) -> list[Interaction]:
+        if not interaction_ids:
+            return []
+        ph = ",".join("?" for _ in interaction_ids)
+        rows = self._fetchall(
+            f"SELECT * FROM interactions WHERE interaction_id IN ({ph}) ORDER BY created_at ASC",  # noqa: S608
+            interaction_ids,
+        )
+        return [_row_to_interaction(r) for r in rows]
+
     _fetchone: Any
     _fetchall: Any
 

@@ -47,9 +47,17 @@ def temp_storage_dir():
 @pytest.fixture
 def request_context(temp_storage_dir):
     # Patch _get_embedding so storage doesn't try to call out for embeddings.
+    from reflexio.server.llm.litellm_client import LiteLLMClient
     from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 
-    with patch.object(SQLiteStorage, "_get_embedding", return_value=[0.0] * 512):
+    with (
+        patch.object(SQLiteStorage, "_get_embedding", return_value=[0.0] * 512),
+        patch.object(
+            LiteLLMClient,
+            "get_embeddings",
+            side_effect=lambda texts, *_args, **_kwargs: [[0.0] * 512 for _ in texts],
+        ),
+    ):
         ctx = RequestContext(org_id="test_org", storage_base_dir=temp_storage_dir)
         yield ctx
 
@@ -95,6 +103,7 @@ def _seed_playbook(
     user_id: str,
     playbook_name: str = "fb",
     content: str = "old rule",
+    source_interaction_ids: list[int] | None = None,
 ) -> UserPlaybook:
     pb = UserPlaybook(
         user_playbook_id=user_playbook_id,
@@ -106,6 +115,7 @@ def _seed_playbook(
         trigger="when X",
         rationale="because Y",
         source="seed",
+        source_interaction_ids=source_interaction_ids or [],
     )
     storage.save_user_playbooks([pb])
     return pb
@@ -370,6 +380,43 @@ class TestReplacePlaybook:
         assert current[0].user_id == "u1"
         assert current[0].agent_version == "v1"
         assert current[0].playbook_name == "fb"
+
+    def test_replace_preserves_source_interaction_ids(
+        self, request_context, service, llm_client
+    ):
+        _set_config(request_context)
+        storage = request_context.storage
+        _seed_playbook(storage, 1, "u1", source_interaction_ids=[10, 11])
+
+        cite = Citation(kind="playbook", real_id="1")
+        _seed_request_with_interactions(
+            storage,
+            "u1",
+            "r1",
+            [
+                _make_interaction("u1", "r1", "User", "hi"),
+                _make_interaction("u1", "r1", "Assistant", "hello", citations=[cite]),
+            ],
+        )
+
+        llm_client.generate_chat_response.return_value = ReflectionOutput(
+            decisions=[
+                ReflectionDecision(
+                    target_kind="playbook",
+                    target_id="1",
+                    action="replace",
+                    new_content="new rule",
+                    reason="rule was wrong",
+                )
+            ]
+        )
+
+        result = service.run(ReflectionServiceRequest(user_id="u1"))
+
+        assert result.replaced_count == 1
+        current = storage.get_user_playbooks(user_id="u1", status_filter=[None])
+        assert len(current) == 1
+        assert current[0].source_interaction_ids == [10, 11]
 
 
 class TestNoChange:

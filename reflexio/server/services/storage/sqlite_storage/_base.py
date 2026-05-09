@@ -614,6 +614,7 @@ class SQLiteStorageBase(BaseStorage):
         # Run after DDL so tables exist on fresh databases
         self._migrate_expanded_terms()
         self._migrate_agentic_signals()
+        self._migrate_agent_playbook_source_windows()
         return True
 
     def _try_load_sqlite_vec(self) -> bool:
@@ -879,6 +880,31 @@ class SQLiteStorageBase(BaseStorage):
                 if col not in cols:
                     self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} TEXT")  # noqa: S608
                     logger.info("Added %s column to %s", col, table)
+        self.conn.commit()
+
+    def _migrate_agent_playbook_source_windows(self) -> None:
+        """Add source window snapshots to existing agent source mappings."""
+        cols = {
+            row["name"]
+            for row in self.conn.execute(
+                "PRAGMA table_info(agent_playbook_source_user_playbooks)"
+            ).fetchall()
+        }
+        if not cols:
+            return
+        if "source_interaction_ids" not in cols:
+            self.conn.execute(
+                "ALTER TABLE agent_playbook_source_user_playbooks "
+                "ADD COLUMN source_interaction_ids TEXT NOT NULL DEFAULT '[]'"
+            )
+            logger.info(
+                "Added source_interaction_ids column to "
+                "agent_playbook_source_user_playbooks"
+            )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_apsup_user "
+            "ON agent_playbook_source_user_playbooks(user_playbook_id)"
+        )
         self.conn.commit()
 
     # ------------------------------------------------------------------
@@ -1214,6 +1240,72 @@ CREATE TABLE IF NOT EXISTS playbook_aggregation_change_logs (
 );
 CREATE INDEX IF NOT EXISTS idx_pacl_playbook_name ON playbook_aggregation_change_logs(playbook_name);
 CREATE INDEX IF NOT EXISTS idx_pacl_agent_version ON playbook_aggregation_change_logs(agent_version);
+
+CREATE TABLE IF NOT EXISTS agent_playbook_source_user_playbooks (
+    agent_playbook_id INTEGER NOT NULL,
+    user_playbook_id INTEGER NOT NULL,
+    source_interaction_ids TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    PRIMARY KEY (agent_playbook_id, user_playbook_id)
+);
+CREATE INDEX IF NOT EXISTS idx_apsup_agent ON agent_playbook_source_user_playbooks(agent_playbook_id);
+CREATE INDEX IF NOT EXISTS idx_apsup_user ON agent_playbook_source_user_playbooks(user_playbook_id);
+
+CREATE TABLE IF NOT EXISTS playbook_optimization_jobs (
+    job_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    target_kind TEXT NOT NULL,
+    target_id INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    best_candidate_id INTEGER,
+    successor_target_id INTEGER,
+    decision_reason TEXT NOT NULL DEFAULT '',
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_poj_target ON playbook_optimization_jobs(target_kind, target_id);
+CREATE INDEX IF NOT EXISTS idx_poj_status ON playbook_optimization_jobs(status);
+
+CREATE TABLE IF NOT EXISTS playbook_optimization_candidates (
+    candidate_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id INTEGER NOT NULL,
+    candidate_index INTEGER NOT NULL DEFAULT 0,
+    content TEXT NOT NULL,
+    parent_candidate_ids TEXT NOT NULL DEFAULT '[]',
+    aggregate_score REAL,
+    is_winner INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_poc_job ON playbook_optimization_candidates(job_id);
+
+CREATE TABLE IF NOT EXISTS playbook_optimization_evaluations (
+    evaluation_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id INTEGER NOT NULL,
+    candidate_id INTEGER NOT NULL,
+    target_kind TEXT NOT NULL,
+    target_id INTEGER NOT NULL,
+    scenario_user_playbook_id INTEGER,
+    source_interaction_ids TEXT NOT NULL DEFAULT '[]',
+    score REAL NOT NULL DEFAULT 0.0,
+    verdict TEXT NOT NULL DEFAULT 'tie',
+    likert INTEGER NOT NULL DEFAULT 0,
+    rationale TEXT NOT NULL DEFAULT '',
+    asi_json TEXT NOT NULL DEFAULT '{}',
+    incumbent_rollout_json TEXT NOT NULL DEFAULT '[]',
+    candidate_rollout_json TEXT NOT NULL DEFAULT '[]',
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_poe_job ON playbook_optimization_evaluations(job_id);
+CREATE INDEX IF NOT EXISTS idx_poe_candidate ON playbook_optimization_evaluations(candidate_id);
+
+CREATE TABLE IF NOT EXISTS playbook_optimization_events (
+    event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id INTEGER NOT NULL,
+    event_type TEXT NOT NULL,
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_poev_job ON playbook_optimization_events(job_id);
 
 CREATE TABLE IF NOT EXISTS _operation_state (
     service_name TEXT PRIMARY KEY,

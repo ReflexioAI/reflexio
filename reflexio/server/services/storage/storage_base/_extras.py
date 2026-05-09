@@ -108,3 +108,8 @@ class ExtrasMixin:
             list[Interaction]: List of matching interaction objects
         """
         raise NotImplementedError
+
+    @abstractmethod
+    def get_interactions_by_ids(self, interaction_ids: list[int]) -> list[Interaction]:
+        """Fetch interactions by interaction ids, ordered by created_at."""
+        raise NotImplementedError

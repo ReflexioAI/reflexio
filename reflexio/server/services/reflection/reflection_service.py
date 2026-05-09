@@ -408,7 +408,7 @@ class ReflectionService:
             blocking_issue=cited.blocking_issue,
             status=None,
             source=cited.source,
-            source_interaction_ids=[],
+            source_interaction_ids=list(cited.source_interaction_ids),
         )
         storage.save_user_playbooks([new_playbook])
         try:

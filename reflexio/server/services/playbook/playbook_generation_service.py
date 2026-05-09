@@ -322,6 +322,7 @@ class PlaybookGenerationService(
         if all_playbooks:
             try:
                 self.storage.save_user_playbooks(all_playbooks)  # type: ignore[reportOptionalMemberAccess]
+                self._enqueue_user_playbook_optimization(all_playbooks)
 
                 # Delete superseded existing entries only after save succeeds
                 if existing_ids_to_delete:
@@ -350,6 +351,44 @@ class PlaybookGenerationService(
             if not self.output_pending_status and not self.skip_aggregation:
                 logger.info("Trigger playbook aggregation")
                 self._trigger_playbook_aggregation()
+
+    def _enqueue_user_playbook_optimization(
+        self, saved_playbooks: list[UserPlaybook]
+    ) -> None:
+        config = self.configurator.get_config().playbook_optimizer_config
+        if (
+            not config.enabled
+            or not config.optimize_user_playbooks
+            or not saved_playbooks
+        ):
+            return
+        from reflexio.server.services.playbook_optimizer import (
+            PlaybookOptimizationScheduler,
+            PlaybookOptimizationTarget,
+            PlaybookOptimizer,
+        )
+
+        scheduler = PlaybookOptimizationScheduler.get_instance()
+        for playbook in saved_playbooks:
+            if (
+                not playbook.user_playbook_id
+                or playbook.status is not None
+                or not playbook.source_interaction_ids
+            ):
+                continue
+            target = PlaybookOptimizationTarget(
+                kind="user_playbook", target_id=playbook.user_playbook_id
+            )
+            scheduler.enqueue(
+                org_id=self.request_context.org_id,
+                target=target,
+                callback=lambda target=target: PlaybookOptimizer(
+                    self.request_context, self.client
+                ).optimize(target),
+                jitter_seconds=config.scheduler_jitter_seconds,
+                abort_cooldown_threshold=config.abort_cooldown_threshold,
+                cooldown_after_aborts_seconds=config.cooldown_after_aborts_seconds,
+            )
 
     def _get_extractor_state_service_name(self) -> str:
         """
