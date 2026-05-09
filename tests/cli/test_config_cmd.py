@@ -143,3 +143,217 @@ class TestConfigLocal:
             result = runner.invoke(cli_app, ["config", "local"])
         assert result.exit_code == 0, result.output
         assert "mode: local" in result.output
+
+
+class TestConfigUpdate:
+    """Tests for ``reflexio config update`` (PATCH-style partial update).
+
+    The command builds a ``partial`` dict from one of three input modes
+    (``--data``, ``--file``, or repeated ``--field``) and forwards it to
+    ``client.update_config``. We mock the client and assert the dict.
+    """
+
+    @staticmethod
+    def _mock_client_with_success() -> MagicMock:
+        mock_client = MagicMock()
+        mock_client.update_config.return_value = {
+            "success": True,
+            "msg": "Configuration set successfully",
+        }
+        return mock_client
+
+    def test_data_partial(self, runner: CliRunner, cli_app) -> None:
+        mock_client = self._mock_client_with_success()
+        with patch(
+            "reflexio.cli.commands.config_cmd.get_client", return_value=mock_client
+        ):
+            result = runner.invoke(
+                cli_app,
+                ["config", "update", "--data", '{"extraction_backend":"classic"}'],
+            )
+        assert result.exit_code == 0, result.output
+        mock_client.update_config.assert_called_once_with(
+            {"extraction_backend": "classic"}
+        )
+
+    def test_file_partial(self, runner: CliRunner, cli_app, tmp_path) -> None:
+        cfg = tmp_path / "partial.json"
+        cfg.write_text('{"window_size": 8}')
+        mock_client = self._mock_client_with_success()
+        with patch(
+            "reflexio.cli.commands.config_cmd.get_client", return_value=mock_client
+        ):
+            result = runner.invoke(cli_app, ["config", "update", "--file", str(cfg)])
+        assert result.exit_code == 0, result.output
+        mock_client.update_config.assert_called_once_with({"window_size": 8})
+
+    def test_field_pairs(self, runner: CliRunner, cli_app) -> None:
+        mock_client = self._mock_client_with_success()
+        with patch(
+            "reflexio.cli.commands.config_cmd.get_client", return_value=mock_client
+        ):
+            result = runner.invoke(
+                cli_app,
+                [
+                    "config",
+                    "update",
+                    "--field",
+                    "extraction_backend=classic",
+                    "--field",
+                    "search_backend=classic",
+                ],
+            )
+        assert result.exit_code == 0, result.output
+        mock_client.update_config.assert_called_once_with(
+            {"extraction_backend": "classic", "search_backend": "classic"}
+        )
+
+    def test_field_json_value_int(self, runner: CliRunner, cli_app) -> None:
+        """Numeric / bool / null literals come through ``:json:`` prefix."""
+        mock_client = self._mock_client_with_success()
+        with patch(
+            "reflexio.cli.commands.config_cmd.get_client", return_value=mock_client
+        ):
+            result = runner.invoke(
+                cli_app,
+                ["config", "update", "--field", "window_size=:json:10"],
+            )
+        assert result.exit_code == 0, result.output
+        mock_client.update_config.assert_called_once_with({"window_size": 10})
+        # The value must be a real int, not the string "10".
+        sent = mock_client.update_config.call_args.args[0]
+        assert isinstance(sent["window_size"], int)
+
+    def test_field_json_value_bool(self, runner: CliRunner, cli_app) -> None:
+        mock_client = self._mock_client_with_success()
+        with patch(
+            "reflexio.cli.commands.config_cmd.get_client", return_value=mock_client
+        ):
+            result = runner.invoke(
+                cli_app,
+                ["config", "update", "--field", "skip_should_run_check=:json:true"],
+            )
+        assert result.exit_code == 0, result.output
+        mock_client.update_config.assert_called_once_with(
+            {"skip_should_run_check": True}
+        )
+
+    def test_field_dotted_path_one_level(self, runner: CliRunner, cli_app) -> None:
+        mock_client = self._mock_client_with_success()
+        with patch(
+            "reflexio.cli.commands.config_cmd.get_client", return_value=mock_client
+        ):
+            result = runner.invoke(
+                cli_app,
+                [
+                    "config",
+                    "update",
+                    "--field",
+                    "llm_config.embedding_model_name=local/minilm-l6-v2",
+                ],
+            )
+        assert result.exit_code == 0, result.output
+        mock_client.update_config.assert_called_once_with(
+            {"llm_config": {"embedding_model_name": "local/minilm-l6-v2"}}
+        )
+
+    def test_field_dotted_paths_merge_under_same_top(
+        self, runner: CliRunner, cli_app
+    ) -> None:
+        mock_client = self._mock_client_with_success()
+        with patch(
+            "reflexio.cli.commands.config_cmd.get_client", return_value=mock_client
+        ):
+            result = runner.invoke(
+                cli_app,
+                [
+                    "config",
+                    "update",
+                    "--field",
+                    "llm_config.embedding_model_name=local/minilm-l6-v2",
+                    "--field",
+                    "llm_config.extraction_agent=anthropic/claude-3-5-sonnet",
+                ],
+            )
+        assert result.exit_code == 0, result.output
+        mock_client.update_config.assert_called_once_with(
+            {
+                "llm_config": {
+                    "embedding_model_name": "local/minilm-l6-v2",
+                    "extraction_agent": "anthropic/claude-3-5-sonnet",
+                }
+            }
+        )
+
+    def test_field_double_dot_rejected(self, runner: CliRunner, cli_app) -> None:
+        """``a.b.c`` is rejected — only one level of nesting via --field."""
+        mock_client = self._mock_client_with_success()
+        with patch(
+            "reflexio.cli.commands.config_cmd.get_client", return_value=mock_client
+        ):
+            result = runner.invoke(
+                cli_app,
+                ["config", "update", "--field", "a.b.c=value"],
+            )
+        assert result.exit_code != 0
+        mock_client.update_config.assert_not_called()
+
+    def test_field_missing_equals_rejected(self, runner: CliRunner, cli_app) -> None:
+        mock_client = self._mock_client_with_success()
+        with patch(
+            "reflexio.cli.commands.config_cmd.get_client", return_value=mock_client
+        ):
+            result = runner.invoke(
+                cli_app, ["config", "update", "--field", "no_equals_here"]
+            )
+        assert result.exit_code != 0
+        mock_client.update_config.assert_not_called()
+
+    def test_no_args_rejected(self, runner: CliRunner, cli_app) -> None:
+        mock_client = self._mock_client_with_success()
+        with patch(
+            "reflexio.cli.commands.config_cmd.get_client", return_value=mock_client
+        ):
+            result = runner.invoke(cli_app, ["config", "update"])
+        assert result.exit_code != 0
+        mock_client.update_config.assert_not_called()
+
+    def test_mixed_sources_rejected(self, runner: CliRunner, cli_app) -> None:
+        mock_client = self._mock_client_with_success()
+        with patch(
+            "reflexio.cli.commands.config_cmd.get_client", return_value=mock_client
+        ):
+            result = runner.invoke(
+                cli_app,
+                [
+                    "config",
+                    "update",
+                    "--data",
+                    '{"a":1}',
+                    "--field",
+                    "b=2",
+                ],
+            )
+        assert result.exit_code != 0
+        mock_client.update_config.assert_not_called()
+
+    def test_json_mode_renders_envelope(self, runner: CliRunner, cli_app) -> None:
+        import json as _json
+
+        mock_client = self._mock_client_with_success()
+        with patch(
+            "reflexio.cli.commands.config_cmd.get_client", return_value=mock_client
+        ):
+            result = runner.invoke(
+                cli_app,
+                [
+                    "--json",
+                    "config",
+                    "update",
+                    "--field",
+                    "extraction_backend=classic",
+                ],
+            )
+        assert result.exit_code == 0, result.output
+        envelope = _json.loads(result.output)
+        assert envelope["ok"] is True

@@ -202,6 +202,169 @@ def set_config(
         print_info("Configuration updated")
 
 
+def _build_partial_from_fields(fields: list[str]) -> dict:
+    """Parse repeated ``--field name=value`` pairs into a partial dict.
+
+    Plain values are kept as strings. Use the ``:json:`` prefix to pass
+    a JSON literal (numbers, booleans, null, arrays, objects). Names
+    may include exactly one ``.`` to set a single-level nested key —
+    multiple dotted entries with the same top-level key merge into the
+    same dict. Deeper nesting is intentionally not supported; use
+    ``--data`` for arbitrary JSON.
+
+    Args:
+        fields: List of ``name=value`` (or ``a.b=value``) strings.
+
+    Returns:
+        dict: Top-level partial dict ready to ship to ``update_config``.
+
+    Raises:
+        CliError: For malformed inputs (missing ``=``, more than one
+            dot, conflicting top-level keys, invalid JSON literal).
+    """
+    partial: dict = {}
+    for spec in fields:
+        if "=" not in spec:
+            raise CliError(
+                error_type="validation",
+                message=f"--field expects 'name=value', got: {spec!r}",
+                exit_code=EXIT_VALIDATION,
+            )
+        name, _, value_str = spec.partition("=")
+        if value_str.startswith(":json:"):
+            try:
+                value: object = json.loads(value_str[len(":json:") :])
+            except json.JSONDecodeError as exc:
+                raise CliError(
+                    error_type="validation",
+                    message=f"--field {name}: invalid JSON value: {exc}",
+                    exit_code=EXIT_VALIDATION,
+                ) from exc
+        else:
+            value = value_str
+        if "." in name:
+            top, _, child = name.partition(".")
+            if "." in child:
+                raise CliError(
+                    error_type="validation",
+                    message=(
+                        f"--field supports at most one dot in name (got {name!r}); "
+                        "for deeper nesting use --data"
+                    ),
+                    exit_code=EXIT_VALIDATION,
+                )
+            existing = partial.setdefault(top, {})
+            if not isinstance(existing, dict):
+                raise CliError(
+                    error_type="validation",
+                    message=(
+                        f"--field {name}: conflicts with prior --field {top}=<scalar>"
+                    ),
+                    exit_code=EXIT_VALIDATION,
+                )
+            existing[child] = value
+        else:
+            if isinstance(partial.get(name), dict):
+                raise CliError(
+                    error_type="validation",
+                    message=(
+                        f"--field {name}: conflicts with prior --field "
+                        f"{name}.<child>=..."
+                    ),
+                    exit_code=EXIT_VALIDATION,
+                )
+            partial[name] = value
+    return partial
+
+
+@app.command(name="update")
+@handle_errors
+def update_config(
+    ctx: typer.Context,
+    data: Annotated[
+        str | None,
+        typer.Option(
+            "--data", help="JSON string or @filepath with partial config data"
+        ),
+    ] = None,
+    file: Annotated[
+        Path | None,
+        typer.Option("--file", help="Path to JSON file with partial config"),
+    ] = None,
+    fields: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--field",
+            help=(
+                "Set a single field as 'name=value'. Repeatable. Use "
+                "':json:' prefix for numeric/bool/null. Use 'a.b' for "
+                "one level of nesting."
+            ),
+        ),
+    ] = None,
+) -> None:
+    """Apply a partial update to the org config (PATCH-style).
+
+    Unlike ``set``, this does a server-side merge with the existing
+    config — you only specify the fields you want to change. Useful for
+    flipping a single backend without re-supplying ``storage_config``.
+
+    Args:
+        ctx: Typer context with CliState in ctx.obj
+        data: JSON string or ``@filepath`` with the partial config payload.
+        file: Path to a JSON file with the partial config payload.
+        fields: Repeatable ``name=value`` pairs (see ``_build_partial_from_fields``).
+    """
+    sources_present = sum(x is not None for x in (data, file, fields))
+    if sources_present == 0:
+        raise CliError(
+            error_type="validation",
+            message="Must provide one of --data, --file, or one or more --field",
+            hint=(
+                'Examples: --data \'{"extraction_backend":"classic"}\'  |  '
+                "--file partial.json  |  --field extraction_backend=classic"
+            ),
+            exit_code=EXIT_VALIDATION,
+        )
+    if sources_present > 1:
+        raise CliError(
+            error_type="validation",
+            message="Cannot mix --data / --file / --field",
+            exit_code=EXIT_VALIDATION,
+        )
+
+    try:
+        if data is not None:
+            partial = _resolve_data(data)
+        elif file is not None:
+            partial = json.loads(file.read_text())
+        else:
+            assert fields is not None  # noqa: S101 - guard above
+            partial = _build_partial_from_fields(fields)
+    except (json.JSONDecodeError, FileNotFoundError, OSError) as exc:
+        raise CliError(
+            error_type="validation",
+            message=f"Failed to parse config data: {exc}",
+            exit_code=EXIT_VALIDATION,
+        ) from exc
+
+    if not isinstance(partial, dict):
+        raise CliError(
+            error_type="validation",
+            message="Partial config must be a JSON object",
+            exit_code=EXIT_VALIDATION,
+        )
+
+    client = get_client(ctx)
+    resp = client.update_config(partial)
+
+    json_mode: bool = ctx.obj.json_mode
+    if json_mode:
+        render(resp, json_mode=True)
+    else:
+        print_info("Configuration updated")
+
+
 # ---------------------------------------------------------------------------
 # Storage credential inspection / pull (backed by GET /api/my_config)
 # ---------------------------------------------------------------------------
@@ -338,5 +501,3 @@ def storage(
         display,
         revealed=reveal,
     )
-
-
