@@ -1,3 +1,5 @@
+from typing import Any
+
 from reflexio.lib._base import ReflexioBase
 from reflexio.models.api_schema.retriever_schema import SetConfigResponse
 from reflexio.models.config_schema import Config
@@ -63,3 +65,19 @@ class ConfigMixin(ReflexioBase):
             Config: The current configuration
         """
         return self.request_context.configurator.get_config()
+
+    def current_config_version(self) -> tuple[str, Any] | None:
+        """Cheap probe of the persisted config version.
+
+        Delegates to the underlying ``ConfigStorage.get_version()``.
+        Used by the per-org Reflexio cache to detect out-of-band
+        configuration changes (file edits, replica writes, direct DB
+        updates) without doing a full reload on every request.
+
+        Returns:
+            tuple[str, Any] | None: ``("file", mtime)`` for file-backed
+            storage, ``("db", version)`` for DB-backed storage, or
+            ``None`` when probing is unsupported / fails (the cache
+            treats ``None`` as "still fresh").
+        """
+        return self.request_context.configurator.config_storage.get_version()

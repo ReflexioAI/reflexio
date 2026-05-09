@@ -2,6 +2,7 @@ import json
 import os
 import traceback
 from pathlib import Path
+from typing import Any
 
 from reflexio.models.config_schema import (
     Config,
@@ -105,6 +106,26 @@ class LocalFileConfigStorage(ConfigStorage):
             print(
                 f"Cannot save config for org {self.org_id}: no local directory configured"
             )
+
+    def get_version(self) -> tuple[str, Any] | None:
+        """Return the on-disk mtime of the org's config file, if it exists.
+
+        The Reflexio cache uses this to detect out-of-band edits to
+        ``~/.reflexio/configs/config_<org-id>.json`` (e.g. an operator
+        editing the file directly while the server is running). If the
+        file is missing — for example, before the first ``set_config``
+        write — return None so the cache leaves the entry alone rather
+        than thrashing every request.
+
+        Returns:
+            tuple[str, float] | None: ``("file", mtime_seconds)`` when
+            the config file exists, ``None`` otherwise (missing file or
+            stat failure).
+        """
+        try:
+            return ("file", Path(self.config_file).stat().st_mtime)
+        except OSError:
+            return None
 
     def _save_config_to_local_dir(self, config: Config) -> None:
         """

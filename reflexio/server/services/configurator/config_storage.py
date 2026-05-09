@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from typing import Any
 
 from reflexio.models.config_schema import Config
 
@@ -40,3 +41,22 @@ class ConfigStorage(ABC):
         Args:
             config (Config): Configuration object to save
         """
+
+    def get_version(self) -> tuple[str, Any] | None:
+        """Cheap probe of the persisted config version, used by the per-org cache.
+
+        Backends that can cheaply detect out-of-band mutations should
+        override this. The Reflexio cache stamps the returned tuple at
+        load time and re-probes on every cache hit; if the value
+        changes, the cached instance is evicted and rebuilt with fresh
+        configuration.
+
+        Returns:
+            tuple[str, Any] | None: A ``(kind, value)`` tuple where
+            ``kind`` is a short string identifying the probe type
+            (e.g. ``"file"`` for mtime, ``"db"`` for a row version).
+            Returns ``None`` when probing is unsupported or fails — the
+            cache treats ``None`` as "still fresh", deferring to the
+            TTL safety net.
+        """
+        return None

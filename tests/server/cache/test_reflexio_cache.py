@@ -8,6 +8,7 @@ Covers:
 4. invalidate_reflexio_cache removes found entries and returns False for missing
 5. clear_reflexio_cache empties all entries
 6. get_cache_stats returns correct structure and values
+7. Version-based auto-invalidation: stale entries are evicted on next get
 """
 
 from unittest.mock import MagicMock, patch
@@ -237,3 +238,107 @@ class TestGetCacheStats:
         from reflexio.server.cache.reflexio_cache import REFLEXIO_CACHE_TTL_SECONDS
 
         assert get_cache_stats()["ttl_seconds"] == REFLEXIO_CACHE_TTL_SECONDS
+
+
+# =============================================================================
+# Version-based auto-invalidation tests
+# =============================================================================
+
+
+def _stub_reflexio(version: tuple[str, object] | None) -> MagicMock:
+    """Build a Reflexio mock that returns *version* from current_config_version().
+
+    Each call to ``current_config_version()`` returns the same tuple,
+    matching the contract that the probe is cheap and idempotent
+    between out-of-band writes.
+    """
+    instance = MagicMock()
+    instance.current_config_version.return_value = version
+    return instance
+
+
+class TestVersionBasedInvalidation:
+    """Tests for auto-eviction when the persisted config version changes."""
+
+    @patch("reflexio.server.cache.reflexio_cache.Reflexio")
+    def test_cache_evicts_when_config_file_modified(self, mock_reflexio_cls: MagicMock):
+        """A cached entry whose probed version differs from the cached one is rebuilt."""
+        # First instance is constructed at version mtime=100.0 — cached.
+        # Then someone edits the file out-of-band, bumping mtime to 200.0.
+        # The cached instance now reports the new version when probed.
+        first = _stub_reflexio(("file", 100.0))
+        second = _stub_reflexio(("file", 200.0))
+        mock_reflexio_cls.side_effect = [first, second]
+
+        a = get_reflexio("org-1")
+        # Simulate an out-of-band file edit by changing what the cached
+        # mock reports on its NEXT probe.
+        first.current_config_version.return_value = ("file", 200.0)
+
+        b = get_reflexio("org-1")
+        assert a is not b
+        assert b is second
+        assert mock_reflexio_cls.call_count == 2
+
+    @patch("reflexio.server.cache.reflexio_cache.Reflexio")
+    def test_cache_keeps_when_config_file_unchanged(self, mock_reflexio_cls: MagicMock):
+        """Identical probe value across hits leaves the cached instance in place."""
+        first = _stub_reflexio(("file", 100.0))
+        mock_reflexio_cls.return_value = first
+
+        a = get_reflexio("org-1")
+        b = get_reflexio("org-1")
+        c = get_reflexio("org-1")
+
+        assert a is b is c
+        assert mock_reflexio_cls.call_count == 1
+        # Probe was called on the second + third hits (not the first
+        # construction, where the result is captured for stamping).
+        assert first.current_config_version.call_count >= 2
+
+    @patch("reflexio.server.cache.reflexio_cache.Reflexio")
+    def test_cache_handles_none_version(self, mock_reflexio_cls: MagicMock):
+        """When the backend can't probe (returns None), the entry is never auto-evicted."""
+        first = _stub_reflexio(None)
+        mock_reflexio_cls.return_value = first
+
+        a = get_reflexio("org-1")
+        b = get_reflexio("org-1")
+
+        assert a is b
+        # The cache short-circuits the probe call when the stamped
+        # version is None — no point in re-probing a backend that
+        # already declared "I can't tell you". One call happened at
+        # construction to capture the stamp; the second hit must NOT
+        # add another call.
+        assert first.current_config_version.call_count == 1
+        assert mock_reflexio_cls.call_count == 1
+
+    @patch("reflexio.server.cache.reflexio_cache.Reflexio")
+    def test_probe_failure_treated_as_fresh(self, mock_reflexio_cls: MagicMock):
+        """A probe that raises must not break the cache hit; the cached instance is kept."""
+        first = _stub_reflexio(("file", 100.0))
+        mock_reflexio_cls.return_value = first
+
+        a = get_reflexio("org-1")
+        # Subsequent probes blow up — we want the cache to swallow it
+        # and serve the cached instance, not crash the request.
+        first.current_config_version.side_effect = OSError("disk gone")
+
+        b = get_reflexio("org-1")
+        assert a is b
+        assert mock_reflexio_cls.call_count == 1
+
+    @patch("reflexio.server.cache.reflexio_cache.Reflexio")
+    def test_db_version_tuple_evicts_on_change(self, mock_reflexio_cls: MagicMock):
+        """The eviction path is generic — works for ('db', int) tuples too, not just file mtimes."""
+        first = _stub_reflexio(("db", 1))
+        second = _stub_reflexio(("db", 2))
+        mock_reflexio_cls.side_effect = [first, second]
+
+        a = get_reflexio("org-1")
+        first.current_config_version.return_value = ("db", 2)
+
+        b = get_reflexio("org-1")
+        assert a is not b
+        assert b is second
