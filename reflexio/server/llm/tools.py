@@ -108,23 +108,53 @@ class ToolLoopResult(BaseModel):
     finished_reason: Literal["finish_tool", "max_steps", "error"]
 
 
+# Models we know support function calling per vendor docs but that litellm's
+# model_cost registry hasn't catalogued yet. When litellm returns False
+# (without raising) for a model whose name starts with one of these prefixes,
+# treat that as a registry gap rather than an actual capability gap.
+#
+# Each entry must be justified by (a) the vendor docs and (b) a confirmed
+# round-trip tool call against the live API. Update this list when litellm
+# upstreams the registration so the override becomes redundant.
+_TOOL_CALLING_OVERRIDES: tuple[str, ...] = (
+    # https://platform.minimax.io/docs/guides/text-m2-function-call says
+    # MiniMax-M2.7 supports tool use + interleaved thinking via OpenAI-compatible
+    # tools format. Verified by a live `litellm.completion(model='minimax/MiniMax-M2.7',
+    # tools=[...])` round-trip that returned a proper tool_call message.
+    # litellm 1.80.x has 'minimax/MiniMax-M2' in model_cost but not 'MiniMax-M2.7'.
+    "minimax/MiniMax-M2",
+)
+
+
 def supports_tool_calling(model: str) -> bool:
     """Return True when litellm reports native function-calling support.
 
     Wrapped so tests can monkeypatch the probe without touching litellm.
     On any internal error we optimistically assume support — cheaper to
-    attempt a real call than to wrongly fall back.
+    attempt a real call than to wrongly fall back. When litellm returns
+    False (without raising) for a model in :data:`_TOOL_CALLING_OVERRIDES`,
+    we override to True — see the constant for the rationale.
 
     Args:
         model (str): Fully-qualified model name.
 
     Returns:
-        bool: True if litellm advertises function-calling for ``model``.
+        bool: True if litellm advertises function-calling for ``model``,
+            or the model name matches a known-good override prefix.
     """
     try:
         import litellm
 
-        return bool(litellm.supports_function_calling(model=model))
+        if bool(litellm.supports_function_calling(model=model)):
+            return True
+        if any(model.startswith(prefix) for prefix in _TOOL_CALLING_OVERRIDES):
+            logger.debug(
+                "litellm.supports_function_calling returned False for %s; "
+                "applying override (see _TOOL_CALLING_OVERRIDES)",
+                model,
+            )
+            return True
+        return False
     except Exception as e:
         logger.warning(
             "supports_function_calling probe failed for %s: %s: %s — assuming True",

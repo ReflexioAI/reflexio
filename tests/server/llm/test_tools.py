@@ -488,3 +488,66 @@ def test_run_tool_loop_captures_usage_on_tool_loop_turn(monkeypatch):
     assert turn.cost_usd == pytest.approx(0.002)
     # model field is populated from the resolved model name (non-None)
     assert turn.model is not None
+
+
+class TestSupportsToolCallingOverrides:
+    """Verify ``supports_tool_calling`` overrides litellm's False for models
+    we know support function calling per vendor docs.
+
+    Surfaced when litellm 1.80.x's model_cost registry had
+    ``minimax/MiniMax-M2`` (with tool support) but not ``MiniMax-M2.7``,
+    even though MiniMax's vendor docs explicitly say M2.7 supports tools
+    and a live tool call round-trip succeeded.
+    """
+
+    def test_litellm_true_returns_true(self, monkeypatch):
+        """Happy path: litellm says True, function returns True."""
+        from reflexio.server.llm import tools as tools_mod
+
+        monkeypatch.setattr(
+            "litellm.supports_function_calling", lambda model: True  # noqa: ARG005
+        )
+        assert tools_mod.supports_tool_calling("openai/gpt-5-mini") is True
+
+    def test_litellm_false_unknown_model_returns_false(self, monkeypatch):
+        """litellm says False for a model not in the override list — return False."""
+        from reflexio.server.llm import tools as tools_mod
+
+        monkeypatch.setattr(
+            "litellm.supports_function_calling", lambda model: False  # noqa: ARG005
+        )
+        assert tools_mod.supports_tool_calling("some-random/model-without-tools") is False
+
+    def test_litellm_false_minimax_m2_overrides_to_true(self, monkeypatch):
+        """litellm says False for minimax/MiniMax-M2.7 (registry gap), but our
+        override says True — confirmed by vendor docs + live round-trip."""
+        from reflexio.server.llm import tools as tools_mod
+
+        monkeypatch.setattr(
+            "litellm.supports_function_calling", lambda model: False  # noqa: ARG005
+        )
+        # M2.7 is the model name not registered in litellm's model_cost yet
+        assert tools_mod.supports_tool_calling("minimax/MiniMax-M2.7") is True
+        # Family override applies to all M2.x variants
+        assert tools_mod.supports_tool_calling("minimax/MiniMax-M2") is True
+        assert tools_mod.supports_tool_calling("minimax/MiniMax-M2-special") is True
+
+    def test_override_does_not_apply_to_other_minimax_models(self, monkeypatch):
+        """The override is prefix-scoped: 'minimax/MiniMax-M2' applies to M2 family
+        only, not e.g. abab6.5 or older models."""
+        from reflexio.server.llm import tools as tools_mod
+
+        monkeypatch.setattr(
+            "litellm.supports_function_calling", lambda model: False  # noqa: ARG005
+        )
+        assert tools_mod.supports_tool_calling("minimax/abab6.5-chat") is False
+
+    def test_litellm_raises_returns_true(self, monkeypatch):
+        """Existing behavior: any litellm exception → optimistically assume True."""
+        from reflexio.server.llm import tools as tools_mod
+
+        def boom(model):  # noqa: ARG001
+            raise RuntimeError("litellm internal error")
+
+        monkeypatch.setattr("litellm.supports_function_calling", boom)
+        assert tools_mod.supports_tool_calling("any/model") is True
