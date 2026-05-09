@@ -106,7 +106,8 @@ class PlaybookOptimizer:
             )
         )
         logger.info(
-            "event=playbook_optimization_start job_id=%d target_kind=%s target_id=%d "
+            "event=playbook_optimization_start job_id=%d candidate_id=none "
+            "target_kind=%s target_id=%d "
             "windows=%d backend=%s max_metric_calls=%d max_turns=%d",
             job.job_id,
             target.kind,
@@ -147,25 +148,28 @@ class PlaybookOptimizer:
             else str(best)
         )
         best_score = float(result.val_aggregate_scores[result.best_idx])
-        logger.info(
-            "event=gepa_run_end job_id=%d best_idx=%d best_score=%.3f num_candidates=%d",
-            job.job_id,
-            result.best_idx,
-            best_score,
-            len(result.val_aggregate_scores),
-        )
         winner_candidate = adapter._ensure_candidate(best_content)
         self.storage.update_playbook_optimization_candidate(
             winner_candidate.candidate_id,
             aggregate_score=best_score,
             is_winner=True,
         )
+        logger.info(
+            "event=gepa_run_end job_id=%d candidate_id=%d "
+            "best_idx=%d best_score=%.3f num_candidates=%d",
+            job.job_id,
+            winner_candidate.candidate_id,
+            result.best_idx,
+            best_score,
+            len(result.val_aggregate_scores),
+        )
 
         if self._has_aborted_evaluations(job.job_id):
             logger.warning(
-                "event=playbook_optimization_aborted job_id=%d "
+                "event=playbook_optimization_aborted job_id=%d candidate_id=%d "
                 "reason='assistant backend aborted one or more evaluations' best_score=%.3f",
                 job.job_id,
+                winner_candidate.candidate_id,
                 best_score,
             )
             self.storage.update_playbook_optimization_job(
@@ -183,8 +187,8 @@ class PlaybookOptimizer:
             job.job_id, winner_candidate.candidate_id, best_score, config
         ):
             logger.info(
-                "event=playbook_optimization_no_commit job_id=%d "
-                "best_candidate_id=%d best_score=%.3f reason='did not pass commit thresholds'",
+                "event=playbook_optimization_no_commit job_id=%d candidate_id=%d "
+                "best_score=%.3f reason='did not pass commit thresholds'",
                 job.job_id,
                 winner_candidate.candidate_id,
                 best_score,
@@ -202,8 +206,8 @@ class PlaybookOptimizer:
 
         successor_id = self._commit_if_allowed(target, incumbent, best_content, config)
         logger.info(
-            "event=playbook_optimization_committed job_id=%d "
-            "best_candidate_id=%d successor_target_id=%s best_score=%.3f",
+            "event=playbook_optimization_committed job_id=%d candidate_id=%d "
+            "successor_target_id=%s best_score=%.3f",
             job.job_id,
             winner_candidate.candidate_id,
             successor_id if successor_id is not None else "none",
