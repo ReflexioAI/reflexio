@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -564,3 +565,135 @@ class TestQMDUpdateIndex:
             client.update_index()
             args_passed = mock_run.call_args[0][0]
             assert "update" in args_passed
+
+
+class TestQMDEnsureCollection:
+    """Regression tests for stale-path detection in ``_ensure_collection``."""
+
+    def test_register_uses_caller_provided_path_not_hardcoded(
+        self, tmp_path: Path
+    ) -> None:
+        """When QMD has no existing collection, ``collection add`` is invoked
+        with the caller's ``collection_path`` — never a hardcoded ``/tmp``
+        path. Regression for the leak where production logs showed
+        ``/tmp/e2e-disk/...`` instead of the configured directory."""
+        client = _make_qmd_client(tmp_path, collection_name="test_col")
+        # The constructor already invoked `collection add`; assert the path
+        # baked into the client matches the directory we passed in.
+        assert client.collection_path == tmp_path
+        assert "/tmp/e2e-disk" not in str(client.collection_path)
+
+    def test_re_registers_when_existing_path_is_stale(self, tmp_path: Path) -> None:
+        """When QMD's registry holds the same name pointed at a stale path
+        (e.g. a prior test run's ``/tmp/e2e-disk/...``), the client removes
+        the stale entry and re-adds the collection at the real path."""
+        from reflexio.server.services.storage.disk_storage._qmd_client import (
+            QMDClient,
+        )
+
+        # Sequence of subprocess.run invocations during construction:
+        #   1. _check_installed: qmd --version
+        #   2. _ensure_collection: collection list --json (returns stale path)
+        #   3. _ensure_collection: collection remove (idempotent)
+        #   4. _ensure_collection: collection add with the new path
+        #   5. update_index: qmd update
+        version_result = MagicMock(returncode=0)
+        list_result = MagicMock(
+            returncode=0,
+            stdout=json.dumps([{"name": "test_col", "path": "/tmp/e2e-disk/disk_x"}]),
+            stderr="",
+        )
+        remove_result = MagicMock(returncode=0, stderr="")
+        add_result = MagicMock(returncode=0, stderr="")
+        update_result = MagicMock(returncode=0, stderr="")
+
+        seq = [
+            version_result,
+            list_result,
+            remove_result,
+            add_result,
+            update_result,
+        ]
+        with patch("subprocess.run", side_effect=seq) as mock_run:
+            QMDClient(collection_path=tmp_path, collection_name="test_col")
+
+        # Find the `collection add` invocation and assert it uses our
+        # tmp_path, not the stale /tmp/e2e-disk path.
+        add_calls = [
+            call
+            for call in mock_run.call_args_list
+            if "collection" in call.args[0] and "add" in call.args[0]
+        ]
+        assert add_calls, "expected `collection add` invocation"
+        argv = add_calls[0].args[0]
+        assert str(tmp_path) in argv
+        assert "/tmp/e2e-disk" not in " ".join(argv)
+        # And the stale entry was removed first.
+        remove_calls = [
+            call
+            for call in mock_run.call_args_list
+            if "collection" in call.args[0] and "remove" in call.args[0]
+        ]
+        assert remove_calls, "expected `collection remove` invocation for stale path"
+
+    def test_keeps_existing_collection_when_path_matches(self, tmp_path: Path) -> None:
+        """When the registered path matches, no re-register and no
+        ``update_index`` are issued — that path was the no-op we always
+        had."""
+        from reflexio.server.services.storage.disk_storage._qmd_client import (
+            QMDClient,
+        )
+
+        version_result = MagicMock(returncode=0)
+        list_result = MagicMock(
+            returncode=0,
+            stdout=json.dumps([{"name": "test_col", "path": str(tmp_path.resolve())}]),
+            stderr="",
+        )
+
+        with patch(
+            "subprocess.run", side_effect=[version_result, list_result]
+        ) as mock_run:
+            QMDClient(collection_path=tmp_path, collection_name="test_col")
+
+        # No collection add / remove / update_index calls.
+        invoked = [call.args[0] for call in mock_run.call_args_list]
+        assert not any("add" in cmd and "collection" in cmd for cmd in invoked)
+        assert not any("remove" in cmd and "collection" in cmd for cmd in invoked)
+
+
+class TestQMDProbeTimeout:
+    """Tests for the configurable probe timeout."""
+
+    def test_status_uses_short_probe_timeout(self, tmp_path: Path) -> None:
+        """``status`` is a fast probe and must use the short timeout, not 60s."""
+        client = _make_qmd_client(tmp_path)
+        client.probe_timeout_seconds = 3
+
+        mock_result = MagicMock(returncode=0, stdout="{}", stderr="")
+        with patch("subprocess.run", return_value=mock_result) as mock_run:
+            client.status()
+        kwargs = mock_run.call_args.kwargs
+        assert kwargs.get("timeout") == 3
+
+    def test_status_returns_empty_when_probe_times_out(self, tmp_path: Path) -> None:
+        """If the qmd subprocess wedges, status() bails with an empty dict
+        rather than blocking the caller for 60s."""
+        client = _make_qmd_client(tmp_path)
+
+        with patch(
+            "subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd="qmd", timeout=5),
+        ):
+            assert client.status() == {}
+
+    def test_default_probe_timeout_is_short(self, tmp_path: Path) -> None:
+        """Default probe timeout must be small enough that wedged probes
+        don't block requests for tens of seconds."""
+        from reflexio.server.services.storage.disk_storage._qmd_client import (
+            DEFAULT_PROBE_TIMEOUT_SECONDS,
+        )
+
+        assert DEFAULT_PROBE_TIMEOUT_SECONDS <= 10
+        client = _make_qmd_client(tmp_path)
+        assert client.probe_timeout_seconds == DEFAULT_PROBE_TIMEOUT_SECONDS

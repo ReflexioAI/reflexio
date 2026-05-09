@@ -30,6 +30,13 @@ class QMDResult:
     source: str = ""  # "fts" | "vec" | "reranked"
 
 
+#: Timeout (seconds) for fast "probe" qmd subcommands like ``status`` and
+#: ``collection list``. Kept short because they're expected to return
+#: immediately; if they don't, the QMD subprocess is wedged and the right
+#: response is to bail rather than block the request thread.
+DEFAULT_PROBE_TIMEOUT_SECONDS = 5
+
+
 @dataclass
 class QMDClient:
     """Thin wrapper around the ``qmd`` CLI binary.
@@ -38,11 +45,16 @@ class QMDClient:
         collection_path: Root directory of the QMD collection.
         collection_name: Name to register with QMD.
         qmd_binary: Path or command name for the qmd executable.
+        probe_timeout_seconds: Timeout (in seconds) for short, fast-feedback
+            qmd subcommands like ``status`` and ``collection list``. Defaults
+            to :data:`DEFAULT_PROBE_TIMEOUT_SECONDS`. Long-running operations
+            (search, embed, update) keep their own larger timeouts.
     """
 
     collection_path: Path
     collection_name: str
     qmd_binary: str = "qmd"
+    probe_timeout_seconds: int = DEFAULT_PROBE_TIMEOUT_SECONDS
     _available: bool = field(default=False, init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -137,8 +149,18 @@ class QMDClient:
         self._run_qmd(args, timeout=300)
 
     def status(self) -> dict:
-        """Return QMD index health information."""
-        result = self._run_qmd(["status", "--json"], capture=True)
+        """Return QMD index health information.
+
+        ``status`` is a fast probe — if it doesn't respond within
+        :attr:`probe_timeout_seconds` the subprocess is wedged. We bail
+        with an empty dict rather than block the caller for the
+        subcommand-default 60s.
+        """
+        result = self._run_qmd(
+            ["status", "--json"],
+            capture=True,
+            timeout=self.probe_timeout_seconds,
+        )
         if result and result.stdout.strip():
             try:
                 return json.loads(result.stdout)
@@ -194,34 +216,47 @@ class QMDClient:
         logger.error("All QMD automatic installation methods failed")
 
     def _ensure_collection(self) -> None:
-        """Register the storage directory as a QMD collection if not already registered."""
-        # Check existing collections
-        result = self._run_qmd(["collection", "list", "--json"], capture=True)
-        if result and result.stdout.strip():
-            try:
-                collections = json.loads(result.stdout)
-                # If collection already exists, skip
-                if isinstance(collections, list):
-                    for col in collections:
-                        if (
-                            isinstance(col, dict)
-                            and col.get("name") == self.collection_name
-                        ):
-                            logger.info(
-                                "QMD collection '%s' already registered",
-                                self.collection_name,
-                            )
-                            return
-                elif (
-                    isinstance(collections, dict)
-                    and self.collection_name in collections
-                ):
-                    logger.info(
-                        "QMD collection '%s' already registered", self.collection_name
-                    )
-                    return
-            except json.JSONDecodeError:
-                pass
+        """Register the storage directory as a QMD collection if not already registered.
+
+        QMD's collection registry is global — a previous test run that
+        registered the same collection name against a different path
+        (e.g. ``/tmp/e2e-disk/...``) leaves a stale entry behind. If we
+        accept that entry as-is, every search runs against the wrong
+        directory and logs a misleading ``Collection: /tmp/e2e-disk/...``
+        line. Re-register when the registered path doesn't match
+        ``self.collection_path``.
+        """
+        # Check existing collections; use the probe timeout — listing should
+        # be near-instant.
+        result = self._run_qmd(
+            ["collection", "list", "--json"],
+            capture=True,
+            timeout=self.probe_timeout_seconds,
+        )
+        existing_path = self._existing_collection_path(result)
+        if existing_path is not None:
+            target = self.collection_path.resolve()
+            if existing_path == target:
+                logger.info(
+                    "QMD collection '%s' already registered at %s",
+                    self.collection_name,
+                    existing_path,
+                )
+                return
+            # Stale path — drop the old entry so the re-add below points
+            # qmd at the correct directory. ``collection remove`` is
+            # idempotent so we don't bother checking the rc.
+            logger.warning(
+                "QMD collection '%s' is registered at stale path %s; "
+                "re-registering at %s",
+                self.collection_name,
+                existing_path,
+                target,
+            )
+            self._run_qmd(
+                ["collection", "remove", self.collection_name],
+                timeout=self.probe_timeout_seconds,
+            )
 
         # Register new collection
         logger.info(
@@ -241,6 +276,42 @@ class QMDClient:
 
         # Initial index build
         self.update_index()
+
+    def _existing_collection_path(
+        self, list_result: subprocess.CompletedProcess | None
+    ) -> Path | None:
+        """Return the registered path for ``self.collection_name``, or None.
+
+        QMD's ``collection list --json`` returns either a list of
+        ``{"name": ..., "path": ...}`` dicts or a dict keyed by name.
+        Unknown shapes degrade to ``None`` (callers will treat that as
+        "not registered" and re-register, which is safe).
+        """
+        if list_result is None or not list_result.stdout.strip():
+            return None
+        try:
+            collections = json.loads(list_result.stdout)
+        except json.JSONDecodeError:
+            return None
+
+        raw_path: str | None = None
+        if isinstance(collections, list):
+            for col in collections:
+                if isinstance(col, dict) and col.get("name") == self.collection_name:
+                    raw_path = col.get("path") or col.get("collection_path")
+                    break
+        elif isinstance(collections, dict):
+            entry = collections.get(self.collection_name)
+            if isinstance(entry, str):
+                raw_path = entry
+            elif isinstance(entry, dict):
+                raw_path = entry.get("path") or entry.get("collection_path")
+        if raw_path is None:
+            return None
+        try:
+            return Path(raw_path).resolve()
+        except OSError:
+            return Path(raw_path)
 
     def _run_qmd(
         self,
