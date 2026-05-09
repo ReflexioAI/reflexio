@@ -1318,5 +1318,114 @@ class TestIntegration:
         assert unique.content == "User prefers Python programming"
 
 
+# ===============================
+# Test: Rerun mode status_filter behavior (R1 fix)
+# ===============================
+
+
+class TestRetrieveExistingProfilesStatusFilter:
+    """Tests for the status_filter selection in _retrieve_existing_profiles.
+
+    These cover the R1 fix: when output_pending_status=True (rerun preview
+    mode), the deduplicator must NOT search against existing CURRENT
+    profiles, otherwise newly-extracted profiles get flagged as duplicates
+    and the downstream deletion step in
+    ProfileGenerationService._process_results collapses the user's CURRENT
+    profile set to zero during what is supposed to be a non-destructive
+    preview.
+    """
+
+    def _make_profile(self, content: str, profile_id: str | None = None) -> UserProfile:
+        return UserProfile(
+            profile_id=profile_id or str(uuid.uuid4()),
+            user_id="user",
+            content=content,
+            last_modified_timestamp=int(datetime.now(UTC).timestamp()),
+            generated_from_request_id="req",
+            profile_time_to_live=ProfileTimeToLive.ONE_MONTH,
+        )
+
+    def test_normal_mode_searches_current_profiles(
+        self, mock_request_context, mock_llm_client, mock_site_var_manager
+    ):
+        """Default (output_pending_status=False) searches CURRENT profiles."""
+        deduplicator = ProfileDeduplicator(
+            request_context=mock_request_context,
+            llm_client=mock_llm_client,
+        )
+        new_profiles = [self._make_profile("User likes dark mode")]
+
+        deduplicator._retrieve_existing_profiles(new_profiles, "user")
+
+        # Verify storage was called with status_filter=[None] (CURRENT)
+        assert mock_request_context.storage.search_user_profile.call_count == 1
+        call_kwargs = mock_request_context.storage.search_user_profile.call_args.kwargs
+        assert call_kwargs["status_filter"] == [None]
+
+    def test_rerun_mode_searches_pending_profiles_only(
+        self, mock_request_context, mock_llm_client, mock_site_var_manager
+    ):
+        """output_pending_status=True searches PENDING profiles, not CURRENT."""
+        from reflexio.models.api_schema.service_schemas import Status
+
+        deduplicator = ProfileDeduplicator(
+            request_context=mock_request_context,
+            llm_client=mock_llm_client,
+            output_pending_status=True,
+        )
+        new_profiles = [self._make_profile("User likes dark mode")]
+
+        deduplicator._retrieve_existing_profiles(new_profiles, "user")
+
+        # Verify storage was called with status_filter=[Status.PENDING]
+        assert mock_request_context.storage.search_user_profile.call_count == 1
+        call_kwargs = mock_request_context.storage.search_user_profile.call_args.kwargs
+        assert call_kwargs["status_filter"] == [Status.PENDING]
+
+    def test_rerun_mode_default_init_value_is_false(
+        self, mock_request_context, mock_llm_client, mock_site_var_manager
+    ):
+        """ProfileDeduplicator.output_pending_status defaults to False to
+        preserve the pre-R1-fix behavior for normal extraction callers."""
+        deduplicator = ProfileDeduplicator(
+            request_context=mock_request_context,
+            llm_client=mock_llm_client,
+        )
+        assert deduplicator.output_pending_status is False
+
+    def test_rerun_mode_dedup_against_existing_pending(
+        self, mock_request_context, mock_llm_client, mock_site_var_manager
+    ):
+        """When in rerun mode and an existing PENDING profile is similar to
+        a new one, the LLM call sees the PENDING profile in EXISTING set --
+        so dedup against pending is preserved (preview semantics)."""
+        from reflexio.models.api_schema.service_schemas import Status
+
+        existing_pending = self._make_profile("User uses dark theme", "p-existing-1")
+        existing_pending.status = Status.PENDING
+
+        # Storage returns the existing PENDING profile when searched
+        mock_request_context.storage.search_user_profile.return_value = [
+            existing_pending
+        ]
+
+        deduplicator = ProfileDeduplicator(
+            request_context=mock_request_context,
+            llm_client=mock_llm_client,
+            output_pending_status=True,
+        )
+
+        new_profiles = [self._make_profile("User likes dark mode", "p-new-1")]
+        existing = deduplicator._retrieve_existing_profiles(new_profiles, "user")
+
+        # Storage was filtered to PENDING
+        call_kwargs = mock_request_context.storage.search_user_profile.call_args.kwargs
+        assert call_kwargs["status_filter"] == [Status.PENDING]
+        # The PENDING profile was retrieved as a candidate for dedup
+        assert len(existing) == 1
+        assert existing[0].profile_id == "p-existing-1"
+        assert existing[0].status == Status.PENDING
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

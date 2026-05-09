@@ -168,6 +168,7 @@ class ProfileGenerationService(
                 deduplicator = ProfileDeduplicator(
                     request_context=self.request_context,
                     llm_client=self.client,
+                    output_pending_status=self.output_pending_status,
                 )
                 all_new_profiles, existing_ids_to_delete, superseded_profiles = (
                     deduplicator.deduplicate(all_new_profiles, user_id, request_id)

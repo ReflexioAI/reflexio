@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from pydantic import BaseModel, ConfigDict, Field
 
 from reflexio.models.api_schema.retriever_schema import SearchUserProfileRequest
-from reflexio.models.api_schema.service_schemas import UserProfile
+from reflexio.models.api_schema.service_schemas import Status, UserProfile
 from reflexio.models.config_schema import EMBEDDING_DIMENSIONS
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient
@@ -178,6 +178,7 @@ class ProfileDeduplicator(BaseDeduplicator):
         self,
         request_context: RequestContext,
         llm_client: LiteLLMClient,
+        output_pending_status: bool = False,
     ):
         """
         Initialize the profile deduplicator.
@@ -185,8 +186,15 @@ class ProfileDeduplicator(BaseDeduplicator):
         Args:
             request_context: Request context with storage and prompt manager
             llm_client: Unified LLM client for LLM calls
+            output_pending_status: When True (rerun preview mode), the deduplicator
+                searches against existing PENDING profiles instead of CURRENT
+                profiles. This makes rerun idempotent against pending state and
+                leaves the user's current profile set untouched. When False
+                (normal extraction), searches against CURRENT profiles so newly
+                extracted facts can supersede stale ones.
         """
         super().__init__(request_context, llm_client)
+        self.output_pending_status = output_pending_status
 
     def _get_prompt_id(self) -> str:
         """Get the prompt ID for profile deduplication."""
@@ -303,7 +311,22 @@ class ProfileDeduplicator(BaseDeduplicator):
             logger.warning("Failed to generate embeddings for dedup search: %s", e)
             embeddings = [None] * len(query_texts)
 
-        # Search for each new profile
+        # Search for each new profile.
+        #
+        # When output_pending_status=True (rerun preview mode), search against
+        # existing PENDING profiles so dedup is idempotent: a rerun should
+        # collapse duplicates within the pending preview set without ever
+        # touching the user's CURRENT profiles. Searching against [None]
+        # (current) here would cause newly-extracted profiles to be flagged
+        # as duplicates of current ones, and the downstream deletion step
+        # in ProfileGenerationService._process_results would then delete the
+        # CURRENT profiles -- collapsing the user's profile set to zero
+        # during what is supposed to be a non-destructive preview.
+        if self.output_pending_status:
+            search_status_filter: list[Status | None] = [Status.PENDING]
+        else:
+            search_status_filter = [None]  # Only current profiles
+
         seen_ids: set[str] = set()
         existing_profiles: list[UserProfile] = []
 
@@ -316,7 +339,7 @@ class ProfileDeduplicator(BaseDeduplicator):
                         top_k=10,
                         threshold=0.4,
                     ),
-                    status_filter=[None],  # Only current profiles
+                    status_filter=search_status_filter,
                     query_embedding=embeddings[i],
                 )
                 for profile in results:
@@ -329,8 +352,11 @@ class ProfileDeduplicator(BaseDeduplicator):
                 )
 
         logger.info(
-            "Retrieved %d unique existing profiles for deduplication",
+            "Retrieved %d unique existing profiles for deduplication "
+            "(status_filter=%s, output_pending_status=%s)",
             len(existing_profiles),
+            search_status_filter,
+            self.output_pending_status,
         )
         return existing_profiles
 
