@@ -1249,6 +1249,35 @@ class ReflexioClient:
             json=config.model_dump(),  # type: ignore[reportAttributeAccessIssue]
         )
 
+    def update_config(self, partial: dict) -> dict:
+        """Apply a partial (PATCH-style) update to the org config.
+
+        Unlike :meth:`set_config`, this does NOT round-trip the payload
+        through ``Config(**...)`` client-side, so partial updates like
+        ``{"extraction_backend": "classic"}`` succeed without needing
+        the caller to also re-send required fields like ``storage_config``.
+        The server fetches the existing config and shallow-merges
+        atomically — there is no client-side read-modify-write race.
+
+        Nested objects (e.g. ``storage_config``, ``llm_config``) are
+        replaced wholesale; deep merging is intentionally not supported.
+
+        Args:
+            partial: Top-level fields to overlay on the existing config.
+                Unknown keys are dropped server-side by Pydantic.
+
+        Returns:
+            dict: ``{"success": bool, "msg": str}`` from the server.
+
+        Raises:
+            TypeError: If *partial* is not a ``dict``.
+        """
+        if not isinstance(partial, dict):
+            raise TypeError(
+                f"update_config requires a dict, got {type(partial).__name__}"
+            )
+        return self._make_request("POST", "/api/update_config", json=partial)
+
     def get_config(self) -> Config:
         """Get configuration for the organization.
 
