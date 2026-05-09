@@ -614,6 +614,7 @@ class SQLiteStorageBase(BaseStorage):
         # Run after DDL so tables exist on fresh databases
         self._migrate_expanded_terms()
         self._migrate_agentic_signals()
+        self._migrate_agent_playbook_source_windows()
         return True
 
     def _try_load_sqlite_vec(self) -> bool:
@@ -879,6 +880,31 @@ class SQLiteStorageBase(BaseStorage):
                 if col not in cols:
                     self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} TEXT")  # noqa: S608
                     logger.info("Added %s column to %s", col, table)
+        self.conn.commit()
+
+    def _migrate_agent_playbook_source_windows(self) -> None:
+        """Add source window snapshots to existing agent source mappings."""
+        cols = {
+            row["name"]
+            for row in self.conn.execute(
+                "PRAGMA table_info(agent_playbook_source_user_playbooks)"
+            ).fetchall()
+        }
+        if not cols:
+            return
+        if "source_interaction_ids" not in cols:
+            self.conn.execute(
+                "ALTER TABLE agent_playbook_source_user_playbooks "
+                "ADD COLUMN source_interaction_ids TEXT NOT NULL DEFAULT '[]'"
+            )
+            logger.info(
+                "Added source_interaction_ids column to "
+                "agent_playbook_source_user_playbooks"
+            )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_apsup_user "
+            "ON agent_playbook_source_user_playbooks(user_playbook_id)"
+        )
         self.conn.commit()
 
     # ------------------------------------------------------------------
@@ -1218,10 +1244,12 @@ CREATE INDEX IF NOT EXISTS idx_pacl_agent_version ON playbook_aggregation_change
 CREATE TABLE IF NOT EXISTS agent_playbook_source_user_playbooks (
     agent_playbook_id INTEGER NOT NULL,
     user_playbook_id INTEGER NOT NULL,
+    source_interaction_ids TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     PRIMARY KEY (agent_playbook_id, user_playbook_id)
 );
 CREATE INDEX IF NOT EXISTS idx_apsup_agent ON agent_playbook_source_user_playbooks(agent_playbook_id);
+CREATE INDEX IF NOT EXISTS idx_apsup_user ON agent_playbook_source_user_playbooks(user_playbook_id);
 
 CREATE TABLE IF NOT EXISTS playbook_optimization_jobs (
     job_id INTEGER PRIMARY KEY AUTOINCREMENT,

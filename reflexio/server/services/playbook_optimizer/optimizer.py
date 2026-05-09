@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 from reflexio.models.api_schema.domain import (
     AgentPlaybook,
+    AgentPlaybookSourceWindow,
     PlaybookOptimizationEvent,
     PlaybookOptimizationJob,
     PlaybookStatus,
@@ -20,6 +21,7 @@ from reflexio.server.llm.litellm_client import LiteLLMClient
 from .assistant_webhook import AssistantCallable, LocalScriptAssistant, WebhookAssistant
 from .gepa_adapter import PLAYBOOK_CONTENT_COMPONENT, ReflexioPlaybookGEPAAdapter
 from .judge import PairwiseJudge
+from .models import ScenarioWindow
 from .rollout import MultiTurnRollout
 from .scenario_resolver import ScenarioResolver
 
@@ -94,15 +96,17 @@ class PlaybookOptimizer:
         if len(windows) == 1 and not config.allow_single_window_commit:
             logger.info("Skipping playbook optimization with one source window")
             return "skipped"
+        train_windows, validation_windows = _split_train_validation_windows(
+            windows, config
+        )
+        split_metadata = _split_metadata(windows, train_windows, validation_windows)
 
         job = self.storage.create_playbook_optimization_job(
             PlaybookOptimizationJob(
                 target_kind=target.kind,
                 target_id=target.target_id,
                 status="running",
-                metadata_json=json.dumps(
-                    {"source_window_count": len(windows)}, ensure_ascii=False
-                ),
+                metadata_json=json.dumps(split_metadata, ensure_ascii=False),
             )
         )
         logger.info(
@@ -133,7 +137,13 @@ class PlaybookOptimizer:
             max_turns=config.max_turns,
         )
         try:
-            result = self._run_gepa(config, incumbent.content, windows, adapter)
+            result = self._run_gepa(
+                config,
+                incumbent.content,
+                train_windows,
+                validation_windows,
+                adapter,
+            )
         except Exception as exc:
             logger.exception("Playbook optimization failed")
             self.storage.update_playbook_optimization_job(
@@ -178,13 +188,19 @@ class PlaybookOptimizer:
                 best_candidate_id=winner_candidate.candidate_id,
                 decision_reason="assistant backend aborted one or more evaluations",
                 metadata_json=json.dumps(
-                    result.to_dict(), ensure_ascii=False, default=str
+                    _result_metadata(result, split_metadata),
+                    ensure_ascii=False,
+                    default=str,
                 ),
             )
             return "aborted"
 
         if not self._passes_commit_thresholds(
-            job.job_id, winner_candidate.candidate_id, best_score, config
+            job.job_id,
+            winner_candidate.candidate_id,
+            validation_windows,
+            best_score,
+            config,
         ):
             logger.info(
                 "event=playbook_optimization_no_commit job_id=%d candidate_id=%d "
@@ -199,7 +215,9 @@ class PlaybookOptimizer:
                 best_candidate_id=winner_candidate.candidate_id,
                 decision_reason="best candidate did not pass commit thresholds",
                 metadata_json=json.dumps(
-                    result.to_dict(), ensure_ascii=False, default=str
+                    _result_metadata(result, split_metadata),
+                    ensure_ascii=False,
+                    default=str,
                 ),
             )
             return "completed"
@@ -219,7 +237,11 @@ class PlaybookOptimizer:
             best_candidate_id=winner_candidate.candidate_id,
             successor_target_id=successor_id,
             decision_reason="committed" if successor_id else "winner persisted only",
-            metadata_json=json.dumps(result.to_dict(), ensure_ascii=False, default=str),
+            metadata_json=json.dumps(
+                _result_metadata(result, split_metadata),
+                ensure_ascii=False,
+                default=str,
+            ),
         )
         return "completed"
 
@@ -227,7 +249,8 @@ class PlaybookOptimizer:
         self,
         config: PlaybookOptimizerConfig,
         seed_content: str,
-        windows: list,
+        train_windows: list[ScenarioWindow],
+        validation_windows: list[ScenarioWindow],
         adapter: ReflexioPlaybookGEPAAdapter,
     ) -> Any:
         from gepa.api import optimize as gepa_optimize
@@ -235,8 +258,8 @@ class PlaybookOptimizer:
         reflection_lm = config.reflection_model or self.llm_client.config.model
         return gepa_optimize(
             seed_candidate={PLAYBOOK_CONTENT_COMPONENT: seed_content},
-            trainset=windows,
-            valset=windows,
+            trainset=train_windows,
+            valset=validation_windows,
             adapter=adapter,
             reflection_lm=reflection_lm,
             candidate_selection_strategy="pareto",
@@ -325,16 +348,26 @@ class PlaybookOptimizer:
         self,
         job_id: int,
         candidate_id: int,
+        validation_windows: list[ScenarioWindow],
         best_score: float,
         config: PlaybookOptimizerConfig,
     ) -> bool:
         if best_score < config.min_commit_score:
             return False
         evaluations = self.storage.list_playbook_optimization_evaluations(job_id)
+        validation_keys = {_window_eval_key(window) for window in validation_windows}
         winning_windows = {
-            evaluation.scenario_user_playbook_id
+            _evaluation_key(
+                evaluation.scenario_user_playbook_id,
+                evaluation.source_interaction_ids,
+            )
             for evaluation in evaluations
             if evaluation.candidate_id == candidate_id
+            and _evaluation_key(
+                evaluation.scenario_user_playbook_id,
+                evaluation.source_interaction_ids,
+            )
+            in validation_keys
             and evaluation.verdict == "candidate"
             and evaluation.score >= config.min_commit_score
             and evaluation.likert >= config.min_commit_likert
@@ -355,8 +388,8 @@ class PlaybookOptimizer:
         if target.kind == "agent_playbook":
             if not config.auto_update_pending_agent_playbooks:
                 return None
-            source_ids = self.storage.get_source_user_playbook_ids_for_agent_playbook(
-                target.target_id
+            source_windows = _source_windows_with_backfill(
+                self.storage, target.target_id
             )
             current = self.storage.get_agent_playbook_by_id(target.target_id)
             if (
@@ -379,8 +412,8 @@ class PlaybookOptimizer:
             )
             saved = self.storage.save_agent_playbooks([successor])
             if saved and saved[0].agent_playbook_id:
-                self.storage.set_source_user_playbook_ids_for_agent_playbook(
-                    saved[0].agent_playbook_id, source_ids
+                self.storage.set_source_windows_for_agent_playbook(
+                    saved[0].agent_playbook_id, source_windows
                 )
                 return saved[0].agent_playbook_id
             return None
@@ -463,3 +496,89 @@ def _safe_event_payload(value: Any, depth: int = 0) -> Any:
     if hasattr(value, "model_dump"):
         return _safe_event_payload(value.model_dump(), depth + 1)
     return str(value)
+
+
+def _split_train_validation_windows(
+    windows: list[ScenarioWindow],
+    config: PlaybookOptimizerConfig,
+) -> tuple[list[ScenarioWindow], list[ScenarioWindow]]:
+    if len(windows) <= 1:
+        return windows, windows
+
+    ordered_windows = sorted(
+        windows,
+        key=lambda window: (
+            window.user_playbook_id if window.user_playbook_id is not None else -1,
+            tuple(window.source_interaction_ids),
+        ),
+    )
+    validation_count = min(config.max_validation_windows, len(ordered_windows) - 1)
+    validation_windows = ordered_windows[:validation_count]
+    train_windows = ordered_windows[validation_count:]
+    return train_windows, validation_windows
+
+
+def _source_windows_with_backfill(
+    storage: Any, agent_playbook_id: int
+) -> list[AgentPlaybookSourceWindow]:
+    source_windows = storage.get_source_windows_for_agent_playbook(agent_playbook_id)
+    missing_ids = [
+        window.user_playbook_id
+        for window in source_windows
+        if not window.source_interaction_ids
+    ]
+    if not missing_ids:
+        return source_windows
+
+    playbooks = storage.get_user_playbooks_by_ids_any_user(
+        missing_ids, status_filter=None
+    )
+    source_ids_by_playbook_id = {
+        playbook.user_playbook_id: playbook.source_interaction_ids
+        for playbook in playbooks
+        if playbook.source_interaction_ids
+    }
+    return [
+        window
+        if window.source_interaction_ids
+        else AgentPlaybookSourceWindow(
+            user_playbook_id=window.user_playbook_id,
+            source_interaction_ids=list(
+                source_ids_by_playbook_id.get(window.user_playbook_id, [])
+            ),
+        )
+        for window in source_windows
+    ]
+
+
+def _split_metadata(
+    windows: list[ScenarioWindow],
+    train_windows: list[ScenarioWindow],
+    validation_windows: list[ScenarioWindow],
+) -> dict[str, Any]:
+    return {
+        "source_window_count": len(windows),
+        "train_window_count": len(train_windows),
+        "validation_window_count": len(validation_windows),
+        "validation_scenario_user_playbook_ids": [
+            window.user_playbook_id for window in validation_windows
+        ],
+    }
+
+
+def _result_metadata(result: Any, split_metadata: dict[str, Any]) -> dict[str, Any]:
+    metadata = result.to_dict()
+    if not isinstance(metadata, dict):
+        metadata = {"gepa_result": metadata}
+    metadata.update(split_metadata)
+    return metadata
+
+
+def _window_eval_key(window: ScenarioWindow) -> tuple[int | None, tuple[int, ...]]:
+    return window.user_playbook_id, tuple(window.source_interaction_ids)
+
+
+def _evaluation_key(
+    scenario_user_playbook_id: int | None, source_interaction_ids: list[int]
+) -> tuple[int | None, tuple[int, ...]]:
+    return scenario_user_playbook_id, tuple(source_interaction_ids)

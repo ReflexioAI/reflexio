@@ -294,6 +294,7 @@ All fields live on `PlaybookOptimizerConfig` (in `reflexio/models/config_schema.
 |---|---|---|---|
 | `assistant_script_path` | `str \| None` | `None` | Absolute path to the executable. Set this to enable the script backend. |
 | `assistant_script_args` | `list[str]` | `[]` | Extra argv tokens passed after `assistant_script_path`. |
+| `max_validation_windows` | `int > 0` | 2 | Maximum source windows held out for validation; all remaining source windows form the GEPA training pool. |
 
 ### 6.2 Existing fields that now apply to both backends
 
@@ -304,6 +305,7 @@ All fields live on `PlaybookOptimizerConfig` (in `reflexio/models/config_schema.
 | `webhook_timeout_seconds` | `int > 0` | 60 | Per-call timeout — both backends |
 | `webhook_max_retries` | `int >= 0` | 3 | Retry budget — both backends |
 | `webhook_backoff_base_seconds` | `float >= 0` | 1.0 | Exponential base — both backends |
+| `reflection_minibatch_size` | `int > 0` | 2 | Number of training windows GEPA samples for each reflection minibatch |
 
 ### 6.3 Validator
 
@@ -349,7 +351,7 @@ What happens, in order, when a new agent playbook is generated and the optimizer
 | 1 | `PlaybookAggregator._enqueue_playbook_optimization` | After saving new agent playbooks, enqueues each PENDING playbook with the scheduler. |
 | 2 | `PlaybookOptimizationScheduler` | Debounces by `(org_id, kind, target_id)`, fires after a small jitter, spawns a daemon thread. |
 | 3 | `PlaybookOptimizer.optimize(target)` | Loads config, calls `_create_assistant` → backend instance (or returns early). |
-| 4 | `ScenarioResolver` | Builds `ScenarioWindow`s from the playbook's `source_interaction_ids`. |
+| 4 | `ScenarioResolver` | Builds `ScenarioWindow`s from snapshotted agent source windows or a user playbook's `source_interaction_ids`. |
 | 5 | `gepa.api.optimize(...)` | Runs the candidate-search loop. |
 | 6 | `ReflexioPlaybookGEPAAdapter.evaluate` | For each `(candidate, window)`: |
 |   |   | • `MultiTurnRollout(incumbent).run(window)` → calls backend N times |

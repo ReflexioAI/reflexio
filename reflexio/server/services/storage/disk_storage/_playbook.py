@@ -10,6 +10,7 @@ from reflexio.models.api_schema.retriever_schema import (
 )
 from reflexio.models.api_schema.service_schemas import (
     AgentPlaybook,
+    AgentPlaybookSourceWindow,
     AgentSuccessEvaluationResult,
     PlaybookOptimizationCandidate,
     PlaybookOptimizationEvaluation,
@@ -798,24 +799,90 @@ class PlaybookMixin:
     def set_source_user_playbook_ids_for_agent_playbook(
         self, agent_playbook_id: int, user_playbook_ids: list[int]
     ) -> None:
-        path = self._entity_path(
-            self._agent_playbook_source_map_dir(), str(agent_playbook_id)
-        )
-        path.write_text(
-            json.dumps({"user_playbook_ids": user_playbook_ids}, indent=2),
-            encoding="utf-8",
+        self.set_source_windows_for_agent_playbook(
+            agent_playbook_id,
+            [
+                AgentPlaybookSourceWindow(
+                    user_playbook_id=upid, source_interaction_ids=[]
+                )
+                for upid in user_playbook_ids
+            ],
         )
 
     def get_source_user_playbook_ids_for_agent_playbook(
         self, agent_playbook_id: int
     ) -> list[int]:
+        return [
+            window.user_playbook_id
+            for window in self.get_source_windows_for_agent_playbook(agent_playbook_id)
+        ]
+
+    def set_source_windows_for_agent_playbook(
+        self,
+        agent_playbook_id: int,
+        source_windows: list[AgentPlaybookSourceWindow],
+    ) -> None:
+        by_id: dict[int, list[int]] = {}
+        for window in source_windows:
+            ids = by_id.setdefault(window.user_playbook_id, [])
+            seen = set(ids)
+            for source_id in window.source_interaction_ids:
+                if source_id not in seen:
+                    ids.append(source_id)
+                    seen.add(source_id)
+        path = self._entity_path(
+            self._agent_playbook_source_map_dir(), str(agent_playbook_id)
+        )
+        path.write_text(
+            json.dumps(
+                {
+                    "source_windows": [
+                        {
+                            "user_playbook_id": upid,
+                            "source_interaction_ids": source_interaction_ids,
+                        }
+                        for upid, source_interaction_ids in by_id.items()
+                    ]
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
+    def get_source_windows_for_agent_playbook(
+        self, agent_playbook_id: int
+    ) -> list[AgentPlaybookSourceWindow]:
         path = self._entity_path(
             self._agent_playbook_source_map_dir(), str(agent_playbook_id)
         )
         if not path.exists():
             return []
         data = json.loads(path.read_text(encoding="utf-8") or "{}")
-        return [int(v) for v in data.get("user_playbook_ids", [])]
+        if isinstance(data, list):
+            return [
+                AgentPlaybookSourceWindow(
+                    user_playbook_id=int(v), source_interaction_ids=[]
+                )
+                for v in data
+            ]
+        if isinstance(data.get("source_windows"), list):
+            return [
+                AgentPlaybookSourceWindow(
+                    user_playbook_id=int(item["user_playbook_id"]),
+                    source_interaction_ids=[
+                        int(source_id)
+                        for source_id in item.get("source_interaction_ids", [])
+                    ],
+                )
+                for item in data["source_windows"]
+                if isinstance(item, dict) and item.get("user_playbook_id") is not None
+            ]
+        return [
+            AgentPlaybookSourceWindow(
+                user_playbook_id=int(v), source_interaction_ids=[]
+            )
+            for v in data.get("user_playbook_ids", [])
+        ]
 
     def create_playbook_optimization_job(
         self, job: PlaybookOptimizationJob

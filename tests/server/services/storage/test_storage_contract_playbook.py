@@ -3,7 +3,11 @@
 import pytest
 
 from reflexio.models.api_schema.domain.enums import Status
-from reflexio.models.api_schema.service_schemas import AgentPlaybook, UserPlaybook
+from reflexio.models.api_schema.service_schemas import (
+    AgentPlaybook,
+    AgentPlaybookSourceWindow,
+    UserPlaybook,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -18,6 +22,7 @@ def _make_user_playbook(
     user_id: str,
     playbook_name: str,
     agent_version: str,
+    source_interaction_ids: list[int] | None = None,
 ) -> UserPlaybook:
     return UserPlaybook(
         user_playbook_id=user_playbook_id,
@@ -28,6 +33,7 @@ def _make_user_playbook(
         content=f"content-{user_playbook_id}",
         created_at=1_700_000_000 + user_playbook_id,
         source="test",
+        source_interaction_ids=source_interaction_ids or [],
     )
 
 
@@ -226,6 +232,57 @@ class TestArchiveUserPlaybookById:
         # u1's row untouched.
         current = storage.get_user_playbooks(user_id="u1", status_filter=[None])
         assert len(current) == 1
+
+
+class TestAgentPlaybookSourceWindows:
+    def test_source_windows_round_trip_and_legacy_ids(self, storage):
+        storage.set_source_windows_for_agent_playbook(
+            10,
+            [
+                AgentPlaybookSourceWindow(
+                    user_playbook_id=2, source_interaction_ids=[20, 21]
+                ),
+                AgentPlaybookSourceWindow(
+                    user_playbook_id=3, source_interaction_ids=[30]
+                ),
+            ],
+        )
+
+        assert storage.get_source_user_playbook_ids_for_agent_playbook(10) == [2, 3]
+        windows = storage.get_source_windows_for_agent_playbook(10)
+        assert [w.user_playbook_id for w in windows] == [2, 3]
+        assert [w.source_interaction_ids for w in windows] == [[20, 21], [30]]
+
+    def test_legacy_id_writer_creates_empty_source_windows(self, storage):
+        storage.set_source_user_playbook_ids_for_agent_playbook(10, [2, 3, 2])
+
+        assert storage.get_source_user_playbook_ids_for_agent_playbook(10) == [2, 3]
+        assert storage.get_source_windows_for_agent_playbook(10) == [
+            AgentPlaybookSourceWindow(user_playbook_id=2, source_interaction_ids=[]),
+            AgentPlaybookSourceWindow(user_playbook_id=3, source_interaction_ids=[]),
+        ]
+
+    def test_source_windows_survive_user_playbook_delete(self, storage):
+        playbook = _make_user_playbook(2, "u1", "fb", "v1", source_interaction_ids=[20])
+        storage.save_user_playbooks([playbook])
+        storage.set_source_windows_for_agent_playbook(
+            10,
+            [
+                AgentPlaybookSourceWindow(
+                    user_playbook_id=playbook.user_playbook_id,
+                    source_interaction_ids=[20],
+                )
+            ],
+        )
+
+        storage.delete_user_playbooks_by_ids([playbook.user_playbook_id])
+
+        assert storage.get_source_windows_for_agent_playbook(10) == [
+            AgentPlaybookSourceWindow(
+                user_playbook_id=playbook.user_playbook_id,
+                source_interaction_ids=[20],
+            )
+        ]
 
 
 # ---------------------------------------------------------------------------

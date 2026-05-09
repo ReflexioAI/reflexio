@@ -479,7 +479,8 @@ class PlaybookOptimizerConfig(BaseModel):
     # --- GEPA budget -------------------------------------------------------
     max_metric_calls: int = Field(default=40, gt=0)
     max_turns: int = Field(default=5, gt=0)
-    reflection_minibatch_size: int = Field(default=3, gt=0)
+    reflection_minibatch_size: int = Field(default=2, gt=0)
+    max_validation_windows: int = Field(default=2, gt=0)
     min_commit_windows: int = Field(default=2, gt=0)
     min_commit_score: float = Field(default=0.75, ge=0.0, le=1.0)
     min_commit_likert: int = Field(default=4, ge=1, le=5)

@@ -24,15 +24,33 @@ class ScenarioResolver:
         self.storage = storage
 
     def for_agent_playbook(self, agent_playbook_id: int) -> list[ScenarioWindow]:
-        user_playbook_ids = (
-            self.storage.get_source_user_playbook_ids_for_agent_playbook(
-                agent_playbook_id
-            )
-        )
-        user_playbooks = self.storage.get_user_playbooks_by_ids_any_user(
-            user_playbook_ids, status_filter=None
+        source_windows = self.storage.get_source_windows_for_agent_playbook(
+            agent_playbook_id
         )
         windows: list[ScenarioWindow] = []
+        legacy_user_playbook_ids: list[int] = []
+        for source_window in source_windows:
+            if not source_window.source_interaction_ids:
+                legacy_user_playbook_ids.append(source_window.user_playbook_id)
+                continue
+            interactions = self.storage.get_interactions_by_ids(
+                source_window.source_interaction_ids
+            )
+            if interactions:
+                windows.append(
+                    ScenarioWindow(
+                        user_playbook_id=source_window.user_playbook_id,
+                        source_interaction_ids=source_window.source_interaction_ids,
+                        interactions=interactions,
+                    )
+                )
+
+        if not legacy_user_playbook_ids:
+            return windows
+
+        user_playbooks = self.storage.get_user_playbooks_by_ids_any_user(
+            legacy_user_playbook_ids, status_filter=None
+        )
         for playbook in user_playbooks:
             if not playbook.source_interaction_ids:
                 continue

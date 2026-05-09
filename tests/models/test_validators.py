@@ -87,74 +87,108 @@ class TestSSRFPrevention:
     def test_always_blocks_aws_metadata_ip(self):
         """Cloud metadata IP 169.254.169.254 is ALWAYS blocked."""
         with pytest.raises(ValidationError, match="cloud metadata"):
-            CustomEndpointConfig(
-                model="x", api_key="k", api_base="http://169.254.169.254/latest"
+            CustomEndpointConfig.model_validate(
+                {
+                    "model": "x",
+                    "api_key": "k",
+                    "api_base": "http://169.254.169.254/latest",
+                }
             )
 
     def test_always_blocks_gcp_metadata_hostname(self):
         """GCP metadata hostname is ALWAYS blocked."""
         with pytest.raises(ValidationError, match="cloud metadata"):
-            CustomEndpointConfig(
-                model="x",
-                api_key="k",
-                api_base="http://metadata.google.internal/computeMetadata/v1",
+            CustomEndpointConfig.model_validate(
+                {
+                    "model": "x",
+                    "api_key": "k",
+                    "api_base": "http://metadata.google.internal/computeMetadata/v1",
+                }
             )
 
     def test_allows_public_urls(self):
         """Public URLs are always accepted."""
-        config = CustomEndpointConfig(
-            model="gpt-4", api_key="sk-test", api_base="https://api.openai.com/v1"
+        config = CustomEndpointConfig.model_validate(
+            {
+                "model": "gpt-4",
+                "api_key": "sk-test",
+                "api_base": "https://api.openai.com/v1",
+            }
         )
         assert str(config.api_base).startswith("https://api.openai.com")
 
     def test_allows_localhost_by_default(self, non_strict_mode):
         """Localhost is allowed when REFLEXIO_BLOCK_PRIVATE_URLS is not set."""
-        config = CustomEndpointConfig(
-            model="local-model", api_key="k", api_base="http://localhost:8080/v1"
+        config = CustomEndpointConfig.model_validate(
+            {
+                "model": "local-model",
+                "api_key": "k",
+                "api_base": "http://localhost:8080/v1",
+            }
         )
         assert "localhost" in str(config.api_base)
 
     def test_allows_private_ip_by_default(self, non_strict_mode):
         """Private IPs are allowed when REFLEXIO_BLOCK_PRIVATE_URLS is not set."""
-        config = CustomEndpointConfig(
-            model="local-model", api_key="k", api_base="http://192.168.1.100:8080/v1"
+        config = CustomEndpointConfig.model_validate(
+            {
+                "model": "local-model",
+                "api_key": "k",
+                "api_base": "http://192.168.1.100:8080/v1",
+            }
         )
         assert "192.168.1.100" in str(config.api_base)
 
     def test_blocks_localhost_in_strict_mode(self, strict_mode):
         """Localhost is blocked when REFLEXIO_BLOCK_PRIVATE_URLS=true."""
         with pytest.raises(ValidationError, match="localhost"):
-            CustomEndpointConfig(
-                model="x", api_key="k", api_base="http://localhost:8080/v1"
+            CustomEndpointConfig.model_validate(
+                {
+                    "model": "x",
+                    "api_key": "k",
+                    "api_base": "http://localhost:8080/v1",
+                }
             )
 
     def test_blocks_private_ip_in_strict_mode(self, strict_mode):
         """Private IPs are blocked when REFLEXIO_BLOCK_PRIVATE_URLS=true."""
         with pytest.raises(ValidationError, match="private"):
-            CustomEndpointConfig(
-                model="x", api_key="k", api_base="http://192.168.1.1/v1"
+            CustomEndpointConfig.model_validate(
+                {
+                    "model": "x",
+                    "api_key": "k",
+                    "api_base": "http://192.168.1.1/v1",
+                }
             )
 
     def test_blocks_loopback_ip_in_strict_mode(self, strict_mode):
         """Loopback IP 127.0.0.1 is blocked in strict mode."""
         with pytest.raises(ValidationError):
-            CustomEndpointConfig(
-                model="x", api_key="k", api_base="http://127.0.0.1:8080/v1"
+            CustomEndpointConfig.model_validate(
+                {
+                    "model": "x",
+                    "api_key": "k",
+                    "api_base": "http://127.0.0.1:8080/v1",
+                }
             )
 
     def test_azure_endpoint_ssrf_prevention(self):
         """AzureOpenAIConfig.endpoint is also protected against SSRF."""
         with pytest.raises(ValidationError, match="cloud metadata"):
-            AzureOpenAIConfig(
-                api_key="test-key",
-                endpoint="http://169.254.169.254/latest/meta-data/",
+            AzureOpenAIConfig.model_validate(
+                {
+                    "api_key": "test-key",
+                    "endpoint": "http://169.254.169.254/latest/meta-data/",
+                }
             )
 
     def test_azure_endpoint_allows_valid_url(self):
         """Valid Azure endpoints are accepted."""
-        config = AzureOpenAIConfig(
-            api_key="test-key",
-            endpoint="https://my-resource.openai.azure.com/",
+        config = AzureOpenAIConfig.model_validate(
+            {
+                "api_key": "test-key",
+                "endpoint": "https://my-resource.openai.azure.com/",
+            }
         )
         assert "openai.azure.com" in str(config.endpoint)
 
@@ -553,6 +587,8 @@ class TestTimeRangeValidation:
             start_time=datetime(2024, 1, 1, tzinfo=UTC),
             end_time=datetime(2024, 6, 1, tzinfo=UTC),
         )
+        assert req.start_time is not None
+        assert req.end_time is not None
         assert req.start_time < req.end_time
 
     def test_none_times_accepted(self):
@@ -618,9 +654,11 @@ class TestCrossFieldValidators:
     def test_openai_config_with_azure(self):
         """OpenAIConfig with only azure_config is valid."""
         config = OpenAIConfig(
-            azure_config=AzureOpenAIConfig(
-                api_key="test",
-                endpoint="https://my-resource.openai.azure.com/",
+            azure_config=AzureOpenAIConfig.model_validate(
+                {
+                    "api_key": "test",
+                    "endpoint": "https://my-resource.openai.azure.com/",
+                }
             )
         )
         assert config.azure_config is not None
@@ -708,6 +746,12 @@ class TestCrossFieldValidators:
 
         assert config.webhook_url is None
         assert config.assistant_script_path is None
+        assert config.max_validation_windows == 2
+
+    def test_playbook_optimizer_rejects_invalid_max_validation_windows(self):
+        """PlaybookOptimizerConfig: validation window cap must be positive."""
+        with pytest.raises(ValidationError):
+            PlaybookOptimizerConfig(max_validation_windows=0)
 
     def test_playbook_optimizer_rejects_multiple_assistant_backends(self):
         """PlaybookOptimizerConfig: webhook and script are mutually exclusive."""
@@ -752,20 +796,24 @@ class TestBackwardCompatibility:
 
     def test_config_accepts_old_window_names(self):
         """Config: extraction_window_size/stride still accepted as aliases."""
-        config = Config(
-            storage_config=StorageConfigSQLite(),
-            extraction_window_size=15,
-            extraction_window_stride=7,
+        config = Config.model_validate(
+            {
+                "storage_config": StorageConfigSQLite(),
+                "extraction_window_size": 15,
+                "extraction_window_stride": 7,
+            }
         )
         assert config.window_size == 15
         assert config.stride_size == 7
 
     def test_config_accepts_current_legacy_names(self):
         """Config: batch_size/batch_interval still accepted as aliases."""
-        config = Config(
-            storage_config=StorageConfigSQLite(),
-            batch_size=20,
-            batch_interval=8,
+        config = Config.model_validate(
+            {
+                "storage_config": StorageConfigSQLite(),
+                "batch_size": 20,
+                "batch_interval": 8,
+            }
         )
         assert config.window_size == 20
         assert config.stride_size == 8
@@ -782,24 +830,28 @@ class TestBackwardCompatibility:
 
     def test_config_prefers_new_names_when_both_present(self):
         """Config: new names win if old and new field names are both present."""
-        config = Config(
-            storage_config=StorageConfigSQLite(),
-            window_size=20,
-            stride_size=8,
-            batch_size=10,
-            batch_interval=5,
-            extraction_window_size=2,
-            extraction_window_stride=1,
+        config = Config.model_validate(
+            {
+                "storage_config": StorageConfigSQLite(),
+                "window_size": 20,
+                "stride_size": 8,
+                "batch_size": 10,
+                "batch_interval": 5,
+                "extraction_window_size": 2,
+                "extraction_window_stride": 1,
+            }
         )
         assert config.window_size == 20
         assert config.stride_size == 8
 
     def test_config_model_dump_uses_only_new_names(self):
         """Config: serialization emits window_size/stride_size only."""
-        config = Config(
-            storage_config=StorageConfigSQLite(),
-            batch_size=20,
-            batch_interval=8,
+        config = Config.model_validate(
+            {
+                "storage_config": StorageConfigSQLite(),
+                "batch_size": 20,
+                "batch_interval": 8,
+            }
         )
         dumped = config.model_dump()
         assert dumped["window_size"] == 20
@@ -819,22 +871,26 @@ class TestBackwardCompatibility:
 
     def test_profile_extractor_old_override_names(self):
         """ProfileExtractorConfig: old extraction_window_*_override names still work."""
-        config = ProfileExtractorConfig(
-            extractor_name="test",
-            extraction_definition_prompt="test",
-            extraction_window_size_override=30,
-            extraction_window_stride_override=10,
+        config = ProfileExtractorConfig.model_validate(
+            {
+                "extractor_name": "test",
+                "extraction_definition_prompt": "test",
+                "extraction_window_size_override": 30,
+                "extraction_window_stride_override": 10,
+            }
         )
         assert config.window_size_override == 30
         assert config.stride_size_override == 10
 
     def test_profile_extractor_current_legacy_override_names(self):
         """ProfileExtractorConfig: batch_*_override names still work."""
-        config = ProfileExtractorConfig(
-            extractor_name="test",
-            extraction_definition_prompt="test",
-            batch_size_override=30,
-            batch_interval_override=10,
+        config = ProfileExtractorConfig.model_validate(
+            {
+                "extractor_name": "test",
+                "extraction_definition_prompt": "test",
+                "batch_size_override": 30,
+                "batch_interval_override": 10,
+            }
         )
         assert config.window_size_override == 30
         assert config.stride_size_override == 10
@@ -843,11 +899,13 @@ class TestBackwardCompatibility:
 
     def test_profile_extractor_override_model_dump_uses_only_new_names(self):
         """ProfileExtractorConfig: serialization emits window/stride override names."""
-        config = ProfileExtractorConfig(
-            extractor_name="test",
-            extraction_definition_prompt="test",
-            batch_size_override=30,
-            batch_interval_override=10,
+        config = ProfileExtractorConfig.model_validate(
+            {
+                "extractor_name": "test",
+                "extraction_definition_prompt": "test",
+                "batch_size_override": 30,
+                "batch_interval_override": 10,
+            }
         )
         dumped = config.model_dump()
         assert dumped["window_size_override"] == 30
@@ -857,54 +915,64 @@ class TestBackwardCompatibility:
 
     def test_playbook_config_old_override_names(self):
         """PlaybookConfig: old extraction_window_*_override names still work."""
-        config = PlaybookConfig(
-            extractor_name="test",
-            extraction_definition_prompt="test",
-            extraction_window_size_override=25,
-            extraction_window_stride_override=5,
+        config = PlaybookConfig.model_validate(
+            {
+                "extractor_name": "test",
+                "extraction_definition_prompt": "test",
+                "extraction_window_size_override": 25,
+                "extraction_window_stride_override": 5,
+            }
         )
         assert config.window_size_override == 25
         assert config.stride_size_override == 5
 
     def test_playbook_config_current_legacy_override_names(self):
         """PlaybookConfig: batch_*_override names still work."""
-        config = PlaybookConfig(
-            extractor_name="test",
-            extraction_definition_prompt="test",
-            batch_size_override=25,
-            batch_interval_override=5,
+        config = PlaybookConfig.model_validate(
+            {
+                "extractor_name": "test",
+                "extraction_definition_prompt": "test",
+                "batch_size_override": 25,
+                "batch_interval_override": 5,
+            }
         )
         assert config.window_size_override == 25
         assert config.stride_size_override == 5
 
     def test_success_config_old_override_names(self):
         """AgentSuccessConfig: old extraction_window_*_override names still work."""
-        config = AgentSuccessConfig(
-            evaluation_name="test",
-            success_definition_prompt="test",
-            extraction_window_size_override=40,
-            extraction_window_stride_override=15,
+        config = AgentSuccessConfig.model_validate(
+            {
+                "evaluation_name": "test",
+                "success_definition_prompt": "test",
+                "extraction_window_size_override": 40,
+                "extraction_window_stride_override": 15,
+            }
         )
         assert config.window_size_override == 40
         assert config.stride_size_override == 15
 
     def test_success_config_current_legacy_override_names(self):
         """AgentSuccessConfig: batch_*_override names still work."""
-        config = AgentSuccessConfig(
-            evaluation_name="test",
-            success_definition_prompt="test",
-            batch_size_override=40,
-            batch_interval_override=15,
+        config = AgentSuccessConfig.model_validate(
+            {
+                "evaluation_name": "test",
+                "success_definition_prompt": "test",
+                "batch_size_override": 40,
+                "batch_interval_override": 15,
+            }
         )
         assert config.window_size_override == 40
         assert config.stride_size_override == 15
 
     def test_aggregator_config_old_field_names(self):
         """PlaybookAggregatorConfig: old field names still work via AliasChoices."""
-        config = PlaybookAggregatorConfig(
-            min_feedback_threshold=5,
-            refresh_count=3,
-            similarity_threshold=0.7,
+        config = PlaybookAggregatorConfig.model_validate(
+            {
+                "min_feedback_threshold": 5,
+                "refresh_count": 3,
+                "similarity_threshold": 0.7,
+            }
         )
         assert config.min_cluster_size == 5
         assert config.reaggregation_trigger_count == 3

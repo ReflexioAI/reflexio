@@ -88,6 +88,7 @@ __all__ = [
     "PlaybookOptimizationCandidate",
     "PlaybookOptimizationEvaluation",
     "PlaybookOptimizationEvent",
+    "AgentPlaybookSourceWindow",
     "agent_playbook_to_snapshot",
     "RunPlaybookAggregationRequest",
     "RunPlaybookAggregationResponse",
@@ -331,6 +332,13 @@ class PlaybookOptimizationEvent(BaseModel):
     event_type: str
     payload_json: str = "{}"
     created_at: int = Field(default_factory=lambda: int(datetime.now(UTC).timestamp()))
+
+
+class AgentPlaybookSourceWindow(BaseModel):
+    """Replayable source window snapshotted when an agent playbook is generated."""
+
+    user_playbook_id: int
+    source_interaction_ids: list[int] = Field(default_factory=list)
 
 
 class AgentSuccessEvaluationResult(BaseModel):

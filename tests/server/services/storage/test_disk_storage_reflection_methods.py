@@ -19,7 +19,11 @@ from reflexio.models.api_schema.domain.enums import (
     ProfileTimeToLive,
     Status,
 )
-from reflexio.models.api_schema.service_schemas import UserPlaybook, UserProfile
+from reflexio.models.api_schema.service_schemas import (
+    AgentPlaybookSourceWindow,
+    UserPlaybook,
+    UserProfile,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -244,3 +248,49 @@ class TestDiskArchiveUserPlaybookById:
         assert disk_storage.archive_user_playbook_by_id("u2", 1) is False
         current = disk_storage.get_user_playbooks(user_id="u1", status_filter=[None])
         assert {p.user_playbook_id for p in current} == {1}
+
+
+class TestDiskAgentPlaybookSourceWindows:
+    def test_source_windows_round_trip(self, disk_storage):
+        disk_storage.set_source_windows_for_agent_playbook(
+            10,
+            [
+                AgentPlaybookSourceWindow(
+                    user_playbook_id=2, source_interaction_ids=[20, 21]
+                )
+            ],
+        )
+
+        assert disk_storage.get_source_user_playbook_ids_for_agent_playbook(10) == [2]
+        assert disk_storage.get_source_windows_for_agent_playbook(10) == [
+            AgentPlaybookSourceWindow(
+                user_playbook_id=2, source_interaction_ids=[20, 21]
+            )
+        ]
+
+    def test_reads_legacy_id_only_map(self, disk_storage):
+        path = disk_storage._entity_path(  # noqa: SLF001
+            disk_storage._agent_playbook_source_map_dir(),  # noqa: SLF001
+            "10",
+        )
+        path.write_text(
+            '{"user_playbook_ids": [2, 3]}',
+            encoding="utf-8",
+        )
+
+        assert disk_storage.get_source_windows_for_agent_playbook(10) == [
+            AgentPlaybookSourceWindow(user_playbook_id=2, source_interaction_ids=[]),
+            AgentPlaybookSourceWindow(user_playbook_id=3, source_interaction_ids=[]),
+        ]
+
+    def test_reads_legacy_list_map(self, disk_storage):
+        path = disk_storage._entity_path(  # noqa: SLF001
+            disk_storage._agent_playbook_source_map_dir(),  # noqa: SLF001
+            "10",
+        )
+        path.write_text("[2, 3]", encoding="utf-8")
+
+        assert disk_storage.get_source_windows_for_agent_playbook(10) == [
+            AgentPlaybookSourceWindow(user_playbook_id=2, source_interaction_ids=[]),
+            AgentPlaybookSourceWindow(user_playbook_id=3, source_interaction_ids=[]),
+        ]

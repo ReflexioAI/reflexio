@@ -3,6 +3,7 @@ from abc import abstractmethod
 from reflexio.models.api_schema.common import BlockingIssue
 from reflexio.models.api_schema.domain import (
     AgentPlaybook,
+    AgentPlaybookSourceWindow,
     AgentSuccessEvaluationResult,
     PlaybookOptimizationCandidate,
     PlaybookOptimizationEvaluation,
@@ -458,6 +459,22 @@ class PlaybookMixin:
         self, agent_playbook_id: int
     ) -> list[int]:
         """Return source user playbook ids for an agent playbook."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def set_source_windows_for_agent_playbook(
+        self,
+        agent_playbook_id: int,
+        source_windows: list[AgentPlaybookSourceWindow],
+    ) -> None:
+        """Persist replayable source windows that produced an agent playbook."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_source_windows_for_agent_playbook(
+        self, agent_playbook_id: int
+    ) -> list[AgentPlaybookSourceWindow]:
+        """Return replayable source windows for an agent playbook."""
         raise NotImplementedError
 
     @abstractmethod

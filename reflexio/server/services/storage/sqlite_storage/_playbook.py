@@ -12,6 +12,7 @@ from reflexio.models.api_schema.retriever_schema import (
 )
 from reflexio.models.api_schema.service_schemas import (
     AgentPlaybook,
+    AgentPlaybookSourceWindow,
     AgentSuccessEvaluationResult,
     PlaybookOptimizationCandidate,
     PlaybookOptimizationEvaluation,
@@ -879,6 +880,39 @@ class PlaybookMixin:
     def set_source_user_playbook_ids_for_agent_playbook(
         self, agent_playbook_id: int, user_playbook_ids: list[int]
     ) -> None:
+        self.set_source_windows_for_agent_playbook(
+            agent_playbook_id,
+            [
+                AgentPlaybookSourceWindow(
+                    user_playbook_id=upid, source_interaction_ids=[]
+                )
+                for upid in user_playbook_ids
+            ],
+        )
+
+    @SQLiteStorageBase.handle_exceptions
+    def get_source_user_playbook_ids_for_agent_playbook(
+        self, agent_playbook_id: int
+    ) -> list[int]:
+        return [
+            window.user_playbook_id
+            for window in self.get_source_windows_for_agent_playbook(agent_playbook_id)
+        ]
+
+    @SQLiteStorageBase.handle_exceptions
+    def set_source_windows_for_agent_playbook(
+        self,
+        agent_playbook_id: int,
+        source_windows: list[AgentPlaybookSourceWindow],
+    ) -> None:
+        by_id: dict[int, list[int]] = {}
+        for window in source_windows:
+            ids = by_id.setdefault(window.user_playbook_id, [])
+            seen = set(ids)
+            for source_id in window.source_interaction_ids:
+                if source_id not in seen:
+                    ids.append(source_id)
+                    seen.add(source_id)
         with self._lock:
             self.conn.execute(
                 "DELETE FROM agent_playbook_source_user_playbooks WHERE agent_playbook_id = ?",
@@ -886,23 +920,37 @@ class PlaybookMixin:
             )
             self.conn.executemany(
                 """INSERT OR IGNORE INTO agent_playbook_source_user_playbooks
-                   (agent_playbook_id, user_playbook_id) VALUES (?, ?)""",
-                [(agent_playbook_id, upid) for upid in user_playbook_ids],
+                   (agent_playbook_id, user_playbook_id, source_interaction_ids)
+                   VALUES (?, ?, ?)""",
+                [
+                    (
+                        agent_playbook_id,
+                        upid,
+                        _json_dumps(source_interaction_ids) or "[]",
+                    )
+                    for upid, source_interaction_ids in by_id.items()
+                ],
             )
             self.conn.commit()
 
     @SQLiteStorageBase.handle_exceptions
-    def get_source_user_playbook_ids_for_agent_playbook(
+    def get_source_windows_for_agent_playbook(
         self, agent_playbook_id: int
-    ) -> list[int]:
+    ) -> list[AgentPlaybookSourceWindow]:
         rows = self._fetchall(
-            """SELECT user_playbook_id
+            """SELECT user_playbook_id, source_interaction_ids
                FROM agent_playbook_source_user_playbooks
                WHERE agent_playbook_id = ?
                ORDER BY user_playbook_id ASC""",
             (agent_playbook_id,),
         )
-        return [int(row["user_playbook_id"]) for row in rows]
+        return [
+            AgentPlaybookSourceWindow(
+                user_playbook_id=int(row["user_playbook_id"]),
+                source_interaction_ids=_json_loads(row["source_interaction_ids"]) or [],
+            )
+            for row in rows
+        ]
 
     @SQLiteStorageBase.handle_exceptions
     def create_playbook_optimization_job(

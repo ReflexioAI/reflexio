@@ -13,6 +13,7 @@ if TYPE_CHECKING:
 from reflexio.models.api_schema.service_schemas import (
     AgentPlaybook,
     AgentPlaybookSnapshot,
+    AgentPlaybookSourceWindow,
     AgentPlaybookUpdateEntry,
     PlaybookAggregationChangeLog,
     PlaybookStatus,
@@ -863,8 +864,18 @@ class PlaybookAggregator:
                         "agent_playbook_id": saved_fb.agent_playbook_id,
                         "user_playbook_ids": raw_ids,
                     }
-                    self.storage.set_source_user_playbook_ids_for_agent_playbook(  # type: ignore[reportOptionalMemberAccess]
-                        saved_fb.agent_playbook_id, raw_ids
+                    self.storage.set_source_windows_for_agent_playbook(  # type: ignore[reportOptionalMemberAccess]
+                        saved_fb.agent_playbook_id,
+                        [
+                            AgentPlaybookSourceWindow(
+                                user_playbook_id=fb.user_playbook_id,
+                                source_interaction_ids=list(fb.source_interaction_ids),
+                            )
+                            for fb in sorted(
+                                cluster_playbooks,
+                                key=lambda item: item.user_playbook_id,
+                            )
+                        ],
                     )
 
             # Store fingerprints in operation state

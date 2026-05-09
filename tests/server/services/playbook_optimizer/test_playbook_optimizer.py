@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 import threading
 import time
@@ -11,6 +12,7 @@ import pytest
 
 from reflexio.models.api_schema.domain import (
     AgentPlaybook,
+    AgentPlaybookSourceWindow,
     Interaction,
     PlaybookOptimizationCandidate,
     PlaybookOptimizationEvaluation,
@@ -43,8 +45,14 @@ from reflexio.server.services.playbook_optimizer.models import (
     JudgeASI,
     ScenarioWindow,
 )
-from reflexio.server.services.playbook_optimizer.optimizer import PlaybookOptimizer
+from reflexio.server.services.playbook_optimizer.optimizer import (
+    PlaybookOptimizer,
+    _split_train_validation_windows,
+)
 from reflexio.server.services.playbook_optimizer.rollout import MultiTurnRollout
+from reflexio.server.services.playbook_optimizer.scenario_resolver import (
+    ScenarioResolver,
+)
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 
 
@@ -65,6 +73,51 @@ def _optimizer_for_test(storage, config) -> PlaybookOptimizer:
     )
     llm_client = SimpleNamespace(config=SimpleNamespace(model="fake-model"))
     return PlaybookOptimizer(cast(Any, context), cast(Any, llm_client))
+
+
+def _scenario_window(user_playbook_id: int) -> ScenarioWindow:
+    return ScenarioWindow(
+        user_playbook_id=user_playbook_id,
+        source_interaction_ids=[user_playbook_id * 10],
+        interactions=[
+            Interaction(
+                interaction_id=user_playbook_id * 10,
+                user_id="u1",
+                request_id=f"r{user_playbook_id}",
+                role="User",
+                content=f"scenario {user_playbook_id}",
+            )
+        ],
+    )
+
+
+def _seed_request_and_user_interaction(
+    storage: SQLiteStorage,
+    *,
+    interaction_id: int,
+    request_id: str,
+    content: str = "scenario",
+) -> None:
+    storage.add_request(
+        Request(
+            request_id=request_id,
+            user_id="u1",
+            source="test",
+            agent_version="v1",
+        )
+    )
+    storage.add_user_interactions_bulk(
+        "u1",
+        [
+            Interaction(
+                interaction_id=interaction_id,
+                user_id="u1",
+                request_id=request_id,
+                role="User",
+                content=content,
+            )
+        ],
+    )
 
 
 def test_local_script_assistant_sends_payload_and_parses_content(tmp_path):
@@ -291,6 +344,75 @@ def test_optimizer_selects_local_script_assistant(tmp_path):
     assert assistant.command == [sys.executable, "assistant.py"]
 
 
+def test_optimizer_splits_train_and_validation_windows(tmp_path):
+    storage = _sqlite_storage(tmp_path)
+    optimizer = _optimizer_for_test(
+        storage,
+        Config(
+            storage_config=StorageConfigSQLite(db_path=str(tmp_path / "reflexio.db")),
+            playbook_optimizer_config=PlaybookOptimizerConfig(),
+        ),
+    )
+
+    windows = [_scenario_window(idx) for idx in range(30, 0, -1)]
+    train_windows, validation_windows = _split_train_validation_windows(
+        windows,
+        optimizer._config(),  # noqa: SLF001
+    )
+
+    assert len(train_windows) == 28
+    assert len(validation_windows) == 2
+    assert [w.user_playbook_id for w in validation_windows] == [1, 2]
+    assert {w.user_playbook_id for w in train_windows}.isdisjoint(
+        {w.user_playbook_id for w in validation_windows}
+    )
+
+
+def test_optimizer_split_holds_out_len_minus_one_for_small_sets(tmp_path):
+    storage = _sqlite_storage(tmp_path)
+    config = PlaybookOptimizerConfig(max_validation_windows=4)
+    optimizer = _optimizer_for_test(
+        storage,
+        Config(
+            storage_config=StorageConfigSQLite(db_path=str(tmp_path / "reflexio.db")),
+            playbook_optimizer_config=config,
+        ),
+    )
+
+    train_windows, validation_windows = _split_train_validation_windows(
+        [_scenario_window(idx) for idx in range(1, 6)],
+        optimizer._config(),  # noqa: SLF001
+    )
+    assert len(train_windows) == 1
+    assert len(validation_windows) == 4
+
+    train_windows, validation_windows = _split_train_validation_windows(
+        [_scenario_window(1), _scenario_window(2)],
+        optimizer._config(),  # noqa: SLF001
+    )
+    assert len(train_windows) == 1
+    assert len(validation_windows) == 1
+
+
+def test_optimizer_split_reuses_single_window_only_when_allowed(tmp_path):
+    storage = _sqlite_storage(tmp_path)
+    config = PlaybookOptimizerConfig(allow_single_window_commit=True)
+    optimizer = _optimizer_for_test(
+        storage,
+        Config(
+            storage_config=StorageConfigSQLite(db_path=str(tmp_path / "reflexio.db")),
+            playbook_optimizer_config=config,
+        ),
+    )
+
+    train_windows, validation_windows = _split_train_validation_windows(
+        [_scenario_window(1)],
+        optimizer._config(),  # noqa: SLF001
+    )
+
+    assert train_windows == validation_windows == [_scenario_window(1)]
+
+
 def test_optimizer_runs_local_script_assistant_and_persists_evaluation(tmp_path):
     storage = _sqlite_storage(tmp_path)
     script = tmp_path / "assistant.py"
@@ -358,6 +480,7 @@ json.dump({"content": "response for " + payload["playbooks"][0]["content"]}, sys
         storage_config=StorageConfigSQLite(db_path=str(tmp_path / "reflexio.db")),
         playbook_optimizer_config=PlaybookOptimizerConfig(
             enabled=True,
+            optimize_agent_playbooks=True,
             assistant_script_path=sys.executable,
             assistant_script_args=[str(script), str(record)],
             allow_single_window_commit=True,
@@ -369,7 +492,7 @@ json.dump({"content": "response for " + payload["playbooks"][0]["content"]}, sys
     )
     optimizer = _optimizer_for_test(storage, config)
 
-    def fake_run_gepa(config, seed_content, windows, adapter):  # noqa: ARG001
+    def fake_run_gepa(config, seed_content, train_windows, validation_windows, adapter):  # noqa: ARG001
         adapter.judge = Mock()
         adapter.judge.judge.return_value = JudgeOutput(
             verdict="candidate",
@@ -379,7 +502,7 @@ json.dump({"content": "response for " + payload["playbooks"][0]["content"]}, sys
             asi=JudgeASI(winning_behaviors=["clearer response"]),
         )
         adapter.evaluate(
-            windows,
+            validation_windows,
             {PLAYBOOK_CONTENT_COMPONENT: "candidate content"},
             capture_traces=True,
         )
@@ -404,9 +527,80 @@ json.dump({"content": "response for " + payload["playbooks"][0]["content"]}, sys
     assert "candidate content" in calls[1]
     jobs = storage.conn.execute("SELECT * FROM playbook_optimization_jobs").fetchall()
     assert jobs[0]["status"] == "completed"
+    metadata = json.loads(jobs[0]["metadata_json"])
+    assert metadata["source_window_count"] == 1
+    assert metadata["train_window_count"] == 1
+    assert metadata["validation_window_count"] == 1
     evaluations = storage.list_playbook_optimization_evaluations(jobs[0]["job_id"])
     assert len(evaluations) == 1
     assert evaluations[0].verdict == "candidate"
+
+
+def test_optimizer_passes_distinct_train_and_validation_sets_to_gepa(tmp_path):
+    storage = _sqlite_storage(tmp_path)
+    config = Config(
+        storage_config=StorageConfigSQLite(db_path=str(tmp_path / "reflexio.db")),
+        playbook_optimizer_config=PlaybookOptimizerConfig(
+            enabled=True,
+            optimize_agent_playbooks=True,
+            webhook_url="https://assistant.example.test/rollout",
+            auto_update_pending_agent_playbooks=False,
+            min_commit_windows=1,
+            min_commit_score=0.1,
+            min_commit_likert=1,
+        ),
+    )
+    optimizer = _optimizer_for_test(storage, config)
+    incumbent = AgentPlaybook(
+        agent_playbook_id=1,
+        playbook_name="support",
+        agent_version="v1",
+        content="incumbent",
+        playbook_status=PlaybookStatus.PENDING,
+    )
+    optimizer._load_incumbent = Mock(return_value=incumbent)  # type: ignore[method-assign]
+    optimizer._resolve_windows = Mock(  # type: ignore[method-assign]
+        return_value=[_scenario_window(idx) for idx in range(1, 6)]
+    )
+    captured: dict[str, list[ScenarioWindow]] = {}
+
+    def fake_run_gepa(config, seed_content, train_windows, validation_windows, adapter):  # noqa: ARG001
+        captured["train"] = train_windows
+        captured["validation"] = validation_windows
+        candidate = adapter._ensure_candidate("candidate content")  # noqa: SLF001
+        for window in validation_windows:
+            storage.insert_playbook_optimization_evaluation(
+                PlaybookOptimizationEvaluation(
+                    job_id=adapter.job_id,
+                    candidate_id=candidate.candidate_id,
+                    target_kind="agent_playbook",
+                    target_id=1,
+                    scenario_user_playbook_id=window.user_playbook_id,
+                    source_interaction_ids=window.source_interaction_ids,
+                    score=0.9,
+                    verdict="candidate",
+                    likert=5,
+                )
+            )
+        return SimpleNamespace(
+            best_candidate={PLAYBOOK_CONTENT_COMPONENT: "candidate content"},
+            val_aggregate_scores=[0.9],
+            best_idx=0,
+            to_dict=lambda: {"best_idx": 0},
+        )
+
+    optimizer._run_gepa = fake_run_gepa  # type: ignore[method-assign]
+
+    optimizer.optimize(PlaybookOptimizationTarget(kind="agent_playbook", target_id=1))
+
+    assert [w.user_playbook_id for w in captured["validation"]] == [1, 2]
+    assert [w.user_playbook_id for w in captured["train"]] == [3, 4, 5]
+    jobs = storage.conn.execute("SELECT * FROM playbook_optimization_jobs").fetchall()
+    metadata = json.loads(jobs[0]["metadata_json"])
+    assert metadata["source_window_count"] == 5
+    assert metadata["train_window_count"] == 3
+    assert metadata["validation_window_count"] == 2
+    assert metadata["validation_scenario_user_playbook_ids"] == [1, 2]
 
 
 def test_sqlite_persists_source_mapping_and_winner_candidate(tmp_path):
@@ -435,6 +629,141 @@ def test_sqlite_persists_source_mapping_and_winner_candidate(tmp_path):
     assert persisted.is_winner is True
 
 
+def test_scenario_resolver_uses_snapshotted_source_windows_after_user_delete(tmp_path):
+    storage = _sqlite_storage(tmp_path)
+    _seed_request_and_user_interaction(
+        storage, interaction_id=101, request_id="r101", content="original ask"
+    )
+    storage.save_user_playbooks(
+        [
+            UserPlaybook(
+                user_playbook_id=7,
+                user_id="u1",
+                agent_version="v1",
+                request_id="r101",
+                playbook_name="support",
+                content="source",
+                source_interaction_ids=[101],
+            )
+        ]
+    )
+    storage.set_source_windows_for_agent_playbook(
+        10,
+        [AgentPlaybookSourceWindow(user_playbook_id=7, source_interaction_ids=[101])],
+    )
+    storage.delete_user_playbooks_by_ids([7])
+
+    windows = ScenarioResolver(storage).for_agent_playbook(10)
+
+    assert len(windows) == 1
+    assert windows[0].user_playbook_id == 7
+    assert windows[0].source_interaction_ids == [101]
+    assert [turn.content for turn in windows[0].user_turns] == ["original ask"]
+
+
+def test_scenario_resolver_backfills_legacy_empty_source_windows(tmp_path):
+    storage = _sqlite_storage(tmp_path)
+    _seed_request_and_user_interaction(
+        storage, interaction_id=102, request_id="r102", content="legacy ask"
+    )
+    user_playbook = UserPlaybook(
+        user_id="u1",
+        agent_version="v1",
+        request_id="r102",
+        playbook_name="support",
+        content="source",
+        source_interaction_ids=[102],
+    )
+    storage.save_user_playbooks([user_playbook])
+    storage.set_source_user_playbook_ids_for_agent_playbook(
+        10, [user_playbook.user_playbook_id]
+    )
+
+    windows = ScenarioResolver(storage).for_agent_playbook(10)
+
+    assert len(windows) == 1
+    assert windows[0].user_playbook_id == user_playbook.user_playbook_id
+    assert windows[0].source_interaction_ids == [102]
+    assert [turn.content for turn in windows[0].user_turns] == ["legacy ask"]
+
+
+def test_optimizer_successor_preserves_source_window_snapshots(tmp_path):
+    storage = _sqlite_storage(tmp_path)
+    _seed_request_and_user_interaction(
+        storage, interaction_id=201, request_id="r201", content="validate"
+    )
+    [agent_playbook] = storage.save_agent_playbooks(
+        [
+            AgentPlaybook(
+                playbook_name="support",
+                agent_version="v1",
+                content="incumbent content",
+                playbook_status=PlaybookStatus.PENDING,
+            )
+        ]
+    )
+    storage.set_source_windows_for_agent_playbook(
+        agent_playbook.agent_playbook_id,
+        [AgentPlaybookSourceWindow(user_playbook_id=12, source_interaction_ids=[201])],
+    )
+    config = Config(
+        storage_config=StorageConfigSQLite(db_path=str(tmp_path / "reflexio.db")),
+        playbook_optimizer_config=PlaybookOptimizerConfig(
+            enabled=True,
+            optimize_agent_playbooks=True,
+            webhook_url="https://assistant.example.test/rollout",
+            allow_single_window_commit=True,
+            min_commit_windows=1,
+            min_commit_score=0.1,
+            min_commit_likert=1,
+        ),
+    )
+    optimizer = _optimizer_for_test(storage, config)
+    optimizer._resolve_windows = Mock(  # type: ignore[method-assign]
+        return_value=[_scenario_window(12)]
+    )
+
+    def fake_run_gepa(config, seed_content, train_windows, validation_windows, adapter):  # noqa: ARG001
+        candidate = adapter._ensure_candidate("candidate content")  # noqa: SLF001
+        storage.insert_playbook_optimization_evaluation(
+            PlaybookOptimizationEvaluation(
+                job_id=adapter.job_id,
+                candidate_id=candidate.candidate_id,
+                target_kind="agent_playbook",
+                target_id=agent_playbook.agent_playbook_id,
+                scenario_user_playbook_id=12,
+                source_interaction_ids=[120],
+                score=0.9,
+                verdict="candidate",
+                likert=5,
+            )
+        )
+        return SimpleNamespace(
+            best_candidate={PLAYBOOK_CONTENT_COMPONENT: "candidate content"},
+            val_aggregate_scores=[0.9],
+            best_idx=0,
+            to_dict=lambda: {"best_idx": 0},
+        )
+
+    optimizer._run_gepa = fake_run_gepa  # type: ignore[method-assign]
+
+    optimizer.optimize(
+        PlaybookOptimizationTarget(
+            kind="agent_playbook", target_id=agent_playbook.agent_playbook_id
+        )
+    )
+
+    successors = [
+        playbook
+        for playbook in storage.get_agent_playbooks(playbook_name="support")
+        if playbook.content == "candidate content"
+    ]
+    assert len(successors) == 1
+    assert storage.get_source_windows_for_agent_playbook(
+        successors[0].agent_playbook_id
+    ) == [AgentPlaybookSourceWindow(user_playbook_id=12, source_interaction_ids=[201])]
+
+
 def test_commit_thresholds_only_count_winner_candidate(tmp_path):
     storage = _sqlite_storage(tmp_path)
     job = storage.create_playbook_optimization_job(
@@ -453,6 +782,7 @@ def test_commit_thresholds_only_count_winner_candidate(tmp_path):
             target_kind="agent_playbook",
             target_id=10,
             scenario_user_playbook_id=1,
+            source_interaction_ids=[10],
             score=0.95,
             verdict="candidate",
             likert=5,
@@ -472,7 +802,11 @@ def test_commit_thresholds_only_count_winner_candidate(tmp_path):
     )
 
     assert not optimizer._passes_commit_thresholds(  # noqa: SLF001
-        job.job_id, winner_candidate.candidate_id, 0.95, config
+        job.job_id,
+        winner_candidate.candidate_id,
+        [_scenario_window(2)],
+        0.95,
+        config,
     )
 
     storage.insert_playbook_optimization_evaluation(
@@ -482,13 +816,18 @@ def test_commit_thresholds_only_count_winner_candidate(tmp_path):
             target_kind="agent_playbook",
             target_id=10,
             scenario_user_playbook_id=2,
+            source_interaction_ids=[20],
             score=0.9,
             verdict="candidate",
             likert=5,
         )
     )
     assert optimizer._passes_commit_thresholds(  # noqa: SLF001
-        job.job_id, winner_candidate.candidate_id, 0.95, config
+        job.job_id,
+        winner_candidate.candidate_id,
+        [_scenario_window(2)],
+        0.95,
+        config,
     )
 
 
