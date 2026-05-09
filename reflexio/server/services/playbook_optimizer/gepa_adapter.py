@@ -118,6 +118,16 @@ class ReflexioPlaybookGEPAAdapter:
                     candidate_rollout_json=output.candidate_rollout.model_dump_json(),
                 )
             )
+            logger.info(
+                "event=playbook_optimization_evaluation job_id=%d candidate_id=%d "
+                "scenario_user_playbook_id=%s verdict=%s score=%.3f likert=%d",
+                self.job_id,
+                persisted_candidate.candidate_id,
+                window.user_playbook_id,
+                output.verdict,
+                output.score,
+                output.likert,
+            )
 
         return EvaluationBatch(
             outputs=outputs,
