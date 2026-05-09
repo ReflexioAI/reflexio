@@ -586,7 +586,7 @@ class TestSetupInitEmbeddingStep:
         env_path.parent.mkdir(parents=True, exist_ok=True)
         env_path.write_text("")
         monkeypatch.setattr(
-            "reflexio.cli.env_loader.load_reflexio_env",
+            "reflexio.cli.env_loader.ensure_user_env_for_setup",
             lambda: env_path,
         )
 
@@ -621,7 +621,7 @@ class TestSetupInitEmbeddingStep:
         env_path.parent.mkdir(parents=True, exist_ok=True)
         env_path.write_text("")
         monkeypatch.setattr(
-            "reflexio.cli.env_loader.load_reflexio_env",
+            "reflexio.cli.env_loader.ensure_user_env_for_setup",
             lambda: env_path,
         )
 
@@ -651,7 +651,7 @@ class TestSetupInitEmbeddingStep:
         env_path.parent.mkdir(parents=True, exist_ok=True)
         env_path.write_text("")
         monkeypatch.setattr(
-            "reflexio.cli.env_loader.load_reflexio_env",
+            "reflexio.cli.env_loader.ensure_user_env_for_setup",
             lambda: env_path,
         )
 
@@ -679,7 +679,7 @@ class TestSetupInitEmbeddingStep:
         env_path.parent.mkdir(parents=True, exist_ok=True)
         env_path.write_text("")
         monkeypatch.setattr(
-            "reflexio.cli.env_loader.load_reflexio_env",
+            "reflexio.cli.env_loader.ensure_user_env_for_setup",
             lambda: env_path,
         )
 
@@ -716,7 +716,7 @@ class TestSetupInitEmbeddingStep:
         env_path.parent.mkdir(parents=True, exist_ok=True)
         env_path.write_text("")
         monkeypatch.setattr(
-            "reflexio.cli.env_loader.load_reflexio_env",
+            "reflexio.cli.env_loader.ensure_user_env_for_setup",
             lambda: env_path,
         )
 
@@ -821,7 +821,7 @@ class TestChooseEmbeddingProviderEdgeCases:
         env_path.parent.mkdir(parents=True, exist_ok=True)
         env_path.write_text("")
         monkeypatch.setattr(
-            "reflexio.cli.env_loader.load_reflexio_env",
+            "reflexio.cli.env_loader.ensure_user_env_for_setup",
             lambda: env_path,
         )
 
@@ -858,3 +858,81 @@ class TestChooseEmbeddingProviderEdgeCases:
 
         with pytest.raises(typer.Exit):
             claude_code_setup(uninstall=False, expert=False, embedding="opneai")
+
+
+class TestEnsureUserEnvForSetup:
+    """Regression tests for the user-level .env target.
+
+    ``setup init`` must always write to ``~/.reflexio/.env`` even when
+    invoked from a directory that already contains its own ``.env``
+    (e.g. a worktree root or unrelated project).
+    """
+
+    def test_setup_init_writes_to_user_home_not_cwd(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When CWD has an unrelated ``.env``, the new key lands in
+        ``~/.reflexio/.env`` and the CWD ``.env`` is left untouched."""
+        from reflexio.cli.env_loader import ensure_user_env_for_setup
+
+        fake_home = tmp_path / "home"
+        fake_cwd = tmp_path / "worktree"
+        fake_cwd.mkdir(parents=True)
+        cwd_env = fake_cwd / ".env"
+        cwd_env.write_text("UNRELATED_VAR=do-not-touch\n")
+
+        # Pre-create ~/.reflexio/.env so we don't depend on the bundled template.
+        user_env = fake_home / ".reflexio" / ".env"
+        user_env.parent.mkdir(parents=True, exist_ok=True)
+        user_env.write_text("")
+
+        monkeypatch.setattr("pathlib.Path.home", lambda: fake_home)
+        monkeypatch.chdir(fake_cwd)
+        # Re-bind module-level constants that captured Path.home() at import time.
+        monkeypatch.setattr(
+            "reflexio.cli.env_loader._USER_ENV_DIR", fake_home / ".reflexio"
+        )
+        monkeypatch.setattr("reflexio.cli.env_loader._USER_ENV_FILE", user_env)
+
+        resolved = ensure_user_env_for_setup()
+
+        assert resolved == user_env
+        assert resolved is not None and resolved.parent == fake_home / ".reflexio"
+        # CWD .env was not selected and was not modified.
+        assert cwd_env.read_text() == "UNRELATED_VAR=do-not-touch\n"
+
+    def test_setup_init_creates_user_env_when_missing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When no ``~/.reflexio/.env`` exists yet, the function creates it
+        from the bundled template — never falling back to CWD."""
+        from reflexio.cli.env_loader import ensure_user_env_for_setup
+
+        fake_home = tmp_path / "home"
+        fake_cwd = tmp_path / "worktree"
+        fake_cwd.mkdir(parents=True)
+        cwd_env = fake_cwd / ".env"
+        cwd_env.write_text("CWD_ONLY=ignored\n")
+
+        monkeypatch.setattr("pathlib.Path.home", lambda: fake_home)
+        monkeypatch.chdir(fake_cwd)
+        monkeypatch.setattr(
+            "reflexio.cli.env_loader._USER_ENV_DIR", fake_home / ".reflexio"
+        )
+        monkeypatch.setattr(
+            "reflexio.cli.env_loader._USER_ENV_FILE",
+            fake_home / ".reflexio" / ".env",
+        )
+
+        # Mock the template so the test doesn't rely on .env.example presence.
+        monkeypatch.setattr(
+            "reflexio.cli.env_loader._find_env_example",
+            lambda *_args, **_kwargs: "REFLEXIO_URL=\n",
+        )
+
+        resolved = ensure_user_env_for_setup()
+
+        assert resolved == fake_home / ".reflexio" / ".env"
+        assert resolved is not None and resolved.exists()
+        # CWD .env was untouched.
+        assert cwd_env.read_text() == "CWD_ONLY=ignored\n"

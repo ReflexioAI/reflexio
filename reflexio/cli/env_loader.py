@@ -131,6 +131,46 @@ def load_reflexio_env(
     return created
 
 
+def ensure_user_env_for_setup(
+    *,
+    package_data_module: str = "reflexio.data",
+    auto_generate_keys: list[str] | None = None,
+) -> Path | None:
+    """Return ``~/.reflexio/.env``, creating it from the template if missing.
+
+    Distinct from :func:`load_reflexio_env`: that function honors a CWD-local
+    ``./.env`` (intentional for ``services start``, where a project-level
+    override should take precedence). For ``setup init`` we never want to
+    write to whatever ``.env`` happens to be in the user's CWD — they may be
+    running from a worktree or a project root with an unrelated ``.env``,
+    and the resulting writes pollute that file and break the documented
+    ``~/.reflexio/.env`` invariant.
+
+    Args:
+        package_data_module: Module containing the bundled ``.env.example``
+            template (for ``importlib.resources``). OS uses ``reflexio.data``,
+            enterprise uses ``reflexio_ext.data``.
+        auto_generate_keys: Env var names to auto-fill with random hex
+            tokens when creating from the template.
+
+    Returns:
+        Path to ``~/.reflexio/.env`` (existing or newly created), or
+        ``None`` if no template could be found.
+    """
+    global _loaded_env_path
+    if _USER_ENV_FILE.exists():
+        load_dotenv(dotenv_path=_USER_ENV_FILE)
+        resolved = _USER_ENV_FILE.resolve()
+        _logger.debug("Loaded user env from: %s", resolved)
+        _loaded_env_path = resolved
+        _backfill_missing_keys(_USER_ENV_FILE, auto_generate_keys or [])
+        return _USER_ENV_FILE
+    created = _create_default_env(package_data_module, auto_generate_keys or [])
+    if created is not None:
+        _loaded_env_path = created.resolve()
+    return created
+
+
 def _backfill_missing_keys(env_path: Path, keys: list[str]) -> None:
     """Generate and write any missing secret keys into an existing .env file.
 

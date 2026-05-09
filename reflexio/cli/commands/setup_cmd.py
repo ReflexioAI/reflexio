@@ -707,10 +707,13 @@ def openclaw(
         )
         raise typer.Exit(1)
 
-    # Step 1: Load .env path
-    from reflexio.cli.env_loader import load_reflexio_env
+    # Step 1: Load .env path. Always target ~/.reflexio/.env — running setup
+    # from a worktree or project root that happens to contain its own .env
+    # would otherwise pollute that file via load_reflexio_env's CWD-first
+    # search. Setup writes are user-global, not project-local.
+    from reflexio.cli.env_loader import ensure_user_env_for_setup
 
-    env_path = load_reflexio_env()
+    env_path = ensure_user_env_for_setup()
     if env_path is None:
         typer.echo("Error: could not locate or create a .env file")
         raise typer.Exit(1)
@@ -816,9 +819,11 @@ def init(
         )
         raise typer.Exit(1)
 
-    from reflexio.cli.env_loader import load_reflexio_env
+    # Always target ~/.reflexio/.env — see ensure_user_env_for_setup docstring
+    # for why we don't honor a CWD-local .env in setup commands.
+    from reflexio.cli.env_loader import ensure_user_env_for_setup
 
-    env_path = load_reflexio_env()
+    env_path = ensure_user_env_for_setup()
     if env_path is None:
         typer.echo("Error: could not locate or create a .env file")
         raise typer.Exit(1)
@@ -1292,10 +1297,13 @@ def claude_code_setup(
         location = _prompt_install_location()
         target = Path.home() if location == InstallLocation.ALL_PROJECTS else Path.cwd()
 
-    # Step 1: Load .env path
-    from reflexio.cli.env_loader import load_reflexio_env
+    # Step 1: Load .env path. Always target ~/.reflexio/.env — running setup
+    # from a worktree or project root that happens to contain its own .env
+    # would otherwise pollute that file via load_reflexio_env's CWD-first
+    # search. Setup writes are user-global, not project-local.
+    from reflexio.cli.env_loader import ensure_user_env_for_setup
 
-    env_path = load_reflexio_env()
+    env_path = ensure_user_env_for_setup()
     if env_path is None:
         typer.echo("Error: could not locate or create a .env file")
         raise typer.Exit(1)
