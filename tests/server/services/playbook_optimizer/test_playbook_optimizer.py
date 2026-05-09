@@ -592,6 +592,35 @@ def test_run_gepa_reuses_trainset_for_single_window_validation(tmp_path):
     assert kwargs["trainset"] == [window]
     assert kwargs["valset"] is None
     assert kwargs["cache_evaluation"] is True
+    [stopper] = kwargs["stop_callbacks"]
+    assert stopper.threshold == 0.9
+
+
+def test_run_gepa_forwards_configured_early_stop_score(tmp_path):
+    storage = _sqlite_storage(tmp_path)
+    config = PlaybookOptimizerConfig(
+        enabled=True,
+        optimize_agent_playbooks=True,
+        webhook_url="https://assistant.example.test/rollout",
+        early_stop_score=0.5,
+    )
+    optimizer = _optimizer_for_test(
+        storage,
+        Config(
+            storage_config=StorageConfigSQLite(db_path=str(tmp_path / "reflexio.db")),
+            playbook_optimizer_config=config,
+        ),
+    )
+    adapter = Mock(job_id=123)
+    window = _scenario_window(1)
+    with patch("gepa.api.optimize") as gepa_optimize:
+        gepa_optimize.return_value = SimpleNamespace()
+
+        optimizer._run_gepa(config, "seed", [window], [window], adapter)  # noqa: SLF001
+
+    _, kwargs = gepa_optimize.call_args
+    [stopper] = kwargs["stop_callbacks"]
+    assert stopper.threshold == 0.5
 
 
 def test_run_gepa_keeps_distinct_validation_holdout(tmp_path):

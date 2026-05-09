@@ -270,6 +270,7 @@ class PlaybookOptimizer:
         adapter: ReflexioPlaybookGEPAAdapter,
     ) -> Any:
         from gepa.api import optimize as gepa_optimize
+        from gepa.utils.stop_condition import ScoreThresholdStopper
 
         reflection_lm = config.reflection_model or self.llm_client.config.model
         return gepa_optimize(
@@ -287,6 +288,7 @@ class PlaybookOptimizer:
             use_merge=config.use_merge,
             max_merge_invocations=config.max_merge_invocations,
             max_metric_calls=config.max_metric_calls,
+            stop_callbacks=[ScoreThresholdStopper(config.early_stop_score)],
             raise_on_exception=False,
             display_progress_bar=False,
             cache_evaluation=True,

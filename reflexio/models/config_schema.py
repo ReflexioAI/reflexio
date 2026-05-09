@@ -476,6 +476,7 @@ class PlaybookOptimizerConfig(BaseModel):
     # --- GEPA budget -------------------------------------------------------
     max_metric_calls: int = Field(default=20, gt=0)
     max_turns: int = Field(default=4, gt=0)
+    early_stop_score: float = Field(default=0.9, ge=0.0, le=1.0)
     reflection_minibatch_size: int = Field(default=2, gt=0)
     max_validation_windows: int = Field(default=2, gt=0)
     min_commit_windows: int = Field(default=2, gt=0)

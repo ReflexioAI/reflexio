@@ -322,6 +322,7 @@ need deeper exploration.
 | `webhook_backoff_base_seconds` | `float >= 0` | 1.0 | Exponential base — both backends |
 | `max_metric_calls` | `int > 0` | 20 | GEPA metric-call budget per optimization run |
 | `max_turns` | `int > 0` | 4 | Maximum user turns replayed per source window rollout |
+| `early_stop_score` | `float [0, 1]` | 0.9 | Stops GEPA early once the current best validation score reaches this threshold |
 | `reflection_minibatch_size` | `int > 0` | 2 | Number of training windows GEPA samples for each reflection minibatch |
 
 ### 6.3 Validator
