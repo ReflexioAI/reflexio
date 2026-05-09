@@ -748,7 +748,13 @@ class TestCrossFieldValidators:
         assert config.assistant_script_path is None
         assert config.max_metric_calls == 20
         assert config.max_turns == 4
+        assert config.early_stop_score == 0.9
         assert config.max_validation_windows == 2
+
+    def test_playbook_optimizer_rejects_invalid_early_stop_score(self):
+        """PlaybookOptimizerConfig: early stop score must be in [0, 1]."""
+        with pytest.raises(ValidationError):
+            PlaybookOptimizerConfig(early_stop_score=1.1)
 
     def test_playbook_optimizer_rejects_invalid_max_validation_windows(self):
         """PlaybookOptimizerConfig: validation window cap must be positive."""
