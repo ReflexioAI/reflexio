@@ -487,6 +487,79 @@ class BaseGenerationService(
             self._get_base_service_name(),  # type: ignore[reportArgumentType]
         )
 
+    def _serialize_request_for_queue(self, request: TRequest) -> dict | None:
+        """Serialize a request for the pending-request queue.
+
+        Default implementation handles Pydantic ``BaseModel`` requests via
+        ``model_dump(mode="json")``. Override in subclasses whose requests
+        are not Pydantic models.
+
+        The queued payload is what the rerun loop will run when this request
+        comes off the queue — so it MUST capture every field the run needs to
+        reproduce the original publish (user_id, request_id, agent_version,
+        source, force_extraction, etc.). Without this, the rerun runs with the
+        wrong holder's request and the queued user's interactions are silently
+        skipped (R2 / reflexio-enterprise#59).
+
+        Returns ``None`` to opt out — the queue then stores only the
+        request_id and the rerun falls back to the original holder's request,
+        which is the pre-fix behaviour. Use only for services where the
+        per-request payload doesn't differ between concurrent callers.
+        """
+        # Pydantic BaseModel — handles the common case (PlaybookGenerationRequest,
+        # ProfileGenerationRequest).
+        model_dump = getattr(request, "model_dump", None)
+        if callable(model_dump):
+            try:
+                dumped = model_dump(mode="json")
+            except Exception:  # pragma: no cover — defensive
+                logger.warning(
+                    "Failed to model_dump %s request for queue; "
+                    "rerun will fall back to original holder's request",
+                    self._get_service_name(),
+                )
+                return None
+            if isinstance(dumped, dict):
+                return dumped
+        return None
+
+    def _deserialize_request_from_queue(
+        self,
+        payload: dict,
+        original_request: TRequest,
+    ) -> TRequest:
+        """Reconstruct a request object from a queued payload.
+
+        Default implementation calls ``type(original_request).model_validate(payload)``
+        for Pydantic-backed requests. Override in subclasses with non-Pydantic
+        request types.
+
+        Args:
+            payload: The dict previously produced by ``_serialize_request_for_queue``
+            original_request: The request the lock holder ran with — used as a
+                fallback type and for any fields the payload doesn't carry
+        """
+        request_cls = type(original_request)
+        model_validate = getattr(request_cls, "model_validate", None)
+        if callable(model_validate):
+            try:
+                rebuilt = model_validate(payload)
+            except Exception as exc:  # pragma: no cover — defensive
+                logger.warning(
+                    "Failed to model_validate queued payload for %s: %s; "
+                    "falling back to original request",
+                    self._get_service_name(),
+                    exc,
+                )
+                return original_request
+            # Narrow the object type to TRequest — model_validate on
+            # type(original_request) returns the same class, so the cast is
+            # safe in practice. Pyright can't see through getattr, so we
+            # use isinstance to satisfy the type checker.
+            if isinstance(rebuilt, request_cls):
+                return rebuilt  # type: ignore[reportReturnType]
+        return original_request
+
     def run(self, request: TRequest) -> None:
         """
         Run the generation service for the given request.
@@ -512,14 +585,23 @@ class BaseGenerationService(
 
         state_manager = self._create_state_manager()
 
-        # Try to acquire lock
-        if not state_manager.acquire_lock(my_request_id, scope_id=scope_id):
-            return  # Another operation is running, we've updated pending_request_id
+        # Try to acquire lock — pass the serialized payload so blocked
+        # publishes land in the queue with their own data attached. This is
+        # the fix for R2 / reflexio-enterprise#59: without the payload, the
+        # rerun re-uses the holder's request and the queued users' batches
+        # never get extracted.
+        my_payload = self._serialize_request_for_queue(request)
+        if not state_manager.acquire_lock(
+            my_request_id, scope_id=scope_id, payload=my_payload
+        ):
+            return  # Another operation is running, we've enqueued ourselves
 
-        # Re-run loop: keep running until no new requests come in
+        current_request: TRequest = request
+
+        # Re-run loop: drain the pending queue (FIFO) until empty
         try:
             while True:
-                self._run_generation(request)
+                self._run_generation(current_request)
 
                 # If in batch mode and cancellation was requested, clear lock
                 # to prevent queued pending requests from running, then stop
@@ -531,23 +613,39 @@ class BaseGenerationService(
                     )
                     break
 
-                # Check if another request came in during our run
-                pending_request_id = state_manager.release_lock(
+                # Pop the next queued request (if any). Returns the queued
+                # request's ID + payload so the rerun runs against THAT
+                # publish's data, not the original holder's.
+                next_entry = state_manager.release_lock_pop_queue(
                     my_request_id, scope_id=scope_id
                 )
 
+                if next_entry is None:
+                    break  # Queue empty — we're done
+
+                next_request_id = next_entry["request_id"]
+                next_payload = next_entry.get("payload")
+
                 logger.info(
-                    "Released in-progress lock for %s: request_id=%s, pending_request_id=%s",
+                    "Draining queued %s request: prev_request_id=%s, next_request_id=%s, "
+                    "payload_present=%s",
                     self._get_service_name(),
                     my_request_id,
-                    pending_request_id,
+                    next_request_id,
+                    next_payload is not None,
                 )
 
-                if not pending_request_id:
-                    break  # No pending request, we're done
+                # Reconstruct the queued request. If the payload is missing
+                # (legacy state row from a pre-fix server), fall back to the
+                # original request — matches pre-fix behaviour.
+                if next_payload:
+                    current_request = self._deserialize_request_from_queue(
+                        next_payload, request
+                    )
+                else:
+                    current_request = request
 
-                # Another request came in, update my_request_id and re-run
-                my_request_id = pending_request_id
+                my_request_id = next_request_id
 
         except Exception:
             # Clear lock on error to prevent deadlock

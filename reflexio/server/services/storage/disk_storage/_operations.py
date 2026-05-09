@@ -285,7 +285,11 @@ class OperationMixin:
             self._clear_dir(self._operation_states_dir())
 
     def try_acquire_in_progress_lock(
-        self, state_key: str, request_id: str, stale_lock_seconds: int = 300
+        self,
+        state_key: str,
+        request_id: str,
+        stale_lock_seconds: int = 300,
+        payload: dict | None = None,
     ) -> dict:
         current_time = int(time.time())
 
@@ -310,6 +314,7 @@ class OperationMixin:
                     "started_at": current_time,
                     "current_request_id": request_id,
                     "pending_request_id": None,
+                    "pending_request_queue": [],
                 }
                 state_data = {
                     "service_name": state_key,
@@ -319,8 +324,20 @@ class OperationMixin:
                 self._write_dict(path, state_data)
                 return {"acquired": True, "state": new_state}
 
-            # Case 3: Active lock - update pending
-            current_state["pending_request_id"] = request_id
+            # Holder retry — idempotent acquire.
+            if current_state.get("current_request_id") == request_id:
+                return {"acquired": True, "state": current_state}
+
+            # Case 3: Active lock - append to queue (FIFO, dedup by request_id)
+            queue = list(current_state.get("pending_request_queue") or [])
+            already_queued = any(
+                isinstance(entry, dict) and entry.get("request_id") == request_id
+                for entry in queue
+            )
+            if not already_queued:
+                queue.append({"request_id": request_id, "payload": payload})
+            current_state["pending_request_queue"] = queue
+            current_state["pending_request_id"] = request_id  # legacy mirror
             state_data = {
                 "service_name": state_key,
                 "operation_state": current_state,

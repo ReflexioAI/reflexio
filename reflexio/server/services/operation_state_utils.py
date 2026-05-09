@@ -383,27 +383,40 @@ class OperationStateManager:
         request_id: str,
         scope_id: str | None = None,
         stale_seconds: int = GENERATION_STALE_LOCK_SECONDS,
+        payload: dict | None = None,
     ) -> bool:
         """Atomically check and acquire in-progress lock.
 
         Uses a single atomic database operation to prevent race conditions where
         multiple requests could both acquire the lock simultaneously.
 
-        If a valid in-progress operation exists, updates pending_request_id so the
-        running operation knows to re-run when it finishes. If no valid lock exists
-        or the lock is stale, acquires the lock.
+        If a valid in-progress operation exists, appends the request to the
+        ``pending_request_queue`` (along with its ``payload``) so the running
+        operation drains queued requests one at a time after it completes. If
+        no valid lock exists or the lock is stale, acquires the lock.
 
         Args:
             request_id: Current request ID
             scope_id: Optional scope identifier (e.g., user_id)
             stale_seconds: Seconds after which a lock is considered stale
+            payload: Optional serialized request payload to enqueue with this
+                request when the lock is held by someone else. Required for the
+                rerun loop to operate on the SAME interactions the original
+                publish enqueued, not whatever the bookmark currently points at
+                (R2 / reflexio-enterprise#59).
 
         Returns:
             bool: True if lock acquired (proceed with generation), False if skipped
         """
         state_key = self._lock_key(scope_id)
+        # Pass ``payload`` as a kwarg so storage backends that haven't been
+        # updated to the new signature still error loudly rather than silently
+        # dropping it on the floor.
         result = self.storage.try_acquire_in_progress_lock(
-            state_key, request_id, stale_seconds
+            state_key,
+            request_id,
+            stale_seconds,
+            payload=payload,
         )
 
         acquired = result.get("acquired", False)
@@ -418,7 +431,7 @@ class OperationStateManager:
         else:
             logger.info(
                 "Skipping %s - another operation is in progress (state_key=%s). "
-                "Updated pending_request_id to %s",
+                "Enqueued request_id=%s for drain on release",
                 self.service_name,
                 state_key,
                 request_id,
@@ -500,6 +513,9 @@ class OperationStateManager:
     def clear_lock(self, scope_id: str | None = None) -> None:
         """Clear the in-progress state (used for error cleanup).
 
+        Also drops any queued pending requests — they were tied to the now-failed
+        run's context and should not be drained against fresh state.
+
         Args:
             scope_id: Optional scope identifier (e.g., user_id)
         """
@@ -510,6 +526,7 @@ class OperationStateManager:
                 "in_progress": False,
                 "current_request_id": None,
                 "pending_request_id": None,
+                "pending_request_queue": [],
             },
         )
         logger.debug(
@@ -517,6 +534,112 @@ class OperationStateManager:
             self.service_name,
             state_key,
         )
+
+    def release_lock_pop_queue(
+        self,
+        request_id: str,
+        scope_id: str | None = None,
+    ) -> dict | None:
+        """Release the lock and pop the next queued pending request, if any.
+
+        FIFO drain — preserves order so blocked publishes are processed in the
+        order they arrived. Replaces the older single-slot ``pending_request_id``
+        last-wins behaviour that silently dropped earlier blocked publishes
+        (R2 / reflexio-enterprise#59).
+
+        On a legacy state row (written by a pre-fix server before redeploy)
+        the queue is missing but ``pending_request_id`` may be set; we surface
+        that as a queue entry with ``payload=None`` so the caller falls back
+        to the original request rather than dropping it on the floor.
+
+        Args:
+            request_id: The request ID of the current operation (the holder)
+            scope_id: Optional scope identifier (e.g., user_id)
+
+        Returns:
+            dict | None: ``{"request_id": str, "payload": dict | None}`` for
+                the next queued request, or None if the queue is empty / we're
+                not the lock holder.
+        """
+        state_key = self._lock_key(scope_id)
+        state_record = self.storage.get_operation_state(state_key)
+
+        if not state_record:
+            return None
+
+        state = (
+            state_record.get("operation_state", {})
+            if isinstance(state_record.get("operation_state"), dict)
+            else state_record
+        )
+
+        # Backward compatibility for locks written before current_request_id was introduced.
+        current_request_id = state.get("current_request_id") or state.get("request_id")
+
+        # Only drain if we still own the lock.
+        if current_request_id != request_id:
+            return None
+
+        queue = list(state.get("pending_request_queue") or [])
+        next_entry: dict | None = None
+
+        if queue:
+            head = queue.pop(0)
+            if isinstance(head, dict) and "request_id" in head:
+                next_entry = {
+                    "request_id": head["request_id"],
+                    "payload": head.get("payload"),
+                }
+
+        if next_entry is None:
+            # Legacy fallback: storage row lacks the queue field but the old
+            # pending_request_id slot was set by an in-flight pre-fix server.
+            legacy_pending = state.get("pending_request_id")
+            if legacy_pending and legacy_pending != request_id:
+                next_entry = {"request_id": legacy_pending, "payload": None}
+
+        if next_entry is None:
+            # No more pending work — clear the lock.
+            self.storage.upsert_operation_state(
+                state_key,
+                {
+                    "in_progress": False,
+                    "current_request_id": None,
+                    "pending_request_id": None,
+                    "pending_request_queue": [],
+                },
+            )
+            logger.info(
+                "Released in-progress lock for %s: state_key=%s, request_id=%s",
+                self.service_name,
+                state_key,
+                request_id,
+            )
+            return None
+
+        # Transfer ownership to the popped request — it becomes the new holder.
+        # Mirror the head request_id into the legacy single slot for the
+        # release window during a server upgrade.
+        new_holder_request_id = next_entry["request_id"]
+        legacy_mirror = queue[0]["request_id"] if queue else None
+        self.storage.upsert_operation_state(
+            state_key,
+            {
+                "in_progress": True,
+                "started_at": int(time.time()),
+                "current_request_id": new_holder_request_id,
+                "pending_request_id": legacy_mirror,
+                "pending_request_queue": queue,
+            },
+        )
+        logger.info(
+            "Drained queued request %s on release of %s (state_key=%s, remaining=%d)",
+            new_holder_request_id,
+            self.service_name,
+            state_key,
+            len(queue),
+        )
+        return next_entry
 
     # ── Use Case 3: Extractor Bookmark ──
     # (Track last-processed interactions per extractor)

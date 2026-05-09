@@ -1520,6 +1520,139 @@ class TestInProgressLockMechanism:
         service.storage.upsert_operation_state.assert_not_called()
 
 
+class TestPayloadAwareDrain:
+    """Drain loop must rerun against the QUEUED request's payload, not the
+    original holder's. This is the R2 fix (reflexio-enterprise#59).
+    """
+
+    def test_drain_uses_queued_payload_not_original(self, llm_client, request_context):
+        """When a queue entry comes off, _run_generation runs with the queued
+        payload's user_id/request_id — the previous bug ran with the holder's."""
+        from pydantic import BaseModel
+
+        class PydanticTestRequest(BaseModel):
+            user_id: str
+            request_id: str
+
+        seen_user_ids: list[str] = []
+
+        class TrackingService(InProgressTrackingService):
+            def _run_generation(self, request):
+                seen_user_ids.append(getattr(request, "user_id", None))
+                # Don't call super() — base just bumps a counter.
+
+        service = TrackingService(
+            llm_client,
+            request_context,
+            extractor_configs=[MockExtractorConfig(extractor_name="extractor1")],
+        )
+
+        # First call returns state with a queued entry; second call shows
+        # empty queue so drain stops.
+        call_count = [0]
+
+        def mock_get_state(state_key):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return {
+                    "operation_state": {
+                        "in_progress": True,
+                        "current_request_id": "request_holder",
+                        "pending_request_queue": [
+                            {
+                                "request_id": "request_queued",
+                                "payload": {
+                                    "user_id": "queued_user",
+                                    "request_id": "request_queued",
+                                },
+                            },
+                        ],
+                    }
+                }
+            return {
+                "operation_state": {
+                    "in_progress": True,
+                    "current_request_id": "request_queued",
+                    "pending_request_queue": [],
+                }
+            }
+
+        service.storage.try_acquire_in_progress_lock = MagicMock(
+            return_value={"acquired": True}
+        )
+        service.storage.get_operation_state = mock_get_state
+        service.storage.upsert_operation_state = MagicMock()
+
+        original = PydanticTestRequest(
+            user_id="holder_user", request_id="request_holder"
+        )
+        service.run(original)
+
+        assert seen_user_ids == ["holder_user", "queued_user"], (
+            f"Drain ran with wrong user_ids: {seen_user_ids} "
+            "(expected holder first, then queued)"
+        )
+
+    def test_drain_legacy_pending_request_id_falls_back_to_original(
+        self, llm_client, request_context
+    ):
+        """Mid-deploy back-compat: if the storage row lacks the queue field
+        but has the legacy pending_request_id, the rerun should still happen
+        — using the original request, matching pre-fix behaviour."""
+        from pydantic import BaseModel
+
+        class PydanticTestRequest(BaseModel):
+            user_id: str
+            request_id: str
+
+        seen_user_ids: list[str] = []
+
+        class TrackingService(InProgressTrackingService):
+            def _run_generation(self, request):
+                seen_user_ids.append(getattr(request, "user_id", None))
+
+        service = TrackingService(
+            llm_client,
+            request_context,
+            extractor_configs=[MockExtractorConfig(extractor_name="extractor1")],
+        )
+
+        call_count = [0]
+
+        def mock_get_state(state_key):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return {
+                    "operation_state": {
+                        "in_progress": True,
+                        "current_request_id": "request_holder",
+                        "pending_request_id": "request_legacy",
+                        # No pending_request_queue field
+                    }
+                }
+            return {
+                "operation_state": {
+                    "in_progress": True,
+                    "current_request_id": "request_legacy",
+                    "pending_request_queue": [],
+                }
+            }
+
+        service.storage.try_acquire_in_progress_lock = MagicMock(
+            return_value={"acquired": True}
+        )
+        service.storage.get_operation_state = mock_get_state
+        service.storage.upsert_operation_state = MagicMock()
+
+        original = PydanticTestRequest(
+            user_id="holder_user", request_id="request_holder"
+        )
+        service.run(original)
+
+        # Legacy entry has no payload → fallback to original holder's request.
+        assert seen_user_ids == ["holder_user", "holder_user"]
+
+
 # ===============================
 # Test: Extractor Names Filtering in Rerun
 # ===============================

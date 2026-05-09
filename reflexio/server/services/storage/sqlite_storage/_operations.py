@@ -271,7 +271,11 @@ class OperationMixin:
 
     @SQLiteStorageBase.handle_exceptions
     def try_acquire_in_progress_lock(
-        self, state_key: str, request_id: str, stale_lock_seconds: int = 300
+        self,
+        state_key: str,
+        request_id: str,
+        stale_lock_seconds: int = 300,
+        payload: dict | None = None,
     ) -> dict:
         with self._lock:
             row = self._fetchone(
@@ -287,6 +291,7 @@ class OperationMixin:
                     "status": "in_progress",
                     "current_request_id": request_id,
                     "pending_request_id": None,
+                    "pending_request_queue": [],
                 }
                 self._execute(
                     """INSERT INTO _operation_state (service_name, operation_state, updated_at)
@@ -305,11 +310,13 @@ class OperationMixin:
                 is_stale = (now - updated_epoch) > stale_lock_seconds
 
             if current_state.get("status") != "in_progress" or is_stale:
-                # Acquire lock
+                # Acquire lock — reset queue (any pre-existing entries are
+                # stale-lock detritus from a crashed run; we want a clean slate).
                 state = {
                     "status": "in_progress",
                     "current_request_id": request_id,
                     "pending_request_id": None,
+                    "pending_request_queue": [],
                 }
                 self._execute(
                     "UPDATE _operation_state SET operation_state = ?, updated_at = ? WHERE service_name = ?",
@@ -317,7 +324,21 @@ class OperationMixin:
                 )
                 return {"acquired": True, "state": state}
 
-            # Lock is active — update pending
+            # Lock is active and held by ME — idempotent retry, do nothing.
+            if current_state.get("current_request_id") == request_id:
+                return {"acquired": True, "state": current_state}
+
+            # Lock is active and held by someone else — append to queue
+            queue = list(current_state.get("pending_request_queue") or [])
+            already_queued = any(
+                isinstance(entry, dict) and entry.get("request_id") == request_id
+                for entry in queue
+            )
+            if not already_queued:
+                queue.append({"request_id": request_id, "payload": payload})
+            current_state["pending_request_queue"] = queue
+            # Keep legacy single-slot in sync with the most-recent entry for
+            # back-compat with consumers that haven't migrated to the queue.
             current_state["pending_request_id"] = request_id
             self._execute(
                 "UPDATE _operation_state SET operation_state = ?, updated_at = ? WHERE service_name = ?",

@@ -395,6 +395,7 @@ class TestAcquireLock:
             "test_service::org_123::lock",
             "req_1",
             GENERATION_STALE_LOCK_SECONDS,
+            payload=None,
         )
 
     def test_acquire_lock_already_held(self, manager, mock_storage):
@@ -412,6 +413,7 @@ class TestAcquireLock:
             "test_service::org_123::user_5::lock",
             "req_1",
             GENERATION_STALE_LOCK_SECONDS,
+            payload=None,
         )
 
     def test_acquire_lock_custom_stale_seconds(self, manager, mock_storage):
@@ -420,7 +422,7 @@ class TestAcquireLock:
         manager.acquire_lock("req_1", stale_seconds=60)
 
         mock_storage.try_acquire_in_progress_lock.assert_called_once_with(
-            "test_service::org_123::lock", "req_1", 60
+            "test_service::org_123::lock", "req_1", 60, payload=None
         )
 
 
@@ -556,6 +558,151 @@ class TestClearLock:
 
         key, _ = mock_storage.upsert_operation_state.call_args[0]
         assert key == "test_service::org_123::user_5::lock"
+
+
+# ===============================
+# Use Case 2b: Pending-Request Queue (R2 / reflexio-enterprise#59)
+# ===============================
+#
+# Replaces the single-slot pending_request_id mechanism. When N>1 publishes
+# arrive while the lock is held, every blocked request is queued in FIFO
+# order along with its own payload. release_lock_pop_queue() drains them
+# one at a time, transferring lock ownership and returning the queued
+# payload so the caller re-runs with that request's data — not the
+# original holder's request.
+
+
+class TestAcquireLockWithPayload:
+    """acquire_lock should be able to forward a payload that lands in the queue."""
+
+    def test_acquire_lock_forwards_payload(self, manager, mock_storage):
+        mock_storage.try_acquire_in_progress_lock.return_value = {"acquired": False}
+
+        result = manager.acquire_lock(
+            "req_1",
+            payload={"user_id": "u1", "request_id": "req_1"},
+        )
+
+        assert result is False
+        mock_storage.try_acquire_in_progress_lock.assert_called_once()
+        kwargs = mock_storage.try_acquire_in_progress_lock.call_args.kwargs
+        assert kwargs.get("payload") == {"user_id": "u1", "request_id": "req_1"}
+
+
+class TestReleaseLockPopQueue:
+    """Tests for release_lock_pop_queue — queue-aware variant of release_lock."""
+
+    def test_pop_no_state(self, manager, mock_storage):
+        mock_storage.get_operation_state.return_value = None
+        assert manager.release_lock_pop_queue("req_1") is None
+        mock_storage.upsert_operation_state.assert_not_called()
+
+    def test_pop_empty_queue_clears_lock(self, manager, mock_storage):
+        mock_storage.get_operation_state.return_value = {
+            "operation_state": {
+                "current_request_id": "req_1",
+                "pending_request_queue": [],
+                "pending_request_id": None,
+            }
+        }
+
+        result = manager.release_lock_pop_queue("req_1")
+        assert result is None
+
+        _, state = mock_storage.upsert_operation_state.call_args[0]
+        assert state["in_progress"] is False
+        assert state["current_request_id"] is None
+        assert state["pending_request_queue"] == []
+        assert state["pending_request_id"] is None
+
+    def test_pop_returns_oldest_first(self, manager, mock_storage):
+        """FIFO: first queued request comes out first."""
+        mock_storage.get_operation_state.return_value = {
+            "operation_state": {
+                "current_request_id": "req_1",
+                "pending_request_queue": [
+                    {"request_id": "req_2", "payload": {"user_id": "user_b"}},
+                    {"request_id": "req_3", "payload": {"user_id": "user_c"}},
+                ],
+            }
+        }
+
+        result = manager.release_lock_pop_queue("req_1")
+
+        assert result is not None
+        assert result["request_id"] == "req_2"
+        assert result["payload"] == {"user_id": "user_b"}
+
+        _, state = mock_storage.upsert_operation_state.call_args[0]
+        # Lock transfers to req_2
+        assert state["in_progress"] is True
+        assert state["current_request_id"] == "req_2"
+        # req_3 still queued
+        assert state["pending_request_queue"] == [
+            {"request_id": "req_3", "payload": {"user_id": "user_c"}},
+        ]
+
+    def test_pop_legacy_pending_request_id_fallback(self, manager, mock_storage):
+        """Back-compat: if storage row only has the old pending_request_id slot
+        (written by a previous server version mid-deploy), surface it as an entry
+        with payload=None so the rerun loop still drains it."""
+        mock_storage.get_operation_state.return_value = {
+            "operation_state": {
+                "current_request_id": "req_1",
+                "pending_request_id": "req_legacy",
+                # No pending_request_queue field — pre-fix state
+            }
+        }
+
+        result = manager.release_lock_pop_queue("req_1")
+
+        assert result is not None
+        assert result["request_id"] == "req_legacy"
+        # Payload is None for legacy entries; caller must fall back
+        # to the original request (matches pre-fix behaviour).
+        assert result["payload"] is None
+
+        _, state = mock_storage.upsert_operation_state.call_args[0]
+        assert state["current_request_id"] == "req_legacy"
+        assert state["pending_request_id"] is None
+
+    def test_pop_not_owner_returns_none(self, manager, mock_storage):
+        mock_storage.get_operation_state.return_value = {
+            "operation_state": {
+                "current_request_id": "someone_else",
+                "pending_request_queue": [
+                    {"request_id": "req_2", "payload": {}},
+                ],
+            }
+        }
+
+        result = manager.release_lock_pop_queue("req_1")
+        assert result is None
+        mock_storage.upsert_operation_state.assert_not_called()
+
+    def test_pop_with_scope_id(self, manager, mock_storage):
+        mock_storage.get_operation_state.return_value = {
+            "operation_state": {
+                "current_request_id": "req_1",
+                "pending_request_queue": [],
+            }
+        }
+
+        manager.release_lock_pop_queue("req_1", scope_id="user_5")
+
+        mock_storage.get_operation_state.assert_called_once_with(
+            "test_service::org_123::user_5::lock"
+        )
+
+
+class TestClearLockClearsQueue:
+    """clear_lock must also drop any queued pending payloads to prevent
+    stale rerun work after an error."""
+
+    def test_clear_lock_resets_queue(self, manager, mock_storage):
+        manager.clear_lock()
+        _, state = mock_storage.upsert_operation_state.call_args[0]
+        assert state["pending_request_queue"] == []
 
 
 # ===============================

@@ -130,18 +130,37 @@ class OperationMixin:
 
     @abstractmethod
     def try_acquire_in_progress_lock(
-        self, state_key: str, request_id: str, stale_lock_seconds: int = 300
+        self,
+        state_key: str,
+        request_id: str,
+        stale_lock_seconds: int = 300,
+        payload: dict | None = None,
     ) -> dict:
         """Atomically try to acquire an in-progress lock.
 
         This method should use atomic operations to either:
         1. Acquire the lock if no active lock exists (or lock is stale)
-        2. Update pending_request_id if an active lock is held by another request
+        2. Append ``{"request_id": request_id, "payload": payload}`` to
+           ``pending_request_queue`` if an active lock is held by another
+           request. Duplicates (same ``request_id`` already queued, or matching
+           the current holder) are dropped to keep the queue idempotent under
+           publish retries.
+
+        The queue is a FIFO drained one entry at a time when the holder
+        releases the lock. It replaces the older single-slot
+        ``pending_request_id`` field, which silently dropped earlier blocked
+        requests when a new one came in. ``pending_request_id`` is still
+        written for one release window so a server upgrade in flight can be
+        drained by either code path.
 
         Args:
             state_key (str): The operation state key (e.g., "profile_generation_in_progress::3::user_id")
             request_id (str): The current request's unique identifier
             stale_lock_seconds (int): Seconds after which a lock is considered stale (default 300)
+            payload (dict | None): Optional serialized request payload preserved
+                for the rerun loop. Required so the rerun runs against the SAME
+                interactions the blocked publish enqueued, not whatever the
+                bookmark currently points at (R2 / reflexio-enterprise#59).
 
         Returns:
             dict: Result with keys:

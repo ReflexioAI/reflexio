@@ -72,3 +72,81 @@ class TestOperationStateCRUD:
 
         all_states = storage.get_all_operation_states()
         assert len(all_states) == 2
+
+
+# ---------------------------------------------------------------------------
+# TestPendingRequestQueue — R2 / reflexio-enterprise#59
+# ---------------------------------------------------------------------------
+
+
+class TestPendingRequestQueue:
+    """Contract: when the lock is held, blocked requests queue FIFO with payloads."""
+
+    def _state(self, storage, key):
+        record = storage.get_operation_state(key)
+        if record is None:
+            return None
+        return record.get("operation_state", record)
+
+    def test_first_acquire_creates_empty_queue(self, storage):
+        result = storage.try_acquire_in_progress_lock("svc_lock_1", "req_1")
+        assert result["acquired"] is True
+
+        state = self._state(storage, "svc_lock_1")
+        assert state is not None
+        assert state.get("pending_request_queue", []) == []
+
+    def test_blocked_request_appends_to_queue(self, storage):
+        storage.try_acquire_in_progress_lock("svc_lock_2", "req_1")
+        result = storage.try_acquire_in_progress_lock(
+            "svc_lock_2", "req_2", payload={"user_id": "user_b"}
+        )
+        assert result["acquired"] is False
+
+        state = self._state(storage, "svc_lock_2")
+        queue = state.get("pending_request_queue", [])
+        assert len(queue) == 1
+        assert queue[0]["request_id"] == "req_2"
+        assert queue[0]["payload"] == {"user_id": "user_b"}
+
+    def test_multiple_blocked_requests_queue_fifo(self, storage):
+        storage.try_acquire_in_progress_lock("svc_lock_3", "req_1")
+        storage.try_acquire_in_progress_lock(
+            "svc_lock_3", "req_2", payload={"user_id": "user_b"}
+        )
+        storage.try_acquire_in_progress_lock(
+            "svc_lock_3", "req_3", payload={"user_id": "user_c"}
+        )
+
+        state = self._state(storage, "svc_lock_3")
+        queue = state.get("pending_request_queue", [])
+        assert [q["request_id"] for q in queue] == ["req_2", "req_3"]
+        assert queue[0]["payload"] == {"user_id": "user_b"}
+        assert queue[1]["payload"] == {"user_id": "user_c"}
+
+    def test_queue_ignores_duplicate_request_id(self, storage):
+        """If the same request_id retries while blocked (e.g. publish retry)
+        we should not enqueue it twice. Pre-fix, the single slot just got
+        overwritten; queue must dedupe by request_id."""
+        storage.try_acquire_in_progress_lock("svc_lock_4", "req_1")
+        storage.try_acquire_in_progress_lock(
+            "svc_lock_4", "req_2", payload={"user_id": "user_b"}
+        )
+        storage.try_acquire_in_progress_lock(
+            "svc_lock_4", "req_2", payload={"user_id": "user_b_v2"}
+        )
+
+        state = self._state(storage, "svc_lock_4")
+        queue = state.get("pending_request_queue", [])
+        # Only one entry for req_2 — second attempt is a noop.
+        assert [q["request_id"] for q in queue] == ["req_2"]
+
+    def test_holder_retry_does_not_self_enqueue(self, storage):
+        """Holder calling try_acquire again for its own request_id is a noop."""
+        storage.try_acquire_in_progress_lock("svc_lock_5", "req_1")
+        result = storage.try_acquire_in_progress_lock("svc_lock_5", "req_1")
+        # Same request — treated as already-acquired.
+        assert result["acquired"] is True
+
+        state = self._state(storage, "svc_lock_5")
+        assert state.get("pending_request_queue", []) == []
