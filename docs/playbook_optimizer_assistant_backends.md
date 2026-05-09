@@ -280,7 +280,7 @@ def _create_assistant(self, config) -> AssistantCallable | None:
 | Both set | **Rejected at config load time** by a Pydantic validator (`ValueError: Configure only one playbook optimizer assistant backend...`) |
 | Neither set | Optimizer logs `Skipping playbook optimization: no assistant backend configured` and returns without creating a job |
 
-The check happens *before* loading the incumbent or resolving scenario windows, so an unconfigured optimizer short-circuits cheaply.
+The backend check happens *before* loading the incumbent or resolving scenario windows, so an unconfigured optimizer short-circuits cheaply. After source-window resolution, the optimizer also skips before job creation when the validation holdout is smaller than `min_commit_windows` or the target kind has no enabled auto-update path.
 
 ---
 
@@ -296,6 +296,21 @@ All fields live on `PlaybookOptimizerConfig` (in `reflexio/models/config_schema.
 | `assistant_script_args` | `list[str]` | `[]` | Extra argv tokens passed after `assistant_script_path`. |
 | `max_validation_windows` | `int > 0` | 2 | Maximum source windows held out for validation; all remaining source windows form the GEPA training pool. |
 
+Reflexio always passes `cache_evaluation=True` to GEPA so the same accepted
+candidate/window pair is never scored twice across iterations.
+
+Single-window optimization is eligible when `min_commit_windows=1`. In that
+case Reflexio also passes `valset=None` so GEPA reuses the training loader
+as validation.
+
+With the default `min_commit_windows=2` and `max_validation_windows=2`, the
+optimizer needs at least three source windows to run: two are held out for
+validation and at least one stays in the training pool. Targets with one or
+two source windows are skipped before any job row is written. Note that the
+default `max_metric_calls` and `max_turns` were lowered (from 40 → 20 and
+5 → 4) in this release to keep nightly runs cheaper — raise them if you
+need deeper exploration.
+
 ### 6.2 Existing fields that now apply to both backends
 
 | Field | Type | Default | Notes |
@@ -305,6 +320,8 @@ All fields live on `PlaybookOptimizerConfig` (in `reflexio/models/config_schema.
 | `webhook_timeout_seconds` | `int > 0` | 60 | Per-call timeout — both backends |
 | `webhook_max_retries` | `int >= 0` | 3 | Retry budget — both backends |
 | `webhook_backoff_base_seconds` | `float >= 0` | 1.0 | Exponential base — both backends |
+| `max_metric_calls` | `int > 0` | 20 | GEPA metric-call budget per optimization run |
+| `max_turns` | `int > 0` | 4 | Maximum user turns replayed per source window rollout |
 | `reflection_minibatch_size` | `int > 0` | 2 | Number of training windows GEPA samples for each reflection minibatch |
 
 ### 6.3 Validator

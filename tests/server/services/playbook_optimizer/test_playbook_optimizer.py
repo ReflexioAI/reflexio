@@ -394,9 +394,9 @@ def test_optimizer_split_holds_out_len_minus_one_for_small_sets(tmp_path):
     assert len(validation_windows) == 1
 
 
-def test_optimizer_split_reuses_single_window_only_when_allowed(tmp_path):
+def test_optimizer_split_reuses_single_window(tmp_path):
     storage = _sqlite_storage(tmp_path)
-    config = PlaybookOptimizerConfig(allow_single_window_commit=True)
+    config = PlaybookOptimizerConfig()
     optimizer = _optimizer_for_test(
         storage,
         Config(
@@ -411,6 +411,217 @@ def test_optimizer_split_reuses_single_window_only_when_allowed(tmp_path):
     )
 
     assert train_windows == validation_windows == [_scenario_window(1)]
+
+
+def test_optimizer_skips_when_validation_windows_cannot_satisfy_commit_threshold(
+    tmp_path,
+):
+    storage = _sqlite_storage(tmp_path)
+    config = Config(
+        storage_config=StorageConfigSQLite(db_path=str(tmp_path / "reflexio.db")),
+        playbook_optimizer_config=PlaybookOptimizerConfig(
+            enabled=True,
+            optimize_agent_playbooks=True,
+            webhook_url="https://assistant.example.test/rollout",
+            min_commit_windows=2,
+        ),
+    )
+    optimizer = _optimizer_for_test(storage, config)
+    optimizer._load_incumbent = Mock(  # type: ignore[method-assign]
+        return_value=AgentPlaybook(
+            agent_playbook_id=1,
+            playbook_name="support",
+            agent_version="v1",
+            content="incumbent",
+            playbook_status=PlaybookStatus.PENDING,
+        )
+    )
+    optimizer._resolve_windows = Mock(  # type: ignore[method-assign]
+        return_value=[_scenario_window(1), _scenario_window(2)]
+    )
+    optimizer._run_gepa = Mock(side_effect=AssertionError("GEPA should not run"))  # type: ignore[method-assign]
+
+    result = optimizer.optimize(
+        PlaybookOptimizationTarget(kind="agent_playbook", target_id=1)
+    )
+
+    assert result == "skipped"
+    optimizer._run_gepa.assert_not_called()  # type: ignore[attr-defined]
+    jobs = storage.conn.execute("SELECT * FROM playbook_optimization_jobs").fetchall()
+    assert jobs == []
+
+
+@pytest.mark.parametrize(
+    ("target", "optimizer_config"),
+    [
+        (
+            PlaybookOptimizationTarget(kind="agent_playbook", target_id=1),
+            PlaybookOptimizerConfig(
+                enabled=True,
+                optimize_agent_playbooks=True,
+                auto_update_pending_agent_playbooks=False,
+                webhook_url="https://assistant.example.test/rollout",
+            ),
+        ),
+        (
+            PlaybookOptimizationTarget(kind="user_playbook", target_id=1),
+            PlaybookOptimizerConfig(
+                enabled=True,
+                optimize_user_playbooks=True,
+                auto_update_user_playbooks=False,
+                webhook_url="https://assistant.example.test/rollout",
+            ),
+        ),
+    ],
+)
+def test_optimizer_skips_when_winner_cannot_be_adopted(
+    tmp_path, target, optimizer_config
+):
+    storage = _sqlite_storage(tmp_path)
+    config = Config(
+        storage_config=StorageConfigSQLite(db_path=str(tmp_path / "reflexio.db")),
+        playbook_optimizer_config=optimizer_config,
+    )
+    optimizer = _optimizer_for_test(storage, config)
+    optimizer._load_incumbent = Mock(  # type: ignore[method-assign]
+        return_value=AgentPlaybook(
+            agent_playbook_id=1,
+            playbook_name="support",
+            agent_version="v1",
+            content="incumbent",
+            playbook_status=PlaybookStatus.PENDING,
+        )
+    )
+    optimizer._resolve_windows = Mock(  # type: ignore[method-assign]
+        return_value=[_scenario_window(idx) for idx in range(1, 4)]
+    )
+    optimizer._run_gepa = Mock(side_effect=AssertionError("GEPA should not run"))  # type: ignore[method-assign]
+
+    result = optimizer.optimize(target)
+
+    assert result == "skipped"
+    optimizer._run_gepa.assert_not_called()  # type: ignore[attr-defined]
+    jobs = storage.conn.execute("SELECT * FROM playbook_optimization_jobs").fetchall()
+    assert jobs == []
+
+
+def test_optimizer_runs_single_window_when_commit_threshold_is_one(tmp_path):
+    storage = _sqlite_storage(tmp_path)
+    config = Config(
+        storage_config=StorageConfigSQLite(db_path=str(tmp_path / "reflexio.db")),
+        playbook_optimizer_config=PlaybookOptimizerConfig(
+            enabled=True,
+            optimize_agent_playbooks=True,
+            webhook_url="https://assistant.example.test/rollout",
+            min_commit_windows=1,
+            min_commit_score=0.1,
+            min_commit_likert=1,
+        ),
+    )
+    optimizer = _optimizer_for_test(storage, config)
+    optimizer._load_incumbent = Mock(  # type: ignore[method-assign]
+        return_value=AgentPlaybook(
+            agent_playbook_id=1,
+            playbook_name="support",
+            agent_version="v1",
+            content="incumbent",
+            playbook_status=PlaybookStatus.PENDING,
+        )
+    )
+    window = _scenario_window(1)
+    optimizer._resolve_windows = Mock(return_value=[window])  # type: ignore[method-assign]
+
+    def fake_run_gepa(config, seed_content, train_windows, validation_windows, adapter):  # noqa: ARG001
+        candidate = adapter._ensure_candidate("candidate content")  # noqa: SLF001
+        storage.insert_playbook_optimization_evaluation(
+            PlaybookOptimizationEvaluation(
+                job_id=adapter.job_id,
+                candidate_id=candidate.candidate_id,
+                target_kind="agent_playbook",
+                target_id=1,
+                scenario_user_playbook_id=window.user_playbook_id,
+                source_interaction_ids=window.source_interaction_ids,
+                score=0.9,
+                verdict="candidate",
+                likert=5,
+            )
+        )
+        return SimpleNamespace(
+            best_candidate={PLAYBOOK_CONTENT_COMPONENT: "candidate content"},
+            val_aggregate_scores=[0.9],
+            best_idx=0,
+            to_dict=lambda: {"best_idx": 0},
+        )
+
+    optimizer._run_gepa = Mock(side_effect=fake_run_gepa)  # type: ignore[method-assign]
+
+    result = optimizer.optimize(
+        PlaybookOptimizationTarget(kind="agent_playbook", target_id=1)
+    )
+
+    assert result == "completed"
+    optimizer._run_gepa.assert_called_once()  # type: ignore[attr-defined]
+    _, _, train_windows, validation_windows, _ = optimizer._run_gepa.call_args.args  # type: ignore[attr-defined]
+    assert train_windows == validation_windows == [window]
+    jobs = storage.conn.execute("SELECT * FROM playbook_optimization_jobs").fetchall()
+    assert jobs[0]["status"] == "completed"
+
+
+def test_run_gepa_reuses_trainset_for_single_window_validation(tmp_path):
+    storage = _sqlite_storage(tmp_path)
+    config = PlaybookOptimizerConfig(
+        enabled=True,
+        optimize_agent_playbooks=True,
+        webhook_url="https://assistant.example.test/rollout",
+    )
+    optimizer = _optimizer_for_test(
+        storage,
+        Config(
+            storage_config=StorageConfigSQLite(db_path=str(tmp_path / "reflexio.db")),
+            playbook_optimizer_config=config,
+        ),
+    )
+    adapter = Mock(job_id=123)
+    window = _scenario_window(1)
+    with patch("gepa.api.optimize") as gepa_optimize:
+        gepa_optimize.return_value = SimpleNamespace()
+
+        optimizer._run_gepa(config, "seed", [window], [window], adapter)  # noqa: SLF001
+
+    _, kwargs = gepa_optimize.call_args
+    assert kwargs["trainset"] == [window]
+    assert kwargs["valset"] is None
+    assert kwargs["cache_evaluation"] is True
+
+
+def test_run_gepa_keeps_distinct_validation_holdout(tmp_path):
+    storage = _sqlite_storage(tmp_path)
+    config = PlaybookOptimizerConfig(
+        enabled=True,
+        optimize_agent_playbooks=True,
+        webhook_url="https://assistant.example.test/rollout",
+    )
+    optimizer = _optimizer_for_test(
+        storage,
+        Config(
+            storage_config=StorageConfigSQLite(db_path=str(tmp_path / "reflexio.db")),
+            playbook_optimizer_config=config,
+        ),
+    )
+    adapter = Mock(job_id=123)
+    train_windows = [_scenario_window(2)]
+    validation_windows = [_scenario_window(1)]
+    with patch("gepa.api.optimize") as gepa_optimize:
+        gepa_optimize.return_value = SimpleNamespace()
+
+        optimizer._run_gepa(  # noqa: SLF001
+            config, "seed", train_windows, validation_windows, adapter
+        )
+
+    _, kwargs = gepa_optimize.call_args
+    assert kwargs["trainset"] == train_windows
+    assert kwargs["valset"] == validation_windows
+    assert kwargs["cache_evaluation"] is True
 
 
 def test_optimizer_runs_local_script_assistant_and_persists_evaluation(tmp_path):
@@ -483,8 +694,7 @@ json.dump({"content": "response for " + payload["playbooks"][0]["content"]}, sys
             optimize_agent_playbooks=True,
             assistant_script_path=sys.executable,
             assistant_script_args=[str(script), str(record)],
-            allow_single_window_commit=True,
-            auto_update_pending_agent_playbooks=False,
+            auto_update_pending_agent_playbooks=True,
             min_commit_windows=1,
             min_commit_score=0.1,
             min_commit_likert=1,
@@ -544,7 +754,7 @@ def test_optimizer_passes_distinct_train_and_validation_sets_to_gepa(tmp_path):
             enabled=True,
             optimize_agent_playbooks=True,
             webhook_url="https://assistant.example.test/rollout",
-            auto_update_pending_agent_playbooks=False,
+            auto_update_pending_agent_playbooks=True,
             min_commit_windows=1,
             min_commit_score=0.1,
             min_commit_likert=1,
@@ -712,7 +922,6 @@ def test_optimizer_successor_preserves_source_window_snapshots(tmp_path):
             enabled=True,
             optimize_agent_playbooks=True,
             webhook_url="https://assistant.example.test/rollout",
-            allow_single_window_commit=True,
             min_commit_windows=1,
             min_commit_score=0.1,
             min_commit_likert=1,

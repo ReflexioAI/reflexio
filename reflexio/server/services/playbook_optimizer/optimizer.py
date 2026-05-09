@@ -93,12 +93,28 @@ class PlaybookOptimizer:
         windows = self._resolve_windows(target, config)
         if not windows:
             return "skipped"
-        if len(windows) == 1 and not config.allow_single_window_commit:
-            logger.info("Skipping playbook optimization with one source window")
-            return "skipped"
         train_windows, validation_windows = _split_train_validation_windows(
             windows, config
         )
+        if len(validation_windows) < config.min_commit_windows:
+            logger.info(
+                "Skipping playbook optimization: validation windows below "
+                "min_commit_windows target_kind=%s target_id=%d "
+                "validation_windows=%d min_commit_windows=%d",
+                target.kind,
+                target.target_id,
+                len(validation_windows),
+                config.min_commit_windows,
+            )
+            return "skipped"
+        if not _can_adopt_winner(target, config):
+            logger.info(
+                "Skipping playbook optimization: no configured adoption path "
+                "target_kind=%s target_id=%d",
+                target.kind,
+                target.target_id,
+            )
+            return "skipped"
         split_metadata = _split_metadata(windows, train_windows, validation_windows)
 
         job = self.storage.create_playbook_optimization_job(
@@ -259,7 +275,9 @@ class PlaybookOptimizer:
         return gepa_optimize(
             seed_candidate={PLAYBOOK_CONTENT_COMPONENT: seed_content},
             trainset=train_windows,
-            valset=validation_windows,
+            valset=None
+            if _same_window_sequence(train_windows, validation_windows)
+            else validation_windows,
             adapter=adapter,
             reflection_lm=reflection_lm,
             candidate_selection_strategy="pareto",
@@ -271,6 +289,7 @@ class PlaybookOptimizer:
             max_metric_calls=config.max_metric_calls,
             raise_on_exception=False,
             display_progress_bar=False,
+            cache_evaluation=True,
             callbacks=cast(Any, [_GEPAStorageCallback(self.storage, adapter.job_id)]),
         )
 
@@ -385,9 +404,12 @@ class PlaybookOptimizer:
         best_content: str,
         config: PlaybookOptimizerConfig,
     ) -> int | None:
+        # The optimize() entrypoint already gates on _can_adopt_winner before
+        # creating the job, but check again so this stays correct if called
+        # from elsewhere.
+        if not _can_adopt_winner(target, config):
+            return None
         if target.kind == "agent_playbook":
-            if not config.auto_update_pending_agent_playbooks:
-                return None
             source_windows = _source_windows_with_backfill(
                 self.storage, target.target_id
             )
@@ -416,8 +438,6 @@ class PlaybookOptimizer:
                     saved[0].agent_playbook_id, source_windows
                 )
                 return saved[0].agent_playbook_id
-            return None
-        if not config.auto_update_user_playbooks:
             return None
         current_user = self.storage.get_user_playbook_by_id(target.target_id)
         if current_user is None or current_user.status is not None:
@@ -448,6 +468,15 @@ def _agent_like_playbook(playbook: UserPlaybook) -> AgentPlaybook:
         playbook_status=PlaybookStatus.PENDING,
         status=playbook.status,
     )
+
+
+def _can_adopt_winner(
+    target: PlaybookOptimizationTarget,
+    config: PlaybookOptimizerConfig,
+) -> bool:
+    if target.kind == "agent_playbook":
+        return config.auto_update_pending_agent_playbooks
+    return config.auto_update_user_playbooks
 
 
 def _append_optimizer_metadata(existing: str, predecessor_id: int) -> str:
@@ -516,6 +545,18 @@ def _split_train_validation_windows(
     validation_windows = ordered_windows[:validation_count]
     train_windows = ordered_windows[validation_count:]
     return train_windows, validation_windows
+
+
+def _same_window_sequence(
+    left: list[ScenarioWindow],
+    right: list[ScenarioWindow],
+) -> bool:
+    if len(left) != len(right):
+        return False
+    return all(
+        _window_eval_key(left_window) == _window_eval_key(right_window)
+        for left_window, right_window in zip(left, right, strict=True)
+    )
 
 
 def _source_windows_with_backfill(
