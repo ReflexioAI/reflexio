@@ -85,6 +85,7 @@ def create_app(exclude: set[str] | None = None) -> typer.Typer:
             ctx.obj.api_key = api_key
 
     # Register command groups
+    from reflexio.cli.commands.admin_cmd import app as admin_app
     from reflexio.cli.commands.agent_playbooks import app as agent_playbooks_app
     from reflexio.cli.commands.api import app as api_app
     from reflexio.cli.commands.auth import app as auth_app
@@ -112,6 +113,7 @@ def create_app(exclude: set[str] | None = None) -> typer.Typer:
         (api_app, "api"),
         (doctor_app, "doctor"),
         (setup_app, "setup"),
+        (admin_app, "admin"),
     ]
     for sub_app, name in _sub_apps:
         if name not in _skip:

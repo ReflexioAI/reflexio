@@ -109,6 +109,8 @@ __all__ = [
     "CancelOperationRequest",
     "CancelOperationResponse",
     "ShareLink",
+    "AdminInvalidateCacheRequest",
+    "AdminInvalidateCacheResponse",
 ]
 
 # ===============================
@@ -917,3 +919,31 @@ class CancelOperationResponse(BaseModel):
     success: bool
     cancelled_services: list[str] = []
     msg: str | None = None
+
+
+# Admin cache invalidation — explicit eviction of the per-org Reflexio cache.
+class AdminInvalidateCacheRequest(BaseModel):
+    """Request body for ``POST /api/admin/cache/invalidate``.
+
+    The optional ``org_id`` is a verification token: when supplied it
+    must match the caller's resolved org_id, otherwise the server
+    rejects with 403. This guards against a misconfigured client
+    accidentally invalidating someone else's cache. Cross-org admin
+    invalidation is intentionally out of scope for this endpoint.
+    """
+
+    org_id: str | None = None
+
+
+class AdminInvalidateCacheResponse(BaseModel):
+    """Result of an admin cache invalidation call.
+
+    Attributes:
+        invalidated (bool): True when an entry was evicted, False when
+            no entry was cached for the org (still a successful no-op).
+        org_id (str): The org_id that was targeted (always the caller's
+            own org).
+    """
+
+    invalidated: bool
+    org_id: str

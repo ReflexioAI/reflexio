@@ -1290,6 +1290,37 @@ class ReflexioClient:
         )
         return Config(**response)
 
+    def invalidate_cache(self, org_id: str | None = None) -> dict:
+        """Explicitly evict the server-side per-org Reflexio cache entry.
+
+        Useful when the running config has been mutated through a
+        channel the server can't observe (sibling-replica writes,
+        direct DB updates, hand-edited config files on backends that
+        don't support cheap version probing). Phase 1 mtime-based
+        auto-invalidation and Phase 3 DB-version probing cover most
+        cases automatically; this is the manual escape hatch.
+
+        Cross-org invalidation is intentionally not supported: the
+        endpoint only ever invalidates the caller's own org. The
+        ``org_id`` argument is a verification token — when provided
+        it must match the token's authenticated org or the server
+        rejects with 403.
+
+        Args:
+            org_id: Optional org_id to verify against the caller's
+                authenticated identity. Omit to let the server
+                resolve it from the auth header.
+
+        Returns:
+            dict: ``{"invalidated": bool, "org_id": str}``. The
+            ``invalidated`` flag is False when nothing was cached for
+            the org (still a successful no-op).
+        """
+        body: dict[str, str] = {}
+        if org_id is not None:
+            body["org_id"] = org_id
+        return self._make_request("POST", "/api/admin/cache/invalidate", json=body)
+
     def get_user_playbooks(
         self,
         request: GetUserPlaybooksRequest | dict | None = None,
