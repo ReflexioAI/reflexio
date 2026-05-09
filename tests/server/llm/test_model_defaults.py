@@ -331,6 +331,27 @@ class TestValidateLlmAvailability:
         monkeypatch.setenv("GEMINI_API_KEY", "gem-test")
         validate_llm_availability()
 
+    def test_embedding_only_provider_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``providers == ["local"]`` (embedder-only, no LLM key) must raise.
+
+        The local ONNX embedder satisfies the embedding role but has no
+        generation model, so any extraction call would crash inside the
+        role resolver. Failing fast at startup keeps the user out of
+        that footgun.
+        """
+        from reflexio.server.llm.providers import local_embedding_provider as lep
+
+        # No LLM env vars; opt into the local embedder so ``local`` shows
+        # up in ``detect_available_providers`` results.
+        monkeypatch.setenv("CLAUDE_SMART_USE_LOCAL_EMBEDDING", "1")
+        monkeypatch.setattr(lep.importlib.util, "find_spec", lambda _name: object())
+        with pytest.raises(
+            RuntimeError, match="No generation-capable LLM provider available"
+        ):
+            validate_llm_availability()
+
 
 # ---------------------------------------------------------------------------
 # All providers have defaults defined
@@ -420,7 +441,6 @@ class TestAgenticV2Roles:
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
         name = resolve_model_name(role=ModelRole.SEARCH_AGENT)
         assert name == "gpt-5-mini"
-
 
 
 class TestMinimaxAgenticRoles:

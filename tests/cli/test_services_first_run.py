@@ -140,6 +140,69 @@ class TestEnsureLlmConfigured:
         mock_llm.assert_not_called()
         mock_emb.assert_called_once_with(env, "anthropic")
 
+    def test_local_only_provider_still_triggers_llm_wizard(
+        self, tmp_path: Path
+    ) -> None:
+        """``providers == ["local"]`` (embedder-only) must NOT skip the LLM wizard.
+
+        ``detect_available_providers()`` can legally surface only the local
+        ONNX embedder when chromadb is importable but no LLM key is set.
+        That state has ``has_embedding=True`` but no generation provider,
+        so the request still has nothing to drive extraction with — we
+        must prompt for an LLM provider rather than falling through.
+        """
+        env = tmp_path / ".env"
+        env.write_text("")
+        with (
+            patch(
+                "reflexio.server.llm.model_defaults.detect_available_providers",
+                return_value=["local"],
+            ),
+            patch(
+                "reflexio.server.llm.providers.local_embedding_provider"
+                ".is_chromadb_importable",
+                return_value=True,
+            ),
+            patch("sys.stdin.isatty", return_value=True),
+            patch(
+                "reflexio.cli.commands.setup_cmd._prompt_llm_provider",
+                return_value=("OpenAI", "gpt-5-mini", "openai"),
+            ) as mock_llm,
+            patch(
+                "reflexio.cli.commands.setup_cmd._prompt_embedding_provider",
+                return_value=None,
+            ) as mock_emb,
+            patch("dotenv.load_dotenv"),
+        ):
+            _ensure_llm_configured(env)
+        # Wizard ran — we did not silently fall through on the embedder-only state.
+        mock_llm.assert_called_once_with(env)
+        mock_emb.assert_called_once_with(env, "openai")
+
+    def test_local_only_provider_non_tty_exits_with_generation_message(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Embedder-only providers in non-TTY mode → exit with a message naming the missing role."""
+        env = tmp_path / ".env"
+        env.write_text("")
+        with (
+            patch(
+                "reflexio.server.llm.model_defaults.detect_available_providers",
+                return_value=["local"],
+            ),
+            patch(
+                "reflexio.server.llm.providers.local_embedding_provider"
+                ".is_chromadb_importable",
+                return_value=True,
+            ),
+            patch("sys.stdin.isatty", return_value=False),
+            pytest.raises(typer.Exit) as exc_info,
+        ):
+            _ensure_llm_configured(env)
+        assert exc_info.value.exit_code == 1
+        out = capsys.readouterr().out
+        assert "no generation-capable LLM API key" in out
+
     def test_services_start_proceeds_without_cloud_embedder_when_chromadb_present(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:

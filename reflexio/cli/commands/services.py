@@ -60,6 +60,7 @@ def _ensure_llm_configured(env_path: Path) -> None:
     )
     from reflexio.server.llm.model_defaults import (
         EMBEDDING_CAPABLE_PROVIDERS,
+        GENERATION_CAPABLE_PROVIDERS,
         detect_available_providers,
     )
     from reflexio.server.llm.providers.local_embedding_provider import (
@@ -68,23 +69,29 @@ def _ensure_llm_configured(env_path: Path) -> None:
 
     providers = detect_available_providers()
     has_embedding = any(p in EMBEDDING_CAPABLE_PROVIDERS for p in providers)
-    if providers and has_embedding:
+    has_generation = any(p in GENERATION_CAPABLE_PROVIDERS for p in providers)
+    if providers and has_generation and has_embedding:
         return
 
-    # Path 3 of the embedding auto-detection: if at least one LLM key is
-    # present but no cloud embedder is configured, and chromadb is importable,
-    # the runtime will silently fall back to the local MiniLM embedder
-    # (see ``_auto_detect_model`` in model_defaults.py). No need to prompt
-    # or block startup. We don't apply this when ``providers`` is empty —
-    # that case still needs the user to pick an LLM key.
-    if providers and is_chromadb_importable():
+    # Path 3 of the embedding auto-detection: if a generation provider is
+    # configured but no cloud embedder, and chromadb is importable, the
+    # runtime will silently fall back to the local MiniLM embedder (see
+    # ``_auto_detect_model`` in model_defaults.py). No need to prompt or
+    # block startup. We require ``has_generation`` here because providers
+    # like ``["local"]`` (embedder-only) leave the GENERATION role
+    # unresolvable and must still trip the wizard.
+    if has_generation and is_chromadb_importable():
         _logger.info("Using local embedder as fallback (no cloud embedder configured)")
         return
 
     if not sys.stdin.isatty():
         typer.echo(
             "\nReflexio is not fully configured yet — "
-            + ("no LLM API key" if not providers else "no embedding-capable provider")
+            + (
+                "no generation-capable LLM API key"
+                if not has_generation
+                else "no embedding-capable provider"
+            )
             + f" was found in {env_path}.\n"
             "Set one of OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY, ... "
             "in that file, or run `reflexio setup init` interactively, "
@@ -92,7 +99,7 @@ def _ensure_llm_configured(env_path: Path) -> None:
         )
         raise typer.Exit(1)
 
-    if not providers:
+    if not has_generation:
         typer.echo(
             "\nWelcome to Reflexio! Let's pick an LLM provider before "
             "starting the local services."

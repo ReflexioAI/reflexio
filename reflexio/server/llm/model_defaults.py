@@ -287,6 +287,11 @@ EMBEDDING_CAPABLE_PROVIDERS: frozenset[str] = frozenset(
 )
 
 
+GENERATION_CAPABLE_PROVIDERS: frozenset[str] = frozenset(
+    p for p, d in _PROVIDER_DEFAULTS.items() if d.generation is not None
+)
+
+
 # ---------------------------------------------------------------------------
 # Model role enum and resolution
 # ---------------------------------------------------------------------------
@@ -431,10 +436,24 @@ def validate_llm_availability(
     generation_provider = next(
         (p for p in providers if _PROVIDER_DEFAULTS[p].generation), None
     )
-    if generation_provider:
-        logger.info("Primary provider for generation: %s", generation_provider)
-    else:
-        logger.info("No generation-capable provider available")
+    if generation_provider is None:
+        # Configurations that surface only embedding-capable providers
+        # (e.g. ``providers == ["local"]`` from chromadb being importable
+        # but no LLM key set) leave every generation-role lookup
+        # unresolvable. Failing here means the next reflexio call would
+        # raise "No provider supports role=generation" deep inside the
+        # extraction pipeline; we'd rather raise at startup with the
+        # same actionable message users hit when no providers are
+        # detected at all.
+        raise RuntimeError(
+            "No generation-capable LLM provider available. Set at least "
+            "one of: "
+            + ", ".join(sorted(_ENV_TO_PROVIDER))
+            + f" in your .env file, or set {_CLAUDE_CODE_ENABLE_ENV}=1 "
+            "with the `claude` CLI on PATH to use the local Claude Code "
+            "provider."
+        )
+    logger.info("Primary provider for generation: %s", generation_provider)
 
     # Validate embedding availability. When no embedding-capable provider
     # is configured, fall back to the in-process local ONNX embedder if
