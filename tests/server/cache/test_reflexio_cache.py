@@ -342,3 +342,47 @@ class TestVersionBasedInvalidation:
         b = get_reflexio("org-1")
         assert a is not b
         assert b is second
+
+    @patch("reflexio.server.cache.reflexio_cache.Reflexio")
+    def test_construction_probe_failure_does_not_disable_future_eviction(
+        self, mock_reflexio_cls: MagicMock
+    ):
+        """A transient probe failure at construction must not poison the entry.
+
+        Earlier code stamped the entry with ``cached_version=None``
+        whenever ``_probe_version_safe`` returned None — which conflated
+        "backend can't probe" with "probe raised". That permanently
+        disabled auto-eviction for the entry. The fix: don't cache an
+        instance whose construction probe raised, so the next request
+        re-builds and re-probes successfully, and version-based eviction
+        works from then on.
+        """
+        # First instance's construction-time probe raises. Second
+        # instance probes cleanly at version 100, then jumps to 200.
+        # Third instance (post-eviction) probes at 200.
+        first = MagicMock()
+        first.org_id = "org-1"
+        first.current_config_version.side_effect = OSError("disk gone")
+
+        second = _stub_reflexio(("file", 100.0))
+        third = _stub_reflexio(("file", 200.0))
+        mock_reflexio_cls.side_effect = [first, second, third]
+
+        # Request 1: construction-time probe raises → instance returned
+        # but NOT cached.
+        a = get_reflexio("org-1")
+        assert a is first
+        assert get_cache_stats()["current_size"] == 0
+
+        # Request 2: backend recovers, second construction succeeds and
+        # gets cached at version 100.
+        b = get_reflexio("org-1")
+        assert b is second
+        assert get_cache_stats()["current_size"] == 1
+
+        # Request 3: out-of-band edit bumps version to 200; eviction
+        # runs because the entry has a real stamp now.
+        second.current_config_version.return_value = ("file", 200.0)
+        c = get_reflexio("org-1")
+        assert c is third
+        assert mock_reflexio_cls.call_count == 3
