@@ -91,6 +91,7 @@ class ExtractionCtx:
     search_count: int = 0
     finished: bool = False
     search_answer: str | None = None
+    agent_playbook_status_filter: list[str] | None = None
     # Compressed rehydration excerpts captured by `read_session_text` calls
     # during the agent loop. Surfaced verbatim on the response so callers can
     # include them in downstream context without going through the search

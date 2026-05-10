@@ -95,19 +95,33 @@ class SearchAgent:
         self.max_steps = max_steps
         self.enable_agent_answer = enable_agent_answer
 
-    def run(self, *, user_id: str, agent_version: str, query: str) -> SearchResult:
+    def run(
+        self,
+        *,
+        user_id: str,
+        agent_version: str,
+        query: str,
+        agent_playbook_status_filter: list[str] | None = None,
+    ) -> SearchResult:
         """Run one search loop for the given query.
 
         Args:
             user_id (str): Authenticated user scope.
             agent_version (str): Active agent_version for playbook scoping.
             query (str): The search query to answer.
+            agent_playbook_status_filter (list[str] | None): Allowed
+                AgentPlaybook approval statuses. Defaults are applied by the
+                tool handler when omitted.
 
         Returns:
             SearchResult: Typed outcome with answer, termination reason, budget flag,
                 and the full tool-loop trace for entity harvesting by callers.
         """
-        ctx = ExtractionCtx(user_id=user_id, agent_version=agent_version)
+        ctx = ExtractionCtx(
+            user_id=user_id,
+            agent_version=agent_version,
+            agent_playbook_status_filter=agent_playbook_status_filter,
+        )
         bundle = HandlerBundle(
             storage=self.storage,
             ctx=ctx,

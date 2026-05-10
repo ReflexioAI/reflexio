@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Self
+from typing import Literal, Self
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -298,7 +298,12 @@ class SearchAgentPlaybookRequest(BaseModel):
         start_time (datetime, optional): Start time for created_at filter
         end_time (datetime, optional): End time for created_at filter
         status_filter (list[Optional[Status]], optional): Filter by status (None for CURRENT, PENDING, ARCHIVED)
-        playbook_status_filter (PlaybookStatus, optional): Filter by playbook status (PENDING, APPROVED, REJECTED)
+        playbook_status_filter (PlaybookStatus | list[PlaybookStatus], optional):
+            Filter by playbook approval status. Accepts either a single
+            ``PlaybookStatus`` (matched with ``=``) or a list (matched with
+            ``IN (...)``) so callers can request multiple approval states in
+            a single storage query without per-status fan-out. Defaults to
+            None (no status predicate).
         top_k (int, optional): Maximum number of results to return. Defaults to 10
         threshold (float, optional): Similarity threshold for vector search. Defaults to 0.4
     """
@@ -309,7 +314,7 @@ class SearchAgentPlaybookRequest(BaseModel):
     start_time: datetime | None = None
     end_time: datetime | None = None
     status_filter: list[Status | None] | None = None
-    playbook_status_filter: PlaybookStatus | None = None
+    playbook_status_filter: PlaybookStatus | list[PlaybookStatus] | None = None
     top_k: int | None = Field(default=10, gt=0)
     threshold: float | None = Field(default=0.4, ge=0.0, le=1.0)
     enable_reformulation: bool | None = False
@@ -520,6 +525,9 @@ class ReformulationResult(BaseModel):
 # ===============================
 
 
+UnifiedSearchEntityType = Literal["profiles", "user_playbooks", "agent_playbooks"]
+
+
 class UnifiedSearchRequest(BaseModel):
     """Request for unified search across all entity types.
 
@@ -530,6 +538,13 @@ class UnifiedSearchRequest(BaseModel):
         agent_version (str, optional): Filter by agent version (agent_playbooks, user_playbooks)
         playbook_name (str, optional): Filter by playbook name (agent_playbooks, user_playbooks)
         user_id (str, optional): Filter by user ID (profiles, user_playbooks)
+        entity_types (list[str], optional): Entity types to search. When omitted,
+            searches profiles, user_playbooks, and agent_playbooks.
+        agent_playbook_status_filter (list[PlaybookStatus], optional): Approval
+            statuses to include for agent_playbooks. When omitted, defaults to
+            ``[APPROVED, PENDING]`` so that REJECTED playbooks are suppressed
+            from results — a rejection in the dashboard immediately hides the
+            playbook. Pass an explicit list to opt into REJECTED items.
         conversation_history (list[ConversationTurn], optional): Prior conversation turns for context-aware query rewriting
     """
 
@@ -539,6 +554,8 @@ class UnifiedSearchRequest(BaseModel):
     agent_version: str | None = None
     playbook_name: str | None = None
     user_id: str | None = None
+    entity_types: list[UnifiedSearchEntityType] | None = None
+    agent_playbook_status_filter: list[PlaybookStatus] | None = None
     conversation_history: list[ConversationTurn] | None = None
     enable_reformulation: bool | None = False
     enable_agent_answer: bool | None = False

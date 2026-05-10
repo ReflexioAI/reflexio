@@ -201,6 +201,9 @@ class AgenticSearchService:
             user_id=request.user_id,
             agent_version=request.agent_version or "",
             query=query,
+            agent_playbook_status_filter=_agent_playbook_status_filter_values(
+                request.agent_playbook_status_filter
+            ),
         )
 
         if result.outcome == "error":
@@ -312,8 +315,32 @@ class AgenticSearchService:
             all_agent_playbooks = storage.get_agent_playbooks(
                 agent_version=agent_version
             )
+            allowed_statuses = set(
+                _agent_playbook_status_filter_values(
+                    request.agent_playbook_status_filter
+                )
+            )
+            all_agent_playbooks = [
+                p
+                for p in all_agent_playbooks
+                if str(
+                    getattr(
+                        getattr(p, "playbook_status", None),
+                        "value",
+                        getattr(p, "playbook_status", None),
+                    )
+                )
+                in allowed_statuses
+            ]
             agent_playbooks = _filter_ordered(
                 all_agent_playbooks, "agent_playbook_id", agent_playbook_ids, top_k
             )
 
         return profiles, user_playbooks, agent_playbooks
+
+
+def _agent_playbook_status_filter_values(statuses: list | None) -> list[str]:
+    """Approval statuses allowed by unified search; default excludes rejected."""
+    if statuses:
+        return [str(getattr(status, "value", status)) for status in statuses]
+    return ["approved", "pending"]

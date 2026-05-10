@@ -1190,9 +1190,17 @@ class PlaybookMixin:
         if end_time:
             conditions.append("ap.created_at <= ?")
             params.append(_epoch_to_iso(end_time))
-        if playbook_status_filter:
-            conditions.append("ap.playbook_status = ?")
-            params.append(playbook_status_filter.value)
+        if playbook_status_filter is not None:
+            if isinstance(playbook_status_filter, list):
+                if not playbook_status_filter:
+                    conditions.append("1=0")
+                else:
+                    placeholders = ",".join("?" for _ in playbook_status_filter)
+                    conditions.append(f"ap.playbook_status IN ({placeholders})")
+                    params.extend(s.value for s in playbook_status_filter)
+            else:
+                conditions.append("ap.playbook_status = ?")
+                params.append(playbook_status_filter.value)
         if status_filter is not None:
             frag, sparams = _build_status_sql(status_filter)
             conditions.append(frag)

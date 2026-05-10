@@ -2169,7 +2169,10 @@ class ReflexioClient:
         agent_version: str | None = None,
         playbook_name: str | None = None,
         user_id: str | None = None,
+        entity_types: list[str] | None = None,
+        agent_playbook_status_filter: list[PlaybookStatus | str] | None = None,
         enable_reformulation: bool | None = None,
+        enable_agent_answer: bool | None = None,
         conversation_history: list[ConversationTurn] | list[dict] | None = None,
         search_mode: SearchMode | str | None = None,
     ) -> UnifiedSearchViewResponse:
@@ -2186,7 +2189,13 @@ class ReflexioClient:
             agent_version (Optional[str]): Filter by agent version (agent_playbooks, user_playbooks)
             playbook_name (Optional[str]): Filter by playbook name (agent_playbooks, user_playbooks)
             user_id (Optional[str]): Filter by user ID (profiles, user_playbooks)
+            entity_types (Optional[list[str]]): Entity types to search. Valid values:
+                "profiles", "user_playbooks", "agent_playbooks".
+            agent_playbook_status_filter (Optional[list[Union[PlaybookStatus, str]]]):
+                Agent-playbook approval statuses to include.
             enable_reformulation (Optional[bool]): Enable LLM query reformulation (default: False)
+            enable_agent_answer (Optional[bool]): Enable agentic answer synthesis when
+                the configured search backend supports it (default: False).
             conversation_history (Optional[list[ConversationTurn] | list[dict]]): Prior conversation turns for context-aware query reformulation. Accepts ConversationTurn objects or dicts with "role" and "content" keys.
             search_mode (Optional[SearchMode | str]): Search mode to use. Accepts SearchMode enum or string value ("vector", "fts", "hybrid").
 
@@ -2202,7 +2211,10 @@ class ReflexioClient:
             agent_version=agent_version,
             playbook_name=playbook_name,
             user_id=user_id,
+            entity_types=entity_types,
+            agent_playbook_status_filter=agent_playbook_status_filter,
             enable_reformulation=enable_reformulation,
+            enable_agent_answer=enable_agent_answer,
             conversation_history=conversation_history,
             search_mode=search_mode,
         )

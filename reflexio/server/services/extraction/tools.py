@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 from pydantic import BaseModel, Field
 
 from reflexio.models.api_schema.domain.entities import (
+    PlaybookStatus,
     Status,
     UserPlaybook,
     UserProfile,
@@ -303,6 +304,19 @@ def _maybe_embed_query(storage: Any, query: str) -> list[float] | None:
 
 def _status_from_str(s: str) -> Status | None:
     return {"current": None, "pending": Status.PENDING, "archived": Status.ARCHIVED}[s]
+
+
+def _agent_playbook_statuses_from_ctx(ctx: ExtractionCtx) -> list[PlaybookStatus]:
+    values = ctx.agent_playbook_status_filter or ["approved", "pending"]
+    out: list[PlaybookStatus] = []
+    for value in values:
+        try:
+            status = PlaybookStatus(value)
+        except ValueError:
+            continue
+        if status not in out:
+            out.append(status)
+    return out
 
 
 RERANK_POOL_SIZE = 30
@@ -668,20 +682,30 @@ def _handle_search_agent_playbooks(
     """
     final_k = _cap_top_k(args.top_k)
     fetch_k = _fetch_k_for_rerank(final_k, args.rerank, args.llm_rerank)
-    request = SearchAgentPlaybookRequest(
-        query=args.query,
-        agent_version=ctx.agent_version,
-        top_k=fetch_k,
-        status_filter=[_status_from_str(args.status)],
-        search_mode=SearchMode.HYBRID,
-        threshold=0.4,
-    )
-    if ctx.extractor_name:
-        request.playbook_name = ctx.extractor_name
-    hits = storage.search_agent_playbooks(
-        request,
-        options=SearchOptions(query_embedding=_maybe_embed_query(storage, args.query)),
-    )
+    options = SearchOptions(query_embedding=_maybe_embed_query(storage, args.query))
+    hits: list[Any] = []
+    seen_ids: set[str] = set()
+    for playbook_status in _agent_playbook_statuses_from_ctx(ctx):
+        request = SearchAgentPlaybookRequest(
+            query=args.query,
+            agent_version=ctx.agent_version,
+            top_k=fetch_k,
+            status_filter=[_status_from_str(args.status)],
+            playbook_status_filter=playbook_status,
+            search_mode=SearchMode.HYBRID,
+            threshold=0.4,
+        )
+        if ctx.extractor_name:
+            request.playbook_name = ctx.extractor_name
+        for hit in storage.search_agent_playbooks(request, options=options):
+            hit_id = str(getattr(hit, "agent_playbook_id", ""))
+            if hit_id and hit_id not in seen_ids:
+                seen_ids.add(hit_id)
+                hits.append(hit)
+                if len(hits) >= fetch_k:
+                    break
+        if len(hits) >= fetch_k:
+            break
     ctx.search_count += 1
     hits = _maybe_rerank_hits(
         hits=hits,

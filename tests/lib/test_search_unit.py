@@ -266,6 +266,72 @@ class TestUnifiedSearch:
         mock_agentic_inst.search.assert_called_once_with(request)
         mock_run_unified.assert_not_called()
 
+    def test_filtered_search_uses_classic_backend_even_when_agentic_configured(self):
+        """Entity/status-constrained search must not use agent-only retrieval tools."""
+        mixin = _make_mixin()
+        mixin.llm_client = MagicMock()
+        mock_config = MagicMock()
+        mock_config.llm_config = None
+        mock_config.search_backend = "agentic"
+        mixin.request_context.configurator.get_config.return_value = mock_config
+
+        expected_response = UnifiedSearchResponse(success=True)
+
+        with (
+            patch(
+                "reflexio.server.services.unified_search_service.run_unified_search",
+                return_value=expected_response,
+            ) as mock_run_unified,
+            patch(
+                "reflexio.server.services.search.agentic_search_service.AgenticSearchService"
+            ) as mock_agentic_cls,
+        ):
+            request = UnifiedSearchRequest(
+                query="test query",
+                entity_types=["profiles", "user_playbooks", "agent_playbooks"],
+                agent_playbook_status_filter=["pending", "approved"],
+            )
+            response = mixin.unified_search(request, org_id="org_1")
+
+        assert response is expected_response
+        mock_run_unified.assert_called_once()
+        mock_agentic_cls.assert_not_called()
+
+    def test_agentic_bypass_warns_once_per_process(self):
+        """Operators opting into ``search_backend='agentic'`` must see a warning
+        the first time the bypass kicks in; subsequent calls stay silent so logs
+        don't drown."""
+        # Reset the module-level latch so the assertion is deterministic
+        # regardless of test execution order.
+        import reflexio.lib._search as search_mod
+
+        search_mod._AGENTIC_BYPASS_LOGGED = False
+
+        mixin = _make_mixin()
+        mixin.llm_client = MagicMock()
+        mock_config = MagicMock()
+        mock_config.llm_config = None
+        mock_config.search_backend = "agentic"
+        mixin.request_context.configurator.get_config.return_value = mock_config
+
+        with (
+            patch(
+                "reflexio.server.services.unified_search_service.run_unified_search",
+                return_value=UnifiedSearchResponse(success=True),
+            ),
+            patch.object(search_mod._LOGGER, "warning") as mock_warn,
+        ):
+            request = UnifiedSearchRequest(
+                query="q",
+                entity_types=["profiles", "user_playbooks"],
+            )
+            mixin.unified_search(request, org_id="org_1")
+            mixin.unified_search(request, org_id="org_1")
+            mixin.unified_search(request, org_id="org_1")
+
+        assert mock_warn.call_count == 1, "warning must fire exactly once per process"
+        assert "agentic search backend bypassed" in mock_warn.call_args.args[0]
+
     def test_dispatches_to_classic_when_search_backend_classic(self):
         """When config.search_backend == 'classic', run_unified_search runs.
 

@@ -5,13 +5,17 @@ and reformulated_query propagation.
 """
 
 import unittest
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+from reflexio.models.api_schema.domain.entities import AgentPlaybook, PlaybookStatus
 from reflexio.models.api_schema.retriever_schema import (
     UnifiedSearchRequest,
 )
+from reflexio.models.config_schema import SearchOptions
 from reflexio.server.services.pre_retrieval import ReformulationResult
 from reflexio.server.services.unified_search_service import (
+    _search_agent_playbooks_via_storage,
     run_unified_search,
 )
 
@@ -64,7 +68,15 @@ class TestRunUnifiedSearch(unittest.TestCase):
         )
 
         self.assertTrue(result.success)
-        storage.search_agent_playbooks.assert_called_once()
+        # Default agent-playbook status filtering uses a single storage call
+        # with the full APPROVED+PENDING allow-list; REJECTED is excluded
+        # server-side.
+        assert storage.search_agent_playbooks.call_count == 1
+        sent_filters = [
+            call.args[0].playbook_status_filter
+            for call in storage.search_agent_playbooks.call_args_list
+        ]
+        assert sent_filters == [[PlaybookStatus.APPROVED, PlaybookStatus.PENDING]]
 
     @patch("reflexio.server.services.unified_search_service.QueryReformulator")
     def test_local_storage_without_get_embedding(self, _reformulator_cls):
@@ -86,7 +98,15 @@ class TestRunUnifiedSearch(unittest.TestCase):
         )
 
         self.assertTrue(result.success)
-        storage.search_agent_playbooks.assert_called_once()
+        # Default agent-playbook status filtering uses a single storage call
+        # with the full APPROVED+PENDING allow-list; REJECTED is excluded
+        # server-side.
+        assert storage.search_agent_playbooks.call_count == 1
+        sent_filters = [
+            call.args[0].playbook_status_filter
+            for call in storage.search_agent_playbooks.call_args_list
+        ]
+        assert sent_filters == [[PlaybookStatus.APPROVED, PlaybookStatus.PENDING]]
 
     @patch("reflexio.server.services.unified_search_service.QueryReformulator")
     def test_reformulated_query_populated_when_changed(self, _reformulator_cls):
@@ -133,6 +153,124 @@ class TestRunUnifiedSearch(unittest.TestCase):
 
         self.assertTrue(result.success)
         self.assertIsNone(result.reformulated_query)
+
+
+def _agent_playbook(
+    agent_playbook_id: int, status: PlaybookStatus
+) -> AgentPlaybook:
+    return AgentPlaybook(
+        agent_playbook_id=agent_playbook_id,
+        agent_version="claude-code",
+        content=f"rule {agent_playbook_id}",
+        playbook_status=status,
+    )
+
+
+def test_search_agent_playbooks_allows_pending_and_approved_but_not_rejected() -> None:
+    """One storage call carries the full allow-list; REJECTED is not in it."""
+    seen_filters: list[list[PlaybookStatus] | PlaybookStatus | None] = []
+
+    def search_agent_playbooks(request, _options):
+        seen_filters.append(request.playbook_status_filter)
+        return [
+            _agent_playbook(1, PlaybookStatus.PENDING),
+            _agent_playbook(2, PlaybookStatus.APPROVED),
+        ]
+
+    storage = SimpleNamespace(search_agent_playbooks=search_agent_playbooks)
+
+    results = _search_agent_playbooks_via_storage(
+        storage=storage,
+        query="formatting",
+        top_k=5,
+        threshold=0.3,
+        agent_version="claude-code",
+        playbook_name=None,
+        allowed_statuses=[PlaybookStatus.PENDING, PlaybookStatus.APPROVED],
+        options=SearchOptions(),
+    )
+
+    assert seen_filters == [[PlaybookStatus.PENDING, PlaybookStatus.APPROVED]]
+    assert [p.playbook_status for p in results] == [
+        PlaybookStatus.PENDING,
+        PlaybookStatus.APPROVED,
+    ]
+
+
+def test_search_agent_playbooks_default_excludes_rejected() -> None:
+    """When the caller omits ``allowed_statuses``, the single storage call
+    passes APPROVED + PENDING as the filter; REJECTED never appears so a
+    dashboard rejection suppresses the playbook for every consumer."""
+    seen_filters: list[list[PlaybookStatus] | PlaybookStatus | None] = []
+
+    def search_agent_playbooks(request, _options):
+        seen_filters.append(request.playbook_status_filter)
+        return []
+
+    storage = SimpleNamespace(search_agent_playbooks=search_agent_playbooks)
+
+    _search_agent_playbooks_via_storage(
+        storage=storage,
+        query="formatting",
+        top_k=5,
+        threshold=0.3,
+        agent_version="claude-code",
+        playbook_name=None,
+        allowed_statuses=None,
+        options=SearchOptions(),
+    )
+
+    assert seen_filters == [[PlaybookStatus.APPROVED, PlaybookStatus.PENDING]]
+    assert all(PlaybookStatus.REJECTED not in (f or []) for f in seen_filters)
+
+
+class TestEntityTypesFiltering(unittest.TestCase):
+    """``UnifiedSearchRequest.entity_types`` should gate which storage calls fire."""
+
+    @patch("reflexio.server.services.unified_search_service.QueryReformulator")
+    def test_only_requested_entity_types_query_storage(self, _reformulator_cls):
+        """When ``entity_types=["agent_playbooks"]``, profile and user-playbook
+        storage methods must NOT be invoked. Without this gate, callers asking
+        for a single entity would silently incur the cost of all three legs."""
+        _reformulator_cls.return_value.rewrite.return_value = ReformulationResult(
+            standalone_query="q"
+        )
+        storage = _mock_storage()
+
+        request = UnifiedSearchRequest(query="q", entity_types=["agent_playbooks"])
+        result = run_unified_search(
+            request=request,
+            org_id="test-org",
+            storage=storage,
+            llm_client=MagicMock(),
+            prompt_manager=MagicMock(),
+        )
+
+        self.assertTrue(result.success)
+        storage.search_agent_playbooks.assert_called()
+        storage.search_user_playbooks.assert_not_called()
+        storage.search_user_profile.assert_not_called()
+
+    @patch("reflexio.server.services.unified_search_service.QueryReformulator")
+    def test_excluded_entity_types_return_empty_in_response(self, _reformulator_cls):
+        """A leg that wasn't requested must come back as an empty list, not None."""
+        _reformulator_cls.return_value.rewrite.return_value = ReformulationResult(
+            standalone_query="q"
+        )
+        storage = _mock_storage()
+
+        request = UnifiedSearchRequest(query="q", entity_types=["profiles"])
+        result = run_unified_search(
+            request=request,
+            org_id="test-org",
+            storage=storage,
+            llm_client=MagicMock(),
+            prompt_manager=MagicMock(),
+        )
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.agent_playbooks, [])
+        self.assertEqual(result.user_playbooks, [])
 
 
 if __name__ == "__main__":

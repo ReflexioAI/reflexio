@@ -53,6 +53,20 @@ export const unifiedSearchMethods: MethodDef[] = [
         description: "Filter by user ID (profiles, user_playbooks)",
       },
       {
+        name: "entity_types",
+        type: "json",
+        required: false,
+        description:
+          'Entity types to search, e.g. ["profiles", "user_playbooks", "agent_playbooks"]',
+      },
+      {
+        name: "agent_playbook_status_filter",
+        type: "json",
+        required: false,
+        description:
+          'Agent playbook approval statuses to include, e.g. ["pending", "approved"]',
+      },
+      {
         name: "enable_reformulation",
         type: "boolean",
         required: false,

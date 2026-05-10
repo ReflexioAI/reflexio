@@ -23,6 +23,7 @@ from reflexio.models.api_schema.retriever_schema import (
 )
 from reflexio.models.api_schema.service_schemas import (
     AgentPlaybook,
+    PlaybookStatus,
     UserPlaybook,
     UserProfile,
 )
@@ -36,6 +37,18 @@ if TYPE_CHECKING:
     from reflexio.server.api_endpoints.request_context import RequestContext
 
 logger = logging.getLogger(__name__)
+_DEFAULT_ENTITY_TYPES = frozenset(
+    {"profiles", "agent_playbooks", "user_playbooks"}
+)
+# Statuses returned for agent_playbooks when the caller does not pass an
+# explicit ``agent_playbook_status_filter``. Excludes REJECTED so that a
+# rejection in the dashboard immediately suppresses the playbook from search
+# results — every consumer benefits without opting in. Callers that genuinely
+# want REJECTED items (e.g. admin views) must pass the full list explicitly.
+_DEFAULT_AGENT_PLAYBOOK_STATUSES: tuple[PlaybookStatus, ...] = (
+    PlaybookStatus.APPROVED,
+    PlaybookStatus.PENDING,
+)
 
 
 def run_unified_search(
@@ -187,44 +200,63 @@ def _run_phase_b(
     """
     options = SearchOptions(query_embedding=embedding)
 
+    entity_types = set(request.entity_types or _DEFAULT_ENTITY_TYPES)
+    allowed_agent_statuses = request.agent_playbook_status_filter
     executor = ThreadPoolExecutor(max_workers=3)
     try:
-        profiles_future = executor.submit(
-            _search_profiles_via_storage,
-            storage,
-            query,
-            top_k,
-            threshold,
-            request.user_id,
-            embedding,
+        profiles_future = (
+            executor.submit(
+                _search_profiles_via_storage,
+                storage,
+                query,
+                top_k,
+                threshold,
+                request.user_id,
+                embedding,
+            )
+            if "profiles" in entity_types
+            else None
         )
-        fb_request = SearchAgentPlaybookRequest(
-            query=query,
-            agent_version=request.agent_version,
-            playbook_name=request.playbook_name,
-            status_filter=[None],
-            threshold=threshold,
-            top_k=top_k,
+        agent_playbooks_future = (
+            executor.submit(
+                _search_agent_playbooks_via_storage,
+                storage,
+                query,
+                top_k,
+                threshold,
+                request.agent_version,
+                request.playbook_name,
+                allowed_agent_statuses,
+                options,
+            )
+            if "agent_playbooks" in entity_types
+            else None
         )
-        agent_playbooks_future = executor.submit(
-            storage.search_agent_playbooks, fb_request, options
-        )
-        rf_request = SearchUserPlaybookRequest(
-            query=query,
-            user_id=request.user_id,
-            agent_version=request.agent_version,
-            playbook_name=request.playbook_name,
-            status_filter=None,
-            threshold=threshold,
-            top_k=top_k,
-        )
-        user_playbooks_future = executor.submit(
-            storage.search_user_playbooks, rf_request, options
-        )
+        if "user_playbooks" in entity_types:
+            rf_request = SearchUserPlaybookRequest(
+                query=query,
+                user_id=request.user_id,
+                agent_version=request.agent_version,
+                playbook_name=request.playbook_name,
+                status_filter=None,
+                threshold=threshold,
+                top_k=top_k,
+            )
+            user_playbooks_future = executor.submit(
+                storage.search_user_playbooks, rf_request, options
+            )
+        else:
+            user_playbooks_future = None
 
-        profiles = profiles_future.result(timeout=30)
-        agent_playbooks = agent_playbooks_future.result(timeout=30)
-        user_playbooks = user_playbooks_future.result(timeout=30)
+        profiles = profiles_future.result(timeout=30) if profiles_future else []
+        agent_playbooks = (
+            agent_playbooks_future.result(timeout=30)
+            if agent_playbooks_future
+            else []
+        )
+        user_playbooks = (
+            user_playbooks_future.result(timeout=30) if user_playbooks_future else []
+        )
     except FuturesTimeoutError:
         logger.error("Unified search timed out")
         return None, None, None
@@ -235,6 +267,46 @@ def _run_phase_b(
         executor.shutdown(wait=False, cancel_futures=True)
 
     return profiles, agent_playbooks, user_playbooks
+
+
+def _search_agent_playbooks_via_storage(
+    storage: BaseStorage,
+    query: str,
+    top_k: int,
+    threshold: float,
+    agent_version: str | None,
+    playbook_name: str | None,
+    allowed_statuses: list[PlaybookStatus] | None,
+    options: SearchOptions,
+) -> list[AgentPlaybook]:
+    """Search agent playbooks, restricted to one or more approval statuses.
+
+    When ``allowed_statuses`` is None or empty, falls back to
+    ``_DEFAULT_AGENT_PLAYBOOK_STATUSES`` (APPROVED + PENDING). Callers that
+    genuinely want REJECTED playbooks must opt in by passing the full list.
+    """
+    statuses = list(allowed_statuses) if allowed_statuses else list(
+        _DEFAULT_AGENT_PLAYBOOK_STATUSES
+    )
+    request = SearchAgentPlaybookRequest(
+        query=query,
+        agent_version=agent_version,
+        playbook_name=playbook_name,
+        status_filter=[None],
+        playbook_status_filter=statuses,
+        threshold=threshold,
+        top_k=top_k,
+    )
+    results: list[AgentPlaybook] = []
+    seen_ids: set[str] = set()
+    for playbook in storage.search_agent_playbooks(request, options):
+        playbook_id = str(getattr(playbook, "agent_playbook_id", ""))
+        if playbook_id and playbook_id not in seen_ids:
+            seen_ids.add(playbook_id)
+            results.append(playbook)
+            if len(results) >= top_k:
+                break
+    return results
 
 
 def _search_profiles_via_storage(

@@ -457,7 +457,7 @@ class PlaybookMixin:
         start_time: int | None,
         end_time: int | None,
         status_filter: list[Status | None] | None,
-        playbook_status_filter: PlaybookStatus | None,
+        playbook_status_filter: PlaybookStatus | list[PlaybookStatus] | None,
     ) -> bool:
         """Check if an AgentPlaybook passes all search filters."""
         if agent_version and ap.agent_version != agent_version:
@@ -468,11 +468,12 @@ class PlaybookMixin:
             return False
         if end_time and ap.created_at > end_time:
             return False
-        if (
-            playbook_status_filter is not None
-            and ap.playbook_status != playbook_status_filter
-        ):
-            return False
+        if playbook_status_filter is not None:
+            if isinstance(playbook_status_filter, list):
+                if ap.playbook_status not in playbook_status_filter:
+                    return False
+            elif ap.playbook_status != playbook_status_filter:
+                return False
         return status_filter is None or matches_status_filter(ap.status, status_filter)
 
     def search_agent_playbooks(
