@@ -26,6 +26,17 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 PLAYBOOK_CONTENT_COMPONENT = "playbook_content"
+_EvaluationCacheKey = tuple[str, int | None, tuple[int, ...]]
+
+
+def _evaluation_cache_key(
+    candidate_content: str, window: ScenarioWindow
+) -> _EvaluationCacheKey:
+    return (
+        candidate_content,
+        window.user_playbook_id,
+        tuple(window.source_interaction_ids),
+    )
 
 
 class ReflexioPlaybookGEPAAdapter:
@@ -74,6 +85,9 @@ class ReflexioPlaybookGEPAAdapter:
         self.max_turns = max_turns
         self.propose_new_texts: ProposalFn | None = None
         self._candidate_ids_by_content: dict[str, int] = {}
+        self._evaluation_cache: dict[
+            _EvaluationCacheKey, CandidateEvaluationOutput
+        ] = {}
 
     def evaluate(
         self,
@@ -90,7 +104,48 @@ class ReflexioPlaybookGEPAAdapter:
         trajectories: list[EvaluationTrajectory] = []
 
         for window in batch:
-            output = self._evaluate_one(window, candidate_content)
+            cache_key = _evaluation_cache_key(candidate_content, window)
+            cached = self._evaluation_cache.get(cache_key)
+            if cached is not None:
+                output = cached
+                logger.info(
+                    "event=playbook_optimization_evaluation_cache_hit job_id=%d "
+                    "candidate_id=%d scenario_user_playbook_id=%s verdict=%s",
+                    self.job_id,
+                    persisted_candidate.candidate_id,
+                    window.user_playbook_id,
+                    output.verdict,
+                )
+            else:
+                output = self._evaluate_one(window, candidate_content)
+                self._evaluation_cache[cache_key] = output
+                self.storage.insert_playbook_optimization_evaluation(
+                    PlaybookOptimizationEvaluation(
+                        job_id=self.job_id,
+                        candidate_id=persisted_candidate.candidate_id,
+                        target_kind=self.target_kind,  # type: ignore[arg-type]
+                        target_id=self.target_id,
+                        scenario_user_playbook_id=window.user_playbook_id,
+                        source_interaction_ids=window.source_interaction_ids,
+                        score=output.score,
+                        verdict=output.verdict,
+                        likert=output.likert,
+                        rationale=output.rationale,
+                        asi_json=output.asi.model_dump_json(),
+                        incumbent_rollout_json=output.incumbent_rollout.model_dump_json(),
+                        candidate_rollout_json=output.candidate_rollout.model_dump_json(),
+                    )
+                )
+                logger.info(
+                    "event=playbook_optimization_evaluation job_id=%d candidate_id=%d "
+                    "scenario_user_playbook_id=%s verdict=%s score=%.3f likert=%d",
+                    self.job_id,
+                    persisted_candidate.candidate_id,
+                    window.user_playbook_id,
+                    output.verdict,
+                    output.score,
+                    output.likert,
+                )
             outputs.append(output)
             scores.append(output.score)
             if capture_traces:
@@ -101,33 +156,6 @@ class ReflexioPlaybookGEPAAdapter:
                         output=output,
                     )
                 )
-            self.storage.insert_playbook_optimization_evaluation(
-                PlaybookOptimizationEvaluation(
-                    job_id=self.job_id,
-                    candidate_id=persisted_candidate.candidate_id,
-                    target_kind=self.target_kind,  # type: ignore[arg-type]
-                    target_id=self.target_id,
-                    scenario_user_playbook_id=window.user_playbook_id,
-                    source_interaction_ids=window.source_interaction_ids,
-                    score=output.score,
-                    verdict=output.verdict,
-                    likert=output.likert,
-                    rationale=output.rationale,
-                    asi_json=output.asi.model_dump_json(),
-                    incumbent_rollout_json=output.incumbent_rollout.model_dump_json(),
-                    candidate_rollout_json=output.candidate_rollout.model_dump_json(),
-                )
-            )
-            logger.info(
-                "event=playbook_optimization_evaluation job_id=%d candidate_id=%d "
-                "scenario_user_playbook_id=%s verdict=%s score=%.3f likert=%d",
-                self.job_id,
-                persisted_candidate.candidate_id,
-                window.user_playbook_id,
-                output.verdict,
-                output.score,
-                output.likert,
-            )
 
         return EvaluationBatch(
             outputs=outputs,
