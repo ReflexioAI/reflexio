@@ -118,7 +118,6 @@ class ReflexioPlaybookGEPAAdapter:
                 )
             else:
                 output = self._evaluate_one(window, candidate_content)
-                self._evaluation_cache[cache_key] = output
                 self.storage.insert_playbook_optimization_evaluation(
                     PlaybookOptimizationEvaluation(
                         job_id=self.job_id,
@@ -136,6 +135,11 @@ class ReflexioPlaybookGEPAAdapter:
                         candidate_rollout_json=output.candidate_rollout.model_dump_json(),
                     )
                 )
+                # Persist before caching so a failed insert does not leave a
+                # phantom result behind; skip caching transient assistant-
+                # backend aborts so the next iteration retries the rollout.
+                if output.verdict != "aborted":
+                    self._evaluation_cache[cache_key] = output
                 logger.info(
                     "event=playbook_optimization_evaluation job_id=%d candidate_id=%d "
                     "scenario_user_playbook_id=%s verdict=%s score=%.3f likert=%d",
