@@ -61,7 +61,7 @@ esac
     # Append (>>) so prior server logs are preserved across restarts; the
     # new-lifetime banner emitted by `reflexio services start` provides the
     # visual separator between runs.
-    reflexio services start --only backend >> "$LOG_DIR/server.log" 2>&1 &
+    reflexio services start --only backend --no-reload >> "$LOG_DIR/server.log" 2>&1 &
     sleep 30 && rm -f "$STARTING_FLAG"
 ) &
 

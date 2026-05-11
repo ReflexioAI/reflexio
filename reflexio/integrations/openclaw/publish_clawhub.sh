@@ -217,7 +217,7 @@ reflexio setup openclaw
 # this server via HTTP on 127.0.0.1:8081 — it will NOT start the server for
 # you. Tell the user you are doing this before running it.
 curl -sf --max-time 2 http://127.0.0.1:8081/health >/dev/null 2>&1 \\
-  || (nohup reflexio services start --only backend \\
+  || (nohup reflexio services start --only backend --no-reload \\
         >> ~/.reflexio/logs/server.log 2>&1 & \\
       sleep 5)
 ```
