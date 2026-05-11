@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import sys
 import time
@@ -11,6 +12,8 @@ from pathlib import Path
 import reflexio
 from reflexio.cli.env_loader import load_reflexio_env
 from reflexio.cli.utils import ServiceConfig, get_env_port, run_services
+
+logger = logging.getLogger(__name__)
 
 _PACKAGE_DIR = Path(reflexio.__file__).resolve().parent
 # Editable installs lay out as `…/open_source/reflexio/reflexio/__init__.py`,
@@ -22,7 +25,12 @@ DOCS_DIR = _EDITABLE_REPO_ROOT / "docs"
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
-    """Add run-services arguments to the parser."""
+    """Add run-services arguments to the parser.
+
+    Args:
+        parser (argparse.ArgumentParser): The parser to populate with
+            run-services flags. Mutated in-place.
+    """
     parser.add_argument(
         "--backend-port",
         type=int,
@@ -46,6 +54,72 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="Disable uvicorn auto-reload",
     )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help=(
+            "Number of backend worker processes (daemon mode only). "
+            "Default 1 during multi-worker safety audit; will bump to 2 "
+            "after audit. Forced to 1 when --reload is on."
+        ),
+    )
+    parser.add_argument(
+        "--max-requests",
+        type=int,
+        default=10000,
+        help="Worker recycles after this many requests. 0 disables. Default 10000.",
+    )
+    parser.add_argument(
+        "--max-requests-jitter",
+        type=int,
+        default=1000,
+        help="Random 0..jitter per worker. Default 1000.",
+    )
+    parser.add_argument(
+        "--graceful-shutdown-sec",
+        type=int,
+        default=30,
+        help="Drain window on shutdown. Default 30.",
+    )
+
+
+def _build_run_services_parser() -> argparse.ArgumentParser:
+    """Build the standalone run_services CLI parser.
+
+    The parent ``reflexio`` CLI normally builds the parser and calls
+    :func:`add_arguments` to populate it. This helper exists so tests (and
+    any ad-hoc ``python -m reflexio.cli.run_services``-style invocation)
+    can construct a self-contained parser with all run-services flags.
+
+    Returns:
+        argparse.ArgumentParser: Parser populated with all run_services
+        flags via :func:`add_arguments`.
+    """
+    parser = argparse.ArgumentParser(prog="reflexio.cli.run_services")
+    add_arguments(parser)
+    return parser
+
+
+def _warn_if_sqlite_multi_worker(*, storage_backend: str, workers: int) -> None:
+    """Emit a warning when SQLite is paired with multi-worker mode.
+
+    SQLite supports concurrent reads but serializes writes (even in WAL
+    mode). Multi-worker deployments will see increased write latency and
+    occasional "database is locked" errors under contention. Operators are
+    not blocked — just notified — so they can switch to Postgres/Supabase
+    if they hit issues.
+
+    Args:
+        storage_backend (str): One of "sqlite", "postgres", "supabase".
+        workers (int): Configured worker count.
+    """
+    if storage_backend == "sqlite" and workers > 1:
+        logger.warning(
+            "SQLite has limited concurrent write throughput; consider "
+            "--workers 1 or switching to Postgres/Supabase. (workers=%d)",
+            workers,
+        )
 
 
 def resolve_ports(
@@ -80,18 +154,41 @@ def build_backend_service(
     app_module: str = "reflexio.server.api:app",
     reload: bool = True,
     reload_includes: list[str] | None = None,
+    workers: int = 1,
+    max_requests: int = 10000,
+    max_requests_jitter: int = 1000,
+    graceful_shutdown_sec: int = 30,
 ) -> ServiceConfig:
-    """Build a backend ServiceConfig.
+    """Build a ServiceConfig describing how to spawn the backend.
 
     Args:
-        ports: Resolved port map (must contain "backend" key)
-        app_module: Uvicorn app module path
-        reload: Whether to enable auto-reload
-        reload_includes: Additional glob patterns for reload watching
+        ports (dict[str, int]): Resolved port map (must contain "backend").
+        app_module (str): ASGI app path; defaults to the production app
+            factory.
+        reload (bool): When True, enables uvicorn autoreload (single
+            worker forced). When False, daemon mode with multi-worker
+            request-count recycling is used.
+        reload_includes (list[str] | None): Additional glob patterns for
+            reload watching. Only used when ``reload`` is True.
+        workers (int): Number of uvicorn worker processes. Forced to 1
+            when ``reload`` is True. Default 1.
+        max_requests (int): Daemon-mode worker recycles after this many
+            requests. Set to 0 to disable. Default 10000.
+        max_requests_jitter (int): Random 0..jitter added to
+            ``max_requests`` per worker. Default 1000.
+        graceful_shutdown_sec (int): Drain window on shutdown. Default 30.
 
     Returns:
-        ServiceConfig: Backend service configuration
+        ServiceConfig: Backend service configuration ready to spawn.
+
+    Raises:
+        ValueError: When ``reload=True`` and ``workers > 1``.
     """
+    if reload and workers > 1:
+        raise ValueError(
+            "--workers N (N>1) is incompatible with --reload; "
+            "pass --no-reload or set --workers 1"
+        )
     # Launch via our own ``python -m reflexio.server`` entrypoint rather
     # than the ``uvicorn`` CLI so the log config in
     # :mod:`reflexio.server.uvicorn_logging` is applied upfront via
@@ -103,15 +200,22 @@ def build_backend_service(
         "--app",
         app_module,
         "--host",
-        "0.0.0.0",
+        "0.0.0.0",  # noqa: S104
         "--port",
         str(ports["backend"]),
     ]
     if reload:
-        includes = reload_includes or []
-        for pattern in includes:
+        for pattern in reload_includes or []:
             cmd.extend(["--reload-include", pattern])
         cmd.append("--reload")
+        # Dev mode is always single-worker; reload + multi-worker is
+        # rejected above.
+        cmd.extend(["--workers", "1"])
+    else:
+        cmd.extend(["--workers", str(workers)])
+        cmd.extend(["--max-requests", str(max_requests)])
+        cmd.extend(["--max-requests-jitter", str(max_requests_jitter)])
+        cmd.extend(["--graceful-shutdown-sec", str(graceful_shutdown_sec)])
     return ServiceConfig(name="backend", command=cmd)
 
 
@@ -174,11 +278,21 @@ def execute(args: argparse.Namespace) -> None:
     services: list[ServiceConfig] = []
 
     if "backend" in only:
+        workers = getattr(args, "workers", 1)
+        max_requests = getattr(args, "max_requests", 10000)
+        max_requests_jitter = getattr(args, "max_requests_jitter", 1000)
+        graceful_shutdown_sec = getattr(args, "graceful_shutdown_sec", 30)
+        storage_backend = os.environ.get("REFLEXIO_STORAGE", "sqlite").lower()
+        _warn_if_sqlite_multi_worker(storage_backend=storage_backend, workers=workers)
         services.append(
             build_backend_service(
                 ports,
                 reload=not args.no_reload,
                 reload_includes=["reflexio/server/site_var/site_var_sources/*.json"],
+                workers=workers,
+                max_requests=max_requests,
+                max_requests_jitter=max_requests_jitter,
+                graceful_shutdown_sec=graceful_shutdown_sec,
             )
         )
 

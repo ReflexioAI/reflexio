@@ -171,6 +171,35 @@ def start(
         str | None,
         typer.Option(help="Data storage backend: sqlite (default), supabase, or disk"),
     ] = None,
+    workers: Annotated[
+        int,
+        typer.Option(
+            "--workers",
+            help=(
+                "Number of backend worker processes (daemon mode only). "
+                "Default 1 during multi-worker safety audit; will bump to 2 "
+                "after audit."
+            ),
+        ),
+    ] = 1,
+    max_requests: Annotated[
+        int,
+        typer.Option(
+            "--max-requests",
+            help="Worker recycles after this many requests (0 disables). Default 10000.",
+        ),
+    ] = 10000,
+    max_requests_jitter: Annotated[
+        int,
+        typer.Option("--max-requests-jitter", help="Random 0..jitter per worker."),
+    ] = 1000,
+    graceful_shutdown_sec: Annotated[
+        int,
+        typer.Option(
+            "--graceful-shutdown-sec",
+            help="Seconds to drain in-flight requests on shutdown.",
+        ),
+    ] = 30,
 ) -> None:
     """Start Reflexio services (backend, docs)."""
     from reflexio.cli.bootstrap_config import resolve_storage, save_storage_to_config
@@ -203,6 +232,10 @@ def start(
         docs_port=docs_port,
         only=only,
         no_reload=no_reload,
+        workers=workers,
+        max_requests=max_requests,
+        max_requests_jitter=max_requests_jitter,
+        graceful_shutdown_sec=graceful_shutdown_sec,
     )
     run_mod.execute(args)
 
