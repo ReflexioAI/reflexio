@@ -125,7 +125,12 @@ from reflexio.models.api_schema.ui.converters import (
     to_user_playbook_view,
 )
 from reflexio.models.config_schema import Config
-from reflexio.server.api_endpoints import account_api, publisher_api, retriever_api
+from reflexio.server.api_endpoints import (
+    account_api,
+    health_api,
+    publisher_api,
+    retriever_api,
+)
 from reflexio.server.cache.reflexio_cache import (
     get_reflexio,
     invalidate_reflexio_cache,
@@ -1891,6 +1896,9 @@ def create_app(
     # Include additional routers
     for router in additional_routers or []:
         app.include_router(router)
+
+    # Health/observability endpoint (per-worker metrics for recycling)
+    health_api.install(app)
 
     return app
 
