@@ -177,11 +177,10 @@ def start(
             "--workers",
             help=(
                 "Number of backend worker processes (daemon mode only). "
-                "Default 1 during multi-worker safety audit; will bump to 2 "
-                "after audit."
+                "Default 2 enables zero-downtime worker recycling."
             ),
         ),
-    ] = 1,
+    ] = 2,
     max_requests: Annotated[
         int,
         typer.Option(

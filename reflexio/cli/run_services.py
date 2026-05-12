@@ -57,11 +57,11 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--workers",
         type=int,
-        default=1,
+        default=2,
         help=(
             "Number of backend worker processes (daemon mode only). "
-            "Default 1 during multi-worker safety audit; will bump to 2 "
-            "after audit. Forced to 1 when --reload is on."
+            "Default 2 enables zero-downtime worker recycling. "
+            "Forced to 1 when --reload is on."
         ),
     )
     parser.add_argument(
@@ -154,7 +154,7 @@ def build_backend_service(
     app_module: str = "reflexio.server.api:app",
     reload: bool = True,
     reload_includes: list[str] | None = None,
-    workers: int = 1,
+    workers: int = 2,
     max_requests: int = 10000,
     max_requests_jitter: int = 1000,
     graceful_shutdown_sec: int = 30,
@@ -170,8 +170,8 @@ def build_backend_service(
             request-count recycling is used.
         reload_includes (list[str] | None): Additional glob patterns for
             reload watching. Only used when ``reload`` is True.
-        workers (int): Number of uvicorn worker processes. Forced to 1
-            when ``reload`` is True. Default 1.
+        workers (int): Number of uvicorn worker processes. Must be 1
+            when ``reload`` is True (validated). Default 2.
         max_requests (int): Daemon-mode worker recycles after this many
             requests. Set to 0 to disable. Default 10000.
         max_requests_jitter (int): Random 0..jitter added to
@@ -278,7 +278,11 @@ def execute(args: argparse.Namespace) -> None:
     services: list[ServiceConfig] = []
 
     if "backend" in only:
-        workers = getattr(args, "workers", 1)
+        reload = not args.no_reload
+        # Dev mode (--reload) is always single-worker; coerce silently so
+        # users running with default flags (reload on, workers default 2)
+        # don't hit the reload+multi-worker rejection in build_backend_service.
+        workers = 1 if reload else getattr(args, "workers", 2)
         max_requests = getattr(args, "max_requests", 10000)
         max_requests_jitter = getattr(args, "max_requests_jitter", 1000)
         graceful_shutdown_sec = getattr(args, "graceful_shutdown_sec", 30)
@@ -287,7 +291,7 @@ def execute(args: argparse.Namespace) -> None:
         services.append(
             build_backend_service(
                 ports,
-                reload=not args.no_reload,
+                reload=reload,
                 reload_includes=["reflexio/server/site_var/site_var_sources/*.json"],
                 workers=workers,
                 max_requests=max_requests,

@@ -24,7 +24,9 @@ def _cmd(reload: bool, **kwargs: Any) -> list[str]:
 
 
 def test_dev_mode_includes_reload_and_workers_1() -> None:
-    cmd = _cmd(reload=True)
+    # Dev mode requires workers=1 explicitly; the CLI dispatcher coerces this
+    # automatically, but build_backend_service expects the resolved value.
+    cmd = _cmd(reload=True, workers=1)
     assert "--reload" in cmd
     assert "--workers" in cmd
     assert cmd[cmd.index("--workers") + 1] == "1"
@@ -51,11 +53,11 @@ def test_daemon_mode_forwards_graceful_shutdown_sec() -> None:
     assert cmd[cmd.index("--graceful-shutdown-sec") + 1] == "20"
 
 
-def test_daemon_mode_defaults_to_workers_1_for_now() -> None:
-    """Interim default until concurrency audit passes."""
+def test_daemon_mode_defaults_to_workers_2() -> None:
+    """Audit (Task 9) + B1-B5 stress tests + F2/F3 remediation all passed; default is 2 workers."""
     cmd = _cmd(reload=False)
     assert "--workers" in cmd
-    assert cmd[cmd.index("--workers") + 1] == "1"
+    assert cmd[cmd.index("--workers") + 1] == "2"
 
 
 def test_reload_plus_workers_gt_1_rejected() -> None:
