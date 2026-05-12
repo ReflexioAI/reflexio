@@ -9,7 +9,7 @@ precise measurement — a p95 that's 3× slower on an unchanged baseline
 almost certainly indicates a real regression (e.g. an accidental per-row
 LLM call, a missing index, a broken query plan).
 
-Marked ``skip_in_precommit`` so it runs in ``test-all`` but not on every
+Marked ``skip_in_precommit`` so it runs in ``check-and-test`` but not on every
 commit; seeding 150 rows and running 40 timed retrievals still takes a
 few seconds.
 """

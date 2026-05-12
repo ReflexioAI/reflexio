@@ -90,7 +90,7 @@ Sanity checks to run on any report:
 `tests/benchmarks/test_retrieval_latency_smoke.py` runs a tiny version of
 this benchmark at `N=50, trials=10, sqlite + service only` and asserts that
 p95 has not regressed past 3× the committed baseline. It's marked
-`skip_in_precommit`, so it runs in `test-all` but not on every commit. To
+`skip_in_precommit`, so it runs in `check-and-test` but not on every commit. To
 regenerate the baseline after an intentional perf change:
 
 ```bash
