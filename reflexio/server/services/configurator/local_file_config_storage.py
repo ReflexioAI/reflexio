@@ -1,6 +1,7 @@
 import contextlib
 import json
 import os
+import time
 import traceback
 from pathlib import Path
 from typing import Any
@@ -132,30 +133,35 @@ class LocalFileConfigStorage(ConfigStorage):
         """
         Saves configuration to the local JSON file atomically.
 
-        Writes to a sibling ``.tmp`` file first, then renames it over the
-        final path. ``Path.replace`` is atomic on POSIX (same filesystem),
-        so concurrent ``set_config`` calls across multiple workers cannot
-        observe a partially-written file, and a crash mid-write leaves
-        the previous good file intact.
+        Writes to a per-write unique ``.tmp`` file first, then renames it
+        over the final path. ``Path.replace`` is atomic on POSIX (same
+        filesystem), so concurrent ``set_config`` calls across multiple
+        workers cannot observe a partially-written file, and a crash
+        mid-write leaves the previous good file intact. The tmp filename
+        embeds the pid and a nanosecond timestamp so concurrent writers
+        do not race on the same temp path.
 
         Args:
             config (Config): Configuration object to save
+
+        Raises:
+            OSError: If the write or atomic rename fails. The tmp file is
+                cleaned up on failure (best-effort), but the original
+                exception propagates so callers see the failure rather
+                than a false success.
         """
         if not (self.base_dir and self.config_file):
             raise ValueError("base_dir and config_file must be set")
 
         final_path = Path(self.config_file)
         final_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = final_path.with_suffix(final_path.suffix + ".tmp")
+        tmp_path = final_path.with_name(
+            f"{final_path.name}.{os.getpid()}.{time.time_ns()}.tmp"
+        )
         try:
             tmp_path.write_text(config.model_dump_json(), encoding="utf-8")
             tmp_path.replace(final_path)
-        except Exception as e:
-            # Best-effort cleanup of the tmp file on failure so it doesn't
-            # leak; ignore errors during cleanup (file may not exist).
+        except OSError:
             with contextlib.suppress(OSError):
                 tmp_path.unlink(missing_ok=True)
-            print(f"{str(e)}")
-            tbs = traceback.format_exc().split("\n")
-            for tb in tbs:
-                print(f"  {tb}")
+            raise
