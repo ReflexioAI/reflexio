@@ -55,8 +55,14 @@ def test_workers_zero_rejected() -> None:
 
 
 def test_max_requests_zero_disables_recycling() -> None:
-    """--max-requests 0 must be valid (operator disabling recycling)."""
+    """--max-requests 0 must translate to limit_max_requests=None at uvicorn.
+
+    uvicorn treats ``limit_max_requests=0`` as "shut down after 0 served requests"
+    (i.e. recycle on the first request). The operator-facing contract for
+    ``--max-requests 0`` is "disable recycling", which corresponds to uvicorn's
+    None default. The dispatcher must translate.
+    """
     with patch("reflexio.server.__main__.uvicorn.run") as run:
         main(["--port", "8081", "--workers", "2", "--max-requests", "0"])
     kwargs = run.call_args.kwargs
-    assert kwargs["limit_max_requests"] == 0
+    assert kwargs["limit_max_requests"] is None

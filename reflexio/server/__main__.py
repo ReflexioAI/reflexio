@@ -111,13 +111,17 @@ def main(argv: list[str] | None = None) -> None:
         )
         return
 
+    # uvicorn treats limit_max_requests=0 as "recycle after 0 requests" (i.e. the
+    # worker exits on its first served request). Translate the operator-facing
+    # "0 disables recycling" semantics into uvicorn's None to actually disable.
+    limit_max_requests = args.max_requests if args.max_requests > 0 else None
     uvicorn.run(
         args.app,
         host=args.host,
         port=args.port,
         reload=False,
         workers=args.workers,
-        limit_max_requests=args.max_requests,
+        limit_max_requests=limit_max_requests,
         limit_max_requests_jitter=args.max_requests_jitter,
         timeout_graceful_shutdown=args.graceful_shutdown_sec,
         log_config=UVICORN_LOG_CONFIG,
