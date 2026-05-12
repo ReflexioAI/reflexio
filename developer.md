@@ -45,6 +45,38 @@ uv run reflexio services start --storage supabase  # Supabase PostgreSQL
 
 Stop services with `./stop_services.sh`.
 
+## Dev mode vs. daemon mode
+
+The `reflexio services start` command has two distinct modes:
+
+### Dev mode (default for interactive use)
+
+- `reflexio services start` (no flag) → uvicorn `--reload` ON, single process.
+- The backend reloads on every source-file change. Convenient for fast iteration.
+- Single-process means concurrency is asyncio (one CPU core). Sufficient for local testing.
+
+### Daemon mode (set-and-forget deployments)
+
+- `reflexio services start --no-reload` → uvicorn multi-worker manager, no reload.
+- Workers exit after ~`--max-requests` served requests; the manager respawns them.
+- Memory accumulation from any source resets periodically. No external supervisor needed beyond uvicorn itself.
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--no-reload` | (off; opt in for daemon mode) | Switches to daemon mode |
+| `--workers N` | 2 | Worker count. Higher = more parallelism; must be ≥1 |
+| `--max-requests N` | 10000 | Worker recycles after this many requests; 0 disables |
+| `--max-requests-jitter J` | 1000 | Per-worker random 0..J added to threshold (avoid synchronized recycles) |
+| `--graceful-shutdown-sec S` | 30 | Drain window for in-flight requests on shutdown |
+
+The `--reload + --workers > 1` combination is rejected at CLI parse time (autoreload is incompatible with multi-worker mode).
+
+When the storage backend is SQLite and `--workers > 1`, a warning is logged at startup — SQLite supports concurrent reads but serializes writes (even in WAL mode), so high-QPS writes hit `SQLITE_BUSY`. Switch to Postgres/Supabase for higher write throughput.
+
+### Why this matters
+
+Long-uptime processes accumulate memory regardless of source (request handlers, ORM caches, third-party libraries, fragmented allocators). Without recycling, RSS grows monotonically over days/weeks. With request-count recycling at workers≥2, one worker exits cleanly after ~max_requests served, the manager respawns it under a fresh PID, and the peer worker absorbs traffic during the ~1-2s respawn window — zero downtime.
+
 ## API Usage
 
 ```bash
