@@ -834,20 +834,21 @@ class PlaybookMixin:
         path = self._entity_path(
             self._agent_playbook_source_map_dir(), str(agent_playbook_id)
         )
-        path.write_text(
-            json.dumps(
-                {
-                    "source_windows": [
-                        {
-                            "user_playbook_id": upid,
-                            "source_interaction_ids": source_interaction_ids,
-                        }
-                        for upid, source_interaction_ids in by_id.items()
-                    ]
-                },
-                indent=2,
-            ),
-            encoding="utf-8",
+        # Route through `_write_dict` so the write is atomic (tmp +
+        # rename). Concurrent updates from multiple workers for the
+        # same agent_playbook_id can otherwise race last-writer-wins
+        # and a crash mid-write would corrupt the JSON.
+        self._write_dict(
+            path,
+            {
+                "source_windows": [
+                    {
+                        "user_playbook_id": upid,
+                        "source_interaction_ids": source_interaction_ids,
+                    }
+                    for upid, source_interaction_ids in by_id.items()
+                ]
+            },
         )
 
     def get_source_windows_for_agent_playbook(
