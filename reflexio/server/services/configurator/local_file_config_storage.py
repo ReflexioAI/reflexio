@@ -1,3 +1,4 @@
+import contextlib
 import json
 import os
 import traceback
@@ -129,7 +130,13 @@ class LocalFileConfigStorage(ConfigStorage):
 
     def _save_config_to_local_dir(self, config: Config) -> None:
         """
-        Saves configuration to the local JSON file.
+        Saves configuration to the local JSON file atomically.
+
+        Writes to a sibling ``.tmp`` file first, then renames it over the
+        final path. ``Path.replace`` is atomic on POSIX (same filesystem),
+        so concurrent ``set_config`` calls across multiple workers cannot
+        observe a partially-written file, and a crash mid-write leaves
+        the previous good file intact.
 
         Args:
             config (Config): Configuration object to save
@@ -137,11 +144,17 @@ class LocalFileConfigStorage(ConfigStorage):
         if not (self.base_dir and self.config_file):
             raise ValueError("base_dir and config_file must be set")
 
-        Path(self.base_dir).mkdir(parents=True, exist_ok=True)
+        final_path = Path(self.config_file)
+        final_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = final_path.with_suffix(final_path.suffix + ".tmp")
         try:
-            with Path(self.config_file).open("w", encoding="utf-8") as f:
-                f.write(config.model_dump_json())
+            tmp_path.write_text(config.model_dump_json(), encoding="utf-8")
+            tmp_path.replace(final_path)
         except Exception as e:
+            # Best-effort cleanup of the tmp file on failure so it doesn't
+            # leak; ignore errors during cleanup (file may not exist).
+            with contextlib.suppress(OSError):
+                tmp_path.unlink(missing_ok=True)
             print(f"{str(e)}")
             tbs = traceback.format_exc().split("\n")
             for tb in tbs:

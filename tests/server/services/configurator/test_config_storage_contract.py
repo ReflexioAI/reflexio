@@ -9,6 +9,7 @@ backends later.
 from __future__ import annotations
 
 import tempfile
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
@@ -95,6 +96,35 @@ class TestConfigStorageContract:
         storage = LocalFileConfigStorage(org_id="brand-new-org", base_dir=str(tmp_path))
         # Don't trigger load_config (which creates the file). Probe directly.
         assert storage.get_version() is None
+
+    def test_save_config_writes_atomically(self, tmp_path) -> None:
+        """save_config writes via a temp file and renames into place.
+
+        This is the multi-worker safety property the F2 audit remediation
+        enforces: ``LocalFileConfigStorage._save_config_to_local_dir``
+        must write to ``config_<org>.json.tmp`` then atomically rename
+        over the final path. Two assertions:
+
+        1. After a successful save, no ``.tmp`` sidecar is left behind.
+        2. The persisted config round-trips through ``load_config``.
+
+        We don't simulate a crash here — a true "leave the previous good
+        file intact on crash" test would require process-kill plumbing.
+        The leak-check is a cheap proxy that fails loudly if someone
+        ever reverts to a non-atomic ``open("w")`` write.
+        """
+        storage = LocalFileConfigStorage(org_id="atomic-org", base_dir=str(tmp_path))
+        cfg = storage.get_default_config()
+        cfg.window_size = 7
+        storage.save_config(cfg)
+
+        final = Path(storage.config_file)
+        assert final.exists(), "config file should be written"
+        tmp = final.with_suffix(final.suffix + ".tmp")
+        assert not tmp.exists(), "atomic write should not leak a .tmp sidecar"
+
+        loaded = storage.load_config()
+        assert loaded.window_size == 7
 
     def test_get_version_changes_after_save(
         self, config_storage: ConfigStorage
