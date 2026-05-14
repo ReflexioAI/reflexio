@@ -602,11 +602,6 @@ class SQLiteStorageBase(BaseStorage):
     # DDL / migration
     # ------------------------------------------------------------------
 
-    @property
-    def connection(self) -> sqlite3.Connection:
-        """Return the underlying SQLite connection."""
-        return self.conn
-
     def migrate(self) -> bool:
         self._migrate_feedback_schema()
         self._migrate_interactions_schema()

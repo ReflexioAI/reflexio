@@ -8,10 +8,13 @@ notification spec for the state machine.
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
+
+_LOGGER = logging.getLogger(__name__)
 
 StallReason = Literal["billing_error", "auth_error"]
 
@@ -164,4 +167,53 @@ def _parse_ts(raw: str | None) -> datetime | None:
     try:
         return datetime.fromisoformat(raw)
     except ValueError:
+        _LOGGER.warning("Malformed timestamp in stall_state: %r", raw)
         return None
+
+
+class SQLiteStallStateMixin:
+    """SQLite-backed stall_state operations exposed as storage methods."""
+
+    # Type hints for instance attributes provided by SQLiteStorageBase via MRO
+    conn: Any
+
+    def get_stall_state(self) -> StallState:
+        """Return the current stall row.
+
+        Returns:
+            StallState: Current snapshot of the singleton stall row.
+        """
+        return get_stall_state(self.conn)
+
+    def upsert_stall_state(
+        self,
+        *,
+        reason: StallReason,
+        stalled_at: datetime,
+        reset_estimate: datetime | None,
+        error_message: str,
+    ) -> None:
+        """Mark the singleton as stalled with the given reason. Re-arms notified flag.
+
+        Args:
+            reason (StallReason): The stall reason discriminator (``billing_error``
+                or ``auth_error``).
+            stalled_at (datetime): When the stall was first detected.
+            reset_estimate (datetime | None): Estimated reset time, if known.
+            error_message (str): Raw error text for debugging.
+        """
+        upsert_stall_state(
+            self.conn,
+            reason=reason,
+            stalled_at=stalled_at,
+            reset_estimate=reset_estimate,
+            error_message=error_message,
+        )
+
+    def mark_stall_notified(self) -> None:
+        """Set ``notified_in_cc=1`` for the current stall. No-op when clean."""
+        mark_stall_notified(self.conn)
+
+    def clear_stall_state(self) -> None:
+        """Mark the singleton clean — clears all stall fields atomically."""
+        clear_stall_state(self.conn)
