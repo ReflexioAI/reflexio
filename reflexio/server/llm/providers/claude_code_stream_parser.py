@@ -14,11 +14,10 @@ import logging
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta, timezone
-from typing import Literal
+
+from reflexio.models.api_schema.stall_state_schema import StallReason
 
 _LOGGER = logging.getLogger(__name__)
-
-StallReason = Literal["billing_error", "auth_error"]
 
 _BILLING_CATEGORIES = {"billing_error"}
 _AUTH_CATEGORIES = {"authentication_failed", "oauth_org_not_allowed"}
@@ -181,10 +180,16 @@ def parse_reset_estimate(text: str) -> datetime | None:
     match = _RESET_RE.search(text or "")
     if not match:
         return None
-    hour = int(match.group("hour")) % 12
+    hour_raw = int(match.group("hour"))
+    minute = int(match.group("minute"))
+    # The regex permits 1–2 digit hours and minutes; reject out-of-range
+    # values so "13:00pm" or "10:75am" parse as None instead of producing
+    # silently-wrong times via modulo arithmetic.
+    if not 1 <= hour_raw <= 12 or not 0 <= minute <= 59:
+        return None
+    hour = hour_raw % 12
     if match.group("ampm").lower() == "pm":
         hour += 12
-    minute = int(match.group("minute"))
     today = datetime.now(timezone.utc).date()
     candidate = datetime.combine(today, time(hour, minute), tzinfo=timezone.utc)
     if candidate <= datetime.now(timezone.utc):

@@ -12,11 +12,11 @@ import logging
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any
+
+from reflexio.models.api_schema.stall_state_schema import StallReason
 
 _LOGGER = logging.getLogger(__name__)
-
-StallReason = Literal["billing_error", "auth_error"]
 
 
 @dataclass(frozen=True)

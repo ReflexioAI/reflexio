@@ -12,6 +12,8 @@ from reflexio.server.api_endpoints.request_context import RequestContext, get_re
 
 router = APIRouter(tags=["stall_state"])
 
+_UNSUPPORTED_DETAIL = "Stall state is not supported by the configured storage backend"
+
 
 def _require_storage(ctx: RequestContext):
     """Return ``ctx.storage`` or raise 503 when storage isn't configured.
@@ -48,10 +50,14 @@ def read_stall_state(
         StallStateResponse: ``stalled=False`` with null fields when clean.
 
     Raises:
-        HTTPException: 503 when storage is not configured.
+        HTTPException: 503 when storage is not configured, or when the
+            backend does not implement stall_state (e.g. disk storage).
     """
     storage = _require_storage(ctx)
-    state = storage.get_stall_state()
+    try:
+        state = storage.get_stall_state()
+    except NotImplementedError as exc:
+        raise HTTPException(status_code=503, detail=_UNSUPPORTED_DETAIL) from exc
     return StallStateResponse(
         stalled=state.stalled,
         reason=state.reason,
@@ -79,9 +85,13 @@ def post_notified(
             ``False`` when no stall is active.
 
     Raises:
-        HTTPException: 503 when storage is not configured.
+        HTTPException: 503 when storage is not configured, or when the
+            backend does not implement stall_state (e.g. disk storage).
     """
     storage = _require_storage(ctx)
-    storage.mark_stall_notified()
-    state = storage.get_stall_state()
+    try:
+        storage.mark_stall_notified()
+        state = storage.get_stall_state()
+    except NotImplementedError as exc:
+        raise HTTPException(status_code=503, detail=_UNSUPPORTED_DETAIL) from exc
     return MarkNotifiedResponse(notified_in_cc=state.notified_in_cc)

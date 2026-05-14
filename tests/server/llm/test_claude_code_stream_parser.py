@@ -82,3 +82,13 @@ def test_parse_reset_estimate_extracts_time(text, expected_hour):
 
 def test_parse_reset_estimate_returns_none_when_no_match():
     assert parse_reset_estimate("unrelated error text") is None
+
+
+@pytest.mark.parametrize("text", [
+    "resets 13:00pm",   # hour > 12 in 12-hour format
+    "resets 0:30am",    # hour < 1
+    "resets 10:75am",   # minute > 59
+])
+def test_parse_reset_estimate_rejects_out_of_range(text):
+    """Reject inputs the regex accepts but that aren't valid 12-hour clock times."""
+    assert parse_reset_estimate(text) is None

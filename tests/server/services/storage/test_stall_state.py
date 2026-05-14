@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -28,6 +28,20 @@ def test_upsert_then_get_roundtrip(storage):
     assert state.reason == "billing_error"
     assert state.notified_in_cc is False
     assert state.error_message == "credit exhausted"
+
+
+def test_reset_estimate_roundtrip(storage):
+    """A non-None reset_estimate persists and parses back to the same datetime."""
+    now = datetime.now(timezone.utc)
+    reset_time = now + timedelta(hours=6)
+    storage.upsert_stall_state(
+        reason="billing_error",
+        stalled_at=now,
+        reset_estimate=reset_time,
+        error_message="quota exceeded",
+    )
+    state = storage.get_stall_state()
+    assert state.reset_estimate == reset_time
 
 
 def test_mark_notified_flips_only_that_field(storage):
