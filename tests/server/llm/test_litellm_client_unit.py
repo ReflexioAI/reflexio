@@ -1310,6 +1310,22 @@ class TestTemperatureRestriction:
         assert call_kwargs["seed"] == 7
         assert call_kwargs["temperature"] == 0.0
 
+    @patch("reflexio.server.llm.litellm_client.litellm.completion")
+    def test_invalid_seed_env_falls_back_to_default(self, mock_completion, monkeypatch):
+        """A non-integer REFLEXIO_LLM_SEED falls back to seed=42 so the
+        'always inject a seed' contract holds; the temperature override still
+        fires because the operator explicitly opted into determinism."""
+        monkeypatch.setenv("REFLEXIO_LLM_SEED", "not-an-int")
+        mock_completion.return_value = _make_completion_response("ok")
+        config = LiteLLMConfig(model="gpt-4o", temperature=0.3)
+        client = LiteLLMClient(config)
+
+        client.generate_response("hi")
+
+        call_kwargs = mock_completion.call_args.kwargs
+        assert call_kwargs["seed"] == 42
+        assert call_kwargs["temperature"] == 0.0
+
 
 # ===================================================================
 # Config management tests

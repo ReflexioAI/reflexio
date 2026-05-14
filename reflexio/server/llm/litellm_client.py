@@ -770,14 +770,18 @@ class LiteLLMClient:
         # flows through by default — silently clobbering a user's configured
         # temperature was surprising. Current-gen reasoning models (gpt-5-*)
         # ignore both knobs; the seed is best-effort.
+        default_seed = 42
         seed_explicit = "REFLEXIO_LLM_SEED" in os.environ
-        seed_raw = os.environ.get("REFLEXIO_LLM_SEED", "42")
+        seed_raw = os.environ.get("REFLEXIO_LLM_SEED", str(default_seed))
         try:
             params["seed"] = int(seed_raw)
         except ValueError:
             self.logger.warning(
-                "REFLEXIO_LLM_SEED=%r is not an int; ignoring", seed_raw
+                "REFLEXIO_LLM_SEED=%r is not an int; falling back to default seed=%d",
+                seed_raw,
+                default_seed,
             )
+            params["seed"] = default_seed
         if seed_explicit and not self._is_temperature_restricted_model(actual_model):
             params["temperature"] = 0.0
 
