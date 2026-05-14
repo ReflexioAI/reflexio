@@ -267,14 +267,13 @@ class CorrelationIdMiddleware(BaseHTTPMiddleware):
         return response
 
 
-DEFAULT_ORG_ID = "self-host-org"
+from reflexio.server._auth import DEFAULT_ORG_ID, default_get_org_id
+
+# Re-exported for backwards compatibility — callers that did
+# ``from reflexio.server.api import default_get_org_id`` continue to work.
+__all__ = ["DEFAULT_ORG_ID", "create_app", "default_get_org_id"]
 
 core_router = APIRouter()
-
-
-def default_get_org_id() -> str:
-    """Return the default organization ID for local hosting."""
-    return DEFAULT_ORG_ID
 
 
 @core_router.get("/")

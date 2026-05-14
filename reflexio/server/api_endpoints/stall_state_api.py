@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
 from reflexio.models.api_schema.stall_state_schema import (
     MarkNotifiedResponse,
@@ -11,6 +11,28 @@ from reflexio.models.api_schema.stall_state_schema import (
 from reflexio.server.api_endpoints.request_context import RequestContext, get_request_context
 
 router = APIRouter(tags=["stall_state"])
+
+
+def _require_storage(ctx: RequestContext):
+    """Return ``ctx.storage`` or raise 503 when storage isn't configured.
+
+    Cloud-mode deployments may run with ``ctx.storage is None`` until the
+    caller provisions a backend; stall_state has no meaningful response in
+    that state, so we surface 503 instead of an ``AttributeError``.
+
+    Args:
+        ctx (RequestContext): The injected request context.
+
+    Returns:
+        BaseStorage: The configured storage backend.
+
+    Raises:
+        HTTPException: 503 when storage is not configured.
+    """
+    if not ctx.is_storage_configured():
+        raise HTTPException(status_code=503, detail="Storage not configured")
+    assert ctx.storage is not None  # narrows BaseStorage | None -> BaseStorage
+    return ctx.storage
 
 
 @router.get("/stall_state", response_model=StallStateResponse)
@@ -24,8 +46,12 @@ def read_stall_state(
 
     Returns:
         StallStateResponse: ``stalled=False`` with null fields when clean.
+
+    Raises:
+        HTTPException: 503 when storage is not configured.
     """
-    state = ctx.storage.get_stall_state()
+    storage = _require_storage(ctx)
+    state = storage.get_stall_state()
     return StallStateResponse(
         stalled=state.stalled,
         reason=state.reason,
@@ -51,7 +77,11 @@ def post_notified(
     Returns:
         MarkNotifiedResponse: ``notified_in_cc=True`` after the call (when stalled),
             ``False`` when no stall is active.
+
+    Raises:
+        HTTPException: 503 when storage is not configured.
     """
-    ctx.storage.mark_stall_notified()
-    state = ctx.storage.get_stall_state()
+    storage = _require_storage(ctx)
+    storage.mark_stall_notified()
+    state = storage.get_stall_state()
     return MarkNotifiedResponse(notified_in_cc=state.notified_in_cc)
