@@ -25,6 +25,7 @@ import os
 import shutil
 import subprocess  # noqa: S404 — subprocess is the integration point; inputs are sanitised.
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +38,13 @@ from litellm.types.utils import (
     Usage,
 )
 from pydantic import BaseModel
+
+from reflexio.server.llm.providers.claude_code_stream_parser import (
+    ParseResult,
+    classify_stall,
+    parse_reset_estimate,
+    parse_stream_json,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -286,28 +294,38 @@ def _split_system_and_dialogue(
     return "\n\n".join(systems), "\n\n".join(turns)
 
 
-def _run_cli(
+def _run_cli_stream(
     cli_path: str,
     system_prompt: str,
     dialogue: str,
     timeout_seconds: int,
-) -> dict[str, Any]:
-    """Invoke ``claude -p --output-format json`` and return the parsed response.
+) -> ParseResult:
+    """Invoke ``claude -p --output-format stream-json`` and return a ParseResult.
 
     Args:
-        cli_path: Path to the ``claude`` executable.
-        system_prompt: Combined system prompt to append (may be empty).
-        dialogue: Flattened user/assistant dialogue sent on stdin.
-        timeout_seconds: Subprocess timeout.
+        cli_path (str): Path to the ``claude`` executable.
+        system_prompt (str): Combined system prompt to append (may be empty).
+        dialogue (str): Flattened user/assistant dialogue sent on stdin.
+        timeout_seconds (int): Subprocess timeout.
 
     Returns:
-        dict: Parsed JSON result from the CLI.
+        ParseResult: Aggregated state of the stream — success flag, terminal
+            text, retry errors observed, and stderr.
 
     Raises:
-        ClaudeCodeCLIError: On non-zero exit, timeout, or malformed JSON.
+        ClaudeCodeCLIError: On timeout or missing binary.
     """
     model = os.environ.get(_ENV_MODEL) or _DEFAULT_CLI_MODEL
-    cmd = [cli_path, "-p", "--output-format", "json", "--model", model]
+    cmd = [
+        cli_path,
+        "-p",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--include-partial-messages",
+        "--model",
+        model,
+    ]
     if system_prompt:
         cmd.extend(["--append-system-prompt", system_prompt])
 
@@ -315,8 +333,13 @@ def _run_cli(
     # Stop hook) can detect that this is a reflexio-internal invocation
     # and skip publishing — otherwise extractor system prompts get
     # re-published as user interactions and contaminate the corpus.
+    #
+    # CLAUDE_CODE_MAX_RETRIES=3 keeps short infrastructure blips tolerated
+    # while bounding the worst-case stall to a few seconds before we
+    # surface the failure to reflexio's stall_state table.
     env = os.environ.copy()
     env["CLAUDE_SMART_INTERNAL"] = "1"
+    env["CLAUDE_CODE_MAX_RETRIES"] = "3"
 
     try:
         proc = subprocess.run(  # noqa: S603 — cmd is constructed from validated parts.
@@ -335,51 +358,36 @@ def _run_cli(
     except FileNotFoundError as exc:
         raise ClaudeCodeCLIError(f"claude CLI not found at {cli_path}") from exc
 
-    if proc.returncode != 0:
-        stderr = proc.stderr.strip()
-        suffix = "…" if len(stderr) > 500 else ""
-        raise ClaudeCodeCLIError(
-            f"claude CLI exited {proc.returncode}: {stderr[:500]}{suffix}"
-        )
-
-    try:
-        return json.loads(proc.stdout)
-    except json.JSONDecodeError as exc:
-        raise ClaudeCodeCLIError(
-            f"claude CLI returned non-JSON output: {proc.stdout[:500]!r}"
-        ) from exc
+    return parse_stream_json(
+        proc.stdout, exit_code=proc.returncode, stderr_text=proc.stderr
+    )
 
 
 def _build_model_response(
     model: str,
-    cli_result: dict[str, Any],
+    terminal_text: str,
     elapsed_seconds: float,
 ) -> ModelResponse:
-    """Wrap the CLI's JSON result in a LiteLLM ``ModelResponse``.
+    """Wrap the CLI's terminal text in a LiteLLM ``ModelResponse``.
+
+    The stream-json transport does not surface usage tokens at the terminal
+    event, so prompt/completion counts are reported as zero. Downstream
+    LiteLLM callers tolerate this (usage is informational, not load-bearing).
 
     Args:
-        model: The model string originally requested (e.g. ``claude-code/default``).
-        cli_result: Parsed JSON from the CLI.
-        elapsed_seconds: Wall time the subprocess took — for logging only.
+        model (str): The model string originally requested
+            (e.g. ``claude-code/default``).
+        terminal_text (str): The terminal ``result`` text from the CLI.
+        elapsed_seconds (float): Wall time the subprocess took — for logging only.
 
     Returns:
         ModelResponse: Shaped to match what callers of ``litellm.completion`` expect.
     """
-    text = cli_result.get("result") or cli_result.get("response") or ""
-    usage_block = cli_result.get("usage") or {}
-    prompt_tokens = int(usage_block.get("input_tokens") or 0)
-    completion_tokens = int(usage_block.get("output_tokens") or 0)
-    response_id = cli_result.get("session_id") or f"claude-code-{int(time.time())}"
-
-    message = Message(role="assistant", content=text)
+    message = Message(role="assistant", content=terminal_text)
     choice = Choices(index=0, message=message, finish_reason="stop")
-    usage = Usage(
-        prompt_tokens=prompt_tokens,
-        completion_tokens=completion_tokens,
-        total_tokens=prompt_tokens + completion_tokens,
-    )
+    usage = Usage(prompt_tokens=0, completion_tokens=0, total_tokens=0)
     response = ModelResponse(
-        id=str(response_id),
+        id=f"claude-code-{int(time.time())}",
         choices=[choice],
         created=int(time.time()),
         model=model,
@@ -387,11 +395,9 @@ def _build_model_response(
         usage=usage,
     )
     _LOGGER.debug(
-        "claude-code provider: model=%s elapsed=%.2fs in=%d out=%d",
+        "claude-code provider: model=%s elapsed=%.2fs",
         model,
         elapsed_seconds,
-        prompt_tokens,
-        completion_tokens,
     )
     return response
 
@@ -445,10 +451,26 @@ def _warn_on_ignored_params(*sources: Any) -> None:
 class ClaudeCodeLLM(CustomLLM):
     """LiteLLM custom handler routing completions through the ``claude`` CLI."""
 
-    def __init__(self, cli_path: str | None = None, timeout_seconds: int | None = None):
+    def __init__(
+        self,
+        cli_path: str | None = None,
+        timeout_seconds: int | None = None,
+        storage: Any | None = None,
+    ):
+        """Initialise the handler.
+
+        Args:
+            cli_path (str | None): Override for the ``claude`` binary path.
+            timeout_seconds (int | None): Override for subprocess timeout.
+            storage (Any | None): A BaseStorage-shaped object used to persist
+                stall_state on credit/auth failures. Typed as ``Any`` to avoid
+                a circular import with ``server.services.storage``. When None,
+                stall state is not recorded (back-compat).
+        """
         super().__init__()
         self._explicit_cli_path = cli_path
         self._explicit_timeout = timeout_seconds
+        self._storage = storage
 
     def _cli_path(self) -> str:
         """Resolve the CLI path, raising when unavailable.
@@ -519,17 +541,63 @@ class ClaudeCodeLLM(CustomLLM):
         system_prompt = _maybe_append_schema(system_prompt, response_format)
 
         started = time.perf_counter()
-        cli_result = _run_cli(
+        result = _run_cli_stream(
             cli_path=self._cli_path(),
             system_prompt=system_prompt,
             dialogue=dialogue,
             timeout_seconds=self._timeout(),
         )
-        return _build_model_response(
-            model=model,
-            cli_result=cli_result,
-            elapsed_seconds=time.perf_counter() - started,
+
+        if result.success:
+            self._clear_stall_safely()
+            return _build_model_response(
+                model=model,
+                terminal_text=result.terminal_text,
+                elapsed_seconds=time.perf_counter() - started,
+            )
+
+        self._record_stall_safely(result)
+        raise ClaudeCodeCLIError(
+            f"claude -p stream failed; retry_errors={result.retry_errors}; "
+            f"stderr={result.stderr_text[:200]!r}"
         )
+
+    def _record_stall_safely(self, result: ParseResult) -> None:
+        """Persist a stall_state row on credit/auth failure. Never raises.
+
+        Args:
+            result (ParseResult): Output of :func:`_run_cli_stream`.
+
+        Returns:
+            None
+        """
+        reason = classify_stall(result)
+        if reason is None or self._storage is None:
+            return
+        try:
+            self._storage.upsert_stall_state(
+                reason=reason,
+                stalled_at=datetime.now(UTC),
+                reset_estimate=parse_reset_estimate(
+                    f"{result.stderr_text} {result.terminal_text}"
+                ),
+                error_message=(result.stderr_text or result.terminal_text)[:1000],
+            )
+        except Exception as exc:  # noqa: BLE001 — never crash the provider over telemetry.
+            _LOGGER.warning("Failed to record stall_state: %s", exc)
+
+    def _clear_stall_safely(self) -> None:
+        """Clear any prior stall_state row after a successful run. Never raises.
+
+        Returns:
+            None
+        """
+        if self._storage is None:
+            return
+        try:
+            self._storage.clear_stall_state()
+        except Exception as exc:  # noqa: BLE001 — never crash the provider over telemetry.
+            _LOGGER.warning("Failed to clear stall_state: %s", exc)
 
     async def acompletion(  # type: ignore[override]
         self, *args: Any, **kwargs: Any
@@ -549,20 +617,30 @@ class ClaudeCodeLLM(CustomLLM):
 
 
 _REGISTERED = False
+_HANDLER: ClaudeCodeLLM | None = None
 
 
-def register_if_enabled() -> bool:
+def register_if_enabled(storage: Any | None = None) -> bool:
     """Register the ``claude-code`` provider with LiteLLM if enabled and available.
 
     Idempotent — safe to call more than once per process. Opt-in via
     ``CLAUDE_SMART_USE_LOCAL_CLI=1``. Skips registration (with a warning)
     when the env var is set but the CLI is not on PATH.
 
+    Args:
+        storage (Any | None): Optional BaseStorage-shaped handle used by the
+            provider to persist stall_state on credit/auth failures. The
+            caller (``LiteLLMClient`` import-time wiring) typically has no
+            storage available, so use :func:`set_storage` to late-bind it
+            once a request context exists.
+
     Returns:
         bool: True if the provider is registered after this call.
     """
-    global _REGISTERED
+    global _REGISTERED, _HANDLER
     if _REGISTERED:
+        if storage is not None and _HANDLER is not None:
+            _HANDLER._storage = storage
         return True
     if not _env_enabled():
         return False
@@ -580,11 +658,29 @@ def register_if_enabled() -> bool:
     if any(entry.get("provider") == PROVIDER_KEY for entry in existing):
         _REGISTERED = True
         return True
-    existing.append({"provider": PROVIDER_KEY, "custom_handler": ClaudeCodeLLM()})
+    _HANDLER = ClaudeCodeLLM(storage=storage)
+    existing.append({"provider": PROVIDER_KEY, "custom_handler": _HANDLER})
     litellm.custom_provider_map = existing
     _REGISTERED = True
     _LOGGER.info("Registered %s LiteLLM provider (cli=%s)", PROVIDER_KEY, cli_path)
     return True
+
+
+def set_storage(storage: Any) -> None:
+    """Bind storage onto the registered handler after registration.
+
+    The provider is registered at LiteLLM-import time, before any
+    request-scoped storage exists. Once a storage instance is available,
+    call this to enable stall_state persistence on the live handler.
+
+    Args:
+        storage (Any): BaseStorage-shaped instance.
+
+    Returns:
+        None
+    """
+    if _HANDLER is not None:
+        _HANDLER._storage = storage
 
 
 __all__ = [
@@ -594,4 +690,5 @@ __all__ = [
     "ClaudeCodeLLM",
     "is_claude_code_available",
     "register_if_enabled",
+    "set_storage",
 ]

@@ -11,6 +11,11 @@ from unittest.mock import MagicMock, patch
 import pytest
 from pydantic import BaseModel
 
+
+def _stream_json(result_text: str) -> str:
+    """Build a minimal stream-json NDJSON body with one terminal ``result`` event."""
+    return json.dumps({"type": "result", "result": result_text, "session_id": "s"}) + "\n"
+
 from reflexio.server.llm.providers import claude_code_provider as ccp
 from reflexio.server.llm.providers.claude_code_provider import (
     ClaudeCodeCLIError,
@@ -25,6 +30,7 @@ from reflexio.server.llm.providers.claude_code_provider import (
 def _reset_module_state() -> None:
     """Each test starts with fresh registration and warn-once flags."""
     ccp._REGISTERED = False
+    ccp._HANDLER = None
     ccp._IMAGE_WARNED = False
     ccp._MULTITURN_WARNED = False
     ccp._UNSUPPORTED_PARAMS_WARNED.clear()
@@ -148,9 +154,10 @@ class TestSplitSystemAndDialogue:
 
 class TestClaudeCodeLLMCompletion:
     def _mock_cli(
-        self, monkeypatch: pytest.MonkeyPatch, response: dict[str, Any]
+        self, monkeypatch: pytest.MonkeyPatch, result_text: str = "ok"
     ) -> MagicMock:
-        mock_run = MagicMock(return_value=_fake_completed_process(json.dumps(response)))
+        """Mock subprocess.run to return a stream-json NDJSON body with one result event."""
+        mock_run = MagicMock(return_value=_fake_completed_process(_stream_json(result_text)))
         monkeypatch.setattr(ccp.subprocess, "run", mock_run)
         monkeypatch.setattr(ccp, "_resolve_cli_path", lambda: "/usr/local/bin/claude")
         return mock_run
@@ -158,14 +165,7 @@ class TestClaudeCodeLLMCompletion:
     def test_basic_completion_shapes_model_response(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        self._mock_cli(
-            monkeypatch,
-            {
-                "result": "hello world",
-                "session_id": "abc123",
-                "usage": {"input_tokens": 5, "output_tokens": 2},
-            },
-        )
+        self._mock_cli(monkeypatch, result_text="hello world")
         llm = ClaudeCodeLLM()
 
         response = llm.completion(
@@ -175,14 +175,47 @@ class TestClaudeCodeLLMCompletion:
 
         assert response.choices[0].message.content == "hello world"  # type: ignore[union-attr]
         assert response.model == "claude-code/default"
-        assert response.usage.prompt_tokens == 5  # type: ignore[attr-defined]
-        assert response.usage.completion_tokens == 2  # type: ignore[attr-defined]
-        assert response.usage.total_tokens == 7  # type: ignore[attr-defined]
+        # stream-json does not surface usage tokens at terminal event.
+        assert response.usage.prompt_tokens == 0  # type: ignore[attr-defined]
+        assert response.usage.completion_tokens == 0  # type: ignore[attr-defined]
+        assert response.usage.total_tokens == 0  # type: ignore[attr-defined]
+
+    def test_uses_stream_json_output_format(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The provider must invoke the CLI with stream-json, not the legacy json envelope."""
+        mock_run = self._mock_cli(monkeypatch)
+        llm = ClaudeCodeLLM()
+
+        llm.completion(
+            model="claude-code/default",
+            messages=[{"role": "user", "content": "hi"}],
+        )
+
+        cmd = mock_run.call_args.args[0]
+        fmt_idx = cmd.index("--output-format")
+        assert cmd[fmt_idx + 1] == "stream-json"
+        # stream-json requires --verbose to emit events.
+        assert "--verbose" in cmd
+
+    def test_sets_max_retries_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """CLAUDE_CODE_MAX_RETRIES=3 must be passed in the subprocess env."""
+        mock_run = self._mock_cli(monkeypatch)
+        llm = ClaudeCodeLLM()
+
+        llm.completion(
+            model="claude-code/default",
+            messages=[{"role": "user", "content": "hi"}],
+        )
+
+        env = mock_run.call_args.kwargs["env"]
+        assert env["CLAUDE_CODE_MAX_RETRIES"] == "3"
+        assert env["CLAUDE_SMART_INTERNAL"] == "1"
 
     def test_system_message_goes_to_append_system_prompt_flag(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        mock_run = self._mock_cli(monkeypatch, {"result": "ok", "usage": {}})
+        mock_run = self._mock_cli(monkeypatch)
         llm = ClaudeCodeLLM()
 
         llm.completion(
@@ -203,7 +236,7 @@ class TestClaudeCodeLLMCompletion:
     def test_no_system_message_omits_flag(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        mock_run = self._mock_cli(monkeypatch, {"result": "ok", "usage": {}})
+        mock_run = self._mock_cli(monkeypatch)
         llm = ClaudeCodeLLM()
 
         llm.completion(
@@ -217,9 +250,7 @@ class TestClaudeCodeLLMCompletion:
     def test_response_format_appends_schema_to_system_prompt(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        mock_run = self._mock_cli(
-            monkeypatch, {"result": '{"name":"Yi","age":31}', "usage": {}}
-        )
+        mock_run = self._mock_cli(monkeypatch, result_text='{"name":"Yi","age":31}')
         llm = ClaudeCodeLLM()
 
         response = llm.completion(
@@ -241,7 +272,7 @@ class TestClaudeCodeLLMCompletion:
     def test_response_format_merges_with_existing_system_prompt(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        mock_run = self._mock_cli(monkeypatch, {"result": "{}", "usage": {}})
+        mock_run = self._mock_cli(monkeypatch, result_text="{}")
         llm = ClaudeCodeLLM()
 
         llm.completion(
@@ -262,7 +293,7 @@ class TestClaudeCodeLLMCompletion:
     def test_response_format_dict_schema_also_injected(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        mock_run = self._mock_cli(monkeypatch, {"result": "{}", "usage": {}})
+        mock_run = self._mock_cli(monkeypatch, result_text="{}")
         llm = ClaudeCodeLLM()
 
         llm.completion(
@@ -288,7 +319,7 @@ class TestClaudeCodeLLMCompletion:
     def test_unsupported_params_warn_once(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
-        self._mock_cli(monkeypatch, {"result": "ok", "usage": {}})
+        self._mock_cli(monkeypatch)
         llm = ClaudeCodeLLM()
 
         with caplog.at_level(
@@ -345,7 +376,9 @@ class TestClaudeCodeLLMCompletion:
                 messages=[{"role": "user", "content": "hi"}],
             )
 
-    def test_malformed_json_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_malformed_stream_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Non-NDJSON garbage on stdout (exit 0) is treated as a failed call —
+        the stream parser sees no terminal event and marks success=False."""
         monkeypatch.setattr(
             ccp.subprocess,
             "run",
@@ -354,7 +387,7 @@ class TestClaudeCodeLLMCompletion:
         monkeypatch.setattr(ccp, "_resolve_cli_path", lambda: "/usr/local/bin/claude")
         llm = ClaudeCodeLLM()
 
-        with pytest.raises(ClaudeCodeCLIError, match="non-JSON"):
+        with pytest.raises(ClaudeCodeCLIError, match="stream failed"):
             llm.completion(
                 model="claude-code/default",
                 messages=[{"role": "user", "content": "hi"}],
@@ -376,7 +409,7 @@ class TestClaudeCodeLLMCompletion:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """LiteLLM sometimes passes extra positional args; they must be tolerated."""
-        self._mock_cli(monkeypatch, {"result": "ok", "usage": {}})
+        self._mock_cli(monkeypatch)
         llm = ClaudeCodeLLM()
 
         response = llm.completion(
