@@ -11,11 +11,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 from pydantic import BaseModel
 
-
-def _stream_json(result_text: str) -> str:
-    """Build a minimal stream-json NDJSON body with one terminal ``result`` event."""
-    return json.dumps({"type": "result", "result": result_text, "session_id": "s"}) + "\n"
-
 from reflexio.server.llm.providers import claude_code_provider as ccp
 from reflexio.server.llm.providers.claude_code_provider import (
     ClaudeCodeCLIError,
@@ -24,6 +19,11 @@ from reflexio.server.llm.providers.claude_code_provider import (
     is_claude_code_available,
     register_if_enabled,
 )
+
+
+def _stream_json(result_text: str) -> str:
+    """Build a minimal stream-json NDJSON body with one terminal ``result`` event."""
+    return json.dumps({"type": "result", "result": result_text, "session_id": "s"}) + "\n"
 
 
 @pytest.fixture(autouse=True)
@@ -355,7 +355,7 @@ class TestClaudeCodeLLMCompletion:
         monkeypatch.setattr(ccp, "_resolve_cli_path", lambda: "/usr/local/bin/claude")
         llm = ClaudeCodeLLM()
 
-        with pytest.raises(ClaudeCodeCLIError, match="auth failed"):
+        with pytest.raises(ClaudeCodeCLIError, match="stream failed"):
             llm.completion(
                 model="claude-code/default",
                 messages=[{"role": "user", "content": "hi"}],

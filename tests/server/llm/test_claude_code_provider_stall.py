@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
+from reflexio.server.llm.providers import claude_code_provider as ccp
 from reflexio.server.llm.providers.claude_code_provider import (
     ClaudeCodeCLIError,
     ClaudeCodeLLM,
@@ -29,7 +30,7 @@ def _mock_run(returncode: int, stdout: str, stderr: str = ""):
 
 def test_clean_run_clears_stall(llm, storage):
     stream = '{"type":"result","result":"ok","session_id":"s"}\n'
-    with patch("subprocess.run", return_value=_mock_run(0, stream)):
+    with patch.object(ccp.subprocess, "run", return_value=_mock_run(0, stream)):
         llm.completion(
             model="claude-code/default",
             messages=[{"role": "user", "content": "hi"}],
@@ -42,8 +43,8 @@ def test_billing_failure_writes_stall(llm, storage):
         '{"type":"system","subtype":"api_retry","error":"billing_error",'
         '"attempt":1,"max_retries":3}\n'
     )
-    with patch(
-        "subprocess.run",
+    with patch.object(
+        ccp.subprocess, "run",
         return_value=_mock_run(1, stream, "resets Mon 12:00am"),
     ), pytest.raises(ClaudeCodeCLIError):
         llm.completion(
@@ -61,8 +62,8 @@ def test_transient_failure_does_not_stall(llm, storage):
         '{"type":"system","subtype":"api_retry","error":"rate_limit",'
         '"attempt":1,"max_retries":3}\n'
     )
-    with patch(
-        "subprocess.run", return_value=_mock_run(1, stream)
+    with patch.object(
+        ccp.subprocess, "run", return_value=_mock_run(1, stream)
     ), pytest.raises(ClaudeCodeCLIError):
         llm.completion(
             model="claude-code/default",
@@ -84,7 +85,7 @@ def test_prior_stall_cleared_after_successful_run(llm, storage):
     assert storage.get_stall_state().stalled is True
 
     stream = '{"type":"result","result":"recovered","session_id":"s"}\n'
-    with patch("subprocess.run", return_value=_mock_run(0, stream)):
+    with patch.object(ccp.subprocess, "run", return_value=_mock_run(0, stream)):
         llm.completion(
             model="claude-code/default",
             messages=[{"role": "user", "content": "hi"}],
