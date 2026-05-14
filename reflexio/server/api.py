@@ -130,6 +130,7 @@ from reflexio.server.api_endpoints import (
     health_api,
     publisher_api,
     retriever_api,
+    stall_state_api,
 )
 from reflexio.server.cache.reflexio_cache import (
     get_reflexio,
@@ -1892,6 +1893,9 @@ def create_app(
 
     # Include core routes
     app.include_router(core_router)
+
+    # Include stall_state routes
+    app.include_router(stall_state_api.router)
 
     # Include additional routers
     for router in additional_routers or []:

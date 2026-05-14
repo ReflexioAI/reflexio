@@ -26,3 +26,17 @@ class RequestContext:
             bool: True if storage is configured, False otherwise
         """
         return self.storage is not None
+
+
+def get_request_context(
+    org_id: str = "self-host-org",
+) -> RequestContext:
+    """FastAPI dependency that builds a RequestContext for the calling org.
+
+    Args:
+        org_id (str): Organisation identifier resolved by the auth layer.
+
+    Returns:
+        RequestContext: Fully initialised context with storage attached.
+    """
+    return RequestContext(org_id=org_id)
