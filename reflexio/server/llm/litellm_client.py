@@ -763,22 +763,23 @@ class LiteLLMClient:
         else:
             params["temperature"] = temperature
 
-        # Determinism knob: if REFLEXIO_LLM_SEED is set in the environment,
-        # inject it as seed + force temperature=0 on non-restricted models so
-        # repeated extraction calls produce stable outputs on providers that
-        # honor `seed`. Default to "42" so LongMemEval rounds are reproducible
-        # without requiring the env var to be set. Current-gen reasoning models
-        # (gpt-5-*) do not honor seed or temperature; the knob is best-effort.
-        seed_env = os.environ.get("REFLEXIO_LLM_SEED") or "42"
-        if seed_env:
-            try:
-                params["seed"] = int(seed_env)
-            except ValueError:
-                self.logger.warning(
-                    "REFLEXIO_LLM_SEED=%r is not an int; ignoring", seed_env
-                )
-            if not self._is_temperature_restricted_model(actual_model):
-                params["temperature"] = 0.0
+        # Determinism knob: `seed` is always injected (defaulting to 42) on
+        # providers that honor it, since seed alone is cheap and harmless.
+        # The companion temperature=0 override is opt-in via an explicit
+        # REFLEXIO_LLM_SEED env var so that caller-configured temperature
+        # flows through by default — silently clobbering a user's configured
+        # temperature was surprising. Current-gen reasoning models (gpt-5-*)
+        # ignore both knobs; the seed is best-effort.
+        seed_explicit = "REFLEXIO_LLM_SEED" in os.environ
+        seed_raw = os.environ.get("REFLEXIO_LLM_SEED", "42")
+        try:
+            params["seed"] = int(seed_raw)
+        except ValueError:
+            self.logger.warning(
+                "REFLEXIO_LLM_SEED=%r is not an int; ignoring", seed_raw
+            )
+        if seed_explicit and not self._is_temperature_restricted_model(actual_model):
+            params["temperature"] = 0.0
 
         max_tokens = kwargs.pop("max_tokens", self.config.max_tokens)
         if max_tokens:

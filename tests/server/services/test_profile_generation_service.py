@@ -1173,6 +1173,10 @@ def test_should_run_before_extraction_combines_all_extractor_criteria():
                 "_collect_scoped_interactions_for_precheck",
                 return_value=([session_data], extractor_configs),
             ),
+            patch(
+                "reflexio.server.services.base_generation_service._cheap_should_run_reject",
+                return_value=None,
+            ),
             patch.object(
                 service.client,
                 "generate_chat_response",
