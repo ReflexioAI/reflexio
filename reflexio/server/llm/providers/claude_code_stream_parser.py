@@ -14,7 +14,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta, timezone
-from typing import Any, Literal
+from typing import Literal
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -163,12 +163,20 @@ def _classify_from_text(text: str) -> StallReason | None:
 def parse_reset_estimate(text: str) -> datetime | None:
     """Best-effort parse of a reset time from Claude Code error text.
 
+    The hour/minute extracted from the message text is treated as UTC, then
+    advanced one day if it has already passed. Claude Code's error messages
+    typically express reset times in the user's local timezone, so the
+    returned datetime may be off by the user's UTC offset (up to ±24h).
+    Callers should treat this as an approximation, not an authoritative
+    reset moment.
+
     Args:
         text (str): Error text — typically the terminal event message or stderr.
 
     Returns:
-        datetime | None: A timezone-aware UTC datetime for the next reset,
-            or None when no recognizable pattern is found.
+        datetime | None: A UTC-naive-in-spirit but tz-aware datetime that
+            best approximates the next reset, or None when no recognizable
+            pattern is found.
     """
     match = _RESET_RE.search(text or "")
     if not match:
