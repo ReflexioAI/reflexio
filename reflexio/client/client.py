@@ -105,6 +105,10 @@ from reflexio.models.api_schema.service_schemas import (
     UserProfile,
     WhoamiResponse,
 )
+from reflexio.models.api_schema.stall_state_schema import (
+    MarkNotifiedResponse,
+    StallStateResponse,
+)
 from reflexio.models.config_schema import Config
 
 from .cache import InMemoryCache
@@ -2367,3 +2371,21 @@ class ReflexioClient:
         response = self._make_request("DELETE", "/api/delete_all_agent_playbooks")
         self._cache.invalidate("get_agent_playbooks")
         return BulkDeleteResponse(**response)
+
+    def get_stall_state(self) -> StallStateResponse:
+        """Read the current learning-stall state from the server.
+
+        Returns:
+            StallStateResponse: ``stalled=False`` when clean.
+        """
+        response = self._make_request("GET", "/stall_state")
+        return StallStateResponse.model_validate(response)
+
+    def mark_stall_notified(self) -> MarkNotifiedResponse:
+        """Idempotently flip ``notified_in_cc=1`` on the current stall row.
+
+        Returns:
+            MarkNotifiedResponse: New ``notified_in_cc`` value.
+        """
+        response = self._make_request("POST", "/stall_state/notified")
+        return MarkNotifiedResponse.model_validate(response)
