@@ -492,6 +492,68 @@ class GetDashboardStatsResponse(BaseModel):
     msg: str | None = None
 
 
+class PlaybookApplicationStat(BaseModel):
+    """Per-rule application stats derived from interaction citations.
+
+    Aggregates the JSON ``citations`` column on interactions to surface how
+    often each individual playbook or profile has been cited by the agent in
+    a given time window. Used by the claude-smart dashboard to show users a
+    "track record" for each rule so the impact of a learning is visible
+    rather than abstract.
+
+    Args:
+        real_id (str): Stable id of the cited item — ``user_playbook_id``,
+            ``agent_playbook_id``, or ``profile_id`` (always serialized as a
+            string).
+        kind (str): ``"playbook"`` or ``"profile"`` — the citation kind, as
+            recorded on ``Interaction.citations``.
+        title (str): Human-readable label for the rule. Empty string when
+            the underlying row has been deleted but old citations remain.
+        applied_count (int): Number of interactions in the window whose
+            citations referenced this ``(kind, real_id)``.
+        last_applied_at (int | None): Unix epoch seconds of the most recent
+            interaction citing this rule. ``None`` when no citation matches.
+            Matches the int-epoch convention used elsewhere in the dashboard
+            (e.g. ``Interaction.created_at``).
+        last_interaction_id (int | None): ``interaction_id`` of the most
+            recent citing interaction; useful for deep-linking from the
+            dashboard.
+    """
+
+    real_id: str
+    kind: Literal["playbook", "profile"]
+    title: str = ""
+    applied_count: int = Field(ge=0)
+    last_applied_at: int | None = None
+    last_interaction_id: int | None = None
+
+
+class GetPlaybookApplicationStatsRequest(BaseModel):
+    """Request for per-rule application stats.
+
+    Args:
+        days_back (int): Look-back window in days. Defaults to 30; must be
+            positive.
+    """
+
+    days_back: int = Field(default=30, gt=0)
+
+
+class GetPlaybookApplicationStatsResponse(BaseModel):
+    """Response containing per-rule application stats.
+
+    Args:
+        success (bool): Whether the call succeeded.
+        stats (list[PlaybookApplicationStat]): One row per cited rule, sorted
+            by ``applied_count`` descending.
+        msg (str | None): Optional error message when ``success`` is False.
+    """
+
+    success: bool
+    stats: list[PlaybookApplicationStat] = Field(default_factory=list)
+    msg: str | None = None
+
+
 # ===============================
 # Query Reformulation Models
 # ===============================

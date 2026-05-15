@@ -3,6 +3,8 @@ from reflexio.models.api_schema.retriever_schema import (
     DashboardStats,
     GetDashboardStatsRequest,
     GetDashboardStatsResponse,
+    GetPlaybookApplicationStatsRequest,
+    GetPlaybookApplicationStatsResponse,
     PeriodStats,
     TimeSeriesDataPoint,
 )
@@ -87,4 +89,43 @@ class DashboardMixin(ReflexioBase):
         except Exception as e:
             return GetDashboardStatsResponse(
                 success=False, msg=f"Failed to get dashboard stats: {str(e)}"
+            )
+
+    def get_playbook_application_stats(
+        self, request: GetPlaybookApplicationStatsRequest | dict
+    ) -> GetPlaybookApplicationStatsResponse:
+        """Get per-rule citation counts from the interactions table.
+
+        Aggregates the JSON citations column on interactions in the look-back
+        window and groups by (kind, real_id) so the dashboard can show how
+        often each individual playbook or profile has been applied.
+
+        Args:
+            request (Union[GetPlaybookApplicationStatsRequest, dict]): Request
+                containing days_back.
+
+        Returns:
+            GetPlaybookApplicationStatsResponse: Response containing the
+                aggregated stats sorted by applied_count descending.
+        """
+        if not self._is_storage_configured():
+            return GetPlaybookApplicationStatsResponse(
+                success=True, stats=[], msg=STORAGE_NOT_CONFIGURED_MSG
+            )
+        try:
+            if isinstance(request, dict):
+                request = GetPlaybookApplicationStatsRequest(**request)
+            stats = self._get_storage().get_playbook_application_stats(
+                days_back=request.days_back
+            )
+            return GetPlaybookApplicationStatsResponse(
+                success=True,
+                stats=stats,
+                msg="Retrieved playbook application stats successfully",
+            )
+        except Exception as e:
+            return GetPlaybookApplicationStatsResponse(
+                success=False,
+                stats=[],
+                msg=f"Failed to get playbook application stats: {str(e)}",
             )

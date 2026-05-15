@@ -28,6 +28,8 @@ from reflexio.models.api_schema.retriever_schema import (
     GetEvaluationResultsViewResponse,
     GetInteractionsRequest,
     GetInteractionsViewResponse,
+    GetPlaybookApplicationStatsRequest,
+    GetPlaybookApplicationStatsResponse,
     GetProfileStatisticsResponse,
     GetProfilesViewResponse,
     GetRequestsRequest,
@@ -1480,6 +1482,35 @@ def get_dashboard_stats(
 
     # Get dashboard stats using Reflexio's method
     return reflexio.get_dashboard_stats(request)
+
+
+@core_router.post(
+    "/api/get_playbook_application_stats",
+    response_model=GetPlaybookApplicationStatsResponse,
+    response_model_exclude_none=True,
+)
+def get_playbook_application_stats(
+    request: GetPlaybookApplicationStatsRequest,
+    org_id: str = Depends(default_get_org_id),
+) -> GetPlaybookApplicationStatsResponse:
+    """Get per-rule citation counts aggregated from interactions.
+
+    Returns one row per cited (kind, real_id) over the look-back window,
+    sorted by applied_count descending. Lets the dashboard show users a
+    per-rule "track record" — how often each playbook or profile has been
+    applied and when it last fired.
+
+    Args:
+        request (GetPlaybookApplicationStatsRequest): Request containing
+            days_back.
+        org_id (str): Organization ID.
+
+    Returns:
+        GetPlaybookApplicationStatsResponse: Response containing aggregated
+            stats.
+    """
+    reflexio = get_reflexio(org_id=org_id)
+    return reflexio.get_playbook_application_stats(request)
 
 
 @core_router.post(

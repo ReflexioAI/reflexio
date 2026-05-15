@@ -5,6 +5,7 @@ from reflexio.models.api_schema.domain import (
     PlaybookAggregationChangeLog,
     ProfileChangeLog,
 )
+from reflexio.models.api_schema.retriever_schema import PlaybookApplicationStat
 
 
 class ExtrasMixin:
@@ -31,6 +32,32 @@ class ExtrasMixin:
                 - evaluations_time_series: List of time series data points (raw, ungrouped)
         """
         raise NotImplementedError
+
+    def get_playbook_application_stats(
+        self, days_back: int = 30
+    ) -> list[PlaybookApplicationStat]:
+        """Return per-rule citation counts derived from interaction citations.
+
+        Aggregates the JSON ``citations`` column on ``interactions`` over the
+        last ``days_back`` days and groups by ``(kind, real_id)``. Joins with
+        the playbook / profile tables to populate human-readable titles.
+
+        Concrete default returns ``[]`` so backends that do not yet implement
+        this method degrade gracefully (the dashboard simply shows no stats)
+        rather than raising 500s. Storage backends should override with a
+        real implementation — see ``sqlite_storage._extras`` for the
+        reference implementation.
+
+        Args:
+            days_back (int): Look-back window in days. Must be positive.
+
+        Returns:
+            list[PlaybookApplicationStat]: One row per cited ``(kind,
+                real_id)``, sorted by ``applied_count`` descending. Empty
+                when the backend has no implementation.
+        """
+        del days_back
+        return []
 
     @abstractmethod
     def get_profile_statistics(self) -> dict:

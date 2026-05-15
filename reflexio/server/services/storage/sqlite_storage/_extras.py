@@ -1,8 +1,10 @@
 """Analytics and change log methods for SQLite storage."""
 
 import sqlite3
-from typing import Any
+from collections import defaultdict
+from typing import Any, Literal, cast
 
+from reflexio.models.api_schema.retriever_schema import PlaybookApplicationStat
 from reflexio.models.api_schema.service_schemas import (
     Interaction,
     PlaybookAggregationChangeLog,
@@ -15,10 +17,13 @@ from ._base import (
     _epoch_to_iso,
     _iso_to_epoch,
     _json_dumps,
+    _json_loads,
     _row_to_interaction,
     _row_to_playbook_aggregation_change_log,
     _row_to_profile_change_log,
 )
+
+type _CitationKind = Literal["playbook", "profile"]
 
 
 class ExtrasMixin:
@@ -190,6 +195,97 @@ class ExtrasMixin:
                 for r in evals_ts
             ],
         }
+
+    @SQLiteStorageBase.handle_exceptions
+    def get_playbook_application_stats(
+        self, days_back: int = 30
+    ) -> list[PlaybookApplicationStat]:
+        """Return per-rule citation counts from the ``interactions`` table.
+
+        Aggregates the JSON ``citations`` column over the look-back window and
+        groups by ``(kind, real_id)``. Iteration is done in Python (rather
+        than pushing into SQL via ``json_each``) because volumes are bounded
+        per org and the resulting code is easier to maintain. Titles come
+        from the citation rows themselves — they are captured at injection
+        time when the rule is rendered into context.
+
+        Args:
+            days_back (int): Look-back window in days. Must be positive.
+
+        Returns:
+            list[PlaybookApplicationStat]: One row per cited ``(kind,
+                real_id)``, sorted by ``applied_count`` descending and then
+                by ``last_applied_at`` descending. Empty when no interactions
+                in the window carry citations.
+        """
+        if days_back <= 0:
+            return []
+
+        current_time = _epoch_now()
+        start_iso = _epoch_to_iso(current_time - days_back * 24 * 60 * 60)
+        rows = self._fetchall(
+            "SELECT interaction_id, created_at, citations FROM interactions "
+            "WHERE created_at >= ? "
+            "AND citations IS NOT NULL AND citations != '' AND citations != '[]' "
+            "ORDER BY created_at DESC, interaction_id DESC",
+            (start_iso,),
+        )
+        if not rows:
+            return []
+
+        aggregates: dict[tuple[_CitationKind, str], dict[str, Any]] = defaultdict(
+            lambda: {
+                "applied_count": 0,
+                "title": "",
+                "last_applied_at": None,
+                "last_interaction_id": None,
+            }
+        )
+        for row in rows:
+            citations = _json_loads(row["citations"])
+            if not isinstance(citations, list):
+                continue
+            for c in citations:
+                if not isinstance(c, dict):
+                    continue
+                kind = c.get("kind")
+                real_id = c.get("real_id")
+                if kind not in ("playbook", "profile") or not real_id:
+                    continue
+                key: tuple[_CitationKind, str] = (
+                    cast(_CitationKind, kind),
+                    str(real_id),
+                )
+                agg = aggregates[key]
+                agg["applied_count"] += 1
+                if agg["last_applied_at"] is None:
+                    # rows ordered DESC, so the first time we see this key
+                    # is the most recent occurrence
+                    agg["last_applied_at"] = _iso_to_epoch(row["created_at"])
+                    agg["last_interaction_id"] = row["interaction_id"]
+                if not agg["title"]:
+                    title = c.get("title") or ""
+                    if isinstance(title, str) and title.strip():
+                        agg["title"] = title.strip()
+
+        stats = [
+            PlaybookApplicationStat(
+                real_id=real_id,
+                kind=kind,
+                title=agg["title"],
+                applied_count=agg["applied_count"],
+                last_applied_at=agg["last_applied_at"],
+                last_interaction_id=agg["last_interaction_id"],
+            )
+            for (kind, real_id), agg in aggregates.items()
+        ]
+        stats.sort(
+            key=lambda s: (
+                -s.applied_count,
+                -(s.last_applied_at if s.last_applied_at is not None else 0),
+            )
+        )
+        return stats
 
     # ------------------------------------------------------------------
     # Statistics methods
