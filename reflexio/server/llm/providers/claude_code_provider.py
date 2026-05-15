@@ -632,7 +632,8 @@ def _render_tools_instruction(tools: list[Any], finish_tool: str = "finish") -> 
     for tool in tools or []:
         if not isinstance(tool, dict):
             continue
-        fn = tool.get("function") if isinstance(tool.get("function"), dict) else {}
+        raw_fn = tool.get("function")
+        fn: dict[str, Any] = raw_fn if isinstance(raw_fn, dict) else {}
         name = fn.get("name") or "?"
         desc = fn.get("description") or ""
         params = fn.get("parameters") or {}
@@ -935,15 +936,18 @@ class ClaudeCodeLLM(CustomLLM):
             # When ``tools`` are provided, attempt to parse the model's
             # terminal text as a ``{"tool": ..., "args": ...}`` JSON object.
             # If parsing succeeds, return a tool-call ModelResponse; otherwise
-            # fall through to a plain-text response — the caller treats that
-            # as "no tool_calls" and terminates the tool loop.
+            # warn (so the silent fall-through is observable) and return a
+            # plain-text response, which the caller treats as "no tool_calls"
+            # and uses to terminate the tool loop.
             if tools:
-                tool_names = {
-                    (tool.get("function") or {}).get("name")
+                tool_names: set[str] = {
+                    name
                     for tool in tools
                     if isinstance(tool, dict)
+                    and isinstance(
+                        name := (tool.get("function") or {}).get("name"), str
+                    )
                 }
-                tool_names.discard(None)
                 tool_use = _parse_tool_use(result.terminal_text, tool_names)
                 if tool_use is not None:
                     return _build_model_response_with_tool_call(
@@ -952,6 +956,20 @@ class ClaudeCodeLLM(CustomLLM):
                         elapsed_seconds=elapsed,
                         tool_use=tool_use,
                     )
+                # Log a metadata-only warning (no raw payload) — the model
+                # output can carry user content / source code; deferring the
+                # body to a DEBUG fingerprint avoids turning a recoverable
+                # parse miss into a log-retention concern.
+                _LOGGER.warning(
+                    "claude-code provider: tools=%s were provided but no valid "
+                    "tool_use JSON was parsed from model output; the tool loop "
+                    "will terminate without a finish_tool call.",
+                    sorted(tool_names),
+                )
+                _LOGGER.debug(
+                    "claude-code provider: unparsable tool-use payload length=%d",
+                    len(result.terminal_text),
+                )
 
             return _build_model_response(
                 model=model,
