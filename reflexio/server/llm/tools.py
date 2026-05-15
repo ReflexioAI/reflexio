@@ -123,6 +123,13 @@ _TOOL_CALLING_OVERRIDES: tuple[str, ...] = (
     # tools=[...])` round-trip that returned a proper tool_call message.
     # litellm 1.80.x has 'minimax/MiniMax-M2' in model_cost but not 'MiniMax-M2.7'.
     "minimax/MiniMax-M2",
+    # claude-code/* models route through our local CLI provider
+    # (see providers/claude_code_provider.py). litellm has no registry
+    # entry for them, so it returns False. The provider handles tool
+    # calling explicitly by rendering tool specs into the system prompt
+    # and parsing the model's JSON output back into ChatCompletionMessageToolCall
+    # blocks. Verified end-to-end against the agentic ExtractionAgent loop.
+    "claude-code/",
 )
 
 

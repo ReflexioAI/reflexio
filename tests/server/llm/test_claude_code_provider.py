@@ -99,11 +99,23 @@ class TestSplitSystemAndDialogue:
     def test_tool_role_prefixed(self) -> None:
         msgs = [
             {"role": "user", "content": "fetch"},
+            {"role": "tool", "tool_call_id": "call_abc", "content": "result: 42"},
+            {"role": "assistant", "content": "done"},
+        ]
+        _, dialogue = _split_system_and_dialogue(msgs)
+        # The Tool line includes the tool_call_id in brackets so multi-call
+        # context can be reconstructed: ``Tool[<id>]: <content>``.
+        assert "Tool[call_abc]: result: 42" in dialogue
+
+    def test_tool_role_without_id_uses_placeholder(self) -> None:
+        msgs = [
+            {"role": "user", "content": "fetch"},
             {"role": "tool", "content": "result: 42"},
             {"role": "assistant", "content": "done"},
         ]
         _, dialogue = _split_system_and_dialogue(msgs)
-        assert "Tool: result: 42" in dialogue
+        # Tool message with no tool_call_id falls back to ``?`` placeholder.
+        assert "Tool[?]: result: 42" in dialogue
 
     def test_image_blocks_dropped_with_single_warning(
         self, caplog: pytest.LogCaptureFixture

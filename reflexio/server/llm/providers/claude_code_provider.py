@@ -22,6 +22,7 @@ import inspect
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess  # noqa: S404 — subprocess is the integration point; inputs are sanitised.
 import tempfile
@@ -34,7 +35,9 @@ from typing import Any
 import litellm
 from litellm.llms.custom_llm import CustomLLM
 from litellm.types.utils import (
+    ChatCompletionMessageToolCall,
     Choices,
+    Function,
     Message,
     ModelResponse,
     Usage,
@@ -318,21 +321,65 @@ def _split_system_and_dialogue(
     for msg in messages:
         role = msg.get("role", "user")
         content = _flatten_content(msg.get("content"))
-        if not content:
+        tool_calls = msg.get("tool_calls") if role == "assistant" else None
+        if not content and not tool_calls:
             continue
         if role == "system":
             systems.append(content)
             continue
         non_system_roles += 1
         if role == "assistant":
-            turns.append(f"Assistant: {content}")
+            # When the assistant message carries tool_calls (content is
+            # typically None), serialise them as breadcrumbs so the CLI's
+            # next-turn context shows which tools were invoked. This is
+            # required for multi-turn tool loops to converge.
+            if tool_calls:
+                breadcrumbs = []
+                for tc in tool_calls:
+                    name = _tool_call_attr(tc, "name") or "?"
+                    args = _tool_call_attr(tc, "arguments") or "{}"
+                    breadcrumbs.append(f"called {name} with {args}")
+                prefix = "; ".join(breadcrumbs)
+                if content:
+                    turns.append(f"Assistant: {content}\n[tools: {prefix}]")
+                else:
+                    turns.append(f"Assistant: [tools: {prefix}]")
+            else:
+                turns.append(f"Assistant: {content}")
         elif role == "tool":
-            turns.append(f"Tool: {content}")
+            tcid = msg.get("tool_call_id") or "?"
+            turns.append(f"Tool[{tcid}]: {content}")
         else:
             turns.append(f"User: {content}")
     if non_system_roles > 1:
         _warn_multiturn_once()
     return "\n\n".join(systems), "\n\n".join(turns)
+
+
+def _tool_call_attr(tc: Any, attr: str) -> str | None:
+    """Read a tool-call field from either a LiteLLM object or a plain dict.
+
+    ``tool_calls`` entries may be ``ChatCompletionMessageToolCall`` objects
+    (each carrying a ``.function`` with ``.name`` / ``.arguments``) or
+    raw dicts (``{"function": {"name": ..., "arguments": ...}}``). Walk
+    both shapes.
+
+    Args:
+        tc: A single ``tool_calls`` entry (object or dict).
+        attr: The attribute to read (``"name"`` or ``"arguments"``).
+
+    Returns:
+        str | None: The attribute's string value, or ``None`` if absent.
+    """
+    if isinstance(tc, dict):
+        fn = tc.get("function") or {}
+        value = fn.get(attr) if isinstance(fn, dict) else getattr(fn, attr, None)
+    else:
+        fn = getattr(tc, "function", None)
+        value = getattr(fn, attr, None) if fn is not None else None
+    if value is None:
+        return None
+    return value if isinstance(value, str) else json.dumps(value)
 
 
 def _run_cli_stream(
@@ -537,6 +584,192 @@ def _build_model_response(
     return response
 
 
+_TOOL_USE_INSTRUCTION_TEMPLATE = (
+    "## EXTERNAL TOOL-CALLING MODE\n"
+    "\n"
+    "You are running as a non-interactive subprocess driven by an external "
+    "orchestrator. The orchestrator will execute tools on your behalf. You "
+    "MUST NOT use Read, Edit, Write, Bash, Glob, Grep, TodoWrite, Task, or "
+    "ANY of your built-in Claude Code tools. The tools listed below are "
+    "NOT real callable functions in this session — they are the external "
+    "tools the ORCHESTRATOR exposes, which YOU describe by emitting a "
+    "structured JSON request as your final text response.\n"
+    "\n"
+    "Your response MUST be EXACTLY one JSON object on a single line, with "
+    "this shape:\n"
+    '{{"tool": "<tool_name>", "args": {{...}} }}\n'
+    "\n"
+    "Hard rules — failing any of these will break the orchestrator:\n"
+    "1. Output ONLY the JSON object as plain text. No prose before or after.\n"
+    "2. No markdown. No ```json``` code fences.\n"
+    "3. Do NOT invoke any built-in tool. Do NOT search the codebase. Just "
+    "   emit the JSON.\n"
+    "4. ``tool`` must be exactly one of the names listed below.\n"
+    "5. ``args`` must be a JSON object matching that tool's parameters.\n"
+    "6. To terminate the orchestrator's loop, call the tool named "
+    "``{finish}`` with the appropriate args.\n"
+    "\n"
+    "Available orchestrator tools (each described by name + params schema):\n"
+    "{tool_specs}\n"
+    "\n"
+    "Now decide which tool to call and output ONLY the JSON object.\n"
+)
+
+
+def _render_tools_instruction(tools: list[Any], finish_tool: str = "finish") -> str:
+    """Render a LiteLLM tools spec into a system-prompt addendum.
+
+    Args:
+        tools: LiteLLM-style tools list. Each entry is a dict with
+            ``{"type": "function", "function": {"name", "description", "parameters"}}``.
+        finish_tool: The conventional finish tool name (echoed in the
+            instructions so the model has a recognised termination signal).
+
+    Returns:
+        str: The system-prompt block to append.
+    """
+    lines: list[str] = []
+    for tool in tools or []:
+        if not isinstance(tool, dict):
+            continue
+        fn = tool.get("function") if isinstance(tool.get("function"), dict) else {}
+        name = fn.get("name") or "?"
+        desc = fn.get("description") or ""
+        params = fn.get("parameters") or {}
+        lines.append(
+            f"- {name}: {desc}\n  parameters: {json.dumps(params, separators=(',', ':'))}"
+        )
+    tool_specs = "\n".join(lines) if lines else "(no tools)"
+    return _TOOL_USE_INSTRUCTION_TEMPLATE.format(
+        finish=finish_tool, tool_specs=tool_specs
+    )
+
+
+def _maybe_append_tools_instruction(system_prompt: str, tools: list[Any] | None) -> str:
+    """Append the tool-use instructions when tools are present.
+
+    Args:
+        system_prompt: Existing system prompt (possibly empty).
+        tools: LiteLLM-style tools list, or None/empty.
+
+    Returns:
+        str: The (possibly-augmented) system prompt.
+    """
+    if not tools:
+        return system_prompt
+    instruction = _render_tools_instruction(tools)
+    if system_prompt:
+        return f"{system_prompt}\n\n{instruction}"
+    return instruction
+
+
+def _parse_tool_use(text: str, tool_names: set[str]) -> dict[str, Any] | None:
+    """Try to parse a ``{"tool": ..., "args": ...}`` block from claude's output.
+
+    Walks candidate JSON substrings (plain, code-fenced, first balanced
+    ``{...}``) in order, returning the first that parses to a dict with a
+    recognised ``tool`` name and a dict ``args``.
+
+    Args:
+        text: Raw text from claude's ``-p --output-format json`` ``result``.
+        tool_names: Set of tool names registered by the caller. The returned
+            ``tool`` must be in this set.
+
+    Returns:
+        dict | None: ``{"name": str, "args": dict}`` on success; ``None`` if
+            no valid tool-use JSON could be located.
+    """
+    stripped = (text or "").strip()
+    if not stripped:
+        return None
+    candidates: list[str] = [stripped]
+    fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", stripped, re.DOTALL)
+    if fence:
+        candidates.append(fence.group(1))
+    # Find the first balanced ``{...}`` object via JSONDecoder.raw_decode
+    # instead of the greedy ``r"\{.*\}"`` regex. The greedy form swallows
+    # any trailing ``{...}`` on the same line and silently misses a valid
+    # tool-call when claude appends explanatory text after the JSON.
+    decoder = json.JSONDecoder()
+    for idx, ch in enumerate(stripped):
+        if ch != "{":
+            continue
+        try:
+            obj, end = decoder.raw_decode(stripped[idx:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict):
+            candidates.append(stripped[idx : idx + end])
+            break
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(parsed, dict):
+            continue
+        name = parsed.get("tool")
+        args = parsed.get("args")
+        if name in tool_names and isinstance(args, dict):
+            return {"name": name, "args": args}
+    return None
+
+
+def _build_model_response_with_tool_call(
+    *,
+    model: str,
+    terminal_text: str,
+    elapsed_seconds: float,
+    tool_use: dict[str, Any],
+) -> ModelResponse:
+    """Wrap the CLI terminal text as a ``ModelResponse`` carrying one ``tool_calls`` entry.
+
+    The stream-json transport does not surface usage tokens at the terminal
+    event, so prompt/completion counts are reported as zero (same convention
+    as :func:`_build_model_response`). Downstream LiteLLM callers tolerate
+    this — usage is informational, not load-bearing.
+
+    Args:
+        model: Model string passed in by LiteLLM.
+        terminal_text: The terminal ``result`` text from the CLI (retained
+            for signature parity with the plain-text branch; surfaced via
+            logging only).
+        elapsed_seconds: Subprocess wall time, for logging only.
+        tool_use: Parsed ``{"name": str, "args": dict}`` from the model output.
+
+    Returns:
+        ModelResponse: A LiteLLM response with ``choices[0].message.tool_calls`` set
+            and ``content`` set to ``None`` — matches OpenAI/Anthropic tool-call shape.
+    """
+    del terminal_text  # retained for signature parity only
+    call_id = f"call_{int(time.time() * 1000)}"
+    tool_call = ChatCompletionMessageToolCall(
+        id=call_id,
+        type="function",
+        function=Function(
+            name=tool_use["name"],
+            arguments=json.dumps(tool_use["args"]),
+        ),
+    )
+    message = Message(role="assistant", content=None, tool_calls=[tool_call])
+    choice = Choices(index=0, message=message, finish_reason="tool_calls")
+    usage = Usage(prompt_tokens=0, completion_tokens=0, total_tokens=0)
+    response = ModelResponse(
+        id=f"claude-code-{int(time.time())}",
+        choices=[choice],
+        created=int(time.time()),
+        model=model,
+        object="chat.completion",
+        usage=usage,
+    )
+    _LOGGER.debug(
+        "claude-code provider: tool_call name=%s elapsed=%.2fs",
+        tool_use["name"],
+        elapsed_seconds,
+    )
+    return response
+
+
 def _maybe_append_schema(system_prompt: str, response_format: Any) -> str:
     """Return *system_prompt* extended with a JSON-schema instruction when applicable.
 
@@ -665,15 +898,27 @@ class ClaudeCodeLLM(CustomLLM):
         Raises:
             ClaudeCodeCLIError: On CLI failure or missing binary.
         """
-        del args, kwargs
+        del args
         messages = messages or []
         optional_params = optional_params or {}
+
+        # Tools may arrive in either ``optional_params["tools"]`` (LiteLLM's
+        # standard plumbing for custom providers) or as a top-level ``tools``
+        # kwarg. Read both before discarding kwargs.
+        tools = optional_params.get("tools") or kwargs.get("tools")
+        del kwargs
 
         _warn_on_ignored_params(optional_params)
 
         response_format = optional_params.get("response_format")
         system_prompt, dialogue = _split_system_and_dialogue(messages)
-        system_prompt = _maybe_append_schema(system_prompt, response_format)
+        # When ``tools`` is present, render the tools spec into the system
+        # prompt and ignore response_format (mutually exclusive with our
+        # tool_use JSON output contract).
+        if tools:
+            system_prompt = _maybe_append_tools_instruction(system_prompt, tools)
+        else:
+            system_prompt = _maybe_append_schema(system_prompt, response_format)
 
         started = time.perf_counter()
         result = _run_cli_stream(
@@ -685,10 +930,33 @@ class ClaudeCodeLLM(CustomLLM):
 
         if result.success:
             self._clear_stall_safely()
+            elapsed = time.perf_counter() - started
+
+            # When ``tools`` are provided, attempt to parse the model's
+            # terminal text as a ``{"tool": ..., "args": ...}`` JSON object.
+            # If parsing succeeds, return a tool-call ModelResponse; otherwise
+            # fall through to a plain-text response — the caller treats that
+            # as "no tool_calls" and terminates the tool loop.
+            if tools:
+                tool_names = {
+                    (tool.get("function") or {}).get("name")
+                    for tool in tools
+                    if isinstance(tool, dict)
+                }
+                tool_names.discard(None)
+                tool_use = _parse_tool_use(result.terminal_text, tool_names)
+                if tool_use is not None:
+                    return _build_model_response_with_tool_call(
+                        model=model,
+                        terminal_text=result.terminal_text,
+                        elapsed_seconds=elapsed,
+                        tool_use=tool_use,
+                    )
+
             return _build_model_response(
                 model=model,
                 terminal_text=result.terminal_text,
-                elapsed_seconds=time.perf_counter() - started,
+                elapsed_seconds=elapsed,
             )
 
         self._record_stall_safely(result)
