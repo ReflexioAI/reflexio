@@ -8,6 +8,7 @@ be exercised without requiring the ``qmd`` CLI.
 
 from __future__ import annotations
 
+import json
 import tempfile
 from collections.abc import Generator
 from datetime import UTC, datetime
@@ -294,3 +295,101 @@ class TestDiskAgentPlaybookSourceWindows:
             AgentPlaybookSourceWindow(user_playbook_id=2, source_interaction_ids=[]),
             AgentPlaybookSourceWindow(user_playbook_id=3, source_interaction_ids=[]),
         ]
+
+
+class TestDiskRetention:
+    def test_profile_retention_uses_persisted_created_at(self, disk_storage):
+        disk_storage.add_user_profile(
+            "u1",
+            [
+                _make_profile("u1", "z-old", "old"),
+                _make_profile("u1", "m-mid", "mid"),
+                _make_profile("u1", "a-new", "new"),
+            ],
+        )
+        for profile_id, created_at in (
+            ("z-old", 1),
+            ("m-mid", 2),
+            ("a-new", 3),
+        ):
+            path = disk_storage._entity_path(  # noqa: SLF001
+                disk_storage._user_dir(  # noqa: SLF001
+                    disk_storage._profiles_dir(),  # noqa: SLF001
+                    "u1",
+                ),
+                profile_id,
+            )
+            path.write_text(
+                disk_storage._with_entity_metadata(  # noqa: SLF001
+                    path.read_text(encoding="utf-8"),
+                    path.suffix,
+                    {"created_at": created_at},
+                ),
+                encoding="utf-8",
+            )
+
+        deleted = disk_storage.delete_oldest_retention_target_rows("profiles", 2)
+
+        assert deleted == 2
+        remaining = disk_storage.get_all_profiles(limit=10)
+        assert {profile.profile_id for profile in remaining} == {"a-new"}
+
+    def test_source_map_retention_deletes_logical_rows(self, disk_storage):
+        disk_storage.set_source_windows_for_agent_playbook(
+            10,
+            [
+                AgentPlaybookSourceWindow(
+                    user_playbook_id=2, source_interaction_ids=[20]
+                ),
+                AgentPlaybookSourceWindow(
+                    user_playbook_id=3, source_interaction_ids=[30]
+                ),
+            ],
+        )
+        disk_storage.set_source_windows_for_agent_playbook(
+            11,
+            [
+                AgentPlaybookSourceWindow(
+                    user_playbook_id=1, source_interaction_ids=[10]
+                )
+            ],
+        )
+        created_at_by_path = {
+            "10": {2: 1, 3: 3},
+            "11": {1: 2},
+        }
+        for agent_playbook_id, created_at_by_user_id in created_at_by_path.items():
+            path = disk_storage._entity_path(  # noqa: SLF001
+                disk_storage._agent_playbook_source_map_dir(),  # noqa: SLF001
+                agent_playbook_id,
+            )
+            data = json.loads(path.read_text(encoding="utf-8"))
+            for window in data["source_windows"]:
+                window["created_at"] = created_at_by_user_id[
+                    int(window["user_playbook_id"])
+                ]
+            path.write_text(json.dumps(data), encoding="utf-8")
+
+        assert (
+            disk_storage.count_retention_target_rows(
+                "agent_playbook_source_user_playbooks"
+            )
+            == 3
+        )
+
+        deleted = disk_storage.delete_oldest_retention_target_rows(
+            "agent_playbook_source_user_playbooks",
+            2,
+        )
+
+        assert deleted == 2
+        assert (
+            disk_storage.count_retention_target_rows(
+                "agent_playbook_source_user_playbooks"
+            )
+            == 1
+        )
+        assert disk_storage.get_source_windows_for_agent_playbook(10) == [
+            AgentPlaybookSourceWindow(user_playbook_id=3, source_interaction_ids=[30])
+        ]
+        assert disk_storage.get_source_windows_for_agent_playbook(11) == []

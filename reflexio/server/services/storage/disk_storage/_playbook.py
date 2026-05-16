@@ -823,6 +823,15 @@ class PlaybookMixin:
         agent_playbook_id: int,
         source_windows: list[AgentPlaybookSourceWindow],
     ) -> None:
+        path = self._entity_path(
+            self._agent_playbook_source_map_dir(), str(agent_playbook_id)
+        )
+        existing_created_at = {
+            int(item["user_playbook_id"]): item.get("created_at")
+            for item in self._read_source_windows_data(path)
+            if item.get("user_playbook_id") is not None
+        }
+        now = int(time.time())
         by_id: dict[int, list[int]] = {}
         for window in source_windows:
             ids = by_id.setdefault(window.user_playbook_id, [])
@@ -831,9 +840,6 @@ class PlaybookMixin:
                 if source_id not in seen:
                     ids.append(source_id)
                     seen.add(source_id)
-        path = self._entity_path(
-            self._agent_playbook_source_map_dir(), str(agent_playbook_id)
-        )
         # Route through `_write_dict` so the write is atomic (tmp +
         # rename). Concurrent updates from multiple workers for the
         # same agent_playbook_id can otherwise race last-writer-wins
@@ -845,6 +851,7 @@ class PlaybookMixin:
                     {
                         "user_playbook_id": upid,
                         "source_interaction_ids": source_interaction_ids,
+                        "created_at": existing_created_at.get(upid, now),
                     }
                     for upid, source_interaction_ids in by_id.items()
                 ]

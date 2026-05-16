@@ -42,6 +42,10 @@ from reflexio.server.services.reflection.reflection_service import ReflectionSer
 from reflexio.server.services.reflection.reflection_service_utils import (
     ReflectionServiceRequest,
 )
+from reflexio.server.services.storage.retention import (
+    delete_count_for_retention,
+    get_row_retention_limits,
+)
 from reflexio.server.usage_metrics import record_usage_event
 
 if TYPE_CHECKING:
@@ -139,8 +143,8 @@ class GenerationService:
             logger.error("Received None user_id in publish_user_interaction_request")
             return result
 
-        # Check if cleanup is needed before adding new interactions
-        self._cleanup_old_interactions_if_needed()
+        # Check if cleanup is needed before adding new interactions.
+        self._cleanup_storage_tables_if_needed()
 
         publish_start = time.perf_counter()
         # Resolve agent_version: explicit > env var > default. Resolved here
@@ -431,49 +435,60 @@ class GenerationService:
                 type(exc).__name__,
             )
 
-    def _cleanup_old_interactions_if_needed(self) -> None:
-        """
-        Check total interaction count and cleanup oldest interactions if threshold exceeded.
-        Uses OperationStateManager simple lock to prevent race conditions.
-        """
-        from reflexio.server import (
-            INTERACTION_CLEANUP_DELETE_COUNT,
-            INTERACTION_CLEANUP_THRESHOLD,
-        )
-
-        if INTERACTION_CLEANUP_THRESHOLD <= 0:
-            return  # Cleanup disabled
+    def _cleanup_storage_tables_if_needed(self) -> None:
+        """Best-effort publish-boundary cleanup for capped storage tables."""
+        limits = {
+            target_name: limit
+            for target_name, limit in get_row_retention_limits().items()
+            if limit > 0
+        }
+        if not limits:
+            return
 
         try:
-            total_count = self.storage.count_all_interactions()  # type: ignore[reportOptionalMemberAccess]
-            if total_count < INTERACTION_CLEANUP_THRESHOLD:
-                return  # No cleanup needed
-
             mgr = OperationStateManager(
                 self.storage,  # type: ignore[reportArgumentType]
                 self.org_id,
-                "interaction_cleanup",  # type: ignore[reportArgumentType]
+                "storage_table_cleanup",  # type: ignore[reportArgumentType]
             )
             if not mgr.acquire_simple_lock(stale_seconds=CLEANUP_STALE_LOCK_SECONDS):
                 return
 
             try:
-                # Perform cleanup
-                deleted = self.storage.delete_oldest_interactions(  # type: ignore[reportOptionalMemberAccess]
-                    INTERACTION_CLEANUP_DELETE_COUNT
-                )
-                logger.info(
-                    "Cleaned up %d oldest interactions (total was %d, threshold %d)",
-                    deleted,
-                    total_count,
-                    INTERACTION_CLEANUP_THRESHOLD,
-                )
+                for target_name, limit in limits.items():
+                    # Isolate per-target failures so one bad table does not
+                    # short-circuit cleanup for every subsequent target.
+                    try:
+                        self._cleanup_retention_target(target_name, limit)
+                    except Exception as e:  # noqa: BLE001
+                        logger.error(
+                            "Failed to cleanup retention target %s: %s",
+                            target_name,
+                            e,
+                        )
             finally:
                 mgr.release_simple_lock()
 
         except Exception as e:
-            logger.error("Failed to cleanup old interactions: %s", e)
+            logger.error("Failed to cleanup storage tables: %s", e)
             # Don't raise - cleanup failure shouldn't block normal operation
+
+    def _cleanup_retention_target(self, target_name: str, limit: int) -> None:
+        total_count = self.storage.count_retention_target_rows(target_name)  # type: ignore[reportOptionalMemberAccess]
+        if total_count < limit:
+            return
+        delete_count = delete_count_for_retention(total_count)
+        deleted = self.storage.delete_oldest_retention_target_rows(  # type: ignore[reportOptionalMemberAccess]
+            target_name,
+            delete_count,
+        )
+        logger.info(
+            "Cleaned up %d oldest %s row(s) (total was %d, limit %d)",
+            deleted,
+            target_name,
+            total_count,
+            limit,
+        )
 
     # ===============================
     # static methods

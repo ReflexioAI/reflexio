@@ -48,6 +48,12 @@ from reflexio.models.config_schema import (
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
 from reflexio.server.services.storage.error import StorageError
+from reflexio.server.services.storage.retention import RetentionTarget
+from reflexio.server.services.storage.retention_mixin import (
+    RETENTION_DELETE_CHUNK,
+    RetentionMixin,
+    chunked,
+)
 from reflexio.server.services.storage.storage_base import BaseStorage
 from reflexio.server.site_var.site_var_manager import SiteVarManager
 from ._stall_state import init_stall_state_table
@@ -516,7 +522,7 @@ def _row_to_playbook_aggregation_change_log(
 # ---------------------------------------------------------------------------
 
 
-class SQLiteStorageBase(BaseStorage):
+class SQLiteStorageBase(RetentionMixin, BaseStorage):
     """SQLite-backed storage base class for local/self-hosted deployments."""
 
     @staticmethod
@@ -618,6 +624,197 @@ class SQLiteStorageBase(BaseStorage):
         self._migrate_agent_playbook_source_windows()
         init_stall_state_table(self.conn)
         return True
+
+    # -- Retention hooks (see RetentionMixin) --
+
+    @handle_exceptions
+    def _retention_table_exists(self, table_name: str) -> bool:
+        row = self._fetchone(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (table_name,),
+        )
+        return row is not None
+
+    @handle_exceptions
+    def _retention_count_rows(self, target: RetentionTarget) -> int:
+        row = self._fetchone(f"SELECT COUNT(*) as cnt FROM {target.table_name}")  # noqa: S608
+        return int(row["cnt"]) if row else 0
+
+    @handle_exceptions
+    def _retention_select_oldest_keys(
+        self, target: RetentionTarget, count: int
+    ) -> list[tuple[Any, ...]]:
+        id_sql = ", ".join(target.id_columns)
+        tiebreak_sql = id_sql
+        rows = self._fetchall(
+            f"SELECT {id_sql} FROM {target.table_name} "  # noqa: S608
+            f"ORDER BY {target.order_column} ASC, {tiebreak_sql} ASC LIMIT ?",
+            (count,),
+        )
+        return [tuple(row[col] for col in target.id_columns) for row in rows]
+
+    @handle_exceptions
+    def _retention_perform_delete(
+        self, target: RetentionTarget, keys: list[tuple[Any, ...]]
+    ) -> None:
+        # Wrap dependency + target deletes in a single critical section so
+        # concurrent writers see either both or neither.
+        with self._lock:
+            self._retention_delete_dependencies(target, keys)
+            self._retention_delete_target_rows(target, keys)
+            self.conn.commit()
+
+    def _retention_delete_dependencies(
+        self, target: RetentionTarget, keys: list[tuple[Any, ...]]
+    ) -> None:
+        ids = [key[0] for key in keys]
+        target_name = target.name
+        if target_name == "requests":
+            self._delete_interactions_for_request_ids([str(v) for v in ids])
+        elif target_name == "interactions":
+            self._delete_interaction_search_rows([int(v) for v in ids])
+        elif target_name == "profiles":
+            self._delete_profile_search_rows([str(v) for v in ids])
+        elif target_name == "user_playbooks":
+            self._delete_source_windows_for_user_playbook_ids([int(v) for v in ids])
+            self._delete_playbook_search_rows("user", [int(v) for v in ids])
+        elif target_name == "agent_playbooks":
+            self._delete_source_windows_for_agent_playbook_ids([int(v) for v in ids])
+            self._delete_playbook_search_rows("agent", [int(v) for v in ids])
+        elif target_name == "playbook_optimization_jobs":
+            self._delete_optimizer_rows_for_job_ids([int(v) for v in ids])
+        elif target_name == "playbook_optimization_candidates":
+            self._delete_optimizer_evaluations_for_candidate_ids([int(v) for v in ids])
+
+    def _retention_delete_target_rows(
+        self, target: RetentionTarget, keys: list[tuple[Any, ...]]
+    ) -> None:
+        if len(target.id_columns) == 1:
+            self._delete_in_chunks(
+                target.table_name,
+                target.id_columns[0],
+                [key[0] for key in keys],
+            )
+            return
+        # Composite-key delete: chunk by row to bound parameter count.
+        params_per_key = len(target.id_columns)
+        rows_per_chunk = max(1, RETENTION_DELETE_CHUNK // params_per_key)
+        for chunk in chunked(keys, rows_per_chunk):
+            where = " OR ".join(
+                "(" + " AND ".join(f"{column} = ?" for column in target.id_columns) + ")"
+                for _ in chunk
+            )
+            params = [value for key in chunk for value in key]
+            self.conn.execute(
+                f"DELETE FROM {target.table_name} WHERE {where}",  # noqa: S608
+                params,
+            )
+
+    # -- Chunked-delete primitives shared by the cascade helpers --
+
+    def _delete_in_chunks(
+        self, table_name: str, column_name: str, values: list[Any]
+    ) -> None:
+        """Chunked ``DELETE FROM table WHERE col IN (...)``.
+
+        Chunking keeps parameter count under ``SQLITE_MAX_VARIABLE_NUMBER``
+        on older sqlite builds (default 999) and avoids degenerate plans
+        on very large IN lists.
+        """
+        if not values:
+            return
+        for chunk in chunked(values):
+            placeholders = ",".join("?" for _ in chunk)
+            self.conn.execute(
+                f"DELETE FROM {table_name} WHERE {column_name} IN ({placeholders})",  # noqa: S608
+                chunk,
+            )
+
+    def _select_in_chunks(
+        self, sql_template: str, values: list[Any]
+    ) -> list[Any]:
+        """Run ``sql_template`` (containing ``{placeholders}``) over chunks of
+        ``values`` and aggregate the result rows."""
+        results: list[Any] = []
+        for chunk in chunked(values):
+            placeholders = ",".join("?" for _ in chunk)
+            stmt = sql_template.format(placeholders=placeholders)
+            results.extend(self.conn.execute(stmt, chunk).fetchall())
+        return results
+
+    def _delete_interactions_for_request_ids(self, request_ids: list[str]) -> None:
+        if not request_ids:
+            return
+        rows = self._select_in_chunks(
+            "SELECT interaction_id FROM interactions WHERE request_id IN ({placeholders})",
+            request_ids,
+        )
+        self._delete_interaction_search_rows(
+            [int(row["interaction_id"]) for row in rows]
+        )
+        self._delete_in_chunks("interactions", "request_id", request_ids)
+
+    def _delete_interaction_search_rows(self, interaction_ids: list[int]) -> None:
+        if not interaction_ids:
+            return
+        self._delete_in_chunks("interactions_fts", "rowid", interaction_ids)
+        for interaction_id in interaction_ids:
+            self._vec_delete("interactions_vec", interaction_id)
+
+    def _delete_profile_search_rows(self, profile_ids: list[str]) -> None:
+        if not profile_ids:
+            return
+        rows = self._select_in_chunks(
+            "SELECT rowid, profile_id FROM profiles WHERE profile_id IN ({placeholders})",
+            profile_ids,
+        )
+        for row in rows:
+            self._fts_delete_profile(row["profile_id"])
+            self._vec_delete("profiles_vec", row["rowid"])
+
+    def _delete_playbook_search_rows(self, kind: str, ids: list[int]) -> None:
+        if not ids:
+            return
+        self._delete_in_chunks(f"{kind}_playbooks_fts", "rowid", ids)
+        for item_id in ids:
+            self._vec_delete(f"{kind}_playbooks_vec", item_id)
+
+    def _delete_source_windows_for_agent_playbook_ids(
+        self, agent_playbook_ids: list[int]
+    ) -> None:
+        self._delete_in_chunks(
+            "agent_playbook_source_user_playbooks",
+            "agent_playbook_id",
+            agent_playbook_ids,
+        )
+
+    def _delete_source_windows_for_user_playbook_ids(
+        self, user_playbook_ids: list[int]
+    ) -> None:
+        self._delete_in_chunks(
+            "agent_playbook_source_user_playbooks",
+            "user_playbook_id",
+            user_playbook_ids,
+        )
+
+    def _delete_optimizer_rows_for_job_ids(self, job_ids: list[int]) -> None:
+        if not job_ids:
+            return
+        for table in (
+            "playbook_optimization_evaluations",
+            "playbook_optimization_events",
+            "playbook_optimization_candidates",
+        ):
+            self._delete_in_chunks(table, "job_id", job_ids)
+
+    def _delete_optimizer_evaluations_for_candidate_ids(
+        self, candidate_ids: list[int]
+    ) -> None:
+        self._delete_in_chunks(
+            "playbook_optimization_evaluations",
+            "candidate_id",
+            candidate_ids,
+        )
 
     def _try_load_sqlite_vec(self) -> bool:
         """Attempt to load the sqlite-vec extension for native KNN search.

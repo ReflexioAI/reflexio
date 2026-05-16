@@ -11,17 +11,29 @@ import threading
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TypeVar, cast
+from typing import Any, TypeVar, cast
 
+import yaml
 from pydantic import BaseModel
 
 from reflexio.models.api_schema.service_schemas import (
     AgentPlaybook,
+    AgentSuccessEvaluationResult,
+    Interaction,
+    PlaybookAggregationChangeLog,
+    PlaybookOptimizationCandidate,
+    PlaybookOptimizationEvaluation,
+    PlaybookOptimizationEvent,
+    PlaybookOptimizationJob,
+    ProfileChangeLog,
+    Request,
     UserPlaybook,
+    UserProfile,
 )
 from reflexio.models.config_schema import StorageConfigDisk
 from reflexio.server import LOCAL_STORAGE_PATH
 from reflexio.server.services.storage.error import StorageError
+from reflexio.server.services.storage.retention import RETENTION_TARGETS_BY_NAME
 from reflexio.server.services.storage.storage_base import BaseStorage
 
 from ._file_io import (
@@ -190,7 +202,15 @@ class DiskStorageBase(BaseStorage):
             raise StorageError(f"Unsupported file format: {path.suffix}")
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".tmp")
-        tmp.write_text(serializer(model), encoding="utf-8")
+        text = serializer(model)
+        if isinstance(model, UserProfile):
+            created_at = self._entity_metadata_value(path, "created_at")
+            if created_at is None:
+                created_at = int(datetime.now(UTC).timestamp())
+            text = self._with_entity_metadata(
+                text, path.suffix, {"created_at": created_at}
+            )
+        tmp.write_text(text, encoding="utf-8")
         tmp.rename(path)
 
     def _read_entity(self, path: Path, model_class: type[T]) -> T:
@@ -214,7 +234,7 @@ class DiskStorageBase(BaseStorage):
         if "embedding" in model_class.model_fields and (
             embedding := self._read_embedding(path)
         ):
-            entity.embedding = embedding
+            cast(Any, entity).embedding = embedding
         return entity  # type: ignore[return-value]
 
     def _list_entities(self, directory: Path, model_class: type[T]) -> list[T]:
@@ -298,6 +318,62 @@ class DiskStorageBase(BaseStorage):
         tmp = path.with_suffix(".tmp")
         tmp.write_text(json.dumps(data_dict, indent=2, default=str))
         tmp.rename(path)
+
+    def _entity_metadata_value(self, path: Path, key: str) -> Any | None:
+        """Read a metadata value directly from an entity file."""
+        if not path.exists():
+            return None
+        try:
+            if path.suffix == ".json":
+                data = json.loads(path.read_text(encoding="utf-8") or "{}")
+                return data.get(key) if isinstance(data, dict) else None
+            if path.suffix != ".md":
+                return None
+            frontmatter, _body = self._split_markdown_frontmatter(
+                path.read_text(encoding="utf-8")
+            )
+            return frontmatter.get(key)
+        except (OSError, json.JSONDecodeError, ValueError, yaml.YAMLError):
+            return None
+
+    def _with_entity_metadata(
+        self, text: str, suffix: str, metadata: dict[str, Any]
+    ) -> str:
+        """Return serialized entity text with extra metadata preserved."""
+        if suffix == ".json":
+            data = json.loads(text or "{}")
+            if isinstance(data, dict):
+                data.update(metadata)
+                return json.dumps(data, indent=2, default=str)
+            return text
+        if suffix != ".md":
+            return text
+        frontmatter, body = self._split_markdown_frontmatter(text)
+        frontmatter.update(metadata)
+        yaml_text = yaml.dump(
+            frontmatter,
+            default_flow_style=False,
+            allow_unicode=True,
+            sort_keys=False,
+            width=120,
+        ).rstrip("\n")
+        return f"---\n{yaml_text}\n---{body}"
+
+    @staticmethod
+    def _split_markdown_frontmatter(text: str) -> tuple[dict[str, Any], str]:
+        if not text.startswith("---"):
+            return {}, text
+        close_idx = text.find("\n---\n", 3)
+        if close_idx == -1:
+            if not text.endswith("\n---"):
+                return {}, text
+            close_idx = len(text) - 4
+            body = ""
+        else:
+            body = text[close_idx + 4 :]
+        yaml_text = text[3 : close_idx + 1]
+        data = yaml.safe_load(yaml_text) or {}
+        return data if isinstance(data, dict) else {}, body
 
     # ------------------------------------------------------------------
     # Embedding sidecar I/O
@@ -395,6 +471,286 @@ class DiskStorageBase(BaseStorage):
     def _current_timestamp(self) -> str:
         """Return a timezone-aware ISO timestamp."""
         return datetime.now(UTC).isoformat()
+
+    def count_retention_target_rows(self, target_name: str) -> int:
+        if target_name == "agent_playbook_source_user_playbooks":
+            with self._lock:
+                return len(self._source_map_rows())
+        spec = self._disk_retention_spec(target_name)
+        if spec is None:
+            return 0
+        directory, _model, recursive = spec
+        with self._lock:
+            return len(self._scan_entities(directory, recursive=recursive))
+
+    def delete_oldest_retention_target_rows(self, target_name: str, count: int) -> int:
+        if count <= 0:
+            return 0
+        if target_name == "agent_playbook_source_user_playbooks":
+            return self._delete_oldest_source_map_files(count)
+        spec = self._disk_retention_spec(target_name)
+        if spec is None:
+            return 0
+        directory, model, recursive = spec
+        target = RETENTION_TARGETS_BY_NAME[target_name]
+
+        with self._lock:
+            entries: list[tuple[Any, Path, Any]] = []
+            for path in self._scan_entities(directory, recursive=recursive):
+                entity = self._read_entity(path, model)
+                entries.append(
+                    (
+                        self._disk_retention_order_value(
+                            target_name, target.order_column, path, entity
+                        ),
+                        path,
+                        entity,
+                    )
+                )
+            entries.sort(key=lambda item: (item[0], item[1].name))
+            selected = entries[:count]
+            if not selected:
+                return 0
+            self._delete_disk_retention_dependencies(target_name, selected)
+            for _order, path, _entity in selected:
+                if path.exists():
+                    self._delete_embedding(path)
+                    path.unlink()
+        self._trigger_qmd_update()
+        return len(selected)
+
+    def _disk_retention_spec(
+        self, target_name: str
+    ) -> tuple[Path, type[BaseModel], bool] | None:
+        specs: dict[str, tuple[Path, type[BaseModel], bool]] = {
+            "profiles": (self._profiles_dir(), UserProfile, True),
+            "interactions": (self._interactions_dir(), Interaction, True),
+            "requests": (self._requests_dir(), Request, False),
+            "user_playbooks": (self._user_playbooks_dir(), UserPlaybook, False),
+            "agent_playbooks": (self._agent_playbooks_dir(), AgentPlaybook, False),
+            "agent_success_evaluation_result": (
+                self._evaluations_dir(),
+                AgentSuccessEvaluationResult,
+                False,
+            ),
+            "profile_change_logs": (
+                self._profile_change_logs_dir(),
+                ProfileChangeLog,
+                False,
+            ),
+            "playbook_aggregation_change_logs": (
+                self._playbook_agg_change_logs_dir(),
+                PlaybookAggregationChangeLog,
+                False,
+            ),
+            "playbook_optimization_jobs": (
+                self._playbook_opt_jobs_dir(),
+                PlaybookOptimizationJob,
+                False,
+            ),
+            "playbook_optimization_candidates": (
+                self._playbook_opt_candidates_dir(),
+                PlaybookOptimizationCandidate,
+                False,
+            ),
+            "playbook_optimization_evaluations": (
+                self._playbook_opt_evaluations_dir(),
+                PlaybookOptimizationEvaluation,
+                False,
+            ),
+            "playbook_optimization_events": (
+                self._playbook_opt_events_dir(),
+                PlaybookOptimizationEvent,
+                False,
+            ),
+        }
+        if target_name not in RETENTION_TARGETS_BY_NAME:
+            raise ValueError(f"Unknown retention target: {target_name}")
+        return specs.get(target_name)
+
+    def _disk_retention_order_value(
+        self,
+        target_name: str,
+        order_column: str,
+        path: Path,
+        entity: BaseModel,
+    ) -> float:
+        value = (
+            self._entity_metadata_value(path, order_column)
+            if target_name == "profiles"
+            else getattr(entity, order_column, None)
+        )
+        if value is None:
+            return path.stat().st_mtime
+        return self._normalize_retention_order_value(value)
+
+    @staticmethod
+    def _normalize_retention_order_value(value: Any) -> float:
+        if isinstance(value, int | float):
+            return float(value)
+        if isinstance(value, datetime):
+            return value.timestamp()
+        if isinstance(value, str):
+            try:
+                return float(value)
+            except ValueError:
+                pass
+            try:
+                return datetime.fromisoformat(value).timestamp()
+            except ValueError:
+                return 0.0
+        return 0.0
+
+    def _delete_disk_retention_dependencies(
+        self, target_name: str, entries: list[tuple[Any, Path, Any]]
+    ) -> None:
+        entities = [entity for _order, _path, entity in entries]
+        if target_name == "requests":
+            request_ids = {entity.request_id for entity in entities}
+            self._delete_interactions_for_request_ids(request_ids)
+        elif target_name == "user_playbooks":
+            user_playbook_ids = {int(entity.user_playbook_id) for entity in entities}
+            self._delete_source_windows_for_user_playbook_ids(user_playbook_ids)
+        elif target_name == "agent_playbooks":
+            agent_playbook_ids = {int(entity.agent_playbook_id) for entity in entities}
+            self._delete_source_map_files(agent_playbook_ids)
+        elif target_name == "playbook_optimization_jobs":
+            job_ids = {int(entity.job_id) for entity in entities}
+            self._delete_optimizer_files_for_job_ids(job_ids)
+        elif target_name == "playbook_optimization_candidates":
+            candidate_ids = {int(entity.candidate_id) for entity in entities}
+            self._delete_optimizer_evaluation_files_for_candidate_ids(candidate_ids)
+
+    def _delete_interactions_for_request_ids(self, request_ids: set[str]) -> None:
+        if not request_ids:
+            return
+        for path in self._scan_entities(self._interactions_dir(), recursive=True):
+            interaction = self._read_entity(path, Interaction)
+            if interaction.request_id in request_ids:
+                self._delete_embedding(path)
+                path.unlink()
+
+    def _delete_source_map_files(self, agent_playbook_ids: set[int]) -> None:
+        for agent_playbook_id in agent_playbook_ids:
+            path = self._entity_path(
+                self._agent_playbook_source_map_dir(), str(agent_playbook_id)
+            )
+            if path.exists():
+                path.unlink()
+
+    def _delete_source_windows_for_user_playbook_ids(
+        self, user_playbook_ids: set[int]
+    ) -> None:
+        if not user_playbook_ids:
+            return
+        for path in self._scan_entities(self._agent_playbook_source_map_dir()):
+            windows = self._read_source_windows_data(path)
+            filtered = [
+                item
+                for item in windows
+                if int(item.get("user_playbook_id", 0)) not in user_playbook_ids
+            ]
+            if filtered:
+                self._write_dict(path, {"source_windows": filtered})
+            else:
+                path.unlink()
+
+    def _delete_optimizer_files_for_job_ids(self, job_ids: set[int]) -> None:
+        if not job_ids:
+            return
+        for directory, model in (
+            (self._playbook_opt_evaluations_dir(), PlaybookOptimizationEvaluation),
+            (self._playbook_opt_events_dir(), PlaybookOptimizationEvent),
+            (self._playbook_opt_candidates_dir(), PlaybookOptimizationCandidate),
+        ):
+            for path in self._scan_entities(directory):
+                entity = self._read_entity(path, model)
+                if int(entity.job_id) in job_ids:
+                    path.unlink()
+
+    def _delete_optimizer_evaluation_files_for_candidate_ids(
+        self, candidate_ids: set[int]
+    ) -> None:
+        if not candidate_ids:
+            return
+        for path in self._scan_entities(self._playbook_opt_evaluations_dir()):
+            entity = self._read_entity(path, PlaybookOptimizationEvaluation)
+            if int(entity.candidate_id) in candidate_ids:
+                path.unlink()
+
+    def _delete_oldest_source_map_files(self, count: int) -> int:
+        return self._delete_oldest_source_map_rows(count)
+
+    def _source_map_rows(self) -> list[tuple[float, int, int, Path, dict[str, Any]]]:
+        rows: list[tuple[float, int, int, Path, dict[str, Any]]] = []
+        for path in self._scan_entities(self._agent_playbook_source_map_dir()):
+            try:
+                agent_playbook_id = int(path.stem)
+            except ValueError:
+                continue
+            fallback_created_at = path.stat().st_mtime
+            for window in self._read_source_windows_data(path):
+                user_playbook_id = int(window.get("user_playbook_id", 0))
+                created_at = self._normalize_retention_order_value(
+                    window.get("created_at", fallback_created_at)
+                )
+                rows.append(
+                    (created_at, agent_playbook_id, user_playbook_id, path, window)
+                )
+        return rows
+
+    def _read_source_windows_data(self, path: Path) -> list[dict[str, Any]]:
+        if not path.exists():
+            return []
+        try:
+            data = json.loads(path.read_text(encoding="utf-8") or "{}")
+        except json.JSONDecodeError:
+            return []
+        if isinstance(data, list):
+            return [
+                {
+                    "user_playbook_id": int(user_playbook_id),
+                    "source_interaction_ids": [],
+                    "created_at": path.stat().st_mtime,
+                }
+                for user_playbook_id in data
+            ]
+        if not isinstance(data, dict):
+            return []
+        windows = data.get("source_windows")
+        if isinstance(windows, list):
+            return [item for item in windows if isinstance(item, dict)]
+        user_playbook_ids = data.get("user_playbook_ids")
+        if isinstance(user_playbook_ids, list):
+            return [
+                {
+                    "user_playbook_id": int(user_playbook_id),
+                    "source_interaction_ids": [],
+                    "created_at": path.stat().st_mtime,
+                }
+                for user_playbook_id in user_playbook_ids
+            ]
+        return []
+
+    def _delete_oldest_source_map_rows(self, count: int) -> int:
+        with self._lock:
+            selected = self._source_map_rows()[:]
+            selected.sort(key=lambda row: (row[0], row[1], row[2]))
+            selected = selected[:count]
+            by_path: dict[Path, set[int]] = {}
+            for _created_at, _agent_id, user_playbook_id, path, _window in selected:
+                by_path.setdefault(path, set()).add(user_playbook_id)
+            for path, user_playbook_ids in by_path.items():
+                remaining = [
+                    window
+                    for window in self._read_source_windows_data(path)
+                    if int(window.get("user_playbook_id", 0)) not in user_playbook_ids
+                ]
+                if remaining:
+                    self._write_dict(path, {"source_windows": remaining})
+                elif path.exists():
+                    path.unlink()
+        return len(selected)
 
     # Directory accessors
     def _profiles_dir(self) -> Path:
