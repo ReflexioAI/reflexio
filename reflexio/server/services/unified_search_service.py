@@ -37,9 +37,7 @@ if TYPE_CHECKING:
     from reflexio.server.api_endpoints.request_context import RequestContext
 
 logger = logging.getLogger(__name__)
-_DEFAULT_ENTITY_TYPES = frozenset(
-    {"profiles", "agent_playbooks", "user_playbooks"}
-)
+_DEFAULT_ENTITY_TYPES = frozenset({"profiles", "agent_playbooks", "user_playbooks"})
 # Statuses returned for agent_playbooks when the caller does not pass an
 # explicit ``agent_playbook_status_filter``. Excludes REJECTED so that a
 # rejection in the dashboard immediately suppresses the playbook from search
@@ -84,13 +82,12 @@ def run_unified_search(
     threshold = request.threshold if request.threshold is not None else 0.3
 
     # --- Phase A: query reformulation + embedding generation ---
-    supports_embedding = hasattr(storage, "_get_embedding")
     reformulated_query, embedding = _run_phase_a(
         query=request.query,
         storage=storage,
         llm_client=llm_client,
         prompt_manager=prompt_manager,
-        supports_embedding=supports_embedding,
+        supports_embedding=storage.supports_embedding,
         conversation_history=request.conversation_history,
         enable_reformulation=bool(request.enable_reformulation),
         pre_retrieval_model_name=pre_retrieval_model_name,
@@ -250,9 +247,7 @@ def _run_phase_b(
 
         profiles = profiles_future.result(timeout=30) if profiles_future else []
         agent_playbooks = (
-            agent_playbooks_future.result(timeout=30)
-            if agent_playbooks_future
-            else []
+            agent_playbooks_future.result(timeout=30) if agent_playbooks_future else []
         )
         user_playbooks = (
             user_playbooks_future.result(timeout=30) if user_playbooks_future else []
@@ -285,8 +280,10 @@ def _search_agent_playbooks_via_storage(
     ``_DEFAULT_AGENT_PLAYBOOK_STATUSES`` (APPROVED + PENDING). Callers that
     genuinely want REJECTED playbooks must opt in by passing the full list.
     """
-    statuses = list(allowed_statuses) if allowed_statuses else list(
-        _DEFAULT_AGENT_PLAYBOOK_STATUSES
+    statuses = (
+        list(allowed_statuses)
+        if allowed_statuses
+        else list(_DEFAULT_AGENT_PLAYBOOK_STATUSES)
     )
     request = SearchAgentPlaybookRequest(
         query=query,

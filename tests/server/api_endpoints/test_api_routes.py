@@ -92,41 +92,35 @@ class TestPublishInteraction:
 class TestSearchEndpoints:
     """Tests for search endpoints."""
 
-    def test_search_profiles_returns_200(self, client):
-        mock_response = SearchUserProfileResponse(
+    def test_search_profiles_returns_200(self, client, patched_reflexio, mock_reflexio):
+        mock_reflexio.search_user_profiles.return_value = SearchUserProfileResponse(
             success=True,
             user_profiles=[],
             msg="OK",
         )
 
-        with patch(
-            "reflexio.server.api_endpoints.retriever_api.search_user_profiles",
-            return_value=mock_response,
-        ):
-            response = client.post(
-                "/api/search_profiles",
-                json={"user_id": "user-1", "query": "test user"},
-            )
+        response = client.post(
+            "/api/search_profiles",
+            json={"user_id": "user-1", "query": "test user"},
+        )
         assert response.status_code == 200
         data = response.json()
         assert data["success"] is True
         assert data["user_profiles"] == []
 
-    def test_search_interactions_returns_200(self, client):
-        mock_response = SearchInteractionResponse(
+    def test_search_interactions_returns_200(
+        self, client, patched_reflexio, mock_reflexio
+    ):
+        mock_reflexio.search_interactions.return_value = SearchInteractionResponse(
             success=True,
             interactions=[],
             msg="OK",
         )
 
-        with patch(
-            "reflexio.server.api_endpoints.retriever_api.search_interactions",
-            return_value=mock_response,
-        ):
-            response = client.post(
-                "/api/search_interactions",
-                json={"user_id": "user-1", "query": "hello"},
-            )
+        response = client.post(
+            "/api/search_interactions",
+            json={"user_id": "user-1", "query": "hello"},
+        )
         assert response.status_code == 200
         data = response.json()
         assert data["success"] is True

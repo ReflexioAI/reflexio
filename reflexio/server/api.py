@@ -125,11 +125,11 @@ from reflexio.models.api_schema.ui.converters import (
     to_user_playbook_view,
 )
 from reflexio.models.config_schema import Config
+from reflexio.server._auth import DEFAULT_ORG_ID, default_get_org_id
 from reflexio.server.api_endpoints import (
     account_api,
     health_api,
     publisher_api,
-    retriever_api,
     stall_state_api,
 )
 from reflexio.server.cache.reflexio_cache import (
@@ -139,6 +139,11 @@ from reflexio.server.cache.reflexio_cache import (
 from reflexio.server.correlation import correlation_id_var, generate_correlation_id
 
 logger = logging.getLogger(__name__)
+
+# Re-exported for backwards compatibility — callers that did
+# ``from reflexio.server.api import default_get_org_id`` or ``DEFAULT_ORG_ID``
+# continue to work.
+__all__ = ["DEFAULT_ORG_ID", "create_app", "default_get_org_id"]
 
 # Bot protection configuration
 REQUEST_TIMEOUT_SECONDS = 60
@@ -266,12 +271,6 @@ class CorrelationIdMiddleware(BaseHTTPMiddleware):
         response.headers["X-Correlation-ID"] = cid
         return response
 
-
-from reflexio.server._auth import DEFAULT_ORG_ID, default_get_org_id
-
-# Re-exported for backwards compatibility — callers that did
-# ``from reflexio.server.api import default_get_org_id`` continue to work.
-__all__ = ["DEFAULT_ORG_ID", "create_app", "default_get_org_id"]
 
 core_router = APIRouter()
 
@@ -450,7 +449,7 @@ def search_user_profiles(
     payload: SearchUserProfileRequest,
     org_id: str = Depends(default_get_org_id),
 ) -> SearchProfilesViewResponse:
-    response = retriever_api.search_user_profiles(org_id=org_id, request=payload)
+    response = get_reflexio(org_id=org_id).search_user_profiles(payload)
     return SearchProfilesViewResponse(
         success=response.success,
         user_profiles=[to_profile_view(p) for p in response.user_profiles],
@@ -479,7 +478,7 @@ def rerank_user_profiles(
     Returns:
         SearchProfilesViewResponse: Reranked profiles, top_k entries.
     """
-    response = retriever_api.rerank_user_profiles(org_id=org_id, request=payload)
+    response = get_reflexio(org_id=org_id).rerank_user_profiles(payload)
     return SearchProfilesViewResponse(
         success=response.success,
         user_profiles=[to_profile_view(p) for p in response.user_profiles],
@@ -509,8 +508,8 @@ def storage_stats(
     Returns:
         StorageStatsResponse: Counts and timestamp range for the user.
     """
-    return retriever_api.storage_stats(
-        org_id=org_id, request=StorageStatsRequest(user_id=user_id)
+    return get_reflexio(org_id=org_id).storage_stats(
+        StorageStatsRequest(user_id=user_id)
     )
 
 
@@ -525,7 +524,7 @@ def search_interactions(
     payload: SearchInteractionRequest,
     org_id: str = Depends(default_get_org_id),
 ) -> SearchInteractionsViewResponse:
-    response = retriever_api.search_interactions(org_id=org_id, request=payload)
+    response = get_reflexio(org_id=org_id).search_interactions(payload)
     return SearchInteractionsViewResponse(
         success=response.success,
         interactions=[to_interaction_view(i) for i in response.interactions],
@@ -557,7 +556,7 @@ def search_user_playbooks_endpoint(
     Returns:
         SearchUserPlaybooksViewResponse: Response containing matching user playbooks
     """
-    response = retriever_api.search_user_playbooks(org_id=org_id, request=payload)
+    response = get_reflexio(org_id=org_id).search_user_playbooks(payload)
     return SearchUserPlaybooksViewResponse(
         success=response.success,
         user_playbooks=[to_user_playbook_view(rf) for rf in response.user_playbooks],
@@ -589,7 +588,7 @@ def search_agent_playbooks_endpoint(
     Returns:
         SearchAgentPlaybooksViewResponse: Response containing matching agent playbooks
     """
-    response = retriever_api.search_agent_playbooks(org_id=org_id, request=payload)
+    response = get_reflexio(org_id=org_id).search_agent_playbooks(payload)
     return SearchAgentPlaybooksViewResponse(
         success=response.success,
         agent_playbooks=[to_agent_playbook_view(fb) for fb in response.agent_playbooks],
@@ -622,7 +621,7 @@ def unified_search_endpoint(
     Returns:
         UnifiedSearchViewResponse: Combined search results
     """
-    response = retriever_api.unified_search(org_id=org_id, request=payload)
+    response = get_reflexio(org_id=org_id).unified_search(payload, org_id=org_id)
     return UnifiedSearchViewResponse(
         success=response.success,
         profiles=[to_profile_view(p) for p in response.profiles],
@@ -639,7 +638,7 @@ def unified_search_endpoint(
 def get_profile_change_log(
     org_id: str = Depends(default_get_org_id),
 ) -> ProfileChangeLogViewResponse:
-    response = retriever_api.get_profile_change_logs(org_id=org_id)
+    response = get_reflexio(org_id=org_id).get_profile_change_logs()
     return ProfileChangeLogViewResponse(
         success=response.success,
         profile_change_logs=[
@@ -657,8 +656,7 @@ def get_playbook_aggregation_change_logs(
     agent_version: str,
     org_id: str = Depends(default_get_org_id),
 ) -> PlaybookAggregationChangeLogResponse:
-    return retriever_api.get_playbook_aggregation_change_logs(
-        org_id=org_id,
+    return get_reflexio(org_id=org_id).get_playbook_aggregation_change_logs(
         playbook_name=playbook_name,
         agent_version=agent_version,
     )
@@ -928,7 +926,7 @@ def get_interactions(
     request: GetInteractionsRequest,
     org_id: str = Depends(default_get_org_id),
 ) -> GetInteractionsViewResponse:
-    response = retriever_api.get_user_interactions(org_id=org_id, request=request)
+    response = get_reflexio(org_id=org_id).get_interactions(request)
     return GetInteractionsViewResponse(
         success=response.success,
         interactions=[to_interaction_view(i) for i in response.interactions],
@@ -981,7 +979,7 @@ def get_requests_endpoint(
     Returns:
         GetRequestsViewResponse: Response containing requests with their interactions
     """
-    internal_response = retriever_api.get_requests(org_id=org_id, request=request)
+    internal_response = get_reflexio(org_id=org_id).get_requests(request)
     return GetRequestsViewResponse(
         success=internal_response.success,
         sessions=[
@@ -1011,7 +1009,7 @@ def get_profiles(
     request: GetUserProfilesRequest,
     org_id: str = Depends(default_get_org_id),
 ) -> GetProfilesViewResponse:
-    response = retriever_api.get_user_profiles(org_id=org_id, request=request)
+    response = get_reflexio(org_id=org_id).get_profiles(request)
     return GetProfilesViewResponse(
         success=response.success,
         user_profiles=[to_profile_view(p) for p in response.user_profiles],

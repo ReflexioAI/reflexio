@@ -17,7 +17,7 @@ import threading
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal
 
 from reflexio.models.api_schema.common import BlockingIssue
 from reflexio.models.api_schema.service_schemas import (
@@ -528,6 +528,8 @@ def _row_to_playbook_aggregation_change_log(
 
 class SQLiteStorageBase(RetentionMixin, BaseStorage):
     """SQLite-backed storage base class for local/self-hosted deployments."""
+
+    supports_embedding: ClassVar[bool] = True
 
     @staticmethod
     def handle_exceptions(func: Callable[..., Any]) -> Callable[..., Any]:

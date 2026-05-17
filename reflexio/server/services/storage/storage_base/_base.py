@@ -1,5 +1,6 @@
 from abc import ABC
 from collections.abc import Sequence
+from typing import ClassVar
 
 from reflexio.models.api_schema.domain import Status
 
@@ -35,6 +36,9 @@ def matches_status_filter(
 
 class BaseStorageCore(ABC):  # noqa: B024
     """Base class for storage. Abstract methods are defined in mixin classes."""
+
+    # Capability flag — backends that implement `_get_embedding` set this to True.
+    supports_embedding: ClassVar[bool] = False
 
     def __init__(self, org_id: str, base_dir: str | None = None) -> None:
         self.org_id = org_id

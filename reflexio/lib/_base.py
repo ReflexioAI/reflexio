@@ -164,7 +164,7 @@ class ReflexioBase:
         if not query or search_mode == SearchMode.FTS:
             return None
         storage = self._get_storage()
-        if not hasattr(storage, "_get_embedding"):
+        if not storage.supports_embedding:
             return None
         try:
             return storage._get_embedding(query, purpose="query")  # type: ignore[reportAttributeAccessIssue]
