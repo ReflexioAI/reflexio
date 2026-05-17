@@ -451,6 +451,57 @@ class TestClaudeCodeLLMCompletion:
         assert mock_run.call_args.kwargs["env"]["CLAUDE_SMART_HOST"] == "codex"
         assert response.choices[0].message.content == "codex reply"  # type: ignore[union-attr]
 
+    def test_codex_host_uses_compat_wrapper_with_claude_flags(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The bundled Codex compatibility wrapper keeps the Claude CLI contract."""
+        mock_run = MagicMock(return_value=_fake_completed_process(_stream_json("ok")))
+        monkeypatch.setenv("CLAUDE_SMART_HOST", "codex")
+        monkeypatch.setattr(ccp.subprocess, "run", mock_run)
+        monkeypatch.setattr(
+            ccp,
+            "_resolve_cli_path",
+            lambda: "/plugin/scripts/codex-claude-compat",
+        )
+
+        response = ClaudeCodeLLM().completion(
+            model="claude-code/default",
+            messages=[{"role": "user", "content": "ping"}],
+        )
+
+        cmd = mock_run.call_args.args[0]
+        assert cmd[:3] == [
+            "/plugin/scripts/codex-claude-compat",
+            "-p",
+            "--output-format",
+        ]
+        assert "exec" not in cmd
+        assert "--include-partial-messages" in cmd
+        assert response.choices[0].message.content == "ok"  # type: ignore[union-attr]
+
+    def test_codex_host_uses_windows_compat_wrapper_with_claude_flags(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Windows .cmd wrapper is also treated as a Claude-compatible shim."""
+        mock_run = MagicMock(return_value=_fake_completed_process(_stream_json("ok")))
+        monkeypatch.setenv("CLAUDE_SMART_HOST", "codex")
+        monkeypatch.setattr(ccp.subprocess, "run", mock_run)
+        monkeypatch.setattr(
+            ccp,
+            "_resolve_cli_path",
+            lambda: "/plugin/scripts/codex-claude-compat.cmd",
+        )
+
+        ClaudeCodeLLM().completion(
+            model="claude-code/default",
+            messages=[{"role": "user", "content": "ping"}],
+        )
+
+        cmd = mock_run.call_args.args[0]
+        assert cmd[0] == "/plugin/scripts/codex-claude-compat.cmd"
+        assert "-p" in cmd
+        assert "exec" not in cmd
+
 
 class TestIsClaudeCodeAvailable:
     def test_requires_env_var(self, monkeypatch: pytest.MonkeyPatch) -> None:

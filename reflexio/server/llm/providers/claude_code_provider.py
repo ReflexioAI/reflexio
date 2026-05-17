@@ -59,7 +59,12 @@ _ENV_TIMEOUT = "CLAUDE_SMART_CLI_TIMEOUT"
 _ENV_MODEL = "CLAUDE_SMART_CLI_MODEL"
 _HOST_CODEX = "codex"
 _HOST_CLAUDE_CODE = "claude-code"
-_CODEX_COMPAT_SCRIPT = "codex-claude-compat.py"
+_CODEX_COMPAT_SCRIPT_NAMES = (
+    ("codex-claude-compat.cmd", "codex-claude-compat")
+    if os.name == "nt"
+    else ("codex-claude-compat", "codex-claude-compat.cmd")
+)
+_CODEX_COMPAT_SCRIPT_NAME_SET = set(_CODEX_COMPAT_SCRIPT_NAMES)
 _DEFAULT_TIMEOUT_SECONDS = 120
 _DEFAULT_CLI_MODEL = "claude-sonnet-4-6"
 
@@ -99,9 +104,10 @@ def _candidate_codex_compat_path() -> Path | None:
         root = os.environ.get(env_var)
         if not root:
             continue
-        candidate = Path(root) / "scripts" / _CODEX_COMPAT_SCRIPT
-        if candidate.is_file() and os.access(candidate, os.X_OK):
-            return candidate
+        for name in _CODEX_COMPAT_SCRIPT_NAMES:
+            candidate = Path(root) / "scripts" / name
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                return candidate
     return None
 
 
@@ -350,7 +356,7 @@ def _run_cli_stream(
     Raises:
         ClaudeCodeCLIError: On timeout or missing binary.
     """
-    if _host() == _HOST_CODEX and Path(cli_path).name != _CODEX_COMPAT_SCRIPT:
+    if _host() == _HOST_CODEX and Path(cli_path).name not in _CODEX_COMPAT_SCRIPT_NAME_SET:
         return _run_codex_stream(
             codex_path=cli_path,
             system_prompt=system_prompt,
