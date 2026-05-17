@@ -46,7 +46,10 @@ from reflexio.models.config_schema import (
     SearchMode,
 )
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
-from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
+from reflexio.server.llm.model_defaults import (
+    ModelRole,
+    resolve_model_name,
+)
 from reflexio.server.services.storage.error import StorageError
 from reflexio.server.services.storage.retention import RetentionTarget
 from reflexio.server.services.storage.retention_mixin import (
@@ -56,6 +59,7 @@ from reflexio.server.services.storage.retention_mixin import (
 )
 from reflexio.server.services.storage.storage_base import BaseStorage
 from reflexio.server.site_var.site_var_manager import SiteVarManager
+
 from ._stall_state import init_stall_state_table
 
 logger = logging.getLogger(__name__)
@@ -701,7 +705,9 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         rows_per_chunk = max(1, RETENTION_DELETE_CHUNK // params_per_key)
         for chunk in chunked(keys, rows_per_chunk):
             where = " OR ".join(
-                "(" + " AND ".join(f"{column} = ?" for column in target.id_columns) + ")"
+                "("
+                + " AND ".join(f"{column} = ?" for column in target.id_columns)
+                + ")"
                 for _ in chunk
             )
             params = [value for key in chunk for value in key]
@@ -730,9 +736,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 chunk,
             )
 
-    def _select_in_chunks(
-        self, sql_template: str, values: list[Any]
-    ) -> list[Any]:
+    def _select_in_chunks(self, sql_template: str, values: list[Any]) -> list[Any]:
         """Run ``sql_template`` (containing ``{placeholders}``) over chunks of
         ``values`` and aggregate the result rows."""
         results: list[Any] = []

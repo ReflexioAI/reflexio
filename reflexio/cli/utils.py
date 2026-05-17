@@ -10,6 +10,7 @@ import os
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from collections.abc import Callable
@@ -116,7 +117,7 @@ def get_pidfile_path(ports: dict[str, int]) -> Path:
     """Get a unique pidfile path based on the port combination."""
     port_str = json.dumps(ports, sort_keys=True)
     port_hash = hashlib.md5(port_str.encode()).hexdigest()[:8]  # noqa: S324
-    return Path(f"/tmp/reflexio_services_{port_hash}.json")  # noqa: S108
+    return Path(tempfile.gettempdir()) / f"reflexio_services_{port_hash}.json"
 
 
 def write_pidfile(pidfile: Path, service_pids: dict[str, int]) -> None:

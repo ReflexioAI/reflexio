@@ -47,6 +47,7 @@ dependencies = [
     # ``sentence-transformers`` transitively, but we depend on it directly
     # so the CrossEncoder/SentenceTransformer surface is guaranteed.
     "sentence-transformers>=3.0",
+    "einops>=0.8.0",
 ]
 
 [project.optional-dependencies]
