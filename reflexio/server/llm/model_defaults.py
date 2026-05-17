@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 
 # Env var opting into the Claude Code CLI provider (registered in
 # reflexio.server.llm.providers.claude_code_provider). When set to "1"
-# *and* the `claude` binary is on PATH, the provider is auto-detected
+# *and* the active host CLI is available, the provider is auto-detected
 # with highest priority — reflexio will route extraction/evaluation
 # calls through the local CLI instead of requiring an API key.
 _CLAUDE_CODE_ENABLE_ENV = "CLAUDE_SMART_USE_LOCAL_CLI"
@@ -292,6 +292,13 @@ GENERATION_CAPABLE_PROVIDERS: frozenset[str] = frozenset(
 )
 
 
+def _local_cli_provider_hint() -> str:
+    return (
+        f"or set {_CLAUDE_CODE_ENABLE_ENV}=1 with the active host CLI "
+        "(claude for Claude Code, codex for Codex) available."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Model role enum and resolution
 # ---------------------------------------------------------------------------
@@ -334,8 +341,7 @@ def _auto_detect_model(
         raise RuntimeError(
             "No LLM provider available. Set at least one of: "
             + ", ".join(sorted(_ENV_TO_PROVIDER))
-            + f" in your .env file, or set {_CLAUDE_CODE_ENABLE_ENV}=1 "
-            "with the `claude` CLI on PATH to use the local Claude Code provider."
+            + f" in your .env file, {_local_cli_provider_hint()}"
         )
 
     if role == ModelRole.EMBEDDING:
@@ -428,8 +434,7 @@ def validate_llm_availability(
         raise RuntimeError(
             "No LLM provider available. Set at least one of: "
             + ", ".join(sorted(_ENV_TO_PROVIDER))
-            + f" in your .env file, or set {_CLAUDE_CODE_ENABLE_ENV}=1 "
-            "with the `claude` CLI on PATH to use the local Claude Code provider."
+            + f" in your .env file, {_local_cli_provider_hint()}"
         )
 
     logger.info("Auto-detected LLM providers (priority order): %s", providers)
@@ -449,9 +454,7 @@ def validate_llm_availability(
             "No generation-capable LLM provider available. Set at least "
             "one of: "
             + ", ".join(sorted(_ENV_TO_PROVIDER))
-            + f" in your .env file, or set {_CLAUDE_CODE_ENABLE_ENV}=1 "
-            "with the `claude` CLI on PATH to use the local Claude Code "
-            "provider."
+            + f" in your .env file, {_local_cli_provider_hint()}"
         )
     logger.info("Primary provider for generation: %s", generation_provider)
 

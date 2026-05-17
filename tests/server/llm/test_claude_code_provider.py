@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import subprocess
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -419,6 +420,37 @@ class TestClaudeCodeLLMCompletion:
         )
         assert response.choices[0].message.content == "ok"  # type: ignore[union-attr]
 
+    def test_codex_host_uses_codex_exec(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Codex runs generation through ``codex exec`` instead of Claude flags."""
+
+        def fake_run(cmd, **kwargs):
+            out = Path(cmd[cmd.index("--output-last-message") + 1])
+            out.write_text("codex reply", encoding="utf-8")
+            return _fake_completed_process(stdout="", returncode=0)
+
+        mock_run = MagicMock(side_effect=fake_run)
+        monkeypatch.setenv("CLAUDE_SMART_HOST", "codex")
+        monkeypatch.setattr(ccp.subprocess, "run", mock_run)
+        monkeypatch.setattr(ccp, "_resolve_cli_path", lambda: "/usr/local/bin/codex")
+
+        response = ClaudeCodeLLM().completion(
+            model="claude-code/default",
+            messages=[
+                {"role": "system", "content": "Be terse."},
+                {"role": "user", "content": "ping"},
+            ],
+        )
+
+        cmd = mock_run.call_args.args[0]
+        assert cmd[:2] == ["/usr/local/bin/codex", "exec"]
+        assert "-p" not in cmd
+        assert "--append-system-prompt" not in cmd
+        assert mock_run.call_args.kwargs["input"] == "Be terse.\n\n## Task\nUser: ping"
+        assert mock_run.call_args.kwargs["env"]["CLAUDE_SMART_HOST"] == "codex"
+        assert response.choices[0].message.content == "codex reply"  # type: ignore[union-attr]
+
 
 class TestIsClaudeCodeAvailable:
     def test_requires_env_var(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -448,6 +480,17 @@ class TestIsClaudeCodeAvailable:
         # Force PATH lookup to fail so the override is what matters.
         monkeypatch.setattr(ccp.shutil, "which", lambda _: None)
         assert is_claude_code_available() is True
+
+    def test_codex_host_resolves_codex_cli(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("CLAUDE_SMART_USE_LOCAL_CLI", "1")
+        monkeypatch.setenv("CLAUDE_SMART_HOST", "codex")
+        monkeypatch.delenv("CLAUDE_SMART_CLI_PATH", raising=False)
+        monkeypatch.delenv("PLUGIN_ROOT", raising=False)
+        monkeypatch.delenv("CLAUDE_PLUGIN_ROOT", raising=False)
+        monkeypatch.setattr(ccp.shutil, "which", lambda name: f"/usr/local/bin/{name}")
+
+        assert is_claude_code_available() is True
+        assert ccp._resolve_cli_path() == "/usr/local/bin/codex"  # noqa: SLF001
 
 
 class TestRegisterIfEnabled:

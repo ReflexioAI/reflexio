@@ -24,7 +24,9 @@ import logging
 import os
 import shutil
 import subprocess  # noqa: S404 — subprocess is the integration point; inputs are sanitised.
+import tempfile
 import time
+from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -51,8 +53,13 @@ _LOGGER = logging.getLogger(__name__)
 PROVIDER_KEY = "claude-code"
 ENV_ENABLE = "CLAUDE_SMART_USE_LOCAL_CLI"
 _ENV_CLI_PATH = "CLAUDE_SMART_CLI_PATH"
+_ENV_HOST = "CLAUDE_SMART_HOST"
+_ENV_CODEX_PATH = "CLAUDE_SMART_CODEX_PATH"
 _ENV_TIMEOUT = "CLAUDE_SMART_CLI_TIMEOUT"
 _ENV_MODEL = "CLAUDE_SMART_CLI_MODEL"
+_HOST_CODEX = "codex"
+_HOST_CLAUDE_CODE = "claude-code"
+_CODEX_COMPAT_SCRIPT = "codex-claude-compat.py"
 _DEFAULT_TIMEOUT_SECONDS = 120
 _DEFAULT_CLI_MODEL = "claude-sonnet-4-6"
 
@@ -76,11 +83,35 @@ def _env_enabled() -> bool:
     return bool(raw) and raw.lower() in _TRUTHY_ENV_VALUES
 
 
+def _host() -> str:
+    """Return the host that owns this backend process."""
+    return _HOST_CODEX if os.environ.get(_ENV_HOST) == _HOST_CODEX else _HOST_CLAUDE_CODE
+
+
+def _cli_name() -> str:
+    """Return the expected local CLI binary for the active host."""
+    return "codex" if _host() == _HOST_CODEX else "claude"
+
+
+def _candidate_codex_compat_path() -> Path | None:
+    """Return the Codex compatibility wrapper from plugin roots, if present."""
+    for env_var in ("PLUGIN_ROOT", "CLAUDE_PLUGIN_ROOT"):
+        root = os.environ.get(env_var)
+        if not root:
+            continue
+        candidate = Path(root) / "scripts" / _CODEX_COMPAT_SCRIPT
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
 def _resolve_cli_path() -> str | None:
-    """Return the path to the ``claude`` CLI binary, or None if unavailable.
+    """Return the path to the active host CLI, or None if unavailable.
 
     Honours the ``CLAUDE_SMART_CLI_PATH`` override before falling back to
-    ``shutil.which("claude")``.
+    host-specific defaults. Claude Code uses ``claude``. Codex prefers the
+    compatibility wrapper shipped with the plugin, then falls back to
+    ``codex`` directly.
 
     Returns:
         str | None: Absolute path to the CLI, or None if not found.
@@ -95,19 +126,23 @@ def _resolve_cli_path() -> str | None:
             _ENV_CLI_PATH,
             override,
         )
+    if _host() == _HOST_CODEX:
+        compat = _candidate_codex_compat_path()
+        if compat is not None:
+            return str(compat)
+        return os.environ.get(_ENV_CODEX_PATH) or shutil.which("codex")
     return shutil.which("claude")
 
 
 def is_claude_code_available() -> bool:
-    """Return True when the claude-code provider is usable right now.
+    """Return True when the local CLI provider is usable right now.
 
     Both the opt-in env var *and* a resolvable CLI path are required, so
     an unrelated env var can't silently redirect extraction traffic.
 
     Returns:
         bool: True iff ``CLAUDE_SMART_USE_LOCAL_CLI`` is truthy AND a
-            ``claude`` binary is resolvable (via PATH or
-            ``CLAUDE_SMART_CLI_PATH``).
+            host CLI is resolvable.
     """
     return _env_enabled() and _resolve_cli_path() is not None
 
@@ -300,10 +335,10 @@ def _run_cli_stream(
     dialogue: str,
     timeout_seconds: int,
 ) -> ParseResult:
-    """Invoke ``claude -p --output-format stream-json`` and return a ParseResult.
+    """Invoke the active host CLI and return a ParseResult.
 
     Args:
-        cli_path (str): Path to the ``claude`` executable.
+        cli_path (str): Path to the host executable or compatibility wrapper.
         system_prompt (str): Combined system prompt to append (may be empty).
         dialogue (str): Flattened user/assistant dialogue sent on stdin.
         timeout_seconds (int): Subprocess timeout.
@@ -315,6 +350,29 @@ def _run_cli_stream(
     Raises:
         ClaudeCodeCLIError: On timeout or missing binary.
     """
+    if _host() == _HOST_CODEX and Path(cli_path).name != _CODEX_COMPAT_SCRIPT:
+        return _run_codex_stream(
+            codex_path=cli_path,
+            system_prompt=system_prompt,
+            dialogue=dialogue,
+            timeout_seconds=timeout_seconds,
+        )
+    return _run_claude_stream(
+        cli_path=cli_path,
+        system_prompt=system_prompt,
+        dialogue=dialogue,
+        timeout_seconds=timeout_seconds,
+    )
+
+
+def _run_claude_stream(
+    *,
+    cli_path: str,
+    system_prompt: str,
+    dialogue: str,
+    timeout_seconds: int,
+) -> ParseResult:
+    """Invoke ``claude -p --output-format stream-json`` and return a ParseResult."""
     model = os.environ.get(_ENV_MODEL) or _DEFAULT_CLI_MODEL
     cmd = [
         cli_path,
@@ -361,6 +419,77 @@ def _run_cli_stream(
     return parse_stream_json(
         proc.stdout, exit_code=proc.returncode, stderr_text=proc.stderr
     )
+
+
+def _run_codex_stream(
+    *,
+    codex_path: str,
+    system_prompt: str,
+    dialogue: str,
+    timeout_seconds: int,
+) -> ParseResult:
+    """Invoke ``codex exec`` and shape its output like a terminal stream result."""
+    output_path = _temporary_output_path()
+    cmd = [
+        codex_path,
+        "exec",
+        "--sandbox",
+        "read-only",
+        "--skip-git-repo-check",
+        "--ephemeral",
+        "--ignore-rules",
+        "--output-last-message",
+        str(output_path),
+        "-",
+    ]
+
+    env = os.environ.copy()
+    env[_ENV_HOST] = _HOST_CODEX
+    env["CLAUDE_SMART_INTERNAL"] = "1"
+
+    try:
+        proc = subprocess.run(  # noqa: S603 — cmd is constructed from validated parts.
+            cmd,
+            input=_codex_prompt(prompt=dialogue, system_prompt=system_prompt),
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            check=False,
+            env=env,
+        )
+        try:
+            terminal_text = output_path.read_text(encoding="utf-8").strip()
+        except OSError:
+            terminal_text = ""
+    except subprocess.TimeoutExpired as exc:
+        raise ClaudeCodeCLIError(
+            f"codex CLI timed out after {timeout_seconds}s"
+        ) from exc
+    except FileNotFoundError as exc:
+        raise ClaudeCodeCLIError(f"codex CLI not found at {codex_path}") from exc
+    finally:
+        with suppress(OSError):
+            output_path.unlink()
+
+    return ParseResult(
+        success=proc.returncode == 0 and bool(terminal_text),
+        terminal_text=terminal_text,
+        stderr_text=proc.stderr,
+        raw_lines_parsed=1 if terminal_text else 0,
+    )
+
+
+def _temporary_output_path() -> Path:
+    with tempfile.NamedTemporaryFile(
+        prefix="claude-smart-codex-", delete=False
+    ) as handle:
+        return Path(handle.name)
+
+
+def _codex_prompt(*, prompt: str, system_prompt: str) -> str:
+    if not system_prompt:
+        return prompt
+    return f"{system_prompt}\n\n## Task\n{prompt}"
 
 
 def _build_model_response(
@@ -484,8 +613,8 @@ class ClaudeCodeLLM(CustomLLM):
         path = self._explicit_cli_path or _resolve_cli_path()
         if not path:
             raise ClaudeCodeCLIError(
-                "claude CLI not found. Install Claude Code or set "
-                f"{_ENV_CLI_PATH} to its absolute path."
+                f"{_cli_name()} CLI not found for {_host()}. Install the host "
+                f"CLI or set {_ENV_CLI_PATH} to an executable path."
             )
         return path
 
@@ -647,9 +776,11 @@ def register_if_enabled(storage: Any | None = None) -> bool:
     cli_path = _resolve_cli_path()
     if not cli_path:
         _LOGGER.warning(
-            "%s=1 is set but the claude CLI is not on PATH. "
-            "Install Claude Code or set %s; skipping provider registration.",
+            "%s=1 is set but the %s CLI is not available for %s. "
+            "Install the host CLI or set %s; skipping provider registration.",
             ENV_ENABLE,
+            _cli_name(),
+            _host(),
             _ENV_CLI_PATH,
         )
         return False
