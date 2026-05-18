@@ -4,6 +4,7 @@ from ._base import (
     _effective_search_mode,
     _sanitize_fts_query,
     _true_rrf_merge,
+    _vector_rank_rows,
 )
 from ._extras import ExtrasMixin
 from ._operations import OperationMixin
@@ -44,6 +45,7 @@ __all__ = [
     "_effective_search_mode",
     "_sanitize_fts_query",
     "_true_rrf_merge",
+    "_vector_rank_rows",
     "StallReason",
     "StallState",
     "clear_stall_state",
