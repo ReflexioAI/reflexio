@@ -14,6 +14,8 @@ from reflexio.models.api_schema.retriever_schema import (
 )
 from reflexio.models.api_schema.service_schemas import (
     BulkDeleteResponse,
+    ClearUserDataRequest,
+    ClearUserDataResponse,
     DeleteRequestRequest,
     DeleteRequestResponse,
     DeleteRequestsByIdsRequest,
@@ -232,6 +234,37 @@ class InteractionsMixin(ReflexioBase):
         deleted = self._get_storage().delete_requests_by_ids(request.request_ids)
         return BulkDeleteResponse(
             success=True, deleted_count=deleted, message=f"Deleted {deleted} item(s)"
+        )
+
+    @_require_storage(ClearUserDataResponse)
+    def clear_user_data(
+        self,
+        request: ClearUserDataRequest | dict,
+    ) -> ClearUserDataResponse:
+        """Delete all rows scoped to a single ``user_id``.
+
+        Wipes the user's interactions, user playbooks, profiles, and
+        requests. Intentionally does NOT touch ``agent_playbooks`` —
+        those are the cross-project rollup of skills and have no
+        ``user_id`` column. Used by paired-protocol harnesses (e.g.
+        SWE-bench) to isolate per-task data on a shared backend without
+        nuking sibling tasks' rows.
+
+        Args:
+            request (ClearUserDataRequest | dict): Request containing
+                the ``user_id`` whose data should be cleared.
+
+        Returns:
+            ClearUserDataResponse: Per-entity deletion counts.
+        """
+        if isinstance(request, dict):
+            request = ClearUserDataRequest(**request)
+        deleted_counts = self._get_storage().clear_user_data(request.user_id)
+        total = sum(deleted_counts.values())
+        return ClearUserDataResponse(
+            success=True,
+            deleted_counts=deleted_counts,
+            message=f"Cleared {total} row(s) for user {request.user_id!r}",
         )
 
     def get_interactions(
