@@ -441,7 +441,9 @@ class PlaybookMixin:
         status_filter = request.status_filter
         match_count = request.top_k or 10
         query_embedding = options.query_embedding if options else None
-        mode = _effective_search_mode(request.search_mode, query_embedding)
+        mode = _effective_search_mode(
+            request.search_mode, query_embedding, request.query
+        )
         rrf_k = options.rrf_k if options else 60
         vector_weight = options.vector_weight if options else 1.0
         fts_weight = options.fts_weight if options else 1.0
@@ -1170,7 +1172,9 @@ class PlaybookMixin:
         playbook_status_filter = request.playbook_status_filter
         match_count = request.top_k or 10
         query_embedding = options.query_embedding if options else None
-        mode = _effective_search_mode(request.search_mode, query_embedding)
+        mode = _effective_search_mode(
+            request.search_mode, query_embedding, request.query
+        )
         rrf_k = options.rrf_k if options else 60
         vector_weight = options.vector_weight if options else 1.0
         fts_weight = options.fts_weight if options else 1.0

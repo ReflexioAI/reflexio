@@ -525,7 +525,7 @@ class ProfileMixin:
         req = search_interaction_request
         has_query = bool(req.query)
         match_count = req.most_recent_k or 10
-        mode = _effective_search_mode(req.search_mode, query_embedding)
+        mode = _effective_search_mode(req.search_mode, query_embedding, req.query)
 
         conditions: list[str] = ["i.user_id = ?"]
         params: list[str | int | float] = [req.user_id]
@@ -616,7 +616,7 @@ class ProfileMixin:
         match_count = req.top_k or 10
         current_ts = _epoch_now()
         has_query = bool(req.query)
-        mode = _effective_search_mode(req.search_mode, query_embedding)
+        mode = _effective_search_mode(req.search_mode, query_embedding, req.query)
         has_embedding = query_embedding is not None
         logger.info(
             "Profile search: requested_mode=%s, effective_mode=%s, has_query=%s, has_embedding=%s, user_id=%s",

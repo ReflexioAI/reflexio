@@ -351,22 +351,52 @@ class TestCosineSimilarity:
 
 class TestEffectiveSearchMode:
     def test_fts_always_honored(self):
-        assert _effective_search_mode(SearchMode.FTS, [1.0]) == SearchMode.FTS
+        assert _effective_search_mode(SearchMode.FTS, [1.0], "q") == SearchMode.FTS
 
     def test_hybrid_with_embedding(self):
-        assert _effective_search_mode(SearchMode.HYBRID, [1.0]) == SearchMode.HYBRID
+        assert (
+            _effective_search_mode(SearchMode.HYBRID, [1.0], "q") == SearchMode.HYBRID
+        )
 
     def test_vector_with_embedding(self):
-        assert _effective_search_mode(SearchMode.VECTOR, [1.0]) == SearchMode.VECTOR
+        assert (
+            _effective_search_mode(SearchMode.VECTOR, [1.0], "q") == SearchMode.VECTOR
+        )
 
     def test_hybrid_falls_back_to_fts_without_embedding(self):
-        assert _effective_search_mode(SearchMode.HYBRID, None) == SearchMode.FTS
+        assert _effective_search_mode(SearchMode.HYBRID, None, "q") == SearchMode.FTS
 
     def test_vector_falls_back_to_fts_without_embedding(self):
-        assert _effective_search_mode(SearchMode.VECTOR, None) == SearchMode.FTS
+        assert _effective_search_mode(SearchMode.VECTOR, None, "q") == SearchMode.FTS
 
     def test_fts_without_embedding(self):
-        assert _effective_search_mode(SearchMode.FTS, None) == SearchMode.FTS
+        assert _effective_search_mode(SearchMode.FTS, None, "q") == SearchMode.FTS
+
+    def test_hybrid_fallback_with_query_warns(self, caplog):
+        with caplog.at_level("WARNING"):
+            result = _effective_search_mode(SearchMode.HYBRID, None, "hello")
+        assert result == SearchMode.FTS
+        assert any("falling back to FTS" in rec.message for rec in caplog.records)
+
+    def test_vector_fallback_with_query_warns(self, caplog):
+        with caplog.at_level("WARNING"):
+            result = _effective_search_mode(SearchMode.VECTOR, None, "hello")
+        assert result == SearchMode.FTS
+        assert any("falling back to FTS" in rec.message for rec in caplog.records)
+
+    @pytest.mark.parametrize("query", [None, ""])
+    def test_hybrid_fallback_without_query_is_silent(self, caplog, query):
+        with caplog.at_level("WARNING"):
+            result = _effective_search_mode(SearchMode.HYBRID, None, query)
+        assert result == SearchMode.FTS
+        assert not any("falling back to FTS" in rec.message for rec in caplog.records)
+
+    @pytest.mark.parametrize("query", [None, ""])
+    def test_vector_fallback_without_query_is_silent(self, caplog, query):
+        with caplog.at_level("WARNING"):
+            result = _effective_search_mode(SearchMode.VECTOR, None, query)
+        assert result == SearchMode.FTS
+        assert not any("falling back to FTS" in rec.message for rec in caplog.records)
 
 
 # ---------------------------------------------------------------------------

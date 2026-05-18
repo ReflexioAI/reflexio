@@ -154,21 +154,26 @@ def _cosine_similarity(a: list[float], b: list[float]) -> float:
 def _effective_search_mode(
     mode: SearchMode,
     query_embedding: list[float] | None,
+    query: str | None,
 ) -> SearchMode:
     """Downgrade search mode when the required embedding is unavailable.
 
     Args:
         mode: Requested search mode.
         query_embedding: Pre-computed query embedding, or None.
+        query: Original query text. The fallback warning is suppressed when
+            this is falsy, since an empty-query HYBRID/VECTOR request has no
+            semantic intent to lose.
 
     Returns:
         The effective SearchMode — falls back to FTS when HYBRID/VECTOR lacks an embedding.
     """
     if mode in (SearchMode.HYBRID, SearchMode.VECTOR) and not query_embedding:
-        logger.warning(
-            "Search mode '%s' requested but no query embedding provided — falling back to FTS",
-            mode,
-        )
+        if query:
+            logger.warning(
+                "Search mode '%s' requested but no query embedding provided — falling back to FTS",
+                mode,
+            )
         return SearchMode.FTS
     return mode
 
