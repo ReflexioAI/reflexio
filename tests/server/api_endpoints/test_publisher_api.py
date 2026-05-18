@@ -13,6 +13,7 @@ from reflexio.server.api_endpoints.publisher_api import (
     add_user_interaction,
     add_user_playbook,
     add_user_profile,
+    clear_user_data,
     delete_agent_playbook,
     delete_agent_playbooks_by_ids_bulk,
     delete_all_interactions_bulk,
@@ -340,6 +341,16 @@ class TestBulkDeletes:
         result = delete_user_playbooks_by_ids_bulk(ORG_ID, request)
 
         mock_reflexio.delete_user_playbooks_by_ids_bulk.assert_called_once_with(request)
+        assert result is expected
+
+    def test_clear_user_data(self, mock_reflexio):
+        request = MagicMock()
+        expected = MagicMock()
+        mock_reflexio.clear_user_data.return_value = expected
+
+        result = clear_user_data(ORG_ID, request)
+
+        mock_reflexio.clear_user_data.assert_called_once_with(request)
         assert result is expected
 
 

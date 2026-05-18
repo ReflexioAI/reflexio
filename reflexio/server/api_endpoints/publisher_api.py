@@ -22,6 +22,8 @@ from reflexio.models.api_schema.service_schemas import (
     AddUserProfileRequest,
     AddUserProfileResponse,
     BulkDeleteResponse,
+    ClearUserDataRequest,
+    ClearUserDataResponse,
     DeleteAgentPlaybookRequest,
     DeleteAgentPlaybookResponse,
     DeleteAgentPlaybooksByIdsRequest,
@@ -384,6 +386,22 @@ def delete_user_playbooks_by_ids_bulk(
     """
     reflexio = get_reflexio(org_id=org_id)
     return reflexio.delete_user_playbooks_by_ids_bulk(request)
+
+
+def clear_user_data(
+    org_id: str, request: ClearUserDataRequest
+) -> ClearUserDataResponse:
+    """Delete all rows scoped to a single ``user_id``.
+
+    Args:
+        org_id (str): Organization ID
+        request (ClearUserDataRequest): Request containing the target user_id
+
+    Returns:
+        ClearUserDataResponse: Response with per-entity deletion counts
+    """
+    reflexio = get_reflexio(org_id=org_id)
+    return reflexio.clear_user_data(request)
 
 
 # ==============================
