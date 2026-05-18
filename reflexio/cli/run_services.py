@@ -291,15 +291,7 @@ def should_start_local_embedding_service() -> bool:
         return True
     if provider in {"cloud", "internal_service", "inprocess", "off"}:
         return False
-    return os.environ.get("CLAUDE_SMART_USE_LOCAL_EMBEDDING") in {
-        "1",
-        "true",
-        "True",
-        "yes",
-        "YES",
-        "on",
-        "ON",
-    }
+    return os.environ.get("CLAUDE_SMART_USE_LOCAL_EMBEDDING") == "1"
 
 
 def execute(args: argparse.Namespace) -> None:

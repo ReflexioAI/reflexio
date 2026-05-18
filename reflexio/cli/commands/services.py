@@ -215,9 +215,10 @@ def start(
     # (e.g. REFLEXIO_STORAGE=supabase) are visible to the resolution chain.
     load_reflexio_env()
 
-    if not os.environ.get("REFLEXIO_EMBEDDING_PROVIDER") and os.environ.get(
-        "CLAUDE_SMART_USE_LOCAL_EMBEDDING"
-    ) in {"1", "true", "True", "yes", "YES", "on", "ON"}:
+    if (
+        not os.environ.get("REFLEXIO_EMBEDDING_PROVIDER")
+        and os.environ.get("CLAUDE_SMART_USE_LOCAL_EMBEDDING") == "1"
+    ):
         os.environ["REFLEXIO_EMBEDDING_PROVIDER"] = "local_service"
 
     selected_services = run_mod.parse_only_flag(only, {"backend", "docs"})

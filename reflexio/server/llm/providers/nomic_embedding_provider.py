@@ -185,7 +185,7 @@ def register_if_enabled() -> bool:
     global _REGISTERED
     if _REGISTERED:
         return True
-    if os.environ.get(_ENV_ENABLE) not in {"1", "true", "True"}:
+    if os.environ.get(_ENV_ENABLE) != "1":
         return False
     provider = os.environ.get(_ENV_PROVIDER, "").strip().lower()
     if provider in {"local_service", "internal_service", "off"}:

@@ -36,10 +36,6 @@ class EmbeddingUnavailableError(RuntimeError):
     """Raised when the configured embedding provider is unavailable."""
 
 
-def _truthy(value: str | None) -> bool:
-    return value in {"1", "true", "True", "yes", "YES", "on", "ON"}
-
-
 def _local_service_url() -> str:
     port = os.environ.get(_ENV_EMBEDDING_PORT, str(_DEFAULT_LOCAL_PORT))
     return f"http://127.0.0.1:{port}"
@@ -136,7 +132,7 @@ def embedding_provider_mode(model: str | None = None) -> EmbeddingProviderMode:
             )
         return mode  # type: ignore[return-value]
 
-    if _truthy(os.environ.get(_ENV_CLAUDE_SMART_LOCAL)):
+    if os.environ.get(_ENV_CLAUDE_SMART_LOCAL) == "1":
         return "local_service"
 
     if os.environ.get(_ENV_SERVICE_URL):

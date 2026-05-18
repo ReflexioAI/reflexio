@@ -194,10 +194,10 @@ def is_local_embedder_available() -> bool:
     to surface ``"local"`` as an option.
 
     Returns:
-        bool: True when ``CLAUDE_SMART_USE_LOCAL_EMBEDDING`` is truthy
+        bool: True when ``CLAUDE_SMART_USE_LOCAL_EMBEDDING=1``
             AND ``chromadb`` is importable.
     """
-    if os.environ.get(_ENV_ENABLE) not in {"1", "true", "True"}:
+    if os.environ.get(_ENV_ENABLE) != "1":
         return False
     return is_chromadb_importable()
 

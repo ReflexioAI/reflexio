@@ -136,6 +136,14 @@ class TestBuildBackendService:
 
         assert should_start_local_embedding_service() is True
 
+    def test_should_not_start_local_embedding_service_for_true_string(
+        self, monkeypatch
+    ) -> None:
+        monkeypatch.delenv("REFLEXIO_EMBEDDING_PROVIDER", raising=False)
+        monkeypatch.setenv("CLAUDE_SMART_USE_LOCAL_EMBEDDING", "true")
+
+        assert should_start_local_embedding_service() is False
+
     def test_should_not_start_local_embedding_service_for_internal(
         self, monkeypatch
     ) -> None:

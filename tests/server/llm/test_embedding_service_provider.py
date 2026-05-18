@@ -20,6 +20,14 @@ def test_claude_smart_legacy_flag_defaults_to_local_service(monkeypatch) -> None
     assert embedding_provider_mode("local/nomic-embed-v1.5") == "local_service"
 
 
+def test_claude_smart_legacy_flag_requires_one(monkeypatch) -> None:
+    monkeypatch.delenv("REFLEXIO_EMBEDDING_PROVIDER", raising=False)
+    monkeypatch.delenv("REFLEXIO_EMBEDDING_SERVICE_URL", raising=False)
+    monkeypatch.setenv("CLAUDE_SMART_USE_LOCAL_EMBEDDING", "true")
+
+    assert embedding_provider_mode("local/nomic-embed-v1.5") == "inprocess"
+
+
 def test_local_model_without_opt_in_preserves_inprocess_mode(monkeypatch) -> None:
     monkeypatch.delenv("REFLEXIO_EMBEDDING_PROVIDER", raising=False)
     monkeypatch.delenv("REFLEXIO_EMBEDDING_SERVICE_URL", raising=False)
