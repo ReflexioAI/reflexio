@@ -13,9 +13,11 @@ import typer
 from reflexio.cli.commands.services import validate_storage_backend
 from reflexio.cli.run_services import (
     build_backend_service,
+    build_embedding_service,
     build_nextjs_service,
     parse_only_flag,
     resolve_ports,
+    should_start_local_embedding_service,
 )
 from reflexio.cli.stop_services import build_stop_targets
 
@@ -116,8 +118,31 @@ class TestBuildBackendService:
     """Tests for build_backend_service()."""
 
     def test_reload_true_adds_reload_flag(self) -> None:
-        svc = build_backend_service({"backend": 8081}, reload=True)
+        svc = build_backend_service({"backend": 8081}, reload=True, workers=1)
         assert "--reload" in svc.command
+
+    def test_build_embedding_service_uses_embedding_daemon(self) -> None:
+        svc = build_embedding_service({"embedding": 8072})
+
+        assert svc.name == "embedding"
+        assert "reflexio.server.llm.embedding_service:app" in svc.command
+        assert svc.env == {"REFLEXIO_EMBEDDING_DAEMON": "1"}
+
+    def test_should_start_local_embedding_service_for_claude_smart(
+        self, monkeypatch
+    ) -> None:
+        monkeypatch.delenv("REFLEXIO_EMBEDDING_PROVIDER", raising=False)
+        monkeypatch.setenv("CLAUDE_SMART_USE_LOCAL_EMBEDDING", "1")
+
+        assert should_start_local_embedding_service() is True
+
+    def test_should_not_start_local_embedding_service_for_internal(
+        self, monkeypatch
+    ) -> None:
+        monkeypatch.setenv("REFLEXIO_EMBEDDING_PROVIDER", "internal_service")
+        monkeypatch.setenv("CLAUDE_SMART_USE_LOCAL_EMBEDDING", "1")
+
+        assert should_start_local_embedding_service() is False
 
     def test_reload_false_omits_reload_flag(self) -> None:
         svc = build_backend_service({"backend": 8081}, reload=False)
@@ -127,6 +152,7 @@ class TestBuildBackendService:
         svc = build_backend_service(
             {"backend": 8081},
             reload=True,
+            workers=1,
             reload_includes=["*.json", "*.yaml"],
         )
         assert "--reload-include" in svc.command

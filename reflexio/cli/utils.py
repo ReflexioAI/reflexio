@@ -144,6 +144,7 @@ def remove_pidfile(pidfile: Path) -> None:
 # Patterns that indicate a service is ready to accept requests
 _READY_PATTERNS: dict[str, list[str]] = {
     "backend": ["Application startup complete"],
+    "embedding": ["Application startup complete"],
     "frontend": ["Ready in"],
     "docs": ["Ready in"],
 }
@@ -151,6 +152,7 @@ _READY_PATTERNS: dict[str, list[str]] = {
 # Extra env vars to suppress noise from subprocesses at source
 _NOISE_SUPPRESSION_ENV: dict[str, dict[str, str]] = {
     "backend": {"LITELLM_LOG": "ERROR"},
+    "embedding": {"LITELLM_LOG": "ERROR"},
     "frontend": {"NODE_NO_WARNINGS": "1"},
     "docs": {"NODE_NO_WARNINGS": "1"},
 }

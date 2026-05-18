@@ -25,10 +25,16 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         help="Docs port (default: 8082, env: DOCS_PORT)",
     )
     parser.add_argument(
+        "--embedding-port",
+        type=int,
+        default=None,
+        help="Embedding service port (default: 8072, env: EMBEDDING_PORT)",
+    )
+    parser.add_argument(
         "--only",
         type=str,
         default=None,
-        help="Comma-separated list of services to stop: backend,docs",
+        help="Comma-separated list of services to stop: backend,docs,embedding",
     )
     parser.add_argument(
         "--force",
@@ -64,6 +70,10 @@ def build_stop_targets(
         port_map["docs"] = ports["docs"]
         process_patterns["docs"] = f"next dev.*-p {ports['docs']}"
 
+    if "embedding" in only:
+        port_map["embedding"] = ports["embedding"]
+        process_patterns["embedding"] = "reflexio.server.llm.embedding_service:app"
+
     return port_map, process_patterns
 
 
@@ -71,12 +81,14 @@ def execute(args: argparse.Namespace) -> None:
     """Execute the stop-services command."""
     load_dotenv()
 
-    ports = resolve_ports(args, defaults={"backend": 8081, "docs": 8082})
-    only = parse_only_flag(args.only, {"backend", "docs"})
+    ports = resolve_ports(
+        args, defaults={"backend": 8081, "docs": 8082, "embedding": 8072}
+    )
+    only = parse_only_flag(args.only, {"backend", "docs", "embedding"})
     port_map, process_patterns = build_stop_targets(only, ports)
 
     if not port_map:
-        print("No services selected. Available: backend, docs")
+        print("No services selected. Available: backend, docs, embedding")
         return
 
     print("Stopping services...")

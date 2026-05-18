@@ -18,6 +18,9 @@ from reflexio.models.api_schema.service_schemas import (
     UserProfile,
 )
 from reflexio.models.config_schema import SearchMode, SearchOptions
+from reflexio.server.llm.providers.embedding_service_provider import (
+    EmbeddingUnavailableError,
+)
 from reflexio.server.services.storage.sqlite_storage import (
     SQLiteStorage,
     _cosine_similarity,
@@ -401,14 +404,14 @@ class TestVectorRankRowsLogging:
         ):
             _vector_rank_rows(rows, [1.0, 0.0] + [0.0] * 510, match_count=3)
         line = next(
-            r.getMessage()
-            for r in caplog.records
-            if "vector_rank:" in r.getMessage()
+            r.getMessage() for r in caplog.records if "vector_rank:" in r.getMessage()
         )
         # The log shows candidates=50 but only ~10 scores in top_scores=.
         assert "candidates=50" in line
         # Score list portion should not contain 50 entries.
-        assert line.count(",") <= 12  # ~10 entries plus commas in candidates/match_count
+        assert (
+            line.count(",") <= 12
+        )  # ~10 entries plus commas in candidates/match_count
 
 
 class TestEffectiveSearchMode:
@@ -970,6 +973,25 @@ def test_embedding_prefix_applied():
         # Default purpose is document
         s._get_embedding("hello world")
         assert captured_texts[-1] == "search_document: hello world"
+
+
+def test_embedding_unavailable_degrades_to_empty_vector():
+    """Embedding service outages should not block storage writes/search."""
+
+    def mock_llm_get_embedding(text, model, dimensions):  # noqa: ARG001
+        raise EmbeddingUnavailableError("service down")
+
+    with (
+        tempfile.TemporaryDirectory() as temp_dir,
+        patch(
+            "reflexio.server.services.storage.sqlite_storage._base.LiteLLMClient"
+        ) as mock_cls,
+    ):
+        mock_cls.return_value.get_embedding = mock_llm_get_embedding
+        with patch.object(SQLiteStorage, "_try_load_sqlite_vec", return_value=False):
+            s = SQLiteStorage(org_id="0", db_path=f"{temp_dir}/reflexio.db")
+
+        assert s._get_embedding("hello world") == []
 
 
 # ---------------------------------------------------------------------------

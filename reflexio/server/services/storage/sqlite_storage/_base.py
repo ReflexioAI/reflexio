@@ -50,6 +50,9 @@ from reflexio.server.llm.model_defaults import (
     ModelRole,
     resolve_model_name,
 )
+from reflexio.server.llm.providers.embedding_service_provider import (
+    EmbeddingUnavailableError,
+)
 from reflexio.server.services.storage.error import StorageError
 from reflexio.server.services.storage.retention import RetentionTarget
 from reflexio.server.services.storage.retention_mixin import (
@@ -1172,9 +1175,17 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             The embedding vector as a list of floats.
         """
         prefix = "search_document: " if purpose == "document" else "search_query: "
-        return self.llm_client.get_embedding(
-            prefix + text, self.embedding_model_name, self.embedding_dimensions
-        )
+        try:
+            return self.llm_client.get_embedding(
+                prefix + text, self.embedding_model_name, self.embedding_dimensions
+            )
+        except EmbeddingUnavailableError as exc:
+            logger.warning(
+                "Embedding unavailable for %s text; continuing without vector: %s",
+                purpose,
+                exc,
+            )
+            return []
 
     def _should_expand_documents(self) -> bool:
         """Check if document expansion is enabled."""

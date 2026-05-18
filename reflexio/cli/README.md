@@ -59,16 +59,23 @@ Example: `uv run reflexio --json search "refund policy"`.
 
 ## Services
 
-Start and stop the backend and docs servers.
+Start and stop the backend, docs server, and optional local embedding daemon.
 
 ```shell
 uv run reflexio services start                          # backend :8081, docs :8082
 uv run reflexio services start --storage sqlite         # sqlite (default) | supabase | disk
 uv run reflexio services start --backend-port 9000 --docs-port 9001
 uv run reflexio services start --only backend --no-reload
+uv run reflexio embeddings serve --port 8072            # OpenAI-compatible local embeddings
 uv run reflexio services stop
 uv run reflexio services stop --force                   # SIGKILL instead of SIGTERM
 ```
+
+When `REFLEXIO_EMBEDDING_PROVIDER=local_service` or
+`CLAUDE_SMART_USE_LOCAL_EMBEDDING=1`, `services start --only backend` starts an
+`embedding` service dependency automatically. The daemon exposes
+`POST /v1/embeddings` and supports `local/nomic-embed-v1.5`,
+`local/nomic-embed-text-v1.5`, and `local/minilm-l6-v2`.
 
 ## Publishing interactions
 

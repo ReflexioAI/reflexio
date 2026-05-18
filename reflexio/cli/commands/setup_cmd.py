@@ -6,7 +6,6 @@ import contextlib
 import json
 import os
 import re
-import shlex
 import shutil
 import subprocess
 import sys
@@ -915,58 +914,25 @@ def _merge_hook_config(
     *,
     expert: bool = False,
 ) -> None:
-    """Add or update Reflexio hooks in .claude/settings.json.
+    """Remove legacy Reflexio Claude Code hooks from .claude/settings.json.
 
-    Installs hooks:
-    - SessionStart: checks if the Reflexio server is running and starts it in
-      the background if not (~10ms, non-blocking).
-    - UserPromptSubmit: runs `reflexio search` on every user prompt and injects
-      results as context Claude sees.
-    - Stop (expert mode only): publishes the session transcript to Reflexio
-      for extraction at session end.
+    The maintained Claude Code/Codex integration is the claude-smart plugin.
+    The legacy JS hooks remain in the package for one compatibility release as
+    no-op shims, but new installs should not register SessionStart,
+    UserPromptSubmit, or Stop hooks that can recursively start backend/search/
+    publish flows.
 
     Args:
         settings_path: Path to the project's .claude/settings.json.
         handler_js_path: Absolute path to handler.js in the installed package.
         expert: If True, also install the Stop hook for transcript capture.
     """
-    settings: dict = {}
-    if settings_path.exists():
-        with contextlib.suppress(json.JSONDecodeError, OSError):
-            settings = json.loads(settings_path.read_text())
-
-    hooks = settings.setdefault("hooks", {})
-
-    # Session start hook (SessionStart) — checks/starts Reflexio server proactively
-    session_start_hook_sh = handler_js_path.parent / "session_start_hook.sh"
-    _upsert_hook(
-        hooks, "SessionStart", f"bash {shlex.quote(str(session_start_hook_sh))}"
-    )
-
-    # Search hook (UserPromptSubmit) — injects Reflexio context before Claude responds
-    search_hook_js = handler_js_path.parent / "search_hook.js"
-    _upsert_hook(hooks, "UserPromptSubmit", f"node {shlex.quote(str(search_hook_js))}")
-
-    # Stop hook (expert mode) — publishes session transcript for extraction.
-    # On non-expert (re)install, remove the hook if it was previously installed.
-    if expert:
-        _upsert_hook(hooks, "Stop", f"node {shlex.quote(str(handler_js_path))}")
-    else:
-        stop_hooks = hooks.get("Stop", [])
-        cleaned = [
-            entry
-            for entry in stop_hooks
-            if not any(
-                "reflexio" in h.get("command", "") for h in entry.get("hooks", [])
-            )
-        ]
-        if cleaned:
-            hooks["Stop"] = cleaned
-        elif "Stop" in hooks:
-            del hooks["Stop"]
-
+    del handler_js_path, expert
     settings_path.parent.mkdir(parents=True, exist_ok=True)
-    settings_path.write_text(json.dumps(settings, indent=2) + "\n")
+    if not settings_path.exists():
+        settings_path.write_text("{}\n")
+        return
+    _remove_hook_config(settings_path)
 
 
 def _remove_hook_config(settings_path: Path) -> None:

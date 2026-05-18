@@ -32,6 +32,12 @@ from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
 from reflexio.server.llm.providers.claude_code_provider import (
     register_if_enabled as _register_claude_code,
 )
+from reflexio.server.llm.providers.embedding_service_provider import (
+    EmbeddingUnavailableError,
+    embedding_provider_mode,
+    get_service_embeddings,
+    should_use_embedding_service,
+)
 from reflexio.server.llm.providers.local_embedding_provider import (
     LocalEmbedder,
 )
@@ -572,6 +578,13 @@ class LiteLLMClient:
             LiteLLMClientError: If embedding generation fails.
         """
         embedding_model = model or self._resolve_default_embedding_model()
+        mode = embedding_provider_mode(embedding_model)
+        if mode == "off":
+            raise EmbeddingUnavailableError("Embedding provider is disabled")
+        if should_use_embedding_service(embedding_model):
+            return get_service_embeddings(
+                [text], model=embedding_model, dimensions=dimensions
+            )[0]
 
         # local/nomic-embed-* routes to the sentence-transformers Nomic
         # provider (137M params, 768d Matryoshka-truncated to 512). Higher
@@ -592,6 +605,10 @@ class LiteLLMClient:
         # ``CLAUDE_SMART_USE_LOCAL_EMBEDDING``) is enforced earlier in the
         # auto-detection layer (see ``model_defaults._auto_detect_model``).
         if embedding_model.startswith("local/"):
+            if mode == "cloud":
+                raise EmbeddingUnavailableError(
+                    f"Local embedding model {embedding_model!r} cannot use cloud mode"
+                )
             if not _is_chromadb_importable():
                 raise LiteLLMClientError(
                     f"Embedding model {embedding_model!r} requires chromadb. "
@@ -654,6 +671,13 @@ class LiteLLMClient:
             return []
 
         embedding_model = model or self._resolve_default_embedding_model()
+        mode = embedding_provider_mode(embedding_model)
+        if mode == "off":
+            raise EmbeddingUnavailableError("Embedding provider is disabled")
+        if should_use_embedding_service(embedding_model):
+            return get_service_embeddings(
+                list(texts), model=embedding_model, dimensions=dimensions
+            )
 
         # See matching short-circuits in get_embedding above.
         if _is_nomic_model(embedding_model) and _nomic_embedder_enabled():
@@ -665,6 +689,10 @@ class LiteLLMClient:
                 ) from e
 
         if embedding_model.startswith("local/"):
+            if mode == "cloud":
+                raise EmbeddingUnavailableError(
+                    f"Local embedding model {embedding_model!r} cannot use cloud mode"
+                )
             if not _is_chromadb_importable():
                 raise LiteLLMClientError(
                     f"Embedding model {embedding_model!r} requires chromadb. "

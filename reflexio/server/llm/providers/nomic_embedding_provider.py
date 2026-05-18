@@ -37,6 +37,8 @@ from typing import Any
 _LOGGER = logging.getLogger(__name__)
 
 _ENV_ENABLE = "CLAUDE_SMART_USE_LOCAL_EMBEDDING"
+_ENV_PROVIDER = "REFLEXIO_EMBEDDING_PROVIDER"
+_ENV_DAEMON = "REFLEXIO_EMBEDDING_DAEMON"
 _MODEL_KEYS = {"local/nomic-embed-v1.5", "local/nomic-embed-text-v1.5"}
 _HF_MODEL_NAME = "nomic-ai/nomic-embed-text-v1.5"
 
@@ -185,6 +187,21 @@ def register_if_enabled() -> bool:
         return True
     if os.environ.get(_ENV_ENABLE) not in {"1", "true", "True"}:
         return False
+    provider = os.environ.get(_ENV_PROVIDER, "").strip().lower()
+    if provider in {"local_service", "internal_service", "off"}:
+        _LOGGER.info(
+            "Nomic in-process prewarm skipped because %s=%s",
+            _ENV_PROVIDER,
+            provider,
+        )
+        return False
+    if not provider and os.environ.get(_ENV_DAEMON) != "1":
+        _LOGGER.info(
+            "Nomic in-process prewarm skipped; %s=1 now defaults to the "
+            "shared embedding service.",
+            _ENV_ENABLE,
+        )
+        return False
     if importlib.util.find_spec("sentence_transformers") is None:
         _LOGGER.warning(
             "%s=1 set but `sentence-transformers` not installed; the Nomic "
@@ -193,7 +210,9 @@ def register_if_enabled() -> bool:
         )
         return False
     _REGISTERED = True
-    _LOGGER.info("Nomic local embedding provider enabled (models=%s)", sorted(_MODEL_KEYS))
+    _LOGGER.info(
+        "Nomic local embedding provider enabled (models=%s)", sorted(_MODEL_KEYS)
+    )
 
     def _prewarm() -> None:
         """Background load + dummy inference so the first real request is fast."""
@@ -202,7 +221,9 @@ def register_if_enabled() -> bool:
             embedder.embed(["warmup"])
             _LOGGER.info("Nomic embedder pre-warmed")
         except Exception:  # noqa: BLE001
-            _LOGGER.exception("Nomic embedder pre-warm failed; first call will pay the cost")
+            _LOGGER.exception(
+                "Nomic embedder pre-warm failed; first call will pay the cost"
+            )
 
     threading.Thread(target=_prewarm, daemon=True, name="nomic-prewarm").start()
     return True

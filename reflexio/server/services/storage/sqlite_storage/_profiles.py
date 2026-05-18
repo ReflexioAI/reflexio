@@ -19,6 +19,9 @@ from reflexio.models.api_schema.service_schemas import (
     UserProfile,
 )
 from reflexio.models.config_schema import SearchMode
+from reflexio.server.llm.providers.embedding_service_provider import (
+    EmbeddingUnavailableError,
+)
 
 from ._base import (
     SQLiteStorageBase,
@@ -444,9 +447,17 @@ class ProfileMixin:
             "\n".join([i.content or "", i.user_action_description or ""])
             for i in interactions
         ]
-        embeddings = self.llm_client.get_embeddings(
-            texts, self.embedding_model_name, self.embedding_dimensions
-        )
+        try:
+            embeddings = self.llm_client.get_embeddings(
+                texts, self.embedding_model_name, self.embedding_dimensions
+            )
+        except EmbeddingUnavailableError as exc:
+            logger.warning(
+                "Embedding unavailable for interaction bulk insert; "
+                "continuing without vectors: %s",
+                exc,
+            )
+            embeddings = [[] for _ in texts]
         for interaction, embedding in zip(interactions, embeddings, strict=False):
             interaction.embedding = embedding
             self._insert_interaction(interaction)

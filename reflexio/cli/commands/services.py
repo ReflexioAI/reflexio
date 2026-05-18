@@ -70,6 +70,9 @@ def _ensure_llm_configured(env_path: Path) -> None:
     providers = detect_available_providers()
     has_embedding = any(p in EMBEDDING_CAPABLE_PROVIDERS for p in providers)
     has_generation = any(p in GENERATION_CAPABLE_PROVIDERS for p in providers)
+    embedding_provider = os.environ.get("REFLEXIO_EMBEDDING_PROVIDER", "").lower()
+    if embedding_provider in {"local_service", "internal_service"}:
+        has_embedding = True
     if providers and has_generation and has_embedding:
         return
 
@@ -161,8 +164,12 @@ def start(
     docs_port: Annotated[
         int | None, typer.Option(help="Docs server port (default: 8082)")
     ] = None,
+    embedding_port: Annotated[
+        int | None, typer.Option(help="Embedding service port (default: 8072)")
+    ] = None,
     only: Annotated[
-        str | None, typer.Option(help="Comma-separated services: backend,docs")
+        str | None,
+        typer.Option(help="Comma-separated services: backend,docs,embedding"),
     ] = None,
     no_reload: Annotated[
         bool, typer.Option("--no-reload", help="Disable uvicorn auto-reload")
@@ -208,6 +215,11 @@ def start(
     # (e.g. REFLEXIO_STORAGE=supabase) are visible to the resolution chain.
     load_reflexio_env()
 
+    if not os.environ.get("REFLEXIO_EMBEDDING_PROVIDER") and os.environ.get(
+        "CLAUDE_SMART_USE_LOCAL_EMBEDDING"
+    ) in {"1", "true", "True", "yes", "YES", "on", "ON"}:
+        os.environ["REFLEXIO_EMBEDDING_PROVIDER"] = "local_service"
+
     # First-run guard: if the backend's lifespan validator would reject the
     # current env (no LLM key, or no embedding-capable provider), prompt now
     # so users see a friendly wizard instead of a lifespan traceback.
@@ -229,6 +241,7 @@ def start(
     args = argparse.Namespace(
         backend_port=backend_port,
         docs_port=docs_port,
+        embedding_port=embedding_port,
         only=only,
         no_reload=no_reload,
         workers=workers,
@@ -247,8 +260,12 @@ def stop(
     docs_port: Annotated[
         int | None, typer.Option(help="Docs server port (default: 8082)")
     ] = None,
+    embedding_port: Annotated[
+        int | None, typer.Option(help="Embedding service port (default: 8072)")
+    ] = None,
     only: Annotated[
-        str | None, typer.Option(help="Comma-separated services: backend,docs")
+        str | None,
+        typer.Option(help="Comma-separated services: backend,docs,embedding"),
     ] = None,
     force: Annotated[bool, typer.Option("--force", help="SIGKILL immediately")] = False,
 ) -> None:
@@ -256,6 +273,7 @@ def stop(
     args = argparse.Namespace(
         backend_port=backend_port,
         docs_port=docs_port,
+        embedding_port=embedding_port,
         only=only,
         force=force,
     )

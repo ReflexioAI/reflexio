@@ -12,6 +12,9 @@ from pathlib import Path
 import reflexio
 from reflexio.cli.env_loader import load_reflexio_env
 from reflexio.cli.utils import ServiceConfig, get_env_port, run_services
+from reflexio.server.llm.providers.embedding_service_provider import (
+    embedding_service_url,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -44,10 +47,16 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         help="Docs port (default: 8082, env: DOCS_PORT)",
     )
     parser.add_argument(
+        "--embedding-port",
+        type=int,
+        default=None,
+        help="Embedding service port (default: 8072, env: EMBEDDING_PORT)",
+    )
+    parser.add_argument(
         "--only",
         type=str,
         default=None,
-        help="Comma-separated list of services to start: backend,docs",
+        help="Comma-separated list of services to start: backend,docs,embedding",
     )
     parser.add_argument(
         "--no-reload",
@@ -242,6 +251,24 @@ def build_nextjs_service(
     )
 
 
+def build_embedding_service(ports: dict[str, int]) -> ServiceConfig:
+    """Build the local embedding daemon service configuration."""
+    return ServiceConfig(
+        name="embedding",
+        command=[
+            sys.executable,
+            "-m",
+            "uvicorn",
+            "reflexio.server.llm.embedding_service:app",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(ports["embedding"]),
+        ],
+        env={"REFLEXIO_EMBEDDING_DAEMON": "1"},
+    )
+
+
 def parse_only_flag(only: str | None, default_services: set[str]) -> set[str]:
     """Parse the --only flag into a set of service names.
 
@@ -257,6 +284,24 @@ def parse_only_flag(only: str | None, default_services: set[str]) -> set[str]:
     return default_services
 
 
+def should_start_local_embedding_service() -> bool:
+    """Return True when backend startup depends on the local embedding daemon."""
+    provider = os.environ.get("REFLEXIO_EMBEDDING_PROVIDER", "").strip().lower()
+    if provider == "local_service":
+        return True
+    if provider in {"cloud", "internal_service", "inprocess", "off"}:
+        return False
+    return os.environ.get("CLAUDE_SMART_USE_LOCAL_EMBEDDING") in {
+        "1",
+        "true",
+        "True",
+        "yes",
+        "YES",
+        "on",
+        "ON",
+    }
+
+
 def execute(args: argparse.Namespace) -> None:
     """Execute the run-services command."""
     load_reflexio_env()
@@ -268,14 +313,29 @@ def execute(args: argparse.Namespace) -> None:
     ts = time.strftime("%Y-%m-%d %H:%M:%S %Z")
     print(f"\n{bar}\n=== NEW REFLEXIO SERVER START — {ts} ===\n{bar}\n")
 
-    ports = resolve_ports(args, defaults={"backend": 8081, "docs": 8082})
+    ports = resolve_ports(
+        args, defaults={"backend": 8081, "docs": 8082, "embedding": 8072}
+    )
     os.environ["API_BACKEND_URL"] = os.environ.get(
         "API_BACKEND_URL", f"http://localhost:{ports['backend']}"
     )
+    os.environ["EMBEDDING_PORT"] = str(ports["embedding"])
 
     only = parse_only_flag(args.only, {"backend", "docs"})
+    if "backend" in only and should_start_local_embedding_service():
+        only.add("embedding")
+        os.environ["REFLEXIO_EMBEDDING_PROVIDER"] = os.environ.get(
+            "REFLEXIO_EMBEDDING_PROVIDER", "local_service"
+        )
+        os.environ["REFLEXIO_EMBEDDING_SERVICE_URL"] = os.environ.get(
+            "REFLEXIO_EMBEDDING_SERVICE_URL",
+            embedding_service_url("local_service"),
+        )
     docs_explicit = args.only is not None and "docs" in only
     services: list[ServiceConfig] = []
+
+    if "embedding" in only:
+        services.append(build_embedding_service(ports))
 
     if "backend" in only:
         reload = not args.no_reload
@@ -315,7 +375,7 @@ def execute(args: argparse.Namespace) -> None:
             )
 
     if not services:
-        print("No services selected. Available: backend, docs")
+        print("No services selected. Available: backend, docs, embedding")
         return
 
     started_ports = {s.name: ports[s.name] for s in services}
