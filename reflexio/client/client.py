@@ -69,6 +69,8 @@ from reflexio.models.api_schema.service_schemas import (
     AddUserProfileResponse,
     AgentPlaybook,
     BulkDeleteResponse,
+    ClearUserDataRequest,
+    ClearUserDataResponse,
     DeleteAgentPlaybookRequest,
     DeleteAgentPlaybookResponse,
     DeleteAgentPlaybooksByIdsRequest,
@@ -2389,3 +2391,27 @@ class ReflexioClient:
         """
         response = self._make_request("POST", "/stall_state/notified")
         return MarkNotifiedResponse.model_validate(response)
+
+    def clear_user_data(self, user_id: str) -> ClearUserDataResponse:
+        """Delete all rows scoped to a single ``user_id``.
+
+        Wipes the user's interactions, user playbooks, profiles, and
+        requests on the server. Does NOT touch agent playbooks — they
+        are intentionally shared cross-project. Used by paired-protocol
+        harnesses (e.g. SWE-bench) to isolate per-task data on a shared
+        backend without one task's clear-all nuking another in-flight
+        task's rows.
+
+        Args:
+            user_id (str): The user id whose data should be cleared.
+
+        Returns:
+            ClearUserDataResponse: Per-entity deletion counts.
+        """
+        req = ClearUserDataRequest(user_id=user_id)
+        response = self._make_request(
+            "POST", "/api/clear_user_data", json=req.model_dump()
+        )
+        # Nuclear — clear everything that could reference this user.
+        self._cache.clear()
+        return ClearUserDataResponse(**response)

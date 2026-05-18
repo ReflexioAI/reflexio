@@ -1319,6 +1319,113 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         ]
         return self._fetchall(sql, all_params)
 
+    # ------------------------------------------------------------------
+    # Per-user data clear
+    # ------------------------------------------------------------------
+
+    def clear_user_data(self, user_id: str) -> dict[str, int]:
+        """Atomic per-``user_id`` row deletion across all user-scoped tables.
+
+        Overrides the BaseStorage default with a single-transaction SQL
+        implementation. Removes interactions, user playbooks, profiles,
+        and requests scoped to the user. Intentionally does NOT touch
+        ``agent_playbooks`` — they are the cross-project rollup of
+        skills and have no ``user_id`` column.
+
+        Also cleans up FTS and vector sidecars for the user's rows so
+        subsequent searches don't surface deleted data.
+
+        Args:
+            user_id (str): The user id whose rows should be deleted.
+
+        Returns:
+            dict[str, int]: Per-entity deletion counts with keys
+                ``interactions``, ``user_playbooks``, ``profiles``, and
+                ``requests``.
+        """
+        with self._lock:
+            # Snapshot rowids/ids that need FTS or vector cleanup before
+            # the DELETE removes them from the main tables.
+            interaction_ids = [
+                r["interaction_id"]
+                for r in self.conn.execute(
+                    "SELECT interaction_id FROM interactions WHERE user_id = ?",
+                    (user_id,),
+                ).fetchall()
+            ]
+            user_playbook_ids = [
+                r["user_playbook_id"]
+                for r in self.conn.execute(
+                    "SELECT user_playbook_id FROM user_playbooks WHERE user_id = ?",
+                    (user_id,),
+                ).fetchall()
+            ]
+            profile_rows = self.conn.execute(
+                "SELECT rowid, profile_id FROM profiles WHERE user_id = ?",
+                (user_id,),
+            ).fetchall()
+            profile_rowids = [r["rowid"] for r in profile_rows]
+            profile_ids = [r["profile_id"] for r in profile_rows]
+
+            # FTS cleanup
+            if interaction_ids:
+                ph = ",".join("?" for _ in interaction_ids)
+                self.conn.execute(
+                    f"DELETE FROM interactions_fts WHERE rowid IN ({ph})",
+                    interaction_ids,
+                )
+            if user_playbook_ids:
+                ph = ",".join("?" for _ in user_playbook_ids)
+                self.conn.execute(
+                    f"DELETE FROM user_playbooks_fts WHERE rowid IN ({ph})",
+                    user_playbook_ids,
+                )
+            if profile_ids:
+                ph = ",".join("?" for _ in profile_ids)
+                self.conn.execute(
+                    f"DELETE FROM profiles_fts WHERE profile_id IN ({ph})",
+                    profile_ids,
+                )
+
+            # Vector index cleanup (best-effort: only if sqlite-vec loaded)
+            if self._has_sqlite_vec:
+                vec_targets = (
+                    ("interactions_vec", interaction_ids),
+                    ("user_playbooks_vec", user_playbook_ids),
+                    ("profiles_vec", profile_rowids),
+                )
+                for vec_table, rowids in vec_targets:
+                    if rowids:
+                        ph = ",".join("?" for _ in rowids)
+                        self.conn.execute(
+                            f"DELETE FROM {vec_table} WHERE rowid IN ({ph})",
+                            rowids,
+                        )
+
+            # Main-table deletes. Order matters only for foreign key
+            # integrity; SQLite default has FK off for most tables here
+            # so order is chosen for readability.
+            interactions_cur = self.conn.execute(
+                "DELETE FROM interactions WHERE user_id = ?", (user_id,)
+            )
+            user_playbooks_cur = self.conn.execute(
+                "DELETE FROM user_playbooks WHERE user_id = ?", (user_id,)
+            )
+            profiles_cur = self.conn.execute(
+                "DELETE FROM profiles WHERE user_id = ?", (user_id,)
+            )
+            requests_cur = self.conn.execute(
+                "DELETE FROM requests WHERE user_id = ?", (user_id,)
+            )
+            self.conn.commit()
+
+            return {
+                "interactions": interactions_cur.rowcount,
+                "user_playbooks": user_playbooks_cur.rowcount,
+                "profiles": profiles_cur.rowcount,
+                "requests": requests_cur.rowcount,
+            }
+
 
 # ---------------------------------------------------------------------------
 # DDL — table and FTS definitions

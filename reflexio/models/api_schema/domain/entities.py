@@ -58,6 +58,8 @@ __all__ = [
     "DeleteProfilesByIdsRequest",
     "DeleteAgentPlaybooksByIdsRequest",
     "DeleteUserPlaybooksByIdsRequest",
+    "ClearUserDataRequest",
+    "ClearUserDataResponse",
     "InteractionData",
     "PublishUserInteractionRequest",
     "PublishUserInteractionResponse",
@@ -478,6 +480,21 @@ class DeleteAgentPlaybooksByIdsRequest(BaseModel):
 
 class DeleteUserPlaybooksByIdsRequest(BaseModel):
     user_playbook_ids: list[int] = Field(min_length=1)
+
+
+# Clear all data scoped to a single user_id (interactions, requests, user
+# playbooks, profiles). Used by paired-protocol harnesses (e.g. SWE-bench) to
+# isolate per-task data on a shared storage backend without nuking sibling
+# tasks' rows. Intentionally does NOT touch agent_playbooks — they are the
+# cross-project rollup of skills and have no user_id column.
+class ClearUserDataRequest(BaseModel):
+    user_id: NonEmptyStr
+
+
+class ClearUserDataResponse(BaseModel):
+    success: bool
+    deleted_counts: dict[str, int] = Field(default_factory=dict)
+    message: str | None = None
 
 
 # user provided interaction data from the request
