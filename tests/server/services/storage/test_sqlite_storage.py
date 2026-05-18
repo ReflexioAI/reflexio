@@ -24,6 +24,7 @@ from reflexio.server.services.storage.sqlite_storage import (
     _effective_search_mode,
     _sanitize_fts_query,
     _true_rrf_merge,
+    _vector_rank_rows,
 )
 
 # ---------------------------------------------------------------------------
@@ -347,6 +348,67 @@ class TestCosineSimilarity:
 
     def test_zero_vector(self):
         assert _cosine_similarity([0.0, 0.0], [1.0, 2.0]) == 0.0
+
+
+class TestVectorRankRowsLogging:
+    """Logging of cosine-similarity scores in ``_vector_rank_rows``.
+
+    Validates the diagnostic that gives retrieval misses a paper trail
+    in ``backend.log``. Without it, a caller-side "0 hits" is
+    indistinguishable from "candidate scored 0.39 but was just below
+    threshold" vs "candidate scored 0.05, semantic mismatch."
+    """
+
+    def _row(self, embedding: list[float]) -> dict:
+        # The function only touches ``row["embedding"]`` so a dict
+        # mock suffices — no need for a real sqlite3.Row.
+        return {"embedding": json.dumps(embedding), "id": 1}
+
+    def test_emits_top_scores_when_candidates_exist(self, caplog) -> None:
+        rows = [
+            self._row([1.0, 0.0, 0.0]),
+            self._row([0.5, 0.5, 0.0]),
+            self._row([0.0, 0.0, 1.0]),
+        ]
+        with caplog.at_level(
+            "INFO",
+            logger="reflexio.server.services.storage.sqlite_storage._base",
+        ):
+            _vector_rank_rows(rows, [1.0, 0.0, 0.0], match_count=2)
+        msgs = [r.getMessage() for r in caplog.records]
+        assert any("vector_rank:" in m for m in msgs)
+        # The log line must include candidate count and the ranked scores.
+        line = next(m for m in msgs if "vector_rank:" in m)
+        assert "candidates=3" in line
+        assert "match_count=2" in line
+        assert "top_scores=" in line
+
+    def test_no_log_when_no_candidates(self, caplog) -> None:
+        """Empty candidate set produces no log line so noise stays bounded."""
+        with caplog.at_level(
+            "INFO",
+            logger="reflexio.server.services.storage.sqlite_storage._base",
+        ):
+            _vector_rank_rows([], [1.0, 0.0, 0.0], match_count=5)
+        assert not any("vector_rank:" in r.getMessage() for r in caplog.records)
+
+    def test_top_scores_truncated_to_10(self, caplog) -> None:
+        """Long candidate lists must not flood the log."""
+        rows = [self._row([1.0, 0.0] + [0.0] * 510) for _ in range(50)]
+        with caplog.at_level(
+            "INFO",
+            logger="reflexio.server.services.storage.sqlite_storage._base",
+        ):
+            _vector_rank_rows(rows, [1.0, 0.0] + [0.0] * 510, match_count=3)
+        line = next(
+            r.getMessage()
+            for r in caplog.records
+            if "vector_rank:" in r.getMessage()
+        )
+        # The log shows candidates=50 but only ~10 scores in top_scores=.
+        assert "candidates=50" in line
+        # Score list portion should not contain 50 entries.
+        assert line.count(",") <= 12  # ~10 entries plus commas in candidates/match_count
 
 
 class TestEffectiveSearchMode:

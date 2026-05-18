@@ -202,6 +202,22 @@ def _vector_rank_rows(
             scored.append((row, sim))
 
     scored.sort(key=lambda x: x[1], reverse=True)
+    # Diagnostic: log the full pre-cut score distribution so retrieval
+    # misses are debuggable. Without this, the only signal callers see is
+    # "K results returned" with no way to tell whether a relevant row
+    # scored 0.39 (close, just below an upstream threshold filter) vs
+    # 0.05 (semantic mismatch, no threshold tuning will save it). Top 10
+    # is sufficient context; logs at INFO so it shows up in production
+    # backend.log without an explicit debug flag. Cost is one log line
+    # per vector search call (~200 bytes).
+    if scored:
+        top = [round(s, 3) for _, s in scored[:10]]
+        logger.info(
+            "vector_rank: candidates=%d match_count=%d top_scores=%s",
+            len(scored),
+            match_count,
+            top,
+        )
     return [row for row, _ in scored[:match_count]]
 
 
