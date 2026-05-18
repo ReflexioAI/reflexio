@@ -241,3 +241,26 @@ class TestEnsureLlmConfigured:
             "Using local embedder as fallback" in record.message
             for record in caplog.records
         )
+
+
+def test_embedding_only_start_skips_first_run_llm_guard(monkeypatch) -> None:
+    from reflexio.cli.commands import services
+
+    called_args = None
+
+    def _capture_execute(args) -> None:
+        nonlocal called_args
+        called_args = args
+
+    monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_EMBEDDING", raising=False)
+    monkeypatch.setattr("reflexio.cli.env_loader.load_reflexio_env", lambda: None)
+    monkeypatch.setattr(
+        "reflexio.cli.bootstrap_config.resolve_storage", lambda _: "sqlite"
+    )
+    monkeypatch.setattr(services, "_ensure_llm_configured", lambda _: pytest.fail())
+    monkeypatch.setattr(services.run_mod, "execute", _capture_execute)
+
+    services.start(only="embedding")
+
+    assert called_args is not None
+    assert called_args.only == "embedding"

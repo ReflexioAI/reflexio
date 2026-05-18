@@ -220,10 +220,13 @@ def start(
     ) in {"1", "true", "True", "yes", "YES", "on", "ON"}:
         os.environ["REFLEXIO_EMBEDDING_PROVIDER"] = "local_service"
 
+    selected_services = run_mod.parse_only_flag(only, {"backend", "docs"})
+
     # First-run guard: if the backend's lifespan validator would reject the
     # current env (no LLM key, or no embedding-capable provider), prompt now
     # so users see a friendly wizard instead of a lifespan traceback.
-    _ensure_llm_configured(get_env_path())
+    if "backend" in selected_services:
+        _ensure_llm_configured(get_env_path())
 
     resolved = resolve_storage(storage)
     os.environ["REFLEXIO_STORAGE"] = resolved

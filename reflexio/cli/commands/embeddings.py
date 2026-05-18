@@ -10,6 +10,27 @@ import uvicorn
 
 app = typer.Typer(help="Run Reflexio embedding services.")
 
+_DEFAULT_EMBEDDING_PORT = 8072
+
+
+def _resolve_port(port: int | None) -> int:
+    if port is not None:
+        return port
+
+    raw_port = os.environ.get("EMBEDDING_PORT")
+    if raw_port is None:
+        return _DEFAULT_EMBEDDING_PORT
+
+    try:
+        return int(raw_port)
+    except ValueError:
+        typer.echo(
+            f"Warning: invalid EMBEDDING_PORT={raw_port!r}; "
+            f"using default {_DEFAULT_EMBEDDING_PORT}",
+            err=True,
+        )
+        return _DEFAULT_EMBEDDING_PORT
+
 
 @app.command()
 def serve(
@@ -23,7 +44,7 @@ def serve(
     ] = None,
 ) -> None:
     """Serve an OpenAI-compatible local embedding endpoint."""
-    resolved_port = port or int(os.environ.get("EMBEDDING_PORT", "8072"))
+    resolved_port = _resolve_port(port)
     uvicorn.run(
         "reflexio.server.llm.embedding_service:app",
         host=host,

@@ -93,3 +93,40 @@ def test_service_response_is_sorted_by_index(monkeypatch) -> None:
         [0.1, 0.2],
         [0.3, 0.4],
     ]
+
+
+def test_service_response_rejects_index_mismatch(monkeypatch) -> None:
+    class _Response:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {
+                "data": [
+                    {"index": 1, "embedding": [0.3, 0.4]},
+                    {"index": 1, "embedding": [0.5, 0.6]},
+                ]
+            }
+
+    class _Client:
+        def __init__(self, timeout: float) -> None:
+            self.timeout = timeout
+
+        def __enter__(self) -> _Client:
+            return self
+
+        def __exit__(self, *args) -> None:
+            return None
+
+        def post(self, url: str, json: dict) -> _Response:  # noqa: A002, ARG002
+            return _Response()
+
+    monkeypatch.setenv("REFLEXIO_EMBEDDING_PROVIDER", "local_service")
+    monkeypatch.delenv("REFLEXIO_EMBEDDING_SERVICE_URL", raising=False)
+    monkeypatch.setattr(
+        "reflexio.server.llm.providers.embedding_service_provider.httpx.Client",
+        _Client,
+    )
+
+    with pytest.raises(EmbeddingUnavailableError, match="duplicate index 1"):
+        get_service_embeddings(["a", "b"], model="local/nomic-embed-v1.5")

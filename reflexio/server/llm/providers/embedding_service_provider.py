@@ -76,6 +76,48 @@ def embedding_service_timeout_seconds() -> float:
     return max(timeout_ms, 1) / 1000
 
 
+def _ordered_embeddings_from_response(
+    data: Any, expected_count: int
+) -> list[list[float]]:
+    if not isinstance(data, list):
+        raise ValueError("embedding service response is missing data[]")
+    if len(data) != expected_count:
+        raise ValueError(
+            "embedding service response cardinality mismatch: "
+            f"expected {expected_count}, got {len(data)}"
+        )
+
+    seen: set[int] = set()
+    indexed_embeddings: list[tuple[int, list[Any]]] = []
+    for item in data:
+        if not isinstance(item, dict):
+            raise ValueError("embedding service response data[] has invalid item")
+
+        index = item.get("index")
+        if type(index) is not int:
+            raise ValueError("embedding service response has invalid index")
+        if index in seen:
+            raise ValueError(f"embedding service response has duplicate index {index}")
+        seen.add(index)
+
+        embedding = item.get("embedding")
+        if not isinstance(embedding, list):
+            raise ValueError("embedding service response has invalid embeddings")
+        indexed_embeddings.append((index, embedding))
+
+    expected_indices = set(range(expected_count))
+    if seen != expected_indices:
+        raise ValueError(
+            "embedding service response indices mismatch: "
+            f"expected {sorted(expected_indices)}, got {sorted(seen)}"
+        )
+
+    return [
+        [float(value) for value in embedding]
+        for _, embedding in sorted(indexed_embeddings)
+    ]
+
+
 def embedding_provider_mode(model: str | None = None) -> EmbeddingProviderMode:
     """Resolve the embedding provider mode for a model.
 
@@ -154,14 +196,7 @@ def get_service_embeddings(
                 response = client.post(url, json=payload)
             response.raise_for_status()
             body = response.json()
-            data = body.get("data")
-            if not isinstance(data, list):
-                raise ValueError("embedding service response is missing data[]")
-            sorted_data = sorted(data, key=lambda item: int(item.get("index", 0)))
-            embeddings = [item.get("embedding") for item in sorted_data]
-            if not all(isinstance(item, list) for item in embeddings):
-                raise ValueError("embedding service response has invalid embeddings")
-            return [[float(value) for value in item] for item in embeddings]
+            return _ordered_embeddings_from_response(body.get("data"), len(texts))
         except Exception as exc:  # noqa: BLE001 - normalized to typed degradation signal
             last_error = exc
             if attempt == 0:

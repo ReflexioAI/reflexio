@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import json
 import os
 import re
@@ -1324,12 +1323,7 @@ def claude_code_setup(
         typer.echo(f"  Embedding Provider: {embedding_label}")
     typer.echo(f"  Storage: {storage_label}")
     typer.echo(f"  Skill ({skill_type}): {skill_path}")
-    hooks_summary = (
-        "SessionStart + UserPromptSubmit + Stop"
-        if expert
-        else "SessionStart + UserPromptSubmit"
-    )
-    typer.echo(f"  Hooks: {hooks_summary}")
+    typer.echo("  Hooks: legacy Reflexio hooks removed (use claude-smart plugin)")
     if location == InstallLocation.ALL_PROJECTS:
         typer.echo("")
         typer.echo("Note: User-level hooks fire for ALL Claude Code sessions.")

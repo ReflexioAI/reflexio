@@ -339,7 +339,9 @@ class TestInstallClaudeCodeIntegration:
         settings = json.loads((tmp_path / ".claude" / "settings.json").read_text())
         assert "Stop" not in settings.get("hooks", {})
 
-    def test_expert_mode_installs_session_end_hook(self, tmp_path: Path) -> None:
+    def test_expert_mode_does_not_install_session_end_hook(
+        self, tmp_path: Path
+    ) -> None:
         """Expert mode still creates slash command files but not legacy hooks."""
         _install_claude_code_integration(
             tmp_path, expert=True, location=InstallLocation.CURRENT_PROJECT
@@ -350,7 +352,7 @@ class TestInstallClaudeCodeIntegration:
             tmp_path / ".claude" / "commands" / "reflexio-extract" / "SKILL.md"
         ).exists()
 
-    def test_expert_mode_session_end_hook_idempotent(self, tmp_path: Path) -> None:
+    def test_expert_mode_no_session_end_hook_idempotent(self, tmp_path: Path) -> None:
         """Running expert install twice doesn't add legacy hooks."""
         for _ in range(2):
             _install_claude_code_integration(
