@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -901,10 +903,25 @@ def _upsert_hook(hooks: dict, event_name: str, hook_command: str) -> None:
     }
     for existing in event_hooks:
         inner = existing.get("hooks", [])
-        if any("reflexio" in h.get("command", "") for h in inner):
+        if any(_is_legacy_reflexio_hook_command(h.get("command", "")) for h in inner):
             existing["hooks"] = hook_entry["hooks"]
             return
     event_hooks.append(hook_entry)
+
+
+_LEGACY_REFLEXIO_HOOK_FILES = (
+    "reflexio/integrations/claude_code/hook/handler.js",
+    "reflexio/integrations/claude_code/hook/search_hook.js",
+    "reflexio/integrations/claude_code/hook/session_start_hook.sh",
+    "integrations/claude_code/hook/handler.js",
+    "integrations/claude_code/hook/search_hook.js",
+    "integrations/claude_code/hook/session_start_hook.sh",
+)
+
+
+def _is_legacy_reflexio_hook_command(command: str) -> bool:
+    normalized = command.replace("\\", "/")
+    return any(marker in normalized for marker in _LEGACY_REFLEXIO_HOOK_FILES)
 
 
 def _merge_hook_config(
@@ -913,25 +930,59 @@ def _merge_hook_config(
     *,
     expert: bool = False,
 ) -> None:
-    """Remove legacy Reflexio Claude Code hooks from .claude/settings.json.
+    """Add or update Reflexio hooks in .claude/settings.json.
 
-    The maintained Claude Code/Codex integration is the claude-smart plugin.
-    The legacy JS hooks remain in the package for one compatibility release as
-    no-op shims, but new installs should not register SessionStart,
-    UserPromptSubmit, or Stop hooks that can recursively start backend/search/
-    publish flows.
+    Installs hooks:
+    - SessionStart: checks if the Reflexio server is running and starts it in
+      the background if not (~10ms, non-blocking).
+    - UserPromptSubmit: runs `reflexio search` on every user prompt and injects
+      results as context Claude sees.
+    - Stop (expert mode only): publishes the session transcript to Reflexio
+      for extraction at session end.
 
     Args:
         settings_path: Path to the project's .claude/settings.json.
         handler_js_path: Absolute path to handler.js in the installed package.
         expert: If True, also install the Stop hook for transcript capture.
     """
-    del handler_js_path, expert
+    settings: dict = {}
+    if settings_path.exists():
+        with contextlib.suppress(json.JSONDecodeError, OSError):
+            settings = json.loads(settings_path.read_text())
+
+    hooks = settings.setdefault("hooks", {})
+
+    # Session start hook (SessionStart) — checks/starts Reflexio server proactively
+    session_start_hook_sh = handler_js_path.parent / "session_start_hook.sh"
+    _upsert_hook(
+        hooks, "SessionStart", f"bash {shlex.quote(str(session_start_hook_sh))}"
+    )
+
+    # Search hook (UserPromptSubmit) — injects Reflexio context before Claude responds
+    search_hook_js = handler_js_path.parent / "search_hook.js"
+    _upsert_hook(hooks, "UserPromptSubmit", f"node {shlex.quote(str(search_hook_js))}")
+
+    # Stop hook (expert mode) — publishes session transcript for extraction.
+    # On non-expert (re)install, remove the hook if it was previously installed.
+    if expert:
+        _upsert_hook(hooks, "Stop", f"node {shlex.quote(str(handler_js_path))}")
+    else:
+        stop_hooks = hooks.get("Stop", [])
+        cleaned = [
+            entry
+            for entry in stop_hooks
+            if not any(
+                _is_legacy_reflexio_hook_command(h.get("command", ""))
+                for h in entry.get("hooks", [])
+            )
+        ]
+        if cleaned:
+            hooks["Stop"] = cleaned
+        elif "Stop" in hooks:
+            del hooks["Stop"]
+
     settings_path.parent.mkdir(parents=True, exist_ok=True)
-    if not settings_path.exists():
-        settings_path.write_text("{}\n")
-        return
-    _remove_hook_config(settings_path)
+    settings_path.write_text(json.dumps(settings, indent=2) + "\n")
 
 
 def _remove_hook_config(settings_path: Path) -> None:
@@ -957,7 +1008,8 @@ def _remove_hook_config(settings_path: Path) -> None:
             entry
             for entry in event_hooks
             if not any(
-                "reflexio" in h.get("command", "") for h in entry.get("hooks", [])
+                _is_legacy_reflexio_hook_command(h.get("command", ""))
+                for h in entry.get("hooks", [])
             )
         ]
         if not hooks[event_name]:
@@ -1323,7 +1375,12 @@ def claude_code_setup(
         typer.echo(f"  Embedding Provider: {embedding_label}")
     typer.echo(f"  Storage: {storage_label}")
     typer.echo(f"  Skill ({skill_type}): {skill_path}")
-    typer.echo("  Hooks: legacy Reflexio hooks removed (use claude-smart plugin)")
+    hooks_summary = (
+        "SessionStart + UserPromptSubmit + Stop"
+        if expert
+        else "SessionStart + UserPromptSubmit"
+    )
+    typer.echo(f"  Hooks: {hooks_summary}")
     if location == InstallLocation.ALL_PROJECTS:
         typer.echo("")
         typer.echo("Note: User-level hooks fire for ALL Claude Code sessions.")

@@ -104,6 +104,10 @@ Run `reflexio setup claude-code` to install automatically (add `--expert` for th
 
 - The SessionStart hook adds ~10ms latency — all server work runs in a background process
 - The flag file prevents concurrent server starts across hooks and sessions
+- Hooks skip internal/headless Claude invocations such as Reflexio extractor
+  calls (`CLAUDE_SMART_INTERNAL=1`, `REFLEXIO_INTERNAL=1`, or
+  `CLAUDE_CODE_ENTRYPOINT` not equal to `cli`) so backend/search/publish flows
+  do not recurse into themselves.
 - Publishing is fire-and-forget — failures do not affect the Claude Code session
 - Publish errors are logged to `~/.reflexio/logs/stop-hook.log` for diagnostics
 - Transcript data is written to a temp file with restricted permissions (0600)

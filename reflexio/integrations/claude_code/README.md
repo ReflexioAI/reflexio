@@ -329,6 +329,10 @@ ORDER BY user_playbook_id DESC LIMIT 5;
 | Skill not loading             | Verify `.claude/skills/reflexio/SKILL.md` exists in your project. |
 | Wrong user_id                 | Run `reflexio setup claude-code` to reconfigure.                  |
 
+The hooks intentionally skip internal/headless Claude invocations, including
+Reflexio's own extractor calls, so a globally installed integration does not
+recursively start the backend, search, or publish extractor prompts.
+
 
 ---
 
@@ -389,4 +393,3 @@ Integration files are installed to either `~/.claude/` (all projects) or `your-p
 └── logs/
     └── server.log                       ← Server logs
 ```
-

@@ -324,12 +324,47 @@ class TestInstallClaudeCodeIntegration:
         assert not cmd.exists()
 
     def test_hooks_in_settings_json(self, tmp_path: Path) -> None:
-        """Legacy Reflexio hooks are not installed for new Claude Code setup."""
+        """Hooks are written to settings.json with correct events."""
         _install_claude_code_integration(
             tmp_path, location=InstallLocation.ALL_PROJECTS
         )
         settings = json.loads((tmp_path / ".claude" / "settings.json").read_text())
-        assert "hooks" not in settings
+        assert "SessionStart" in settings["hooks"]
+        assert "UserPromptSubmit" in settings["hooks"]
+
+    def test_install_preserves_claude_smart_hooks(self, tmp_path: Path) -> None:
+        """Standalone setup must not overwrite claude-smart plugin hooks."""
+        settings_path = tmp_path / ".claude" / "settings.json"
+        settings_path.parent.mkdir(parents=True)
+        smart_command = (
+            'bash "$HOME/.claude/plugins/marketplaces/reflexioai/plugin/'
+            'scripts/hook_entry.sh" claude-code session-start'
+        )
+        settings_path.write_text(
+            json.dumps(
+                {
+                    "hooks": {
+                        "SessionStart": [
+                            {"hooks": [{"type": "command", "command": smart_command}]}
+                        ]
+                    }
+                }
+            )
+            + "\n"
+        )
+
+        _install_claude_code_integration(
+            tmp_path, location=InstallLocation.CURRENT_PROJECT
+        )
+
+        settings = json.loads(settings_path.read_text())
+        commands = [
+            hook["command"]
+            for entry in settings["hooks"]["SessionStart"]
+            for hook in entry["hooks"]
+        ]
+        assert smart_command in commands
+        assert any("session_start_hook.sh" in command for command in commands)
 
     def test_normal_mode_no_session_end_hook(self, tmp_path: Path) -> None:
         """Normal mode does not install the Stop hook."""
@@ -337,29 +372,31 @@ class TestInstallClaudeCodeIntegration:
             tmp_path, location=InstallLocation.CURRENT_PROJECT
         )
         settings = json.loads((tmp_path / ".claude" / "settings.json").read_text())
-        assert "Stop" not in settings.get("hooks", {})
+        assert "Stop" not in settings["hooks"]
 
-    def test_expert_mode_does_not_install_session_end_hook(
-        self, tmp_path: Path
-    ) -> None:
-        """Expert mode still creates slash command files but not legacy hooks."""
+    def test_expert_mode_installs_session_end_hook(self, tmp_path: Path) -> None:
+        """Expert mode installs Stop hook alongside SessionStart and UserPromptSubmit."""
         _install_claude_code_integration(
             tmp_path, expert=True, location=InstallLocation.CURRENT_PROJECT
         )
         settings = json.loads((tmp_path / ".claude" / "settings.json").read_text())
-        assert "Stop" not in settings.get("hooks", {})
-        assert (
-            tmp_path / ".claude" / "commands" / "reflexio-extract" / "SKILL.md"
-        ).exists()
+        assert "Stop" in settings["hooks"]
+        assert len(settings["hooks"]["Stop"]) == 1
+        # Verify the Stop hook command points to handler.js
+        cmd = settings["hooks"]["Stop"][0]["hooks"][0]["command"]
+        assert "handler.js" in cmd
+        assert cmd.startswith("node ")
 
-    def test_expert_mode_no_session_end_hook_idempotent(self, tmp_path: Path) -> None:
-        """Running expert install twice doesn't add legacy hooks."""
+    def test_expert_mode_session_end_hook_idempotent(self, tmp_path: Path) -> None:
+        """Running expert install twice doesn't duplicate the Stop hook."""
         for _ in range(2):
             _install_claude_code_integration(
                 tmp_path, expert=True, location=InstallLocation.ALL_PROJECTS
             )
         settings = json.loads((tmp_path / ".claude" / "settings.json").read_text())
-        assert "hooks" not in settings
+        assert len(settings["hooks"]["Stop"]) == 1
+        assert len(settings["hooks"]["SessionStart"]) == 1
+        assert len(settings["hooks"]["UserPromptSubmit"]) == 1
 
     def test_normal_reinstall_removes_expert_artifacts(self, tmp_path: Path) -> None:
         """Re-installing in normal mode removes expert-only files and hooks."""
@@ -370,7 +407,7 @@ class TestInstallClaudeCodeIntegration:
         claude_dir = tmp_path / ".claude"
         assert (claude_dir / "commands" / "reflexio-extract").exists()
         settings = json.loads((claude_dir / "settings.json").read_text())
-        assert "Stop" not in settings.get("hooks", {})
+        assert "Stop" in settings["hooks"]
 
         # Re-install in normal mode
         _install_claude_code_integration(
@@ -380,6 +417,36 @@ class TestInstallClaudeCodeIntegration:
         settings = json.loads((claude_dir / "settings.json").read_text())
         assert "Stop" not in settings.get("hooks", {})
 
+    def test_normal_reinstall_preserves_non_reflexio_stop_hooks(
+        self, tmp_path: Path
+    ) -> None:
+        """Normal reinstall only removes the standalone Reflexio Stop hook."""
+        _install_claude_code_integration(
+            tmp_path, expert=True, location=InstallLocation.CURRENT_PROJECT
+        )
+        settings_path = tmp_path / ".claude" / "settings.json"
+        settings = json.loads(settings_path.read_text())
+        smart_command = (
+            'bash "$HOME/.claude/plugins/marketplaces/reflexioai/plugin/'
+            'scripts/hook_entry.sh" claude-code stop'
+        )
+        settings["hooks"]["Stop"].append(
+            {"hooks": [{"type": "command", "command": smart_command}]}
+        )
+        settings_path.write_text(json.dumps(settings, indent=2) + "\n")
+
+        _install_claude_code_integration(
+            tmp_path, expert=False, location=InstallLocation.CURRENT_PROJECT
+        )
+
+        settings = json.loads(settings_path.read_text())
+        commands = [
+            hook["command"]
+            for entry in settings["hooks"]["Stop"]
+            for hook in entry["hooks"]
+        ]
+        assert commands == [smart_command]
+
     def test_idempotent_install(self, tmp_path: Path) -> None:
         """Running install twice doesn't corrupt files or duplicate hooks."""
         for _ in range(2):
@@ -387,7 +454,9 @@ class TestInstallClaudeCodeIntegration:
                 tmp_path, location=InstallLocation.ALL_PROJECTS
             )
         settings = json.loads((tmp_path / ".claude" / "settings.json").read_text())
-        assert "hooks" not in settings
+        # Each event should have exactly one hook entry
+        assert len(settings["hooks"]["SessionStart"]) == 1
+        assert len(settings["hooks"]["UserPromptSubmit"]) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -459,13 +528,13 @@ class TestUninstallDetection:
         assert "hooks" not in settings or not settings.get("hooks")
 
     def test_remove_from_dir_cleans_session_end_hook(self, tmp_path: Path) -> None:
-        """Uninstall keeps settings free of legacy Stop hooks."""
+        """Uninstall removes the Stop hook installed by expert mode."""
         _install_claude_code_integration(
             tmp_path, expert=True, location=InstallLocation.CURRENT_PROJECT
         )
         settings_path = tmp_path / ".claude" / "settings.json"
         settings = json.loads(settings_path.read_text())
-        assert "Stop" not in settings.get("hooks", {})
+        assert "Stop" in settings["hooks"]
 
         _remove_from_dir(tmp_path)
 
