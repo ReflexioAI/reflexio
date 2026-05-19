@@ -1,0 +1,8 @@
+node_modules/
+dist/
+*.tsbuildinfo
+__pycache__/
+*.pyc
+.uv-cache/
+.venv/
+package-lock.json
