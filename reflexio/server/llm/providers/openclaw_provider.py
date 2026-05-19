@@ -18,6 +18,7 @@ import logging
 import os
 import shutil
 import subprocess  # noqa: S404 — subprocess is the integration point.
+from pathlib import Path
 from typing import Any
 
 import litellm
@@ -37,7 +38,7 @@ _TRUTHY = {"1", "true", "yes"}
 
 # Module-level state reset by tests via the _reset_module_state fixture.
 _REGISTERED: bool = False
-_HANDLER: "OpenClawLLM | None" = None
+_HANDLER: OpenClawLLM | None = None
 
 
 class OpenClawCLIError(RuntimeError):
@@ -63,8 +64,10 @@ def _resolve_cli_path() -> str | None:
         str | None: Absolute path to the openclaw binary, or None if not found.
     """
     override = os.environ.get(ENV_CLI_PATH)
-    if override and os.path.isfile(override) and os.access(override, os.X_OK):
-        return override
+    if override:
+        path = Path(override)
+        if path.is_file() and os.access(override, os.X_OK):
+            return override
     return shutil.which("openclaw")
 
 
@@ -166,7 +169,7 @@ def _call_cli(*, prompt: str, model: str | None, timeout_s: int) -> str:
 class OpenClawLLM(CustomLLM):
     """LiteLLM CustomLLM that routes completions through the openclaw CLI."""
 
-    def completion(self, *args: Any, **kwargs: Any) -> ModelResponse:
+    def completion(self, *args: Any, **kwargs: Any) -> ModelResponse:  # noqa: ARG002 — LiteLLM CustomLLM signature
         """Synchronous completion via ``openclaw infer model run``.
 
         The ``openclaw/`` prefix is stripped from the requested model id.
