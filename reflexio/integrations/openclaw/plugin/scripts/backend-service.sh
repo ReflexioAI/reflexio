@@ -1,0 +1,266 @@
+#!/usr/bin/env bash
+# Auto-start the reflexio FastAPI backend (port 8081) if it's not already
+# running. Detached spawn, returns immediately so the SessionStart hook
+# doesn't block the session.
+#
+# Subcommands:
+#   start         probe /health; if nothing we recognize is on the port,
+#                 spawn `uv run reflexio services start --only backend
+#                 --no-reload` detached. Polls /health briefly so first
+#                 use after session start lands on a warm server, then
+#                 returns empty stdout regardless.
+#   stop          SIGTERM the recorded process group, escalating to
+#                 SIGKILL after a short grace period.
+#   session-end   no-op by default; only stops the backend if
+#                 OPENCLAW_SMART_BACKEND_STOP_ON_END=1 (opt-in — the
+#                 backend is intended to be long-lived across sessions).
+#   status        print "running on http://localhost:PORT" or "not running".
+set -eu
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=_lib.sh
+. "$HERE/_lib.sh"
+openclaw_smart_source_login_path
+openclaw_smart_prepend_astral_bins
+
+CMD="${1:-start}"
+PORT=8081
+EMBEDDING_PORT="${EMBEDDING_PORT:-8082}"
+# Pass through to `reflexio services start/stop` so the spawned backend
+# binds to PORT.
+export BACKEND_PORT="$PORT"
+export EMBEDDING_PORT
+
+# Default: route extraction through the active host CLI + ONNX embedder
+# so openclaw-smart works without any LLM API key. Users can opt out by
+# pre-exporting these to 0.
+export OPENCLAW_SMART_USE_LOCAL_CLI="${OPENCLAW_SMART_USE_LOCAL_CLI:-1}"
+export OPENCLAW_SMART_USE_LOCAL_EMBEDDING="${OPENCLAW_SMART_USE_LOCAL_EMBEDDING:-1}"
+if [ "${OPENCLAW_SMART_USE_LOCAL_EMBEDDING:-}" = "1" ]; then
+  export REFLEXIO_EMBEDDING_PROVIDER="${REFLEXIO_EMBEDDING_PROVIDER:-local_service}"
+  export REFLEXIO_EMBEDDING_SERVICE_URL="${REFLEXIO_EMBEDDING_SERVICE_URL:-http://127.0.0.1:$EMBEDDING_PORT}"
+fi
+PLUGIN_ROOT="$(cd "$HERE/.." && pwd)"
+
+# Pin the openclaw CLI explicitly so the reflexio backend's openclaw_provider
+# can find it from a hook context whose PATH lacks the user's normal CLI dir.
+if [ -z "${OPENCLAW_SMART_CLI_PATH:-}" ]; then
+  if _oc_cli_path=$(command -v openclaw 2>/dev/null) && [ -n "$_oc_cli_path" ]; then
+    export OPENCLAW_SMART_CLI_PATH="$_oc_cli_path"
+  elif [ -x "$HOME/.local/bin/openclaw" ]; then
+    export OPENCLAW_SMART_CLI_PATH="$HOME/.local/bin/openclaw"
+  fi
+  unset _oc_cli_path
+fi
+
+STATE_DIR="$HOME/.openclaw-smart"
+PID_FILE="$STATE_DIR/backend.pid"
+LOG_FILE="$STATE_DIR/backend.log"
+LOG_MAX_BYTES="$(openclaw_smart_log_max_bytes)"
+mkdir -p "$STATE_DIR"
+openclaw_smart_trim_log_file "$LOG_FILE" "$LOG_MAX_BYTES"
+
+emit_ok() { echo ''; }
+
+emit_start_failure() {
+  reason="$1"
+  if py=$(openclaw_smart_resolve_python 2>/dev/null); then
+    "$py" - "$reason" <<'PY'
+import json
+import sys
+
+reason = sys.argv[1].strip()
+message = (
+    "> **openclaw-smart learning backend is not running.** "
+    "Interactions are being buffered locally, but learning will not publish "
+    "until the backend starts.\n"
+)
+if reason:
+    message += f">\n> Last startup error: `{reason}`\n"
+message += (
+    ">\n> Make sure the openclaw CLI is on PATH so the local model provider "
+    "can be reached. Then run `/openclaw-smart:restart`."
+)
+print(json.dumps({"prependContext": message}))
+PY
+  else
+    emit_ok
+  fi
+}
+
+# Tree-kill the recorded process.
+kill_group() {
+  openclaw_smart_kill_tree "$1"
+}
+
+# True if /health returns 200. Reflexio's /health is a plain GET with no
+# marker header, so we can't distinguish our backend from someone else's
+# reflexio on the same port — if you run two reflexio instances on $PORT
+# you'll get collision regardless of what we do here.
+backend_healthy() {
+  command -v curl >/dev/null 2>&1 || return 1
+  curl -sf -o /dev/null "http://127.0.0.1:$PORT/health" 2>/dev/null
+}
+
+# True only if the recorded PID is alive AND /health responds. A stale
+# PID file from a crashed backend is not enough — we must see the port
+# actually answer, so next hook retries cleanly.
+is_our_backend_running() {
+  if [ -f "$PID_FILE" ]; then
+    pid=$(cat "$PID_FILE" 2>/dev/null || echo "")
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+      backend_healthy && return 0
+    fi
+  fi
+  # Recover from a missing PID file if a foreign-but-functional reflexio
+  # is already serving — no need to start a second one.
+  backend_healthy && return 0
+  return 1
+}
+
+# True if *anything* is listening on the port (even non-HTTP). Used to
+# avoid stomping on a foreign listener with a failed-to-start uvicorn.
+port_occupied() {
+  (echo >"/dev/tcp/127.0.0.1/$PORT") 2>/dev/null
+}
+
+# Reap any reflexio/uvicorn listener still holding $PORT after the PID
+# file kill. Filters by cmdline so we don't knock over an unrelated
+# service a user has bound to $PORT — symmetric with start's refusal to
+# stomp on a foreign listener. Silent on failure.
+reap_port_listeners() {
+  command -v lsof >/dev/null 2>&1 || return 0
+  candidates=$(lsof -ti:"$PORT" 2>/dev/null) || candidates=""
+  [ -z "$candidates" ] && return 0
+  ours=""
+  for pid in $candidates; do
+    cmdline=$(ps -p "$pid" -o command= 2>/dev/null || true)
+    case "$cmdline" in
+      *reflexio*|*uvicorn*) ours="$ours $pid" ;;
+    esac
+  done
+  [ -z "$ours" ] && return 0
+  # shellcheck disable=SC2086
+  kill -TERM $ours 2>/dev/null || true
+  sleep 1
+  remaining=""
+  for pid in $ours; do
+    kill -0 "$pid" 2>/dev/null && remaining="$remaining $pid"
+  done
+  [ -z "$remaining" ] && return 0
+  # shellcheck disable=SC2086
+  kill -KILL $remaining 2>/dev/null || true
+}
+
+# Full shutdown: kill the recorded process group (if any) then sweep the
+# port for surviving reflexio listeners. Used by both `stop` and the
+# opt-in `session-end` path so a stale/missing PID file doesn't produce
+# a silent no-op.
+full_stop() {
+  if [ -f "$PID_FILE" ]; then
+    kill_group "$(cat "$PID_FILE" 2>/dev/null)"
+    rm -f "$PID_FILE"
+  fi
+  reap_port_listeners
+}
+
+case "$CMD" in
+  start)
+    if openclaw_smart_is_internal_invocation_env; then
+      emit_ok; exit 0
+    fi
+    # Opt-out: users who don't want the backend managed by the hook can
+    # set OPENCLAW_SMART_BACKEND_AUTOSTART=0.
+    if [ "${OPENCLAW_SMART_BACKEND_AUTOSTART:-1}" = "0" ]; then
+      emit_ok; exit 0
+    fi
+    if is_our_backend_running; then emit_ok; exit 0; fi
+    if port_occupied; then
+      # Something answered the TCP probe but /health didn't — don't
+      # start a second uvicorn on top of it.
+      openclaw_smart_append_capped_log "$LOG_FILE" "$LOG_MAX_BYTES" "[openclaw-smart] backend: port $PORT held by another process; skipping"
+      emit_ok; exit 0
+    fi
+    if ! command -v uv >/dev/null 2>&1; then
+      if [ "${OPENCLAW_SMART_BOOTSTRAPPING:-}" != "1" ] && [ -x "$PLUGIN_ROOT/scripts/smart-install.sh" ]; then
+        openclaw_smart_append_capped_log "$LOG_FILE" "$LOG_MAX_BYTES" "[openclaw-smart] backend: uv not on PATH; running installer"
+        OPENCLAW_SMART_BOOTSTRAPPING=1 bash "$PLUGIN_ROOT/scripts/smart-install.sh" >>"$STATE_DIR/install.log" 2>&1 || true
+        openclaw_smart_source_login_path
+        openclaw_smart_prepend_astral_bins
+      fi
+      if ! command -v uv >/dev/null 2>&1; then
+        openclaw_smart_append_capped_log "$LOG_FILE" "$LOG_MAX_BYTES" "[openclaw-smart] backend: uv not on PATH after installer; skipping"
+        emit_ok; exit 0
+      fi
+    fi
+    # The reflexio project root lives four levels above the plugin dir:
+    # plugin/ -> integrations/openclaw -> reflexio/integrations -> reflexio -> open_source/reflexio
+    REFLEXIO_PROJECT="$(cd "$PLUGIN_ROOT/../../../.." && pwd)"
+    cd "$REFLEXIO_PROJECT"
+
+    # Cap local interaction history to keep the SQLite store small for
+    # openclaw-smart users. Reflexio's library defaults are much higher
+    # (250k/50k) for server deployments; here we override only in the
+    # openclaw-smart plugin context. Users can still override via env.
+    export INTERACTION_CLEANUP_THRESHOLD="${INTERACTION_CLEANUP_THRESHOLD:-500}"
+    export INTERACTION_CLEANUP_DELETE_COUNT="${INTERACTION_CLEANUP_DELETE_COUNT:-200}"
+
+    # backend-log-runner.sh owns stdout/stderr capture so process output
+    # cannot grow backend.log past its cap.
+    #
+    # --workers: reflexio defaults to 2 (zero-downtime worker recycling
+    # for server deployments). For a single-user openClaw plugin that's
+    # pure overhead: ~1.1 GB extra RSS, periodic 5–10 s spawn hiccups
+    # during worker rotation, and SQLite can't accept concurrent writers
+    # anyway. Default to 1 here; opt in to N via
+    # OPENCLAW_SMART_BACKEND_WORKERS for power users running concurrent
+    # openClaw sessions or wanting zero-downtime recycling.
+    workers="${OPENCLAW_SMART_BACKEND_WORKERS:-1}"
+    openclaw_smart_spawn_detached bash "$HERE/backend-log-runner.sh" \
+      "$LOG_FILE" "$LOG_MAX_BYTES" -- \
+      uv run --project "$REFLEXIO_PROJECT" --quiet \
+      reflexio services start --only backend --no-reload --workers "$workers"
+    svc_pid=$!
+    # Record the spawned pid, not a pgid sampled with ps. On POSIX,
+    # setsid/python os.setsid make this pid the new process group leader;
+    # sampling immediately can race and capture the caller's pgid instead.
+    echo "$svc_pid" > "$PID_FILE"
+
+    # Give uvicorn up to ~10s to answer /health. The very first boot
+    # after a fresh checkout may be slower (LiteLLM import, chromadb
+    # warmup). We always return ok; the backend catches up in background
+    # if it needs to.
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      backend_healthy && break
+      sleep 1
+    done
+    if ! backend_healthy; then
+      pid=$(cat "$PID_FILE" 2>/dev/null || echo "")
+      if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
+        reason=$(tail -n 120 "$LOG_FILE" 2>/dev/null | grep -E "No LLM provider available|No generation-capable LLM provider available|CLI not found|skipping provider registration|Application startup failed" | tail -n 1 | sed 's/^[[:space:]]*//')
+        emit_start_failure "$reason"
+        exit 0
+      fi
+    fi
+    emit_ok
+    ;;
+  stop)
+    full_stop
+    emit_ok
+    ;;
+  session-end)
+    # Default: leave the backend running so learning keeps flowing
+    # between sessions. Opt in to teardown with
+    # OPENCLAW_SMART_BACKEND_STOP_ON_END=1.
+    if [ "${OPENCLAW_SMART_BACKEND_STOP_ON_END:-0}" = "1" ]; then
+      full_stop
+    fi
+    emit_ok
+    ;;
+  status)
+    if is_our_backend_running; then echo "running on http://localhost:$PORT"; else echo "not running"; fi
+    ;;
+  *)
+    emit_ok
+    ;;
+esac
