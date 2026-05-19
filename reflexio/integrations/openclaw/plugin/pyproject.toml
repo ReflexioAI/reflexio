@@ -31,6 +31,10 @@ packages = ["src/openclaw_smart"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "integration: tests that depend on shared state or a running reflexio backend",
+    "e2e: end-to-end tests that drive the full hook pipeline",
+]
 
 [dependency-groups]
 dev = [
