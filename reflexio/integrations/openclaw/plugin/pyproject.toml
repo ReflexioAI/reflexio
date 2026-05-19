@@ -14,6 +14,7 @@ dependencies = [
 [project.scripts]
 openclaw-smart-hook = "openclaw_smart.hook:main"
 openclaw-smart = "openclaw_smart.cli:main"
+openclaw-smart-optimizer-assistant = "openclaw_smart.optimizer_assistant:main"
 
 [tool.uv.sources]
 # This plugin lives inside the reflexio repo; depend on the local reflexio
