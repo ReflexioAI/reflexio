@@ -1,274 +1,130 @@
-# Reflexio OpenClaw Federated Plugin
+# openclaw-smart
 
-Connect [OpenClaw](https://openclaw.ai) agents to [Reflexio](https://github.com/reflexio-ai/reflexio) for automatic cross-session memory with multi-user support. Conversations are captured automatically to a local SQLite buffer, published to the Reflexio server on session end, and relevant profiles and playbooks are injected before every response via a hook.
+openclaw-smart is the openClaw plugin counterpart of
+[claude-smart](https://github.com/reflexio-ai/claude-smart): a thin TS shim
+plus a Python (`openclaw_smart`) package that wires openClaw's plugin hooks
+into a local [Reflexio](https://github.com/reflexio-ai/reflexio) backend
+running at `http://localhost:8081/`. Conversations are buffered to a JSONL
+session log, published for extraction (skills + preferences) via your own
+LLM, and the top-matching items are injected back into every subsequent
+turn as `prependContext`. The plugin degrades silently when the backend is
+unreachable.
 
-## Table of Contents
-
-- [How It Works](#how-it-works)
-- [Multi-User Architecture](#multi-user-architecture)
-- [Prerequisites](#prerequisites)
-- [Installation](#installation)
-- [First-Use Setup](#first-use-setup)
-- [Configuration](#configuration)
-- [Using `reflexio_publish` Tool](#using-reflexio_publish-tool)
-- [Cross-Session Retrieval](#cross-session-retrieval)
-- [File Structure](#file-structure)
-- [Comparison with openclaw-embedded](#comparison-with-openclaw-embedded)
-- [Uninstall](#uninstall)
-- [Manual Testing](#manual-testing)
-
-## How It Works
-
-The plugin has three independent mechanisms:
-
-### 1. Capture (Automatic via Hook)
-
-```
-Each Turn (message:sent)
-  └── Buffer (user message, agent response) → local SQLite (~/.reflexio/sessions.db)
-
-Session End (command:stop)
-  └── Flush all buffered turns to Reflexio server via reflexio_publish CLI
-      └── Server automatically:
-          1. Analyzes conversation via LLM pipeline
-          2. Extracts playbooks: behavior instructions with context (trigger, rationale, blocking_issue)
-          3. Extracts user profiles: preferences, expertise, communication patterns
-          4. Stores everything with vector embeddings for semantic search
-```
-
-Correction detection happens **server-side via LLM** — the plugin does not detect corrections itself.
-
-### 2. Retrieve (Automatic via Hook Injection)
-
-```
-Per-message (message:received hook — automatic)
-  └── Hook injects search results from reflexio search before every agent response
-      └── Returns user playbooks + agent playbooks relevant to the current message
-      └── Semantic search matches message content against playbook triggers
-```
-
-Both user playbooks (corrections specific to this agent instance) and agent playbooks (shared corrections aggregated from all instances) are returned and injected as context.
-
-### 3. Aggregate (Automatic, optional manual trigger)
-
-```
-After each publish
-  └── Aggregation runs in background automatically
-      └── Clusters similar user playbooks across all agent instances
-      └── Deduplicates and consolidates into shared agent playbooks
-      └── New agent playbooks start as PENDING → can be reviewed → APPROVED/REJECTED
-
-Manual trigger
-  └── reflexio agent-playbooks aggregate  (CLI)
-```
-
-Agent playbooks accumulate corrections from all agent instances, so every instance benefits from corrections made by any other instance.
-
-## Multi-User Architecture
-
-Each OpenClaw agent (identified by its `agentId`) is treated as a distinct Reflexio user. This enables per-agent learning isolation alongside cross-agent shared learning:
-
-```
-~/.openclaw/
-├── agents/
-│   ├── main/        → Reflexio user_id: "main"
-│   ├── work/        → Reflexio user_id: "work"
-│   └── ops/         → Reflexio user_id: "ops"
-```
-
-- **User playbooks**: per-agent corrections, isolated by `agentId`. Mistakes made by `main` are tracked separately from mistakes made by `work`.
-- **Agent playbooks**: shared corrections aggregated from ALL agents. Once a correction is aggregated and approved, every instance sees it via `reflexio search`.
-- **`user_id`** is derived from the OpenClaw session key prefix (`agent:<id>:...`), with fallback to `openclaw`. There is no override — the hook is deliberately locked to automatic identity resolution to eliminate env-var reads.
-
-
-## Prerequisites
-
-- [OpenClaw](https://openclaw.ai) installed and running
-- [Node.js](https://nodejs.org/) 18+ (for the plugin runtime)
-- The `reflexio` CLI on PATH: `pipx install reflexio-ai` (or `pip install --user reflexio-ai`)
-- An LLM API key for the Reflexio server (e.g., `OPENAI_API_KEY`) — required for playbook/profile extraction but read only by the server, never by the hook
-
-Supported LLM providers: OpenAI, Anthropic, Google Gemini, DeepSeek, OpenRouter, MiniMax, DashScope, xAI, Moonshot, ZAI, or any local LLM endpoint (Ollama, LM Studio, vLLM).
-
-## Installation
-
-### Option 1 — ClawHub (recommended)
+## Quick install
 
 ```bash
-clawhub plugin install reflexio-federated
+reflexio setup openclaw
 ```
 
-On first use, the plugin auto-installs the `reflexio-ai` CLI (via `pipx` or `pip`) and runs first-use setup.
+This walks you through:
 
-### Option 2 — From Source (if you have `reflexio-ai` and Node.js installed)
+1. Picking an LLM provider and storage backend (SQLite by default).
+2. Writing `OPENCLAW_BIN` + `OPENCLAW_SMART_USE_LOCAL_CLI=1` to
+   `~/.reflexio/.env` so the backend's `openclaw` LiteLLM provider knows
+   which CLI to spawn for extraction.
+3. Installing the bundled plugin into openClaw
+   (`openclaw plugins install <plugin_dir>`).
+4. Running the plugin's first-run installer (`scripts/smart-install.sh`)
+   so the next session doesn't pay a cold-install cost.
+5. Calling `openclaw plugins inspect reflexio-openclaw-smart` to verify
+   the plugin loaded.
 
-```bash
-cd /path/to/reflexio/integrations/openclaw
-./scripts/install.sh
-```
+`reflexio setup openclaw --uninstall [--purge]` reverses everything;
+`--repair` re-runs only the first-run installer.
 
-This installs the plugin from source, registers it with OpenClaw, and restarts the gateway.
+## How it works
 
-### Option 3 — Manual (for development)
+* **session_start** — pushes openclaw-smart's preferred extraction window /
+  stride and the shared-skill optimizer defaults to the reflexio backend.
+  Emits a stall banner (`prependContext`) if learning has been idle.
+* **before_prompt_build** — appends the user prompt to the session JSONL
+  buffer, then runs an `/api/search` query against reflexio scoped to this
+  project. Top hits are rendered as markdown and emitted under
+  `prependContext` (per-turn, not cached).
+* **before_tool_call / after_tool_call** — `before_*` is an observe-only
+  stub (openClaw does not honor injection at that point). `after_*`
+  redacts secrets, truncates oversized strings, normalizes camelCase
+  payloads to snake_case, and appends an `Assistant_tool` record.
+* **agent_end** — reads `payload["messages"]`, appends the latest
+  assistant turn, then publishes everything since the last
+  `published_up_to` watermark (no force-extraction).
+* **session_end** — drains the buffer one last time with
+  `force_extraction=True` so the session's learnings are available before
+  the next openClaw run.
 
-```bash
-# Build the plugin
-cd /path/to/reflexio/integrations/openclaw/plugin
-npm install
-npm run typecheck
-npm run build  # if applicable
+The full design lives in
+[`docs/superpowers/specs/2026-05-19-openclaw-smart-design.md`](../../../../docs/superpowers/specs/2026-05-19-openclaw-smart-design.md).
 
-# Install via openclaw
-cd /path/to/reflexio/integrations/openclaw
-./scripts/install.sh
-```
+## Skills
 
-## First-Use Setup
+Five user-invocable skills ship under `plugin/skills/`:
 
-On the first OpenClaw session after installation, the plugin automatically:
-
-1. Detects if the `reflexio` CLI is installed; if not, installs it via `pipx`
-2. Creates `~/.reflexio/` configuration directory if it doesn't exist
-3. Prompts for LLM provider selection (OpenAI, Anthropic, Gemini, etc.) and API key
-4. Configures the local storage backend (SQLite for local use, Supabase optional)
-5. Starts the Reflexio server in the background at `http://127.0.0.1:8081`
-6. Runs first search to verify setup is complete
-
-**No manual steps required** — everything is automatic and transparent to the user.
+| Skill       | Purpose                                                                    |
+| ----------- | -------------------------------------------------------------------------- |
+| `reflexio`  | Always-on contract: trust injected context, cite with `[oc:…]`, stay quiet |
+| `learn`     | Force-publish the current session for immediate extraction                 |
+| `show`      | Dump currently-known skills + preferences for this project as markdown     |
+| `dashboard` | Open the local reflexio web UI (`http://localhost:3001`, shared with claude-smart) |
+| `restart`   | Restart the local reflexio backend cleanly                                 |
+| `clear-all` | Delete all locally-stored skills + preferences (destructive, prompts)      |
 
 ## Configuration
 
-This plugin stores all configuration in `plugin/openclaw.plugin.json` and reads the following tunable settings:
+Plugin-side config lives in `plugin/openclaw.plugin.json` (no env vars
+required for normal use). The shell scripts honour these env knobs:
 
-### `publish` — Conversation capture and publish behavior
+* `OPENCLAW_SMART_INTERNAL=1` — recursion guard. Set automatically by
+  `openclaw_provider._call_cli` when the reflexio backend's own
+  LiteLLM-routed extraction subprocess fires hooks back into openclaw-smart.
+  Any handler that sees this env in the payload short-circuits.
+* `OPENCLAW_SMART_USE_LOCAL_CLI=1` — opt-in for the
+  `openclaw_provider` LiteLLM plugin on the reflexio side. Set by
+  `reflexio setup openclaw`.
+* `OPENCLAW_BIN` — absolute path to the openclaw CLI used by the local
+  LLM provider. Set by `reflexio setup openclaw`.
+* `OPENCLAW_DEFAULT_MODEL` — default model passed to
+  `openclaw infer model run` when no model is requested explicitly.
+* `OPENCLAW_SMART_STATE_DIR` — overrides the JSONL session buffer
+  location (default `~/.openclaw-smart/sessions/`). Used by tests.
+* `OPENCLAW_SMART_BACKEND_AUTOSTART=0` — opt out of the
+  `session_start` backend auto-start.
+* `OPENCLAW_PLUGIN_ROOT` — pointer used by slash commands;
+  `scripts/ensure-plugin-root.sh` symlinks `~/.reflexio/openclaw-plugin-root`
+  to the active install.
 
-- `batch_size` (default: 10): Number of turns to buffer before mid-session publish. At session end, all remaining turns are flushed regardless.
-- `max_retries` (default: 3): Number of times to retry failed publish attempts.
-- `max_content_length` (default: 10000): Maximum character length per turn to avoid oversized payloads.
+## Recursion guard
 
-### `search` — Context injection before each response
+The reflexio backend uses `openclaw_provider` (a LiteLLM CustomLLM) to
+invoke the openclaw CLI for extraction. That CLI can in turn fire openClaw
+hooks back into openclaw-smart, which would re-publish the extractor's
+own prompt into reflexio — a tight feedback loop that explodes the
+buffer. The guard at `openclaw_smart.internal_call.is_internal_invocation`
+detects this by:
 
-- `timeout_ms` (default: 5000): Maximum time to wait for search results. If the server is slow, search times out and the agent proceeds without injected context (graceful degradation).
-- `top_k` (default: 5): Number of playbooks to return per search.
-- `min_prompt_length` (default: 5): Skip search for trivial inputs (< 5 chars, or yes/no/ok/sure/thanks).
+1. checking `OPENCLAW_SMART_INTERNAL=1` (set by the provider on spawn),
+2. checking whether `workspaceDir` lives inside the reflexio install dir.
 
-### `server` — Reflexio server health and startup
+When either is true the hook dispatcher exits with empty stdout
+immediately — no buffer writes, no search, no publish.
 
-- `health_check_timeout_ms` (default: 3000): Time limit for server health checks. Used to determine if a restart is needed.
-- `stale_flag_ms` (default: 120000): Flag file age threshold. If a startup flag is older than 2 minutes, assume the previous startup attempt failed and try again.
+## Multi-session limitation
 
-All settings are optional and have sensible defaults. To override, edit `plugin/openclaw.plugin.json` and restart the agent.
+The TS shim tracks one `activeSessionKey` per plugin instance to route
+the `reflexio_publish` tool to the right session. In concurrent
+multi-session use the last session-key seen wins. This matches
+claude-smart's behaviour and is intentional — see spec §10.
 
-## Using `reflexio_publish` Tool
+## Troubleshooting
 
-Conversations are automatically published at session end. For high-signal moments, use the `reflexio_publish` tool to flush immediately:
-
-- **User corrects you** and confirms the fix (explicit "good" / "perfect" or moves on)
-- **You complete a key milestone** with non-obvious learnings
-- **High-friction session** with multiple corrections
-
-The Reflexio server handles extraction (profiles, playbooks) from the published conversations. You don't need to structure the data — just publish, and the server does the rest.
-
-## Cross-Session Retrieval
-
-**Session 1 (cold start):** No playbooks exist yet. The agent works normally. At session end, the hook captures and publishes the full conversation. The Reflexio server's LLM pipeline analyzes it and extracts corrections or user preferences.
-
-**Session 2+:** Before each response, the hook runs `reflexio search` and injects matching playbooks and profiles as context. Over time:
-
-- Mistakes made once are not repeated (corrections match by trigger similarity)
-- User preferences are remembered (profiles extracted automatically)
-- The agent adapts its approach per-task based on accumulated playbooks
-- Corrections from one agent instance propagate to all instances via aggregation
-
-## File Structure
-
-```
-openclaw/
-├── README.md                   ← This file
-├── TESTING.md                  ← Manual testing guide
-├── plugin/                     ← Compiled plugin (OpenClaw extension)
-│   ├── openclaw.plugin.json    ← Plugin manifest and config schema
-│   ├── package.json            ← NPM metadata
-│   ├── lib/                    ← Core libraries
-│   │   ├── user-id.ts          ← Multi-user identity resolution
-│   │   ├── server.ts           ← Server URL, health check, auto-start
-│   │   ├── sqlite-buffer.ts    ← Turn buffering
-│   │   ├── publish.ts          ← Publish and CLI spawn
-│   │   └── search.ts           ← Search and result formatting
-│   ├── hook/                   ← Hook event handlers
-│   │   ├── handler.ts          ← Core hook logic (bootstrap, message events, command:stop)
-│   │   └── setup.ts            ← First-use setup (CLI install, storage config)
-│   ├── skills/                 ← Agent instruction and tooling
-│   │   └── reflexio/
-│   │       └── SKILL.md        ← Teaches agent when/how to search and publish
-│   ├── rules/                  ← Always-active behavioral constraints
-│   │   └── reflexio.md         ← Follow injected context, manual fallback, transparency
-│   └── index.ts                ← Plugin entry point (SDK registration)
-├── hook/                       ← Flat hook for manual installation
-│   ├── handler.ts              ← Same as plugin/hook/handler.ts
-│   └── HOOK.md                 ← Hook metadata (see references/HOOK.md)
-├── scripts/                    ← Installation and uninstall
-│   ├── install.sh              ← Plugin installation
-│   └── uninstall.sh            ← Plugin removal (preserves user data)
-└── _old/                       ← Legacy documentation and code (to be removed)
-```
-
-## Comparison with openclaw-embedded
-
-| Aspect               | openclaw (federated)                     | openclaw-embedded                       |
-| -------------------- | ---------------------------------------- | --------------------------------------- |
-| Architecture         | Federated (server-based)                 | Standalone (no server)                  |
-| Storage              | Reflexio server + SQLite buffer          | Local SQLite only                       |
-| Multi-user support   | Yes — per-agentId user isolation         | Single user per instance                |
-| Cross-instance sync  | Yes — via agent playbooks aggregation    | No — isolated per instance              |
-| Prerequisites        | Reflexio CLI, LLM API key, Node.js       | SQLite (no server, no API key needed)   |
-| Best for             | Teams, multiple agents, persistent core  | Single agent, offline-first, lightweight |
-| Deployment           | Reflexio server + OpenClaw agents        | Standalone OpenClaw agent               |
-
-**Use the federated plugin if:**
-- Multiple agents run on the same machine or team (shared learnings via aggregation)
-- Corrections from one agent should propagate to others
-- A persistent Reflexio server is acceptable
-
-**Use openclaw-embedded if:**
-- Single agent, offline-first operation required
-- No external dependencies or API keys
-- Lightweight, self-contained setup
-
-## Uninstall
-
-### Remove the plugin
-
-```bash
-./scripts/uninstall.sh
-```
-
-This removes the plugin from OpenClaw, cleans up state files, and preserves user data in `~/.reflexio/`.
-
-### Remove user data (optional)
-
-```bash
-./scripts/uninstall.sh --purge
-```
-
-This also deletes `~/.reflexio/` entirely.
-
-### Verify removal
-
-```bash
-openclaw plugins list
-# Should not show reflexio-federated
-```
-
-## Manual Testing
-
-See [TESTING.md](TESTING.md) for a complete step-by-step manual testing guide covering:
-- Install verification
-- First-session auto-setup
-- Search injection
-- Conversation capture and publish
-- `reflexio_publish` tool usage
-- Cross-session retry
-- Multi-user isolation
-- Graceful degradation
-- Uninstall
+* **Hook timing out / no inject** — check
+  `~/.openclaw-smart/backend.log` for reflexio startup errors. The
+  session-start backend autostart is best-effort; you can also start it
+  manually via `bash plugin/scripts/backend-service.sh start`.
+* **`uv` not found** — re-run `bash plugin/scripts/smart-install.sh`; on
+  failure it writes the reason to `~/.openclaw-smart/install-failed`.
+* **Stale plugin after a code change** — `reflexio setup openclaw --repair`
+  re-runs the first-run installer and clears the failure marker.
+* **Recursion loop / sessions multiplying** — the extractor lost the
+  `OPENCLAW_SMART_INTERNAL=1` env. Confirm `openclaw_provider._call_cli`
+  is still passing it (see
+  `reflexio/server/llm/providers/openclaw_provider.py`).
