@@ -3,6 +3,9 @@
   "name": "Reflexio openClaw Smart",
   "description": "Cross-session memory and self-improvement for openClaw via local reflexio backend.",
   "skills": ["./skills"],
+  "activation": {
+    "onStartup": true
+  },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,

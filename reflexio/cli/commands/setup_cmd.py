@@ -645,6 +645,23 @@ def _install_openclaw_integration(env_path: Path) -> bool:
             capture_output=True,
             text=True,
         )
+        # Conversation-access opt-in is required for non-bundled plugins to
+        # receive typed hooks (agent_end, before_prompt_build, etc.). Without
+        # this, the gateway silently drops every plugin-side hook dispatch
+        # with: '[plugins] typed hook "agent_end" blocked because non-bundled
+        # plugins must set ...hooks.allowConversationAccess=true'.
+        subprocess.run(
+            [
+                cli,
+                "config",
+                "set",
+                f"plugins.entries.{_OPENCLAW_PLUGIN_ID}.hooks.allowConversationAccess",
+                "true",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
     except subprocess.CalledProcessError as exc:
         typer.echo(f"Error: openclaw command failed: {exc.stderr or exc.stdout}")
         raise typer.Exit(1) from exc
