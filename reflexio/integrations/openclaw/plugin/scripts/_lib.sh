@@ -1,0 +1,371 @@
+# shellcheck shell=bash
+# Shared helpers for openclaw-smart plugin scripts. Source, do not execute.
+
+# openClaw hooks run with a minimal non-interactive PATH that often omits
+# nvm/asdf/brew shims where `npm`, `uv`, etc. live. Pull the user's login-shell
+# PATH the same way claude-mem does so hook-spawned scripts find them without
+# the user having to mutate their global PATH. Best-effort — failures silent.
+openclaw_smart_source_login_path() {
+  local _SHELL_PATH
+  if [ -n "${SHELL:-}" ] && [ -x "$SHELL" ]; then
+    if _SHELL_PATH="$("$SHELL" -lc 'printf %s "$PATH"' 2>/dev/null)"; then
+      [ -n "$_SHELL_PATH" ] && export PATH="$_SHELL_PATH:$PATH"
+    fi
+  fi
+}
+
+# Prepend the astral.sh installer's default bin directories to PATH so a
+# freshly-installed `uv` is reachable before the user re-sources their
+# shell rc. Prepend (not append) so the just-installed binary wins over
+# any stale copy earlier in PATH. Literals only — no subshell, so safe
+# under `set -u`.
+openclaw_smart_prepend_astral_bins() {
+  export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+}
+
+# Prepend openclaw-smart's private Node.js install, if present. The Setup
+# hook installs Node here when the user does not already have a suitable
+# node/npm on PATH, so later hook-spawned dashboard scripts can run without
+# requiring nvm/brew/global npm to be visible from openClaw's shell.
+openclaw_smart_prepend_node_bins() {
+  local _OC_NODE_ROOT
+  _OC_NODE_ROOT="$HOME/.openclaw-smart/node/current"
+  export PATH="$_OC_NODE_ROOT/bin:$_OC_NODE_ROOT:$PATH"
+}
+
+openclaw_smart_is_internal_invocation_env() {
+  if [ "${OPENCLAW_SMART_INTERNAL:-}" = "1" ]; then
+    return 0
+  fi
+  return 1
+}
+
+openclaw_smart_dashboard_unavailable_marker() {
+  printf '%s\n' "$HOME/.openclaw-smart/dashboard-unavailable"
+}
+
+openclaw_smart_node_recovery_hint() {
+  cat <<'EOF'
+Recovery:
+  1. Restart openClaw to let openclaw-smart retry its private Node.js install.
+  2. If the retry is blocked by your network or OS policy, install Node.js 20.9+ manually:
+EOF
+  if openclaw_smart_is_windows; then
+    cat <<'EOF'
+     - winget install OpenJS.NodeJS.LTS
+     - or download the LTS installer from https://nodejs.org/
+EOF
+  elif [ "$(uname -s 2>/dev/null)" = "Darwin" ]; then
+    cat <<'EOF'
+     - brew install node
+     - or download the LTS installer from https://nodejs.org/
+EOF
+  else
+    cat <<'EOF'
+     - use your distro package manager for nodejs/npm
+     - or download the LTS archive from https://nodejs.org/
+EOF
+  fi
+  cat <<'EOF'
+  3. Run /openclaw-smart:restart, then /openclaw-smart:dashboard.
+EOF
+}
+
+openclaw_smart_write_dashboard_unavailable() {
+  local reason marker
+  reason="$1"
+  marker="$(openclaw_smart_dashboard_unavailable_marker)"
+  mkdir -p "$(dirname "$marker")"
+  {
+    printf 'openclaw-smart dashboard is unavailable: %s\n\n' "$reason"
+    printf 'The learning backend and hooks can still work; only the dashboard UI is affected.\n\n'
+    printf 'Private Node.js location: %s\n\n' "$HOME/.openclaw-smart/node/current"
+    openclaw_smart_node_recovery_hint
+  } > "$marker"
+}
+
+openclaw_smart_clear_dashboard_unavailable() {
+  rm -f "$(openclaw_smart_dashboard_unavailable_marker)"
+}
+
+# Return 0 (true) if running under a Windows-flavoured bash (Git Bash,
+# MSYS, Cygwin). Used to gate POSIX-only primitives (setsid, process
+# groups) and route around Windows-specific potholes (the python3 App
+# Execution Alias stub at WindowsApps\python3.exe).
+openclaw_smart_is_windows() {
+  case "$(uname -s 2>/dev/null)" in
+    MINGW*|MSYS*|CYGWIN*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Print the absolute path of a working python interpreter, or nothing
+# (and return non-zero) if none is usable. On Windows, `python3` is
+# usually the Microsoft Store "App Execution Alias" stub at
+# %LocalAppData%\Microsoft\WindowsApps\python3.exe — `command -v python3`
+# returns truthy but invoking it just prints a "Python was not found"
+# message and exits non-zero. We probe with `-V` to filter the stub out
+# and prefer `python` (the real interpreter when one is installed).
+openclaw_smart_resolve_python() {
+  if openclaw_smart_is_windows; then
+    for cand in python python3; do
+      if command -v "$cand" >/dev/null 2>&1 && "$cand" -V >/dev/null 2>&1; then
+        command -v "$cand"
+        return 0
+      fi
+    done
+    return 1
+  fi
+  for cand in python3 python; do
+    if command -v "$cand" >/dev/null 2>&1 && "$cand" -V >/dev/null 2>&1; then
+      command -v "$cand"
+      return 0
+    fi
+  done
+  return 1
+}
+
+openclaw_smart_download() {
+  local url dest src _OC_PY
+  url="$1"
+  dest="$2"
+  mkdir -p "$(dirname "$dest")"
+  case "$url" in
+    file://*)
+      src="${url#file://}"
+      cp "$src" "$dest"
+      return $?
+      ;;
+  esac
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "$url" -o "$dest"
+    return $?
+  fi
+  if command -v wget >/dev/null 2>&1; then
+    wget -q -O "$dest" "$url"
+    return $?
+  fi
+  if command -v powershell >/dev/null 2>&1; then
+    URL="$url" DEST="$dest" powershell -NoProfile -ExecutionPolicy Bypass -Command \
+      '$ProgressPreference="SilentlyContinue"; Invoke-WebRequest -Uri $env:URL -OutFile $env:DEST'
+    return $?
+  fi
+  if command -v pwsh >/dev/null 2>&1; then
+    URL="$url" DEST="$dest" pwsh -NoProfile -Command \
+      '$ProgressPreference="SilentlyContinue"; Invoke-WebRequest -Uri $env:URL -OutFile $env:DEST'
+    return $?
+  fi
+  _OC_PY=$(openclaw_smart_resolve_python || true)
+  if [ -n "$_OC_PY" ]; then
+    "$_OC_PY" - "$url" "$dest" <<'PY'
+import sys
+import urllib.request
+
+url, dest = sys.argv[1], sys.argv[2]
+with urllib.request.urlopen(url, timeout=60) as response:
+    data = response.read()
+with open(dest, "wb") as fh:
+    fh.write(data)
+PY
+    return $?
+  fi
+  return 1
+}
+
+openclaw_smart_sha256_file() {
+  local path _OC_PY
+  path="$1"
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$path" | awk '{print $1}'
+    return "${PIPESTATUS[0]}"
+  fi
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$path" | awk '{print $1}'
+    return "${PIPESTATUS[0]}"
+  fi
+  if command -v openssl >/dev/null 2>&1; then
+    openssl dgst -sha256 "$path" | awk '{print $NF}'
+    return "${PIPESTATUS[0]}"
+  fi
+  _OC_PY=$(openclaw_smart_resolve_python || true)
+  if [ -n "$_OC_PY" ]; then
+    "$_OC_PY" - "$path" <<'PY'
+import hashlib
+import sys
+
+h = hashlib.sha256()
+with open(sys.argv[1], "rb") as fh:
+    for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+        h.update(chunk)
+print(h.hexdigest())
+PY
+    return $?
+  fi
+  return 1
+}
+
+# Return 0 if `node` exists and satisfies the minimum major/minor pair.
+# Patch versions are intentionally ignored because our requirement is a
+# floor, not an exact runtime pin.
+openclaw_smart_node_satisfies() {
+  local min_major min_minor version major minor
+  min_major="$1"
+  min_minor="$2"
+  command -v node >/dev/null 2>&1 || return 1
+  version=$(node -v 2>/dev/null | sed 's/^v//') || return 1
+  major=$(printf '%s' "$version" | awk -F. '{print $1}')
+  minor=$(printf '%s' "$version" | awk -F. '{print $2}')
+  [ -n "$major" ] && [ -n "$minor" ] || return 1
+  case "$major:$minor" in
+    *[!0-9:]*|:*|*:) return 1 ;;
+  esac
+  [ "$major" -gt "$min_major" ] && return 0
+  [ "$major" -eq "$min_major" ] && [ "$minor" -ge "$min_minor" ]
+}
+
+openclaw_smart_resolve_npm() {
+  local cand
+  for cand in npm npm.cmd; do
+    if command -v "$cand" >/dev/null 2>&1; then
+      command -v "$cand"
+      return 0
+    fi
+  done
+  return 1
+}
+
+openclaw_smart_npm_available() {
+  local npm_bin
+  npm_bin=$(openclaw_smart_resolve_npm || true)
+  [ -n "$npm_bin" ] || return 1
+  "$npm_bin" --version >/dev/null 2>&1
+}
+
+openclaw_smart_log_max_bytes() {
+  printf '%s\n' "10000000"
+}
+
+openclaw_smart_trim_log_file() {
+  local file max_bytes size tmp
+  file="$1"
+  max_bytes="${2:-$(openclaw_smart_log_max_bytes)}"
+  case "$max_bytes" in
+    ''|*[!0-9]*) return 0 ;;
+  esac
+  [ -f "$file" ] || return 0
+  size=$(wc -c < "$file" 2>/dev/null | tr -d '[:space:]') || return 0
+  case "$size" in
+    ''|*[!0-9]*) return 0 ;;
+  esac
+  [ "$size" -le "$max_bytes" ] && return 0
+
+  tmp="${file}.trim.$$"
+  if tail -c "$max_bytes" "$file" > "$tmp" 2>/dev/null; then
+    # Rewrite the existing path instead of replacing it, so a process with
+    # this file already open in append mode keeps writing to the capped file.
+    cat "$tmp" > "$file"
+  fi
+  rm -f "$tmp"
+}
+
+openclaw_smart_append_capped_log() {
+  local file max_bytes
+  file="$1"
+  max_bytes="${2:-$(openclaw_smart_log_max_bytes)}"
+  shift 2
+  mkdir -p "$(dirname "$file")"
+  openclaw_smart_trim_log_file "$file" "$max_bytes"
+  printf '%s\n' "$*" >> "$file"
+  openclaw_smart_trim_log_file "$file" "$max_bytes"
+}
+
+# Spawn a command fully detached from the current shell so a hook timeout
+# (openClaw's install/SessionStart budget) cannot kill it mid-flight.
+# POSIX: setsid → python3 os.setsid → nohup (in that order of strength).
+# Windows: nohup alone — Git Bash has no setsid, no process groups, and
+# `os.setsid()` is POSIX-only; nohup ignores SIGHUP which is enough to
+# survive the parent console closing. The python3 fallback is gated on a
+# real-interpreter probe (-V) so the Windows App Execution Alias stub
+# doesn't get invoked. Caller is responsible for redirecting stdout/stderr;
+# we do not impose a log destination here. Stdin is closed so the child
+# cannot inherit a tty. Use `$!` after this call to capture the pid.
+openclaw_smart_spawn_detached() {
+  if openclaw_smart_is_windows; then
+    nohup "$@" < /dev/null &
+    return 0
+  fi
+  if command -v setsid >/dev/null 2>&1; then
+    setsid nohup "$@" < /dev/null &
+  elif _OC_PY=$(openclaw_smart_resolve_python) && [ -n "$_OC_PY" ]; then
+    "$_OC_PY" -c 'import os,sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' \
+      "$@" < /dev/null &
+  else
+    nohup "$@" < /dev/null &
+  fi
+}
+
+# Terminate a process and (on POSIX) its whole process group, escalating
+# from TERM to KILL after a short grace period. On Windows there are no
+# POSIX process groups, so we use `taskkill /T /F /PID` which walks the
+# child-process tree via the Windows job-object/parent-pid relationships
+# — the closest equivalent to a group kill.
+#
+# Windows-specific subtlety: in Git Bash / MSYS, `$!` for a backgrounded
+# job returns the MSYS pid (an internal counter), NOT the native Windows
+# pid that taskkill needs. `ps -W` (or `-o winpid=`) exposes the WINPID
+# column for the translation. If the lookup fails we fall back to
+# treating the input as a native pid, so callers can pass either an MSYS
+# pid (recorded via $!) or a Windows pid (from tasklist) interchangeably.
+# The `//T //F //PID` syntax escapes Git Bash's MSYS path-mangling of
+# arguments that begin with `/`.
+openclaw_smart_kill_tree() {
+  pid="$1"
+  [ -z "$pid" ] && return 0
+  if openclaw_smart_is_windows; then
+    # Git Bash's `ps` is the procps fork, not BSD/Linux ps; it has no
+    # -o option but its default header is `PID PPID PGID WINPID TTY ...`,
+    # so column 4 of the data row is the Windows pid. awk extracts it
+    # without depending on -o support.
+    target=""
+    if command -v ps >/dev/null 2>&1; then
+      target=$(ps -p "$pid" 2>/dev/null | awk 'NR==2 {print $4}' | tr -d ' \r\n' || true)
+    fi
+    [ -z "$target" ] && target="$pid"
+    if command -v taskkill >/dev/null 2>&1; then
+      taskkill //T //F //PID "$target" >/dev/null 2>&1 || true
+    else
+      kill -TERM "$pid" 2>/dev/null || true
+      sleep 0.5
+      kill -KILL "$pid" 2>/dev/null || true
+    fi
+    return 0
+  fi
+  current_pgid=""
+  if command -v ps >/dev/null 2>&1; then
+    current_pgid=$(ps -o pgid= -p "$$" 2>/dev/null | tr -d ' ')
+  fi
+  if [ -n "$current_pgid" ] && [ "$pid" = "$current_pgid" ]; then
+    return 0
+  fi
+  if ! kill -TERM -- "-$pid" 2>/dev/null; then
+    kill -TERM "$pid" 2>/dev/null || true
+    sleep 0.5
+    kill -KILL "$pid" 2>/dev/null || true
+    return 0
+  fi
+  for _ in 1 2 3 4 5; do
+    kill -0 -- "-$pid" 2>/dev/null || return 0
+    sleep 0.2
+  done
+  kill -KILL -- "-$pid" 2>/dev/null || true
+}
+
+# Return 0 (true) if $1 names a pid file whose pid is currently alive.
+# Silent on missing/empty/stale files.
+openclaw_smart_pid_alive_file() {
+  pid_file="$1"
+  [ -f "$pid_file" ] || return 1
+  pid=$(cat "$pid_file" 2>/dev/null || echo "")
+  [ -n "$pid" ] || return 1
+  kill -0 "$pid" 2>/dev/null
+}
