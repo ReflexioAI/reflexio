@@ -221,6 +221,21 @@ if ! uv sync --locked --python 3.12 --quiet >&2; then
   write_failure "uv sync failed in $PLUGIN_ROOT — run 'uv sync --locked --python 3.12' there to diagnose"
 fi
 
+# Compile the TS shim to ./dist/index.js. openClaw 2026.5.12+ requires
+# compiled JS at the path declared in package.json's openclaw.extensions.
+# Source checkouts ship dist/ via the publisher; in dev mode (or when a
+# user installs from a fresh git clone) we (re)build here so the loader
+# can find ./dist/index.js. Skip silently when npm or the script is
+# missing; the dashboard/install banner will surface the resulting load
+# failure to the user.
+if [ ! -f "$PLUGIN_ROOT/dist/index.js" ] && command -v npm >/dev/null 2>&1; then
+  if [ -f "$PLUGIN_ROOT/package.json" ]; then
+    echo "[openclaw-smart] compiling TS shim to dist/..." >&2
+    (cd "$PLUGIN_ROOT" && npm install --silent && npm run build --silent) >&2 || \
+      echo "[openclaw-smart] WARNING: npm install / build failed; openClaw may refuse to load the plugin" >&2
+  fi
+fi
+
 # Reflexio's CLI reads ~/.reflexio/.env (see reflexio/cli/env_loader.py);
 # append our two opt-in flags there so `reflexio services start` picks
 # them up regardless of which directory the user runs it from. Keep

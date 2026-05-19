@@ -4,10 +4,14 @@
 // All logic lives in src/openclaw_smart/. This file only does SDK wiring.
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 
 type AnyHandler = (event: unknown, ctx: unknown) => unknown;
 
-const PLUGIN_ROOT = __dirname;
+// Compiled output lives at <plugin>/dist/index.js; scripts/ + skills/ stay
+// at the plugin root, so we resolve one level up from this module's dir.
+const _MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
+const PLUGIN_ROOT = path.resolve(_MODULE_DIR, "..");
 const HOOK_ENTRY = path.join(PLUGIN_ROOT, "scripts", "hook_entry.sh");
 const CLI_SCRIPT = path.join(PLUGIN_ROOT, "scripts", "cli.sh");
 
