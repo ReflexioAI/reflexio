@@ -183,7 +183,10 @@ class OpenClawLLM(CustomLLM):
         Returns:
             ModelResponse: Reply text in ``choices[0].message.content``.
         """
-        model_kwarg = str(kwargs.get("model", ""))
+        # ``kwargs.get("model")`` can be ``None`` — coercing via ``str(...)``
+        # would yield the literal "None" and skip the default-model fallback.
+        raw_model = kwargs.get("model")
+        model_kwarg = "" if raw_model is None else str(raw_model)
         if "/" in model_kwarg:
             model = model_kwarg.split("/", 1)[1] or None
         else:
@@ -193,7 +196,22 @@ class OpenClawLLM(CustomLLM):
 
         messages = kwargs.get("messages", [])
         prompt = _messages_to_prompt(messages)
-        timeout_s = int(os.environ.get(ENV_TIMEOUT, str(_DEFAULT_TIMEOUT_SECONDS)))
+        # An invalid OPENCLAW_CLI_TIMEOUT must not crash the completion path —
+        # fall back to the default with a warning so misconfiguration degrades
+        # to working-but-slow rather than working-then-erroring.
+        raw_timeout = os.environ.get(ENV_TIMEOUT)
+        try:
+            timeout_s = (
+                int(raw_timeout) if raw_timeout is not None else _DEFAULT_TIMEOUT_SECONDS
+            )
+        except ValueError:
+            _LOGGER.warning(
+                "Invalid %s=%r; using default %d",
+                ENV_TIMEOUT,
+                raw_timeout,
+                _DEFAULT_TIMEOUT_SECONDS,
+            )
+            timeout_s = _DEFAULT_TIMEOUT_SECONDS
 
         text = _call_cli(prompt=prompt, model=model, timeout_s=timeout_s)
 

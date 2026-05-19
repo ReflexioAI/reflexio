@@ -141,11 +141,19 @@ def handle(payload: dict[str, Any]) -> None:
 
     tool_response = fields["tool_response"]
     output_text = _flatten_tool_response_text(tool_response)
+    # ``_redact`` expects a dict; non-dict payloads (raw string, list, or None)
+    # are wrapped under ``_raw`` so the redaction path stays uniform without
+    # crashing on the unusual shape.
+    raw_tool_input = fields["tool_input"]
+    if isinstance(raw_tool_input, dict):
+        safe_tool_input: dict[str, Any] = _redact(raw_tool_input)
+    else:
+        safe_tool_input = {"_raw": _redact_string(str(raw_tool_input))}
     record = {
         "ts": int(time.time()),
         "role": "Assistant_tool",
         "tool_name": tool_name,
-        "tool_input": _redact(fields["tool_input"]),
+        "tool_input": safe_tool_input,
         "tool_output": _redact_string(output_text) if output_text else "",
         "status": _derive_status(tool_response),
     }

@@ -57,7 +57,7 @@ The full design lives in
 
 ## Skills
 
-Five user-invocable skills ship under `plugin/skills/`:
+Six skill folders ship under `plugin/skills/` (`reflexio` is the always-on contract, the other five are user-invocable):
 
 | Skill       | Purpose                                                                    |
 | ----------- | -------------------------------------------------------------------------- |

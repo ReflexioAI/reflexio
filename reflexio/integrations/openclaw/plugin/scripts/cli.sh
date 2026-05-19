@@ -44,7 +44,11 @@ if ! command -v uv >/dev/null 2>&1; then
   fi
   if [ -x "$PLUGIN_ROOT/scripts/smart-install.sh" ]; then
     echo "openclaw-smart: 'uv' not found — bootstrapping dependencies (~1-3 min on first install)..." >&2
-    OPENCLAW_SMART_BOOTSTRAPPING=1 bash "$PLUGIN_ROOT/scripts/smart-install.sh" >&2
+    # ``set -e`` would short-circuit on a non-zero installer exit and skip
+    # the structured failure-marker checks below. Capture the failure
+    # explicitly so the wrapper continues to the unified error reporting.
+    OPENCLAW_SMART_BOOTSTRAPPING=1 bash "$PLUGIN_ROOT/scripts/smart-install.sh" >&2 || \
+      echo "openclaw-smart: smart-install.sh exited non-zero; continuing to error report" >&2
     openclaw_smart_prepend_astral_bins
     openclaw_smart_prepend_node_bins
   fi

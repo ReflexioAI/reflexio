@@ -637,7 +637,9 @@ class TestOpenclawSetup:
 
         def fake_run(argv, **_kw):  # noqa: ANN001
             calls.append(list(argv))
-            if argv[:3] == ["openclaw", "plugins", "inspect"]:
+            # CLI is invoked by absolute path (TOCTOU fix), so check the
+            # subcommand position rather than the executable string.
+            if argv[1:3] == ["plugins", "inspect"]:
                 return _Result("Status: loaded\n")
             return _Result("")
 
@@ -649,6 +651,12 @@ class TestOpenclawSetup:
         flat_args = [arg for call in calls for arg in call]
         assert "reflexio-openclaw-smart" in flat_args
         assert "reflexio-federated" not in flat_args
+        # Every install-side call should target the absolute openclaw_bin
+        # path, not the bare "openclaw" string.
+        for call in calls:
+            assert call[0] == "/usr/bin/openclaw", (
+                f"expected absolute CLI path, got {call[0]!r}"
+            )
         body = env_path.read_text()
         assert 'OPENCLAW_BIN="/usr/bin/openclaw"' in body
         assert 'OPENCLAW_SMART_USE_LOCAL_CLI="1"' in body

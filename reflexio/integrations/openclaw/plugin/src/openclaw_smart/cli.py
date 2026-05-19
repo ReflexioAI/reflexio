@@ -158,6 +158,10 @@ def _run_service(script: Path, subcmd: str) -> int:
         return 0
     except subprocess.CalledProcessError as exc:
         return exc.returncode or 1
+    except OSError as exc:
+        # Script lost executable bit, permission denied, missing interpreter, etc.
+        sys.stderr.write(f"error: failed to execute {script}: {exc}\n")
+        return 1
 
 
 def _service_status(script: Path, wait_ready_s: float = 3.0) -> str:
@@ -166,9 +170,12 @@ def _service_status(script: Path, wait_ready_s: float = 3.0) -> str:
         return "script missing"
     deadline = time.monotonic() + wait_ready_s
     while True:
-        result = subprocess.run(
-            [str(script), "status"], capture_output=True, text=True, check=False
-        )
+        try:
+            result = subprocess.run(
+                [str(script), "status"], capture_output=True, text=True, check=False
+            )
+        except OSError as exc:
+            return f"script error: {exc}"
         status = result.stdout.strip() or "unknown"
         if status != "not running" or time.monotonic() >= deadline:
             return status

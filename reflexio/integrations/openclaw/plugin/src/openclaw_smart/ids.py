@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import subprocess  # noqa: S404 — git invocation with a fixed flag set.
 from pathlib import Path
 
@@ -24,10 +25,20 @@ _LOGGER = logging.getLogger(__name__)
 
 
 def _resolve_from_git(cwd: Path) -> str | None:
-    """Return the git toplevel basename for *cwd*, or ``None`` if not a repo."""
+    """Return the git toplevel basename for *cwd*, or ``None`` if not a repo.
+
+    Must never raise — callers depend on this returning ``None`` cleanly so
+    hook handlers can fall back to other identifiers. Resolves ``git`` to an
+    absolute path first to avoid PATH-dependent process spawning, and catches
+    any ``OSError`` (e.g., ``cwd`` is unreadable or has been deleted) along
+    with the previously-handled ``FileNotFoundError`` / ``TimeoutExpired``.
+    """
+    git_bin = shutil.which("git")
+    if not git_bin:
+        return None
     try:
-        result = subprocess.run(  # noqa: S603, S607 — fixed argv, cwd is a Path.
-            ["git", "rev-parse", "--show-toplevel"],
+        result = subprocess.run(  # noqa: S603 — fixed argv, cwd is a Path.
+            [git_bin, "rev-parse", "--show-toplevel"],
             cwd=cwd,
             capture_output=True,
             text=True,
@@ -38,7 +49,8 @@ def _resolve_from_git(cwd: Path) -> str | None:
             toplevel = result.stdout.strip()
             if toplevel:
                 return Path(toplevel).name
-    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        # OSError covers FileNotFoundError + PermissionError + missing-cwd.
         _LOGGER.debug("git toplevel resolution failed: %s", exc)
     return None
 

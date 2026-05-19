@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
-
 from openclaw_smart import state
 
 
@@ -139,3 +137,40 @@ def test_read_injected_later_wins():
     state.append_injected("s6", [{"id": "s1-abcd", "title": "new"}])
     registry = state.read_injected("s6")
     assert registry["s1-abcd"]["title"] == "new"
+
+
+def test_path_traversal_session_id_rejected(isolate_state_dir, tmp_path):
+    """A crafted session id with path separators must not escape state_dir()."""
+    escape_attempts = [
+        "../escape",
+        "../../etc/passwd",
+        "a/b/c",
+        "sub/sess",
+        "..",
+        "",
+        "a" * 200,  # over 128 char cap
+    ]
+    for sid in escape_attempts:
+        assert state.session_path(sid) is None, (
+            f"unsafe session_path accepted: {sid!r}"
+        )
+        assert state.injected_path(sid) is None
+        # Append + read must silently no-op rather than writing anywhere.
+        state.append(sid, {"role": "User", "content": "x"})
+        state.append_injected(sid, [{"id": "s1-abcd", "title": "x"}])
+        assert state.read_all(sid) == []
+        assert state.read_injected(sid) == {}
+
+    # The state dir itself should remain empty — nothing escaped.
+    if isolate_state_dir.exists():
+        assert not any(isolate_state_dir.glob("**/*.jsonl"))
+    # And nowhere outside it either.
+    assert not (tmp_path / "escape.jsonl").exists()
+
+
+def test_safe_session_ids_accepted():
+    """The safe-id charset (alphanumeric + dot/underscore/hyphen) is allowed."""
+    for sid in ("sess1", "a.b.c", "a_b", "a-b", "01234", "S.1_2-3"):
+        path = state.session_path(sid)
+        assert path is not None
+        assert path.name == f"{sid}.jsonl"

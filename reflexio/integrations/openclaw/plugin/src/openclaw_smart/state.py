@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -61,14 +62,53 @@ def state_dir() -> Path:
     return Path(override) if override else _DEFAULT_STATE_DIR
 
 
-def session_path(session_id: str) -> Path:
-    """Return the JSONL path for a given session id."""
-    return state_dir() / f"{session_id}.jsonl"
+# openClaw session ids are opaque tokens (typically UUID-like). Restrict to a
+# conservative alphanumeric + dot/underscore/hyphen set so a crafted value
+# with path separators (e.g. ``../escape``) or shell metacharacters can't
+# write or read outside ``state_dir()``. Any session id outside this charset
+# is treated as malformed and the resulting filesystem op becomes a no-op
+# upstream (see ``append`` / ``read_all``).
+#
+# We additionally reject ids that are pure-dot tokens (``.``, ``..``) or that
+# contain a ``..`` substring even though the underlying regex would accept
+# them — those are not valid filenames and signal an escape attempt.
+_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 
 
-def injected_path(session_id: str) -> Path:
-    """Return the JSONL path for the per-session oc-cite registry."""
-    return state_dir() / f"{session_id}.injected.jsonl"
+def _safe_session_id(session_id: str) -> str | None:
+    """Return ``session_id`` iff it matches the safe-id charset, else ``None``.
+
+    Args:
+        session_id (str): Caller-supplied session key.
+
+    Returns:
+        str | None: The session id unchanged when safe, ``None`` otherwise.
+    """
+    if not isinstance(session_id, str):
+        return None
+    if not _SESSION_ID_RE.fullmatch(session_id):
+        return None
+    if ".." in session_id:
+        return None
+    if set(session_id) == {"."}:
+        return None
+    return session_id
+
+
+def session_path(session_id: str) -> Path | None:
+    """Return the JSONL path for a given session id, or ``None`` if unsafe."""
+    sid = _safe_session_id(session_id)
+    if sid is None:
+        return None
+    return state_dir() / f"{sid}.jsonl"
+
+
+def injected_path(session_id: str) -> Path | None:
+    """Return the per-session oc-cite registry path, or ``None`` if unsafe."""
+    sid = _safe_session_id(session_id)
+    if sid is None:
+        return None
+    return state_dir() / f"{sid}.injected.jsonl"
 
 
 def append_injected(session_id: str, entries: Iterable[dict[str, Any]]) -> None:
@@ -83,6 +123,9 @@ def append_injected(session_id: str, entries: Iterable[dict[str, Any]]) -> None:
     if not records:
         return
     path = injected_path(session_id)
+    if path is None:
+        _LOGGER.warning("rejected unsafe session_id for append_injected: %r", session_id)
+        return
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as fh:
         if fcntl is not None:
@@ -102,7 +145,7 @@ def read_injected(session_id: str) -> dict[str, dict[str, Any]]:
     record only refreshes metadata).
     """
     path = injected_path(session_id)
-    if not path.exists():
+    if path is None or not path.exists():
         return {}
     registry: dict[str, dict[str, Any]] = {}
     with path.open("r", encoding="utf-8") as fh:
@@ -130,6 +173,9 @@ def append(session_id: str, record: dict[str, Any]) -> None:
     flush size.
     """
     path = session_path(session_id)
+    if path is None:
+        _LOGGER.warning("rejected unsafe session_id for append: %r", session_id)
+        return
     path.parent.mkdir(parents=True, exist_ok=True)
     line = json.dumps(record, ensure_ascii=False) + "\n"
     with path.open("a", encoding="utf-8") as fh:
@@ -144,7 +190,7 @@ def append(session_id: str, record: dict[str, Any]) -> None:
 def read_all(session_id: str) -> list[dict[str, Any]]:
     """Return every record in the buffer as a list of dicts. Missing file → []."""
     path = session_path(session_id)
-    if not path.exists():
+    if path is None or not path.exists():
         return []
     records: list[dict[str, Any]] = []
     with path.open("r", encoding="utf-8") as fh:

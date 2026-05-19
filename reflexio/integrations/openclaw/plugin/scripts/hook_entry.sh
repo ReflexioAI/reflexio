@@ -92,5 +92,15 @@ if ! command -v uv >/dev/null 2>&1; then
   fi
 fi
 
+# Re-check the failure marker after the inline bootstrap. ``smart-install.sh``
+# can write ``install-failed`` *after* uv is on PATH (e.g. ``uv sync`` failed),
+# in which case we still have a working ``uv`` but a non-functional plugin.
+# Without this gate we would proceed to ``uv run`` and crash with a confusing
+# downstream error instead of surfacing the recorded failure reason.
+if [ -f "$FAILURE_MARKER" ]; then
+  echo ''
+  exit 0
+fi
+
 # Stdin is the hook payload JSON — stream it through to the Python CLI.
 exec uv run --project "$PLUGIN_ROOT" --quiet python -m openclaw_smart.hook "$HOST" "$EVENT"

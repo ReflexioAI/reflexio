@@ -46,12 +46,13 @@ acquire_install_lock() {
 
   if command -v flock >/dev/null 2>&1; then
     exec 9>"$INSTALL_LOCK"
-    if ! flock 9; then
-      echo "[openclaw-smart] install lock failed; continuing without serialization" >&2
-      echo ''
-      exit 0
+    if flock 9; then
+      return 0
     fi
-    return 0
+    # flock unexpectedly failed (rare; usually a malformed lockfile fd
+    # rather than a busy lock). Fall through to the portable lockfile
+    # path below instead of bailing out — the installer must still run.
+    echo "[openclaw-smart] flock failed; falling back to lockfile serialization" >&2
   fi
 
   while ! ( set -C; printf '%s\n' "$$" > "$INSTALL_LOCK" ) 2>/dev/null; do

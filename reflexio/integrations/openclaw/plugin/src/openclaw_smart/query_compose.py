@@ -39,14 +39,27 @@ def from_tool_call(tool_name: str, tool_input: Mapping[str, Any]) -> str:
             return ""
 
 
+def _as_str(value: Any) -> str:
+    """Coerce a tool-payload field to a string, treating non-strings as empty.
+
+    Tool inputs come from external openClaw payloads; a malformed event with
+    a non-string ``new_string`` or ``command`` would otherwise crash the
+    hook with ``AttributeError`` / ``TypeError``. We prefer a clean empty
+    query over a partial failure.
+    """
+    return value if isinstance(value, str) else ""
+
+
 def _from_file_edit(tool_input: Mapping[str, Any]) -> str:
-    path = tool_input.get("file_path") or ""
-    snippet = tool_input.get("new_string") or tool_input.get("content") or ""
+    path = _as_str(tool_input.get("file_path"))
+    snippet = _as_str(tool_input.get("new_string")) or _as_str(
+        tool_input.get("content")
+    )
     basename = Path(path).name if path else ""
     return f"{basename} {snippet[:_MAX_SNIPPET_LEN]}".strip()
 
 
 def _from_bash(tool_input: Mapping[str, Any]) -> str:
-    command = tool_input.get("command") or ""
+    command = _as_str(tool_input.get("command"))
     first_line = command.splitlines()[0] if command else ""
     return first_line[:_MAX_SNIPPET_LEN].strip()

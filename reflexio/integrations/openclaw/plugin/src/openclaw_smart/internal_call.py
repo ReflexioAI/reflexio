@@ -25,17 +25,26 @@ from typing import Any
 
 INTERNAL_ENV = "OPENCLAW_SMART_INTERNAL"
 
-# Plugin layout:
+# Plugin layout (in-repo / editable):
 #   <reflexio_repo>/reflexio/integrations/openclaw/plugin/src/openclaw_smart/internal_call.py
 # parents[5] = <reflexio_repo>, the directory we want to fence off.
 #
-# In install mode the in-repo layout is absent — the env marker is the
-# primary signal and this path never matches. ``OPENCLAW_SMART_REFLEXIO_DIR``
-# lets callers (and tests) override the path without touching the module.
+# In install-mode layouts (PyPI wheel, ~/.openclaw/plugins/cache/...), this
+# fixed depth doesn't hold. Guarding the index lookup keeps module import
+# from crashing on unfamiliar layouts — the env marker is the primary
+# signal there. ``OPENCLAW_SMART_REFLEXIO_DIR`` lets callers (and tests)
+# override the path without touching the module.
 _THIS_DIR = Path(__file__).resolve().parent
-_REFLEXIO_DIR = Path(
-    os.environ.get("OPENCLAW_SMART_REFLEXIO_DIR") or _THIS_DIR.parents[5]
-)
+_override_reflexio_dir = os.environ.get("OPENCLAW_SMART_REFLEXIO_DIR")
+if _override_reflexio_dir:
+    _REFLEXIO_DIR: Path = Path(_override_reflexio_dir).resolve()
+else:
+    _parents = _THIS_DIR.parents
+    # In an unexpected layout we fall back to _THIS_DIR itself, which makes
+    # the relative_to() check below match (correctly) only when cwd is
+    # literally inside this module's own directory — effectively a no-op
+    # fence, ceding all detection responsibility to the env marker.
+    _REFLEXIO_DIR = _parents[5] if len(_parents) > 5 else _THIS_DIR
 
 
 def is_internal_invocation(payload: dict[str, Any]) -> bool:

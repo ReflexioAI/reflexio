@@ -616,9 +616,15 @@ def _install_openclaw_integration(env_path: Path) -> bool:
 
     _write_openclaw_env(env_path, openclaw_bin)
 
+    # Use the resolved absolute path for every subprocess invocation so a
+    # mid-setup PATH change (a sibling install, a shell rc reload) can't
+    # silently flip us to a different ``openclaw`` binary partway through.
+    # Mirrors the same lookup discipline the runtime hooks use via OPENCLAW_BIN.
+    cli = openclaw_bin
+
     # Clean install: remove any existing installation and stale extension dir
     subprocess.run(
-        ["openclaw", "plugins", "uninstall", "--force", _OPENCLAW_PLUGIN_ID],
+        [cli, "plugins", "uninstall", "--force", _OPENCLAW_PLUGIN_ID],
         check=False,
         capture_output=True,
         text=True,
@@ -628,13 +634,13 @@ def _install_openclaw_integration(env_path: Path) -> bool:
 
     try:
         subprocess.run(
-            ["openclaw", "plugins", "install", str(plugin_dir)],
+            [cli, "plugins", "install", str(plugin_dir)],
             check=True,
             capture_output=True,
             text=True,
         )
         subprocess.run(
-            ["openclaw", "plugins", "enable", _OPENCLAW_PLUGIN_ID],
+            [cli, "plugins", "enable", _OPENCLAW_PLUGIN_ID],
             check=True,
             capture_output=True,
             text=True,
@@ -648,7 +654,7 @@ def _install_openclaw_integration(env_path: Path) -> bool:
 
     # Gateway restart is best-effort — older openclaw builds may not expose it
     subprocess.run(
-        ["openclaw", "gateway", "restart"],
+        [cli, "gateway", "restart"],
         check=False,
         capture_output=True,
         text=True,
@@ -657,7 +663,7 @@ def _install_openclaw_integration(env_path: Path) -> bool:
     # Verify — match exact "Status: loaded" to avoid false positives from
     # "not loaded" or "unloaded"
     result = subprocess.run(
-        ["openclaw", "plugins", "inspect", _OPENCLAW_PLUGIN_ID],
+        [cli, "plugins", "inspect", _OPENCLAW_PLUGIN_ID],
         capture_output=True,
         text=True,
     )
@@ -684,15 +690,16 @@ def _uninstall_openclaw(env_path: Path | None = None, purge: bool = False) -> No
         "This will remove the Reflexio integration from openClaw. Continue?",
         abort=True,
     )
-    if shutil.which("openclaw"):
+    cli = shutil.which("openclaw")
+    if cli:
         subprocess.run(
-            ["openclaw", "plugins", "disable", _OPENCLAW_PLUGIN_ID],
+            [cli, "plugins", "disable", _OPENCLAW_PLUGIN_ID],
             check=False,
             capture_output=True,
             text=True,
         )
         subprocess.run(
-            ["openclaw", "plugins", "uninstall", "--force", _OPENCLAW_PLUGIN_ID],
+            [cli, "plugins", "uninstall", "--force", _OPENCLAW_PLUGIN_ID],
             check=False,
             capture_output=True,
             text=True,
