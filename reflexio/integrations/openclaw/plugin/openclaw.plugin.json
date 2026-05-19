@@ -1,0 +1,48 @@
+{
+  "id": "reflexio-openclaw-smart",
+  "name": "Reflexio openClaw Smart",
+  "description": "Cross-session memory and self-improvement for openClaw via local reflexio backend.",
+  "skills": ["./skills"],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "publish": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "batch_size": { "type": "integer", "default": 10 },
+          "max_retries": { "type": "integer", "default": 3 },
+          "max_content_length": { "type": "integer", "default": 10000 }
+        }
+      },
+      "search": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "timeout_ms": { "type": "integer", "default": 5000 },
+          "top_k": { "type": "integer", "default": 3 },
+          "min_prompt_length": { "type": "integer", "default": 5 }
+        }
+      },
+      "server": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "health_check_timeout_ms": { "type": "integer", "default": 3000 },
+          "stale_flag_ms": { "type": "integer", "default": 120000 }
+        }
+      },
+      "extraction": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "openClaw model id passed as --model to `openclaw infer model run`. If omitted, the user's openClaw default is used."
+          }
+        }
+      }
+    }
+  }
+}
