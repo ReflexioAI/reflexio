@@ -38,6 +38,9 @@ from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
 from reflexio.server.llm.providers.claude_code_provider import (
     register_if_enabled as _register_claude_code,
 )
+from reflexio.server.llm.providers.openclaw_provider import (
+    register_if_enabled as _register_openclaw,
+)
 from reflexio.server.llm.providers.embedding_service_provider import (
     EmbeddingUnavailableError,
     embedding_provider_mode,
@@ -66,9 +69,10 @@ from reflexio.server.llm.providers.nomic_embedding_provider import (
 # Suppress LiteLLM's verbose logging
 litellm.suppress_debug_info = True
 
-# Opt-in registration of claude-smart's local providers. All no-ops
-# unless the matching env var is set. Safe to call at import.
+# Opt-in registration of local CLI providers. All no-ops unless the
+# matching env var is set. Safe to call at import.
 _register_claude_code()
+_register_openclaw()
 _register_local_embedder()
 _register_nomic_embedder()
 
