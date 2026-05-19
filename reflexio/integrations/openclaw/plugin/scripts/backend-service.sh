@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
-# Auto-start the reflexio FastAPI backend (port 8081) if it's not already
+# Auto-start the reflexio FastAPI backend (port 8071) if it's not already
 # running. Detached spawn, returns immediately so the SessionStart hook
 # doesn't block the session.
+#
+# Port choice: openclaw-smart shares 8071/8072 with the sibling claude-smart
+# plugin so the two plugins coexist on a single shared backend (one SQLite
+# store, one extractor process) — not reflexio's 8081 default, which is
+# reserved for a developer's own local reflexio instance.
 #
 # Subcommands:
 #   start         probe /health; if nothing we recognize is on the port,
@@ -24,8 +29,8 @@ openclaw_smart_source_login_path
 openclaw_smart_prepend_astral_bins
 
 CMD="${1:-start}"
-PORT=8081
-EMBEDDING_PORT="${EMBEDDING_PORT:-8082}"
+PORT=8071
+EMBEDDING_PORT="${EMBEDDING_PORT:-8072}"
 # Pass through to `reflexio services start/stop` so the spawned backend
 # binds to PORT.
 export BACKEND_PORT="$PORT"

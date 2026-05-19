@@ -17,7 +17,7 @@ from openclaw_smart import runtime
 _LOGGER = logging.getLogger(__name__)
 
 _ENV_URL = "REFLEXIO_URL"
-_DEFAULT_URL = "http://localhost:8081/"
+_DEFAULT_URL = "http://localhost:8071/"
 _SEARCH_MODE_HYBRID = "hybrid"  # reflexio.models.config_schema.SearchMode.HYBRID
 _UNIFIED_ENTITY_TYPES = ("profiles", "user_playbooks", "agent_playbooks")
 _AGENT_PLAYBOOK_APPROVAL_STATUSES = ("pending", "approved")

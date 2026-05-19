@@ -9,9 +9,11 @@ import pytest
 from openclaw_smart.reflexio_adapter import Adapter
 
 
-def test_default_url_is_8081():
+def test_default_url_is_8071():
+    # 8071/8072 matches claude-smart so the two plugins share one local
+    # reflexio backend; 8081 is reserved for a developer's own instance.
     adapter = Adapter()
-    assert adapter.url == "http://localhost:8081/"
+    assert adapter.url == "http://localhost:8071/"
 
 
 def test_env_var_overrides_url(monkeypatch):

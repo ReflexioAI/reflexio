@@ -4,11 +4,13 @@ openclaw-smart is the openClaw plugin counterpart of
 [claude-smart](https://github.com/reflexio-ai/claude-smart): a thin TS shim
 plus a Python (`openclaw_smart`) package that wires openClaw's plugin hooks
 into a local [Reflexio](https://github.com/reflexio-ai/reflexio) backend
-running at `http://localhost:8081/`. Conversations are buffered to a JSONL
-session log, published for extraction (skills + preferences) via your own
-LLM, and the top-matching items are injected back into every subsequent
-turn as `prependContext`. The plugin degrades silently when the backend is
-unreachable.
+running at `http://localhost:8071/`. The port matches claude-smart so both
+plugins share one bundled reflexio (one SQLite store, one extractor), and
+leaves reflexio's own 8081 default free for developer use. Conversations
+are buffered to a JSONL session log, published for extraction (skills +
+preferences) via your own LLM, and the top-matching items are injected
+back into every subsequent turn as `prependContext`. The plugin degrades
+silently when the backend is unreachable.
 
 ## Quick install
 
