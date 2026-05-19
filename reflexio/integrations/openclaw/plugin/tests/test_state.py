@@ -169,8 +169,19 @@ def test_path_traversal_session_id_rejected(isolate_state_dir, tmp_path):
 
 
 def test_safe_session_ids_accepted():
-    """The safe-id charset (alphanumeric + dot/underscore/hyphen) is allowed."""
-    for sid in ("sess1", "a.b.c", "a_b", "a-b", "01234", "S.1_2-3"):
+    """The safe-id charset (alphanumeric + dot/underscore/hyphen/colon) is allowed."""
+    # Colons appear in real openClaw sessionKeys (``agent:main:main``); they're
+    # not POSIX path separators so they're safe inside filenames.
+    for sid in (
+        "sess1",
+        "a.b.c",
+        "a_b",
+        "a-b",
+        "01234",
+        "S.1_2-3",
+        "agent:main:main",
+        "agent:work:abc123",
+    ):
         path = state.session_path(sid)
-        assert path is not None
+        assert path is not None, f"safe id {sid!r} should have been accepted"
         assert path.name == f"{sid}.jsonl"

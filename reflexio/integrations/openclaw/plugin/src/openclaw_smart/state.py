@@ -62,17 +62,21 @@ def state_dir() -> Path:
     return Path(override) if override else _DEFAULT_STATE_DIR
 
 
-# openClaw session ids are opaque tokens (typically UUID-like). Restrict to a
-# conservative alphanumeric + dot/underscore/hyphen set so a crafted value
-# with path separators (e.g. ``../escape``) or shell metacharacters can't
-# write or read outside ``state_dir()``. Any session id outside this charset
-# is treated as malformed and the resulting filesystem op becomes a no-op
+# openClaw session ids are opaque tokens. The real shape we see in
+# production is ``agent:<id>:<run>`` (e.g. ``agent:main:main``) — colons
+# are part of the protocol, not a path separator on POSIX, so they're
+# safe in filesystem paths. Restrict to a conservative
+# alphanumeric + dot/underscore/hyphen/colon set so a crafted value
+# with `/` or `\` path separators or shell metacharacters can't write or
+# read outside ``state_dir()``. Any session id outside this charset is
+# treated as malformed and the resulting filesystem op becomes a no-op
 # upstream (see ``append`` / ``read_all``).
 #
-# We additionally reject ids that are pure-dot tokens (``.``, ``..``) or that
-# contain a ``..`` substring even though the underlying regex would accept
-# them — those are not valid filenames and signal an escape attempt.
-_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+# We additionally reject ids that are pure-dot tokens (``.``, ``..``) or
+# contain a ``..`` substring even though the underlying regex would
+# accept them — those are not valid filenames and signal an escape
+# attempt.
+_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 
 
 def _safe_session_id(session_id: str) -> str | None:

@@ -67,7 +67,7 @@ beforeEach(() => {
 });
 
 describe("openclaw-smart TS shim", () => {
-  it("registers all 6 hooks without touching runtime.system", async () => {
+  it("registers the empirically-verified hook set without touching runtime.system", async () => {
     const onCalls: string[] = [];
     // Intentionally omit runtime.system to match the untrusted-plugin reality
     // — if the plugin ever reaches for it, register() crashes here.
@@ -83,6 +83,7 @@ describe("openclaw-smart TS shim", () => {
     await plugin.register(api as never);
     expect(onCalls).toEqual([
       "session_start",
+      "message_received",
       "before_prompt_build",
       "before_tool_call",
       "after_tool_call",
