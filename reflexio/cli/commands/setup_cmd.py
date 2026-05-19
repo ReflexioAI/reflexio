@@ -544,8 +544,59 @@ def _prompt_storage(env_path: Path) -> str:
     raise typer.Exit(1)
 
 
-def _install_openclaw_integration() -> bool:
-    """Install the Reflexio plugin into OpenClaw via the plugin system.
+_OPENCLAW_PLUGIN_ID = "reflexio-openclaw-smart"
+
+
+def _openclaw_plugin_dir() -> Path:
+    """Resolve the absolute path of the bundled openclaw-smart plugin dir."""
+    import reflexio
+
+    pkg_dir = Path(reflexio.__file__).parent
+    return pkg_dir / "integrations" / "openclaw" / "plugin"
+
+
+def _write_openclaw_env(env_path: Path, openclaw_bin: str) -> None:
+    """Persist the openclaw CLI path and local-CLI opt-in to ``~/.reflexio/.env``."""
+    _set_env_var(env_path, "OPENCLAW_BIN", openclaw_bin)
+    _set_env_var(env_path, "OPENCLAW_SMART_USE_LOCAL_CLI", "1")
+
+
+def _remove_env_keys(env_path: Path, keys: tuple[str, ...]) -> None:
+    """Delete the given keys from a ``.env`` file. Silent on missing file/keys."""
+    if not env_path.exists():
+        return
+    lines = env_path.read_text().splitlines()
+    drop = {f"{k}=" for k in keys}
+    kept = [line for line in lines if not any(line.startswith(p) for p in drop)]
+    if len(kept) != len(lines):
+        env_path.write_text("\n".join(kept) + ("\n" if kept else ""))
+
+
+def _run_smart_install(plugin_dir: Path) -> None:
+    """Run the plugin's first-run installer so uv/.venv land before first hook."""
+    script = plugin_dir / "scripts" / "smart-install.sh"
+    if not script.exists():
+        typer.echo(f"Warning: {script} missing, skipping first-run install")
+        return
+    proc = subprocess.run(["bash", str(script)], capture_output=True, text=True)
+    if proc.returncode != 0:
+        typer.echo(
+            "Warning: smart-install.sh exited "
+            f"{proc.returncode}; first session may take longer to bootstrap"
+        )
+        if proc.stderr:
+            typer.echo(proc.stderr.strip())
+
+
+def _install_openclaw_integration(env_path: Path) -> bool:
+    """Install the openclaw-smart plugin into openClaw via the plugin system.
+
+    Writes ``OPENCLAW_BIN`` and ``OPENCLAW_SMART_USE_LOCAL_CLI=1`` to
+    ``~/.reflexio/.env``, installs and enables the bundled plugin, runs the
+    first-run installer, and verifies the plugin is loaded.
+
+    Args:
+        env_path (Path): Path to the ``~/.reflexio/.env`` file to update.
 
     Returns:
         bool: True if the plugin was verified as registered.
@@ -553,30 +604,28 @@ def _install_openclaw_integration() -> bool:
     Raises:
         typer.Exit: If the openclaw CLI is not found on PATH.
     """
-    if not shutil.which("openclaw"):
+    openclaw_bin = shutil.which("openclaw")
+    if not openclaw_bin:
         typer.echo("Error: openclaw CLI not found. Install from https://openclaw.ai")
         raise typer.Exit(1)
 
-    import reflexio
-
-    pkg_dir = Path(reflexio.__file__).parent
-    plugin_dir = pkg_dir / "integrations" / "openclaw" / "plugin"
-
+    plugin_dir = _openclaw_plugin_dir()
     if not plugin_dir.exists():
         typer.echo(f"Error: plugin directory not found at {plugin_dir}")
         raise typer.Exit(1)
 
+    _write_openclaw_env(env_path, openclaw_bin)
+
     # Clean install: remove any existing installation and stale extension dir
     subprocess.run(
-        ["openclaw", "plugins", "uninstall", "--force", "reflexio-federated"],
+        ["openclaw", "plugins", "uninstall", "--force", _OPENCLAW_PLUGIN_ID],
         check=False,
         capture_output=True,
         text=True,
     )
-    stale_ext = Path.home() / ".openclaw" / "extensions" / "reflexio-federated"
+    stale_ext = Path.home() / ".openclaw" / "extensions" / _OPENCLAW_PLUGIN_ID
     shutil.rmtree(stale_ext, ignore_errors=True)
 
-    # Install plugin and restart gateway so inspect sees the new state
     try:
         subprocess.run(
             ["openclaw", "plugins", "install", str(plugin_dir)],
@@ -585,13 +634,7 @@ def _install_openclaw_integration() -> bool:
             text=True,
         )
         subprocess.run(
-            ["openclaw", "plugins", "enable", "reflexio-federated"],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        subprocess.run(
-            ["openclaw", "gateway", "restart"],
+            ["openclaw", "plugins", "enable", _OPENCLAW_PLUGIN_ID],
             check=True,
             capture_output=True,
             text=True,
@@ -600,10 +643,21 @@ def _install_openclaw_integration() -> bool:
         typer.echo(f"Error: openclaw command failed: {exc.stderr or exc.stdout}")
         raise typer.Exit(1) from exc
 
+    # First-run: warm uv venv so the next hook isn't billed for cold install
+    _run_smart_install(plugin_dir)
+
+    # Gateway restart is best-effort — older openclaw builds may not expose it
+    subprocess.run(
+        ["openclaw", "gateway", "restart"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
     # Verify — match exact "Status: loaded" to avoid false positives from
     # "not loaded" or "unloaded"
     result = subprocess.run(
-        ["openclaw", "plugins", "inspect", "reflexio-federated"],
+        ["openclaw", "plugins", "inspect", _OPENCLAW_PLUGIN_ID],
         capture_output=True,
         text=True,
     )
@@ -612,32 +666,42 @@ def _install_openclaw_integration() -> bool:
         return True
 
     typer.echo(
-        "Error: Plugin not loaded -- check 'openclaw plugins inspect reflexio-federated'"
+        f"Error: Plugin not loaded -- check 'openclaw plugins inspect {_OPENCLAW_PLUGIN_ID}'"
     )
     return False
 
 
-def _uninstall_openclaw() -> None:
-    """Remove the Reflexio integration from OpenClaw."""
+def _uninstall_openclaw(env_path: Path | None = None, purge: bool = False) -> None:
+    """Remove the openclaw-smart integration from openClaw.
+
+    Args:
+        env_path (Path | None): Path to ``~/.reflexio/.env`` to strip the
+            ``OPENCLAW_BIN`` / ``OPENCLAW_SMART_USE_LOCAL_CLI`` keys from. ``None``
+            skips the .env cleanup.
+        purge (bool): Also delete ``~/.openclaw-smart/`` state directory.
+    """
     typer.confirm(
-        "This will remove the Reflexio integration from OpenClaw. Continue?",
+        "This will remove the Reflexio integration from openClaw. Continue?",
         abort=True,
     )
     if shutil.which("openclaw"):
         subprocess.run(
-            ["openclaw", "plugins", "disable", "reflexio-federated"],
+            ["openclaw", "plugins", "disable", _OPENCLAW_PLUGIN_ID],
             check=False,
             capture_output=True,
             text=True,
         )
         subprocess.run(
-            ["openclaw", "plugins", "uninstall", "--force", "reflexio-federated"],
+            ["openclaw", "plugins", "uninstall", "--force", _OPENCLAW_PLUGIN_ID],
             check=False,
             capture_output=True,
             text=True,
         )
     else:
         typer.echo("Warning: openclaw CLI not found on PATH, skipping plugin removal")
+
+    if env_path is not None:
+        _remove_env_keys(env_path, ("OPENCLAW_BIN", "OPENCLAW_SMART_USE_LOCAL_CLI"))
 
     # Remove setup markers
     from reflexio.cli.paths import reflexio_home
@@ -648,7 +712,27 @@ def _uninstall_openclaw() -> None:
             marker.unlink(missing_ok=True)
             typer.echo(f"Removed setup marker: {marker}")
 
-    typer.echo("Reflexio integration fully removed from OpenClaw.")
+    if purge:
+        state_dir = Path.home() / ".openclaw-smart"
+        if state_dir.exists():
+            shutil.rmtree(state_dir, ignore_errors=True)
+            typer.echo(f"Removed plugin state: {state_dir}")
+
+    typer.echo("Reflexio integration fully removed from openClaw.")
+
+
+def _repair_openclaw() -> None:
+    """Re-run the plugin's first-run installer and clear any failure marker."""
+    plugin_dir = _openclaw_plugin_dir()
+    if not plugin_dir.exists():
+        typer.echo(f"Error: plugin directory not found at {plugin_dir}")
+        raise typer.Exit(1)
+    failure_marker = Path.home() / ".openclaw-smart" / "install-failed"
+    if failure_marker.exists():
+        failure_marker.unlink()
+        typer.echo(f"Cleared {failure_marker}")
+    _run_smart_install(plugin_dir)
+    typer.echo("Repair complete. Restart openClaw to pick up the refreshed env.")
 
 
 @app.command("openclaw")
@@ -656,7 +740,27 @@ def openclaw(
     uninstall: Annotated[
         bool,
         typer.Option(
-            "--uninstall", help="Remove the Reflexio integration from OpenClaw"
+            "--uninstall", help="Remove the Reflexio integration from openClaw"
+        ),
+    ] = False,
+    repair: Annotated[
+        bool,
+        typer.Option(
+            "--repair",
+            help=(
+                "Re-run the plugin first-run installer and clear any failure "
+                "marker without reinstalling the plugin in openClaw."
+            ),
+        ),
+    ] = False,
+    purge: Annotated[
+        bool,
+        typer.Option(
+            "--purge",
+            help=(
+                "With --uninstall: also delete ~/.openclaw-smart/ state "
+                "(buffered sessions, install markers, logs). Destructive."
+            ),
         ),
     ] = False,
     embedding: Annotated[
@@ -671,9 +775,21 @@ def openclaw(
         ),
     ] = "auto",
 ) -> None:
-    """Set up (or remove) the Reflexio integration for OpenClaw."""
+    """Set up (or remove) the openclaw-smart integration for openClaw."""
+    # Resolve the user-global .env path up front; all three flows write to it.
+    from reflexio.cli.env_loader import ensure_user_env_for_setup
+
+    env_path = ensure_user_env_for_setup()
+    if env_path is None:
+        typer.echo("Error: could not locate or create a .env file")
+        raise typer.Exit(1)
+
+    if repair:
+        _repair_openclaw()
+        return
+
     if uninstall:
-        _uninstall_openclaw()
+        _uninstall_openclaw(env_path=env_path, purge=purge)
         return
 
     if embedding not in _VALID_EMBEDDING_FLAGS:
@@ -683,26 +799,15 @@ def openclaw(
         )
         raise typer.Exit(1)
 
-    # Step 1: Load .env path. Always target ~/.reflexio/.env — running setup
-    # from a worktree or project root that happens to contain its own .env
-    # would otherwise pollute that file via load_reflexio_env's CWD-first
-    # search. Setup writes are user-global, not project-local.
-    from reflexio.cli.env_loader import ensure_user_env_for_setup
-
-    env_path = ensure_user_env_for_setup()
-    if env_path is None:
-        typer.echo("Error: could not locate or create a .env file")
-        raise typer.Exit(1)
-
-    # Step 2: LLM provider
+    # Step 1: LLM provider
     display_name, model, _provider_key = _prompt_llm_provider(env_path)
 
-    # Step 3: Storage. Decided BEFORE the embedding step because Managed /
+    # Step 2: Storage. Decided BEFORE the embedding step because Managed /
     # Self-hosted modes own their own embedding config server-side, and a
     # local override would just shadow the operator's choice.
     storage_label = _prompt_storage(env_path)
 
-    # Step 3.5: Upfront embedding-provider step. Local is the default when
+    # Step 2.5: Upfront embedding-provider step. Local is the default when
     # chromadb is importable; the choice persists to org config so it
     # survives later cloud-key changes. Skipped for remote storage modes
     # for the reason above.
@@ -711,12 +816,13 @@ def openclaw(
     if not is_remote:
         embedding_label = _choose_embedding_provider(env_path, embedding_flag=embedding)
 
-    # Step 4: Install OpenClaw integration
+    # Step 3: Install openclaw-smart integration
     typer.echo("")
-    hook_ok = _install_openclaw_integration()
+    hook_ok = _install_openclaw_integration(env_path)
 
-    # Step 5: Summary
-    hook_status = "reflexio-federated" if hook_ok else "reflexio-federated (unverified)"
+    hook_status = (
+        _OPENCLAW_PLUGIN_ID if hook_ok else f"{_OPENCLAW_PLUGIN_ID} (unverified)"
+    )
 
     typer.echo("")
     typer.echo("Setup complete!")
@@ -727,7 +833,7 @@ def openclaw(
     typer.echo(f"  Plugin: {hook_status}")
     typer.echo("")
     typer.echo("Next steps:")
-    typer.echo("  1. Restart OpenClaw gateway: openclaw gateway restart")
+    typer.echo("  1. Restart openClaw gateway: openclaw gateway restart")
     typer.echo(
         "  2. Start a conversation -- Reflexio will capture and learn automatically"
     )

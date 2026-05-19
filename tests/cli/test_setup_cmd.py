@@ -578,6 +578,82 @@ class TestChooseEmbeddingProviderEdgeCases:
             openclaw(uninstall=False, embedding="opneai")
 
 
+class TestOpenclawSetup:
+    """Tests for the openclaw-smart install/uninstall/repair flows."""
+
+    def test_plugin_id_constant(self) -> None:
+        """The plugin id must match what openClaw and the TS shim register."""
+        from reflexio.cli.commands.setup_cmd import _OPENCLAW_PLUGIN_ID
+
+        assert _OPENCLAW_PLUGIN_ID == "reflexio-openclaw-smart"
+
+    def test_write_openclaw_env_persists_keys(self, tmp_path: Path) -> None:
+        """``_write_openclaw_env`` upserts OPENCLAW_BIN + USE_LOCAL_CLI=1."""
+        from reflexio.cli.commands.setup_cmd import _write_openclaw_env
+
+        env = tmp_path / ".env"
+        _write_openclaw_env(env, "/usr/local/bin/openclaw")
+        body = env.read_text()
+        assert 'OPENCLAW_BIN="/usr/local/bin/openclaw"' in body
+        assert 'OPENCLAW_SMART_USE_LOCAL_CLI="1"' in body
+
+    def test_remove_env_keys_strips_lines(self, tmp_path: Path) -> None:
+        """``_remove_env_keys`` drops the named keys, leaves others untouched."""
+        from reflexio.cli.commands.setup_cmd import _remove_env_keys
+
+        env = tmp_path / ".env"
+        env.write_text(
+            "OTHER=keep\n"
+            'OPENCLAW_BIN="/usr/local/bin/openclaw"\n'
+            'OPENCLAW_SMART_USE_LOCAL_CLI="1"\n'
+            "STILL=keep\n"
+        )
+        _remove_env_keys(env, ("OPENCLAW_BIN", "OPENCLAW_SMART_USE_LOCAL_CLI"))
+        remaining = env.read_text().splitlines()
+        assert remaining == ["OTHER=keep", "STILL=keep"]
+
+    def test_install_openclaw_uses_new_plugin_id(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`_install_openclaw_integration` passes the new plugin id to subprocess."""
+        from reflexio.cli.commands import setup_cmd
+
+        env_path = tmp_path / ".env"
+        env_path.write_text("")
+
+        monkeypatch.setattr(setup_cmd.shutil, "which", lambda _: "/usr/bin/openclaw")
+        plugin_dir = tmp_path / "plugin"
+        plugin_dir.mkdir()
+        monkeypatch.setattr(setup_cmd, "_openclaw_plugin_dir", lambda: plugin_dir)
+        monkeypatch.setattr(setup_cmd, "_run_smart_install", lambda _p: None)
+
+        calls: list[list[str]] = []
+
+        class _Result:
+            def __init__(self, stdout: str = "Status: loaded\n") -> None:
+                self.stdout = stdout
+                self.stderr = ""
+                self.returncode = 0
+
+        def fake_run(argv, **_kw):  # noqa: ANN001
+            calls.append(list(argv))
+            if argv[:3] == ["openclaw", "plugins", "inspect"]:
+                return _Result("Status: loaded\n")
+            return _Result("")
+
+        monkeypatch.setattr(setup_cmd.subprocess, "run", fake_run)
+
+        ok = setup_cmd._install_openclaw_integration(env_path)
+
+        assert ok is True
+        flat_args = [arg for call in calls for arg in call]
+        assert "reflexio-openclaw-smart" in flat_args
+        assert "reflexio-federated" not in flat_args
+        body = env_path.read_text()
+        assert 'OPENCLAW_BIN="/usr/bin/openclaw"' in body
+        assert 'OPENCLAW_SMART_USE_LOCAL_CLI="1"' in body
+
+
 class TestEnsureUserEnvForSetup:
     """Regression tests for the user-level .env target.
 
