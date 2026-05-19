@@ -39,7 +39,14 @@ export default definePluginEntry({
       const handler: AnyHandler = async (event, ctx) => {
         const ctxObj = (ctx ?? {}) as { sessionKey?: string };
         if (ctxObj.sessionKey) activeSessionKey = ctxObj.sessionKey;
-        const payload = { event, ctx, plugin_config: pluginConfig };
+        // Python handlers read a flat dict (e.g. payload.get("sessionKey"),
+        // payload.get("prompt")). Merge ctx first, event on top so any
+        // event-specific overrides win on key clash.
+        const payload = {
+          ...(ctxObj as Record<string, unknown>),
+          ...((event ?? {}) as Record<string, unknown>),
+          plugin_config: pluginConfig,
+        };
         try {
           const r = await runner(
             ["bash", HOOK_ENTRY, "openclaw", token],
