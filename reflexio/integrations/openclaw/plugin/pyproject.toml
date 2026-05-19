@@ -1,0 +1,37 @@
+[project]
+name = "openclaw-smart"
+version = "0.1.0"
+description = "openClaw plugin: cross-session memory via local reflexio backend"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "reflexio-ai",
+    # Used by reflexio's local embedding provider (ONNXMiniLM_L6_V2).
+    "chromadb>=0.5",
+    "einops>=0.8.0",
+]
+
+[project.scripts]
+openclaw-smart-hook = "openclaw_smart.hook:main"
+openclaw-smart = "openclaw_smart.cli:main"
+
+[tool.uv.sources]
+# This plugin lives inside the reflexio repo; depend on the local reflexio
+# package directly, not the PyPI release. Path is from plugin/ → up 4 levels
+# to the open_source/reflexio submodule root.
+reflexio-ai = { path = "../../../..", editable = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/openclaw_smart"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+]
