@@ -11,6 +11,7 @@ from reflexio.models.api_schema.service_schemas import (
     ProfileChangeLog,
     UserProfile,
 )
+from reflexio.server.services.storage.storage_base._extras import ExtrasMixin
 
 pytestmark = pytest.mark.integration
 
@@ -129,7 +130,11 @@ class TestPlaybookApplicationStats:
             _make_interaction(
                 "r2",
                 now,
-                [Citation(kind="playbook", real_id="42", tag="s1-2a", title="timeline")],
+                [
+                    Citation(
+                        kind="playbook", real_id="42", tag="s1-2a", title="timeline"
+                    )
+                ],
             )
         )
 
@@ -168,12 +173,39 @@ class TestPlaybookApplicationStats:
         stats = storage.get_playbook_application_stats(days_back=90)
         assert len(stats) == 1 and stats[0].applied_count == 1
 
+    def test_counts_duplicate_citations_once_per_interaction(self, storage):
+        if not _backend_supports_application_stats(storage):
+            pytest.skip("Backend does not implement get_playbook_application_stats")
+        now = int(datetime.now(tz=UTC).timestamp())
+        storage._insert_interaction(
+            _make_interaction(
+                "r_duplicate",
+                now,
+                [
+                    Citation(
+                        kind="playbook", real_id="42", tag="s1-2a", title="timeline"
+                    ),
+                    Citation(
+                        kind="playbook", real_id="42", tag="s1-2a", title="timeline"
+                    ),
+                ],
+            )
+        )
+
+        stats = storage.get_playbook_application_stats(days_back=30)
+
+        assert len(stats) == 1
+        assert stats[0].applied_count == 1
+
 
 def _backend_supports_application_stats(storage) -> bool:
     """True when the storage backend has a real (non-default) implementation.
 
     The default in ``ExtrasMixin`` returns ``[]`` for any input — backends
     that haven't been wired up yet (disk, supabase, postgres) hit that path
-    and have nothing to test. The SQLite backend has the real implementation.
+    and have nothing to test.
     """
-    return type(storage).__name__ == "SQLiteStorage"
+    return (
+        storage.__class__.get_playbook_application_stats
+        is not ExtrasMixin.get_playbook_application_stats
+    )

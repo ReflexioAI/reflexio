@@ -245,6 +245,7 @@ class ExtrasMixin:
             citations = _json_loads(row["citations"])
             if not isinstance(citations, list):
                 continue
+            seen_keys_in_interaction: set[tuple[_CitationKind, str]] = set()
             for c in citations:
                 if not isinstance(c, dict):
                     continue
@@ -256,6 +257,9 @@ class ExtrasMixin:
                     cast(_CitationKind, kind),
                     str(real_id),
                 )
+                if key in seen_keys_in_interaction:
+                    continue
+                seen_keys_in_interaction.add(key)
                 agg = aggregates[key]
                 agg["applied_count"] += 1
                 if agg["last_applied_at"] is None:
