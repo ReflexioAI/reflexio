@@ -3,7 +3,6 @@ import logging.handlers
 import os
 import sys
 import time
-from pathlib import Path
 
 import colorlog
 
@@ -14,12 +13,13 @@ import openai  # noqa: F401
 import openai.resources  # noqa: F401
 
 from reflexio.cli.env_loader import load_reflexio_env
+from reflexio.cli.paths import reflexio_home
 
 # Load environment variables using shared discovery logic
 load_reflexio_env()
 
-# Default user data directory: ~/.reflexio/data/
-_DEFAULT_DATA_DIR = str(Path.home() / ".reflexio" / "data")
+# Default user data directory: ~/.reflexio/data/ (or REFLEXIO_LOG_DIR/.reflexio/data/).
+_DEFAULT_DATA_DIR = str(reflexio_home() / "data")
 
 # OpenAI related
 OPENAI_API_KEY = os.environ.get(

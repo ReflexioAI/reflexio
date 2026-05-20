@@ -17,7 +17,9 @@ _logger = logging.getLogger(__name__)
 
 from dotenv import load_dotenv
 
-_USER_ENV_DIR = Path.home() / ".reflexio"
+from .paths import reflexio_home
+
+_USER_ENV_DIR = reflexio_home()
 _USER_ENV_FILE = _USER_ENV_DIR / ".env"
 
 

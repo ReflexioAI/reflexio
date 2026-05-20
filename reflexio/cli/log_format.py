@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import itertools
 import logging
-import os
 import re
 import sys
 import threading
@@ -42,30 +41,24 @@ _LEVEL_RE = re.compile(r"^(?:\[)?(ERROR|CRITICAL|WARNING|WARN)(?:\])?(?::|\s+-\s
 # Canonical log file paths.
 # Default: ~/.reflexio/logs/. The REFLEXIO_LOG_DIR env var overrides only the
 # base directory (the ~ part) — the .reflexio/logs suffix is preserved so the
-# on-disk layout stays consistent regardless of where the base points.
+# on-disk layout stays consistent regardless of where the base points. Base
+# resolution is delegated to ``reflexio_home`` so every ``~/.reflexio/*`` path
+# honors the env var identically.
 def _resolve_log_dir() -> Path:
     """Return the directory log files are written to.
 
-    The ``REFLEXIO_LOG_DIR`` env var overrides the base directory only — the
-    ``.reflexio/logs`` suffix is preserved so the on-disk layout matches the
-    default home-relative layout. Resolved at module import time so the
-    public ``DEV_LOG_FILE`` / ``LLM_IO_LOG_FILE`` constants are stable across
-    a server's lifetime — change requires a restart.
+    Resolved at module import time so the public ``DEV_LOG_FILE`` /
+    ``LLM_IO_LOG_FILE`` constants are stable across a server's lifetime —
+    change requires a restart.
 
     Returns:
         Path: Resolved log directory. Not created here — callers must
             ``mkdir(parents=True, exist_ok=True)`` before opening any
             file handler against ``DEV_LOG_FILE`` / ``LLM_IO_LOG_FILE``.
     """
-    base = os.environ.get("REFLEXIO_LOG_DIR")
-    if base:
-        base_path = Path(base).expanduser()
-        if not base_path.is_absolute():
-            base_path = Path.home() / base_path
-        base_path = base_path.resolve()
-    else:
-        base_path = Path.home()
-    return base_path / ".reflexio" / "logs"
+    from .paths import reflexio_home
+
+    return reflexio_home() / "logs"
 
 
 LOG_DIR: Path = _resolve_log_dir()

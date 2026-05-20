@@ -666,7 +666,9 @@ def _uninstall_openclaw() -> None:
         typer.echo("Warning: openclaw CLI not found on PATH, skipping plugin removal")
 
     # Remove setup markers
-    reflexio_dir = Path.home() / ".reflexio"
+    from reflexio.cli.paths import reflexio_home
+
+    reflexio_dir = reflexio_home()
     if reflexio_dir.exists():
         for marker in reflexio_dir.glob(".setup_complete_*"):
             marker.unlink(missing_ok=True)

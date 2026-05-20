@@ -28,6 +28,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlencode, urlparse
 
+from .paths import reflexio_home
+
 logger = logging.getLogger(__name__)
 
 # OAuth client + endpoints used by the Codex CLI. Values verified by
@@ -54,7 +56,7 @@ CODEX_SCOPES = "openid profile email offline_access"
 # downstream call doesn't cross the boundary mid-flight.
 _REFRESH_LEAD_SECONDS = 60
 
-REFLEXIO_AUTH_DIR = Path.home() / ".reflexio" / "auth"
+REFLEXIO_AUTH_DIR = reflexio_home() / "auth"
 REFLEXIO_CODEX_TOKENS_PATH = REFLEXIO_AUTH_DIR / "openai-codex.json"
 
 

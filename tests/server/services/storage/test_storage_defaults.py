@@ -16,7 +16,9 @@ from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 def test_local_storage_path_defaults_to_home_reflexio_data() -> None:
     """With LOCAL_STORAGE_PATH unset, reflexio.server.LOCAL_STORAGE_PATH
     resolves to ~/.reflexio/data."""
-    expected = str(Path.home() / ".reflexio" / "data")
+    from reflexio.cli.paths import reflexio_home
+
+    expected = str(reflexio_home() / "data")
 
     env = {k: v for k, v in os.environ.items() if k != "LOCAL_STORAGE_PATH"}
     import reflexio.server as server_module
@@ -34,7 +36,9 @@ def test_local_storage_path_defaults_to_home_reflexio_data() -> None:
 def test_local_storage_path_empty_string_falls_back_to_default() -> None:
     """LOCAL_STORAGE_PATH='' (blank) also falls back to ~/.reflexio/data
     rather than resolving to an empty path."""
-    expected = str(Path.home() / ".reflexio" / "data")
+    from reflexio.cli.paths import reflexio_home
+
+    expected = str(reflexio_home() / "data")
 
     import reflexio.server as server_module
 
@@ -57,6 +61,24 @@ def test_sqlite_storage_uses_local_storage_path_when_db_path_none() -> None:
     ):
         storage = SQLiteStorage(org_id="0", db_path=None)
         assert storage.db_path == str(Path(temp_dir) / "reflexio.db")
+
+
+def test_local_storage_path_honors_reflexio_log_dir_override(tmp_path: Path) -> None:
+    """When ``REFLEXIO_LOG_DIR`` is set, the default ``LOCAL_STORAGE_PATH``
+    rebases off it: ``<REFLEXIO_LOG_DIR>/.reflexio/data`` instead of
+    ``~/.reflexio/data``."""
+    expected = str(tmp_path / ".reflexio" / "data")
+
+    import reflexio.server as server_module
+
+    try:
+        env = {k: v for k, v in os.environ.items() if k != "LOCAL_STORAGE_PATH"}
+        env["REFLEXIO_LOG_DIR"] = str(tmp_path)
+        with patch.dict(os.environ, env, clear=True):
+            reloaded = importlib.reload(server_module)
+            assert expected == reloaded.LOCAL_STORAGE_PATH
+    finally:
+        importlib.reload(server_module)
 
 
 def test_sqlite_storage_explicit_db_path_overrides_env() -> None:

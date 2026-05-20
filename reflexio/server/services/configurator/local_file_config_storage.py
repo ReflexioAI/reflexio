@@ -6,6 +6,7 @@ import traceback
 from pathlib import Path
 from typing import Any
 
+from reflexio.cli.paths import reflexio_home
 from reflexio.models.config_schema import (
     Config,
     PlaybookConfig,
@@ -36,7 +37,7 @@ class LocalFileConfigStorage(ConfigStorage):
                 f"LocalFileConfigStorage will save config for {org_id} to a local file at {self.config_file}"
             )
         else:
-            self.base_dir = str(Path.home() / ".reflexio" / "configs")
+            self.base_dir = str(reflexio_home() / "configs")
             self.config_file = str(Path(self.base_dir) / f"config_{org_id}.json")
 
     def _default_storage_config(self) -> StorageConfigSQLite | StorageConfigDisk:

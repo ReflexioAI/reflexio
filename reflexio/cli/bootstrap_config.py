@@ -12,6 +12,8 @@ from pathlib import Path
 
 import typer
 
+from .paths import reflexio_home
+
 logger = logging.getLogger(__name__)
 
 _VALID_STORAGE_BACKENDS = frozenset({"sqlite", "supabase", "postgres", "disk"})
@@ -48,7 +50,7 @@ def _config_dir(base_dir: str | None = None) -> Path:
     """Return the config directory path."""
     if base_dir:
         return Path(base_dir) / "configs"
-    return Path.home() / ".reflexio" / "configs"
+    return reflexio_home() / "configs"
 
 
 def default_config_path(base_dir: str | None = None) -> Path:
