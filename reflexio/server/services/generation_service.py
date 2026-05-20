@@ -59,6 +59,7 @@ logger = logging.getLogger(__name__)
 CLEANUP_STALE_LOCK_SECONDS = 600
 # Timeout for the outer generation service parallel execution
 GENERATION_SERVICE_TIMEOUT_SECONDS = 600
+_STALL_WARNING_PREFIX = "Reflexio learning is paused"
 
 
 @dataclass
@@ -202,6 +203,28 @@ class GenerationService:
 
             # Extract source (empty string treated as None)
             source = publish_user_interaction_request.source or None
+
+            if (
+                not publish_user_interaction_request.override_learning_stall
+                and (stall_warning := self._active_learning_stall_warning()) is not None
+            ):
+                result.warnings.append(stall_warning)
+                logger.warning("%s; skipping automatic extraction", stall_warning)
+                record_usage_event(
+                    org_id=self.org_id,
+                    user_id=user_id,
+                    request_id=request_id,
+                    session_id=new_request.session_id,
+                    source=source,
+                    agent_version=agent_version,
+                    event_name="publish_request_succeeded",
+                    event_category="publish",
+                    outcome="success",
+                    count_value=len(new_interactions),
+                    duration_ms=int((time.perf_counter() - publish_start) * 1000),
+                    metadata={"warning_count": len(result.warnings)},
+                )
+                return result
 
             # Reflection runs as its own sliding-window step BEFORE the
             # extractor pool spins up, so any replacements it makes are
@@ -472,6 +495,36 @@ class GenerationService:
         except Exception as e:
             logger.error("Failed to cleanup storage tables: %s", e)
             # Don't raise - cleanup failure shouldn't block normal operation
+
+    def _active_learning_stall_warning(self) -> str | None:
+        """Return a warning when extraction should not auto-retry.
+
+        Plugin publishes should still store raw interactions while the local
+        LLM provider is blocked by auth or billing, but they
+        must not keep invoking extraction on every publish. Only callers that
+        pass ``override_learning_stall=True`` bypass this check so an explicit
+        retry after reauth can clear the stall state on a successful provider
+        call.
+        """
+        try:
+            stall_state = self.storage.get_stall_state()  # type: ignore[reportOptionalMemberAccess]
+        except (AttributeError, NotImplementedError):
+            return None
+        except Exception as exc:  # noqa: BLE001 - stall telemetry must not block publish.
+            logger.debug("Failed to read stall_state before extraction: %s", exc)
+            return None
+
+        if not getattr(stall_state, "stalled", False):
+            return None
+        reason = getattr(stall_state, "reason", None) or "unknown"
+        suffix = (
+            "reauthenticate the active coding-agent provider, then run an explicit "
+            "override retry to resume."
+            if reason == "auth_error"
+            else "wait for the limit/reset condition to clear, then run an explicit "
+            "override retry to resume."
+        )
+        return f"{_STALL_WARNING_PREFIX} ({reason}); {suffix}"
 
     def _cleanup_retention_target(self, target_name: str, limit: int) -> None:
         total_count = self.storage.count_retention_target_rows(target_name)  # type: ignore[reportOptionalMemberAccess]

@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
 from reflexio.models.api_schema.service_schemas import (
@@ -270,6 +271,132 @@ def test_e2e_agentic_v2_extraction_agent_not_invoked_for_trivial_session(tmp_pat
 
     # Result must not have raised (warnings may be empty or trivial).
     assert result.request_id is not None
+
+
+def test_e2e_publish_stores_interactions_but_skips_extraction_when_stalled(tmp_path):
+    """An auth/billing stall pauses automatic learning retries, not raw storage."""
+    user_id = "stalled_user"
+    org_id = "stalled_org"
+
+    with tempfile.TemporaryDirectory() as temp_dir, patch.dict(
+        os.environ, {"OPENAI_API_KEY": "test-key"}, clear=False
+    ):
+        request_context = RequestContext(org_id=org_id, storage_base_dir=temp_dir)
+        assert request_context.storage is not None
+        request_context.storage.llm_client.get_embeddings = MagicMock(  # type: ignore[method-assign]
+            return_value=[[], []]
+        )
+        request_context.storage.upsert_stall_state(
+            reason="auth_error",
+            stalled_at=datetime.now(UTC),
+            reset_estimate=None,
+            error_message="401 Invalid authentication credentials",
+        )
+
+        gs = GenerationService(
+            llm_client=_make_scripted_client([]),
+            request_context=request_context,
+        )
+        gs.configurator.get_config = MagicMock(return_value=_make_agentic_config())  # type: ignore[method-assign]
+
+        request = PublishUserInteractionRequest(
+            user_id=user_id,
+            interaction_data_list=[
+                InteractionData(
+                    role="User",
+                    content=(
+                        "I prefer implementation work to pause automatic learning "
+                        "when provider authentication is broken."
+                    ),
+                ),
+                InteractionData(
+                    role="Assistant",
+                    content="I will surface the authentication issue instead.",
+                ),
+            ],
+            session_id="stalled_sid",
+            force_extraction=True,
+        )
+
+        with (
+            patch(
+                "reflexio.server.services.generation_service.ReflectionService.run"
+            ) as mock_reflection_run,
+            patch(
+                "reflexio.server.services.extraction.agentic_adapter."
+                "AgenticExtractionRunner.run"
+            ) as mock_agentic_run,
+        ):
+            result = gs.run(request)
+
+        assert result.request_id is not None
+        assert result.warnings
+        assert "auth_error" in result.warnings[0]
+        assert "paused" in result.warnings[0]
+        assert mock_reflection_run.call_count == 0
+        assert mock_agentic_run.call_count == 0
+
+        stored = request_context.storage.get_user_interaction(user_id)
+        assert len(stored) == 2
+        assert {item.role for item in stored} == {"User", "Assistant"}
+
+
+def test_e2e_stalled_forced_publish_runs_with_explicit_override(tmp_path):
+    """A forced publish can retry a stall only with the explicit override flag."""
+    user_id = "stalled_override_user"
+    org_id = "stalled_override_org"
+
+    with tempfile.TemporaryDirectory() as temp_dir, patch.dict(
+        os.environ, {"OPENAI_API_KEY": "test-key"}, clear=False
+    ):
+        request_context = RequestContext(org_id=org_id, storage_base_dir=temp_dir)
+        assert request_context.storage is not None
+        request_context.storage.llm_client.get_embeddings = MagicMock(  # type: ignore[method-assign]
+            return_value=[[], []]
+        )
+        request_context.storage.upsert_stall_state(
+            reason="auth_error",
+            stalled_at=datetime.now(UTC),
+            reset_estimate=None,
+            error_message="401 Invalid authentication credentials",
+        )
+
+        gs = GenerationService(
+            llm_client=_make_scripted_client([]),
+            request_context=request_context,
+        )
+        gs.configurator.get_config = MagicMock(return_value=_make_agentic_config())  # type: ignore[method-assign]
+
+        request = PublishUserInteractionRequest(
+            user_id=user_id,
+            interaction_data_list=[
+                InteractionData(
+                    role="User",
+                    content="Retry extraction explicitly after fixing provider authentication.",
+                ),
+                InteractionData(role="Assistant", content="Retrying extraction now."),
+            ],
+            session_id="stalled_override_sid",
+            force_extraction=True,
+            override_learning_stall=True,
+        )
+
+        with (
+            patch(
+                "reflexio.server.services.generation_service.ReflectionService.run"
+            ) as mock_reflection_run,
+            patch(
+                "reflexio.server.services.extraction.agentic_adapter."
+                "AgenticExtractionRunner.run",
+                return_value=[],
+            ) as mock_agentic_run,
+        ):
+            result = gs.run(request)
+
+        assert result.request_id is not None
+        assert result.warnings == []
+        assert mock_reflection_run.call_count == 1
+        assert mock_agentic_run.call_count == 1
 
 
 # ---------------------------------------------------------------------------

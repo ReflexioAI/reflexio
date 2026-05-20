@@ -265,6 +265,13 @@ def publish(
             help="Bypass all extraction gates (stride_size, cheap pre-filter, LLM should_run) and always run extractors",
         ),
     ] = False,
+    override_learning_stall: Annotated[
+        bool,
+        typer.Option(
+            "--override-learning-stall",
+            help="Run extraction even when a provider auth/billing stall is recorded. Use only for explicit retries after reauth or limit reset.",
+        ),
+    ] = False,
 ) -> None:
     """Publish interaction data for a user.
 
@@ -316,6 +323,7 @@ def publish(
             wait_for_response=wait,
             skip_aggregation=skip_aggregation,
             force_extraction=force_extraction,
+            override_learning_stall=override_learning_stall,
         )
         if json_mode:
             render(result, json_mode=True)
@@ -372,6 +380,9 @@ def publish(
             wait_for_response=wait,
             skip_aggregation=payload.get("skip_aggregation", skip_aggregation),
             force_extraction=payload.get("force_extraction", force_extraction),
+            override_learning_stall=payload.get(
+                "override_learning_stall", override_learning_stall
+            ),
         )
         if json_mode:
             render(result, json_mode=True)

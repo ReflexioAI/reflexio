@@ -530,6 +530,7 @@ class PublishUserInteractionRequest(BaseModel):
         False  # when True, extract profiles/playbooks but skip aggregation
     )
     force_extraction: bool = False  # when True, bypass all extraction gates (stride_size, cheap pre-filter, LLM should_run) and always run extractors
+    override_learning_stall: bool = False  # when True, run extraction even if a provider auth/billing stall is recorded
 
 
 # publish user interaction response
