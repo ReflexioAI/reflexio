@@ -27,7 +27,8 @@ _ENV_TIMEOUT_MS = "REFLEXIO_EMBEDDING_SERVICE_TIMEOUT_MS"
 _ENV_EMBEDDING_PORT = "EMBEDDING_PORT"
 _ENV_CLAUDE_SMART_LOCAL = "CLAUDE_SMART_USE_LOCAL_EMBEDDING"
 _DEFAULT_LOCAL_PORT = 8072
-_DEFAULT_TIMEOUT_MS = 2_000
+_DEFAULT_INTERNAL_SERVICE_TIMEOUT_MS = 2_000
+_DEFAULT_LOCAL_SERVICE_TIMEOUT_MS = 30_000
 _SERVICE_MODES = {"local_service", "internal_service"}
 _VALID_MODES = {"cloud", *_SERVICE_MODES, "inprocess", "off"}
 
@@ -59,10 +60,15 @@ def embedding_service_url(mode: EmbeddingProviderMode | None = None) -> str:
     )
 
 
-def embedding_service_timeout_seconds() -> float:
+def embedding_service_timeout_seconds(
+    mode: EmbeddingProviderMode | None = None,
+) -> float:
     raw = os.environ.get(_ENV_TIMEOUT_MS)
     if raw is None:
-        return _DEFAULT_TIMEOUT_MS / 1000
+        resolved = mode or embedding_provider_mode()
+        if resolved == "local_service":
+            return _DEFAULT_LOCAL_SERVICE_TIMEOUT_MS / 1000
+        return _DEFAULT_INTERNAL_SERVICE_TIMEOUT_MS / 1000
     try:
         timeout_ms = int(raw)
     except ValueError as exc:
@@ -184,7 +190,7 @@ def get_service_embeddings(
     if dimensions:
         payload["dimensions"] = dimensions
 
-    timeout = embedding_service_timeout_seconds()
+    timeout = embedding_service_timeout_seconds(mode)
     last_error: Exception | None = None
     for attempt in range(2):
         try:

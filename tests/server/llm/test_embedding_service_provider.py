@@ -8,6 +8,7 @@ from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.llm.providers.embedding_service_provider import (
     EmbeddingUnavailableError,
     embedding_provider_mode,
+    embedding_service_timeout_seconds,
     get_service_embeddings,
 )
 
@@ -34,6 +35,25 @@ def test_local_model_without_opt_in_preserves_inprocess_mode(monkeypatch) -> Non
     monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_EMBEDDING", raising=False)
 
     assert embedding_provider_mode("local/minilm-l6-v2") == "inprocess"
+
+
+def test_local_service_default_timeout_allows_cold_start(monkeypatch) -> None:
+    monkeypatch.delenv("REFLEXIO_EMBEDDING_SERVICE_TIMEOUT_MS", raising=False)
+
+    assert embedding_service_timeout_seconds("local_service") == 30
+
+
+def test_internal_service_keeps_fast_default_timeout(monkeypatch) -> None:
+    monkeypatch.delenv("REFLEXIO_EMBEDDING_SERVICE_TIMEOUT_MS", raising=False)
+
+    assert embedding_service_timeout_seconds("internal_service") == 2
+
+
+def test_embedding_service_timeout_env_overrides_mode_default(monkeypatch) -> None:
+    monkeypatch.setenv("REFLEXIO_EMBEDDING_SERVICE_TIMEOUT_MS", "7500")
+
+    assert embedding_service_timeout_seconds("local_service") == 7.5
+    assert embedding_service_timeout_seconds("internal_service") == 7.5
 
 
 def test_litellm_client_routes_local_service_embeddings(monkeypatch) -> None:
@@ -77,6 +97,7 @@ def test_service_response_is_sorted_by_index(monkeypatch) -> None:
 
     class _Client:
         def __init__(self, timeout: float) -> None:
+            assert timeout == 30
             self.timeout = timeout
 
         def __enter__(self) -> _Client:

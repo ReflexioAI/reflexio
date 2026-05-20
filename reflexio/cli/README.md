@@ -75,7 +75,9 @@ When `REFLEXIO_EMBEDDING_PROVIDER=local_service` or
 `CLAUDE_SMART_USE_LOCAL_EMBEDDING=1`, `services start --only backend` starts an
 `embedding` service dependency automatically. The daemon exposes
 `POST /v1/embeddings` and supports `local/nomic-embed-v1.5`,
-`local/nomic-embed-text-v1.5`, and `local/minilm-l6-v2`.
+`local/nomic-embed-text-v1.5`, and `local/minilm-l6-v2`. Local embedding
+requests allow extra time for model cold start; override with
+`REFLEXIO_EMBEDDING_SERVICE_TIMEOUT_MS` when needed.
 
 ## Publishing interactions
 
