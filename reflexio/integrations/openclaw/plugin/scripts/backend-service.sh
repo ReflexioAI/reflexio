@@ -49,11 +49,11 @@ PLUGIN_ROOT="$(cd "$HERE/.." && pwd)"
 
 # Pin the openclaw CLI explicitly so the reflexio backend's openclaw_provider
 # can find it from a hook context whose PATH lacks the user's normal CLI dir.
-if [ -z "${OPENCLAW_SMART_CLI_PATH:-}" ]; then
+if [ -z "${OPENCLAW_BIN:-}" ]; then
   if _oc_cli_path=$(command -v openclaw 2>/dev/null) && [ -n "$_oc_cli_path" ]; then
-    export OPENCLAW_SMART_CLI_PATH="$_oc_cli_path"
+    export OPENCLAW_BIN="$_oc_cli_path"
   elif [ -x "$HOME/.local/bin/openclaw" ]; then
-    export OPENCLAW_SMART_CLI_PATH="$HOME/.local/bin/openclaw"
+    export OPENCLAW_BIN="$HOME/.local/bin/openclaw"
   fi
   unset _oc_cli_path
 fi

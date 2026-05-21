@@ -523,6 +523,7 @@ def cmd_clear_all(args: argparse.Namespace) -> int:
             )
             return stop_rc or 1
 
+    clear_all_failed = False
     removed_targets = 0
     try:
         for target in targets:
@@ -530,17 +531,18 @@ def cmd_clear_all(args: argparse.Namespace) -> int:
                 removed_targets += 1
     except (OSError, _ClearAllError) as exc:
         sys.stderr.write(f"error: could not remove reflexio data: {exc}\n")
-        return 1
+        clear_all_failed = True
 
     removed_buffers = 0
     root = state.state_dir()
-    if root.is_dir():
+    if not clear_all_failed and root.is_dir():
         for buf in root.glob("*.jsonl"):
             try:
                 buf.unlink()
                 removed_buffers += 1
             except OSError as exc:
                 sys.stderr.write(f"warning: could not remove {buf}: {exc}\n")
+                clear_all_failed = True
 
     start_rc = 0
     if was_running:
@@ -556,7 +558,7 @@ def cmd_clear_all(args: argparse.Namespace) -> int:
         f"Cleared reflexio: {target_summary}. "
         f"Removed {removed_buffers} local session buffer(s).\n"
     )
-    return start_rc or 0
+    return start_rc or (1 if clear_all_failed else 0)
 
 
 def _build_parser() -> argparse.ArgumentParser:

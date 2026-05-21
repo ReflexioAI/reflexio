@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 from argparse import Namespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
-
 from openclaw_smart import cli
 
 
@@ -125,6 +124,32 @@ def test_cmd_clear_all_with_yes_proceeds(monkeypatch, tmp_path):
         rc = cli.cmd_clear_all(Namespace(yes=True))
     assert rc == 0
     assert not (sessions / "old.jsonl").exists()
+
+
+def test_cmd_clear_all_restarts_backend_after_delete_failure(tmp_path):
+    target = cli._ClearAllTarget(
+        path=tmp_path / "reflexio-openclaw-test",
+        kind="dir",
+        label="test target",
+    )
+    service_calls: list[str] = []
+
+    def fake_run_service(_script, command) -> int:  # noqa: ANN001
+        service_calls.append(command)
+        return 0
+
+    with patch(
+        "openclaw_smart.cli._resolve_clear_all_targets", return_value=[target]
+    ), patch("openclaw_smart.cli._service_status", return_value="running on 8071"), patch(
+        "openclaw_smart.cli._remove_clear_all_target",
+        side_effect=cli._ClearAllError("boom"),
+    ), patch(
+        "openclaw_smart.cli._run_service", side_effect=fake_run_service
+    ):
+        rc = cli.cmd_clear_all(Namespace(yes=True))
+
+    assert rc == 1
+    assert service_calls == ["stop", "start"]
 
 
 def test_build_parser_accepts_show():

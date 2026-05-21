@@ -8,12 +8,35 @@ messaging without peeking at the adapter.
 
 from __future__ import annotations
 
+import contextlib
+from collections.abc import Iterator
 from typing import Literal
 
 from openclaw_smart import state
 from openclaw_smart.reflexio_adapter import Adapter
 
+try:
+    import fcntl  # POSIX only — Windows falls back to no publish lock.
+except ImportError:  # pragma: no cover — non-POSIX platforms
+    fcntl = None  # type: ignore[assignment]
+
 PublishStatus = Literal["nothing", "ok", "failed"]
+
+
+@contextlib.contextmanager
+def _session_publish_lock(session_id: str) -> Iterator[None]:
+    """Serialize read-publish-watermark for one session buffer."""
+    lock_path = state.publish_lock_path(session_id)
+    if lock_path is None or fcntl is None:
+        yield
+        return
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a", encoding="utf-8") as fh:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
 
 
 def publish_unpublished(
@@ -54,19 +77,20 @@ def publish_unpublished(
             was unreachable. On ``"failed"`` the watermark is not advanced,
             so the next hook retries the same batch.
     """
-    records = state.read_all(session_id)
-    _, interactions = state.unpublished_slice(records)
-    if not interactions:
-        return ("nothing", 0)
-    client = adapter if adapter is not None else Adapter()
-    ok = client.publish(
-        session_id=session_id,
-        project_id=project_id,
-        interactions=interactions,
-        force_extraction=force_extraction,
-        skip_aggregation=skip_aggregation,
-    )
-    if ok:
-        state.append(session_id, {"published_up_to": len(records)})
-        return ("ok", len(interactions))
-    return ("failed", len(interactions))
+    with _session_publish_lock(session_id):
+        records = state.read_all(session_id)
+        _, interactions = state.unpublished_slice(records)
+        if not interactions:
+            return ("nothing", 0)
+        client = adapter if adapter is not None else Adapter()
+        ok = client.publish(
+            session_id=session_id,
+            project_id=project_id,
+            interactions=interactions,
+            force_extraction=force_extraction,
+            skip_aggregation=skip_aggregation,
+        )
+        if ok:
+            state.append(session_id, {"published_up_to": len(records)})
+            return ("ok", len(interactions))
+        return ("failed", len(interactions))

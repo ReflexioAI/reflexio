@@ -572,6 +572,19 @@ def _remove_env_keys(env_path: Path, keys: tuple[str, ...]) -> None:
         env_path.write_text("\n".join(kept) + ("\n" if kept else ""))
 
 
+def _read_env_key(env_path: Path | None, key: str) -> str | None:
+    """Read a simple KEY=value assignment from a .env file."""
+    if env_path is None or not env_path.exists():
+        return None
+    prefix = f"{key}="
+    for line in env_path.read_text().splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or not stripped.startswith(prefix):
+            continue
+        return stripped[len(prefix) :].strip().strip('"').strip("'") or None
+    return None
+
+
 def _run_smart_install(plugin_dir: Path) -> None:
     """Run the plugin's first-run installer so uv/.venv land before first hook."""
     script = plugin_dir / "scripts" / "smart-install.sh"
@@ -650,7 +663,7 @@ def _install_openclaw_integration(env_path: Path) -> bool:
         # this, the gateway silently drops every plugin-side hook dispatch
         # with: '[plugins] typed hook "agent_end" blocked because non-bundled
         # plugins must set ...hooks.allowConversationAccess=true'.
-        subprocess.run(
+        access_cfg = subprocess.run(
             [
                 cli,
                 "config",
@@ -662,6 +675,12 @@ def _install_openclaw_integration(env_path: Path) -> bool:
             capture_output=True,
             text=True,
         )
+        if access_cfg.returncode != 0:
+            typer.echo(
+                "Error: could not persist openClaw conversation-access permission: "
+                f"{access_cfg.stderr or access_cfg.stdout}"
+            )
+            raise typer.Exit(1)
     except subprocess.CalledProcessError as exc:
         typer.echo(f"Error: openclaw command failed: {exc.stderr or exc.stdout}")
         raise typer.Exit(1) from exc
@@ -707,7 +726,7 @@ def _uninstall_openclaw(env_path: Path | None = None, purge: bool = False) -> No
         "This will remove the Reflexio integration from openClaw. Continue?",
         abort=True,
     )
-    cli = shutil.which("openclaw")
+    cli = _read_env_key(env_path, "OPENCLAW_BIN") or shutil.which("openclaw")
     if cli:
         subprocess.run(
             [cli, "plugins", "disable", _OPENCLAW_PLUGIN_ID],
@@ -722,7 +741,10 @@ def _uninstall_openclaw(env_path: Path | None = None, purge: bool = False) -> No
             text=True,
         )
     else:
-        typer.echo("Warning: openclaw CLI not found on PATH, skipping plugin removal")
+        typer.echo(
+            "Warning: openclaw CLI not found in OPENCLAW_BIN or PATH, "
+            "skipping plugin removal"
+        )
 
     if env_path is not None:
         _remove_env_keys(env_path, ("OPENCLAW_BIN", "OPENCLAW_SMART_USE_LOCAL_CLI"))
@@ -806,6 +828,13 @@ def openclaw(
     env_path = ensure_user_env_for_setup()
     if env_path is None:
         typer.echo("Error: could not locate or create a .env file")
+        raise typer.Exit(1)
+
+    if repair and (uninstall or purge):
+        typer.echo("Error: --repair cannot be combined with --uninstall or --purge")
+        raise typer.Exit(1)
+    if purge and not uninstall:
+        typer.echo("Error: --purge requires --uninstall")
         raise typer.Exit(1)
 
     if repair:

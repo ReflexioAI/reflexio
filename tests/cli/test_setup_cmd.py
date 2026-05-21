@@ -612,6 +612,22 @@ class TestOpenclawSetup:
         remaining = env.read_text().splitlines()
         assert remaining == ["OTHER=keep", "STILL=keep"]
 
+    def test_openclaw_rejects_conflicting_flags(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Repair, uninstall, and purge modes must be unambiguous."""
+        from reflexio.cli import env_loader
+        from reflexio.cli.commands.setup_cmd import openclaw
+
+        env = tmp_path / ".env"
+        env.write_text("")
+        monkeypatch.setattr(env_loader, "ensure_user_env_for_setup", lambda: env)
+
+        with pytest.raises(typer.Exit):
+            openclaw(repair=True, uninstall=True, purge=False)
+        with pytest.raises(typer.Exit):
+            openclaw(repair=False, uninstall=False, purge=True)
+
     def test_install_openclaw_uses_new_plugin_id(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -660,6 +676,66 @@ class TestOpenclawSetup:
         body = env_path.read_text()
         assert 'OPENCLAW_BIN="/usr/bin/openclaw"' in body
         assert 'OPENCLAW_SMART_USE_LOCAL_CLI="1"' in body
+
+    def test_install_openclaw_fails_if_conversation_access_not_persisted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Setup must not report success if typed-hook access cannot be saved."""
+        from reflexio.cli.commands import setup_cmd
+
+        env_path = tmp_path / ".env"
+        env_path.write_text("")
+        plugin_dir = tmp_path / "plugin"
+        plugin_dir.mkdir()
+
+        monkeypatch.setattr(setup_cmd.shutil, "which", lambda _: "/usr/bin/openclaw")
+        monkeypatch.setattr(setup_cmd, "_openclaw_plugin_dir", lambda: plugin_dir)
+
+        class _Result:
+            def __init__(self, returncode: int = 0) -> None:
+                self.stdout = ""
+                self.stderr = "denied"
+                self.returncode = returncode
+
+        def fake_run(argv, **_kw):  # noqa: ANN001
+            if argv[1:3] == ["config", "set"]:
+                return _Result(returncode=1)
+            return _Result()
+
+        monkeypatch.setattr(setup_cmd.subprocess, "run", fake_run)
+
+        with pytest.raises(typer.Exit):
+            setup_cmd._install_openclaw_integration(env_path)
+
+    def test_uninstall_openclaw_reuses_openclaw_bin_from_env(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Uninstall should remove the plugin even if PATH no longer has openclaw."""
+        from reflexio.cli.commands import setup_cmd
+
+        env_path = tmp_path / ".env"
+        env_path.write_text('OPENCLAW_BIN="/opt/openclaw/bin/openclaw"\n')
+        monkeypatch.setattr(setup_cmd.typer, "confirm", lambda *_a, **_kw: True)
+        monkeypatch.setattr(setup_cmd.shutil, "which", lambda _: None)
+
+        calls: list[list[str]] = []
+
+        def fake_run(argv, **_kw):  # noqa: ANN001
+            calls.append(list(argv))
+
+            class _Result:
+                returncode = 0
+                stdout = ""
+                stderr = ""
+
+            return _Result()
+
+        monkeypatch.setattr(setup_cmd.subprocess, "run", fake_run)
+
+        setup_cmd._uninstall_openclaw(env_path=env_path, purge=False)
+
+        assert calls
+        assert all(call[0] == "/opt/openclaw/bin/openclaw" for call in calls)
 
 
 class TestEnsureUserEnvForSetup:

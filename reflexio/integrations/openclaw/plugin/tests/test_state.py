@@ -114,6 +114,36 @@ def test_unpublished_slice_truncates_long_tool_fields():
     assert truncated == "x" * 256
 
 
+def test_unpublished_slice_ignores_malformed_watermark_and_tool_input():
+    records = [
+        {"published_up_to": "not-an-int"},
+        {
+            "role": "Assistant_tool",
+            "tool_name": "Bash",
+            "tool_input": ["not", "a", "mapping"],
+            "tool_output": "ok",
+        },
+        {"role": "Assistant", "content": "Done."},
+    ]
+
+    watermark, turns = state.unpublished_slice(records)
+
+    assert watermark == 0
+    assert turns == [
+        {
+            "role": "Assistant",
+            "content": "Done.",
+            "tools_used": [
+                {
+                    "tool_name": "Bash",
+                    "status": "success",
+                    "tool_data": {"output": "ok"},
+                }
+            ],
+        }
+    ]
+
+
 def test_append_injected_writes_registry():
     state.append_injected(
         "s4",

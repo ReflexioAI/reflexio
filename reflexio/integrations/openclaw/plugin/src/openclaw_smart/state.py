@@ -20,8 +20,9 @@ import json
 import logging
 import os
 import re
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 try:
     import fcntl  # POSIX only — Windows hooks fall back to append-without-lock.
@@ -113,6 +114,14 @@ def injected_path(session_id: str) -> Path | None:
     if sid is None:
         return None
     return state_dir() / f"{sid}.injected.jsonl"
+
+
+def publish_lock_path(session_id: str) -> Path | None:
+    """Return the per-session publish lock path, or ``None`` if unsafe."""
+    sid = _safe_session_id(session_id)
+    if sid is None:
+        return None
+    return state_dir() / f"{sid}.publish.lock"
 
 
 def append_injected(session_id: str, entries: Iterable[dict[str, Any]]) -> None:
@@ -264,7 +273,9 @@ def unpublished_slice(
     turns: list[dict[str, Any]] = []
     for idx, rec in enumerate(records):
         if "published_up_to" in rec:
-            published = rec["published_up_to"]
+            marker = rec.get("published_up_to")
+            if isinstance(marker, int) and marker >= 0:
+                published = marker
             pending_tools = []
             turns = []
             continue
@@ -272,7 +283,8 @@ def unpublished_slice(
             continue
         role = rec.get("role")
         if role == "Assistant_tool":
-            tool_input = rec.get("tool_input") or {}
+            raw_tool_input = rec.get("tool_input")
+            tool_input = raw_tool_input if isinstance(raw_tool_input, dict) else {}
             tool_output = rec.get("tool_output") or ""
             tool_entry: dict[str, Any] = {
                 "tool_name": rec.get("tool_name", ""),

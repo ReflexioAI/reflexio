@@ -33,5 +33,9 @@ def test_handle_falls_back_to_session_id_key():
         return_value="proj-y",
     ):
         session_end.handle({"sessionId": "s2"})
+        pub.publish_unpublished.assert_called_once()
         kwargs = pub.publish_unpublished.call_args[1]
         assert kwargs["session_id"] == "s2"
+        assert kwargs["project_id"] == "proj-y"
+        assert kwargs["force_extraction"] is True
+        assert kwargs["skip_aggregation"] is False
