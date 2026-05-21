@@ -14,11 +14,29 @@ silently when the backend is unreachable.
 
 ## Quick install
 
+Guided Reflexio setup:
+
 ```bash
 reflexio setup openclaw
 ```
 
-This walks you through:
+Or install the OpenClaw plugin from npm:
+
+```bash
+npx openclaw-smart install
+```
+
+The unscoped `openclaw-smart` npm package is a thin `npx` alias around the
+scoped plugin package, `@reflexioai/openclaw-smart`.
+
+If your OpenClaw version supports npm package specs in its plugin installer,
+you can also use the native installer directly:
+
+```bash
+openclaw plugins install @reflexioai/openclaw-smart
+```
+
+The guided `reflexio setup openclaw` command walks you through:
 
 1. Picking an LLM provider and storage backend (SQLite by default).
 2. Writing `OPENCLAW_BIN` + `OPENCLAW_SMART_USE_LOCAL_CLI=1` to
@@ -32,7 +50,9 @@ This walks you through:
    the plugin loaded.
 
 `reflexio setup openclaw --uninstall [--purge]` reverses everything;
-`--repair` re-runs only the first-run installer.
+`--repair` re-runs only the first-run installer. The npm wrapper exposes
+the same maintenance operations as `openclaw-smart uninstall [--purge]`
+and `openclaw-smart repair`.
 
 ## How it works
 

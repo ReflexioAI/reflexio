@@ -1,0 +1,15 @@
+{
+  "name": "openclaw-smart",
+  "version": "0.1.0",
+  "description": "npx installer alias for @reflexioai/openclaw-smart.",
+  "type": "module",
+  "bin": {
+    "openclaw-smart": "./bin/openclaw-smart.js"
+  },
+  "files": [
+    "bin/**/*.js"
+  ],
+  "dependencies": {
+    "@reflexioai/openclaw-smart": "0.1.0"
+  }
+}

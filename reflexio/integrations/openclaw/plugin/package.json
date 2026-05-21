@@ -1,11 +1,14 @@
 {
-  "name": "openclaw-smart",
+  "name": "@reflexioai/openclaw-smart",
   "version": "0.1.0",
   "description": "Self-improving openClaw plugin — learns from corrections across sessions via reflexio.",
-  "private": true,
   "type": "module",
+  "bin": {
+    "openclaw-smart": "./scripts/npm-cli.js"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
+    "prepack": "npm run build",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit"
