@@ -14,6 +14,8 @@ import threading
 import time
 from collections.abc import Callable
 
+from reflexio.server.services.agent_success_evaluation import _eval_health
+
 logger = logging.getLogger(__name__)
 
 # Delay in seconds before evaluating a group after the last request
@@ -89,6 +91,7 @@ class GroupEvaluationScheduler:
         """
         while True:
             try:
+                _eval_health.record_tick()
                 with self._mutex:
                     next_fire_time = self._heap[0][0] if self._heap else None
 
