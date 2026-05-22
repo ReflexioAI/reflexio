@@ -298,6 +298,8 @@ See [developer.md](developer.md) for project structure, supported LLM providers,
 
 For comprehensive guides, examples, and API reference, visit the **[Reflexio Documentation](https://www.reflexio.ai/docs)**.
 
+For coding agents adding Reflexio to another agent, see **[Integrating an AI Agent with Reflexio](AI_AGENT_INTEGRATION.md)**.
+
 ## Contributing
 
 We welcome contributions! Please see [developer.md](developer.md) for guidelines.
