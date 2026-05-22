@@ -11,6 +11,8 @@ from datetime import UTC, datetime
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient
+from reflexio.server.services.agent_success_evaluation import _eval_health
+from reflexio.server.services.agent_success_evaluation._eval_health import SkipReason
 from reflexio.server.services.agent_success_evaluation.agent_success_evaluation_service import (
     AgentSuccessEvaluationService,
 )
@@ -77,12 +79,14 @@ def run_group_evaluation(
     if existing_state and isinstance(existing_state.get("operation_state"), dict):
         op_state = existing_state["operation_state"]
         if op_state.get("evaluated"):
+            _eval_health.record_skip(SkipReason.ALREADY_EVALUATED)
             logger.info("Session %s already evaluated, skipping", session_id)
             return
 
     # 2. Fetch all requests for the session
     requests = storage.get_requests_by_session(user_id, session_id)  # type: ignore[reportOptionalMemberAccess]
     if not requests:
+        _eval_health.record_skip(SkipReason.NO_REQUESTS)
         logger.info("No requests found for session %s, skipping", session_id)
         return
 
@@ -91,6 +95,7 @@ def run_group_evaluation(
     now = int(datetime.now(UTC).timestamp())
     elapsed = now - latest_created_at
     if elapsed < _EFFECTIVE_DELAY_SECONDS:
+        _eval_health.record_skip(SkipReason.NOT_YET_COMPLETE)
         logger.info(
             "Session %s not yet complete (latest request %ds ago, need %ds), skipping",
             session_id,
@@ -103,6 +108,7 @@ def run_group_evaluation(
     request_ids = [r.request_id for r in requests]
     all_interactions = storage.get_interactions_by_request_ids(request_ids)  # type: ignore[reportOptionalMemberAccess]
     if not all_interactions:
+        _eval_health.record_skip(SkipReason.NO_INTERACTIONS)
         logger.info("No interactions found for session %s, skipping", session_id)
         return
 
@@ -128,6 +134,7 @@ def run_group_evaluation(
             )
 
     if not request_interaction_data_models:
+        _eval_health.record_skip(SkipReason.NO_DATA_MODELS)
         logger.info(
             "No request interaction data models built for session %s, skipping",
             session_id,
