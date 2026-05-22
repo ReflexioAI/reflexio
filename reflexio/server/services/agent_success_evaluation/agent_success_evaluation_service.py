@@ -1,10 +1,12 @@
 import logging
+import time
 from dataclasses import dataclass
 
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
 from reflexio.models.config_schema import AgentSuccessConfig
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient
+from reflexio.server.services.agent_success_evaluation import _eval_health
 from reflexio.server.services.agent_success_evaluation.agent_success_evaluation_utils import (
     AgentSuccessEvaluationRequest,
 )
@@ -134,24 +136,46 @@ class AgentSuccessEvaluationService(
             self.service_config.session_id,  # type: ignore[reportOptionalMemberAccess]
         )
 
-        # Save results
+        # Save results with retry+backoff. After the final attempt the producer
+        # failure is recorded into EvalHealth so the operator-facing healthcheck
+        # surfaces persistent storage problems.
         if all_results:
-            try:
-                self.storage.save_agent_success_evaluation_results(all_results)  # type: ignore[reportOptionalMemberAccess]
-                self.last_run_saved_result_count = len(all_results)
-                logger.info(
-                    "Saved %d agent success evaluation results for session: %s",
-                    len(all_results),
-                    self.service_config.session_id,  # type: ignore[reportOptionalMemberAccess]
-                )
-            except Exception as e:
+            backoffs = [1, 4]
+            attempt = 0
+            saved = False
+            while True:
+                attempt += 1
+                try:
+                    self.storage.save_agent_success_evaluation_results(all_results)  # type: ignore[reportOptionalMemberAccess]
+                    self.last_run_saved_result_count = len(all_results)
+                    logger.info(
+                        "Saved %d agent success evaluation results for session: %s (attempt %d)",
+                        len(all_results),
+                        self.service_config.session_id,  # type: ignore[reportOptionalMemberAccess]
+                        attempt,
+                    )
+                    saved = True
+                    break
+                except Exception as e:
+                    logger.warning(
+                        "Save attempt %d/%d failed for session %s: %s",
+                        attempt,
+                        len(backoffs) + 1,
+                        self.service_config.session_id,  # type: ignore[reportOptionalMemberAccess]
+                        e,
+                    )
+                    if attempt > len(backoffs):
+                        break
+                    time.sleep(backoffs[attempt - 1])
+
+            if not saved:
                 self.last_run_save_failed = True
+                _eval_health.record_producer_failure()
                 logger.error(
-                    "Failed to save %s results for session: %s due to %s, exception type: %s",
+                    "Failed to save %s results for session %s after %d attempts",
                     self._get_service_name(),
                     self.service_config.session_id,  # type: ignore[reportOptionalMemberAccess]
-                    str(e),
-                    type(e).__name__,
+                    attempt,
                 )
 
     def has_run_failures(self) -> bool:
