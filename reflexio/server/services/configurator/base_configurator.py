@@ -88,8 +88,8 @@ class BaseConfigurator(ABC):
         return context.strip()
 
     def set_config(self, config: Config) -> None:
-        self.config = config
         self.config_storage.save_config(config=config)
+        self.config = config
 
     def set_config_by_name(
         self,
