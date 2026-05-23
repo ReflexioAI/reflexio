@@ -1,4 +1,14 @@
+from typing import TYPE_CHECKING
+
 from reflexio.lib._base import STORAGE_NOT_CONFIGURED_MSG, ReflexioBase
+from reflexio.models.api_schema.braintrust_schema import (
+    BraintrustStatusResponse,
+    ConnectBraintrustRequest,
+    ConnectBraintrustResponse,
+    SelectProjectsRequest,
+    SelectProjectsResponse,
+    SyncBraintrustResponse,
+)
 from reflexio.models.api_schema.retriever_schema import (
     DashboardStats,
     GetDashboardStatsRequest,
@@ -8,6 +18,11 @@ from reflexio.models.api_schema.retriever_schema import (
     PeriodStats,
     TimeSeriesDataPoint,
 )
+
+if TYPE_CHECKING:
+    from reflexio.server.services.braintrust.service import (
+        BraintrustConnectorService,
+    )
 
 
 class DashboardMixin(ReflexioBase):
@@ -129,3 +144,45 @@ class DashboardMixin(ReflexioBase):
                 stats=[],
                 msg=f"Failed to get playbook application stats: {str(e)}",
             )
+
+    # ==============================
+    # Braintrust connector (Plan C-backend)
+    # ==============================
+
+    def braintrust_connect(
+        self, request: ConnectBraintrustRequest | dict
+    ) -> ConnectBraintrustResponse:
+        """Step 1 of the Braintrust connect flow — validate key, list workspaces."""
+        if isinstance(request, dict):
+            request = ConnectBraintrustRequest(**request)
+        return self._braintrust_service().connect(request)
+
+    def braintrust_select_projects(
+        self, request: SelectProjectsRequest | dict
+    ) -> SelectProjectsResponse:
+        """Step 2 — persist the connection with selected projects (key encrypted)."""
+        if isinstance(request, dict):
+            request = SelectProjectsRequest(**request)
+        return self._braintrust_service().select_projects(request)
+
+    def braintrust_status(self) -> BraintrustStatusResponse:
+        """Return whether this org is connected to Braintrust + sync state."""
+        return self._braintrust_service().status()
+
+    def braintrust_disconnect(self) -> None:
+        """Delete the persisted Braintrust connection."""
+        self._braintrust_service().disconnect()
+
+    def braintrust_sync(self) -> SyncBraintrustResponse:
+        """Manual one-shot sync (cron-driven sync is a follow-up)."""
+        return self._braintrust_service().sync_once()
+
+    def _braintrust_service(self) -> "BraintrustConnectorService":
+        from reflexio.server.services.braintrust.service import (
+            BraintrustConnectorService,
+        )
+
+        return BraintrustConnectorService(
+            storage=self._get_storage(),
+            org_id=self.request_context.org_id,
+        )

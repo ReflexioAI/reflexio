@@ -1,5 +1,9 @@
 from abc import abstractmethod
 
+from reflexio.models.api_schema.braintrust_schema import (
+    BraintrustConnection,
+    ImportedScore,
+)
 from reflexio.models.api_schema.domain import (
     Interaction,
     PlaybookAggregationChangeLog,
@@ -140,3 +144,53 @@ class ExtrasMixin:
     def get_interactions_by_ids(self, interaction_ids: list[int]) -> list[Interaction]:
         """Fetch interactions by interaction ids, ordered by created_at."""
         raise NotImplementedError
+
+    # ==============================
+    # Braintrust connector (default no-ops; backends override)
+    # ==============================
+
+    def save_braintrust_connection(self, connection: BraintrustConnection) -> None:
+        """Persist a Braintrust connection (default no-op).
+
+        Concrete backends should upsert by `org_id`. The default no-op
+        keeps tests and dev mode workable until per-backend implementations
+        land.
+
+        Args:
+            connection (BraintrustConnection): Encrypted connection record.
+        """
+
+    def get_braintrust_connection(
+        self,
+        org_id: str,  # noqa: ARG002 — default no-op; concrete backends use it
+    ) -> BraintrustConnection | None:
+        """Fetch the persisted Braintrust connection for an org.
+
+        Args:
+            org_id (str): The Reflexio org.
+
+        Returns:
+            BraintrustConnection | None: The stored record, or None if the
+                org has not connected (or no backend override yet).
+        """
+        return None
+
+    def delete_braintrust_connection(
+        self,
+        org_id: str,  # noqa: ARG002 — default no-op; concrete backends use it
+    ) -> None:
+        """Delete the org's Braintrust connection (default no-op).
+
+        Args:
+            org_id (str): The Reflexio org to disconnect.
+        """
+
+    def save_imported_scores(self, scores: list[ImportedScore]) -> None:
+        """Persist a batch of imported scorer outputs (default no-op).
+
+        Concrete backends should upsert by `(source, source_run_id,
+        scorer_name)` so re-syncs are idempotent.
+
+        Args:
+            scores (list[ImportedScore]): Scores to persist.
+        """
