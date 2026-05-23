@@ -140,3 +140,40 @@ class ExtrasMixin:
     def get_interactions_by_ids(self, interaction_ids: list[int]) -> list[Interaction]:
         """Fetch interactions by interaction ids, ordered by created_at."""
         raise NotImplementedError
+
+    # ==============================
+    # Evaluation-overview support (default no-ops; backends override)
+    # ==============================
+
+    def count_sessions_with_shadow_content(self, from_ts: int, to_ts: int) -> int:
+        """Return the number of sessions with non-empty shadow content in the window.
+
+        Default implementation returns 0; concrete backends should override
+        once shadow-mode publishing lands. The /api/get_evaluation_overview
+        hero state machine treats 0 as "shadow data not yet available" and
+        degrades to the SHADOW_OFF / EARLY states accordingly.
+
+        Args:
+            from_ts (int): Window start, unix epoch seconds.
+            to_ts (int): Window end, unix epoch seconds.
+
+        Returns:
+            int: Count of sessions in the window with non-empty shadow content.
+        """
+        return 0
+
+    def get_interactions_by_session(self, session_id: str) -> list[Interaction]:
+        """Return the interactions belonging to a single session.
+
+        Default implementation returns []; concrete backends should override
+        with a real query. /api/get_evaluation_overview's rule-attribution
+        panel uses this to harvest citations per session and falls back to
+        an empty panel when no citations are returned.
+
+        Args:
+            session_id (str): The session whose interactions to fetch.
+
+        Returns:
+            list[Interaction]: Interactions in `session_id`, possibly empty.
+        """
+        return []
