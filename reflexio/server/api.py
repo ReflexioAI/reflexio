@@ -19,6 +19,10 @@ from slowapi.util import get_remote_address
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.responses import Response
 
+from reflexio.models.api_schema.eval_overview_schema import (
+    GetEvaluationOverviewRequest,
+    GetEvaluationOverviewResponse,
+)
 from reflexio.models.api_schema.retriever_schema import (
     GetAgentPlaybooksRequest,
     GetAgentPlaybooksViewResponse,
@@ -1511,6 +1515,32 @@ def get_playbook_application_stats(
     """
     reflexio = get_reflexio(org_id=org_id)
     return reflexio.get_playbook_application_stats(request)
+
+
+@core_router.post(
+    "/api/get_evaluation_overview",
+    response_model=GetEvaluationOverviewResponse,
+    response_model_exclude_none=True,
+)
+def get_evaluation_overview(
+    request: GetEvaluationOverviewRequest,
+    org_id: str = Depends(default_get_org_id),
+) -> GetEvaluationOverviewResponse:
+    """Return the redesigned /evaluations page payload.
+
+    Aggregates hero state, four context tiles with deltas, top rule
+    attribution, and a corrections-per-session distribution into a single
+    response shaped exactly as the frontend renders it.
+
+    Args:
+        request (GetEvaluationOverviewRequest): Window + bucket granularity.
+        org_id (str): Organization ID resolved by the auth dependency.
+
+    Returns:
+        GetEvaluationOverviewResponse: Full overview payload.
+    """
+    reflexio = get_reflexio(org_id=org_id)
+    return reflexio.get_evaluation_overview(request)
 
 
 @core_router.post(
