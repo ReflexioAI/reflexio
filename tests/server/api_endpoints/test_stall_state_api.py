@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import tempfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import patch
 
 import pytest
@@ -51,7 +51,7 @@ def test_get_stall_state_clean(client: TestClient):
 def test_get_stall_state_when_stalled(client: TestClient, storage):
     storage.upsert_stall_state(
         reason="billing_error",
-        stalled_at=datetime.now(timezone.utc),
+        stalled_at=datetime.now(UTC),
         reset_estimate=None,
         error_message="credit exhausted",
     )
@@ -66,7 +66,7 @@ def test_get_stall_state_when_stalled(client: TestClient, storage):
 def test_post_notified_flips_flag(client: TestClient, storage):
     storage.upsert_stall_state(
         reason="auth_error",
-        stalled_at=datetime.now(timezone.utc),
+        stalled_at=datetime.now(UTC),
         reset_estimate=None,
         error_message="login",
     )

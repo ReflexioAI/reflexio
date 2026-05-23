@@ -5,10 +5,9 @@ from __future__ import annotations
 import pytest
 
 from reflexio.server.llm.providers.claude_code_stream_parser import (
-    ParseResult,
     classify_stall,
-    parse_stream_json,
     parse_reset_estimate,
+    parse_stream_json,
 )
 
 

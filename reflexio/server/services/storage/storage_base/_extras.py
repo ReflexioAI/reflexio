@@ -1,5 +1,9 @@
 from abc import abstractmethod
 
+from reflexio.models.api_schema.braintrust_schema import (
+    BraintrustConnection,
+    ImportedScore,
+)
 from reflexio.models.api_schema.domain import (
     Interaction,
     PlaybookAggregationChangeLog,
@@ -145,35 +149,74 @@ class ExtrasMixin:
     # Evaluation-overview support (default no-ops; backends override)
     # ==============================
 
-    def count_sessions_with_shadow_content(self, from_ts: int, to_ts: int) -> int:
+    def count_sessions_with_shadow_content(
+        self,
+        from_ts: int,  # noqa: ARG002
+        to_ts: int,  # noqa: ARG002
+    ) -> int:
         """Return the number of sessions with non-empty shadow content in the window.
 
         Default implementation returns 0; concrete backends should override
-        once shadow-mode publishing lands. The /api/get_evaluation_overview
-        hero state machine treats 0 as "shadow data not yet available" and
-        degrades to the SHADOW_OFF / EARLY states accordingly.
-
-        Args:
-            from_ts (int): Window start, unix epoch seconds.
-            to_ts (int): Window end, unix epoch seconds.
-
-        Returns:
-            int: Count of sessions in the window with non-empty shadow content.
+        once shadow-mode publishing lands.
         """
         return 0
 
-    def get_interactions_by_session(self, session_id: str) -> list[Interaction]:
-        """Return the interactions belonging to a single session.
+    def get_interactions_by_session(
+        self,
+        session_id: str,  # noqa: ARG002
+    ) -> list[Interaction]:
+        """Return the interactions belonging to a single session (default []).
 
-        Default implementation returns []; concrete backends should override
-        with a real query. /api/get_evaluation_overview's rule-attribution
-        panel uses this to harvest citations per session and falls back to
-        an empty panel when no citations are returned.
-
-        Args:
-            session_id (str): The session whose interactions to fetch.
-
-        Returns:
-            list[Interaction]: Interactions in `session_id`, possibly empty.
+        Default implementation returns []; concrete backends should override.
         """
         return []
+
+    # ==============================
+    # Braintrust connector (default no-ops; backends override)
+    # ==============================
+
+    def save_braintrust_connection(self, connection: BraintrustConnection) -> None:
+        """Persist a Braintrust connection (default no-op).
+
+        Concrete backends should upsert by `org_id`. The default no-op
+        keeps tests and dev mode workable until per-backend implementations
+        land.
+
+        Args:
+            connection (BraintrustConnection): Encrypted connection record.
+        """
+
+    def get_braintrust_connection(
+        self,
+        org_id: str,  # noqa: ARG002 — default no-op; concrete backends use it
+    ) -> BraintrustConnection | None:
+        """Fetch the persisted Braintrust connection for an org.
+
+        Args:
+            org_id (str): The Reflexio org.
+
+        Returns:
+            BraintrustConnection | None: The stored record, or None if the
+                org has not connected (or no backend override yet).
+        """
+        return None
+
+    def delete_braintrust_connection(
+        self,
+        org_id: str,  # noqa: ARG002 — default no-op; concrete backends use it
+    ) -> None:
+        """Delete the org's Braintrust connection (default no-op).
+
+        Args:
+            org_id (str): The Reflexio org to disconnect.
+        """
+
+    def save_imported_scores(self, scores: list[ImportedScore]) -> None:
+        """Persist a batch of imported scorer outputs (default no-op).
+
+        Concrete backends should upsert by `(source, source_run_id,
+        scorer_name)` so re-syncs are idempotent.
+
+        Args:
+            scores (list[ImportedScore]): Scores to persist.
+        """
