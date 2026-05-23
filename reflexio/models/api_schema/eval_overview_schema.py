@@ -94,8 +94,26 @@ class GetEvaluationOverviewRequest(BaseModel):
     include_shadow: bool = True
 
 
+class BraintrustTileRow(BaseModel):
+    """One imported-scorer aggregate for the context band (Plan C-overview).
+
+    Args:
+        scorer_name (str): The Braintrust scorer name.
+        current (float): Mean value across the current window.
+        n (int): Number of imported scores backing `current`.
+        delta (float): Mean current − mean prior-window. Equals `current`
+            when no baseline (the frontend renders "no baseline").
+    """
+
+    scorer_name: str
+    current: float
+    n: int = Field(ge=0)
+    delta: float
+
+
 class GetEvaluationOverviewResponse(BaseModel):
     hero: HeroBlock
     context_tiles: ContextTile
     rule_attribution: list[RuleAttributionRow]
     score_distribution: ScoreDistribution
+    braintrust_tiles: list[BraintrustTileRow] = Field(default_factory=list)

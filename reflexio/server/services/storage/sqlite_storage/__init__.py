@@ -13,9 +13,9 @@ from ._profiles import ProfileMixin
 from ._requests import RequestMixin
 from ._share_links import SQLiteShareLinkMixin
 from ._stall_state import (
+    SQLiteStallStateMixin,
     StallReason,
     StallState,
-    SQLiteStallStateMixin,
     clear_stall_state,
     get_stall_state,
     init_stall_state_table,

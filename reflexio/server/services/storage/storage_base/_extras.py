@@ -220,3 +220,16 @@ class ExtrasMixin:
         Args:
             scores (list[ImportedScore]): Scores to persist.
         """
+
+    def get_imported_scores(
+        self,
+        org_id: str,  # noqa: ARG002
+        from_ts: int,  # noqa: ARG002
+        to_ts: int,  # noqa: ARG002
+    ) -> list[ImportedScore]:
+        """Return imported scores for the org in `[from_ts, to_ts]` (default []).
+
+        Default implementation returns []; concrete backends override.
+        Used by EvaluationOverviewService to surface Braintrust tiles.
+        """
+        return []

@@ -13,7 +13,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, time, timedelta, timezone
+from datetime import UTC, datetime, time, timedelta
 
 from reflexio.models.api_schema.stall_state_schema import StallReason
 
@@ -190,8 +190,8 @@ def parse_reset_estimate(text: str) -> datetime | None:
     hour = hour_raw % 12
     if match.group("ampm").lower() == "pm":
         hour += 12
-    today = datetime.now(timezone.utc).date()
-    candidate = datetime.combine(today, time(hour, minute), tzinfo=timezone.utc)
-    if candidate <= datetime.now(timezone.utc):
+    today = datetime.now(UTC).date()
+    candidate = datetime.combine(today, time(hour, minute), tzinfo=UTC)
+    if candidate <= datetime.now(UTC):
         candidate += timedelta(days=1)
     return candidate

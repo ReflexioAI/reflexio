@@ -13,10 +13,12 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
+from reflexio.models.api_schema.braintrust_schema import ImportedScore
 from reflexio.models.api_schema.domain.entities import (
     AgentSuccessEvaluationResult,
 )
 from reflexio.models.api_schema.eval_overview_schema import (
+    BraintrustTileRow,
     ContextTile,
     GetEvaluationOverviewRequest,
     GetEvaluationOverviewResponse,
@@ -73,12 +75,16 @@ class EvaluationOverviewService:
         tiles = self._build_tiles(results, results_prev)
         attribution = self._build_attribution(results)
         distribution = self._build_distribution(results, results_prev)
+        braintrust_tiles = self._build_braintrust_tiles(
+            request.from_ts, request.to_ts, prev_from, prev_to
+        )
 
         return GetEvaluationOverviewResponse(
             hero=hero,
             context_tiles=tiles,
             rule_attribution=attribution,
             score_distribution=distribution,
+            braintrust_tiles=braintrust_tiles,
         )
 
     # --- private helpers ---
@@ -200,6 +206,48 @@ class EvaluationOverviewService:
         rule_titles = {(s.kind, s.real_id): s.title for s in stats}
         return citations_by_session, rule_titles
 
+    def _build_braintrust_tiles(
+        self, from_ts: int, to_ts: int, prev_from: int, prev_to: int
+    ) -> list[BraintrustTileRow]:
+        """Aggregate imported_score rows per scorer_name for current + prior windows.
+
+        Returns [] when the org has no Braintrust connection (default no-op
+        storage returns []). The frontend treats an empty list as "not
+        connected" and hides the Braintrust strip entirely.
+        """
+        org_id = self._org_id()
+        if not org_id:
+            return []
+        current = self.storage.get_imported_scores(org_id, from_ts, to_ts)  # type: ignore[attr-defined]
+        if not current:
+            return []
+        prior = self.storage.get_imported_scores(org_id, prev_from, prev_to)  # type: ignore[attr-defined]
+        cur_agg = _aggregate_imported_scores(current)
+        prior_agg = _aggregate_imported_scores(prior)
+        rows: list[BraintrustTileRow] = []
+        for scorer_name, (mean, n) in sorted(cur_agg.items()):
+            # No prior data → set delta = current so the frontend's
+            # `delta == current` check renders "no baseline" honestly.
+            # With prior data → real difference.
+            prior_entry = prior_agg.get(scorer_name)
+            delta = mean if prior_entry is None else mean - prior_entry[0]
+            rows.append(
+                BraintrustTileRow(
+                    scorer_name=scorer_name,
+                    current=mean,
+                    n=n,
+                    delta=delta,
+                )
+            )
+        return rows
+
+    def _org_id(self) -> str:
+        """Resolve org_id from request_context when available; else empty string."""
+        # The service is constructed with `storage` + `config`; org_id isn't a
+        # direct attribute. For Plan C-overview, we read it via the storage
+        # instance's org_id when present (every BaseStorage carries one).
+        return str(getattr(self.storage, "org_id", "") or "")
+
     def _build_distribution(
         self,
         current: list[AgentSuccessEvaluationResult],
@@ -238,6 +286,16 @@ def _mean(values: Iterable[float | int | None]) -> float:
     if not nums:
         return 0.0
     return sum(nums) / len(nums)
+
+
+def _aggregate_imported_scores(
+    scores: list[ImportedScore],
+) -> dict[str, tuple[float, int]]:
+    """Group imported scores by scorer_name → (mean, count)."""
+    bucket: dict[str, list[float]] = defaultdict(list)
+    for s in scores:
+        bucket[s.scorer_name].append(s.value)
+    return {name: (sum(vs) / len(vs), len(vs)) for name, vs in bucket.items() if vs}
 
 
 def _weekly_buckets(
