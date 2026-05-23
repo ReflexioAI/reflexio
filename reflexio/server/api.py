@@ -19,6 +19,14 @@ from slowapi.util import get_remote_address
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.responses import Response
 
+from reflexio.models.api_schema.braintrust_schema import (
+    BraintrustStatusResponse,
+    ConnectBraintrustRequest,
+    ConnectBraintrustResponse,
+    SelectProjectsRequest,
+    SelectProjectsResponse,
+    SyncBraintrustResponse,
+)
 from reflexio.models.api_schema.eval_overview_schema import (
     GetEvaluationOverviewRequest,
     GetEvaluationOverviewResponse,
@@ -1515,6 +1523,101 @@ def get_playbook_application_stats(
     """
     reflexio = get_reflexio(org_id=org_id)
     return reflexio.get_playbook_application_stats(request)
+
+
+# ============================================================================
+# Braintrust connector (Plan C-backend)
+# ============================================================================
+
+
+@core_router.post(
+    "/api/braintrust/connect",
+    response_model=ConnectBraintrustResponse,
+    response_model_exclude_none=True,
+)
+def braintrust_connect(
+    request: ConnectBraintrustRequest,
+    org_id: str = Depends(default_get_org_id),
+) -> ConnectBraintrustResponse:
+    """Step 1: validate the Braintrust API key and list workspaces/projects.
+
+    Persists nothing — call `/api/braintrust/select_projects` to commit.
+
+    Args:
+        request (ConnectBraintrustRequest): Customer's Braintrust API key.
+        org_id (str): Resolved by auth dependency.
+
+    Returns:
+        ConnectBraintrustResponse: Workspaces tree on success; `success=False`
+            with a message when the key is rejected.
+    """
+    reflexio = get_reflexio(org_id=org_id)
+    return reflexio.braintrust_connect(request)
+
+
+@core_router.post(
+    "/api/braintrust/select_projects",
+    response_model=SelectProjectsResponse,
+    response_model_exclude_none=True,
+)
+def braintrust_select_projects(
+    request: SelectProjectsRequest,
+    org_id: str = Depends(default_get_org_id),
+) -> SelectProjectsResponse:
+    """Step 2: commit the Braintrust connection with selected projects.
+
+    The API key is encrypted at rest. Subsequent syncs use the persisted
+    connection until the customer calls DELETE /api/braintrust/connection.
+    """
+    reflexio = get_reflexio(org_id=org_id)
+    return reflexio.braintrust_select_projects(request)
+
+
+@core_router.get(
+    "/api/braintrust/status",
+    response_model=BraintrustStatusResponse,
+    response_model_exclude_none=True,
+)
+def braintrust_status(
+    org_id: str = Depends(default_get_org_id),
+) -> BraintrustStatusResponse:
+    """Return Braintrust connection state. Never echoes the API key."""
+    reflexio = get_reflexio(org_id=org_id)
+    return reflexio.braintrust_status()
+
+
+@core_router.delete("/api/braintrust/connection")
+def braintrust_disconnect(
+    org_id: str = Depends(default_get_org_id),
+) -> dict:
+    """Delete the persisted Braintrust connection for the org.
+
+    Args:
+        org_id (str): Resolved by auth dependency.
+
+    Returns:
+        dict: ``{"success": True}`` on completion.
+    """
+    reflexio = get_reflexio(org_id=org_id)
+    reflexio.braintrust_disconnect()
+    return {"success": True}
+
+
+@core_router.post(
+    "/api/braintrust/sync",
+    response_model=SyncBraintrustResponse,
+    response_model_exclude_none=True,
+)
+def braintrust_sync(
+    org_id: str = Depends(default_get_org_id),
+) -> SyncBraintrustResponse:
+    """Trigger a one-shot sync of Braintrust scorer outputs.
+
+    Scheduled (cron) sync is a follow-up; for now the endpoint exists so
+    operators can drive a manual import.
+    """
+    reflexio = get_reflexio(org_id=org_id)
+    return reflexio.braintrust_sync()
 
 
 @core_router.post(

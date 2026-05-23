@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-
-import pytest
+from datetime import UTC, datetime, timedelta
 
 
 def test_default_is_clean(storage):
@@ -16,7 +14,7 @@ def test_default_is_clean(storage):
 
 
 def test_upsert_then_get_roundtrip(storage):
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     storage.upsert_stall_state(
         reason="billing_error",
         stalled_at=now,
@@ -32,7 +30,7 @@ def test_upsert_then_get_roundtrip(storage):
 
 def test_reset_estimate_roundtrip(storage):
     """A non-None reset_estimate persists and parses back to the same datetime."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     reset_time = now + timedelta(hours=6)
     storage.upsert_stall_state(
         reason="billing_error",
@@ -48,7 +46,7 @@ def test_mark_notified_flips_only_that_field(storage):
     """mark_stall_notified flips only notified_in_cc, leaves other fields intact."""
     storage.upsert_stall_state(
         reason="auth_error",
-        stalled_at=datetime.now(timezone.utc),
+        stalled_at=datetime.now(UTC),
         reset_estimate=None,
         error_message="login",
     )
@@ -61,7 +59,7 @@ def test_mark_notified_flips_only_that_field(storage):
 def test_clear_resets_all_fields_and_notification(storage):
     storage.upsert_stall_state(
         reason="billing_error",
-        stalled_at=datetime.now(timezone.utc),
+        stalled_at=datetime.now(UTC),
         reset_estimate=None,
         error_message="x",
     )
@@ -76,7 +74,7 @@ def test_clear_resets_all_fields_and_notification(storage):
 
 def test_upsert_after_clear_resets_notified_flag(storage):
     """New stall must re-arm notified_in_cc=False so SessionStart fires again."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     storage.upsert_stall_state(
         reason="billing_error",
         stalled_at=now,
