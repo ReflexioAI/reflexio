@@ -1690,4 +1690,33 @@ CREATE TABLE IF NOT EXISTS share_links (
 );
 CREATE INDEX IF NOT EXISTS idx_share_links_resource ON share_links(resource_type, resource_id);
 
+-- ============================================================================
+-- Braintrust connector (Plan C-backend)
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS braintrust_connection (
+    org_id TEXT PRIMARY KEY,
+    api_key_enc TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    workspace_name TEXT NOT NULL DEFAULT '',
+    project_ids TEXT NOT NULL DEFAULT '[]',
+    last_sync_ts INTEGER,
+    last_error TEXT
+);
+
+CREATE TABLE IF NOT EXISTS imported_score (
+    rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+    org_id TEXT NOT NULL,
+    source TEXT NOT NULL,
+    source_run_id TEXT NOT NULL,
+    session_id TEXT,
+    scorer_name TEXT NOT NULL,
+    value REAL NOT NULL,
+    ts INTEGER NOT NULL,
+    UNIQUE (org_id, source, source_run_id, scorer_name)
+);
+CREATE INDEX IF NOT EXISTS idx_imported_score_session
+    ON imported_score (org_id, session_id) WHERE session_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_imported_score_ts ON imported_score (org_id, ts);
+
 """
