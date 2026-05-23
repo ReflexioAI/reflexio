@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from reflexio.models.api_schema.braintrust_schema import (
     BraintrustConnection,
@@ -26,10 +26,23 @@ from reflexio.models.api_schema.braintrust_schema import (
 )
 from reflexio.server.services.braintrust._encryption import decrypt, encrypt
 from reflexio.server.services.braintrust.client import (
+    DEFAULT_BASE_URL,
     BraintrustAuthError,
     BraintrustClient,
     BraintrustHTTPError,
 )
+
+
+def _default_client_factory(api_key: str) -> BraintrustClient:
+    """Default factory that honors `BRAINTRUST_BASE_URL` env override.
+
+    Set the env var to point at a staging or mock Braintrust instance
+    (useful for dev / cron testing without hitting the real API).
+    """
+    import os
+
+    base_url = os.environ.get("BRAINTRUST_BASE_URL", "").strip() or DEFAULT_BASE_URL
+    return BraintrustClient(api_key, base_url=base_url)
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +66,9 @@ class BraintrustConnectorService:
 
     storage: object
     org_id: str
-    client_factory: Callable[[str], BraintrustClient] = BraintrustClient
+    client_factory: Callable[[str], BraintrustClient] = field(
+        default=_default_client_factory
+    )
 
     # ------------------------------------------------------------------
     # Public API
