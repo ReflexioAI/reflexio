@@ -1,4 +1,13 @@
 from reflexio.lib._base import STORAGE_NOT_CONFIGURED_MSG, ReflexioBase
+from reflexio.models.api_schema.eval_overview_schema import (
+    ContextTile,
+    GetEvaluationOverviewRequest,
+    GetEvaluationOverviewResponse,
+    HeroBlock,
+    NumberWithDelta,
+    PercentWithDelta,
+    ScoreDistribution,
+)
 from reflexio.models.api_schema.retriever_schema import (
     DashboardStats,
     GetDashboardStatsRequest,
@@ -129,3 +138,59 @@ class DashboardMixin(ReflexioBase):
                 stats=[],
                 msg=f"Failed to get playbook application stats: {str(e)}",
             )
+
+    def get_evaluation_overview(
+        self, request: GetEvaluationOverviewRequest | dict
+    ) -> GetEvaluationOverviewResponse:
+        """Build the /evaluations overview payload (hero + tiles + attribution + distribution).
+
+        Args:
+            request (GetEvaluationOverviewRequest | dict): Window, bucket
+                granularity, and shadow-inclusion flag.
+
+        Returns:
+            GetEvaluationOverviewResponse: Full payload — the redesigned
+                /evaluations page is expected to render directly from this.
+        """
+        if isinstance(request, dict):
+            request = GetEvaluationOverviewRequest(**request)
+        if not self._is_storage_configured():
+            return _empty_overview_response()
+        from reflexio.server.services.evaluation_overview.service import (
+            EvaluationOverviewService,
+        )
+
+        service = EvaluationOverviewService(
+            storage=self._get_storage(),
+            config=self.request_context.configurator.get_config(),
+        )
+        return service.run(request)
+
+
+def _empty_overview_response() -> GetEvaluationOverviewResponse:
+    """Return a default response when storage is not configured.
+
+    Used by lib wrappers to keep the endpoint stable even before storage is
+    wired up (matches the defensive pattern used by other dashboard methods).
+    """
+    return GetEvaluationOverviewResponse(
+        hero=HeroBlock(
+            state="empty",
+            regular_success_rate_pp=0.0,
+            shadow_success_rate_pp=None,
+            delta_pp=None,
+            buckets=[],
+        ),
+        context_tiles=ContextTile(
+            success=PercentWithDelta(current=0.0, delta_pp=0.0),
+            corrections=NumberWithDelta(current=0.0, delta=0.0),
+            turns=NumberWithDelta(current=0.0, delta=0.0),
+            escalation=PercentWithDelta(current=0.0, delta_pp=0.0),
+        ),
+        rule_attribution=[],
+        score_distribution=ScoreDistribution(
+            current_bins=[0, 0, 0, 0, 0, 0],
+            baseline_bins=[0, 0, 0, 0, 0, 0],
+            labels=["0", "1", "2", "3", "4", "5+"],
+        ),
+    )
