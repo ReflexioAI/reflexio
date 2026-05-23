@@ -4,6 +4,10 @@ import sqlite3
 from collections import defaultdict
 from typing import Any, Literal, cast
 
+from reflexio.models.api_schema.braintrust_schema import (
+    BraintrustConnection,
+    ImportedScore,
+)
 from reflexio.models.api_schema.retriever_schema import PlaybookApplicationStat
 from reflexio.models.api_schema.service_schemas import (
     Interaction,
@@ -416,3 +420,185 @@ class ExtrasMixin:
     @SQLiteStorageBase.handle_exceptions
     def delete_all_playbook_aggregation_change_logs(self) -> None:
         self._execute("DELETE FROM playbook_aggregation_change_logs")
+
+    # ------------------------------------------------------------------
+    # Evaluation-overview support (Plan B-backend)
+    # ------------------------------------------------------------------
+
+    @SQLiteStorageBase.handle_exceptions
+    def count_sessions_with_shadow_content(self, from_ts: int, to_ts: int) -> int:
+        """Count distinct sessions with at least one non-empty shadow interaction.
+
+        Joins `interactions` with `requests` since `session_id` is on the
+        request, not the interaction.
+
+        Args:
+            from_ts (int): Window start, unix epoch seconds.
+            to_ts (int): Window end, unix epoch seconds.
+
+        Returns:
+            int: Distinct count of sessions in the window with shadow content.
+        """
+        rows = self._fetchall(
+            """SELECT COUNT(DISTINCT r.session_id) AS n
+               FROM interactions i
+               JOIN requests r ON i.request_id = r.request_id
+               WHERE COALESCE(i.shadow_content, '') != ''
+                 AND r.session_id != ''
+                 AND i.created_at >= ?
+                 AND i.created_at <= ?""",
+            (_epoch_to_iso(from_ts), _epoch_to_iso(to_ts)),
+        )
+        if not rows:
+            return 0
+        return int(rows[0][0] or 0)
+
+    @SQLiteStorageBase.handle_exceptions
+    def get_interactions_by_session(self, session_id: str) -> list[Interaction]:
+        """Return interactions for a session, ordered by created_at.
+
+        Joins `interactions` with `requests` so we can filter by
+        Request.session_id.
+
+        Args:
+            session_id (str): The session whose interactions to fetch.
+
+        Returns:
+            list[Interaction]: Interactions in the session, possibly empty.
+        """
+        if not session_id:
+            return []
+        rows = self._fetchall(
+            """SELECT i.*
+               FROM interactions i
+               JOIN requests r ON i.request_id = r.request_id
+               WHERE r.session_id = ?
+               ORDER BY i.created_at ASC""",
+            (session_id,),
+        )
+        return [_row_to_interaction(r) for r in rows]
+
+    # ------------------------------------------------------------------
+    # Braintrust connector storage (Plan C-backend + Plan C-overview)
+    # ------------------------------------------------------------------
+
+    @SQLiteStorageBase.handle_exceptions
+    def save_braintrust_connection(self, connection: BraintrustConnection) -> None:
+        """Upsert the org's Braintrust connection.
+
+        Args:
+            connection (BraintrustConnection): Encrypted connection record.
+        """
+        self._execute(
+            """INSERT INTO braintrust_connection
+                 (org_id, api_key_enc, workspace_id, workspace_name,
+                  project_ids, last_sync_ts, last_error)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(org_id) DO UPDATE SET
+                 api_key_enc = excluded.api_key_enc,
+                 workspace_id = excluded.workspace_id,
+                 workspace_name = excluded.workspace_name,
+                 project_ids = excluded.project_ids,
+                 last_sync_ts = excluded.last_sync_ts,
+                 last_error = excluded.last_error""",
+            (
+                connection.org_id,
+                connection.api_key_enc,
+                connection.workspace_id,
+                connection.workspace_name,
+                _json_dumps(connection.project_ids),
+                connection.last_sync_ts,
+                connection.last_error,
+            ),
+        )
+
+    @SQLiteStorageBase.handle_exceptions
+    def get_braintrust_connection(
+        self, org_id: str
+    ) -> BraintrustConnection | None:
+        """Fetch the org's Braintrust connection or None if not connected."""
+        rows = self._fetchall(
+            """SELECT api_key_enc, workspace_id, workspace_name, project_ids,
+                      last_sync_ts, last_error
+               FROM braintrust_connection
+               WHERE org_id = ?""",
+            (org_id,),
+        )
+        if not rows:
+            return None
+        row = rows[0]
+        return BraintrustConnection(
+            org_id=org_id,
+            api_key_enc=row[0],
+            workspace_id=row[1],
+            workspace_name=row[2] or "",
+            project_ids=list(_json_loads(row[3]) or []),
+            last_sync_ts=row[4],
+            last_error=row[5],
+        )
+
+    @SQLiteStorageBase.handle_exceptions
+    def delete_braintrust_connection(self, org_id: str) -> None:
+        """Delete the org's connection (idempotent)."""
+        self._execute(
+            "DELETE FROM braintrust_connection WHERE org_id = ?", (org_id,)
+        )
+
+    @SQLiteStorageBase.handle_exceptions
+    def save_imported_scores(self, scores: list[ImportedScore]) -> None:
+        """Upsert imported scores by (org_id, source, source_run_id, scorer_name)."""
+        if not scores:
+            return
+        rows = [
+            (
+                s.org_id,
+                s.source,
+                s.source_run_id,
+                s.session_id,
+                s.scorer_name,
+                s.value,
+                s.ts,
+            )
+            for s in scores
+        ]
+        with self._lock:
+            self.conn.executemany(
+                """INSERT INTO imported_score
+                     (org_id, source, source_run_id, session_id,
+                      scorer_name, value, ts)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(org_id, source, source_run_id, scorer_name)
+                   DO UPDATE SET
+                     session_id = excluded.session_id,
+                     value = excluded.value,
+                     ts = excluded.ts""",
+                rows,
+            )
+            self.conn.commit()
+
+    @SQLiteStorageBase.handle_exceptions
+    def get_imported_scores(
+        self, org_id: str, from_ts: int, to_ts: int
+    ) -> list[ImportedScore]:
+        """Return imported scores for the org in `[from_ts, to_ts]`."""
+        rows = self._fetchall(
+            """SELECT source, source_run_id, session_id, scorer_name, value, ts
+               FROM imported_score
+               WHERE org_id = ?
+                 AND ts >= ?
+                 AND ts <= ?
+               ORDER BY ts ASC""",
+            (org_id, from_ts, to_ts),
+        )
+        return [
+            ImportedScore(
+                org_id=org_id,
+                source=cast(Literal["braintrust"], row[0]),
+                source_run_id=row[1],
+                session_id=row[2],
+                scorer_name=row[3],
+                value=float(row[4]),
+                ts=int(row[5]),
+            )
+            for row in rows
+        ]
