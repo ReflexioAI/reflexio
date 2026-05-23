@@ -250,4 +250,5 @@ def _empty_overview_response() -> GetEvaluationOverviewResponse:
             baseline_bins=[0, 0, 0, 0, 0, 0],
             labels=["0", "1", "2", "3", "4", "5+"],
         ),
+        braintrust_tiles=[],
     )
