@@ -626,6 +626,11 @@ class Config(BaseModel):
     # (multi-reader + critic). Defaults keep existing behavior; flip to
     # "agentic" to opt in once Phase 3/4 land.
     extraction_backend: Literal["classic", "agentic"] = "classic"
+    # Whether this org has opted into shadow-mode runs. Drives /healthz/eval
+    # liveness derivation and the /api/get_evaluation_overview hero state
+    # machine. When True, each publish optionally schedules a parallel
+    # "without Reflexio" generation for side-by-side comparison.
+    shadow_mode_enabled: bool = False
     search_backend: Literal["classic", "agentic"] = "classic"
     # Extraction axes to skip in the agentic backend. Default: empty set =
     # all three axes (UserProfile, UserProfileAgentRec, UserPlaybook) run.
