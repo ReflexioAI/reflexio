@@ -260,6 +260,15 @@ class GenerationService:
                         config=root_config,
                     )
                 )
+                # Schedule delayed group evaluation — must run for the agentic
+                # backend too, otherwise no AgentSuccessEvaluationResult records
+                # ever get produced and /evaluations stays empty.
+                self._schedule_group_evaluation_if_needed(
+                    new_request=new_request,
+                    user_id=user_id,
+                    agent_version=agent_version,
+                    source=source,
+                )
                 record_usage_event(
                     org_id=self.org_id,
                     user_id=user_id,
@@ -346,45 +355,12 @@ class GenerationService:
                 executor.shutdown(wait=False, cancel_futures=True)
 
             # Schedule delayed group evaluation if session_id is present
-            session_id = new_request.session_id
-            if session_id:
-                scheduler = GroupEvaluationScheduler.get_instance()
-                key = (self.org_id, user_id, session_id)
-
-                def make_callback(
-                    _org_id: str,
-                    _user_id: str,
-                    _sid: str,
-                    _av: str,
-                    _src: str | None,
-                    _rc: RequestContext,
-                    _llm: LiteLLMClient,
-                ) -> Callable[[], None]:
-                    def callback() -> None:
-                        run_group_evaluation(
-                            org_id=_org_id,
-                            user_id=_user_id,
-                            session_id=_sid,
-                            agent_version=_av,
-                            source=_src,
-                            request_context=_rc,
-                            llm_client=_llm,
-                        )
-
-                    return callback
-
-                scheduler.schedule(
-                    key,
-                    make_callback(
-                        self.org_id,
-                        user_id,
-                        session_id,
-                        agent_version,
-                        source,
-                        self.request_context,
-                        self.client,
-                    ),
-                )
+            self._schedule_group_evaluation_if_needed(
+                new_request=new_request,
+                user_id=user_id,
+                agent_version=agent_version,
+                source=source,
+            )
 
             record_usage_event(
                 org_id=self.org_id,
@@ -429,6 +405,70 @@ class GenerationService:
     # ===============================
     # private methods
     # ===============================
+
+    def _schedule_group_evaluation_if_needed(
+        self,
+        *,
+        new_request: Request,
+        user_id: str,
+        agent_version: str,
+        source: str | None,
+    ) -> None:
+        """Enqueue agent-success evaluation for this session, if session_id is set.
+
+        Must be called once per publish — from BOTH the classic and the agentic
+        extraction code paths — so that ``AgentSuccessEvaluationResult`` records
+        get produced regardless of which backend is in use. Skipping this for
+        the agentic path was the silent root cause of empty /evaluations tiles.
+
+        Args:
+            new_request (Request): The just-stored request whose session is being
+                published into. ``new_request.session_id`` gates scheduling.
+            user_id (str): The user owning the session.
+            agent_version (str): Agent version string carried into the evaluator.
+            source (str | None): Optional source label.
+        """
+        session_id = new_request.session_id
+        if not session_id:
+            return
+
+        scheduler = GroupEvaluationScheduler.get_instance()
+        key = (self.org_id, user_id, session_id)
+
+        def make_callback(
+            _org_id: str,
+            _user_id: str,
+            _sid: str,
+            _av: str,
+            _src: str | None,
+            _rc: RequestContext,
+            _llm: LiteLLMClient,
+        ) -> Callable[[], None]:
+            def callback() -> None:
+                run_group_evaluation(
+                    org_id=_org_id,
+                    user_id=_user_id,
+                    session_id=_sid,
+                    agent_version=_av,
+                    source=_src,
+                    request_context=_rc,
+                    llm_client=_llm,
+                )
+
+            return callback
+
+        scheduler.schedule(
+            key,
+            make_callback(
+                self.org_id,
+                user_id,
+                session_id,
+                agent_version,
+                source,
+                self.request_context,
+                self.client,
+            ),
+        )
 
     def _maybe_run_reflection(
         self, *, user_id: str, agent_version: str, source: str | None
