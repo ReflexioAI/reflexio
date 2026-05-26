@@ -3,7 +3,10 @@
 import sqlite3
 from typing import Any
 
-from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
+from reflexio.models.api_schema.internal_schema import (
+    RequestInteractionDataModel,
+    SessionDescriptor,
+)
 from reflexio.models.api_schema.service_schemas import (
     Request,
 )
@@ -232,3 +235,28 @@ class RequestMixin:
             (user_id, session_id),
         )
         return [_row_to_request(r) for r in rows]
+
+    @SQLiteStorageBase.handle_exceptions
+    def get_session_ids_in_window(
+        self, from_ts: int, to_ts: int
+    ) -> list[SessionDescriptor]:
+        from_iso = _epoch_to_iso(from_ts)
+        to_iso = _epoch_to_iso(to_ts)
+        rows = self._fetchall(
+            """SELECT user_id, session_id, agent_version, source
+               FROM requests
+               WHERE session_id IS NOT NULL
+                 AND created_at BETWEEN ? AND ?
+               GROUP BY user_id, session_id
+               ORDER BY session_id""",
+            (from_iso, to_iso),
+        )
+        return [
+            SessionDescriptor(
+                user_id=r["user_id"],
+                session_id=r["session_id"],
+                agent_version=r["agent_version"],
+                source=r["source"],
+            )
+            for r in rows
+        ]

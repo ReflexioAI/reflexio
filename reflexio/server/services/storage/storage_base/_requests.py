@@ -1,7 +1,10 @@
 from abc import abstractmethod
 
 from reflexio.models.api_schema.domain import Request
-from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
+from reflexio.models.api_schema.internal_schema import (
+    RequestInteractionDataModel,
+    SessionDescriptor,
+)
 
 
 class RequestMixin:
@@ -126,5 +129,20 @@ class RequestMixin:
 
         Returns:
             list[Request]: List of Request objects in the session
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_session_ids_in_window(
+        self, from_ts: int, to_ts: int
+    ) -> list[SessionDescriptor]:
+        """Return one descriptor per distinct (user_id, session_id) with any request in window.
+
+        Args:
+            from_ts (int): Inclusive lower bound (Unix seconds).
+            to_ts (int): Inclusive upper bound (Unix seconds).
+
+        Returns:
+            list[SessionDescriptor]: Deduped descriptors ordered by session_id.
         """
         raise NotImplementedError
