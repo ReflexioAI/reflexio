@@ -25,4 +25,4 @@ class SessionDescriptor(NamedTuple):
     user_id: str
     session_id: str
     agent_version: str
-    source: str | None
+    source: str

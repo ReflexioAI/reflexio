@@ -243,12 +243,11 @@ class RequestMixin:
         from_iso = _epoch_to_iso(from_ts)
         to_iso = _epoch_to_iso(to_ts)
         rows = self._fetchall(
-            """SELECT user_id, session_id, agent_version, source
+            """SELECT DISTINCT user_id, session_id, agent_version, source
                FROM requests
                WHERE session_id IS NOT NULL
                  AND created_at BETWEEN ? AND ?
-               GROUP BY user_id, session_id
-               ORDER BY session_id""",
+               ORDER BY session_id, user_id, agent_version""",
             (from_iso, to_iso),
         )
         return [

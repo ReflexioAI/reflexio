@@ -43,9 +43,7 @@ def storage(request: pytest.FixtureRequest) -> Generator[BaseStorage]:
         elif backend == "disk":
             from reflexio.server.services.storage.disk_storage import DiskStorage
 
-            yield DiskStorage(
-                org_id="contract_test_session_window", base_dir=temp_dir
-            )
+            yield DiskStorage(org_id="contract_test_session_window", base_dir=temp_dir)
 
 
 def _seed_request(storage: BaseStorage, user_id: str, session_id: str, ts: int) -> str:
@@ -76,6 +74,12 @@ def test_returns_distinct_sessions_in_window(storage: BaseStorage) -> None:
     assert session_ids == {"s1", "s2"}
     assert sum(1 for d in out if d.session_id == "s1") == 1
 
+    # Verify full descriptor identity for a seeded row, not just session_id.
+    expected_s1 = SessionDescriptor(
+        user_id="u1", session_id="s1", agent_version="v1", source="test"
+    )
+    assert expected_s1 in out
+
 
 def test_empty_window_returns_empty_list(storage: BaseStorage) -> None:
     out = storage.get_session_ids_in_window(from_ts=0, to_ts=1)
@@ -87,3 +91,50 @@ def test_window_boundaries_are_inclusive(storage: BaseStorage) -> None:
     _seed_request(storage, "u1", "edge_high", ts=200)
     out = storage.get_session_ids_in_window(from_ts=100, to_ts=200)
     assert {d.session_id for d in out} == {"edge_low", "edge_high"}
+
+
+def test_null_session_excluded(storage: BaseStorage) -> None:
+    """Requests with session_id=None must be excluded from the result."""
+    _seed_request(storage, "u1", "s1", ts=1000)
+    req = Request(
+        request_id="req_null",
+        user_id="u1",
+        created_at=1000,
+        source="test",
+        agent_version="v1",
+        session_id=None,
+    )
+    storage.add_request(req)
+
+    out = storage.get_session_ids_in_window(from_ts=0, to_ts=5000)
+    assert {d.session_id for d in out} == {"s1"}
+
+
+def test_distinct_agent_versions_split_into_separate_descriptors(
+    storage: BaseStorage,
+) -> None:
+    """Two requests with same (user_id, session_id) but different agent_version produce two descriptors."""
+    storage.add_request(
+        Request(
+            request_id="r1",
+            user_id="u1",
+            created_at=1000,
+            source="test",
+            agent_version="v1",
+            session_id="s1",
+        )
+    )
+    storage.add_request(
+        Request(
+            request_id="r2",
+            user_id="u1",
+            created_at=1100,
+            source="test",
+            agent_version="v2",
+            session_id="s1",
+        )
+    )
+
+    out = storage.get_session_ids_in_window(from_ts=0, to_ts=5000)
+    versions = {d.agent_version for d in out if d.session_id == "s1"}
+    assert versions == {"v1", "v2"}

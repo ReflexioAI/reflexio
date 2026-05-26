@@ -224,13 +224,13 @@ class RequestMixin:
         with self._lock:
             all_requests = self._list_entities(self._requests_dir(), Request)
 
-        seen: dict[tuple[str, str], SessionDescriptor] = {}
+        seen: dict[tuple[str, str, str, str], SessionDescriptor] = {}
         for req in all_requests:
             if req.session_id is None:
                 continue
             if not (from_ts <= req.created_at <= to_ts):
                 continue
-            key = (req.user_id, req.session_id)
+            key = (req.user_id, req.session_id, req.agent_version, req.source)
             if key not in seen:
                 seen[key] = SessionDescriptor(
                     user_id=req.user_id,
@@ -238,4 +238,6 @@ class RequestMixin:
                     agent_version=req.agent_version,
                     source=req.source,
                 )
-        return sorted(seen.values(), key=lambda d: d.session_id)
+        return sorted(
+            seen.values(), key=lambda d: (d.session_id, d.user_id, d.agent_version)
+        )
