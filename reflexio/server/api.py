@@ -1248,7 +1248,7 @@ def update_config(
                     "Nested objects (e.g. user_playbook_extractor_config) "
                     "are replaced wholesale, not deep-merged. To mutate a "
                     "single nested field, fetch the full config via "
-                    "/api/get_config, edit, and PUT it back via "
+                    "/api/get_config, edit, and POST it back via "
                     "/api/set_config."
                 ),
                 "validation_errors": exc.errors(),

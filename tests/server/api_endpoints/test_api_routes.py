@@ -395,7 +395,7 @@ class TestUpdateConfigRoute:
                 "/api/update_config",
                 json={
                     "profile_extractor_configs": [],
-                    "playbook_configs": [],
+                    "user_playbook_extractor_configs": [],
                 },
             )
 
