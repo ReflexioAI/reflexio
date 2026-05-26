@@ -17,6 +17,7 @@ import pytest
 
 from reflexio.models.api_schema.internal_schema import SessionDescriptor
 from reflexio.models.api_schema.service_schemas import (
+    AgentSuccessEvaluationResult,
     Request,
 )
 from reflexio.server.services.storage.storage_base import BaseStorage
@@ -138,3 +139,63 @@ def test_distinct_agent_versions_split_into_separate_descriptors(
     out = storage.get_session_ids_in_window(from_ts=0, to_ts=5000)
     versions = {d.agent_version for d in out if d.session_id == "s1"}
     assert versions == {"v1", "v2"}
+
+
+def _seed_eval_result(
+    storage: BaseStorage,
+    session_id: str,
+    evaluation_name: str,
+    agent_version: str = "v1",
+) -> None:
+    """Save one ``AgentSuccessEvaluationResult`` row with minimal fields set."""
+    result = AgentSuccessEvaluationResult(
+        session_id=session_id,
+        agent_version=agent_version,
+        evaluation_name=evaluation_name,
+        is_success=True,
+        failure_type=None,
+        failure_reason=None,
+        regular_vs_shadow=None,
+        number_of_correction_per_session=0,
+        user_turns_to_resolution=None,
+        is_escalated=False,
+        embedding=[],
+        created_at=1000,
+    )
+    storage.save_agent_success_evaluation_results([result])
+
+
+def test_delete_scoped_to_session_and_name(storage: BaseStorage) -> None:
+    _seed_eval_result(storage, "s1", "overall_success")
+    _seed_eval_result(storage, "s1", "safety")
+    _seed_eval_result(storage, "s2", "overall_success")
+
+    n = storage.delete_agent_success_evaluation_results_for_session(
+        session_id="s1", evaluation_name="overall_success", agent_version="v1"
+    )
+
+    assert n == 1
+    remaining = storage.get_agent_success_evaluation_results(limit=100)
+    sessions_and_names = {(r.session_id, r.evaluation_name) for r in remaining}
+    assert sessions_and_names == {("s1", "safety"), ("s2", "overall_success")}
+
+
+def test_delete_unknown_session_returns_zero(storage: BaseStorage) -> None:
+    n = storage.delete_agent_success_evaluation_results_for_session(
+        session_id="does_not_exist",
+        evaluation_name="overall_success",
+        agent_version="v1",
+    )
+    assert n == 0
+
+
+def test_delete_respects_agent_version_scope(storage: BaseStorage) -> None:
+    _seed_eval_result(storage, "s1", "overall_success", agent_version="v1")
+    _seed_eval_result(storage, "s1", "overall_success", agent_version="v2")
+    n = storage.delete_agent_success_evaluation_results_for_session(
+        session_id="s1", evaluation_name="overall_success", agent_version="v1"
+    )
+    assert n == 1
+    remaining = storage.get_agent_success_evaluation_results(limit=100)
+    versions = {r.agent_version for r in remaining if r.session_id == "s1"}
+    assert versions == {"v2"}

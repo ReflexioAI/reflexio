@@ -1046,3 +1046,36 @@ class PlaybookMixin:
     def delete_all_agent_success_evaluation_results(self) -> None:
         with self._lock:
             self._clear_dir(self._evaluations_dir())
+
+    def delete_agent_success_evaluation_results_for_session(
+        self,
+        session_id: str,
+        evaluation_name: str,
+        agent_version: str,
+    ) -> int:
+        """Delete results scoped to (session_id, evaluation_name, agent_version).
+
+        Iterates the per-file evaluation directory, reads each entity, and
+        unlinks (with its embedding sidecar) any that match the triple.
+
+        Args:
+            session_id (str): Session whose results to clear.
+            evaluation_name (str): Which evaluator's results to clear.
+            agent_version (str): Agent version scope.
+
+        Returns:
+            int: Number of files deleted.
+        """
+        deleted = 0
+        with self._lock:
+            for path in self._scan_entities(self._evaluations_dir()):
+                result = self._read_entity(path, AgentSuccessEvaluationResult)
+                if (
+                    result.session_id == session_id
+                    and result.evaluation_name == evaluation_name
+                    and result.agent_version == agent_version
+                ):
+                    self._delete_embedding(path)
+                    path.unlink()
+                    deleted += 1
+        return deleted

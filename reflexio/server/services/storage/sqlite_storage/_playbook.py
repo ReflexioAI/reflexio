@@ -1330,3 +1330,27 @@ class PlaybookMixin:
     @SQLiteStorageBase.handle_exceptions
     def delete_all_agent_success_evaluation_results(self) -> None:
         self._execute("DELETE FROM agent_success_evaluation_result")
+
+    @SQLiteStorageBase.handle_exceptions
+    def delete_agent_success_evaluation_results_for_session(
+        self,
+        session_id: str,
+        evaluation_name: str,
+        agent_version: str,
+    ) -> int:
+        """Delete results scoped to (session_id, evaluation_name, agent_version).
+
+        Args:
+            session_id (str): Session whose results to clear.
+            evaluation_name (str): Which evaluator's results to clear.
+            agent_version (str): Agent version scope.
+
+        Returns:
+            int: Number of rows deleted.
+        """
+        cur = self._execute(
+            """DELETE FROM agent_success_evaluation_result
+               WHERE session_id = ? AND evaluation_name = ? AND agent_version = ?""",
+            (session_id, evaluation_name, agent_version),
+        )
+        return cur.rowcount
