@@ -51,13 +51,16 @@ def run_group_evaluation(
     source: str | None,
     request_context: RequestContext,
     llm_client: LiteLLMClient,
+    *,
+    force_regenerate: bool = False,
+    evaluation_name: str | None = None,
 ) -> None:
     """Run agent success evaluation for an entire session.
 
     Steps:
-    1. Check if already evaluated via operation state
+    1. Check if already evaluated via operation state (skipped when force_regenerate)
     2. Fetch all requests for the session
-    3. Verify completion (latest request created_at >= delay ago)
+    3. Verify completion (latest request created_at >= delay ago; skipped when force_regenerate)
     4. Fetch interactions and build data models
     5. Run evaluation service
     6. Mark as evaluated in operation state
@@ -70,18 +73,29 @@ def run_group_evaluation(
         source: Source of the interactions
         request_context: Request context with storage and configurator
         llm_client: LLM client for evaluation
+        force_regenerate: When True, bypass the already-evaluated short-circuit
+            and the completeness delay gate so the regenerate worker can
+            re-evaluate sessions of any age regardless of prior state.
+        evaluation_name: When set, narrow the evaluation to a single
+            AgentSuccessConfig.evaluation_name. Propagated to the service via
+            AgentSuccessEvaluationRequest.evaluation_name_filter. When combined
+            with force_regenerate, any prior result rows for
+            (session_id, evaluation_name, agent_version) are deleted before
+            the new run so the re-evaluation cleanly replaces the old verdict.
     """
     storage = request_context.storage
     state_key = _build_state_key(org_id, user_id, session_id)
 
-    # 1. Check if already evaluated
-    existing_state = storage.get_operation_state(state_key)  # type: ignore[reportOptionalMemberAccess]
-    if existing_state and isinstance(existing_state.get("operation_state"), dict):
-        op_state = existing_state["operation_state"]
-        if op_state.get("evaluated"):
-            _eval_health.record_skip(SkipReason.ALREADY_EVALUATED)
-            logger.info("Session %s already evaluated, skipping", session_id)
-            return
+    # 1. Check if already evaluated — skipped in force_regenerate mode so the
+    # regenerate worker can re-evaluate a session that's already been marked.
+    if not force_regenerate:
+        existing_state = storage.get_operation_state(state_key)  # type: ignore[reportOptionalMemberAccess]
+        if existing_state and isinstance(existing_state.get("operation_state"), dict):
+            op_state = existing_state["operation_state"]
+            if op_state.get("evaluated"):
+                _eval_health.record_skip(SkipReason.ALREADY_EVALUATED)
+                logger.info("Session %s already evaluated, skipping", session_id)
+                return
 
     # 2. Fetch all requests for the session
     requests = storage.get_requests_by_session(user_id, session_id)  # type: ignore[reportOptionalMemberAccess]
@@ -90,19 +104,21 @@ def run_group_evaluation(
         logger.info("No requests found for session %s, skipping", session_id)
         return
 
-    # 3. Verify completion: latest request must be >= delay ago
-    latest_created_at = max(r.created_at for r in requests)
-    now = int(datetime.now(UTC).timestamp())
-    elapsed = now - latest_created_at
-    if elapsed < _EFFECTIVE_DELAY_SECONDS:
-        _eval_health.record_skip(SkipReason.NOT_YET_COMPLETE)
-        logger.info(
-            "Session %s not yet complete (latest request %ds ago, need %ds), skipping",
-            session_id,
-            elapsed,
-            _EFFECTIVE_DELAY_SECONDS,
-        )
-        return
+    # 3. Verify completion: latest request must be >= delay ago — skipped in
+    # force_regenerate mode so the operator can re-evaluate any session.
+    if not force_regenerate:
+        latest_created_at = max(r.created_at for r in requests)
+        now = int(datetime.now(UTC).timestamp())
+        elapsed = now - latest_created_at
+        if elapsed < _EFFECTIVE_DELAY_SECONDS:
+            _eval_health.record_skip(SkipReason.NOT_YET_COMPLETE)
+            logger.info(
+                "Session %s not yet complete (latest request %ds ago, need %ds), skipping",
+                session_id,
+                elapsed,
+                _EFFECTIVE_DELAY_SECONDS,
+            )
+            return
 
     # 4. Fetch interactions for all requests
     request_ids = [r.request_id for r in requests]
@@ -142,11 +158,25 @@ def run_group_evaluation(
         return
 
     # 5. Run evaluation
+    # When regenerating a single evaluator, clear any prior result rows for
+    # this (session, evaluation_name, agent_version) so the new run cleanly
+    # replaces the previous verdict instead of leaving stale rows alongside
+    # the regenerated ones.
+    if force_regenerate and evaluation_name is not None:
+        storage.delete_agent_success_evaluation_results_for_session(  # type: ignore[reportOptionalMemberAccess]
+            session_id=session_id,
+            evaluation_name=evaluation_name,
+            agent_version=agent_version,
+        )
+
     logger.info(
-        "Running group evaluation for session=%s with %d requests and %d interactions",
+        "Running group evaluation for session=%s with %d requests and %d interactions"
+        " (force_regenerate=%s, evaluation_name=%s)",
         session_id,
         len(request_interaction_data_models),
         len(all_interactions),
+        force_regenerate,
+        evaluation_name,
     )
 
     evaluation_request = AgentSuccessEvaluationRequest(
@@ -154,6 +184,7 @@ def run_group_evaluation(
         agent_version=agent_version,
         source=source,
         request_interaction_data_models=request_interaction_data_models,
+        evaluation_name_filter=evaluation_name,
     )
 
     evaluation_service = AgentSuccessEvaluationService(

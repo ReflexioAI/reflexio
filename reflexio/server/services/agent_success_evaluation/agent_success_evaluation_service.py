@@ -27,12 +27,16 @@ class AgentSuccessGenerationServiceConfig:
         agent_version: The agent version
         request_interaction_data_models: The interactions to evaluate
         source: Source of the interactions
+        evaluation_name_filter: Optional evaluator-name filter. When set,
+            _load_extractor_configs narrows to the single AgentSuccessConfig
+            whose evaluation_name matches; all others are skipped.
     """
 
     session_id: str
     agent_version: str
     request_interaction_data_models: list[RequestInteractionDataModel]
     source: str | None = None
+    evaluation_name_filter: str | None = None
 
 
 class AgentSuccessEvaluationService(
@@ -81,16 +85,26 @@ class AgentSuccessEvaluationService(
             agent_version=request.agent_version,
             request_interaction_data_models=request.request_interaction_data_models,
             source=request.source,
+            evaluation_name_filter=request.evaluation_name_filter,
         )
 
     def _load_extractor_configs(self) -> list[AgentSuccessConfig]:
         """
         Load agent success configs from configurator.
 
+        When the active service_config carries an evaluation_name_filter
+        (set by run_group_evaluation in regenerate mode), skip every config
+        whose evaluation_name does not match — so the regenerate flow only
+        re-runs the targeted evaluator instead of every configured rubric.
+
         Returns:
-            list[AgentSuccessConfig]: List of agent success configuration objects from YAML
+            list[AgentSuccessConfig]: Agent success configurations to execute.
         """
-        return self.configurator.get_config().agent_success_configs  # type: ignore[reportReturnType]
+        configs = self.configurator.get_config().agent_success_configs  # type: ignore[reportOptionalMemberAccess]
+        name_filter = getattr(self.service_config, "evaluation_name_filter", None)
+        if name_filter is None:
+            return configs  # type: ignore[reportReturnType]
+        return [c for c in configs if c.evaluation_name == name_filter]  # type: ignore[reportReturnType]
 
     def _create_extractor(
         self,
