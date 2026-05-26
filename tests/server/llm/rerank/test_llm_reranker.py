@@ -33,7 +33,9 @@ class _PromptManagerStub:
 class _LLMClientStub:
     """Minimal LiteLLMClient-shape stub returning canned responses."""
 
-    def __init__(self, response: Any = "[5, 7, 3]", raise_on_call: Exception | None = None) -> None:
+    def __init__(
+        self, response: Any = "[5, 7, 3]", raise_on_call: Exception | None = None
+    ) -> None:
         self.response = response
         self.raise_on_call = raise_on_call
         self.calls: list[dict[str, Any]] = []
@@ -92,7 +94,9 @@ def test_score_pairs_llm_success_path() -> None:
     pm = _PromptManagerStub()
     client = _LLMClientStub(response="[10, 5, 2]")
 
-    scores = score_pairs_llm("grocery", ["Walmart", "Thrive Market", "Mexico"], client, pm)
+    scores = score_pairs_llm(
+        "grocery", ["Walmart", "Thrive Market", "Mexico"], client, pm
+    )
 
     assert scores == [10.0, 5.0, 2.0]
     # Prompt rendered with the expected variables.

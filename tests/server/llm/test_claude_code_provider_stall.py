@@ -43,10 +43,14 @@ def test_billing_failure_writes_stall(llm, storage):
         '{"type":"system","subtype":"api_retry","error":"billing_error",'
         '"attempt":1,"max_retries":3}\n'
     )
-    with patch.object(
-        ccp.subprocess, "run",
-        return_value=_mock_run(1, stream, "resets Mon 12:00am"),
-    ), pytest.raises(ClaudeCodeCLIError):
+    with (
+        patch.object(
+            ccp.subprocess,
+            "run",
+            return_value=_mock_run(1, stream, "resets Mon 12:00am"),
+        ),
+        pytest.raises(ClaudeCodeCLIError),
+    ):
         llm.completion(
             model="claude-code/default",
             messages=[{"role": "user", "content": "hi"}],
@@ -62,9 +66,10 @@ def test_transient_failure_does_not_stall(llm, storage):
         '{"type":"system","subtype":"api_retry","error":"rate_limit",'
         '"attempt":1,"max_retries":3}\n'
     )
-    with patch.object(
-        ccp.subprocess, "run", return_value=_mock_run(1, stream)
-    ), pytest.raises(ClaudeCodeCLIError):
+    with (
+        patch.object(ccp.subprocess, "run", return_value=_mock_run(1, stream)),
+        pytest.raises(ClaudeCodeCLIError),
+    ):
         llm.completion(
             model="claude-code/default",
             messages=[{"role": "user", "content": "hi"}],

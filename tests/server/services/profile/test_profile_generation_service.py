@@ -1,8 +1,8 @@
 """
 Unit tests for ProfileGenerationService.
 
-Covers missed lines: _build_should_run_prompt(), _process_results() deduplication
-paths, _update_config_for_incremental(), run_manual_regular() edge cases,
+Carries coverage for _build_should_run_prompt(), _process_results() deduplication
+paths, run_manual_regular() edge cases,
 _count_manual_generated(), error/exception handling paths, and status change helpers.
 """
 
@@ -407,51 +407,6 @@ class TestProcessResults:
         service._process_results([])
 
         request_context.storage.add_profile_change_log.assert_not_called()
-
-
-# ===============================
-# Test: _update_config_for_incremental
-# ===============================
-
-
-class TestUpdateConfigForIncremental:
-    """Tests for _update_config_for_incremental."""
-
-    def test_sets_incremental_flag(self, service, sample_profile):
-        """Sets is_incremental=True on service_config."""
-        service.service_config = ProfileGenerationServiceConfig(
-            user_id="user_1",
-            request_id="req_1",
-        )
-
-        service._update_config_for_incremental([[sample_profile]])
-
-        assert service.service_config.is_incremental is True
-
-    def test_copies_previously_extracted(self, service, sample_profile):
-        """Previously extracted profiles are copied to service_config."""
-        service.service_config = ProfileGenerationServiceConfig(
-            user_id="user_1",
-            request_id="req_1",
-        )
-
-        previously = [[sample_profile]]
-        service._update_config_for_incremental(previously)
-
-        assert len(service.service_config.previously_extracted) == 1
-        assert service.service_config.previously_extracted[0][0] == sample_profile
-
-    def test_empty_previously_extracted(self, service):
-        """Empty previously_extracted list is handled correctly."""
-        service.service_config = ProfileGenerationServiceConfig(
-            user_id="user_1",
-            request_id="req_1",
-        )
-
-        service._update_config_for_incremental([])
-
-        assert service.service_config.is_incremental is True
-        assert service.service_config.previously_extracted == []
 
 
 # ===============================

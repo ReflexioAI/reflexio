@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -70,8 +70,6 @@ class PlaybookGenerationServiceConfig:
     auto_run: bool = True
     force_extraction: bool = False
     extractor_names: list[str] | None = None
-    is_incremental: bool = False
-    previously_extracted: list[list[UserPlaybook]] = field(default_factory=list)
 
 
 class PlaybookGenerationService(
@@ -84,7 +82,7 @@ class PlaybookGenerationService(
 ):
     """
     Service for generating playbook entries from user interactions.
-    Runs multiple PlaybookExtractor instances sequentially with incremental context.
+    Runs the configured PlaybookExtractor for each generation request.
     """
 
     def __init__(
@@ -137,12 +135,21 @@ class PlaybookGenerationService(
 
     def _load_extractor_configs(self) -> list[PlaybookConfig]:
         """
-        Load agent playbook configs from configurator.
+        Load the configured user playbook extractor from configurator.
 
         Returns:
-            list[PlaybookConfig]: List of agent playbook configuration objects from YAML
+            list[PlaybookConfig]: One user playbook extractor configuration object.
         """
-        return self.configurator.get_config().user_playbook_extractor_configs  # type: ignore[reportReturnType]
+        root_config = self.configurator.get_config()
+        config = getattr(root_config, "user_playbook_extractor_config", None)
+        if config is None or not isinstance(
+            getattr(config, "extractor_name", None), str
+        ):
+            legacy_configs = getattr(
+                root_config, "user_playbook_extractor_configs", None
+            )
+            config = legacy_configs[0] if legacy_configs else None
+        return [config] if config else []
 
     def _create_extractor(
         self,
@@ -175,8 +182,7 @@ class PlaybookGenerationService(
         """
         Build prompt for consolidated should_generate check.
 
-        Combines all playbook_definition_prompt values into a single definition
-        for one LLM call.
+        Renders the configured playbook definition for one LLM call.
 
         Args:
             scoped_configs: Playbook extractor configs that had scoped interactions
@@ -202,7 +208,7 @@ class PlaybookGenerationService(
 
         new_interactions = format_sessions_to_history_string(session_data_models)
 
-        # Combine all playbook definitions into a numbered list
+        # Keep the numbered-list shape for prompt compatibility.
         definitions = []
         for i, config in enumerate(scoped_configs, 1):
             if config.extraction_definition_prompt:
@@ -246,11 +252,6 @@ class PlaybookGenerationService(
             ),
         }
 
-    def _update_config_for_incremental(self, previously_extracted: list) -> None:
-        """Update service_config for incremental playbook extraction."""
-        self.service_config.is_incremental = True  # type: ignore[reportOptionalMemberAccess]
-        self.service_config.previously_extracted = list(previously_extracted)  # type: ignore[reportOptionalMemberAccess]
-
     def _process_results(self, results: list[list[UserPlaybook]]) -> None:
         """
         Process, deduplicate, and save all results. Called once after all extractors complete.
@@ -273,17 +274,19 @@ class PlaybookGenerationService(
                 PlaybookDeduplicator,
             )
 
-            # Get deduplication config from the first playbook config that has one
-            playbook_configs_list = (
-                self.configurator.get_config().user_playbook_extractor_configs
+            root_config = self.configurator.get_config()
+            playbook_config = getattr(
+                root_config, "user_playbook_extractor_config", None
             )
-            dedup_config = next(
-                (
-                    c.deduplication_config
-                    for c in (playbook_configs_list or [])
-                    if c.deduplication_config
-                ),
-                None,
+            if playbook_config is None or not isinstance(
+                getattr(playbook_config, "extractor_name", None), str
+            ):
+                legacy_configs = getattr(
+                    root_config, "user_playbook_extractor_configs", None
+                )
+                playbook_config = legacy_configs[0] if legacy_configs else None
+            dedup_config = (
+                playbook_config.deduplication_config if playbook_config else None
             )
 
             deduplicator = PlaybookDeduplicator(
@@ -448,34 +451,34 @@ class PlaybookGenerationService(
         Trigger playbook aggregation for playbook types that have aggregator config.
         This is called after raw user playbook entries are saved to check if aggregation should run.
         """
-        # Get all agent playbook configs
-        playbook_configs = (
-            self.configurator.get_config().user_playbook_extractor_configs
-        )
-        if not playbook_configs:
+        root_config = self.configurator.get_config()
+        playbook_config = getattr(root_config, "user_playbook_extractor_config", None)
+        if playbook_config is None or not isinstance(
+            getattr(playbook_config, "extractor_name", None), str
+        ):
+            legacy_configs = getattr(
+                root_config, "user_playbook_extractor_configs", None
+            )
+            playbook_config = legacy_configs[0] if legacy_configs else None
+        if not playbook_config or not playbook_config.aggregation_config:
             return
 
-        # Iterate through configs and trigger aggregation for those with aggregator config
-        for playbook_config in playbook_configs:
-            if not playbook_config.aggregation_config:
-                continue
+        playbook_name = playbook_config.extractor_name
+        logger.info("Triggering aggregation for playbook_name: %s", playbook_name)
 
-            playbook_name = playbook_config.extractor_name
-            logger.info("Triggering aggregation for playbook_name: %s", playbook_name)
+        # Create aggregator request
+        aggregator_request = PlaybookAggregatorRequest(
+            agent_version=self.service_config.agent_version,  # type: ignore[reportOptionalMemberAccess]
+            playbook_name=playbook_name,
+        )
 
-            # Create aggregator request
-            aggregator_request = PlaybookAggregatorRequest(
-                agent_version=self.service_config.agent_version,  # type: ignore[reportOptionalMemberAccess]
-                playbook_name=playbook_name,
-            )
-
-            # Initialize and run aggregator (synchronous)
-            aggregator = PlaybookAggregator(
-                llm_client=self.client,
-                request_context=self.request_context,
-                agent_version=self.service_config.agent_version,  # type: ignore[reportOptionalMemberAccess]
-            )
-            aggregator.run(aggregator_request)
+        # Initialize and run aggregator (synchronous)
+        aggregator = PlaybookAggregator(
+            llm_client=self.client,
+            request_context=self.request_context,
+            agent_version=self.service_config.agent_version,  # type: ignore[reportOptionalMemberAccess]
+        )
+        aggregator.run(aggregator_request)
 
     # ===============================
     # Rerun hook implementations (override base class methods)

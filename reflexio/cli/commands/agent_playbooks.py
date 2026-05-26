@@ -453,8 +453,8 @@ def aggregate(
     # Default to first configured playbook name if not specified
     if not playbook_name:
         config = client.get_config()
-        if config and config.user_playbook_extractor_configs:
-            playbook_name = config.user_playbook_extractor_configs[0].extractor_name
+        if config and config.user_playbook_extractor_config:
+            playbook_name = config.user_playbook_extractor_config.extractor_name
         else:
             raise CliError(
                 error_type="validation",

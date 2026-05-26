@@ -134,9 +134,7 @@ def mark_stall_notified(conn: sqlite3.Connection) -> None:
         conn (sqlite3.Connection): An open SQLite connection.
     """
     with conn:
-        conn.execute(
-            "UPDATE stall_state SET notified_in_cc=1 WHERE id=1 AND stalled=1"
-        )
+        conn.execute("UPDATE stall_state SET notified_in_cc=1 WHERE id=1 AND stalled=1")
 
 
 def clear_stall_state(conn: sqlite3.Connection) -> None:

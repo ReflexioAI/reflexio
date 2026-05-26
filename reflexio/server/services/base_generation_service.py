@@ -678,9 +678,7 @@ class BaseGenerationService(
                 count_value=len(extractor_configs),
                 metadata={"identifier": identifier},
             )
-            all_results = self._execute_extractors(
-                extractor_configs, request, identifier
-            )
+            all_results = self._execute_extractors(extractor_configs, identifier)
             generated_count = self._count_generated_results(all_results)
 
             if all_results:
@@ -790,20 +788,17 @@ class BaseGenerationService(
     def _execute_extractors(
         self,
         extractor_configs: list[TExtractorConfig],
-        request: TRequest,
         identifier: str,
     ) -> list:
         """
         Run extractors sequentially with timeout and error handling.
 
         Each extractor runs independently in a thread pool with a timeout guard.
-        After the first extractor, the service config is reloaded so subsequent
-        extractors see updated state. Updates _last_extractor_run_stats and raises
-        ExtractorExecutionError if all extractors fail.
+        Updates _last_extractor_run_stats and raises ExtractorExecutionError if
+        all extractors fail.
 
         Args:
             extractor_configs: Filtered list of extractor configs to execute
-            request: The original request (used to reload service config between extractors)
             identifier: Logging context identifier (user_id or request_id)
 
         Returns:
@@ -819,14 +814,9 @@ class BaseGenerationService(
             raise RuntimeError("service_config must be set before executing extractors")
 
         all_results: list = []
-        previously_extracted: list = []
         run_stats = {"total": len(extractor_configs), "failed": 0, "timed_out": 0}
 
-        for i, config in enumerate(extractor_configs):
-            if i > 0 and previously_extracted:
-                self.service_config = self._load_generation_service_config(request)
-                self._update_config_for_incremental(previously_extracted)
-
+        for config in extractor_configs:
             extractor = self._create_extractor(config, self.service_config)
             executor: ThreadPoolExecutor | None = None
             try:
@@ -837,7 +827,6 @@ class BaseGenerationService(
                 result = future.result(timeout=EXTRACTOR_TIMEOUT_SECONDS)
                 if result:
                     all_results.append(result)
-                    previously_extracted.append(result)
             except FuturesTimeoutError:
                 run_stats["failed"] += 1
                 run_stats["timed_out"] += 1
@@ -1124,18 +1113,6 @@ class BaseGenerationService(
             config_override=llm_config.should_run_model_name if llm_config else None,
             api_key_config=api_key_config,
         )
-
-    def _update_config_for_incremental(self, previously_extracted: list) -> None:  # noqa: B027
-        """
-        Update service_config for incremental extraction after the first extractor.
-
-        Override in subclasses that support incremental extraction to set
-        is_incremental and previously_extracted on the service config.
-        Default implementation does nothing.
-
-        Args:
-            previously_extracted: List of results from previous extractors
-        """
 
     # ===============================
     # Batch with progress (shared by rerun + manual)

@@ -179,25 +179,19 @@ def show_config(config: Config) -> None:
     """Display a structured summary of the Reflexio configuration."""
     display(Markdown("### Configuration Summary"))
 
-    extractors = config.profile_extractor_configs or []
-    playbook_configs = config.user_playbook_extractor_configs or []
+    profile_extractor = config.profile_extractor_config
+    playbook_extractor = config.user_playbook_extractor_config
     tools = config.tool_can_use or []
     success_configs = config.agent_success_configs or []
 
     summary = f"""| Setting | Value |
 |---------|-------|
-| **Profile Extractors** | {len(extractors)} configured |
-| **Playbook Configs** | {len(playbook_configs)} configured |
+| **Profile Extractor** | `{profile_extractor.extractor_name}` |
+| **Playbook Extractor** | `{playbook_extractor.extractor_name}` |
 | **Tools Registered** | {len(tools)} tools |
 | **Success Evaluators** | {len(success_configs)} configured |
 | **Extraction Window** | size={config.window_size}, stride={config.stride_size} |"""
 
-    if extractors:
-        names = ", ".join(f"`{e.extractor_name}`" for e in extractors)
-        summary += f"\n| **Extractor Names** | {names} |"
-    if playbook_configs:
-        names = ", ".join(f"`{f.extractor_name}`" for f in playbook_configs)
-        summary += f"\n| **Playbook Names** | {names} |"
     if tools:
         names = ", ".join(f"`{t.tool_name}`" for t in tools)
         summary += f"\n| **Tool Names** | {names} |"

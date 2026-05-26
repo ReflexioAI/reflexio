@@ -289,9 +289,9 @@ def format_sessions_to_history_string(
         first_ts = min(all_ts) if all_ts else 0
         if first_ts:
             try:
-                session_date_iso = datetime.fromtimestamp(
-                    first_ts, tz=UTC
-                ).strftime("%Y-%m-%d")
+                session_date_iso = datetime.fromtimestamp(first_ts, tz=UTC).strftime(
+                    "%Y-%m-%d"
+                )
                 group_header = (
                     f"=== Session: {group_name} (date: {session_date_iso}) ==="
                 )

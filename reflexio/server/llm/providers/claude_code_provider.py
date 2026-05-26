@@ -93,7 +93,9 @@ def _env_enabled() -> bool:
 
 def _host() -> str:
     """Return the host that owns this backend process."""
-    return _HOST_CODEX if os.environ.get(_ENV_HOST) == _HOST_CODEX else _HOST_CLAUDE_CODE
+    return (
+        _HOST_CODEX if os.environ.get(_ENV_HOST) == _HOST_CODEX else _HOST_CLAUDE_CODE
+    )
 
 
 def _cli_name() -> str:
@@ -403,7 +405,10 @@ def _run_cli_stream(
     Raises:
         ClaudeCodeCLIError: On timeout or missing binary.
     """
-    if _host() == _HOST_CODEX and Path(cli_path).name not in _CODEX_COMPAT_SCRIPT_NAME_SET:
+    if (
+        _host() == _HOST_CODEX
+        and Path(cli_path).name not in _CODEX_COMPAT_SCRIPT_NAME_SET
+    ):
         return _run_codex_stream(
             codex_path=cli_path,
             system_prompt=system_prompt,

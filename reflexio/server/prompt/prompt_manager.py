@@ -185,9 +185,7 @@ class PromptManager:
             placeholder = f"<<<PATTERN_{letter.upper()}_RECIPE>>>"
             if placeholder not in main:
                 continue
-            recipe = self.render_prompt(
-                f"search_agent/patterns/{letter}", variables={}
-            )
+            recipe = self.render_prompt(f"search_agent/patterns/{letter}", variables={})
             main = main.replace(placeholder, recipe)
         return main
 

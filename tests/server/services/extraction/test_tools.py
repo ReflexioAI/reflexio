@@ -216,9 +216,7 @@ def test_read_session_text_compresses_when_query_and_llm_provided():
     assert "$800" in rendered_call.kwargs["variables"]["raw_turns"]
     # LLM was invoked with the rendered prompt.
     mock_llm.generate_response.assert_called_once()
-    assert (
-        mock_llm.generate_response.call_args.args[0] == "RENDERED_COMPRESSION_PROMPT"
-    )
+    assert mock_llm.generate_response.call_args.args[0] == "RENDERED_COMPRESSION_PROMPT"
 
 
 def test_read_session_text_falls_back_to_raw_on_compression_exception():
@@ -760,7 +758,9 @@ def test_maybe_rerank_llm_failure_falls_back_to_cross_encoder(monkeypatch):
     import reflexio.server.llm.rerank as rerank_mod
 
     monkeypatch.setattr(rerank_mod, "score_pairs_llm", lambda *_a, **_kw: None)
-    monkeypatch.setattr(rerank_mod, "score_pairs", lambda *_a, **_kw: [1.0, 5.0, 2.0, 0.0])
+    monkeypatch.setattr(
+        rerank_mod, "score_pairs", lambda *_a, **_kw: [1.0, 5.0, 2.0, 0.0]
+    )
     out = _maybe_rerank_hits(
         hits,
         rerank=True,  # cross-encoder also requested

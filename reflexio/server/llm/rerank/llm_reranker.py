@@ -135,7 +135,9 @@ def score_pairs_llm(
         return None
 
     if not isinstance(result, str) or not result.strip():
-        _LOGGER.warning("LLM rerank: empty/non-string response (%r)", type(result).__name__)
+        _LOGGER.warning(
+            "LLM rerank: empty/non-string response (%r)", type(result).__name__
+        )
         return None
 
     scores = _parse_scores(result, expected_n=len(docs))

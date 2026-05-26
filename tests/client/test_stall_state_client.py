@@ -11,7 +11,10 @@ from fastapi.testclient import TestClient
 
 from reflexio.client import ReflexioClient
 from reflexio.server.api import create_app
-from reflexio.server.api_endpoints.request_context import RequestContext, get_request_context
+from reflexio.server.api_endpoints.request_context import (
+    RequestContext,
+    get_request_context,
+)
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 
 
@@ -20,7 +23,9 @@ def storage():
     """A real SQLiteStorage instance in a temporary directory."""
     with tempfile.TemporaryDirectory() as tmp:
         with patch.object(SQLiteStorage, "_get_embedding", return_value=[0.0] * 512):
-            yield SQLiteStorage(org_id="test-stall-client", db_path=f"{tmp}/reflexio.db")
+            yield SQLiteStorage(
+                org_id="test-stall-client", db_path=f"{tmp}/reflexio.db"
+            )
 
 
 @pytest.fixture()

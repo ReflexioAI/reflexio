@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -70,8 +70,6 @@ class ProfileGenerationServiceConfig:
     rerun_end_time: int | None = None
     auto_run: bool = True
     force_extraction: bool = False
-    is_incremental: bool = False
-    previously_extracted: list[list[UserProfile]] = field(default_factory=list)
 
 
 class ProfileGenerationService(
@@ -241,12 +239,19 @@ class ProfileGenerationService(
 
     def _load_extractor_configs(self) -> list[ProfileExtractorConfig]:
         """
-        Load profile extractor configs from configurator.
+        Load the configured profile extractor from configurator.
 
         Returns:
-            list[ProfileExtractorConfig]: List of profile extractor configuration objects from YAML
+            list[ProfileExtractorConfig]: One profile extractor configuration object.
         """
-        return self.configurator.get_config().profile_extractor_configs  # type: ignore[reportReturnType]
+        root_config = self.configurator.get_config()
+        config = getattr(root_config, "profile_extractor_config", None)
+        if config is None or not isinstance(
+            getattr(config, "extractor_name", None), str
+        ):
+            legacy_configs = getattr(root_config, "profile_extractor_configs", None)
+            config = legacy_configs[0] if legacy_configs else None
+        return [config] if config else []
 
     def _create_extractor(
         self,
@@ -293,8 +298,8 @@ class ProfileGenerationService(
         agent_context = self.configurator.get_agent_context()
         prompt_manager = self.request_context.prompt_manager
 
-        # Combine all extractor criteria into a numbered list.
-        # Each extractor can contribute:
+        # Keep the criteria list shape for prompt compatibility.
+        # The single configured extractor can contribute:
         # 1) extraction_definition_prompt (what to extract)
         # 2) should_extract_profile_prompt_override (custom extraction condition)
         combined_criteria_items = []
@@ -327,11 +332,6 @@ class ProfileGenerationService(
                 "new_interactions": new_interactions,
             },
         )
-
-    def _update_config_for_incremental(self, previously_extracted: list) -> None:
-        """Update service_config for incremental profile extraction."""
-        self.service_config.is_incremental = True  # type: ignore[reportOptionalMemberAccess]
-        self.service_config.previously_extracted = list(previously_extracted)  # type: ignore[reportOptionalMemberAccess]
 
     def _get_extractor_state_service_name(self) -> str:
         """

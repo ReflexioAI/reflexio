@@ -312,48 +312,21 @@ class ProfileExtractor:
                 request_interaction_data_models=request_interaction_data_models,
             )
 
-        # Build messages for LLM
-        if self.service_config.is_incremental:
-            from reflexio.server.services.profile.profile_generation_service_utils import (
-                construct_incremental_profile_extraction_messages,
-            )
-
-            messages = construct_incremental_profile_extraction_messages(
-                prompt_manager=self.request_context.prompt_manager,
-                request_interaction_data_models=request_interaction_data_models,
-                existing_profiles=existing_profiles,
-                agent_context_prompt=self.agent_context,
-                context_prompt=(
-                    self.config.context_prompt.strip()
-                    if self.config.context_prompt
-                    else ""
-                ),
-                extraction_definition_prompt=self.config.extraction_definition_prompt.strip(),
-                previously_extracted=self.service_config.previously_extracted,
-                metadata_definition_prompt=(
-                    self.config.metadata_definition_prompt.strip()
-                    if self.config.metadata_definition_prompt
-                    else None
-                ),
-            )
-        else:
-            messages = construct_profile_extraction_messages_from_sessions(
-                prompt_manager=self.request_context.prompt_manager,
-                request_interaction_data_models=request_interaction_data_models,
-                agent_context_prompt=self.agent_context,
-                context_prompt=(
-                    self.config.context_prompt.strip()
-                    if self.config.context_prompt
-                    else ""
-                ),
-                extraction_definition_prompt=self.config.extraction_definition_prompt.strip(),
-                metadata_definition_prompt=(
-                    self.config.metadata_definition_prompt.strip()
-                    if self.config.metadata_definition_prompt
-                    else None
-                ),
-                existing_profiles=existing_profiles,
-            )
+        messages = construct_profile_extraction_messages_from_sessions(
+            prompt_manager=self.request_context.prompt_manager,
+            request_interaction_data_models=request_interaction_data_models,
+            agent_context_prompt=self.agent_context,
+            context_prompt=(
+                self.config.context_prompt.strip() if self.config.context_prompt else ""
+            ),
+            extraction_definition_prompt=self.config.extraction_definition_prompt.strip(),
+            metadata_definition_prompt=(
+                self.config.metadata_definition_prompt.strip()
+                if self.config.metadata_definition_prompt
+                else None
+            ),
+            existing_profiles=existing_profiles,
+        )
 
         messages_dict = messages
         session_count = len(request_interaction_data_models)

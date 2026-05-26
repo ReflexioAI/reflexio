@@ -36,7 +36,9 @@ RETENTION_TARGETS: tuple[RetentionTarget, ...] = (
         "created_at",
         ("result_id",),
     ),
-    RetentionTarget("profile_change_logs", "profile_change_logs", "created_at", ("id",)),
+    RetentionTarget(
+        "profile_change_logs", "profile_change_logs", "created_at", ("id",)
+    ),
     RetentionTarget(
         "playbook_aggregation_change_logs",
         "playbook_aggregation_change_logs",

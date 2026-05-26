@@ -37,9 +37,7 @@ class StallStateMixin:
         Raises:
             NotImplementedError: When the backend does not support stall_state.
         """
-        raise NotImplementedError(
-            f"{type(self).__name__} does not support stall_state"
-        )
+        raise NotImplementedError(f"{type(self).__name__} does not support stall_state")
 
     def upsert_stall_state(
         self,
@@ -60,9 +58,7 @@ class StallStateMixin:
         Raises:
             NotImplementedError: When the backend does not support stall_state.
         """
-        raise NotImplementedError(
-            f"{type(self).__name__} does not support stall_state"
-        )
+        raise NotImplementedError(f"{type(self).__name__} does not support stall_state")
 
     def mark_stall_notified(self) -> None:
         """Set ``notified_in_cc=1`` for the current stall.
@@ -70,9 +66,7 @@ class StallStateMixin:
         Raises:
             NotImplementedError: When the backend does not support stall_state.
         """
-        raise NotImplementedError(
-            f"{type(self).__name__} does not support stall_state"
-        )
+        raise NotImplementedError(f"{type(self).__name__} does not support stall_state")
 
     def clear_stall_state(self) -> None:
         """Mark the singleton clean — clears all stall fields atomically.
@@ -80,6 +74,4 @@ class StallStateMixin:
         Raises:
             NotImplementedError: When the backend does not support stall_state.
         """
-        raise NotImplementedError(
-            f"{type(self).__name__} does not support stall_state"
-        )
+        raise NotImplementedError(f"{type(self).__name__} does not support stall_state")

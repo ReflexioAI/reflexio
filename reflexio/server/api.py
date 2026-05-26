@@ -144,6 +144,39 @@ from reflexio.server.correlation import correlation_id_var, generate_correlation
 
 logger = logging.getLogger(__name__)
 
+_LEGACY_EXTRACTOR_PARTIAL_FIELDS: tuple[tuple[str, str], ...] = (
+    ("profile_extractor_configs", "profile_extractor_config"),
+    ("user_playbook_extractor_configs", "user_playbook_extractor_config"),
+    ("playbook_configs", "user_playbook_extractor_config"),
+    ("agent_feedback_configs", "user_playbook_extractor_config"),
+)
+
+
+def _normalize_legacy_extractor_partial(partial: dict[str, Any]) -> dict[str, Any]:
+    """Map legacy extractor list keys in PATCH payloads to canonical fields.
+
+    ``/api/update_config`` merges partial payloads over a serialized existing
+    config that already contains canonical extractor fields. Schema-level
+    migration cannot tell which keys came from the client, so legacy keys are
+    normalized before the merge.
+    """
+    normalized = dict(partial)
+    for legacy_name, canonical_name in _LEGACY_EXTRACTOR_PARTIAL_FIELDS:
+        if legacy_name not in partial:
+            continue
+        if canonical_name in partial or canonical_name in normalized:
+            normalized.pop(legacy_name, None)
+            continue
+
+        legacy_value = partial[legacy_name]
+        if isinstance(legacy_value, list):
+            normalized[canonical_name] = legacy_value[0] if legacy_value else None
+        else:
+            normalized[canonical_name] = legacy_value
+        normalized.pop(legacy_name, None)
+    return normalized
+
+
 # Re-exported for backwards compatibility — callers that did
 # ``from reflexio.server.api import default_get_org_id`` or ``DEFAULT_ORG_ID``
 # continue to work.
@@ -1164,19 +1197,17 @@ def update_config(
     validates the result and rejects bogus top-level fields.
 
     .. warning::
-       Nested objects (e.g. ``storage_config``) and nested lists
-       (e.g. ``playbook_configs``, ``profile_configs``) are **replaced
-       wholesale**. Deep merging is intentionally not supported -- the
-       discriminator on ``storage_config`` would be lost on partial
-       updates, and merging list-of-dicts has ambiguous semantics
-       (replace by index? merge by key? insert?).
+       Nested objects (e.g. ``storage_config``, ``profile_extractor_config``,
+       ``user_playbook_extractor_config``) are **replaced wholesale**.
+       Deep merging is intentionally not supported -- the discriminator on
+       ``storage_config`` would be lost on partial updates, and merging nested
+       dicts has ambiguous semantics.
 
-       To update a single field inside ``playbook_configs[0]`` you must
-       resend the full ``playbook_configs`` list with that one entry
-       fully populated (including ``extractor_name``,
-       ``extraction_definition_prompt``, etc.). For one-off mutations
-       prefer ``GET /api/get_config`` followed by
-       ``POST /api/set_config`` with the modified full config.
+       To update a field inside an extractor config you must resend that
+       extractor object fully populated (including ``extractor_name``,
+       ``extraction_definition_prompt``, etc.). For one-off mutations prefer
+       ``GET /api/get_config`` followed by ``POST /api/set_config`` with the
+       modified full config.
 
     Unlike :func:`set_config`, callers do not need to re-send the full
     config (including required fields like ``storage_config``) just to
@@ -1198,13 +1229,14 @@ def update_config(
     existing = reflexio.request_context.configurator.get_config().model_dump(
         mode="python"
     )
-    merged = {**existing, **partial}
+    normalized_partial = _normalize_legacy_extractor_partial(partial)
+    merged = {**existing, **normalized_partial}
     # Pydantic validates the merged shape and rejects unknown / malformed
     # fields here, before storage validation in reflexio.set_config.
     # Convert ValidationError into 422 so callers passing a partial that
-    # would replace a nested-list field with an incomplete dict (e.g.
-    # {"playbook_configs": [{"aggregation_config": {...}}]}) get a clean
-    # client-error response instead of a 500.
+    # would replace a nested extractor object with an incomplete dict (e.g.
+    # {"user_playbook_extractor_config": {"aggregation_config": {...}}})
+    # get a clean client-error response instead of a 500.
     try:
         merged_config = Config(**merged)
     except ValidationError as exc:
@@ -1213,11 +1245,11 @@ def update_config(
             detail={
                 "error": "Invalid partial config (top-level shallow merge)",
                 "hint": (
-                    "Nested objects and list-of-dict fields (e.g. "
-                    "playbook_configs) are replaced wholesale, not "
-                    "deep-merged. To mutate a single field inside a "
-                    "list entry, fetch the full config via /api/get_config, "
-                    "edit, and PUT it back via /api/set_config."
+                    "Nested objects (e.g. user_playbook_extractor_config) "
+                    "are replaced wholesale, not deep-merged. To mutate a "
+                    "single nested field, fetch the full config via "
+                    "/api/get_config, edit, and PUT it back via "
+                    "/api/set_config."
                 ),
                 "validation_errors": exc.errors(),
             },

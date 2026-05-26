@@ -278,8 +278,9 @@ def test_e2e_publish_stores_interactions_but_skips_extraction_when_stalled(tmp_p
     user_id = "stalled_user"
     org_id = "stalled_org"
 
-    with tempfile.TemporaryDirectory() as temp_dir, patch.dict(
-        os.environ, {"OPENAI_API_KEY": "test-key"}, clear=False
+    with (
+        tempfile.TemporaryDirectory() as temp_dir,
+        patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}, clear=False),
     ):
         request_context = RequestContext(org_id=org_id, storage_base_dir=temp_dir)
         assert request_context.storage is not None
@@ -346,8 +347,9 @@ def test_e2e_stalled_forced_publish_runs_with_explicit_override(tmp_path):
     user_id = "stalled_override_user"
     org_id = "stalled_override_org"
 
-    with tempfile.TemporaryDirectory() as temp_dir, patch.dict(
-        os.environ, {"OPENAI_API_KEY": "test-key"}, clear=False
+    with (
+        tempfile.TemporaryDirectory() as temp_dir,
+        patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}, clear=False),
     ):
         request_context = RequestContext(org_id=org_id, storage_base_dir=temp_dir)
         assert request_context.storage is not None

@@ -129,7 +129,9 @@ class TestTokensFromResponse:
 
 
 class TestTokenStorage:
-    def test_save_and_load_round_trip(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_save_and_load_round_trip(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         # Redirect storage to a temp dir so the test never touches the
         # developer's real ~/.reflexio/auth/.
         monkeypatch.setattr(codex_auth, "REFLEXIO_AUTH_DIR", tmp_path / "auth")
@@ -154,7 +156,9 @@ class TestTokenStorage:
         loaded = codex_auth.load_tokens_raw()
         assert loaded == tokens
 
-    def test_load_returns_none_when_missing(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_load_returns_none_when_missing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.setattr(
             codex_auth,
             "REFLEXIO_CODEX_TOKENS_PATH",
@@ -162,7 +166,9 @@ class TestTokenStorage:
         )
         assert codex_auth.load_tokens_raw() is None
 
-    def test_load_returns_none_for_malformed_json(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_load_returns_none_for_malformed_json(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         path = tmp_path / "openai-codex.json"
         path.write_text("{not valid json")
         monkeypatch.setattr(codex_auth, "REFLEXIO_CODEX_TOKENS_PATH", path)

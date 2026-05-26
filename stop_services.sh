@@ -3,6 +3,7 @@
 # Configurable ports (must match what was used in run_services.sh)
 BACKEND_PORT=${BACKEND_PORT:-8081}
 DOCS_PORT=${DOCS_PORT:-8082}
+EMBEDDING_PORT=${EMBEDDING_PORT:-8072}
 
 echo "Stopping services..."
 
@@ -33,6 +34,22 @@ if [ -n "$DOCS_PIDS" ]; then
     echo "Stopped docs frontend (${DOCS_PORT})"
 else
     echo "Docs frontend (${DOCS_PORT}) not running"
+fi
+
+# Stop local embedding service
+PIDS=$(lsof -t -i:${EMBEDDING_PORT} 2>/dev/null)
+EMBEDDING_PIDS=$(pgrep -f "reflexio.server.llm.embedding_service:app" 2>/dev/null)
+ALL_PIDS=$(echo -e "${PIDS}\n${EMBEDDING_PIDS}" | sort -u | grep -v '^$')
+if [ -n "$ALL_PIDS" ]; then
+    echo "$ALL_PIDS" | xargs kill 2>/dev/null
+    sleep 1
+    PIDS=$(lsof -t -i:${EMBEDDING_PORT} 2>/dev/null)
+    EMBEDDING_PIDS=$(pgrep -f "reflexio.server.llm.embedding_service:app" 2>/dev/null)
+    ALL_PIDS=$(echo -e "${PIDS}\n${EMBEDDING_PIDS}" | sort -u | grep -v '^$')
+    [ -n "$ALL_PIDS" ] && echo "$ALL_PIDS" | xargs kill -9 2>/dev/null
+    echo "Stopped embedding service (${EMBEDDING_PORT})"
+else
+    echo "Embedding service (${EMBEDDING_PORT}) not running"
 fi
 
 echo "All services stopped."

@@ -155,9 +155,7 @@ class TestRunUnifiedSearch(unittest.TestCase):
         self.assertIsNone(result.reformulated_query)
 
 
-def _agent_playbook(
-    agent_playbook_id: int, status: PlaybookStatus
-) -> AgentPlaybook:
+def _agent_playbook(agent_playbook_id: int, status: PlaybookStatus) -> AgentPlaybook:
     return AgentPlaybook(
         agent_playbook_id=agent_playbook_id,
         agent_version="claude-code",

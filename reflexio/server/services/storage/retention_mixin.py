@@ -83,9 +83,7 @@ class RetentionMixin(ABC):
             return 0
         return self._retention_count_rows(target)
 
-    def delete_oldest_retention_target_rows(
-        self, target_name: str, count: int
-    ) -> int:
+    def delete_oldest_retention_target_rows(self, target_name: str, count: int) -> int:
         """Delete up to ``count`` oldest rows for a retention target.
 
         Calls the dependency-cascade hook before the target-row delete so

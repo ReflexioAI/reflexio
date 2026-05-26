@@ -66,14 +66,19 @@ def test_malformed_ndjson_returns_failure_with_no_stall():
 
 def test_text_fallback_when_no_retry_event_present():
     """When the stream has no api_retry event but stderr contains the phrase."""
-    result = parse_stream_json("", exit_code=1, stderr_text="hit your weekly limit · resets Mon 12:00am")
+    result = parse_stream_json(
+        "", exit_code=1, stderr_text="hit your weekly limit · resets Mon 12:00am"
+    )
     assert classify_stall(result) == "billing_error"
 
 
-@pytest.mark.parametrize("text,expected_hour", [
-    ("resets 3:45pm", 15),
-    ("resets Mon 12:00am", 0),
-])
+@pytest.mark.parametrize(
+    "text,expected_hour",
+    [
+        ("resets 3:45pm", 15),
+        ("resets Mon 12:00am", 0),
+    ],
+)
 def test_parse_reset_estimate_extracts_time(text, expected_hour):
     parsed = parse_reset_estimate(text)
     assert parsed is not None
@@ -84,11 +89,14 @@ def test_parse_reset_estimate_returns_none_when_no_match():
     assert parse_reset_estimate("unrelated error text") is None
 
 
-@pytest.mark.parametrize("text", [
-    "resets 13:00pm",   # hour > 12 in 12-hour format
-    "resets 0:30am",    # hour < 1
-    "resets 10:75am",   # minute > 59
-])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "resets 13:00pm",  # hour > 12 in 12-hour format
+        "resets 0:30am",  # hour < 1
+        "resets 10:75am",  # minute > 59
+    ],
+)
 def test_parse_reset_estimate_rejects_out_of_range(text):
     """Reject inputs the regex accepts but that aren't valid 12-hour clock times."""
     assert parse_reset_estimate(text) is None

@@ -129,9 +129,7 @@ class UnifyAgent:
         for label in ("A", "B", "C"):
             key = f"pass_{label.lower()}_ops"
             rendered_blocks.setdefault(key, "(no proposals)")
-        prompt = self.prompt_manager.render_prompt(
-            "extraction_unify", rendered_blocks
-        )
+        prompt = self.prompt_manager.render_prompt("extraction_unify", rendered_blocks)
         result = self.client.generate_response(
             prompt,
             timeout=self.LLM_TIMEOUT,

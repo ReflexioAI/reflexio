@@ -10,7 +10,10 @@ import pytest
 from fastapi.testclient import TestClient
 
 from reflexio.server.api import create_app
-from reflexio.server.api_endpoints.request_context import RequestContext, get_request_context
+from reflexio.server.api_endpoints.request_context import (
+    RequestContext,
+    get_request_context,
+)
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 
 

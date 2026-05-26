@@ -690,9 +690,19 @@ class TestCrossFieldValidators:
         assert config.stride_size == DEFAULT_STRIDE_SIZE
 
     def test_config_defaults_extractors_when_omitted(self):
-        """Config: omitted extractor lists still get the default extractors."""
+        """Config: omitted extractor fields still get the default extractors."""
         config = Config(storage_config=StorageConfigSQLite())
 
+        assert config.profile_extractor_config is not None
+        assert config.user_playbook_extractor_config is not None
+        assert (
+            config.profile_extractor_config.extractor_name
+            == "default_profile_extractor"
+        )
+        assert (
+            config.user_playbook_extractor_config.extractor_name
+            == "default_playbook_extractor"
+        )
         assert config.profile_extractor_configs is not None
         assert config.user_playbook_extractor_configs is not None
         assert config.profile_extractor_configs[0].extractor_name == (
@@ -702,26 +712,123 @@ class TestCrossFieldValidators:
             "default_playbook_extractor"
         )
 
-    def test_config_populates_default_extractors_when_null(self):
-        """Config: null extractor lists get populated with defaults."""
+    def test_config_disables_extractors_when_null(self):
+        """Config: null extractor fields explicitly disable extraction."""
         config = Config(
             storage_config=StorageConfigSQLite(),
-            profile_extractor_configs=None,
-            user_playbook_extractor_configs=None,
+            profile_extractor_config=None,
+            user_playbook_extractor_config=None,
         )
 
-        assert config.profile_extractor_configs is not None
-        assert len(config.profile_extractor_configs) == 1
-        assert (
-            config.profile_extractor_configs[0].extractor_name
-            == "default_profile_extractor"
+        assert config.profile_extractor_config is None
+        assert config.user_playbook_extractor_config is None
+        assert config.profile_extractor_configs == []
+        assert config.user_playbook_extractor_configs == []
+
+    def test_config_disables_extractors_when_legacy_lists_are_empty(self):
+        """Config: empty legacy extractor lists explicitly disable extraction."""
+        config = Config.model_validate(
+            {
+                "storage_config": StorageConfigSQLite(),
+                "profile_extractor_configs": [],
+                "user_playbook_extractor_configs": [],
+            }
         )
-        assert config.user_playbook_extractor_configs is not None
-        assert len(config.user_playbook_extractor_configs) == 1
-        assert (
-            config.user_playbook_extractor_configs[0].extractor_name
-            == "default_playbook_extractor"
+
+        assert config.profile_extractor_config is None
+        assert config.user_playbook_extractor_config is None
+        assert config.profile_extractor_configs == []
+        assert config.user_playbook_extractor_configs == []
+
+    def test_config_accepts_singular_extractor_fields(self):
+        """Config: singular extractor fields validate and serialize."""
+        profile_config = ProfileExtractorConfig(
+            extractor_name="profile_one",
+            extraction_definition_prompt="profile facts",
         )
+        playbook_config = PlaybookConfig(
+            extractor_name="playbook_one",
+            extraction_definition_prompt="playbook rules",
+        )
+
+        config = Config(
+            storage_config=StorageConfigSQLite(),
+            profile_extractor_config=profile_config,
+            user_playbook_extractor_config=playbook_config,
+        )
+
+        dumped = config.model_dump()
+        assert config.profile_extractor_config == profile_config
+        assert config.user_playbook_extractor_config == playbook_config
+        assert dumped["profile_extractor_config"]["extractor_name"] == "profile_one"
+        assert (
+            dumped["user_playbook_extractor_config"]["extractor_name"] == "playbook_one"
+        )
+        assert dumped["profile_extractor_configs"][0]["extractor_name"] == "profile_one"
+        assert (
+            dumped["user_playbook_extractor_configs"][0]["extractor_name"]
+            == "playbook_one"
+        )
+
+    def test_config_legacy_multi_extractor_lists_keep_first_entry(self):
+        """Config: legacy multi-entry extractor lists are accepted first-entry wins."""
+        config = Config.model_validate(
+            {
+                "storage_config": StorageConfigSQLite(),
+                "profile_extractor_configs": [
+                    ProfileExtractorConfig(
+                        extractor_name="profile_first",
+                        extraction_definition_prompt="first",
+                    ),
+                    ProfileExtractorConfig(
+                        extractor_name="profile_second",
+                        extraction_definition_prompt="second",
+                    ),
+                ],
+                "user_playbook_extractor_configs": [
+                    PlaybookConfig(
+                        extractor_name="playbook_first",
+                        extraction_definition_prompt="first",
+                    ),
+                    PlaybookConfig(
+                        extractor_name="playbook_second",
+                        extraction_definition_prompt="second",
+                    ),
+                ],
+            }
+        )
+
+        assert config.profile_extractor_config is not None
+        assert config.profile_extractor_config.extractor_name == "profile_first"
+        assert [c.extractor_name for c in config.profile_extractor_configs] == [
+            "profile_first"
+        ]
+        assert config.user_playbook_extractor_config is not None
+        assert config.user_playbook_extractor_config.extractor_name == "playbook_first"
+        assert [c.extractor_name for c in config.user_playbook_extractor_configs] == [
+            "playbook_first"
+        ]
+
+    def test_config_accepts_legacy_playbook_aliases_first_entry_wins(self):
+        """Config: legacy playbook alias fields normalize to the singular extractor."""
+        config = Config.model_validate(
+            {
+                "storage_config": StorageConfigSQLite(),
+                "playbook_configs": [
+                    {
+                        "playbook_name": "legacy_first",
+                        "playbook_definition_prompt": "first",
+                    },
+                    {
+                        "playbook_name": "legacy_second",
+                        "playbook_definition_prompt": "second",
+                    },
+                ],
+            }
+        )
+
+        assert config.user_playbook_extractor_config is not None
+        assert config.user_playbook_extractor_config.extractor_name == "legacy_first"
 
     def test_playbook_optimizer_accepts_webhook_backend(self):
         """PlaybookOptimizerConfig: webhook-only assistant backend is valid."""

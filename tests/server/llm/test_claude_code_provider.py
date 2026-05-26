@@ -24,7 +24,9 @@ from reflexio.server.llm.providers.claude_code_provider import (
 
 def _stream_json(result_text: str) -> str:
     """Build a minimal stream-json NDJSON body with one terminal ``result`` event."""
-    return json.dumps({"type": "result", "result": result_text, "session_id": "s"}) + "\n"
+    return (
+        json.dumps({"type": "result", "result": result_text, "session_id": "s"}) + "\n"
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -170,7 +172,9 @@ class TestClaudeCodeLLMCompletion:
         self, monkeypatch: pytest.MonkeyPatch, result_text: str = "ok"
     ) -> MagicMock:
         """Mock subprocess.run to return a stream-json NDJSON body with one result event."""
-        mock_run = MagicMock(return_value=_fake_completed_process(_stream_json(result_text)))
+        mock_run = MagicMock(
+            return_value=_fake_completed_process(_stream_json(result_text))
+        )
         monkeypatch.setattr(ccp.subprocess, "run", mock_run)
         monkeypatch.setattr(ccp, "_resolve_cli_path", lambda: "/usr/local/bin/claude")
         return mock_run
@@ -432,9 +436,7 @@ class TestClaudeCodeLLMCompletion:
         )
         assert response.choices[0].message.content == "ok"  # type: ignore[union-attr]
 
-    def test_codex_host_uses_codex_exec(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_codex_host_uses_codex_exec(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Codex runs generation through ``codex exec`` instead of Claude flags."""
 
         def fake_run(cmd, **kwargs):
@@ -544,7 +546,9 @@ class TestIsClaudeCodeAvailable:
         monkeypatch.setattr(ccp.shutil, "which", lambda _: None)
         assert is_claude_code_available() is True
 
-    def test_codex_host_resolves_codex_cli(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_codex_host_resolves_codex_cli(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.setenv("CLAUDE_SMART_USE_LOCAL_CLI", "1")
         monkeypatch.setenv("CLAUDE_SMART_HOST", "codex")
         monkeypatch.delenv("CLAUDE_SMART_CLI_PATH", raising=False)

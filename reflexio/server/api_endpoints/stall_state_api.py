@@ -8,7 +8,10 @@ from reflexio.models.api_schema.stall_state_schema import (
     MarkNotifiedResponse,
     StallStateResponse,
 )
-from reflexio.server.api_endpoints.request_context import RequestContext, get_request_context
+from reflexio.server.api_endpoints.request_context import (
+    RequestContext,
+    get_request_context,
+)
 
 router = APIRouter(tags=["stall_state"])
 

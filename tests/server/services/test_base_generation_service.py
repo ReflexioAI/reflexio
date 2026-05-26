@@ -6,7 +6,7 @@ Tests the abstract base class by creating a concrete implementation for testing.
 
 import tempfile
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from unittest.mock import MagicMock
 
 import pytest
@@ -53,8 +53,6 @@ class MockServiceConfig:
     source: str | None = None
     allow_manual_trigger: bool = False
     extractor_names: list[str] | None = None
-    is_incremental: bool = False
-    previously_extracted: list = field(default_factory=list)
     auto_run: bool = True
     force_extraction: bool = False
 
@@ -156,10 +154,6 @@ class ConcreteGenerationService(BaseGenerationService):
             self._updated_count = len(items)
             return len(items)
         return 0
-
-    def _update_config_for_incremental(self, previously_extracted):
-        self.service_config.is_incremental = True
-        self.service_config.previously_extracted = list(previously_extracted)
 
     def _create_status_change_response(self, operation, success, counts, msg):
         return {
@@ -1952,10 +1946,10 @@ class TestSequentialExecution:
         with pytest.raises(ExtractorExecutionError):
             service.run(request)
 
-    def test_sequential_refetches_config_for_subsequent_extractors(
+    def test_sequential_uses_single_loaded_config_for_extractors(
         self, llm_client, request_context
     ):
-        """Test that service_config is refetched after the first extractor."""
+        """Test that service_config is loaded once for an extraction run."""
         load_config_calls = []
 
         class RefetchService(ConcreteGenerationService):
@@ -1986,11 +1980,12 @@ class TestSequentialExecution:
         request = MockServiceConfig(user_id="test_user", request_id="test_request")
         service.run(request)
 
-        # Config loaded once initially, then re-loaded before ext2
-        assert len(load_config_calls) == 2
+        assert len(load_config_calls) == 1
 
-    def test_sequential_sets_incremental_flag(self, llm_client, request_context):
-        """Test that is_incremental is set on service_config for subsequent extractors."""
+    def test_sequential_does_not_set_incremental_flag(
+        self, llm_client, request_context
+    ):
+        """Extractor configs run independently without incremental service state."""
         observed_incremental = []
 
         class IncrementalTracker(ConcreteGenerationService):
@@ -2016,11 +2011,12 @@ class TestSequentialExecution:
         request = MockServiceConfig(user_id="test_user", request_id="test_request")
         service.run(request)
 
-        # First extractor: not incremental. Subsequent: incremental
-        assert observed_incremental == [False, True, True]
+        assert observed_incremental == [False, False, False]
 
-    def test_sequential_passes_previously_extracted(self, llm_client, request_context):
-        """Test that previously_extracted accumulates results across extractors."""
+    def test_sequential_does_not_pass_previously_extracted(
+        self, llm_client, request_context
+    ):
+        """Extractor configs do not receive cross-extractor results."""
         observed_previously = []
 
         class PreviousTracker(ConcreteGenerationService):
@@ -2046,13 +2042,12 @@ class TestSequentialExecution:
         request = MockServiceConfig(user_id="test_user", request_id="test_request")
         service.run(request)
 
-        # First: empty, second: 1 result, third: 2 results
-        assert len(observed_previously[0]) == 0
-        assert len(observed_previously[1]) == 1
-        assert len(observed_previously[2]) == 2
+        assert observed_previously == [[], [], []]
 
-    def test_sequential_none_results_not_accumulated(self, llm_client, request_context):
-        """Test that None results from extractors are not added to previously_extracted."""
+    def test_sequential_none_results_do_not_create_incremental_state(
+        self, llm_client, request_context
+    ):
+        """None results do not change the independent extractor state model."""
         observed_previously = []
 
         class NoneResultTracker(ConcreteGenerationService):
@@ -2081,10 +2076,7 @@ class TestSequentialExecution:
         request = MockServiceConfig(user_id="test_user", request_id="test_request")
         service.run(request)
 
-        # ext1: empty, ext2: 1 (from ext1), ext3: 1 (ext2 returned None, not accumulated)
-        assert len(observed_previously[0]) == 0
-        assert len(observed_previously[1]) == 1
-        assert len(observed_previously[2]) == 1
+        assert observed_previously == [[], [], []]
 
     def test_sequential_timeout_does_not_block_following_extractors(
         self, llm_client, request_context, monkeypatch

@@ -382,9 +382,7 @@ def _capture_oauth_callback(state: str, timeout_s: int) -> dict[str, str]:
             "yourself and complete the sign-in?"
         )
     if captured.get("state") != state:
-        raise ValueError(
-            "OAuth state mismatch — refusing to continue (possible CSRF)."
-        )
+        raise ValueError("OAuth state mismatch — refusing to continue (possible CSRF).")
     if err := captured.get("error"):
         raise ValueError(
             f"OAuth provider returned error '{err}': {captured.get('error_description', '')}"

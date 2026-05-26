@@ -739,7 +739,7 @@ class TestRun:
         agg.storage.delete_agent_playbooks_by_ids.assert_called_once_with([50])
 
     @patch.object(PlaybookAggregator, "get_clusters")
-    @patch.object(PlaybookAggregator, "_generate_playbooks_from_clusters")
+    @patch.object(PlaybookAggregator, "_generate_playbooks_with_source_clusters")
     def test_save_exception_restores_full_archive(self, mock_gen, mock_clust):
         """Exception during save_agent_playbooks in full-archive mode restores playbooks."""
         agg = self._make_runnable_aggregator()
@@ -756,7 +756,7 @@ class TestRun:
         agg.storage.restore_archived_agent_playbooks_by_playbook_name.assert_called()
 
     @patch.object(PlaybookAggregator, "get_clusters")
-    @patch.object(PlaybookAggregator, "_generate_playbooks_from_clusters")
+    @patch.object(PlaybookAggregator, "_generate_playbooks_with_source_clusters")
     def test_save_exception_restores_incremental_archive(self, mock_gen, mock_clust):
         """Exception during save_agent_playbooks in incremental mode restores by ids."""
         agg = self._make_runnable_aggregator()
@@ -897,7 +897,7 @@ class TestRun:
             assert fp_data["agent_playbook_id"] is None
 
     @patch.object(PlaybookAggregator, "get_clusters")
-    @patch.object(PlaybookAggregator, "_generate_playbooks_from_clusters")
+    @patch.object(PlaybookAggregator, "_generate_playbooks_with_source_clusters")
     def test_exception_in_incremental_no_archived_ids_still_raises(
         self, mock_gen, mock_clust
     ):

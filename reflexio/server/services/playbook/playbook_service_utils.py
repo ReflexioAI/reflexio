@@ -9,7 +9,6 @@ from reflexio.models.api_schema.domain.entities import Interaction
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
 from reflexio.models.api_schema.service_schemas import (
     BlockingIssue,
-    UserPlaybook,
 )
 from reflexio.server.prompt.prompt_manager import PromptManager
 from reflexio.server.services.playbook.playbook_service_constants import (
@@ -248,76 +247,6 @@ def construct_playbook_extraction_messages_from_sessions(
     user_config = PromptConfig(
         prompt_id=PlaybookServiceConstants.PLAYBOOK_EXTRACTION_PROMPT_ID,
         variables={
-            "interactions": format_sessions_to_history_string(
-                request_interaction_data_models
-            ),
-        },
-    )
-
-    # Extract flat interactions for message construction
-    interactions = extract_interactions_from_request_interaction_data_models(
-        request_interaction_data_models
-    )
-
-    # Use shared message construction
-    config = MessageConstructionConfig(
-        prompt_manager=prompt_manager,
-        system_prompt_config=system_config,
-        user_prompt_config=user_config,
-    )
-
-    return construct_messages_from_interactions(interactions, config)
-
-
-def construct_incremental_playbook_extraction_messages(
-    prompt_manager: PromptManager,
-    request_interaction_data_models: list[RequestInteractionDataModel],
-    agent_context_prompt: str,
-    extraction_definition_prompt: str,
-    previously_extracted: list[UserPlaybook] | None = None,
-    tool_can_use: str | None = None,
-) -> list[dict]:
-    """
-    Construct LLM messages for incremental playbook extraction.
-
-    Uses incremental prompts that show what previous extractors already found,
-    so this extractor focuses on finding additional policies not already covered.
-
-    Args:
-        prompt_manager: The prompt manager for rendering prompt templates
-        request_interaction_data_models: List of request interaction groups to extract playbook entries from
-        agent_context_prompt: Context about the agent for system message
-        extraction_definition_prompt: Definition of what the playbook should contain
-        previously_extracted: Flattened list of all UserPlaybook from previous extractors
-        tool_can_use: Optional formatted string of tools available to the agent
-
-    Returns:
-        list[dict]: List of messages ready for incremental playbook extraction
-    """
-    # Configure system message with incremental prompt
-    system_config = PromptConfig(
-        prompt_id=PlaybookServiceConstants.PLAYBOOK_EXTRACTION_CONTEXT_INCREMENTAL_PROMPT_ID,
-        variables={
-            "agent_context_prompt": agent_context_prompt,
-            "extraction_definition_prompt": extraction_definition_prompt,
-            "tool_can_use": tool_can_use or "",
-        },
-    )
-
-    # Format previously extracted entries
-    formatted_previously_extracted = ""
-    if previously_extracted:
-        formatted_previously_extracted = "\n".join(
-            [f"- {playbook.content}" for playbook in previously_extracted]
-        )
-    else:
-        formatted_previously_extracted = "(None)"
-
-    # Configure final user message with incremental prompt
-    user_config = PromptConfig(
-        prompt_id=PlaybookServiceConstants.PLAYBOOK_EXTRACTION_INCREMENTAL_PROMPT_ID,
-        variables={
-            "previously_extracted_playbooks": formatted_previously_extracted,
             "interactions": format_sessions_to_history_string(
                 request_interaction_data_models
             ),

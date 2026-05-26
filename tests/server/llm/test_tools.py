@@ -505,7 +505,8 @@ class TestSupportsToolCallingOverrides:
         from reflexio.server.llm import tools as tools_mod
 
         monkeypatch.setattr(
-            "litellm.supports_function_calling", lambda model: True  # noqa: ARG005
+            "litellm.supports_function_calling",
+            lambda model: True,  # noqa: ARG005
         )
         assert tools_mod.supports_tool_calling("openai/gpt-5-mini") is True
 
@@ -514,9 +515,12 @@ class TestSupportsToolCallingOverrides:
         from reflexio.server.llm import tools as tools_mod
 
         monkeypatch.setattr(
-            "litellm.supports_function_calling", lambda model: False  # noqa: ARG005
+            "litellm.supports_function_calling",
+            lambda model: False,  # noqa: ARG005
         )
-        assert tools_mod.supports_tool_calling("some-random/model-without-tools") is False
+        assert (
+            tools_mod.supports_tool_calling("some-random/model-without-tools") is False
+        )
 
     def test_litellm_false_minimax_m2_overrides_to_true(self, monkeypatch):
         """litellm says False for minimax/MiniMax-M2.7 (registry gap), but our
@@ -524,7 +528,8 @@ class TestSupportsToolCallingOverrides:
         from reflexio.server.llm import tools as tools_mod
 
         monkeypatch.setattr(
-            "litellm.supports_function_calling", lambda model: False  # noqa: ARG005
+            "litellm.supports_function_calling",
+            lambda model: False,  # noqa: ARG005
         )
         # M2.7 is the model name not registered in litellm's model_cost yet
         assert tools_mod.supports_tool_calling("minimax/MiniMax-M2.7") is True
@@ -538,7 +543,8 @@ class TestSupportsToolCallingOverrides:
         from reflexio.server.llm import tools as tools_mod
 
         monkeypatch.setattr(
-            "litellm.supports_function_calling", lambda model: False  # noqa: ARG005
+            "litellm.supports_function_calling",
+            lambda model: False,  # noqa: ARG005
         )
         assert tools_mod.supports_tool_calling("minimax/abab6.5-chat") is False
 

@@ -79,6 +79,7 @@ from reflexio.models.config_schema import (
     StorageConfigSupabase,
     StorageConfigTest,
     ToolUseConfig,
+    UserPlaybookExtractorConfig,
 )
 
 from .client import ReflexioClient
@@ -160,6 +161,7 @@ __all__ = [
     "ProfileExtractorConfig",
     "PlaybookAggregatorConfig",
     "PlaybookConfig",
+    "UserPlaybookExtractorConfig",
     "AgentSuccessConfig",
     "ToolUseConfig",
     "Config",

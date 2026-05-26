@@ -1220,8 +1220,8 @@ class PlaybookAggregator:
     ) -> None:
         config = self.configurator.get_config().playbook_optimizer_config
         if (
-            not config.enabled
-            or not config.optimize_agent_playbooks
+            getattr(config, "enabled", False) is not True
+            or getattr(config, "optimize_agent_playbooks", False) is not True
             or not saved_playbooks
         ):
             return
@@ -1384,12 +1384,17 @@ class PlaybookAggregator:
     def _get_playbook_aggregator_config(
         self, playbook_name: str
     ) -> PlaybookAggregatorConfig | None:
-        playbook_configs = (
-            self.configurator.get_config().user_playbook_extractor_configs
-        )
-        if not playbook_configs:
+        root_config = self.configurator.get_config()
+        playbook_config = getattr(root_config, "user_playbook_extractor_config", None)
+        if playbook_config is None or not isinstance(
+            getattr(playbook_config, "extractor_name", None), str
+        ):
+            legacy_configs = getattr(
+                root_config, "user_playbook_extractor_configs", None
+            )
+            playbook_config = legacy_configs[0] if legacy_configs else None
+        if not playbook_config:
             return None
-        for agent_playbook_config in playbook_configs:
-            if agent_playbook_config.extractor_name == playbook_name:
-                return agent_playbook_config.aggregation_config
+        if playbook_config.extractor_name == playbook_name:
+            return playbook_config.aggregation_config
         return None

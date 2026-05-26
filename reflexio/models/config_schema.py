@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from enum import IntEnum, StrEnum
 from typing import Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
 from .api_schema.validators import (
     NonEmptyStr,
@@ -546,31 +546,43 @@ class LLMConfig(BaseModel):
     )
 
 
-def _default_profile_extractor_configs() -> list[ProfileExtractorConfig]:
-    return [
-        ProfileExtractorConfig(
-            extractor_name="default_profile_extractor",
-            extraction_definition_prompt=(
-                "Extract key information about the user and their working "
-                "environment: name, role, preferences, and stable facts the "
-                "agent needs to know to serve the user correctly — including "
-                "data/schema details (table names, column types, units, join "
-                "paths), metric definitions the user enforces, and tool "
-                "quirks or workarounds the user relies on. Do NOT extract "
-                "behavioral rules for the agent (those belong in the "
-                "playbook extractor)."
-            ),
+def _default_profile_extractor_config() -> ProfileExtractorConfig:
+    return ProfileExtractorConfig(
+        extractor_name="default_profile_extractor",
+        extraction_definition_prompt=(
+            "Extract key information about the user and their working "
+            "environment: name, role, preferences, and stable facts the "
+            "agent needs to know to serve the user correctly — including "
+            "data/schema details (table names, column types, units, join "
+            "paths), metric definitions the user enforces, and tool "
+            "quirks or workarounds the user relies on. Do NOT extract "
+            "behavioral rules for the agent (those belong in the "
+            "playbook extractor)."
         ),
-    ]
+    )
+
+
+def _default_profile_extractor_configs() -> list[ProfileExtractorConfig]:
+    """Deprecated list-shaped default kept for compatibility."""
+    return [_default_profile_extractor_config()]
+
+
+def _default_user_playbook_extractor_config() -> UserPlaybookExtractorConfig:
+    return UserPlaybookExtractorConfig(
+        extractor_name="default_playbook_extractor",
+        extraction_definition_prompt="Extract playbook rules about agent performance, including areas where the agent was helpful, areas for improvement, and any issues encountered during the interaction.",
+    )
 
 
 def _default_user_playbook_extractor_configs() -> list[UserPlaybookExtractorConfig]:
-    return [
-        UserPlaybookExtractorConfig(
-            extractor_name="default_playbook_extractor",
-            extraction_definition_prompt="Extract playbook rules about agent performance, including areas where the agent was helpful, areas for improvement, and any issues encountered during the interaction.",
-        ),
-    ]
+    """Deprecated list-shaped default kept for compatibility."""
+    return [_default_user_playbook_extractor_config()]
+
+
+def _first_or_none(value: Any) -> Any:
+    if isinstance(value, list):
+        return value[0] if value else None
+    return value
 
 
 class Config(BaseModel):
@@ -582,12 +594,12 @@ class Config(BaseModel):
     # tools agent can use (shared across success evaluation and playbook extraction)
     tool_can_use: list[ToolUseConfig] | None = None
     # user level memory
-    profile_extractor_configs: list[ProfileExtractorConfig] | None = Field(
-        default_factory=_default_profile_extractor_configs
+    profile_extractor_config: ProfileExtractorConfig | None = Field(
+        default_factory=_default_profile_extractor_config
     )
     # user playbook extraction
-    user_playbook_extractor_configs: list[UserPlaybookExtractorConfig] | None = Field(
-        default_factory=_default_user_playbook_extractor_configs
+    user_playbook_extractor_config: UserPlaybookExtractorConfig | None = Field(
+        default_factory=_default_user_playbook_extractor_config
     )
     # agent level success
     agent_success_configs: list[AgentSuccessConfig] | None = None
@@ -648,6 +660,20 @@ class Config(BaseModel):
         """
         data = _migrate_dict(data, _CONFIG_FIELD_MIGRATION)
         if isinstance(data, dict):
+            if (
+                "profile_extractor_config" not in data
+                and "profile_extractor_configs" in data
+            ):
+                data["profile_extractor_config"] = _first_or_none(
+                    data["profile_extractor_configs"]
+                )
+            if (
+                "user_playbook_extractor_config" not in data
+                and "user_playbook_extractor_configs" in data
+            ):
+                data["user_playbook_extractor_config"] = _first_or_none(
+                    data["user_playbook_extractor_configs"]
+                )
             for key in (
                 "window_size",
                 "stride_size",
@@ -707,18 +733,28 @@ class Config(BaseModel):
     def batch_interval(self, value: int) -> None:
         self.stride_size = value
 
-    @model_validator(mode="after")
-    def ensure_default_extractors(self) -> Self:
-        """Populate default extractors if none are configured.
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def profile_extractor_configs(self) -> list[ProfileExtractorConfig]:
+        """Deprecated list view for callers that still expect extractor lists."""
+        return [self.profile_extractor_config] if self.profile_extractor_config else []
 
-        When Config is deserialized from saved JSON with null/empty extractor
-        lists, the default_factory doesn't run. This validator ensures defaults
-        are always present so extraction works out of the box.
-        """
-        if not self.profile_extractor_configs:
-            self.profile_extractor_configs = _default_profile_extractor_configs()
-        if not self.user_playbook_extractor_configs:
-            self.user_playbook_extractor_configs = (
-                _default_user_playbook_extractor_configs()
-            )
-        return self
+    @profile_extractor_configs.setter
+    def profile_extractor_configs(
+        self, value: list[ProfileExtractorConfig] | None
+    ) -> None:
+        self.profile_extractor_config = _first_or_none(value)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def user_playbook_extractor_configs(self) -> list[UserPlaybookExtractorConfig]:
+        """Deprecated list view for callers that still expect extractor lists."""
+        if self.user_playbook_extractor_config is None:
+            return []
+        return [self.user_playbook_extractor_config]
+
+    @user_playbook_extractor_configs.setter
+    def user_playbook_extractor_configs(
+        self, value: list[UserPlaybookExtractorConfig] | None
+    ) -> None:
+        self.user_playbook_extractor_config = _first_or_none(value)

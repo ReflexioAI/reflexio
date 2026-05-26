@@ -45,6 +45,7 @@ class DeferredExtractionRun:
     outcome: str
     kind: str
 
+
 _PROMPT_ID_BY_KIND: dict[str, str] = {
     "UserProfile": "extraction_user_profile",  # user-side facts only as of v1.2.0
     "UserProfileAgentRec": "extraction_user_profile_agent_rec",  # agent-named-answer axis (parallel to UserProfile)
@@ -141,7 +142,9 @@ class ExtractionAgent:
         extractor_name: str,
         extraction_criteria: str,
         sessions_text: str,
-        extraction_kind: Literal["UserProfile", "UserProfileAgentRec", "UserPlaybook"] = "UserProfile",
+        extraction_kind: Literal[
+            "UserProfile", "UserProfileAgentRec", "UserPlaybook"
+        ] = "UserProfile",
         request_id: str = "",
     ) -> CommitResult:
         """Run one extraction loop and commit the resulting plan.
@@ -185,7 +188,9 @@ class ExtractionAgent:
         extractor_name: str,
         extraction_criteria: str,
         sessions_text: str,
-        extraction_kind: Literal["UserProfile", "UserProfileAgentRec", "UserPlaybook"] = "UserProfile",
+        extraction_kind: Literal[
+            "UserProfile", "UserProfileAgentRec", "UserPlaybook"
+        ] = "UserProfile",
         request_id: str = "",
     ) -> DeferredExtractionRun:
         """Run the agent loop but do NOT commit the plan.
@@ -256,9 +261,7 @@ class ExtractionAgent:
         ``ctx.search_count`` and ``ctx.known_ids`` came from the agent's own
         loop and remain valid for the surviving ops.
         """
-        commit = commit_plan(
-            deferred.ctx, self.storage, outcome=deferred.outcome
-        )
+        commit = commit_plan(deferred.ctx, self.storage, outcome=deferred.outcome)
         logger.info(
             "extraction_agent[%s] kind=%s committed applied=%d violations=%s outcome=%s",
             deferred.ctx.extractor_name,

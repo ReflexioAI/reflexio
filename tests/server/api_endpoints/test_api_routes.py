@@ -309,16 +309,14 @@ class TestUpdateConfigRoute:
         db_path = str(Path(tempfile.gettempdir()) / "existing.db")
         return Config(
             storage_config=StorageConfigSQLite(db_path=db_path),
-            user_playbook_extractor_configs=[
-                UserPlaybookExtractorConfig(
-                    extractor_name="default_playbook_extractor",
-                    extraction_definition_prompt="extract feedback",
-                    aggregation_config=PlaybookAggregatorConfig(
-                        min_cluster_size=2,
-                        clustering_similarity=0.45,
-                    ),
-                )
-            ],
+            user_playbook_extractor_config=UserPlaybookExtractorConfig(
+                extractor_name="default_playbook_extractor",
+                extraction_definition_prompt="extract feedback",
+                aggregation_config=PlaybookAggregatorConfig(
+                    min_cluster_size=2,
+                    clustering_similarity=0.45,
+                ),
+            ),
         )
 
     def test_nested_list_replaced_wholesale_when_patched(
@@ -350,6 +348,64 @@ class TestUpdateConfigRoute:
         # are required on UserPlaybookExtractorConfig.
         assert response.status_code in {400, 422}, response.text
         mock_reflexio.set_config.assert_not_called()
+
+    def test_legacy_extractor_lists_override_existing_canonical_config(
+        self, client, patched_reflexio, mock_reflexio
+    ):
+        """Legacy list fields in PATCH payloads update the singular config."""
+        existing = self._existing_config()
+        self._wire_mock(mock_reflexio, existing)
+
+        with patch("reflexio.server.api.invalidate_reflexio_cache"):
+            response = client.post(
+                "/api/update_config",
+                json={
+                    "profile_extractor_configs": [
+                        {
+                            "extractor_name": "legacy_profile",
+                            "extraction_definition_prompt": "profile facts",
+                        }
+                    ],
+                    "user_playbook_extractor_configs": [
+                        {
+                            "extractor_name": "legacy_playbook",
+                            "extraction_definition_prompt": "playbook rules",
+                        }
+                    ],
+                },
+            )
+
+        assert response.status_code == 200, response.text
+        merged = mock_reflexio.set_config.call_args.args[0]
+        assert isinstance(merged, Config)
+        assert merged.profile_extractor_config is not None
+        assert merged.profile_extractor_config.extractor_name == "legacy_profile"
+        assert merged.user_playbook_extractor_config is not None
+        assert merged.user_playbook_extractor_config.extractor_name == "legacy_playbook"
+
+    def test_legacy_empty_extractor_lists_disable_existing_extractors(
+        self, client, patched_reflexio, mock_reflexio
+    ):
+        """Legacy empty list fields in PATCH payloads disable extraction."""
+        existing = self._existing_config_with_playbooks()
+        self._wire_mock(mock_reflexio, existing)
+
+        with patch("reflexio.server.api.invalidate_reflexio_cache"):
+            response = client.post(
+                "/api/update_config",
+                json={
+                    "profile_extractor_configs": [],
+                    "playbook_configs": [],
+                },
+            )
+
+        assert response.status_code == 200, response.text
+        merged = mock_reflexio.set_config.call_args.args[0]
+        assert isinstance(merged, Config)
+        assert merged.profile_extractor_config is None
+        assert merged.user_playbook_extractor_config is None
+        assert merged.profile_extractor_configs == []
+        assert merged.user_playbook_extractor_configs == []
 
     def test_nested_list_preserved_when_patching_unrelated_field(
         self, client, patched_reflexio, mock_reflexio

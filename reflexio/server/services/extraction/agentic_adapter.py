@@ -2,21 +2,19 @@
 
 The classic ``GenerationService.run`` expects a pair of generation services
 (profile + playbook) it can fan out in parallel.  The agentic-v2 runner is
-a single service that iterates extractor configs and calls ``ExtractionAgent``
-once per config, committing directly to storage via ``commit_plan``.
+a single service that calls ``ExtractionAgent`` for the configured profile and
+playbook extractors, committing directly to storage via ``commit_plan``.
 
 This module provides ``AgenticExtractionRunner`` — a thin wrapper that:
 
 1. Applies the same ``_cheap_should_run_reject`` pre-filter the classic
    path uses (honouring ``force_extraction``).
 2. Renders the scoped interactions into a transcript string.
-3. Iterates all enabled ``ProfileExtractorConfig`` and
-   ``UserPlaybookExtractorConfig`` entries and calls ``ExtractionAgent.run``
-   once per config.  The agent itself handles search, create, delete, and
+3. Runs the configured ``ProfileExtractorConfig`` and
+   ``UserPlaybookExtractorConfig``. The agent itself handles search, create, delete, and
    commit (supersession / merge / expansion).
-4. Triggers ``PlaybookAggregator`` for every configured playbook with an
-   ``aggregation_config``, unless ``skip_aggregation`` was set on the
-   publish request.
+4. Triggers ``PlaybookAggregator`` when the configured playbook has an
+   ``aggregation_config``, unless ``skip_aggregation`` was set on the publish request.
 """
 
 from __future__ import annotations
@@ -70,8 +68,7 @@ logger = logging.getLogger(__name__)
 class AgenticExtractionRunner:
     """Wrap ``ExtractionAgent`` so it mirrors the classic publish contract.
 
-    Iterates each enabled extractor config (profile + playbook) and calls
-    ``ExtractionAgent.run`` once per config.  The agent handles its own
+    Runs the configured profile and playbook extractors. The agent handles its own
     search-then-mutate loop and commits the plan directly to storage.
 
     Args:
@@ -110,9 +107,9 @@ class AgenticExtractionRunner:
                 this publish, used for both the pre-filter and transcript.
             new_request (Request): The ``Request`` row just persisted; used
                 to synthesise the precheck ``RequestInteractionDataModel``.
-            config (Config): Resolved top-level config.  ``profile_extractor_configs``
-                and ``user_playbook_extractor_configs`` each drive one agent loop;
-                ``user_playbook_extractor_configs`` also drives the aggregator loop.
+            config (Config): Resolved top-level config. ``profile_extractor_config``
+                and ``user_playbook_extractor_config`` drive extraction; the playbook
+                config also drives aggregation.
 
         Returns:
             list[str]: Non-fatal warnings to surface back to the caller.
@@ -146,8 +143,14 @@ class AgenticExtractionRunner:
         #
         # ``config.skip_extraction_axes`` may suppress any subset of axes by
         # name. Default is an empty set, so all three axes run unchanged.
-        profile_configs = list(config.profile_extractor_configs or [])
-        playbook_configs = list(config.user_playbook_extractor_configs or [])
+        profile_configs = (
+            [config.profile_extractor_config] if config.profile_extractor_config else []
+        )
+        playbook_configs = (
+            [config.user_playbook_extractor_config]
+            if config.user_playbook_extractor_config
+            else []
+        )
         typed_configs = self._build_typed_configs(
             profile_configs=profile_configs,
             playbook_configs=playbook_configs,
@@ -473,9 +476,7 @@ class AgenticExtractionRunner:
         ]
         if not timestamps:
             return None
-        return max(
-            datetime.fromtimestamp(t, tz=UTC).year for t in timestamps
-        )
+        return max(datetime.fromtimestamp(t, tz=UTC).year for t in timestamps)
 
     @classmethod
     def _sanitize_wallclock_years(
@@ -539,7 +540,7 @@ class AgenticExtractionRunner:
         """Run ``PlaybookAggregator`` for every configured playbook with an ``aggregation_config``.
 
         Args:
-            config (Config): Resolved top-level config with playbook extractor configs.
+            config (Config): Resolved top-level config with the playbook extractor config.
             publish_request (PublishUserInteractionRequest): Provides ``agent_version``.
             warnings (list[str]): Mutable list; aggregation failures are appended.
         """
@@ -548,21 +549,21 @@ class AgenticExtractionRunner:
             request_context=self.request_context,
             agent_version=publish_request.agent_version,
         )
-        for pb_cfg in config.user_playbook_extractor_configs or []:
-            if not getattr(pb_cfg, "aggregation_config", None):
-                continue
-            try:
-                aggregator.run(
-                    PlaybookAggregatorRequest(
-                        agent_version=publish_request.agent_version,
-                        playbook_name=pb_cfg.extractor_name,
-                    )
+        pb_cfg = config.user_playbook_extractor_config
+        if not pb_cfg or not getattr(pb_cfg, "aggregation_config", None):
+            return
+        try:
+            aggregator.run(
+                PlaybookAggregatorRequest(
+                    agent_version=publish_request.agent_version,
+                    playbook_name=pb_cfg.extractor_name,
                 )
-            except Exception as e:  # noqa: BLE001 - degrade gracefully
-                logger.warning(
-                    "agentic aggregation failed for %s: %s: %s",
-                    pb_cfg.extractor_name,
-                    type(e).__name__,
-                    e,
-                )
-                warnings.append(f"aggregation failed for {pb_cfg.extractor_name}: {e}")
+            )
+        except Exception as e:  # noqa: BLE001 - degrade gracefully
+            logger.warning(
+                "agentic aggregation failed for %s: %s: %s",
+                pb_cfg.extractor_name,
+                type(e).__name__,
+                e,
+            )
+            warnings.append(f"aggregation failed for {pb_cfg.extractor_name}: {e}")

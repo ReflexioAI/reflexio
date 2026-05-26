@@ -89,9 +89,7 @@ class SelfCritiqueAgent:
         try:
             response = self._call_llm(deferred_runs, transcript)
         except Exception as e:  # noqa: BLE001 — keep all on failure
-            logger.warning(
-                "self_critique llm_failed: %s: %s", type(e).__name__, e
-            )
+            logger.warning("self_critique llm_failed: %s: %s", type(e).__name__, e)
             return 0
         new_contents = self._parse_additions(response)
         if not new_contents:
@@ -142,9 +140,7 @@ class SelfCritiqueAgent:
             if label is None:
                 continue
             rendered[f"pass_{label.lower()}_ops"] = self._render_ops(run)
-        prompt = self.prompt_manager.render_prompt(
-            "extraction_self_critique", rendered
-        )
+        prompt = self.prompt_manager.render_prompt("extraction_self_critique", rendered)
         result = self.client.generate_response(
             prompt,
             timeout=self.LLM_TIMEOUT,

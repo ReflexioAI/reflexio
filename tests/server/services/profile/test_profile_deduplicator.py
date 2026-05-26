@@ -280,6 +280,8 @@ class TestProfileDeduplicatorInit:
             "XAI_API_KEY",
             "MOONSHOT_API_KEY",
             "ZAI_API_KEY",
+            "CLAUDE_SMART_USE_LOCAL_CLI",
+            "CLAUDE_SMART_USE_LOCAL_EMBEDDING",
         ]:
             monkeypatch.delenv(key, raising=False)
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test")

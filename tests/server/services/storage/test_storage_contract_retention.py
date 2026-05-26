@@ -26,7 +26,9 @@ def _make_request(request_id: str, created_at: int) -> Request:
     )
 
 
-def _make_interaction(interaction_id: int, request_id: str, created_at: int) -> Interaction:
+def _make_interaction(
+    interaction_id: int, request_id: str, created_at: int
+) -> Interaction:
     return Interaction(
         interaction_id=interaction_id,
         user_id="u1",

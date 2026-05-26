@@ -17,9 +17,5 @@ def storage() -> Generator[BaseStorage]:
     with tempfile.TemporaryDirectory() as temp_dir:
         from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 
-        with patch.object(
-            SQLiteStorage, "_get_embedding", return_value=[0.0] * 512
-        ):
-            yield SQLiteStorage(
-                org_id="llm_test", db_path=f"{temp_dir}/reflexio.db"
-            )
+        with patch.object(SQLiteStorage, "_get_embedding", return_value=[0.0] * 512):
+            yield SQLiteStorage(org_id="llm_test", db_path=f"{temp_dir}/reflexio.db")

@@ -3,17 +3,13 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class PlaybookServiceConstants:
-    PLAYBOOK_EXTRACTORS_CONFIG_NAME = "user_playbook_extractor_configs"
+    PLAYBOOK_EXTRACTORS_CONFIG_NAME = "user_playbook_extractor_config"
     # ===============================
     # prompt ids
     # ===============================
     PLAYBOOK_SHOULD_GENERATE_PROMPT_ID = "playbook_should_generate"
     PLAYBOOK_EXTRACTION_CONTEXT_PROMPT_ID = "playbook_extraction_context"
     PLAYBOOK_EXTRACTION_PROMPT_ID = "playbook_extraction_main"
-    PLAYBOOK_EXTRACTION_CONTEXT_INCREMENTAL_PROMPT_ID = (
-        "playbook_extraction_context_incremental"
-    )
-    PLAYBOOK_EXTRACTION_INCREMENTAL_PROMPT_ID = "playbook_extraction_main_incremental"
     PLAYBOOK_AGGREGATION_PROMPT_ID = "playbook_aggregation"
 
     # ===============================

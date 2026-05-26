@@ -280,25 +280,6 @@ class PlaybookExtractor:
                 agent_context_prompt=self.agent_context,
                 extraction_definition_prompt=playbook_definition,
             )
-        elif self.service_config.is_incremental:
-            from reflexio.server.services.playbook.playbook_service_utils import (
-                construct_incremental_playbook_extraction_messages,
-            )
-
-            # Flatten previously_extracted (list of list[UserPlaybook]) into single list
-            previously_extracted_flat = []
-            for playbook_list in self.service_config.previously_extracted:
-                if isinstance(playbook_list, list):
-                    previously_extracted_flat.extend(playbook_list)
-
-            messages = construct_incremental_playbook_extraction_messages(
-                prompt_manager=self.request_context.prompt_manager,
-                request_interaction_data_models=request_interaction_data_models,
-                agent_context_prompt=self.agent_context,
-                extraction_definition_prompt=playbook_definition,
-                previously_extracted=previously_extracted_flat,
-                tool_can_use=tool_can_use_str,
-            )
         else:
             messages = construct_playbook_extraction_messages_from_sessions(
                 prompt_manager=self.request_context.prompt_manager,

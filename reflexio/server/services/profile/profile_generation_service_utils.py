@@ -52,7 +52,7 @@ class ProfileGenerationRequest(BaseModel):
 
 @dataclass(frozen=True)
 class ProfileGenerationServiceConstants:
-    PROFILE_EXTRACTORS_CONFIG_NAME = "profile_extractor_configs"
+    PROFILE_EXTRACTORS_CONFIG_NAME = "profile_extractor_config"
     # ===============================
     # prompt ids
     # ===============================
@@ -61,10 +61,6 @@ class ProfileGenerationServiceConstants:
     PROFILE_UPDATE_MAIN_PROMPT_ID = "profile_update_main"
     PROFILE_UPDATE_INSTRUCTION_START_PROMPT_ID = "profile_update_instruction_start"
     PROFILE_UPDATE_INSTRUCTION_PROMPT_ID = "profile_update_instruction"
-    PROFILE_UPDATE_INSTRUCTION_INCREMENTAL_PROMPT_ID = (
-        "profile_update_instruction_incremental"
-    )
-    PROFILE_UPDATE_MAIN_INCREMENTAL_PROMPT_ID = "profile_update_main_incremental"
 
 
 # ===============================
@@ -281,89 +277,6 @@ def construct_profile_extraction_messages_from_sessions(
     )
 
     # Extract flat interactions for message construction (needed for image handling)
-    interactions = extract_interactions_from_request_interaction_data_models(
-        request_interaction_data_models
-    )
-
-    # Use shared message construction
-    config = MessageConstructionConfig(
-        prompt_manager=prompt_manager,
-        system_prompt_config=system_config,
-        user_prompt_config=user_config,
-    )
-
-    return construct_messages_from_interactions(interactions, config)
-
-
-def construct_incremental_profile_extraction_messages(
-    prompt_manager: PromptManager,
-    request_interaction_data_models: list[RequestInteractionDataModel],
-    existing_profiles: list[UserProfile],
-    agent_context_prompt: str,
-    context_prompt: str,
-    extraction_definition_prompt: str,
-    previously_extracted: list[list[UserProfile]],
-    metadata_definition_prompt: str | None = None,
-) -> list[dict]:
-    """
-    Construct LLM messages for incremental profile extraction.
-
-    Uses incremental prompts that show what previous extractors already found,
-    so this extractor focuses on finding additional information not already covered.
-
-    Args:
-        prompt_manager: The prompt manager for rendering prompt templates
-        request_interaction_data_models: List of request interaction groups to extract profiles from
-        existing_profiles: List of existing user profiles for context (refreshed from storage)
-        agent_context_prompt: Context about the agent for system message
-        context_prompt: Additional context for system message
-        extraction_definition_prompt: Definition of what profiles should contain
-        previously_extracted: List of profile lists from all previous extractors
-        metadata_definition_prompt: Optional definition for profile metadata
-
-    Returns:
-        list[dict]: List of messages ready for incremental profile extraction
-    """
-    # Format existing profiles
-    formatted_existing_profiles = ", ".join(
-        [profile.content for profile in existing_profiles]
-    )
-
-    # Format previously extracted profiles
-    previously_added = []
-    for profile_list in previously_extracted:
-        previously_added.extend(profile.content for profile in profile_list)
-
-    formatted_previously_added = (
-        "\n".join(f"- {content}" for content in previously_added)
-        if previously_added
-        else "(None)"
-    )
-
-    # Configure system message with incremental prompt
-    system_config = PromptConfig(
-        prompt_id=ProfileGenerationServiceConstants.PROFILE_UPDATE_INSTRUCTION_INCREMENTAL_PROMPT_ID,
-        variables={
-            "agent_context_prompt": agent_context_prompt,
-            "context_prompt": context_prompt,
-            "extraction_definition_prompt": extraction_definition_prompt,
-            "metadata_definition_prompt": metadata_definition_prompt,
-        },
-    )
-
-    # Configure final user message with incremental prompt
-    user_config = PromptConfig(
-        prompt_id=ProfileGenerationServiceConstants.PROFILE_UPDATE_MAIN_INCREMENTAL_PROMPT_ID,
-        variables={
-            "existing_profiles": formatted_existing_profiles,
-            "previously_added_profiles": formatted_previously_added,
-            "interactions": format_sessions_to_history_string(
-                request_interaction_data_models
-            ),
-        },
-    )
-
-    # Extract flat interactions for message construction
     interactions = extract_interactions_from_request_interaction_data_models(
         request_interaction_data_models
     )

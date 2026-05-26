@@ -266,8 +266,8 @@ playbooks = client.get_agent_playbooks(
 client.set_config(reflexio.SetConfigRequest(
     config=reflexio.Config(
         api_key_config=reflexio.APIKeyConfig(openai="sk-..."),
-        profile_extractor_configs=[...],
-        playbook_configs=[reflexio.PlaybookConfig(...)],
+        profile_extractor_config=reflexio.ProfileExtractorConfig(...),
+        user_playbook_extractor_config=reflexio.PlaybookConfig(...),
     )
 ))
 ```

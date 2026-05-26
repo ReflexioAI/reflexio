@@ -23,10 +23,9 @@ Items explicitly deferred from v1. Each has a rationale for why it's not in scop
 
 **Watch for:** an `api.runtime.memoryCore.dreaming.registerConsolidator()` or similar in future Openclaw releases.
 
-## Ported incremental / expert / should-generate prompt variants
+## Ported expert / should-generate prompt variants
 
-**Rationale:** Reflexio's prompt_bank has `profile_update_instruction_incremental`, `playbook_extraction_main_expert`, and `playbook_should_generate`. V1 skips these as YAGNI:
-- Incremental extraction assumes a standing session with bounded batches; our Flow C extracts full transcripts.
+**Rationale:** Reflexio's prompt_bank has `playbook_extraction_main_expert` and `playbook_should_generate`. V1 skips these as YAGNI:
 - Expert-mode is for advanced scenarios beyond v1.
 - `should_generate` is a cost-saving pre-check; extraction returning an empty list achieves the same at small additional cost.
 

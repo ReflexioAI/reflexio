@@ -179,9 +179,7 @@ class AgenticSearchService:
         # (cross-user rules), and an empty value just means "no AgentPlaybook
         # scope filter," which is safe.
         if not request.user_id:
-            raise ValueError(
-                "agentic search requires a non-empty user_id; got empty"
-            )
+            raise ValueError("agentic search requires a non-empty user_id; got empty")
 
         query = self._reformulate(request)
 

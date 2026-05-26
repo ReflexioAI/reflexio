@@ -30,9 +30,7 @@ _PROMPT_BANK_DIR = (
 # None means the prompt does not produce structured output relevant to mocking.
 PROMPT_VERSION_MAP: dict[str, tuple[str, str | None]] = {
     "playbook_extraction_main": ("v1.0.0", "playbook_extraction"),
-    "playbook_extraction_main_incremental": ("v1.0.0", "playbook_extraction"),
     "playbook_extraction_context": ("v4.0.2", None),
-    "playbook_extraction_context_incremental": ("v4.0.0", None),
     "playbook_should_generate": ("v3.0.0", "boolean_evaluation"),
     "playbook_should_generate_expert": ("v1.0.0", "boolean_evaluation"),
     "playbook_extraction_context_expert": ("v3.0.0", None),
@@ -40,9 +38,7 @@ PROMPT_VERSION_MAP: dict[str, tuple[str, str | None]] = {
     "playbook_aggregation": ("v2.1.0", "playbook_aggregation"),
     "playbook_deduplication": ("v2.0.0", "playbook_deduplication"),
     "profile_update_main": ("v1.0.0", "profile_extraction"),
-    "profile_update_main_incremental": ("v1.0.0", "profile_extraction"),
     "profile_update_instruction_start": ("v1.0.0", None),
-    "profile_update_instruction_incremental": ("v1.0.0", None),
     "profile_should_generate": ("v1.0.0", "boolean_evaluation"),
     "profile_should_generate_override": ("v1.0.0", "boolean_evaluation"),
     "profile_deduplication": ("v1.0.0", "profile_deduplication"),
@@ -92,7 +88,10 @@ def _get_latest_prompt_version(prompt_id: str) -> str:
 
     def _semver_key(p: Path) -> tuple[int, ...]:
         try:
-            return tuple(int(x) for x in p.stem.removeprefix("v").removesuffix(".prompt").split("."))
+            return tuple(
+                int(x)
+                for x in p.stem.removeprefix("v").removesuffix(".prompt").split(".")
+            )
         except ValueError:
             return (0,)
 

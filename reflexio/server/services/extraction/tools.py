@@ -391,7 +391,9 @@ def _maybe_rerank_hits(
         return hits[:final_k]
 
     if llm_rerank:
-        ordered = _try_llm_rerank(hits, rerank_query, final_k, llm_client, prompt_manager)
+        ordered = _try_llm_rerank(
+            hits, rerank_query, final_k, llm_client, prompt_manager
+        )
         if ordered is not None:
             return ordered
         # LLM rerank failed — fall through to cross-encoder ONLY if also requested.
@@ -790,7 +792,9 @@ def _format_raw_turns(
         date_suffix = ""
         if timestamps:
             try:
-                date_iso = datetime.fromtimestamp(min(timestamps), tz=UTC).strftime("%Y-%m-%d")
+                date_iso = datetime.fromtimestamp(min(timestamps), tz=UTC).strftime(
+                    "%Y-%m-%d"
+                )
                 date_suffix = f" (date: {date_iso})"
             except (OverflowError, OSError, ValueError):
                 pass
@@ -845,11 +849,15 @@ def _compress_raw_turns(
             max_retries=_COMPRESS_LLM_MAX_RETRIES,
         )
     except Exception as e:  # noqa: BLE001 — broad: LLM stack raises diverse exception types
-        logger.warning("read_session_text compression failed, using raw fallback: %s", e)
+        logger.warning(
+            "read_session_text compression failed, using raw fallback: %s", e
+        )
         return None
 
     if not isinstance(result, str) or not result.strip():
-        logger.warning("read_session_text compression returned empty, using raw fallback")
+        logger.warning(
+            "read_session_text compression returned empty, using raw fallback"
+        )
         return None
     return result.strip()
 
@@ -910,9 +918,7 @@ def _handle_read_session_text(
     # answer turn appears. The handler enforces the floor regardless of the
     # arg.
     effective_max_chars = max(args.max_chars_per_session, 16000)
-    raw_text = _format_raw_turns(
-        args.session_ids, by_session, effective_max_chars
-    )
+    raw_text = _format_raw_turns(args.session_ids, by_session, effective_max_chars)
 
     # Skip compression on empty query or missing wiring; raw turns are still useful.
     if not args.query.strip() or llm_client is None or prompt_manager is None:

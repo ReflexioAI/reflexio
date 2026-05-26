@@ -311,11 +311,10 @@ def update_config(
 
     .. warning::
        The merge is **top-level shallow only**. Nested objects (e.g.
-       ``storage_config``) and nested lists (e.g. ``playbook_configs``,
-       ``profile_configs``) are replaced wholesale -- to mutate a
-       single field inside ``playbook_configs[0]`` you must resend the
-       full ``playbook_configs`` list with that entry fully populated.
-       For surgical edits to nested-list fields prefer
+       ``storage_config``, ``profile_extractor_config``,
+       ``user_playbook_extractor_config``) are replaced wholesale -- to mutate
+       a field inside either extractor config you must resend that extractor
+       object fully populated. For surgical nested edits prefer
        ``reflexio config get`` -> edit JSON -> ``reflexio config set``.
 
     Args:
