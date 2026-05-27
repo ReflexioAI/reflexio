@@ -56,7 +56,7 @@ PROMPT_VERSION_MAP: dict[str, tuple[str, str | None]] = {
     "extraction_user_profile": ("v1.4.11", None),
     "extraction_user_profile_agent_rec": ("v1.1.3", None),
     "extraction_user_playbook": ("v1.2.0", None),
-    "extraction_unify": ("v1.1.3", None),
+    "extraction_unify": ("v1.2.0", None),
     "extraction_self_critique": ("v1.1.0", None),
     # Agentic search pipeline — single-loop agent with cross-encoder + LLM rerank
     "search_agent": ("v1.25.0", None),
