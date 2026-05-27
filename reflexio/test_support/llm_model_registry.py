@@ -33,8 +33,7 @@ def _build_registry() -> dict[str, ModelRegistryEntry]:
         AgentSuccessEvaluationOutput,
     )
     from reflexio.server.services.playbook.playbook_consolidator import (
-        # Legacy schema kept alive until E3 rewires apply paths; remove in E3.
-        PlaybookConsolidationOutputLegacy,
+        PlaybookConsolidationOutput,
     )
     from reflexio.server.services.playbook.playbook_service_utils import (
         PlaybookAggregationOutput,
@@ -70,10 +69,11 @@ def _build_registry() -> dict[str, ModelRegistryEntry]:
             },
         ),
         "playbook_consolidation": ModelRegistryEntry(
-            model_class=PlaybookConsolidationOutputLegacy,
+            model_class=PlaybookConsolidationOutput,
             minimal_valid={
-                "duplicate_groups": [],
-                "unique_ids": ["NEW-0"],
+                "decisions": [
+                    {"kind": "independent", "new_id": "NEW-0"},
+                ],
             },
         ),
         "profile_extraction": ModelRegistryEntry(

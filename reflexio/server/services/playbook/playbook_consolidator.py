@@ -24,10 +24,6 @@ from reflexio.server.services.deduplication_utils import (
     format_dedup_timestamp,
     parse_item_id,
 )
-from reflexio.server.services.playbook.playbook_service_utils import (
-    StructuredPlaybookContent,
-    ensure_playbook_content,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -35,50 +31,6 @@ logger = logging.getLogger(__name__)
 # ===============================
 # Playbook-specific Pydantic Output Schemas for LLM
 # ===============================
-
-
-# Legacy schema kept alive until E3 rewires apply paths; remove in E3.
-class PlaybookConsolidationDuplicateGroupLegacy(BaseModel):
-    """A group of duplicate playbook entries to merge, with old entries to delete.
-
-    Legacy schema retained so the existing apply path (``_build_deduplicated_results``)
-    and the LLM mock registry keep working until Task E3 rewires the apply path to
-    consume the new ``ConsolidationDecision`` discriminated union.
-    """
-
-    item_ids: list[str] = Field(
-        description="IDs of items in this group matching prompt format (e.g., 'NEW-0', 'EXISTING-1')"
-    )
-    merged_content: StructuredPlaybookContent = Field(
-        description="Consolidated playbook entry in structured format (trigger, rationale, blocking_issue)"
-    )
-
-    model_config = ConfigDict(
-        extra="allow",
-        json_schema_extra={"additionalProperties": False},
-    )
-
-
-# Legacy schema kept alive until E3 rewires apply paths; remove in E3.
-class PlaybookConsolidationOutputLegacy(BaseModel):
-    """Output schema for playbook consolidation with NEW vs EXISTING merge support.
-
-    Legacy two-bucket shape (``duplicate_groups`` + ``unique_ids``) used by the
-    current apply path. Will be replaced in Task E3 by direct consumption of the
-    new ``PlaybookConsolidationOutput`` (discriminated union of decisions).
-    """
-
-    duplicate_groups: list[PlaybookConsolidationDuplicateGroupLegacy] = Field(
-        default=[], description="Groups of duplicate playbook entries to merge"
-    )
-    unique_ids: list[str] = Field(
-        default=[], description="IDs of unique NEW entries (e.g., 'NEW-2')"
-    )
-
-    model_config = ConfigDict(
-        extra="allow",
-        json_schema_extra={"additionalProperties": False},
-    )
 
 
 class DuplicateDecision(BaseModel):
@@ -172,6 +124,31 @@ class PlaybookConsolidationOutput(BaseModel):
     model_config = ConfigDict(json_schema_extra={"additionalProperties": False})
 
 
+class PlaybookConsolidationResult(BaseModel):
+    """Per-kind counters tracked over one consolidation batch.
+
+    Bumped once per successfully-applied decision; ``failed_count`` is bumped
+    when a single decision's apply path raises, allowing the rest of the batch
+    to proceed unaffected.
+    """
+
+    duplicates_count: int = 0
+    prefer_new_count: int = 0
+    prefer_existing_count: int = 0
+    differentiates_count: int = 0
+    independents_count: int = 0
+    failed_count: int = 0
+
+
+_COUNTER_BY_KIND: dict[str, str] = {
+    "duplicate": "duplicates_count",
+    "prefer_new": "prefer_new_count",
+    "prefer_existing": "prefer_existing_count",
+    "differentiate": "differentiates_count",
+    "independent": "independents_count",
+}
+
+
 class PlaybookConsolidator(BaseDeduplicator):
     """
     Consolidates new user playbook entries against each other and against existing entries
@@ -210,9 +187,8 @@ class PlaybookConsolidator(BaseDeduplicator):
         return "new_playbooks"
 
     def _get_output_schema_class(self) -> type[BaseModel]:
-        """Return the legacy two-bucket schema until E3 rewires the apply path."""
-        # Legacy schema kept alive until E3 rewires apply paths; remove in E3.
-        return PlaybookConsolidationOutputLegacy
+        """Return the discriminated-union output schema for consolidation."""
+        return PlaybookConsolidationOutput
 
     def _format_items_for_prompt(self, playbooks: list[UserPlaybook]) -> str:
         """
@@ -430,7 +406,7 @@ class PlaybookConsolidator(BaseDeduplicator):
 
             log_model_response(logger, "Consolidation response", response)
 
-            if not isinstance(response, PlaybookConsolidationOutputLegacy):
+            if not isinstance(response, PlaybookConsolidationOutput):
                 logger.warning(
                     "Unexpected response type from consolidation LLM: %s",
                     type(response),
@@ -442,19 +418,19 @@ class PlaybookConsolidator(BaseDeduplicator):
             logger.error("Failed to identify duplicates: %s", str(e))
             return new_playbooks, []
 
-        if not dedup_output.duplicate_groups:
+        if not dedup_output.decisions:
             logger.info(
-                "No duplicate playbook entries found for request %s", request_id
+                "No consolidation decisions returned for request %s", request_id
             )
             return new_playbooks, []
 
         logger.info(
-            "Found %d duplicate playbook groups for request %s",
-            len(dedup_output.duplicate_groups),
+            "Received %d consolidation decisions for request %s",
+            len(dedup_output.decisions),
             request_id,
         )
 
-        # Build consolidated result
+        # Build consolidated result via the discriminated-union apply path
         return self._build_deduplicated_results(
             new_playbooks=new_playbooks,
             existing_playbooks=existing_playbooks,
@@ -463,153 +439,405 @@ class PlaybookConsolidator(BaseDeduplicator):
             agent_version=agent_version,
         )
 
-    def _build_deduplicated_results(  # noqa: C901
+    # ===============================
+    # Apply path: discriminated-union decisions -> (new rows, archive ids)
+    # ===============================
+
+    def _build_deduplicated_results(
         self,
         new_playbooks: list[UserPlaybook],
         existing_playbooks: list[UserPlaybook],
-        dedup_output: PlaybookConsolidationOutputLegacy,
+        dedup_output: PlaybookConsolidationOutput,
         request_id: str,
         agent_version: str,  # noqa: ARG002
     ) -> tuple[list[UserPlaybook], list[int]]:
         """
-        Build the deduplicated entry list from LLM output.
+        Build the deduplicated entry list from LLM decisions.
 
-        Handles merged groups (creating new entries from merged content)
-        and unique entries. Returns IDs of existing entries to delete
-        so the caller can delete them after save succeeds.
+        Dispatches each ``ConsolidationDecision`` to its kind-specific apply
+        method, accumulates resulting rows + archive ids, and adds any NEW
+        playbooks the LLM didn't reference as a safety fallback so a
+        misbehaving LLM cannot silently drop extracted playbooks.
 
         Args:
-            new_playbooks: Flattened list of new entries
-            existing_playbooks: List of existing entries from DB
-            dedup_output: LLM deduplication output
-            request_id: Request ID
-            agent_version: Agent version
+            new_playbooks: Flattened list of new (candidate) entries.
+            existing_playbooks: List of existing entries from the DB.
+            dedup_output: LLM decisions output (discriminated union).
+            request_id: Request ID stamped onto newly-built rows.
+            agent_version: Agent version (currently unused, kept for symmetry).
 
         Returns:
-            Tuple of (entries ready to save, existing entry IDs to delete)
+            Tuple of (entries ready to save, existing entry IDs to delete).
         """
-        handled_new_indices: set[int] = set()
-        result_playbooks: list[UserPlaybook] = []
-        existing_ids_to_delete: list[int] = []
-        seen_delete_ids: set[int] = set()
+        candidates_by_id = {
+            f"NEW-{idx}": playbook for idx, playbook in enumerate(new_playbooks)
+        }
+        existing_by_id = {
+            playbook.user_playbook_id: playbook
+            for playbook in existing_playbooks
+            if playbook.user_playbook_id
+        }
+        existing_by_position = {
+            f"EXISTING-{idx}": playbook
+            for idx, playbook in enumerate(existing_playbooks)
+        }
 
-        now_ts = int(datetime.now(UTC).timestamp())
+        result_counters = PlaybookConsolidationResult()
+        archive_ids: list[int] = []
+        seen_archive: set[int] = set()
+        new_rows: list[UserPlaybook] = []
+        handled_new_ids: set[str] = set()
 
-        # Process duplicate groups
-        for group in dedup_output.duplicate_groups:
-            group_new_indices: list[int] = []
-            group_existing_indices: list[int] = []
+        for decision in dedup_output.decisions:
+            try:
+                rows, marked_new_ids = self._apply_one(
+                    decision=decision,
+                    candidates_by_id=candidates_by_id,
+                    existing_by_id=existing_by_id,
+                    existing_by_position=existing_by_position,
+                    archive_ids=archive_ids,
+                    seen_archive=seen_archive,
+                    request_id=request_id,
+                )
+            except Exception as exc:  # noqa: BLE001 — per-decision isolation
+                result_counters.failed_count += 1
+                logger.warning(
+                    "event=consolidation_apply_failed kind=%s error_type=%s error=%s",
+                    decision.kind,
+                    type(exc).__name__,
+                    exc,
+                )
+                continue
+            new_rows.extend(rows)
+            handled_new_ids.update(marked_new_ids)
+            self._bump_counter(result_counters, decision.kind)
 
-            for item_id in group.item_ids:
-                parsed = parse_item_id(item_id)
-                if parsed is None:
-                    continue
-                prefix, idx = parsed
-                if prefix == "NEW":
-                    group_new_indices.append(idx)
-                    handled_new_indices.add(idx)
-                elif prefix == "EXISTING":
-                    group_existing_indices.append(idx)
+        # Safety fallback: add any NEW entries the LLM did not reference, so a
+        # misbehaving model cannot silently drop extracted playbooks.
+        for new_id, candidate in candidates_by_id.items():
+            if new_id not in handled_new_ids:
+                logger.warning(
+                    "event=consolidation_unhandled_new id=%s — adding as-is",
+                    new_id,
+                )
+                new_rows.append(candidate)
 
-            # Collect existing entry IDs to delete (deduplicated)
-            for eidx in group_existing_indices:
-                if 0 <= eidx < len(existing_playbooks):
-                    fb_id = existing_playbooks[eidx].user_playbook_id
-                    if fb_id and fb_id not in seen_delete_ids:
-                        seen_delete_ids.add(fb_id)
-                        existing_ids_to_delete.append(fb_id)
+        logger.info(
+            "event=playbook_consolidation_done duplicates=%d prefer_new=%d "
+            "prefer_existing=%d differentiates=%d independents=%d failed=%d",
+            result_counters.duplicates_count,
+            result_counters.prefer_new_count,
+            result_counters.prefer_existing_count,
+            result_counters.differentiates_count,
+            result_counters.independents_count,
+            result_counters.failed_count,
+        )
 
-            # Get template from first NEW entry in group (for metadata)
-            template_playbook: UserPlaybook | None = None
-            if group_new_indices:
-                first_new_idx = group_new_indices[0]
-                if 0 <= first_new_idx < len(new_playbooks):
-                    template_playbook = new_playbooks[first_new_idx]
+        return new_rows, archive_ids
 
-            if template_playbook is None:
-                # Fallback: use first existing entry as template
-                if group_existing_indices:
-                    for eidx in group_existing_indices:
-                        if 0 <= eidx < len(existing_playbooks):
-                            template_playbook = existing_playbooks[eidx]
-                            break
-                if template_playbook is None:
-                    logger.warning("Could not find template entry for group, skipping")
-                    continue
+    def _apply_one(
+        self,
+        *,
+        decision: ConsolidationDecision,
+        candidates_by_id: dict[str, UserPlaybook],
+        existing_by_id: dict[int, UserPlaybook],
+        existing_by_position: dict[str, UserPlaybook],
+        archive_ids: list[int],
+        seen_archive: set[int],
+        request_id: str,
+    ) -> tuple[list[UserPlaybook], list[str]]:
+        """Dispatch a single decision to its kind-specific apply method.
 
-            # Combine source_interaction_ids from all NEW entries in group
-            combined_source_ids: list[int] = []
-            seen_ids: set[int] = set()
-            for idx in group_new_indices:
-                if 0 <= idx < len(new_playbooks):
-                    for sid in new_playbooks[idx].source_interaction_ids:
-                        if sid not in seen_ids:
-                            combined_source_ids.append(sid)
-                            seen_ids.add(sid)
+        Args:
+            decision: The decision to apply (one of five kinds).
+            candidates_by_id: Mapping ``"NEW-N"`` -> candidate ``UserPlaybook``.
+            existing_by_id: Mapping ``user_playbook_id`` -> existing playbook.
+            existing_by_position: Mapping ``"EXISTING-M"`` -> existing playbook
+                (used by ``duplicate`` to resolve EXISTING-M ids in ``item_ids``).
+            archive_ids: Accumulator list mutated with ids to archive/delete.
+            seen_archive: Accumulator set guarding ``archive_ids`` against
+                duplicate ids.
+            request_id: Request ID stamped onto newly-built rows.
 
-            # Also include source_interaction_ids from existing entries being merged
-            for eidx in group_existing_indices:
-                if 0 <= eidx < len(existing_playbooks):
-                    for sid in existing_playbooks[eidx].source_interaction_ids:
-                        if sid not in seen_ids:
-                            combined_source_ids.append(sid)
-                            seen_ids.add(sid)
-
-            # Format content from merged structured content
-            merged_content = group.merged_content
-            playbook_content = ensure_playbook_content(
-                merged_content.content, merged_content
-            )
-            logger.info(
-                "Deduplicated playbook content (freeform): %.200s",
-                playbook_content,
-            )
-
-            # Inherit polarity from the canonical (template) row rather than the
-            # LLM-emitted merged_content: the current consolidation prompt does not
-            # reason about polarity, so its StructuredPlaybookContent.polarity would
-            # just be the default "positive" and could silently flip a "negative"
-            # row's polarity on merge. This conservative inheritance goes away once
-            # the consolidation prompt (Task E5) reasons about polarity directly.
-            merged_playbook = UserPlaybook(
-                user_playbook_id=0,  # Will be assigned by storage
-                user_id=template_playbook.user_id,
-                agent_version=template_playbook.agent_version,
+        Returns:
+            Tuple of ``(rows_to_insert, handled_new_ids)`` where the second
+            element is the set of ``"NEW-N"`` candidate ids consumed by this
+            decision (used to suppress the safety fallback).
+        """
+        if isinstance(decision, DuplicateDecision):
+            return self._apply_duplicate(
+                decision,
+                candidates_by_id=candidates_by_id,
+                existing_by_position=existing_by_position,
+                archive_ids=archive_ids,
+                seen_archive=seen_archive,
                 request_id=request_id,
-                playbook_name=template_playbook.playbook_name,
-                created_at=now_ts,
-                content=playbook_content,
-                trigger=merged_content.trigger,
-                rationale=merged_content.rationale,
-                blocking_issue=merged_content.blocking_issue,
-                polarity=template_playbook.polarity,
-                status=template_playbook.status,
-                source=template_playbook.source,
-                source_interaction_ids=combined_source_ids,
             )
-            result_playbooks.append(merged_playbook)
+        if isinstance(decision, PreferNewDecision):
+            return self._apply_prefer_new(
+                decision,
+                candidates_by_id=candidates_by_id,
+                existing_by_id=existing_by_id,
+                archive_ids=archive_ids,
+                seen_archive=seen_archive,
+            )
+        if isinstance(decision, PreferExistingDecision):
+            return self._apply_prefer_existing(decision)
+        if isinstance(decision, DifferentiateDecision):
+            return self._apply_differentiate(
+                decision,
+                candidates_by_id=candidates_by_id,
+                existing_by_id=existing_by_id,
+                archive_ids=archive_ids,
+                seen_archive=seen_archive,
+                request_id=request_id,
+            )
+        if isinstance(decision, IndependentDecision):
+            return self._apply_independent(decision, candidates_by_id=candidates_by_id)
+        raise ValueError(f"unknown decision kind: {decision}")
 
-        # Add unique NEW entries
-        for uid in dedup_output.unique_ids:
-            parsed = parse_item_id(uid)
+    def _apply_duplicate(
+        self,
+        decision: DuplicateDecision,
+        *,
+        candidates_by_id: dict[str, UserPlaybook],
+        existing_by_position: dict[str, UserPlaybook],
+        archive_ids: list[int],
+        seen_archive: set[int],
+        request_id: str,
+    ) -> tuple[list[UserPlaybook], list[str]]:
+        """Collapse multiple rows into one merged row.
+
+        Archives every ``EXISTING-M`` member's id and emits one new
+        ``UserPlaybook`` built from a template (first ``NEW-N`` member, or the
+        first ``EXISTING-M`` if no NEW members) with the LLM-supplied merged
+        fields. ``polarity`` is taken from ``decision.merged_polarity``.
+
+        Args:
+            decision: The ``DuplicateDecision`` to apply.
+            candidates_by_id: Mapping ``"NEW-N"`` -> candidate playbook.
+            existing_by_position: Mapping ``"EXISTING-M"`` -> existing playbook.
+            archive_ids: Accumulator mutated with EXISTING ids to archive.
+            seen_archive: Dedup set for ``archive_ids``.
+            request_id: Request ID stamped on the merged row.
+
+        Returns:
+            Tuple of ([merged_row], [consumed NEW-N ids]).
+        """
+        new_members: list[UserPlaybook] = []
+        existing_members: list[UserPlaybook] = []
+        handled_new_ids: list[str] = []
+
+        for item_id in decision.item_ids:
+            parsed = parse_item_id(item_id)
             if parsed is None:
                 continue
-            prefix, idx = parsed
-            if (
-                prefix == "NEW"
-                and idx not in handled_new_indices
-                and 0 <= idx < len(new_playbooks)
-            ):
-                result_playbooks.append(new_playbooks[idx])
-                handled_new_indices.add(idx)
+            prefix, _idx = parsed
+            if prefix == "NEW" and item_id in candidates_by_id:
+                new_members.append(candidates_by_id[item_id])
+                handled_new_ids.append(item_id)
+            elif prefix == "EXISTING" and item_id in existing_by_position:
+                existing_members.append(existing_by_position[item_id])
 
-        # Safety fallback: add any NEW entries not mentioned by LLM
-        for idx, playbook in enumerate(new_playbooks):
-            if idx not in handled_new_indices:
-                logger.warning(
-                    "New entry at index %d was not handled by LLM, adding as-is",
-                    idx,
-                )
-                result_playbooks.append(playbook)
+        template = (
+            new_members[0]
+            if new_members
+            else (existing_members[0] if existing_members else None)
+        )
+        if template is None:
+            logger.warning(
+                "event=consolidation_duplicate_no_template item_ids=%s",
+                decision.item_ids,
+            )
+            return [], []
 
-        return result_playbooks, existing_ids_to_delete
+        for existing in existing_members:
+            pid = existing.user_playbook_id
+            if pid and pid not in seen_archive:
+                seen_archive.add(pid)
+                archive_ids.append(pid)
+
+        combined_source_ids = self._merge_source_ids(new_members + existing_members)
+        merged_row = UserPlaybook(
+            user_playbook_id=0,
+            user_id=template.user_id,
+            agent_version=template.agent_version,
+            request_id=request_id,
+            playbook_name=template.playbook_name,
+            created_at=int(datetime.now(UTC).timestamp()),
+            content=decision.merged_content,
+            trigger=decision.merged_trigger,
+            rationale=decision.merged_rationale,
+            blocking_issue=template.blocking_issue,
+            polarity=decision.merged_polarity,
+            status=template.status,
+            source=template.source,
+            source_interaction_ids=combined_source_ids,
+        )
+        return [merged_row], handled_new_ids
+
+    def _apply_prefer_new(
+        self,
+        decision: PreferNewDecision,
+        *,
+        candidates_by_id: dict[str, UserPlaybook],
+        existing_by_id: dict[int, UserPlaybook],
+        archive_ids: list[int],
+        seen_archive: set[int],
+    ) -> tuple[list[UserPlaybook], list[str]]:
+        """Archive the existing row and insert the new candidate unchanged.
+
+        Args:
+            decision: The ``PreferNewDecision`` to apply.
+            candidates_by_id: Mapping ``"NEW-N"`` -> candidate playbook.
+            existing_by_id: Mapping ``user_playbook_id`` -> existing playbook.
+            archive_ids: Accumulator mutated with the existing id to archive.
+            seen_archive: Dedup set for ``archive_ids``.
+
+        Returns:
+            Tuple of ([candidate row], [consumed NEW-N id]).
+        """
+        candidate = candidates_by_id.get(decision.new_id)
+        if candidate is None:
+            raise KeyError(f"prefer_new references unknown NEW id: {decision.new_id}")
+        if (
+            decision.existing_id in existing_by_id
+            and decision.existing_id not in seen_archive
+        ):
+            seen_archive.add(decision.existing_id)
+            archive_ids.append(decision.existing_id)
+        return [candidate], [decision.new_id]
+
+    def _apply_prefer_existing(
+        self,
+        decision: PreferExistingDecision,
+    ) -> tuple[list[UserPlaybook], list[str]]:
+        """No-op apply: the existing row wins and the new candidate is dropped.
+
+        Args:
+            decision: The ``PreferExistingDecision`` to apply.
+
+        Returns:
+            Tuple of ([], [consumed NEW-N id]) — the new id is marked handled
+            so the safety fallback does not re-insert the dropped candidate.
+        """
+        logger.info(
+            "event=consolidation_prefer_existing new_id=%s existing_id=%d",
+            decision.new_id,
+            decision.existing_id,
+        )
+        return [], [decision.new_id]
+
+    def _apply_differentiate(
+        self,
+        decision: DifferentiateDecision,
+        *,
+        candidates_by_id: dict[str, UserPlaybook],
+        existing_by_id: dict[int, UserPlaybook],
+        archive_ids: list[int],
+        seen_archive: set[int],
+        request_id: str,
+    ) -> tuple[list[UserPlaybook], list[str]]:
+        """Archive the existing row and emit two refined rows in its place.
+
+        Builds one ``UserPlaybook`` from the candidate's content/polarity with
+        ``refined_new_trigger``, and a second from the existing row's
+        content/polarity with ``refined_existing_trigger``. Polarity is
+        threaded through unchanged for each side.
+
+        Args:
+            decision: The ``DifferentiateDecision`` to apply.
+            candidates_by_id: Mapping ``"NEW-N"`` -> candidate playbook.
+            existing_by_id: Mapping ``user_playbook_id`` -> existing playbook.
+            archive_ids: Accumulator mutated with the existing id to archive.
+            seen_archive: Dedup set for ``archive_ids``.
+            request_id: Request ID stamped on both new rows.
+
+        Returns:
+            Tuple of ([refined_new_row, refined_existing_row], [NEW-N id]).
+        """
+        candidate = candidates_by_id.get(decision.new_id)
+        if candidate is None:
+            raise KeyError(
+                f"differentiate references unknown NEW id: {decision.new_id}"
+            )
+        existing = existing_by_id.get(decision.existing_id)
+        if existing is None:
+            raise KeyError(
+                f"differentiate references unknown EXISTING id: {decision.existing_id}"
+            )
+
+        if decision.existing_id not in seen_archive:
+            seen_archive.add(decision.existing_id)
+            archive_ids.append(decision.existing_id)
+
+        now_ts = int(datetime.now(UTC).timestamp())
+        refined_candidate = candidate.model_copy(
+            update={
+                "user_playbook_id": 0,
+                "request_id": request_id,
+                "trigger": decision.refined_new_trigger,
+                "created_at": now_ts,
+            }
+        )
+        refined_existing = existing.model_copy(
+            update={
+                "user_playbook_id": 0,
+                "request_id": request_id,
+                "trigger": decision.refined_existing_trigger,
+                "created_at": now_ts,
+                "source_interaction_ids": list(existing.source_interaction_ids),
+            }
+        )
+        return [refined_candidate, refined_existing], [decision.new_id]
+
+    def _apply_independent(
+        self,
+        decision: IndependentDecision,
+        *,
+        candidates_by_id: dict[str, UserPlaybook],
+    ) -> tuple[list[UserPlaybook], list[str]]:
+        """Insert the new candidate unchanged; no archive.
+
+        Args:
+            decision: The ``IndependentDecision`` to apply.
+            candidates_by_id: Mapping ``"NEW-N"`` -> candidate playbook.
+
+        Returns:
+            Tuple of ([candidate row], [consumed NEW-N id]).
+        """
+        candidate = candidates_by_id.get(decision.new_id)
+        if candidate is None:
+            raise KeyError(f"independent references unknown NEW id: {decision.new_id}")
+        return [candidate], [decision.new_id]
+
+    @staticmethod
+    def _merge_source_ids(playbooks: list[UserPlaybook]) -> list[int]:
+        """Combine ``source_interaction_ids`` across playbooks, preserving order.
+
+        Args:
+            playbooks: The playbooks whose source ids should be combined.
+
+        Returns:
+            Order-preserving deduplicated list of source interaction ids.
+        """
+        seen: set[int] = set()
+        combined: list[int] = []
+        for playbook in playbooks:
+            for sid in playbook.source_interaction_ids:
+                if sid not in seen:
+                    seen.add(sid)
+                    combined.append(sid)
+        return combined
+
+    @staticmethod
+    def _bump_counter(result: PlaybookConsolidationResult, kind: str) -> None:
+        """Increment the per-kind counter on ``result`` for a successful apply.
+
+        Args:
+            result: The result counters object to mutate.
+            kind: One of ``duplicate``, ``prefer_new``, ``prefer_existing``,
+                ``differentiate``, or ``independent``.
+        """
+        field = _COUNTER_BY_KIND[kind]
+        setattr(result, field, getattr(result, field) + 1)

@@ -1,4 +1,9 @@
-"""Tests for playbook consolidation service."""
+"""Tests for playbook consolidation service.
+
+Exercises the dispatch-and-apply path of the new ``PlaybookConsolidationOutput``
+discriminated union: ``DuplicateDecision`` is the canonical merge case; other
+kinds are covered by ``test_playbook_consolidator_integration.py`` end-to-end.
+"""
 
 from unittest.mock import MagicMock, patch
 
@@ -6,17 +11,10 @@ import pytest
 
 from reflexio.models.api_schema.service_schemas import UserPlaybook
 from reflexio.server.services.playbook.playbook_consolidator import (
-    # Legacy schema kept alive until E3 rewires apply paths; remove in E3.
-    PlaybookConsolidationDuplicateGroupLegacy as PlaybookConsolidationDuplicateGroup,
-)
-from reflexio.server.services.playbook.playbook_consolidator import (
-    PlaybookConsolidationOutputLegacy as PlaybookConsolidationOutput,
-)
-from reflexio.server.services.playbook.playbook_consolidator import (
+    DuplicateDecision,
+    IndependentDecision,
+    PlaybookConsolidationOutput,
     PlaybookConsolidator,
-)
-from reflexio.server.services.playbook.playbook_service_utils import (
-    StructuredPlaybookContent,
 )
 
 # ===============================
@@ -31,6 +29,7 @@ def _make_user_playbook(
     trigger: str | None = None,
     source_interaction_ids: list[int] | None = None,
     user_playbook_id: int = 0,
+    polarity: str = "positive",
 ) -> UserPlaybook:
     """Helper to create a UserPlaybook object for tests."""
     return UserPlaybook(
@@ -42,6 +41,7 @@ def _make_user_playbook(
         trigger=trigger or f"condition_{idx}",
         source="test",
         source_interaction_ids=source_interaction_ids or [],
+        polarity=polarity,  # type: ignore[arg-type]
     )
 
 
@@ -64,6 +64,24 @@ def mock_consolidator():
         return PlaybookConsolidator(
             request_context=mock_request_context, llm_client=mock_llm_client
         )
+
+
+def _duplicate(
+    item_ids: list[str],
+    *,
+    merged_content: str = "merged content",
+    merged_trigger: str = "merged trigger",
+    merged_rationale: str = "merged rationale",
+    merged_polarity: str = "positive",
+) -> DuplicateDecision:
+    """Build a ``DuplicateDecision`` with sane defaults for merge-shape tests."""
+    return DuplicateDecision(
+        item_ids=item_ids,
+        merged_content=merged_content,
+        merged_trigger=merged_trigger,
+        merged_rationale=merged_rationale,
+        merged_polarity=merged_polarity,  # type: ignore[arg-type]
+    )
 
 
 # ===============================
@@ -259,25 +277,17 @@ class TestDeduplicate:
 
 
 class TestBuildDeduplicatedResults:
-    """Tests for _build_deduplicated_results merge logic."""
+    """Tests for ``_build_deduplicated_results`` decision dispatch."""
 
     def test_merge_group_combines_source_interaction_ids(self, mock_consolidator):
-        """Test that merged groups combine source_interaction_ids from all playbooks."""
+        """A duplicate decision merges source_interaction_ids from all NEW members."""
         new_playbooks = [
             _make_user_playbook(0, source_interaction_ids=[1, 2]),
             _make_user_playbook(1, source_interaction_ids=[3, 4]),
         ]
 
         dedup_output = PlaybookConsolidationOutput(
-            duplicate_groups=[
-                PlaybookConsolidationDuplicateGroup(
-                    item_ids=["NEW-0", "NEW-1"],
-                    merged_content=StructuredPlaybookContent(
-                        content="merged do", trigger="merged when"
-                    ),
-                )
-            ],
-            unique_ids=[],
+            decisions=[_duplicate(["NEW-0", "NEW-1"])],
         )
 
         result, delete_ids = mock_consolidator._build_deduplicated_results(
@@ -292,15 +302,18 @@ class TestBuildDeduplicatedResults:
         assert set(result[0].source_interaction_ids) == {1, 2, 3, 4}
         assert delete_ids == []
 
-    def test_unique_ids_passed_through(self, mock_consolidator):
-        """Test that unique NEW playbooks are passed through unchanged."""
+    def test_independent_decisions_passed_through(self, mock_consolidator):
+        """``IndependentDecision`` rows insert the candidate unchanged."""
         new_playbooks = [
             _make_user_playbook(0),
             _make_user_playbook(1),
         ]
 
         dedup_output = PlaybookConsolidationOutput(
-            duplicate_groups=[], unique_ids=["NEW-0", "NEW-1"]
+            decisions=[
+                IndependentDecision(new_id="NEW-0"),
+                IndependentDecision(new_id="NEW-1"),
+            ],
         )
 
         result, _ = mock_consolidator._build_deduplicated_results(
@@ -314,20 +327,12 @@ class TestBuildDeduplicatedResults:
         assert len(result) == 2
 
     def test_existing_playbooks_to_delete(self, mock_consolidator):
-        """Test that existing playbooks in merge groups are marked for deletion."""
+        """A duplicate decision archives EXISTING members for deletion."""
         new_playbooks = [_make_user_playbook(0)]
         existing_playbooks = [_make_user_playbook(1, user_playbook_id=999)]
 
         dedup_output = PlaybookConsolidationOutput(
-            duplicate_groups=[
-                PlaybookConsolidationDuplicateGroup(
-                    item_ids=["NEW-0", "EXISTING-0"],
-                    merged_content=StructuredPlaybookContent(
-                        content="merged", trigger="when merged"
-                    ),
-                )
-            ],
-            unique_ids=[],
+            decisions=[_duplicate(["NEW-0", "EXISTING-0"])],
         )
 
         result, delete_ids = mock_consolidator._build_deduplicated_results(
@@ -342,7 +347,7 @@ class TestBuildDeduplicatedResults:
         assert 999 in delete_ids
 
     def test_safety_fallback_unhandled_playbooks(self, mock_consolidator):
-        """Test that playbooks not mentioned by LLM are added via safety fallback."""
+        """NEW playbooks not referenced by any decision are added via safety fallback."""
         new_playbooks = [
             _make_user_playbook(0),
             _make_user_playbook(1),
@@ -351,7 +356,7 @@ class TestBuildDeduplicatedResults:
 
         # LLM only mentions index 0
         dedup_output = PlaybookConsolidationOutput(
-            duplicate_groups=[], unique_ids=["NEW-0"]
+            decisions=[IndependentDecision(new_id="NEW-0")],
         )
 
         result, _ = mock_consolidator._build_deduplicated_results(
@@ -362,7 +367,7 @@ class TestBuildDeduplicatedResults:
             agent_version="v1",
         )
 
-        # Index 0 via unique_ids + index 1 and 2 via safety fallback
+        # Index 0 via independent decision + index 1 and 2 via safety fallback
         assert len(result) == 3
 
 
@@ -375,7 +380,7 @@ class TestDeduplicateHappyPath:
     """Tests for the full deduplicate() flow with LLM mocks returning PlaybookConsolidationOutput."""
 
     def test_happy_path_with_duplicates(self, mock_consolidator):
-        """Full happy path: LLM returns a merge group and unique playbooks."""
+        """Full happy path: LLM returns a duplicate decision and an independent."""
         fb0 = _make_user_playbook(0, content="do X when Y", source_interaction_ids=[10])
         fb1 = _make_user_playbook(
             1, content="do X when Y again", source_interaction_ids=[20]
@@ -390,18 +395,17 @@ class TestDeduplicateHappyPath:
         ]
         mock_consolidator.request_context.storage.search_user_playbooks.return_value = []
 
-        # LLM merges fb0 and fb1, keeps fb2 as unique
+        # LLM merges fb0 and fb1, keeps fb2 as independent
         mock_consolidator.client.generate_chat_response.return_value = (
             PlaybookConsolidationOutput(
-                duplicate_groups=[
-                    PlaybookConsolidationDuplicateGroup(
-                        item_ids=["NEW-0", "NEW-1"],
-                        merged_content=StructuredPlaybookContent(
-                            content="do X", trigger="when Y"
-                        ),
-                    )
+                decisions=[
+                    _duplicate(
+                        ["NEW-0", "NEW-1"],
+                        merged_content="do X",
+                        merged_trigger="when Y",
+                    ),
+                    IndependentDecision(new_id="NEW-2"),
                 ],
-                unique_ids=["NEW-2"],
             )
         )
 
@@ -410,7 +414,7 @@ class TestDeduplicateHappyPath:
                 results=[[fb0, fb1], [fb2]], request_id="req_test", agent_version="v1"
             )
 
-        # 1 merged + 1 unique = 2 playbooks
+        # 1 merged + 1 independent = 2 playbooks
         assert len(result) == 2
         assert delete_ids == []
 
@@ -418,7 +422,7 @@ class TestDeduplicateHappyPath:
         merged = result[0]
         assert set(merged.source_interaction_ids) == {10, 20}
 
-        # Unique playbook should be fb2
+        # Independent playbook should be fb2
         assert result[1].content == "do Z when W"
 
     def test_multiple_extractor_results_nested_lists(self, mock_consolidator):
@@ -434,10 +438,14 @@ class TestDeduplicateHappyPath:
         ]
         mock_consolidator.request_context.storage.search_user_playbooks.return_value = []
 
-        # LLM says all are unique
+        # LLM says all are independent
         mock_consolidator.client.generate_chat_response.return_value = (
             PlaybookConsolidationOutput(
-                duplicate_groups=[], unique_ids=["NEW-0", "NEW-1", "NEW-2"]
+                decisions=[
+                    IndependentDecision(new_id="NEW-0"),
+                    IndependentDecision(new_id="NEW-1"),
+                    IndependentDecision(new_id="NEW-2"),
+                ],
             )
         )
 
@@ -450,7 +458,7 @@ class TestDeduplicateHappyPath:
         assert delete_ids == []
 
     def test_all_playbooks_are_duplicates_of_existing(self, mock_consolidator):
-        """All new playbooks are duplicates of existing playbooks in the DB."""
+        """A NEW playbook merging with an EXISTING entry archives the existing row."""
         fb0 = _make_user_playbook(0, content="do X when Y", source_interaction_ids=[10])
         existing_fb = _make_user_playbook(
             99,
@@ -467,15 +475,13 @@ class TestDeduplicateHappyPath:
         # LLM merges NEW-0 with EXISTING-0
         mock_consolidator.client.generate_chat_response.return_value = (
             PlaybookConsolidationOutput(
-                duplicate_groups=[
-                    PlaybookConsolidationDuplicateGroup(
-                        item_ids=["NEW-0", "EXISTING-0"],
-                        merged_content=StructuredPlaybookContent(
-                            content="do X", trigger="when Y"
-                        ),
-                    )
+                decisions=[
+                    _duplicate(
+                        ["NEW-0", "EXISTING-0"],
+                        merged_content="do X",
+                        merged_trigger="when Y",
+                    ),
                 ],
-                unique_ids=[],
             )
         )
 
@@ -493,7 +499,7 @@ class TestDeduplicateHappyPath:
 
 
 # ===============================
-# Tests for _retrieve_existing_playbooks with user_id filter
+# Edge cases for _build_deduplicated_results
 # ===============================
 
 
@@ -501,7 +507,7 @@ class TestBuildDeduplicatedResultsEdgeCases:
     """Extended tests for _build_deduplicated_results edge cases."""
 
     def test_template_fallback_to_existing_playbook(self, mock_consolidator):
-        """Test template selection falls back to existing playbook when no NEW in group."""
+        """A duplicate decision with only EXISTING members uses an EXISTING row as template."""
         existing_playbooks = [
             _make_user_playbook(
                 0,
@@ -511,17 +517,14 @@ class TestBuildDeduplicatedResultsEdgeCases:
             ),
         ]
 
-        # Group only has EXISTING items, no NEW items
         dedup_output = PlaybookConsolidationOutput(
-            duplicate_groups=[
-                PlaybookConsolidationDuplicateGroup(
-                    item_ids=["EXISTING-0"],
-                    merged_content=StructuredPlaybookContent(
-                        content="merged do", trigger="merged when"
-                    ),
-                )
+            decisions=[
+                _duplicate(
+                    ["EXISTING-0"],
+                    merged_content="merged do",
+                    merged_trigger="merged when",
+                ),
             ],
-            unique_ids=[],
         )
 
         result, delete_ids = mock_consolidator._build_deduplicated_results(
@@ -538,17 +541,15 @@ class TestBuildDeduplicatedResultsEdgeCases:
         assert 100 in delete_ids
 
     def test_template_fallback_skips_out_of_range_existing(self, mock_consolidator):
-        """Test that out-of-range existing indices are skipped in fallback."""
+        """A duplicate decision pointing at no resolvable members yields no row."""
         dedup_output = PlaybookConsolidationOutput(
-            duplicate_groups=[
-                PlaybookConsolidationDuplicateGroup(
-                    item_ids=["EXISTING-99"],  # out of range
-                    merged_content=StructuredPlaybookContent(
-                        content="merged do", trigger="merged when"
-                    ),
-                )
+            decisions=[
+                _duplicate(
+                    ["EXISTING-99"],
+                    merged_content="merged do",
+                    merged_trigger="merged when",
+                ),
             ],
-            unique_ids=[],
         )
 
         result, delete_ids = mock_consolidator._build_deduplicated_results(
@@ -559,14 +560,14 @@ class TestBuildDeduplicatedResultsEdgeCases:
             agent_version="v1",
         )
 
-        # Group should be skipped entirely since no valid template was found
+        # Decision should be skipped entirely since no valid template was found
         assert len(result) == 0
         assert delete_ids == []
 
     def test_source_interaction_ids_combined_from_new_and_existing(
         self, mock_consolidator
     ):
-        """Test that source_interaction_ids are combined from both NEW and EXISTING playbooks."""
+        """Source interaction ids combine across NEW + EXISTING duplicate members."""
         new_playbooks = [
             _make_user_playbook(0, source_interaction_ids=[1, 2]),
         ]
@@ -575,15 +576,13 @@ class TestBuildDeduplicatedResultsEdgeCases:
         ]
 
         dedup_output = PlaybookConsolidationOutput(
-            duplicate_groups=[
-                PlaybookConsolidationDuplicateGroup(
-                    item_ids=["NEW-0", "EXISTING-0"],
-                    merged_content=StructuredPlaybookContent(
-                        content="merged", trigger="merged condition"
-                    ),
-                )
+            decisions=[
+                _duplicate(
+                    ["NEW-0", "EXISTING-0"],
+                    merged_content="merged",
+                    merged_trigger="merged condition",
+                ),
             ],
-            unique_ids=[],
         )
 
         result, delete_ids = mock_consolidator._build_deduplicated_results(
@@ -599,22 +598,20 @@ class TestBuildDeduplicatedResultsEdgeCases:
         assert 100 in delete_ids
 
     def test_source_interaction_ids_deduplication(self, mock_consolidator):
-        """Test that duplicate source_interaction_ids are not repeated."""
+        """Duplicate source interaction ids across members are not repeated."""
         new_playbooks = [
             _make_user_playbook(0, source_interaction_ids=[1, 2]),
             _make_user_playbook(1, source_interaction_ids=[2, 3]),
         ]
 
         dedup_output = PlaybookConsolidationOutput(
-            duplicate_groups=[
-                PlaybookConsolidationDuplicateGroup(
-                    item_ids=["NEW-0", "NEW-1"],
-                    merged_content=StructuredPlaybookContent(
-                        content="merged", trigger="merged cond"
-                    ),
-                )
+            decisions=[
+                _duplicate(
+                    ["NEW-0", "NEW-1"],
+                    merged_content="merged",
+                    merged_trigger="merged cond",
+                ),
             ],
-            unique_ids=[],
         )
 
         result, _ = mock_consolidator._build_deduplicated_results(
@@ -630,16 +627,16 @@ class TestBuildDeduplicatedResultsEdgeCases:
         assert result[0].source_interaction_ids == [1, 2, 3]
 
     def test_unhandled_playbooks_safety_net(self, mock_consolidator):
-        """Test that playbooks not mentioned in unique_ids or groups are added via safety net."""
+        """Playbooks not referenced by any decision are added via safety fallback."""
         new_playbooks = [
             _make_user_playbook(0),
             _make_user_playbook(1),
             _make_user_playbook(2),
         ]
 
-        # LLM only mentions index 1 as unique, leaves 0 and 2 unmentioned
+        # LLM only mentions index 1 as independent, leaves 0 and 2 unmentioned
         dedup_output = PlaybookConsolidationOutput(
-            duplicate_groups=[], unique_ids=["NEW-1"]
+            decisions=[IndependentDecision(new_id="NEW-1")],
         )
 
         result, _ = mock_consolidator._build_deduplicated_results(
@@ -651,18 +648,24 @@ class TestBuildDeduplicatedResultsEdgeCases:
         )
 
         assert len(result) == 3
-        # Index 1 is from unique_ids, indices 0 and 2 from safety fallback
+        # Index 1 is from independent decision, indices 0 and 2 from safety fallback
         contents = {fb.content for fb in result}
         assert "content_0" in contents
         assert "content_1" in contents
         assert "content_2" in contents
 
-    def test_invalid_item_ids_are_skipped_in_unique_ids(self, mock_consolidator):
-        """Test that unparseable item IDs in unique_ids are skipped."""
+    def test_invalid_item_ids_skipped_in_duplicate(self, mock_consolidator):
+        """Unparseable item ids in a duplicate decision's ``item_ids`` are skipped."""
         new_playbooks = [_make_user_playbook(0)]
 
         dedup_output = PlaybookConsolidationOutput(
-            duplicate_groups=[], unique_ids=["BADFORMAT", "NEW-0"]
+            decisions=[
+                _duplicate(
+                    ["BADFORMAT", "NEW-0"],
+                    merged_content="merged",
+                    merged_trigger="merged trigger",
+                ),
+            ],
         )
 
         result, _ = mock_consolidator._build_deduplicated_results(
@@ -673,39 +676,23 @@ class TestBuildDeduplicatedResultsEdgeCases:
             agent_version="v1",
         )
 
-        # NEW-0 added via unique_ids, BADFORMAT skipped
+        # BADFORMAT skipped; NEW-0 absorbed into the merged row
         assert len(result) == 1
 
-    def test_existing_only_unique_ids_not_added(self, mock_consolidator):
-        """Test that EXISTING prefix in unique_ids does not add playbook."""
+    def test_independent_for_unknown_new_id_fails_apply(self, mock_consolidator):
+        """``IndependentDecision`` referencing an unknown NEW id is counted as failed.
+
+        The unknown reference raises inside ``_apply_one``; the per-decision
+        ``try/except`` isolates the failure so the rest of the batch (and the
+        safety fallback) still runs.
+        """
         new_playbooks = [_make_user_playbook(0)]
 
         dedup_output = PlaybookConsolidationOutput(
-            duplicate_groups=[], unique_ids=["EXISTING-0"]
+            decisions=[IndependentDecision(new_id="NEW-99")],
         )
 
-        result, _ = mock_consolidator._build_deduplicated_results(
-            new_playbooks=new_playbooks,
-            existing_playbooks=[_make_user_playbook(1, user_playbook_id=100)],
-            dedup_output=dedup_output,
-            request_id="req1",
-            agent_version="v1",
-        )
-
-        # EXISTING-0 in unique_ids is ignored; NEW-0 added by safety net
-        contents = {fb.content for fb in result}
-        assert "content_0" in contents
-
-    def test_out_of_range_new_index_in_unique_ids(self, mock_consolidator):
-        """Test that out-of-range NEW index in unique_ids is safely ignored."""
-        new_playbooks = [_make_user_playbook(0)]
-
-        dedup_output = PlaybookConsolidationOutput(
-            duplicate_groups=[],
-            unique_ids=["NEW-0", "NEW-99"],  # 99 is out of range
-        )
-
-        result, _ = mock_consolidator._build_deduplicated_results(
+        result, delete_ids = mock_consolidator._build_deduplicated_results(
             new_playbooks=new_playbooks,
             existing_playbooks=[],
             dedup_output=dedup_output,
@@ -713,7 +700,9 @@ class TestBuildDeduplicatedResultsEdgeCases:
             agent_version="v1",
         )
 
+        # Decision failed, but safety fallback adds NEW-0 as-is
         assert len(result) == 1
+        assert delete_ids == []
 
 
 class TestFormatItemsForPrompt:
@@ -792,7 +781,9 @@ class TestMockModeCheck:
         mock_consolidator.client.get_embeddings.return_value = [[0.1]]
         mock_consolidator.request_context.storage.search_user_playbooks.return_value = []
         mock_consolidator.client.generate_chat_response.return_value = (
-            PlaybookConsolidationOutput(duplicate_groups=[], unique_ids=["NEW-0"])
+            PlaybookConsolidationOutput(
+                decisions=[IndependentDecision(new_id="NEW-0")],
+            )
         )
 
         fb = _make_user_playbook(0)
