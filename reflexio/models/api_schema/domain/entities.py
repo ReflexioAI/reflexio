@@ -256,6 +256,7 @@ class UserPlaybook(BaseModel):
     status: Status | None = (
         None  # Status.PENDING (from rerun), None (current), Status.ARCHIVED (old)
     )
+    polarity: Literal["positive", "negative"] = "positive"
     source: str | None = None  # source of the interaction that generated this playbook
     source_interaction_ids: list[int] = Field(default_factory=list)
     expanded_terms: str | None = None
