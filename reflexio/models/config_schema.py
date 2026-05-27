@@ -489,10 +489,26 @@ class ReflectionConfig(BaseModel):
         model (str | None): Optional model name override. Falls back to
             ``LLMConfig.generation_model_name`` and then the site
             default for ``ModelRole.GENERATION`` when None.
+        post_horizon_size (int): Minimum interactions after a citation before
+            reflection judges it with full confidence. Citations near the recent
+            edge of the window with fewer than this many follow-up turns get a
+            'last_chance' judgment with the prompt biased toward no_change.
+            Set to 0 to disable the filter (legacy behavior).
     """
 
     enabled: bool = True
     model: str | None = None
+    post_horizon_size: int = Field(
+        default=3,
+        description=(
+            "Minimum interactions after a citation before reflection judges "
+            "it with full confidence. Citations near the recent edge of the "
+            "window with fewer than this many follow-up turns get a "
+            "'last_chance' judgment with the prompt biased toward no_change. "
+            "Set to 0 to disable the filter (legacy behavior)."
+        ),
+        ge=0,
+    )
 
 
 class PlaybookOptimizerConfig(BaseModel):
