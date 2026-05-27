@@ -202,13 +202,18 @@ class PlaybookAggregator:
         """
         Extract a direction key from a user playbook for similarity grouping.
 
+        The polarity is prefixed onto the key so positive and negative playbooks
+        never share tokens during overlap matching. This guarantees mixed-polarity
+        playbooks land in different groups even if their content tokens are similar.
+
         Args:
             fb: A user playbook item
 
         Returns:
-            str: Content as the direction key for grouping
+            str: Polarity-prefixed content used as the direction key for grouping
         """
-        return fb.content or ""
+        content = fb.content or ""
+        return f"{fb.polarity}::{content}"
 
     @staticmethod
     def _token_overlap(str1: str, str2: str, threshold: float = 0.6) -> bool:

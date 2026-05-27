@@ -1209,6 +1209,44 @@ class TestProcessAggregationResponse:
         assert result.playbook_status == PlaybookStatus.PENDING
 
 
+# ---------------------------------------------------------------------------
+# _group_playbooks_by_direction — polarity isolation
+# ---------------------------------------------------------------------------
+
+
+def _make_pb(
+    content: str,
+    polarity: str = "positive",
+    rid: int = 1,
+) -> UserPlaybook:
+    """Build a UserPlaybook with explicit content and polarity for grouping tests."""
+    return UserPlaybook(
+        user_playbook_id=rid,
+        agent_version="v1",
+        request_id=f"req-{rid}",
+        playbook_name="test_fb",
+        content=content,
+        polarity=polarity,  # type: ignore[arg-type]
+    )
+
+
+def test_aggregator_separates_positive_and_negative_polarity():
+    """When a cluster contains both positive and negative playbooks on similar
+    content, the aggregator must group them by polarity."""
+    cluster = [
+        _make_pb(content="Recommend X", polarity="positive", rid=1),
+        _make_pb(content="Recommend X (variant)", polarity="positive", rid=2),
+        _make_pb(content="Avoid X", polarity="negative", rid=3),
+    ]
+    groups = PlaybookAggregator._group_playbooks_by_direction(cluster, threshold=0.6)
+    # Expect 2 groups: one for positive, one for negative
+    polarities_per_group = [{p.polarity for p in g} for g in groups]
+    assert {"positive"} in polarities_per_group
+    assert {"negative"} in polarities_per_group
+    # And no group mixes polarities
+    assert all(len(pset) == 1 for pset in polarities_per_group)
+
+
 def test_playbook_aggregation_prompt_specifies_structured_format():
     """Sanity (v2.1.0): aggregator prompt must carry the Agent-Skills
     formatting discipline — imperative conditional triggers, markdown bullet
