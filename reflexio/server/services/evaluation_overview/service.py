@@ -60,23 +60,45 @@ class EvaluationOverviewService:
     def run(
         self, request: GetEvaluationOverviewRequest
     ) -> GetEvaluationOverviewResponse:
-        """Build the overview payload for the requested window."""
+        """Build the overview payload for the requested window.
+
+        Time windows used here:
+          - ``[request.from_ts, request.to_ts]`` is the *trend* window. The hero
+            chart, rule attribution, and the rule-attribution session set are
+            all computed over it. The frontend sends an 8-week range so the
+            trend chart has shape.
+          - The *tile baseline* and *distribution baseline* are tighter:
+            ``last_7d`` (≤ to_ts) vs ``prior_7d`` (the 7d before that).
+            Tying these to ``request.from_ts`` is wrong — with an 8-week
+            request, ``prior`` would land 9 weeks back and always be empty,
+            so every tile would display "no baseline" regardless of how much
+            data the org has.
+        """
         all_results = self.storage.get_agent_success_evaluation_results(  # type: ignore[attr-defined]
             agent_version=None, limit=10_000
         )
         results = [
             r for r in all_results if request.from_ts <= r.created_at <= request.to_ts
         ]
-        prev_to = request.from_ts
+
+        # Tile + distribution baselines are always last-7d-vs-prior-7d, anchored
+        # to ``request.to_ts`` (which is "now" from the frontend's perspective).
+        cur_7d_from = max(request.from_ts, request.to_ts - _WEEK_SECONDS)
+        prev_to = cur_7d_from
         prev_from = max(0, prev_to - _WEEK_SECONDS)
-        results_prev = [r for r in all_results if prev_from <= r.created_at < prev_to]
+        results_current_7d = [
+            r for r in all_results if cur_7d_from <= r.created_at <= request.to_ts
+        ]
+        results_prev_7d = [
+            r for r in all_results if prev_from <= r.created_at < prev_to
+        ]
 
         hero = self._build_hero(results)
-        tiles = self._build_tiles(results, results_prev)
+        tiles = self._build_tiles(results_current_7d, results_prev_7d)
         attribution = self._build_attribution(results)
-        distribution = self._build_distribution(results, results_prev)
+        distribution = self._build_distribution(results_current_7d, results_prev_7d)
         braintrust_tiles = self._build_braintrust_tiles(
-            request.from_ts, request.to_ts, prev_from, prev_to
+            cur_7d_from, request.to_ts, prev_from, prev_to
         )
 
         return GetEvaluationOverviewResponse(
