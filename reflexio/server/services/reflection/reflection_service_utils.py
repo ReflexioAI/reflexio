@@ -44,35 +44,42 @@ class ReflectionServiceRequest(BaseModel):
 class ReflectionDecision(BaseModel):
     """A single per-citation decision returned by the LLM.
 
-    Default expected outcome is ``action == "no_change"``.
+    Default expected outcome is no_change (no revision fields set).
 
     Attributes:
         target_kind (Literal["profile", "playbook"]): Which kind of
             cited item this decision is about.
         target_id (str): Stable id of the cited row. ``profile_id`` for
             profiles, stringified ``user_playbook_id`` for playbooks.
-        action (Literal["no_change", "replace"]): Whether to leave the
-            cited item alone or archive and replace it.
-        new_content (str | None): Replacement content; required on
-            ``replace``.
+        new_content (str | None): Replacement content text. Setting any
+            of ``new_content`` / ``new_trigger`` / ``new_rationale`` /
+            ``new_profile_time_to_live`` / ``new_polarity`` flags this
+            decision as a revision. Leave all None for no_change.
         new_trigger (str | None): Replacement playbook trigger.
-            Optional even on replace — None falls back to archived
+            Optional even on revision; None falls back to the cited
             value. Ignored for profiles.
         new_rationale (str | None): Replacement playbook rationale.
-            Same fallback semantics. Ignored for profiles.
+            Same fallback semantics. Required when ``new_polarity``
+            differs from the cited row's polarity (audit trail).
+            Ignored for profiles.
         new_profile_time_to_live (ProfileTimeToLive | None): Replacement
-            profile TTL. None falls back to archived value. Ignored for
-            playbooks.
+            profile TTL. None falls back to the cited value. Ignored
+            for playbooks.
+        new_polarity (Literal["positive", "negative"] | None):
+            Replacement polarity for the cited playbook. None keeps the
+            current polarity. Setting a value different from the cited
+            polarity is a flip and requires ``new_rationale`` to be
+            set. Must be None for profile decisions.
         reason (str): Short justification, logged.
     """
 
     target_kind: Literal["profile", "playbook"]
     target_id: str
-    action: Literal["no_change", "replace"]
     new_content: str | None = None
     new_trigger: str | None = None
     new_rationale: str | None = None
     new_profile_time_to_live: ProfileTimeToLive | None = None
+    new_polarity: Literal["positive", "negative"] | None = None
     reason: str = ""
 
 
@@ -86,22 +93,23 @@ class ReflectionResult(BaseModel):
     """Outcome of a single reflection pass for logging / tests.
 
     Attributes:
-        ran (bool): True iff the LLM was actually called. False when
-            reflection short-circuited (disabled, gate not yet open, no
-            citations in window, no current cited rows, LLM error).
+        ran (bool): True iff the LLM was actually called.
         gate_open (bool): True when the stride_size bookmark gate
-            permitted this run (regardless of whether citations existed).
+            permitted this run.
         cited_count (int): Distinct citations seen on Assistant
             interactions in the window.
         considered_count (int): Cited rows that were still current and
-            therefore handed to the LLM.
+            therefore handed to the LLM after the post-horizon filter.
         skipped_count (int): Citations skipped because the target row
-            is missing or already archived (e.g. by deduplication
-            earlier in the publish flow), plus replace decisions whose
-            target was no longer current at apply time.
-        no_change_count (int): Decisions where the LLM kept the row.
-        replaced_count (int): Decisions where a new current row was
-            inserted and the cited row was archived.
+            was missing or already archived, or eligibility was
+            ``deferred`` by the post-horizon filter.
+        no_change_count (int): Decisions with no revision fields set.
+        revised_count (int): Decisions with at least one revision
+            field set (excludes flipped — flipped is a strict subset
+            counted separately).
+        flipped_count (int): Subset of revised: playbook decisions
+            whose ``new_polarity`` differs from the cited row's
+            polarity.
         failed_count (int): Per-decision apply failures, logged.
     """
 
@@ -111,5 +119,6 @@ class ReflectionResult(BaseModel):
     considered_count: int = 0
     skipped_count: int = 0
     no_change_count: int = 0
-    replaced_count: int = 0
+    revised_count: int = 0
+    flipped_count: int = 0
     failed_count: int = 0
