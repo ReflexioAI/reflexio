@@ -26,16 +26,18 @@ This ensures the server is ready before the first `UserPromptSubmit` search hook
 
 1. Runs `reflexio search "<prompt>"` with the user's message
 2. Injects matching profiles and playbooks as context Claude sees before responding
-3. Falls back to starting the server if it is down (redundant safety net for mid-session crashes)
+3. Records the `(kind, real_id)` of every returned profile and user_playbook to a session-scoped JSONL state file at `~/.reflexio/claude-code-sessions/<session_id>.jsonl`. Each line is `{prompt, timestamp, citations: [...]}`. The SessionEnd handler reads this file to attach citations to the assistant interaction that followed each prompt — this is what powers the /evaluations "Rules that moved the needle" attribution panel. The state file is deleted after the SessionEnd publish.
+4. Falls back to starting the server if it is down (redundant safety net for mid-session crashes)
 
 ### On `SessionEnd` (session end)
 
 1. Reads the session transcript JSONL file from `transcript_path` in the event payload
 2. Extracts user queries and assistant responses — preserves text and tool_use blocks (as `tools_used` metadata), skips thinking blocks and system messages
-3. Writes the formatted payload to a temp file
-4. Spawns a detached `reflexio interactions publish --force-extraction --file <payload>` process (fire-and-forget)
-5. Logs publish output to `~/.reflexio/logs/stop-hook.log` for diagnostics
-6. Outputs `{}` on stdout and exits immediately — does not block session shutdown
+3. Loads the session-scoped citation state file written by the search hook and attaches recorded citations to the assistant interaction following each matching user prompt (matched on the first 200 characters of trimmed prompt text)
+4. Writes the formatted payload to a temp file
+5. Spawns a detached `reflexio interactions publish --force-extraction --file <payload>` process (fire-and-forget). Both the temp payload and the citation state file are removed after publish.
+6. Logs publish output to `~/.reflexio/logs/stop-hook.log` for diagnostics
+7. Outputs `{}` on stdout and exits immediately — does not block session shutdown
 
 The `--force-extraction` flag ensures extraction always runs, even if a mid-session publish already happened within the batch interval. The Reflexio server then analyzes the conversation for learning signals (corrections, friction, re-steering) and extracts playbooks and user profiles automatically.
 

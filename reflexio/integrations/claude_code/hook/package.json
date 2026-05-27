@@ -13,5 +13,8 @@
     "search_hook.js",
     "session_start_hook.sh",
     "HOOK.md"
-  ]
+  ],
+  "scripts": {
+    "test": "node --test handler.test.js search_hook.test.js"
+  }
 }
