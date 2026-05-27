@@ -22,6 +22,12 @@ class RuleAttribution:
     title: str
     successes_with: int
     failures_with: int
+    cited_session_ids: tuple[str, ...] = ()
+    """Session IDs (within the trend window) that cited this rule. Tuple so
+    the dataclass stays hashable / frozen. The frontend uses this to filter
+    the /evaluations detail band to show only sessions where the rule
+    actually fired — answering 'which sessions did this rule help/hurt?'
+    without a second roundtrip."""
 
     @property
     def net_sessions(self) -> int:
@@ -50,9 +56,15 @@ def compute_net_sessions(
 
     Returns:
         list[RuleAttribution]: At most `top_n` rows in the order described.
+        Each row carries the session ids that cited the rule so the
+        frontend can drill from a rule into the sessions it fired in.
     """
     successes: dict[CitationKey, int] = {}
     failures: dict[CitationKey, int] = {}
+    # Map (kind, real_id) -> ordered list of session_ids that cited this rule.
+    # Ordering preserves caller-provided iteration order; the frontend sorts
+    # the detail band by created_at when displaying.
+    sessions_by_rule: dict[CitationKey, list[str]] = {}
     for session_id, citations in citations_by_session.items():
         outcome = is_success_by_session.get(session_id)
         if outcome is None:
@@ -64,6 +76,7 @@ def compute_net_sessions(
                 successes[key] = successes.get(key, 0) + 1
             else:
                 failures[key] = failures.get(key, 0) + 1
+            sessions_by_rule.setdefault(key, []).append(session_id)
 
     all_keys = set(successes) | set(failures)
     rows = [
@@ -73,6 +86,7 @@ def compute_net_sessions(
             title=rule_titles.get((kind, real_id), ""),
             successes_with=successes.get((kind, real_id), 0),
             failures_with=failures.get((kind, real_id), 0),
+            cited_session_ids=tuple(sessions_by_rule.get((kind, real_id), [])),
         )
         for (kind, real_id) in all_keys
     ]

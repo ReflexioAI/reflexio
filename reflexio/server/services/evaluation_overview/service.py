@@ -175,6 +175,7 @@ class EvaluationOverviewService:
                 successes_with=r.successes_with,
                 failures_with=r.failures_with,
                 net_sessions=r.net_sessions,
+                cited_session_ids=list(r.cited_session_ids),
             )
             for r in rows
         ]

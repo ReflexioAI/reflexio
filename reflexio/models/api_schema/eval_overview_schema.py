@@ -69,6 +69,11 @@ class RuleAttributionRow(BaseModel):
     successes_with: int = Field(ge=0)
     failures_with: int = Field(ge=0)
     net_sessions: int
+    cited_session_ids: list[str] = Field(default_factory=list)
+    """Session IDs (within the trend window) that cited this rule. The
+    frontend uses this to filter the detail band to the sessions where the
+    rule actually fired — answering 'which sessions did this rule help or
+    hurt?' without a second roundtrip."""
 
 
 class ScoreDistribution(BaseModel):
