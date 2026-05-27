@@ -149,6 +149,35 @@ _COUNTER_BY_KIND: dict[str, str] = {
 }
 
 
+class ConsolidationContractError(ValueError):
+    """A decision violates an invariant the apply layer must guard.
+
+    Raised by individual ``_apply_*`` methods when an LLM-supplied decision
+    breaks a structural contract that the prompt cannot fully enforce — most
+    notably: a ``DuplicateDecision`` cannot group members with opposing
+    polarity (positive vs negative), because doing so would silently flip a
+    recommendation into a prohibition (or vice versa).
+
+    The exception carries ``handled_new_ids`` so the caller can suppress the
+    safety fallback for those candidate ids; otherwise rejecting a bad
+    duplicate-merge would leave the orphan candidate to be re-inserted as an
+    opposing-polarity twin of the existing row, which is exactly the state the
+    contract forbids.
+    """
+
+    def __init__(self, message: str, *, handled_new_ids: list[str]) -> None:
+        """Initialize the contract-violation exception.
+
+        Args:
+            message: Human-readable description of the violated contract.
+            handled_new_ids: ``"NEW-N"`` candidate ids consumed by the bad
+                decision; the orchestrator marks these handled so the safety
+                fallback does not re-insert them.
+        """
+        super().__init__(message)
+        self.handled_new_ids = handled_new_ids
+
+
 class PlaybookConsolidator(BaseDeduplicator):
     """
     Consolidates new user playbook entries against each other and against existing entries
@@ -499,6 +528,19 @@ class PlaybookConsolidator(BaseDeduplicator):
                     seen_archive=seen_archive,
                     request_id=request_id,
                 )
+            except ConsolidationContractError as exc:
+                # Contract violation: a decision broke a polarity / structural
+                # invariant. Suppress the safety fallback for its NEW members
+                # so they are NOT silently re-inserted as opposing-polarity
+                # twins of the existing rows we refused to overwrite.
+                result_counters.failed_count += 1
+                handled_new_ids.update(exc.handled_new_ids)
+                logger.warning(
+                    "event=consolidation_contract_violation kind=%s error=%s",
+                    decision.kind,
+                    exc,
+                )
+                continue
             except Exception as exc:  # noqa: BLE001 — per-decision isolation
                 result_counters.failed_count += 1
                 logger.warning(
@@ -638,6 +680,22 @@ class PlaybookConsolidator(BaseDeduplicator):
                 handled_new_ids.append(item_id)
             elif prefix == "EXISTING" and item_id in existing_by_position:
                 existing_members.append(existing_by_position[item_id])
+
+        # Linchpin contract: members of a duplicate group MUST share polarity.
+        # Opposing polarities for the same trigger are a contradiction that
+        # must route through prefer_new / prefer_existing / differentiate,
+        # never through a silent merge. Raise BEFORE mutating archive_ids so
+        # no side effect leaks when the contract is rejected.
+        member_polarities = {
+            member.polarity for member in (new_members + existing_members)
+        }
+        if len(member_polarities) > 1:
+            raise ConsolidationContractError(
+                "DuplicateDecision groups members with mismatched polarities "
+                f"{sorted(member_polarities)}; opposing-polarity pairs must use "
+                "prefer_new / prefer_existing / differentiate",
+                handled_new_ids=handled_new_ids,
+            )
 
         template = (
             new_members[0]

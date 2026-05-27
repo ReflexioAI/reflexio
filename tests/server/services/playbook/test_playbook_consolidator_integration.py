@@ -454,3 +454,151 @@ class TestDuplicate:
         assert len(surviving) == 1
         assert surviving[0].polarity == "negative"
         assert surviving[0].content == "Recommend X."
+
+
+class TestContradictionResolutionContract:
+    """Linchpin contract: opposing-polarity same-trigger pairs MUST route through
+    a contradiction kind (``prefer_new`` / ``prefer_existing`` / ``differentiate``)
+    and MUST NEVER be silently merged as a ``DuplicateDecision`` or accepted as
+    ``IndependentDecision``.
+
+    Section E4 of the reflection-extraction-polarity plan asserts this as a
+    structural invariant of the apply layer — the LLM prompt encodes it as
+    soft guidance, but the apply path treats a mixed-polarity
+    ``DuplicateDecision`` as a runtime contract violation and refuses to
+    materialise either rule, preventing the two opposite recommendations from
+    co-existing in current storage.
+    """
+
+    def test_opposing_polarity_same_trigger_resolves_to_prefer_or_differentiate(
+        self, sqlite_storage, request_context, consolidator, caplog
+    ):
+        """A bad ``DuplicateDecision`` over opposing polarities is rejected.
+
+        If the LLM returns a ``DuplicateDecision`` that groups a positive
+        existing row with a negative candidate sharing the same trigger, the
+        apply layer raises ``ConsolidationContractViolation`` and the
+        per-decision isolation in ``_build_deduplicated_results`` bumps the
+        failed counter. Crucially, the safety fallback must NOT silently
+        re-insert the orphan candidate — that would still leave both opposing
+        rules in current storage, breaking the contract.
+        """
+        existing = _make_existing_playbook(
+            sqlite_storage,
+            polarity="positive",
+            content="Recommend X.",
+            trigger="when Y",
+        )
+        candidate = _make_candidate(
+            content="Avoid X.",
+            trigger="when Y",
+            polarity="negative",
+        )
+
+        with caplog.at_level("WARNING"):
+            rows, archive_ids = _run_consolidator(
+                consolidator,
+                candidates=[candidate],
+                existing_playbooks=[existing],
+                decisions=[
+                    DuplicateDecision(
+                        item_ids=["NEW-0", "EXISTING-0"],
+                        merged_content="Avoid X.",
+                        merged_trigger="when Y",
+                        merged_rationale="conflict — LLM mis-merged opposite polarities",
+                        merged_polarity="negative",
+                    )
+                ],
+            )
+
+        # Apply layer rejected the bad decision: no row produced, no archive.
+        assert rows == [], (
+            "contract violation must NOT produce a merged row — got "
+            f"{[(r.content, r.polarity) for r in rows]}"
+        )
+        assert archive_ids == [], (
+            "contract violation must NOT archive the existing row — got "
+            f"{archive_ids}"
+        )
+
+        # The per-decision isolation logged the contract violation.
+        assert any(
+            "consolidation_contract_violation" in record.message
+            for record in caplog.records
+        ), (
+            "expected a consolidation_contract_violation warning; got: "
+            f"{[r.message for r in caplog.records]}"
+        )
+
+        # Storage state: the existing positive row remains untouched, and the
+        # negative candidate was NOT silently inserted by the safety fallback.
+        # Opposing-polarity rules with the same trigger must NEVER both occupy
+        # current state simultaneously.
+        _apply_to_storage(sqlite_storage, rows, archive_ids)
+        surviving = sqlite_storage.get_user_playbooks(user_id="u1")
+        assert len(surviving) == 1, (
+            "exactly one row must survive — got "
+            f"{[(r.content, r.polarity) for r in surviving]}"
+        )
+        assert surviving[0].user_playbook_id == existing.user_playbook_id
+        assert surviving[0].polarity == "positive"
+        assert surviving[0].content == "Recommend X."
+
+    def test_opposing_polarity_same_trigger_with_prefer_new_archives_existing(
+        self, sqlite_storage, request_context, consolidator
+    ):
+        """The legitimate path: ``PreferNewDecision`` flips polarity cleanly.
+
+        Same trigger, opposite polarity — the LLM correctly routes the pair
+        through ``prefer_new`` (the new negative evidence supersedes the old
+        positive recommendation). The existing positive row is archived and
+        the negative candidate becomes the sole current row, so the two
+        opposite rules never co-exist.
+        """
+        existing = _make_existing_playbook(
+            sqlite_storage,
+            polarity="positive",
+            content="Recommend X.",
+            trigger="when Y",
+        )
+        candidate = _make_candidate(
+            content="Avoid X.",
+            trigger="when Y",
+            polarity="negative",
+        )
+
+        rows, archive_ids = _run_consolidator(
+            consolidator,
+            candidates=[candidate],
+            existing_playbooks=[existing],
+            decisions=[
+                PreferNewDecision(
+                    new_id="NEW-0",
+                    existing_id=existing.user_playbook_id,
+                    reason="negative evidence supersedes prior positive recommendation",
+                )
+            ],
+        )
+
+        assert archive_ids == [existing.user_playbook_id]
+        assert len(rows) == 1
+        assert rows[0].polarity == "negative"
+        assert rows[0].content == "Avoid X."
+
+        _apply_to_storage(sqlite_storage, rows, archive_ids)
+        surviving = sqlite_storage.get_user_playbooks(user_id="u1")
+        # SQLite delete is a hard remove in the integration setup; only the
+        # negative successor remains. The legacy positive row is gone, so
+        # there's no opposing-polarity co-existence.
+        assert len(surviving) == 1
+        assert surviving[0].polarity == "negative"
+        assert surviving[0].content == "Avoid X."
+        assert surviving[0].trigger == "when Y"
+        # And explicitly: no surviving row with polarity="positive" and the
+        # same trigger remains.
+        assert not any(
+            r.polarity == "positive" and r.trigger == "when Y" for r in surviving
+        ), (
+            "no positive-polarity row with trigger 'when Y' may survive — got "
+            f"{[(r.content, r.polarity, r.trigger) for r in surviving]}"
+        )
