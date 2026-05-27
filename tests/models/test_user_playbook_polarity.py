@@ -1,6 +1,7 @@
-from reflexio.models.api_schema.domain.entities import UserPlaybook
 import pytest
 from pydantic import ValidationError
+
+from reflexio.models.api_schema.domain.entities import UserPlaybook
 
 
 def test_user_playbook_default_polarity_is_positive():

@@ -668,6 +668,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         self._migrate_agent_playbook_source_windows()
         self._migrate_request_metadata()
         self._migrate_shadow_comparison_verdicts()
+        self._migrate_user_playbook_polarity()
         init_stall_state_table(self.conn)
         return True
 
@@ -1157,6 +1158,26 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 if col not in cols:
                     self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} TEXT")  # noqa: S608
                     logger.info("Added %s column to %s", col, table)
+        self.conn.commit()
+
+    def _migrate_user_playbook_polarity(self) -> None:
+        """Add the ``polarity`` column to ``user_playbooks`` if missing.
+
+        Backfill-safe: existing rows default to ``'positive'``. Required for
+        databases created before per-rule polarity was introduced.
+        """
+        cols = {
+            row["name"]
+            for row in self.conn.execute("PRAGMA table_info(user_playbooks)").fetchall()
+        }
+        if not cols:
+            return
+        if "polarity" not in cols:
+            self.conn.execute(
+                "ALTER TABLE user_playbooks "
+                "ADD COLUMN polarity TEXT NOT NULL DEFAULT 'positive'"
+            )
+            logger.info("Added polarity column to user_playbooks")
         self.conn.commit()
 
     def _migrate_agent_playbook_source_windows(self) -> None:

@@ -517,8 +517,7 @@ class TestContradictionResolutionContract:
             f"{[(r.content, r.polarity) for r in rows]}"
         )
         assert archive_ids == [], (
-            "contract violation must NOT archive the existing row — got "
-            f"{archive_ids}"
+            f"contract violation must NOT archive the existing row — got {archive_ids}"
         )
 
         # The per-decision isolation logged the contract violation.

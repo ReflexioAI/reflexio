@@ -369,27 +369,19 @@ def test_runner_force_extraction_bypasses_pre_filter():
 
 
 def test_runner_iterates_all_extractor_configs():
-    """Runner calls ExtractionAgent once per config across both profile + playbook lists."""
+    """Runner calls ExtractionAgent once per axis for the single profile + playbook config."""
     runner = _make_runner()
 
     cfg = Config(
         storage_config=StorageConfigSQLite(),
-        profile_extractor_configs=[
-            ProfileExtractorConfig(
-                extractor_name="profile_one",
-                extraction_definition_prompt="profile prompt",
-            ),
-            ProfileExtractorConfig(
-                extractor_name="profile_two",
-                extraction_definition_prompt="profile prompt 2",
-            ),
-        ],
-        user_playbook_extractor_configs=[
-            UserPlaybookExtractorConfig(
-                extractor_name="playbook_one",
-                extraction_definition_prompt="playbook prompt",
-            ),
-        ],
+        profile_extractor_config=ProfileExtractorConfig(
+            extractor_name="profile_one",
+            extraction_definition_prompt="profile prompt",
+        ),
+        user_playbook_extractor_config=UserPlaybookExtractorConfig(
+            extractor_name="playbook_one",
+            extraction_definition_prompt="playbook prompt",
+        ),
     )
 
     empty_commit = CommitResult(applied=[], violations=[], outcome="finish_tool")
@@ -416,13 +408,13 @@ def test_runner_iterates_all_extractor_configs():
             config=cfg,
         )
 
-    # 2 profile configs × 2 axes (UserProfile, UserProfileAgentRec) +
-    # 1 playbook config × 1 axis (UserPlaybook) = 5 total agent calls.
-    assert mock_run_no_commit.call_count == 5
+    # 1 profile config × 2 axes (UserProfile, UserProfileAgentRec) +
+    # 1 playbook config × 1 axis (UserPlaybook) = 3 total agent calls.
+    assert mock_run_no_commit.call_count == 3
     called_names = {
         c.kwargs["extractor_name"] for c in mock_run_no_commit.call_args_list
     }
-    assert called_names == {"profile_one", "profile_two", "playbook_one"}
+    assert called_names == {"profile_one", "playbook_one"}
 
 
 def test_runner_skip_aggregation_short_circuits():

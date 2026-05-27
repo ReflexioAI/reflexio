@@ -130,9 +130,7 @@ def _set_reflection_config(request_context: RequestContext) -> None:
     request_context.configurator.get_config.return_value = cfg
 
 
-def _seed_failure_window_negative_playbook(
-    storage, user_id: str
-) -> UserPlaybook:
+def _seed_failure_window_negative_playbook(storage, user_id: str) -> UserPlaybook:
     """Persist a negative playbook as if extraction had emitted it.
 
     Simulates the output of the failure-path extractor (covered
@@ -165,9 +163,7 @@ def _seed_failure_window_negative_playbook(
     return rows[0]
 
 
-def _seed_citation_window(
-    storage, user_id: str, playbook_id: int
-) -> None:
+def _seed_citation_window(storage, user_id: str, playbook_id: int) -> None:
     """Seed an interaction window that cites the negative playbook.
 
     Enough interactions to clear the stride gate (stride_size=2) and
@@ -302,9 +298,7 @@ def test_failure_path_produces_negative_rule_reflection_keeps_it(
     archived = storage.get_user_playbooks(
         user_id=user_id, status_filter=[Status.ARCHIVED]
     )
-    assert len(current) == 1, (
-        f"Negative playbook must remain current; got {current!r}"
-    )
+    assert len(current) == 1, f"Negative playbook must remain current; got {current!r}"
     assert current[0].user_playbook_id == seeded.user_playbook_id, (
         "The same row must remain — reflection must not have replaced it"
     )
@@ -313,8 +307,7 @@ def test_failure_path_produces_negative_rule_reflection_keeps_it(
         f"got {current[0].polarity!r}"
     )
     assert current[0].content == seeded.content, (
-        "Content must be unchanged on a no_change decision; "
-        f"got {current[0].content!r}"
+        f"Content must be unchanged on a no_change decision; got {current[0].content!r}"
     )
     assert archived == [], (
         f"No reflection-archived rows expected on no_change; got {archived!r}"

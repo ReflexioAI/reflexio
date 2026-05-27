@@ -333,9 +333,7 @@ def test_existing_positive_plus_failure_path_resolves_to_negative_only(
 
     # Phase 1 (cont.) — construct the failure-path negative candidate on
     # the same trigger.
-    candidate = _build_failure_path_negative_candidate(
-        user_id=user_id, trigger=trigger
-    )
+    candidate = _build_failure_path_negative_candidate(user_id=user_id, trigger=trigger)
     assert candidate.polarity == "negative", (
         "Setup failure — failure-path candidate must be negative; "
         f"got {candidate.polarity!r}"
@@ -428,9 +426,7 @@ def test_existing_positive_plus_failure_path_resolves_via_differentiate(
     trigger = "when user asks about product X"
 
     existing = _seed_positive_playbook(storage, user_id=user_id, trigger=trigger)
-    candidate = _build_failure_path_negative_candidate(
-        user_id=user_id, trigger=trigger
-    )
+    candidate = _build_failure_path_negative_candidate(user_id=user_id, trigger=trigger)
 
     rows, archive_ids = _drive_consolidator(
         consolidator,
