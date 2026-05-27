@@ -539,6 +539,15 @@ class PlaybookConsolidator(BaseDeduplicator):
                     decision.kind,
                     exc,
                 )
+                new_id_str = getattr(decision, "new_id", "unknown")
+                existing_id_str = getattr(decision, "existing_id", "unknown")
+                logger.warning(
+                    "playbook_consolidation.failure kind=%s new_id=%s existing_id=%s error=%s",
+                    decision.kind,
+                    new_id_str,
+                    existing_id_str,
+                    type(exc).__name__,
+                )
                 continue
             except Exception as exc:  # noqa: BLE001 — per-decision isolation
                 result_counters.failed_count += 1
@@ -547,6 +556,15 @@ class PlaybookConsolidator(BaseDeduplicator):
                     decision.kind,
                     type(exc).__name__,
                     exc,
+                )
+                new_id_str = getattr(decision, "new_id", "unknown")
+                existing_id_str = getattr(decision, "existing_id", "unknown")
+                logger.warning(
+                    "playbook_consolidation.failure kind=%s new_id=%s existing_id=%s error=%s",
+                    decision.kind,
+                    new_id_str,
+                    existing_id_str,
+                    type(exc).__name__,
                 )
                 continue
             new_rows.extend(rows)
