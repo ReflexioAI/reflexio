@@ -30,7 +30,6 @@ class OperationMixin:
     _fetchone: Any
     _fetchall: Any
     _current_timestamp: Any
-    get_operation_state: Any
 
     # ------------------------------------------------------------------
     # Operation State methods
