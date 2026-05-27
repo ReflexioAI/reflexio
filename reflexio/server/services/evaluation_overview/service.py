@@ -149,13 +149,9 @@ class EvaluationOverviewService:
             success=PercentWithDelta(
                 current=cur_success, delta_pp=cur_success - prev_success
             ),
-            corrections=NumberWithDelta(
-                current=cur_corr, delta=cur_corr - prev_corr
-            ),
+            corrections=NumberWithDelta(current=cur_corr, delta=cur_corr - prev_corr),
             turns=NumberWithDelta(current=cur_turns, delta=cur_turns - prev_turns),
-            escalation=PercentWithDelta(
-                current=cur_esc, delta_pp=cur_esc - prev_esc
-            ),
+            escalation=PercentWithDelta(current=cur_esc, delta_pp=cur_esc - prev_esc),
         )
 
     def _build_attribution(
@@ -197,8 +193,15 @@ class EvaluationOverviewService:
             interactions = self.storage.get_interactions_by_session(sid)  # type: ignore[attr-defined]
             for interaction in interactions:
                 for cite in getattr(interaction, "citations", []) or []:
-                    kind = cite.get("kind") if isinstance(cite, dict) else None
-                    rid = cite.get("real_id") if isinstance(cite, dict) else None
+                    # Citations may arrive as Pydantic Citation objects (from
+                    # the normal storage path) or as plain dicts (e.g. when
+                    # tests stub the storage). Handle both shapes.
+                    if isinstance(cite, dict):
+                        kind = cite.get("kind")
+                        rid = cite.get("real_id")
+                    else:
+                        kind = getattr(cite, "kind", None)
+                        rid = getattr(cite, "real_id", None)
                     if kind and rid:
                         citations_by_session[sid].append((kind, str(rid)))
         # Titles via existing playbook_application_stats lookup
