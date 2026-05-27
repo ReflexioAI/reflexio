@@ -22,6 +22,14 @@ from reflexio.server.services.agent_success_evaluation.group_evaluation_runner i
 logger = logging.getLogger(__name__)
 
 JobStatus = Literal["running", "completed", "cancelled", "error"]
+"""Lifecycle states for a regenerate job.
+
+``"completed"`` means the worker loop finished iterating, regardless of whether
+every session succeeded — per-session pass/fail counts are in the ``completed``
+and ``failed`` counters. ``"error"`` means the worker itself crashed before or
+during iteration (e.g. storage was unavailable). ``"cancelled"`` means a caller
+set the cancel event and the worker observed it between sessions.
+"""
 
 DEFAULT_TTL_SECONDS = 3600
 _FAILURE_CAP = 50
@@ -46,8 +54,10 @@ class RegenJob:
     failed: int = 0
     failures: list[JobFailure] = field(default_factory=list)
     cancel_event: threading.Event = field(default_factory=threading.Event)
-    started_at: float = field(default_factory=time.monotonic)
+    started_at: float = field(default_factory=time.time)
+    """Unix seconds (wall clock) at job creation — returned to API clients."""
     finished_at: float | None = None
+    """Unix seconds (wall clock) when the worker exited; ``None`` while running."""
 
 
 class RegenJobRegistry:
@@ -109,7 +119,7 @@ class RegenJobRegistry:
             self._evict_completed_locked(ttl_seconds)
 
     def _evict_completed_locked(self, ttl_seconds: int) -> None:
-        now = time.monotonic()
+        now = time.time()
         drop = [
             jid
             for jid, j in self._jobs.items()
@@ -126,13 +136,29 @@ class RegenJobRegistry:
 REGEN_JOBS = RegenJobRegistry()
 
 
-def _run_regen(
+def run_regen(
     *,
     job: RegenJob,
     request_context: RequestContext,
     llm_client: LiteLLMClient,
 ) -> None:
-    """Worker body. Drives run_group_evaluation per session in the window."""
+    """Worker body. Drives run_group_evaluation per session in the window.
+
+    On normal completion of the session loop, sets ``job.status = "completed"``
+    even if individual sessions raised — per-session failures are recorded in
+    ``job.failed`` and ``job.failures``. Sets ``job.status = "error"`` only if
+    the worker itself crashes (e.g. storage misconfigured). Sets
+    ``job.status = "cancelled"`` if the cancel event is observed between
+    sessions.
+
+    Args:
+        job (RegenJob): Pre-registered job whose counters and status this
+            worker mutates in place.
+        request_context (RequestContext): Carrier for storage, config, and
+            prompt manager.
+        llm_client (LiteLLMClient): Shared LLM client used by
+            ``run_group_evaluation`` per session.
+    """
     try:
         storage = request_context.storage
         if storage is None:
@@ -170,4 +196,4 @@ def _run_regen(
         job.status = "error"
         logger.exception("Regen worker crashed for job=%s", job.job_id)
     finally:
-        job.finished_at = time.monotonic()
+        job.finished_at = time.time()

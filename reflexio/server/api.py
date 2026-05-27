@@ -160,7 +160,7 @@ from reflexio.server.cache.reflexio_cache import (
 from reflexio.server.correlation import correlation_id_var, generate_correlation_id
 from reflexio.server.services.agent_success_evaluation.regen_jobs import (
     REGEN_JOBS,
-    _run_regen,
+    run_regen,
 )
 
 logger = logging.getLogger(__name__)
@@ -1728,8 +1728,6 @@ def start_regenerate(
             status_code=400,
             detail=f"Unknown evaluation_name '{payload.evaluation_name}'",
         )
-    if REGEN_JOBS.has_active(org_id, payload.evaluation_name):
-        raise HTTPException(status_code=409, detail="A regenerate is already running")
 
     storage = reflexio.request_context.storage
     if storage is None:
@@ -1737,15 +1735,18 @@ def start_regenerate(
     descriptors = storage.get_session_ids_in_window(
         from_ts=payload.from_ts, to_ts=payload.to_ts
     )
-    job = REGEN_JOBS.create(
-        org_id=org_id,
-        evaluation_name=payload.evaluation_name,
-        from_ts=payload.from_ts,
-        to_ts=payload.to_ts,
-        total=len(descriptors),
-    )
+    try:
+        job = REGEN_JOBS.create(
+            org_id=org_id,
+            evaluation_name=payload.evaluation_name,
+            from_ts=payload.from_ts,
+            to_ts=payload.to_ts,
+            total=len(descriptors),
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
     threading.Thread(
-        target=_run_regen,
+        target=run_regen,
         kwargs={
             "job": job,
             "request_context": reflexio.request_context,

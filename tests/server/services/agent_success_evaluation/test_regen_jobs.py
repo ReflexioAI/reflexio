@@ -1,4 +1,4 @@
-"""Unit tests for RegenJobRegistry and _run_regen."""
+"""Unit tests for RegenJobRegistry and run_regen."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from reflexio.models.api_schema.internal_schema import SessionDescriptor
 from reflexio.server.services.agent_success_evaluation.regen_jobs import (
     RegenJob,
     RegenJobRegistry,
-    _run_regen,
+    run_regen,
 )
 
 
@@ -78,7 +78,7 @@ def test_run_regen_processes_sessions_and_marks_completed():
     with patch(
         "reflexio.server.services.agent_success_evaluation.regen_jobs.run_group_evaluation"
     ) as runner:
-        _run_regen(job=job, request_context=rc, llm_client=llm)
+        run_regen(job=job, request_context=rc, llm_client=llm)
         assert runner.call_count == 2
         first_call = runner.call_args_list[0]
         assert first_call.kwargs["force_regenerate"] is True
@@ -115,7 +115,7 @@ def test_run_regen_records_failures_and_continues():
         "reflexio.server.services.agent_success_evaluation.regen_jobs.run_group_evaluation",
         side_effect=runner,
     ):
-        _run_regen(job=job, request_context=rc, llm_client=MagicMock())
+        run_regen(job=job, request_context=rc, llm_client=MagicMock())
 
     assert job.status == "completed"
     assert job.completed == 2
@@ -150,7 +150,7 @@ def test_run_regen_observes_cancel_between_sessions():
         "reflexio.server.services.agent_success_evaluation.regen_jobs.run_group_evaluation",
         side_effect=runner,
     ):
-        _run_regen(job=job, request_context=rc, llm_client=MagicMock())
+        run_regen(job=job, request_context=rc, llm_client=MagicMock())
 
     assert job.status == "cancelled"
     assert job.completed == 2

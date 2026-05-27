@@ -180,15 +180,19 @@ class RegenerateStatusResponse(BaseModel):
     Args:
         job_id (str): Opaque job handle.
         status (Literal["running", "completed", "cancelled", "error"]):
-            Current lifecycle state.
+            Current lifecycle state. ``"completed"`` means the worker loop
+            finished iterating regardless of whether every session
+            succeeded — per-session pass/fail is in ``completed`` vs.
+            ``failed``. ``"error"`` means the worker itself crashed before
+            or during iteration.
         total (int): Total tuples queued at job creation.
         completed (int): Number of successfully replayed tuples.
         failed (int): Number of tuples that raised in the worker.
         failures (list[RegenerateFailure]): Per-session failure rows, capped
             inside the worker so the response stays small.
-        started_at (float): Monotonic timestamp at job creation.
-        finished_at (float | None): Monotonic timestamp at completion;
-            None while ``status == "running"``.
+        started_at (float): Unix-seconds wall-clock timestamp at job creation.
+        finished_at (float | None): Unix-seconds wall-clock timestamp at
+            worker exit; ``None`` while ``status == "running"``.
     """
 
     job_id: str
