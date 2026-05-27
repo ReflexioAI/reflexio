@@ -303,7 +303,6 @@ class TestReplaceProfile:
                 ReflectionDecision(
                     target_kind="profile",
                     target_id="p1",
-                    action="replace",
                     new_content="new content",
                     new_profile_time_to_live=ProfileTimeToLive.ONE_QUARTER,
                     reason="user contradicted earlier preference",
@@ -313,7 +312,7 @@ class TestReplaceProfile:
 
         result = service.run(ReflectionServiceRequest(user_id="u1"))
         assert result.ran is True
-        assert result.replaced_count == 1
+        assert result.revised_count == 1
         assert result.no_change_count == 0
 
         current = storage.get_user_profile("u1", status_filter=[None])
@@ -354,7 +353,6 @@ class TestReplacePlaybook:
                 ReflectionDecision(
                     target_kind="playbook",
                     target_id="1",
-                    action="replace",
                     new_content="new rule",
                     # new_trigger / new_rationale omitted → fall back to archived
                     reason="rule was wrong",
@@ -364,7 +362,7 @@ class TestReplacePlaybook:
 
         result = service.run(ReflectionServiceRequest(user_id="u1"))
         assert result.ran is True
-        assert result.replaced_count == 1
+        assert result.revised_count == 1
 
         current = storage.get_user_playbooks(user_id="u1", status_filter=[None])
         archived = storage.get_user_playbooks(
@@ -404,7 +402,6 @@ class TestReplacePlaybook:
                 ReflectionDecision(
                     target_kind="playbook",
                     target_id="1",
-                    action="replace",
                     new_content="new rule",
                     reason="rule was wrong",
                 )
@@ -413,7 +410,7 @@ class TestReplacePlaybook:
 
         result = service.run(ReflectionServiceRequest(user_id="u1"))
 
-        assert result.replaced_count == 1
+        assert result.revised_count == 1
         current = storage.get_user_playbooks(user_id="u1", status_filter=[None])
         assert len(current) == 1
         assert current[0].source_interaction_ids == [10, 11]
@@ -443,7 +440,6 @@ class TestNoChange:
                 ReflectionDecision(
                     target_kind="profile",
                     target_id="p1",
-                    action="no_change",
                     reason="still correct",
                 )
             ]
@@ -452,7 +448,7 @@ class TestNoChange:
         result = service.run(ReflectionServiceRequest(user_id="u1"))
         assert result.ran is True
         assert result.no_change_count == 1
-        assert result.replaced_count == 0
+        assert result.revised_count == 0
         # Original profile is still current.
         current = storage.get_user_profile("u1", status_filter=[None])
         assert len(current) == 1
@@ -519,14 +515,12 @@ class TestPerDecisionMalformed:
                 ReflectionDecision(
                     target_kind="playbook",
                     target_id="not-an-int",
-                    action="replace",
                     new_content="garbled",
                     reason="malformed",
                 ),
                 ReflectionDecision(
                     target_kind="profile",
                     target_id="p1",
-                    action="replace",
                     new_content="new content",
                     reason="needed update",
                 ),
@@ -535,8 +529,8 @@ class TestPerDecisionMalformed:
 
         result = service.run(ReflectionServiceRequest(user_id="u1"))
         assert result.ran is True
-        assert result.replaced_count == 1
-        assert result.skipped_count >= 1
+        assert result.revised_count == 1
+        assert result.failed_count >= 1
         # Profile updated, playbook untouched.
         archived_profiles = storage.get_user_profile(
             "u1", status_filter=[Status.ARCHIVED]
@@ -580,7 +574,6 @@ class TestArchiveAfterInsertFailure:
                 ReflectionDecision(
                     target_kind="profile",
                     target_id="p1",
-                    action="replace",
                     new_content="new content",
                     reason="needed update",
                 )
@@ -601,7 +594,7 @@ class TestArchiveAfterInsertFailure:
 
         # Replacement still counted as successful — new row is durable.
         assert result.ran is True
-        assert result.replaced_count == 1
+        assert result.revised_count == 1
 
         # New current row exists; cited row is also still current (transient duplicate).
         current = storage.get_user_profile("u1", status_filter=[None])
@@ -636,7 +629,6 @@ class TestArchiveAfterInsertFailure:
                 ReflectionDecision(
                     target_kind="profile",
                     target_id="p1",
-                    action="replace",
                     new_content="new content",
                     reason="needed update",
                 )
@@ -653,7 +645,7 @@ class TestArchiveAfterInsertFailure:
         ):
             result = service.run(ReflectionServiceRequest(user_id="u1"))
 
-        assert result.replaced_count == 1
+        assert result.revised_count == 1
         assert "reflection_archive_after_insert_noop" in caplog.text
 
     def test_replace_playbook_archive_raises_keeps_new_row(
@@ -679,7 +671,6 @@ class TestArchiveAfterInsertFailure:
                 ReflectionDecision(
                     target_kind="playbook",
                     target_id="1",
-                    action="replace",
                     new_content="new rule",
                     reason="needed update",
                 )
@@ -699,7 +690,7 @@ class TestArchiveAfterInsertFailure:
             result = service.run(ReflectionServiceRequest(user_id="u1"))
 
         assert result.ran is True
-        assert result.replaced_count == 1
+        assert result.revised_count == 1
 
         # Both rows still current — transient duplicate.
         current = storage.get_user_playbooks(user_id="u1", status_filter=[None])
@@ -709,3 +700,145 @@ class TestArchiveAfterInsertFailure:
         assert "reflection_archive_after_insert_failed" in caplog.text
         assert "kind=playbook" in caplog.text
         assert "cited_id=1" in caplog.text
+
+
+class TestPolarityFlip:
+    def test_flip_archives_cited_positive_and_inserts_negative(
+        self, request_context, service, llm_client
+    ):
+        """Polarity flip: cited positive → new negative row.
+
+        Verifies:
+        - The cited positive playbook is archived.
+        - The new playbook has polarity="negative".
+        - result.revised_count == 1 and result.flipped_count == 1.
+        - result.no_change_count == 0.
+        """
+        _set_config(request_context)
+        storage = request_context.storage
+        _seed_playbook(storage, 1, "u1", content="Do X when Y.")
+
+        cite = Citation(kind="playbook", real_id="1")
+        _seed_request_with_interactions(
+            storage,
+            "u1",
+            "r1",
+            [
+                _make_interaction("u1", "r1", "User", "hi"),
+                _make_interaction("u1", "r1", "Assistant", "hello", citations=[cite]),
+            ],
+        )
+
+        llm_client.generate_chat_response.return_value = ReflectionOutput(
+            decisions=[
+                ReflectionDecision(
+                    target_kind="playbook",
+                    target_id="1",
+                    new_content="Avoid X when Y.",
+                    new_polarity="negative",
+                    new_rationale="user pushed back when X was recommended",
+                    reason="evidence of failure",
+                )
+            ]
+        )
+
+        result = service.run(ReflectionServiceRequest(user_id="u1"))
+
+        assert result.ran is True
+        assert result.revised_count == 1
+        assert result.flipped_count == 1
+        assert result.no_change_count == 0
+
+        current = storage.get_user_playbooks(user_id="u1", status_filter=[None])
+        archived = storage.get_user_playbooks(
+            user_id="u1", status_filter=[Status.ARCHIVED]
+        )
+        assert len(current) == 1
+        assert len(archived) == 1
+        assert current[0].polarity == "negative"
+        assert current[0].content == "Avoid X when Y."
+        assert current[0].rationale == "user pushed back when X was recommended"
+        assert archived[0].user_playbook_id == 1
+
+    def test_flip_without_rationale_counts_as_failed(
+        self, request_context, service, llm_client
+    ):
+        """A polarity flip missing new_rationale is rejected by _validate_decision."""
+        _set_config(request_context)
+        storage = request_context.storage
+        _seed_playbook(storage, 1, "u1", content="Do X when Y.")
+
+        cite = Citation(kind="playbook", real_id="1")
+        _seed_request_with_interactions(
+            storage,
+            "u1",
+            "r1",
+            [
+                _make_interaction("u1", "r1", "User", "hi"),
+                _make_interaction("u1", "r1", "Assistant", "hello", citations=[cite]),
+            ],
+        )
+
+        llm_client.generate_chat_response.return_value = ReflectionOutput(
+            decisions=[
+                ReflectionDecision(
+                    target_kind="playbook",
+                    target_id="1",
+                    new_content="Avoid X when Y.",
+                    new_polarity="negative",
+                    # new_rationale intentionally omitted — should fail validation
+                    reason="evidence of failure",
+                )
+            ]
+        )
+
+        result = service.run(ReflectionServiceRequest(user_id="u1"))
+
+        assert result.ran is True
+        assert result.failed_count == 1
+        assert result.revised_count == 0
+        assert result.flipped_count == 0
+        # Cited playbook must remain current — no archive happened.
+        current = storage.get_user_playbooks(user_id="u1", status_filter=[None])
+        assert len(current) == 1
+        assert current[0].user_playbook_id == 1
+
+    def test_same_polarity_revision_does_not_count_as_flip(
+        self, request_context, service, llm_client
+    ):
+        """Revising content while keeping polarity is revised_count++, flipped_count stays 0."""
+        _set_config(request_context)
+        storage = request_context.storage
+        _seed_playbook(storage, 1, "u1", content="Do X when Y.")
+
+        cite = Citation(kind="playbook", real_id="1")
+        _seed_request_with_interactions(
+            storage,
+            "u1",
+            "r1",
+            [
+                _make_interaction("u1", "r1", "User", "hi"),
+                _make_interaction("u1", "r1", "Assistant", "hello", citations=[cite]),
+            ],
+        )
+
+        llm_client.generate_chat_response.return_value = ReflectionOutput(
+            decisions=[
+                ReflectionDecision(
+                    target_kind="playbook",
+                    target_id="1",
+                    new_content="Do X when Y, unless Z.",
+                    new_polarity="positive",  # same as cited
+                    reason="sharpened trigger",
+                )
+            ]
+        )
+
+        result = service.run(ReflectionServiceRequest(user_id="u1"))
+
+        assert result.ran is True
+        assert result.revised_count == 1
+        assert result.flipped_count == 0
+        current = storage.get_user_playbooks(user_id="u1", status_filter=[None])
+        assert len(current) == 1
+        assert current[0].polarity == "positive"

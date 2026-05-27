@@ -139,11 +139,35 @@ class ReflectionService:
             )
             return result
 
+        # Post-horizon filter: only send citations with enough follow-up context.
+        post_horizon_size = (
+            reflection_config.post_horizon_size if reflection_config else 3
+        )
+        eligible = _filter_citations_by_horizon(
+            citations=citations,
+            window=window_interactions,
+            post_horizon_size=post_horizon_size,
+            stride_size=stride_size,
+        )
+        deferred_count = len(citations) - len(eligible)
+        result.skipped_count += deferred_count
+        if not eligible:
+            mgr.update_extractor_bookmark(
+                REFLECTION_OPERATION_NAME,
+                processed_interactions=window_interactions,
+                user_id=request.user_id,
+            )
+            return result
+
+        eligible_citations = [e.citation for e in eligible]
+        horizon_by_key = {
+            (e.citation.kind, e.citation.real_id): e.has_full_horizon for e in eligible
+        }
         cited_profiles, cited_playbooks, missing = self._resolve_cited_rows(
             user_id=request.user_id,
-            citations=citations,
+            citations=eligible_citations,
         )
-        result.skipped_count = missing
+        result.skipped_count += missing
         result.considered_count = len(cited_profiles) + len(cited_playbooks)
         if result.considered_count == 0:
             mgr.update_extractor_bookmark(
@@ -167,6 +191,7 @@ class ReflectionService:
                 window_interactions=window_interactions,
                 cited_profiles=cited_profiles,
                 cited_user_playbooks=cited_playbooks,
+                horizon_by_key=horizon_by_key,
             )
         except Exception as exc:  # noqa: BLE001 — best-effort
             logger.warning(
@@ -183,11 +208,12 @@ class ReflectionService:
         playbooks_by_id = {p.user_playbook_id: p for p in cited_playbooks}
 
         for decision in output.decisions:
-            if decision.action == "no_change":
+            if not _is_revision(decision):
                 result.no_change_count += 1
                 continue
             try:
-                applied = self._apply_replace(
+                self._validate_decision(decision, profiles_by_id, playbooks_by_id)
+                applied, was_flip = self._apply_revision(
                     request=request,
                     decision=decision,
                     profiles_by_id=profiles_by_id,
@@ -205,7 +231,9 @@ class ReflectionService:
                 )
                 continue
             if applied:
-                result.replaced_count += 1
+                result.revised_count += 1
+                if was_flip:
+                    result.flipped_count += 1
             else:
                 result.skipped_count += 1
 
@@ -217,7 +245,7 @@ class ReflectionService:
 
         logger.info(
             "event=reflection_done user_id=%s gate_open=%s ran=%s "
-            "cited=%d considered=%d no_change=%d replaced=%d "
+            "cited=%d considered=%d no_change=%d revised=%d flipped=%d "
             "skipped=%d failed=%d",
             request.user_id,
             result.gate_open,
@@ -225,7 +253,8 @@ class ReflectionService:
             result.cited_count,
             result.considered_count,
             result.no_change_count,
-            result.replaced_count,
+            result.revised_count,
+            result.flipped_count,
             result.skipped_count,
             result.failed_count,
         )
@@ -288,31 +317,93 @@ class ReflectionService:
         )
         return cited_profiles, cited_playbooks, missing
 
-    def _apply_replace(
+    def _validate_decision(
+        self,
+        decision: ReflectionDecision,
+        profiles_by_id: dict[str, UserProfile],  # noqa: ARG002 - kept for signature parity with _apply_revision
+        playbooks_by_id: dict[int, UserPlaybook],
+    ) -> None:
+        """Raise if the decision violates polarity invariants.
+
+        Per-decision try/except in the caller catches these and counts
+        them as failed_count.
+
+        Args:
+            decision (ReflectionDecision): The decision to validate.
+            profiles_by_id (dict[str, UserProfile]): Resolved profile
+                rows keyed by profile_id.
+            playbooks_by_id (dict[int, UserPlaybook]): Resolved playbook
+                rows keyed by user_playbook_id.
+
+        Raises:
+            ValueError: When the decision violates a polarity invariant.
+        """
+        if decision.target_kind == "profile":
+            if decision.new_polarity is not None:
+                raise ValueError("profile decisions may not set new_polarity")
+            return
+        # Playbook
+        try:
+            target_id = int(decision.target_id)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"playbook target_id not an int: {decision.target_id!r}"
+            ) from exc
+        cited = playbooks_by_id.get(target_id)
+        if cited is None:
+            return  # apply step will mark as skipped
+        if (
+            decision.new_polarity is not None
+            and decision.new_polarity != cited.polarity
+            and not decision.new_rationale
+        ):
+            raise ValueError("polarity flip must include new_rationale")
+
+    def _apply_revision(
         self,
         *,
         request: ReflectionServiceRequest,
         decision: ReflectionDecision,
         profiles_by_id: dict[str, UserProfile],
         playbooks_by_id: dict[int, UserPlaybook],
-    ) -> bool:
-        if decision.action != "replace" or not decision.new_content:
-            return False
+    ) -> tuple[bool, bool]:
+        """Apply a revision decision.
+
+        Args:
+            request (ReflectionServiceRequest): The current service
+                request (for user_id / agent_version).
+            decision (ReflectionDecision): The revision to apply.
+            profiles_by_id (dict[str, UserProfile]): Resolved profile
+                rows keyed by profile_id.
+            playbooks_by_id (dict[int, UserPlaybook]): Resolved playbook
+                rows keyed by user_playbook_id.
+
+        Returns:
+            tuple[bool, bool]: ``(applied, was_flip)``. ``applied=False``
+            means the target row could not be resolved (target archived
+            between resolve and apply, etc.). ``was_flip=True`` indicates
+            the new playbook polarity differs from the cited one (profiles
+            always return False here).
+        """
         if decision.target_kind == "profile":
-            cited = profiles_by_id.get(decision.target_id)
-            if cited is None:
-                return False
-            return self._replace_profile(request, decision, cited)
-        if decision.target_kind == "playbook":
-            try:
-                target_id = int(decision.target_id)
-            except (TypeError, ValueError):
-                return False
-            cited = playbooks_by_id.get(target_id)
-            if cited is None:
-                return False
-            return self._replace_playbook(request, decision, cited)
-        return False
+            cited_p = profiles_by_id.get(decision.target_id)
+            if cited_p is None:
+                return False, False
+            return self._replace_profile(request, decision, cited_p), False
+        # Playbook
+        try:
+            target_id = int(decision.target_id)
+        except (TypeError, ValueError):
+            return False, False
+        cited_pb = playbooks_by_id.get(target_id)
+        if cited_pb is None:
+            return False, False
+        was_flip = (
+            decision.new_polarity is not None
+            and decision.new_polarity != cited_pb.polarity
+        )
+        applied = self._replace_playbook(request, decision, cited_pb)
+        return applied, was_flip
 
     def _replace_profile(
         self,
@@ -406,6 +497,11 @@ class ReflectionService:
                 if decision.new_rationale is not None
                 else cited.rationale
             ),
+            polarity=(
+                decision.new_polarity
+                if decision.new_polarity is not None
+                else cited.polarity
+            ),
             blocking_issue=cited.blocking_issue,
             status=None,
             source=cited.source,
@@ -435,6 +531,27 @@ class ReflectionService:
                 new_playbook.user_playbook_id,
             )
         return True
+
+
+_REVISION_FIELDS = (
+    "new_content",
+    "new_trigger",
+    "new_rationale",
+    "new_profile_time_to_live",
+    "new_polarity",
+)
+
+
+def _is_revision(decision: ReflectionDecision) -> bool:
+    """Return True iff any revision field is set on the decision.
+
+    Args:
+        decision (ReflectionDecision): The decision to inspect.
+
+    Returns:
+        bool: True if at least one revision field is non-None.
+    """
+    return any(getattr(decision, f) is not None for f in _REVISION_FIELDS)
 
 
 def _flatten(

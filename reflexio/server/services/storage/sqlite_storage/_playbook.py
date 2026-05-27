@@ -125,8 +125,8 @@ class PlaybookMixin:
                         content, trigger, rationale, blocking_issue,
                         source_interaction_ids,
                         status, source, embedding, expanded_terms,
-                        source_span, notes, reader_angle)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        source_span, notes, reader_angle, polarity)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         up.user_id,
                         up.playbook_name,
@@ -147,6 +147,7 @@ class PlaybookMixin:
                         up.source_span,
                         up.notes,
                         up.reader_angle,
+                        up.polarity,
                     ),
                 )
                 upid = cur.lastrowid or 0

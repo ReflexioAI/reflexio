@@ -460,6 +460,7 @@ def _row_to_user_playbook(
         source_span=d.get("source_span"),
         notes=d.get("notes"),
         reader_angle=d.get("reader_angle"),
+        polarity=d.get("polarity") or "positive",
     )
 
 
@@ -1622,7 +1623,8 @@ CREATE TABLE IF NOT EXISTS user_playbooks (
     expanded_terms TEXT,
     source_span TEXT,
     notes TEXT,
-    reader_angle TEXT
+    reader_angle TEXT,
+    polarity TEXT NOT NULL DEFAULT 'positive'
 );
 CREATE INDEX IF NOT EXISTS idx_user_playbooks_playbook_name ON user_playbooks(playbook_name);
 CREATE INDEX IF NOT EXISTS idx_user_playbooks_agent_version ON user_playbooks(agent_version);

@@ -86,6 +86,7 @@ class ReflectionExtractor:
         window_interactions: list[Interaction],
         cited_profiles: list[UserProfile],
         cited_user_playbooks: list[UserPlaybook],
+        horizon_by_key: dict[tuple[str, str], bool] | None = None,  # noqa: ARG002 - wired in B5 for prompt v1.1.0 per-citation context
     ) -> ReflectionOutput:
         """Render the prompt, call the LLM, return parsed output.
 
