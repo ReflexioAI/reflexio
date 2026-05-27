@@ -11,6 +11,7 @@ preventing silent mock drift.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -36,7 +37,7 @@ PROMPT_VERSION_MAP: dict[str, tuple[str, str | None]] = {
     "playbook_extraction_context_expert": ("v3.1.0", None),
     "playbook_extraction_main_expert": ("v1.1.0", "playbook_extraction"),
     "playbook_aggregation": ("v2.1.0", "playbook_aggregation"),
-    "playbook_consolidation": ("v2.0.0-deprecated", "playbook_consolidation"),
+    "playbook_consolidation": ("v1.0.0", "playbook_consolidation"),
     "playbook_optimizer_judge": ("v1.0.0", None),
     "profile_update_main": ("v1.0.0", "profile_extraction"),
     "profile_update_instruction_start": ("v1.0.0", None),
@@ -77,16 +78,49 @@ PROMPT_VERSION_MAP: dict[str, tuple[str, str | None]] = {
 }
 
 
+_ACTIVE_FLAG_RE = re.compile(r"(?m)^active:\s*(true|false)\s*$")
+
+
+def _is_active(path: Path) -> bool:
+    """Return True if the prompt file's frontmatter declares ``active: true``.
+
+    Parses just the leading ``active:`` line from the frontmatter so we don't
+    pull in YAML. Defaults to False when the flag is missing or the file is
+    unreadable — only files explicitly marked active count toward the trip-wire.
+
+    Args:
+        path (Path): Path to a ``v*.prompt.md`` file.
+
+    Returns:
+        bool: True iff the file's frontmatter contains ``active: true``.
+    """
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    match = _ACTIVE_FLAG_RE.search(raw)
+    return bool(match) and match.group(1) == "true"
+
+
 def _get_latest_prompt_version(prompt_id: str) -> str:
-    """Scan prompt_bank/<prompt_id>/ for the latest v*.prompt.md file.
+    """Scan prompt_bank/<prompt_id>/ for the latest ACTIVE v*.prompt.md file.
 
     Sorted by semver tuple, not lexically — without this v1.10.0 would
     sort BEFORE v1.9.0 and the trip-wire would lock to a stale version.
 
+    Files with ``active: false`` (typically ``-deprecated`` historical
+    records) are filtered out so the trip-wire pins the version the runtime
+    prompt manager will actually load. Without this filter, two siblings
+    like ``v1.0.0.prompt.md`` (active) and ``v1.0.0-deprecated.prompt.md``
+    (inactive) tie on semver key and the trip-wire becomes
+    order-of-glob-dependent; worse, a later-numbered deprecated file (e.g.
+    ``v2.0.0-deprecated``) would beat the real active ``v1.0.0``.
+
     Files with a non-numeric suffix (e.g. ``v2.0.0-deprecated.prompt.md``)
-    are preserved verbatim by ``stem.split(".prompt")[0]`` so the trip-wire
-    can pin an intermediate state where the only files in a directory are
-    deprecated placeholders awaiting a fresh prompt in a follow-up task.
+    that remain active are preserved verbatim by ``stem.split(".prompt")[0]``
+    so the trip-wire can pin an intermediate state where the only active
+    file in a directory is a deprecated placeholder awaiting a fresh prompt
+    in a follow-up task.
     """
     prompt_dir = _PROMPT_BANK_DIR / prompt_id
     if not prompt_dir.is_dir():
@@ -101,10 +135,18 @@ def _get_latest_prompt_version(prompt_id: str) -> str:
         except ValueError:
             return (0,)
 
-    versions = sorted(prompt_dir.glob("v*.prompt.md"), key=_semver_key)
-    if not versions:
+    all_versions = list(prompt_dir.glob("v*.prompt.md"))
+    if not all_versions:
         pytest.fail(f"No version files found in {prompt_dir}")
-    return versions[-1].stem.split(".prompt")[0]
+    active_versions = sorted(
+        (p for p in all_versions if _is_active(p)), key=_semver_key
+    )
+    if not active_versions:
+        pytest.fail(
+            f"No active version files found in {prompt_dir} "
+            f"(all {len(all_versions)} files have active: false)"
+        )
+    return active_versions[-1].stem.split(".prompt")[0]
 
 
 class TestPromptVersionMapping:

@@ -408,7 +408,6 @@ class PlaybookConsolidator(BaseDeduplicator):
             {
                 "new_playbook_count": len(new_playbooks),
                 "new_playbooks": new_text,
-                "existing_playbook_count": len(existing_playbooks),
                 "existing_playbooks": existing_text,
             },
         )
