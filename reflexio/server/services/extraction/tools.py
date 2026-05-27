@@ -46,6 +46,7 @@ from reflexio.server.services.extraction.plan import (
     PlaybookStrength,
     ProfileTTL,
 )
+from reflexio.server.services.polarity_utils import infer_playbook_polarity
 from reflexio.server.services.profile.profile_generation_service_utils import (
     calculate_expiration_timestamp,
 )
@@ -1253,6 +1254,7 @@ def apply_plan_op(op: Any, storage: Any, ctx: ExtractionCtx) -> None:
                     trigger=op.trigger,
                     rationale=op.rationale,
                     source_span=op.source_span,
+                    polarity=infer_playbook_polarity(op.content, op.rationale),
                 )
             ]
         )

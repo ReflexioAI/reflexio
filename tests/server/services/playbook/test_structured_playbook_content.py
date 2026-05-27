@@ -1,4 +1,4 @@
-"""Tests for StructuredPlaybookContent: optional metadata fields and polarity."""
+"""Tests for StructuredPlaybookContent optional metadata fields."""
 
 from reflexio.server.services.playbook.playbook_service_utils import (
     StructuredPlaybookContent,
@@ -24,23 +24,3 @@ def test_structured_playbook_content_accepts_optional_fields() -> None:
     assert c.source_span == "quote"
     assert c.reader_angle == "trigger"
 
-
-def test_structured_playbook_content_default_polarity_is_positive() -> None:
-    p = StructuredPlaybookContent(
-        content="X",
-        trigger="when Y",
-        rationale="because Z",
-        blocking_issue=None,
-    )
-    assert p.polarity == "positive"
-
-
-def test_structured_playbook_content_accepts_negative() -> None:
-    p = StructuredPlaybookContent(
-        content="Avoid X",
-        trigger="when Y",
-        rationale="user pushed back",
-        blocking_issue=None,
-        polarity="negative",
-    )
-    assert p.polarity == "negative"

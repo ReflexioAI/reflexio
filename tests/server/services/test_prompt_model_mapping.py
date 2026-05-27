@@ -29,28 +29,27 @@ _PROMPT_BANK_DIR = (
 # holds the expected mock response for this prompt's structured output.
 # None means the prompt does not produce structured output relevant to mocking.
 PROMPT_VERSION_MAP: dict[str, tuple[str, str | None]] = {
-    "playbook_extraction_main": ("v1.0.0", "playbook_extraction"),
+    "playbook_extraction_main": ("v1.1.0", "playbook_extraction"),
     "playbook_extraction_context": ("v4.1.0", None),
     "playbook_should_generate": ("v3.0.0", "boolean_evaluation"),
     "playbook_should_generate_expert": ("v1.0.0", "boolean_evaluation"),
     "playbook_extraction_context_expert": ("v3.1.0", None),
-    "playbook_extraction_main_expert": ("v1.0.0", "playbook_extraction"),
+    "playbook_extraction_main_expert": ("v1.1.0", "playbook_extraction"),
     "playbook_aggregation": ("v2.1.0", "playbook_aggregation"),
     "playbook_deduplication": ("v2.0.0", "playbook_deduplication"),
     "playbook_optimizer_judge": ("v1.0.0", None),
     "profile_update_main": ("v1.0.0", "profile_extraction"),
-    "profile_update_instruction_start": ("v1.1.0", None),
+    "profile_update_instruction_start": ("v1.0.0", None),
     "profile_should_generate": ("v1.0.0", "boolean_evaluation"),
     "profile_should_generate_override": ("v1.0.0", "boolean_evaluation"),
     "profile_deduplication": ("v1.0.0", "profile_deduplication"),
     "agent_success_evaluation": ("v1.0.0", "agent_success_evaluation"),
-    # F1 cleanup: the session-level shadow comparison branch was retracted.
-    # The prompt directories remain on disk (marked active: false in their
-    # frontmatter) as historical records, but they no longer drive any
-    # production code path, so they are mapped without a registry key.
-    "agent_success_evaluation_with_comparison": ("v1.0.0", None),
+    "agent_success_evaluation_with_comparison": (
+        "v1.0.0",
+        "agent_success_evaluation_comparison",
+    ),
     "shadow_content_evaluation": ("v1.0.0", None),
-    "memory_reflection": ("v1.0.0", None),
+    "memory_reflection": ("v1.1.0", None),
     "query_reformulation": ("v1.0.0", None),
     "document_expansion": ("v1.0.0", None),
     # Agentic extraction pipeline — three parallel axes + unify + self-critique
@@ -75,10 +74,6 @@ PROMPT_VERSION_MAP: dict[str, tuple[str, str | None]] = {
     "rerank_relevance": ("v1.1.0", None),
     # Answer-LLM system prompt for memory-grounded user questions
     "answer_synthesis": ("v1.5.2", None),
-    # F1 — per-turn shadow comparison judge. Produces structured
-    # ShadowComparisonOutput; the mock dispatch lives in the integration
-    # tests rather than the global heuristic mock, so no registry key.
-    "shadow_comparison": ("v1.0.0", None),
 }
 
 

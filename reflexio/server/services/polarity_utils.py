@@ -1,23 +1,35 @@
-"""Soft consistency helpers for playbook polarity.
+"""Polarity helpers for playbook orientation.
 
-The source of truth for a playbook's polarity is the typed
-``UserPlaybook.polarity`` field, populated via Pydantic structured output
-in every LLM emission schema that writes playbooks. The functions in
-this module check whether a playbook's free-form ``content`` framing
-agrees with the declared polarity — used to produce a soft warning log
-when the LLM drifts off the writing convention. Never used as the
-classifier for branching logic.
+Extractor prompts teach the LLM to write either direct action rules or
+avoidance rules, but they do not require a separate polarity output field.
+This module derives the internal ``UserPlaybook.polarity`` value from the
+written rule so downstream search, reflection, consolidation, and aggregation
+can still keep action rules separate from avoidance rules.
 """
 
 from __future__ import annotations
 
 import logging
+from typing import Literal
 
 from reflexio.models.api_schema.domain.entities import UserPlaybook
 
 logger = logging.getLogger(__name__)
 
 NEGATIVE_PREFIXES: tuple[str, ...] = ("Avoid", "Do not", "Don't", "Never")
+NEGATIVE_EVIDENCE_TERMS: tuple[str, ...] = (
+    "avoid",
+    "do not",
+    "don't",
+    "never",
+    "failed",
+    "failure",
+    "rejected",
+    "refuted",
+    "pushed back",
+    "self-corrected",
+    "disliked",
+)
 
 
 def looks_negative(content: str) -> bool:
@@ -36,6 +48,32 @@ def looks_negative(content: str) -> bool:
     """
     stripped = content.lstrip()
     return any(stripped.startswith(p) for p in NEGATIVE_PREFIXES)
+
+
+def infer_playbook_polarity(
+    content: str,
+    rationale: str | None = None,
+) -> Literal["positive", "negative"]:
+    """Derive playbook polarity from rule wording and failure evidence.
+
+    Positive/actionable guidance is the default. Negative polarity is reserved
+    for rules that are written as explicit avoidance guidance and whose
+    rationale/content contains a failure signal.
+
+    Args:
+        content (str): The playbook content.
+        rationale (str | None): Optional rationale supporting the playbook.
+
+    Returns:
+        Literal["positive", "negative"]: The derived internal polarity.
+    """
+    if not looks_negative(content):
+        return "positive"
+
+    evidence_text = f"{content}\n{rationale or ''}".lower()
+    if any(term in evidence_text for term in NEGATIVE_EVIDENCE_TERMS):
+        return "negative"
+    return "positive"
 
 
 def warn_if_polarity_content_mismatch(playbook: UserPlaybook) -> None:
