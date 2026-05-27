@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
@@ -460,4 +461,88 @@ def _collect_citations(interactions: list[Interaction]) -> list[Citation]:
                 continue
             seen.add(key)
             out.append(c)
+    return out
+
+
+@dataclass(frozen=True)
+class _EligibleCitation:
+    """A citation that passed the post-horizon filter.
+
+    Attributes:
+        citation (Citation): The citation itself.
+        position (int): 0-indexed position in the window where it
+            appeared (earliest occurrence — see deduplication note in
+            ``_filter_citations_by_horizon``).
+        has_full_horizon (bool): True iff at least
+            ``post_horizon_size`` interactions follow the citation in
+            the window. False indicates a ``last_chance`` judgment
+            with weaker evidence.
+    """
+
+    citation: Citation
+    position: int
+    has_full_horizon: bool
+
+
+def _filter_citations_by_horizon(
+    citations: list[Citation],
+    window: list[Interaction],
+    post_horizon_size: int,
+    stride_size: int,
+) -> list[_EligibleCitation]:
+    """Filter citations to those that have enough post-citation context.
+
+    For each unique ``(kind, real_id)``, finds the **earliest** occurrence
+    in the window (maximizes follow-up turns) and decides:
+
+    - ``after_count >= post_horizon_size`` → eligible, ``has_full_horizon=True``.
+    - ``position < stride_size`` → eligible (last-chance, about to fall
+      out of the window next stride), ``has_full_horizon=False``.
+    - otherwise → deferred (excluded from this pass).
+
+    Only Assistant-role interactions contribute citations to consider —
+    user-role interactions are skipped even if their ``citations`` list is
+    populated.
+
+    Args:
+        citations (list[Citation]): Distinct citations collected from
+            assistant turns in the window.
+        window (list[Interaction]): The reflection window, oldest first.
+        post_horizon_size (int): Minimum follow-up turns required for a
+            full-horizon judgment. Zero disables the horizon check.
+        stride_size (int): Used to detect citations about to fall out.
+
+    Returns:
+        list[_EligibleCitation]: Citations to send to the LLM, each
+        paired with its window position and horizon flag.
+    """
+    seen: dict[tuple[str, str], int] = {}
+    for idx, interaction in enumerate(window):
+        if interaction.role != "Assistant":
+            continue
+        for c in interaction.citations:
+            key = (c.kind, c.real_id)
+            seen.setdefault(key, idx)  # earliest occurrence only
+
+    citation_by_key = {(c.kind, c.real_id): c for c in citations}
+
+    out: list[_EligibleCitation] = []
+    for key, position in seen.items():
+        cite = citation_by_key.get(key)
+        if cite is None:
+            continue
+        after_count = len(window) - position - 1
+        if post_horizon_size <= 0 or after_count >= post_horizon_size:
+            out.append(
+                _EligibleCitation(
+                    citation=cite, position=position, has_full_horizon=True
+                )
+            )
+        elif position < stride_size:
+            out.append(
+                _EligibleCitation(
+                    citation=cite, position=position, has_full_horizon=False
+                )
+            )
+        # else: deferred — not included
     return out
