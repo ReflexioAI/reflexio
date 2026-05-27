@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -35,6 +35,12 @@ class StructuredPlaybookContent(BaseModel):
 
     Field order matters for autoregressive conditioning: rationale is generated
     first, then trigger, then content is synthesized last as a summary.
+
+    ``polarity`` captures whether the entry encodes a desired behavior
+    (``"positive"``) or an anti-pattern to avoid (``"negative"``). It threads
+    through to the constructed :class:`UserPlaybook` so downstream consumers
+    (search, reflection, consolidation) can reason about positive vs. negative
+    guidance uniformly.
     """
 
     rationale: str | None = Field(
@@ -64,6 +70,10 @@ class StructuredPlaybookContent(BaseModel):
     reader_angle: str | None = Field(
         default=None,
         description="The extraction perspective or reader role that surfaced this entry",
+    )
+    polarity: Literal["positive", "negative"] = Field(
+        default="positive",
+        description="'positive' for desired behaviors, 'negative' for anti-patterns to avoid",
     )
 
     model_config = ConfigDict(

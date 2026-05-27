@@ -460,6 +460,12 @@ class PlaybookDeduplicator(BaseDeduplicator):
                 playbook_content,
             )
 
+            # Inherit polarity from the canonical (template) row rather than the
+            # LLM-emitted merged_content: the current dedup prompt does not reason
+            # about polarity, so its StructuredPlaybookContent.polarity would just
+            # be the default "positive" and could silently flip a "negative" row's
+            # polarity on merge. This conservative inheritance goes away with the
+            # consolidator (Task E1), which replaces this deduplicator entirely.
             merged_playbook = UserPlaybook(
                 user_playbook_id=0,  # Will be assigned by storage
                 user_id=template_playbook.user_id,
@@ -471,6 +477,7 @@ class PlaybookDeduplicator(BaseDeduplicator):
                 trigger=merged_content.trigger,
                 rationale=merged_content.rationale,
                 blocking_issue=merged_content.blocking_issue,
+                polarity=template_playbook.polarity,
                 status=template_playbook.status,
                 source=template_playbook.source,
                 source_interaction_ids=combined_source_ids,

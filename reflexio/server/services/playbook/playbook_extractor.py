@@ -467,5 +467,6 @@ class PlaybookExtractor:
             trigger=entry.trigger,
             rationale=entry.rationale,
             blocking_issue=entry.blocking_issue,
+            polarity=entry.polarity,
             source_interaction_ids=source_interaction_ids,
         )
