@@ -1,6 +1,6 @@
 """Aggregator that composes hero, tiles, rule attribution, and distribution.
 
-The service does four reads (results, citations, playbook stats, shadow count)
+The service does three reads (results, citations, playbook stats)
 and returns a GetEvaluationOverviewResponse. It's invoked from the FastAPI
 route handler; the storage is the same BaseStorage the rest of the server
 uses, so the same instance is reused via request_context.
@@ -50,7 +50,7 @@ class EvaluationOverviewService:
     """Builds the full /api/get_evaluation_overview payload.
 
     The service holds a storage handle and the org's current Config. Each
-    call to `run` performs the four reads and returns a fresh response.
+    call to `run` performs the three reads and returns a fresh response.
     Stateless across calls — safe to reuse the instance across requests.
     """
 

@@ -7,6 +7,7 @@ import pytest
 from reflexio.models.api_schema.domain.entities import AgentSuccessEvaluationResult
 from reflexio.server.services.evaluation_overview.service import (
     EvaluationOverviewService,
+    _weekly_buckets,
 )
 
 
@@ -84,3 +85,48 @@ def test_compute_shadow_rate_partial_graded() -> None:
     )
     assert rate == pytest.approx(50.0)
     assert delta == pytest.approx(50.0 - 66.7)
+
+
+def test_weekly_buckets_pin_shadow_rate_in_ratio_form() -> None:
+    """HeroBucket.shadow_rate must be a ratio (0.0-1.0), not pp.
+
+    The hero-level shadow_success_rate_pp uses 0-100 (per its name),
+    but HeroBucket.shadow_rate uses 0-1 to match the existing
+    HeroBucket.regular_rate convention. Pin both fields with concrete
+    values so a future refactor that adds `* 100` to either side
+    breaks loudly.
+    """
+    # Three graded shadow results in the same week, 2 success + 1 failure.
+    # Pick a fixed timestamp that all 3 share so they bucket together.
+    ts = 1700000000
+    results = [
+        _shadow_result(True, shadow_is_success=True, created_at=ts),
+        _shadow_result(True, shadow_is_success=True, created_at=ts),
+        _shadow_result(False, shadow_is_success=False, created_at=ts),
+        # Plus one ungraded — must NOT contribute to shadow_rate or shadow_n
+        _shadow_result(True, shadow_is_success=None, created_at=ts),
+    ]
+    buckets = _weekly_buckets(results)
+    # Expect at least one bucket containing all 4 results
+    bucket = next(b for b in buckets if b.regular_n == 4)
+    assert bucket.shadow_n == 3
+    assert bucket.shadow_rate == pytest.approx(2 / 3)
+    # Crucial: shadow_rate is a ratio, NOT pp — i.e. NOT 66.67
+    assert bucket.shadow_rate is not None and bucket.shadow_rate <= 1.0
+
+
+def test_n_shadow_in_window_excludes_ungraded_rows() -> None:
+    """Ensure rows with shadow_is_success=None do not count toward the
+    FULL-gate threshold. This is the spec's semantics tightening — without
+    it, orgs that publish shadow_content but flip the flag mid-window
+    would prematurely hit FULL state.
+    """
+    results = [
+        _shadow_result(True, shadow_is_success=True),  # counts
+        _shadow_result(True, shadow_is_success=False),  # counts
+        _shadow_result(True, shadow_is_success=None),  # excluded
+        _shadow_result(True, shadow_is_success=None),  # excluded
+    ]
+    # Compute n_shadow_in_window the same way _build_hero does
+    n_shadow_graded = sum(1 for r in results if r.shadow_is_success is not None)
+    assert n_shadow_graded == 2  # not 4

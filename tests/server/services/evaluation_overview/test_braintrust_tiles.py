@@ -56,13 +56,10 @@ def test_service_returns_empty_braintrust_tiles_with_no_imported_scores() -> Non
     storage.org_id = "org_t"
     storage.get_agent_success_evaluation_results.return_value = []
     storage.get_imported_scores.return_value = []
-    storage.count_sessions_with_shadow_content.return_value = 0
     config = Config(storage_config=StorageConfigSQLite(), shadow_mode_enabled=False)
 
     svc = EvaluationOverviewService(storage=storage, config=config)
-    response = svc.run(
-        GetEvaluationOverviewRequest(from_ts=0, to_ts=int(time.time()))
-    )
+    response = svc.run(GetEvaluationOverviewRequest(from_ts=0, to_ts=int(time.time())))
 
     assert response.braintrust_tiles == []
 
@@ -72,7 +69,6 @@ def test_service_emits_braintrust_tiles_with_delta() -> None:
     storage = MagicMock()
     storage.org_id = "org_t"
     storage.get_agent_success_evaluation_results.return_value = []
-    storage.count_sessions_with_shadow_content.return_value = 0
 
     # Storage returns different score sets per (from_ts, to_ts) window
     def get_imported_scores_router(
@@ -93,9 +89,7 @@ def test_service_emits_braintrust_tiles_with_delta() -> None:
     config = Config(storage_config=StorageConfigSQLite(), shadow_mode_enabled=False)
 
     svc = EvaluationOverviewService(storage=storage, config=config)
-    response = svc.run(
-        GetEvaluationOverviewRequest(from_ts=1_000_000, to_ts=2_000_000)
-    )
+    response = svc.run(GetEvaluationOverviewRequest(from_ts=1_000_000, to_ts=2_000_000))
 
     tiles_by_name = {t.scorer_name: t for t in response.braintrust_tiles}
     assert tiles_by_name["hallucination"].current == 0.2
