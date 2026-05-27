@@ -38,6 +38,7 @@ def construct_agent_success_evaluation_messages_from_sessions(
     success_definition_prompt: str,
     tool_can_use: str,
     metadata_definition_prompt: str | None = None,
+    use_shadow: bool = False,
 ) -> list[dict]:
     """
     Construct LLM messages for agent success evaluation from request interaction groups.
@@ -52,6 +53,9 @@ def construct_agent_success_evaluation_messages_from_sessions(
         success_definition_prompt: Definition of what constitutes agent success
         tool_can_use: Description of tools available to the agent
         metadata_definition_prompt: Optional additional metadata definition
+        use_shadow: When True, render assistant turns using shadow_content instead of
+            content, enabling a symmetric second-pass grade of the shadow response.
+            Defaults to False so all existing callers are unaffected.
 
     Returns:
         list[dict]: List of messages ready for agent success evaluation
@@ -66,7 +70,8 @@ def construct_agent_success_evaluation_messages_from_sessions(
             "tool_can_use": tool_can_use,
             "metadata_definition_prompt": metadata_definition_prompt or "",
             "interactions": format_sessions_to_history_string(
-                request_interaction_data_models
+                request_interaction_data_models,
+                use_shadow=use_shadow,
             ),
         },
     )

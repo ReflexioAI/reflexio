@@ -653,6 +653,10 @@ class Config(BaseModel):
             "deduplicates internally."
         ),
     )
+    # When True, run a direct second-pass LLM grade on shadow_content alongside
+    # the combined regular-vs-shadow comparison, populating
+    # AgentSuccessEvaluationResult.shadow_is_success/shadow_is_escalated.
+    shadow_mode_enabled: bool = False
 
     @model_validator(mode="before")
     @classmethod
