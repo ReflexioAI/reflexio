@@ -46,7 +46,10 @@ from reflexio.server.services.extraction.plan import (
     PlaybookStrength,
     ProfileTTL,
 )
-from reflexio.server.services.polarity_utils import infer_playbook_polarity
+from reflexio.server.services.polarity_utils import (
+    infer_playbook_polarity,
+    warn_if_polarity_content_mismatch,
+)
 from reflexio.server.services.profile.profile_generation_service_utils import (
     calculate_expiration_timestamp,
 )
@@ -1242,22 +1245,20 @@ def apply_plan_op(op: Any, storage: Any, ctx: ExtractionCtx) -> None:
     elif isinstance(op, DeleteUserProfileOp):
         storage.delete_profiles_by_ids([op.id])
     elif isinstance(op, CreateUserPlaybookOp):
-        storage.save_user_playbooks(
-            [
-                UserPlaybook(
-                    user_playbook_id=0,  # storage assigns
-                    user_id=ctx.user_id,
-                    agent_version=ctx.agent_version,
-                    request_id=ctx.request_id,
-                    playbook_name=ctx.extractor_name or "default",
-                    content=op.content,
-                    trigger=op.trigger,
-                    rationale=op.rationale,
-                    source_span=op.source_span,
-                    polarity=infer_playbook_polarity(op.content, op.rationale),
-                )
-            ]
+        new_playbook = UserPlaybook(
+            user_playbook_id=0,  # storage assigns
+            user_id=ctx.user_id,
+            agent_version=ctx.agent_version,
+            request_id=ctx.request_id,
+            playbook_name=ctx.extractor_name or "default",
+            content=op.content,
+            trigger=op.trigger,
+            rationale=op.rationale,
+            source_span=op.source_span,
+            polarity=infer_playbook_polarity(op.content, op.rationale),
         )
+        warn_if_polarity_content_mismatch(new_playbook)
+        storage.save_user_playbooks([new_playbook])
     elif isinstance(op, DeleteUserPlaybookOp):
         try:
             playbook_id = int(op.id)

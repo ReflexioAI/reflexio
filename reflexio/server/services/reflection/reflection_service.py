@@ -39,6 +39,9 @@ from reflexio.models.api_schema.domain.entities import (
 )
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.services.operation_state_utils import OperationStateManager
+from reflexio.server.services.polarity_utils import (
+    warn_if_polarity_content_mismatch,
+)
 from reflexio.server.services.reflection.reflection_extractor import (
     ReflectionExtractor,
 )
@@ -507,6 +510,7 @@ class ReflectionService:
             source=cited.source,
             source_interaction_ids=list(cited.source_interaction_ids),
         )
+        warn_if_polarity_content_mismatch(new_playbook)
         storage.save_user_playbooks([new_playbook])
         try:
             archived = storage.archive_user_playbook_by_id(

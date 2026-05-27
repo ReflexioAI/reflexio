@@ -17,6 +17,9 @@ from reflexio.models.api_schema.domain import (
 from reflexio.models.config_schema import PlaybookOptimizerConfig
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient
+from reflexio.server.services.polarity_utils import (
+    warn_if_polarity_content_mismatch,
+)
 
 from .assistant_webhook import AssistantCallable, LocalScriptAssistant, WebhookAssistant
 from .gepa_adapter import PLAYBOOK_CONTENT_COMPONENT, ReflexioPlaybookGEPAAdapter
@@ -454,6 +457,7 @@ class PlaybookOptimizer:
         successor_user = current_user.model_copy(
             update={"user_playbook_id": 0, "content": best_content, "status": None}
         )
+        warn_if_polarity_content_mismatch(successor_user)
         self.storage.save_user_playbooks([successor_user])
         return successor_user.user_playbook_id or None
 
