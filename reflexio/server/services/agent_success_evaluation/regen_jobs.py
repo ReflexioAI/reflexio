@@ -77,11 +77,19 @@ class RegenJobRegistry:
         to_ts: int,
         total: int,
     ) -> RegenJob:
-        """Register a new running job. Raises RuntimeError if (org, evaluator) is active."""
+        """Register a new running job. Raises RuntimeError when an actively-running
+        job exists for (org, evaluator).
+
+        Only *running* jobs block; a previous completed/cancelled/errored job for
+        the same key is replaced. Eviction by TTL is a separate cleanup concern —
+        we don't want users to wait an hour after a completed run before they can
+        regenerate again.
+        """
         with self._lock:
             self._evict_completed_locked(DEFAULT_TTL_SECONDS)
             key = (org_id, evaluation_name)
-            if key in self._by_org_evaluator:
+            active = self._active_job_for_locked(key)
+            if active is not None:
                 raise RuntimeError(
                     f"A regenerate is already running for evaluator '{evaluation_name}'"
                 )
@@ -112,7 +120,24 @@ class RegenJobRegistry:
     def has_active(self, org_id: str, evaluation_name: str) -> bool:
         with self._lock:
             self._evict_completed_locked(DEFAULT_TTL_SECONDS)
-            return (org_id, evaluation_name) in self._by_org_evaluator
+            return self._active_job_for_locked((org_id, evaluation_name)) is not None
+
+    def _active_job_for_locked(self, key: tuple[str, str]) -> RegenJob | None:
+        """Return the running job for (org, evaluator), or None when no live job exists.
+
+        A registry entry whose job has already finished
+        (``completed`` / ``cancelled`` / ``error``) is treated as having no active
+        job — the previous run finished and the user can start a new one. The
+        registry still holds the finished job until TTL eviction so status polls
+        keep working, but it doesn't block new submissions.
+        """
+        job_id = self._by_org_evaluator.get(key)
+        if job_id is None:
+            return None
+        job = self._jobs.get(job_id)
+        if job is None or job.status != "running":
+            return None
+        return job
 
     def evict_completed_older_than(self, ttl_seconds: int) -> None:
         with self._lock:
