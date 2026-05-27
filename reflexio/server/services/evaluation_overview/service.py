@@ -71,7 +71,7 @@ class EvaluationOverviewService:
         prev_from = max(0, prev_to - _WEEK_SECONDS)
         results_prev = [r for r in all_results if prev_from <= r.created_at < prev_to]
 
-        hero = self._build_hero(request, results)
+        hero = self._build_hero(results)
         tiles = self._build_tiles(results, results_prev)
         attribution = self._build_attribution(results)
         distribution = self._build_distribution(results, results_prev)
@@ -89,9 +89,35 @@ class EvaluationOverviewService:
 
     # --- private helpers ---
 
+    @staticmethod
+    def _compute_shadow_rate_and_delta(
+        results: list[AgentSuccessEvaluationResult],
+        regular_rate: float,
+    ) -> tuple[float | None, float | None]:
+        """Compute shadow_success_rate_pp and delta_pp from already-loaded results.
+
+        Returns (None, None) when no row in ``results`` has a non-null
+        shadow_is_success — i.e. shadow mode was off, no shadow_content was
+        published, or the shadow grade failed for every session in the window.
+
+        Args:
+            results: Evaluation results for the current window.
+            regular_rate: The regular success rate in percentage points (0–100).
+
+        Returns:
+            A tuple of (shadow_rate_pp, delta_pp), both None when no shadow
+            grades are present.
+        """
+        graded = [r for r in results if r.shadow_is_success is not None]
+        if not graded:
+            return (None, None)
+        shadow_rate = (
+            sum(1 for r in graded if r.shadow_is_success) / len(graded)
+        ) * 100
+        return (shadow_rate, shadow_rate - regular_rate)
+
     def _build_hero(
         self,
-        request: GetEvaluationOverviewRequest,
         results: list[AgentSuccessEvaluationResult],
     ) -> HeroBlock:
         if not results:
@@ -99,23 +125,15 @@ class EvaluationOverviewService:
         else:
             earliest = min(r.created_at for r in results)
             days_since = (int(datetime.now(UTC).timestamp()) - earliest) // 86_400
-        n_shadow = self.storage.count_sessions_with_shadow_content(  # type: ignore[attr-defined]
-            request.from_ts, request.to_ts
-        )
+        n_shadow_graded = sum(1 for r in results if r.shadow_is_success is not None)
         state = compute_hero_state(
             shadow_enabled=self.config.shadow_mode_enabled,
             days_since_first_eval=days_since,
-            n_shadow_in_window=n_shadow,
+            n_shadow_in_window=n_shadow_graded,
             total_results=len(results),
         )
         success_rate = _success_rate(results) * 100
-        # shadow_rate and delta are None until real shadow-content evaluations
-        # exist. When count_sessions_with_shadow_content > 0 AND a future
-        # storage method exposes shadow-side outcomes, populate from there.
-        # Today both stay None and the frontend renders state-1 vs state-3
-        # purely from the `state` enum.
-        shadow_rate: float | None = None
-        delta: float | None = None
+        shadow_rate, delta = self._compute_shadow_rate_and_delta(results, success_rate)
         return HeroBlock(
             state=state.value,  # type: ignore[arg-type]
             regular_success_rate_pp=success_rate,
@@ -314,14 +332,23 @@ def _weekly_buckets(
         buckets[week_start].append(r)
     out: list[HeroBucket] = []
     for ts in sorted(buckets):
-        bucket = buckets[ts]
+        week_results = buckets[ts]
+        shadow_graded = [r for r in week_results if r.shadow_is_success is not None]
+        if shadow_graded:
+            shadow_rate: float | None = sum(
+                1 for r in shadow_graded if r.shadow_is_success
+            ) / len(shadow_graded)
+            shadow_n = len(shadow_graded)
+        else:
+            shadow_rate = None
+            shadow_n = 0
         out.append(
             HeroBucket(
                 ts=ts,
-                regular_rate=_success_rate(bucket),
-                shadow_rate=None,
-                regular_n=len(bucket),
-                shadow_n=0,
+                regular_rate=_success_rate(week_results),
+                shadow_rate=shadow_rate,
+                regular_n=len(week_results),
+                shadow_n=shadow_n,
             )
         )
     return out
