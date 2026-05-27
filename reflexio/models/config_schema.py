@@ -653,7 +653,6 @@ class Config(BaseModel):
             "deduplicates internally."
         ),
     )
-
     @model_validator(mode="before")
     @classmethod
     def _migrate_field_names(cls, data: Any) -> Any:

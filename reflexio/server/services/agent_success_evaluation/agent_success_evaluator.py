@@ -183,17 +183,34 @@ class AgentSuccessEvaluator:
         )
 
         # Check if any interaction has shadow content
-        if has_shadow_content(all_interactions):
-            return self._evaluate_with_shadow_comparison(
+        shadow_present = has_shadow_content(all_interactions)
+        shadow_grade_enabled = (
+            root_config is not None
+            and root_config.shadow_mode_enabled
+            and shadow_present
+        )
+
+        if shadow_present:
+            # Existing combined-comparison path still runs (populates regular_vs_shadow)
+            result = self._evaluate_with_shadow_comparison(
+                request_interaction_data_models,
+                tool_can_use_str,
+            )
+        else:
+            # No shadow content — use existing single evaluation prompt
+            result = self._evaluate_regular(
                 request_interaction_data_models,
                 tool_can_use_str,
             )
 
-        # No shadow content - use existing evaluation prompt
-        return self._evaluate_regular(
-            request_interaction_data_models,
-            tool_can_use_str,
-        )
+        if shadow_grade_enabled and result is not None:
+            s_is_success, s_is_escalated = self._run_direct_shadow_grade(
+                request_interaction_data_models, tool_can_use_str
+            )
+            result.shadow_is_success = s_is_success
+            result.shadow_is_escalated = s_is_escalated
+
+        return result
 
     def _evaluate_regular(
         self,
@@ -271,6 +288,87 @@ class AgentSuccessEvaluator:
             evaluation_response=evaluation_response,
             request_interaction_data_models=request_interaction_data_models,
         )
+
+    def _run_direct_shadow_grade(
+        self,
+        request_interaction_data_models: list[RequestInteractionDataModel],
+        tool_can_use_str: str,
+    ) -> tuple[bool | None, bool | None]:
+        """Run a second-pass grade against shadow_content using the same rubric.
+
+        Reuses the agent_success_evaluation/v1.0.0 prompt — but with assistant
+        content substituted for shadow_content via the ``use_shadow=True``
+        flag threaded through ``construct_agent_success_evaluation_messages_from_sessions``.
+
+        Returns the outcome tuple ``(is_success, is_escalated)``. Returns
+        ``(None, None)`` when the underlying LLM call fails — callers
+        should not surface a failed shadow grade as ``False``.
+
+        Args:
+            request_interaction_data_models: All request interaction data models in the group
+            tool_can_use_str: Formatted string of available tools
+
+        Returns:
+            tuple[bool | None, bool | None]: ``(is_success, is_escalated)`` outcome pair,
+                or ``(None, None)`` on LLM failure.
+        """
+        messages = construct_agent_success_evaluation_messages_from_sessions(
+            prompt_manager=self.request_context.prompt_manager,
+            request_interaction_data_models=request_interaction_data_models,
+            agent_context_prompt=self.agent_context,
+            success_definition_prompt=(
+                self.config.success_definition_prompt.strip()
+                if self.config.success_definition_prompt
+                else ""
+            ),
+            tool_can_use=tool_can_use_str,
+            metadata_definition_prompt=(
+                self.config.metadata_definition_prompt.strip()
+                if self.config.metadata_definition_prompt
+                else None
+            ),
+            use_shadow=True,
+        )
+
+        log_llm_messages(logger, "Shadow second-pass evaluation", messages)
+
+        logger.info(
+            "event=agent_success_eval_shadow_llm_start session_id=%s evaluation_name=%s "
+            "model=%s",
+            self.service_config.session_id,
+            self.config.evaluation_name,
+            self.default_evaluate_model_name,
+        )
+
+        try:
+            evaluation_response = self.client.generate_chat_response(
+                messages=messages,
+                model=self.default_evaluate_model_name,
+                response_format=AgentSuccessEvaluationOutput,
+            )
+        except Exception:
+            logger.exception("Shadow second-pass grade failed; leaving outcome None")
+            return (None, None)
+
+        if not evaluation_response:
+            logger.info(
+                "No shadow evaluation can be generated for session %s",
+                self.service_config.session_id,
+            )
+            return (None, None)
+
+        log_model_response(
+            logger, "Shadow second-pass evaluation response", evaluation_response
+        )
+
+        if not isinstance(evaluation_response, AgentSuccessEvaluationOutput):
+            logger.warning(
+                "Unexpected response type from shadow evaluation LLM: %s",
+                type(evaluation_response),
+            )
+            return (None, None)
+
+        return (evaluation_response.is_success, evaluation_response.is_escalated)
 
     def _evaluate_with_shadow_comparison(
         self,

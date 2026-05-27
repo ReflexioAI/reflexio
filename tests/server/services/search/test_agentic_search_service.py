@@ -199,7 +199,7 @@ def test_agentic_fetch_entities_excludes_rejected_by_default():
     )
 
     storage = SimpleNamespace(
-        get_agent_playbooks=lambda agent_version: [
+        get_agent_playbooks=lambda _agent_version: [
             AgentPlaybook(
                 agent_playbook_id=1,
                 agent_version="v1",

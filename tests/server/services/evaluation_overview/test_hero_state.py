@@ -59,3 +59,29 @@ def test_full_when_all_thresholds_met() -> None:
         total_results=800,
     )
     assert state == HeroState.FULL
+
+
+def test_full_gate_threshold_499_vs_500_graded_shadow_rows() -> None:
+    """Pin the 500-graded-shadow-rows boundary.
+
+    Why: the n_shadow_in_window semantics changed from "sessions with
+    shadow_content" (storage call) to "rows with non-null shadow_is_success"
+    (in-memory count). A future caller change that reverts the filter would
+    silently push orgs into FULL state on ungraded shadow rows. The 499/500
+    threshold is the load-bearing gate; pin both sides explicitly.
+    """
+    below = compute_hero_state(
+        shadow_enabled=True,
+        days_since_first_eval=30,
+        n_shadow_in_window=499,
+        total_results=499,
+    )
+    assert below == HeroState.EARLY
+
+    at = compute_hero_state(
+        shadow_enabled=True,
+        days_since_first_eval=30,
+        n_shadow_in_window=500,
+        total_results=500,
+    )
+    assert at == HeroState.FULL

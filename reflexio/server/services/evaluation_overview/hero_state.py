@@ -39,8 +39,12 @@ def compute_hero_state(
         shadow_enabled (bool): Value of `Config.shadow_mode_enabled`.
         days_since_first_eval (int | None): Wall-clock days since the first
             ever evaluated session for this org. None when no results exist.
-        n_shadow_in_window (int): Count of sessions with non-empty shadow
-            content inside the trend window (last 8 weeks).
+        n_shadow_in_window (int): Count of evaluation results with a non-null
+            shadow_is_success grade inside the trend window. Caller is
+            responsible for filtering; this function only consumes the count.
+            Why graded-only: prevents the FULL gate from tripping mid-window-
+            flag-flip when sessions exist with shadow_content but no shadow
+            grade.
         total_results (int): Total AgentSuccessEvaluationResult rows in the
             trend window (used only to differentiate EMPTY from SHADOW_OFF).
 
@@ -51,7 +55,10 @@ def compute_hero_state(
     if total_results == 0:
         return HeroState.EMPTY
     if not shadow_enabled:
-        if days_since_first_eval is not None and days_since_first_eval >= _SHADOW_OFF_MIN_DAYS:
+        if (
+            days_since_first_eval is not None
+            and days_since_first_eval >= _SHADOW_OFF_MIN_DAYS
+        ):
             return HeroState.SHADOW_OFF
         # <7 days since first eval AND shadow off → still onboarding;
         # render as EMPTY so the frontend shows onboarding rather than a
