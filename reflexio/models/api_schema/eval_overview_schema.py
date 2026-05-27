@@ -8,7 +8,9 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+from reflexio.models.api_schema.validators import NonEmptyStr
 
 HeroStateLiteral = Literal["full", "early", "shadow_off", "empty"]
 BucketLiteral = Literal["day", "week"]
@@ -117,3 +119,83 @@ class GetEvaluationOverviewResponse(BaseModel):
     rule_attribution: list[RuleAttributionRow]
     score_distribution: ScoreDistribution
     braintrust_tiles: list[BraintrustTileRow] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# /api/evaluations/regenerate — replay-the-judge endpoints
+# ---------------------------------------------------------------------------
+
+
+class RegenerateRequest(BaseModel):
+    """Input for POST /api/evaluations/regenerate.
+
+    Args:
+        evaluation_name (NonEmptyStr): Name of the evaluator to replay.
+            Must match one of the ``agent_success_configs[*].evaluation_name``
+            entries in the caller's config.
+        from_ts (int): Inclusive lower bound of the window (Unix seconds).
+        to_ts (int): Inclusive upper bound of the window (Unix seconds).
+            Must be strictly greater than ``from_ts``.
+    """
+
+    evaluation_name: NonEmptyStr
+    from_ts: int = Field(ge=0)
+    to_ts: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def _check_window(self) -> RegenerateRequest:
+        if self.from_ts >= self.to_ts:
+            raise ValueError("from_ts must be strictly before to_ts")
+        return self
+
+
+class RegenerateStartResponse(BaseModel):
+    """Returned by POST /api/evaluations/regenerate.
+
+    Args:
+        job_id (str): Opaque handle used to poll status or cancel.
+        total (int): Number of distinct (user, session, agent_version, source)
+            tuples the worker will replay.
+    """
+
+    job_id: str
+    total: int
+
+
+class RegenerateFailure(BaseModel):
+    """One failed session in a regenerate job's failure list.
+
+    Args:
+        session_id (str): The session whose replay failed.
+        reason (str): Truncated exception message (worker boundary).
+    """
+
+    session_id: str
+    reason: str
+
+
+class RegenerateStatusResponse(BaseModel):
+    """Returned by GET /api/evaluations/regenerate/{job_id}.
+
+    Args:
+        job_id (str): Opaque job handle.
+        status (Literal["running", "completed", "cancelled", "error"]):
+            Current lifecycle state.
+        total (int): Total tuples queued at job creation.
+        completed (int): Number of successfully replayed tuples.
+        failed (int): Number of tuples that raised in the worker.
+        failures (list[RegenerateFailure]): Per-session failure rows, capped
+            inside the worker so the response stays small.
+        started_at (float): Monotonic timestamp at job creation.
+        finished_at (float | None): Monotonic timestamp at completion;
+            None while ``status == "running"``.
+    """
+
+    job_id: str
+    status: Literal["running", "completed", "cancelled", "error"]
+    total: int
+    completed: int
+    failed: int
+    failures: list[RegenerateFailure]
+    started_at: float
+    finished_at: float | None

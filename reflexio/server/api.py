@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import threading
 from collections.abc import Callable
 from typing import Any
 
@@ -30,6 +31,10 @@ from reflexio.models.api_schema.braintrust_schema import (
 from reflexio.models.api_schema.eval_overview_schema import (
     GetEvaluationOverviewRequest,
     GetEvaluationOverviewResponse,
+    RegenerateFailure,
+    RegenerateRequest,
+    RegenerateStartResponse,
+    RegenerateStatusResponse,
 )
 from reflexio.models.api_schema.retriever_schema import (
     GetAgentPlaybooksRequest,
@@ -153,6 +158,10 @@ from reflexio.server.cache.reflexio_cache import (
     invalidate_reflexio_cache,
 )
 from reflexio.server.correlation import correlation_id_var, generate_correlation_id
+from reflexio.server.services.agent_success_evaluation.regen_jobs import (
+    REGEN_JOBS,
+    _run_regen,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1676,6 +1685,143 @@ def get_evaluation_overview(
     """
     reflexio = get_reflexio(org_id=org_id)
     return reflexio.get_evaluation_overview(request)
+
+
+# ---------------------------------------------------------------------------
+# /api/evaluations/regenerate — replay the LLM judge over a window
+# ---------------------------------------------------------------------------
+
+
+@core_router.post(
+    "/api/evaluations/regenerate",
+    response_model=RegenerateStartResponse,
+    response_model_exclude_none=True,
+)
+def start_regenerate(
+    payload: RegenerateRequest,
+    org_id: str = Depends(default_get_org_id),
+) -> RegenerateStartResponse:
+    """Start a regenerate job for one evaluator over a time window.
+
+    Args:
+        payload (RegenerateRequest): Evaluator name + window bounds.
+        org_id (str): Organization ID resolved by the auth dependency.
+
+    Returns:
+        RegenerateStartResponse: ``job_id`` to poll/cancel and ``total``
+            tuples queued.
+
+    Raises:
+        HTTPException: 400 when ``evaluation_name`` is not configured for
+            the org. 409 when a regenerate for the same (org, evaluator)
+            is already running. 503 when storage is not configured.
+    """
+    reflexio = get_reflexio(org_id=org_id)
+    config = reflexio.request_context.configurator.get_config()
+    known = (
+        {c.evaluation_name for c in (config.agent_success_configs or [])}
+        if config is not None
+        else set()
+    )
+    if payload.evaluation_name not in known:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown evaluation_name '{payload.evaluation_name}'",
+        )
+    if REGEN_JOBS.has_active(org_id, payload.evaluation_name):
+        raise HTTPException(status_code=409, detail="A regenerate is already running")
+
+    storage = reflexio.request_context.storage
+    if storage is None:
+        raise HTTPException(status_code=503, detail="Storage not configured")
+    descriptors = storage.get_session_ids_in_window(
+        from_ts=payload.from_ts, to_ts=payload.to_ts
+    )
+    job = REGEN_JOBS.create(
+        org_id=org_id,
+        evaluation_name=payload.evaluation_name,
+        from_ts=payload.from_ts,
+        to_ts=payload.to_ts,
+        total=len(descriptors),
+    )
+    threading.Thread(
+        target=_run_regen,
+        kwargs={
+            "job": job,
+            "request_context": reflexio.request_context,
+            "llm_client": reflexio.llm_client,
+        },
+        daemon=True,
+    ).start()
+    return RegenerateStartResponse(job_id=job.job_id, total=job.total)
+
+
+@core_router.get(
+    "/api/evaluations/regenerate/{job_id}",
+    response_model=RegenerateStatusResponse,
+    response_model_exclude_none=True,
+)
+def get_regenerate_status(
+    job_id: str,
+    org_id: str = Depends(default_get_org_id),
+) -> RegenerateStatusResponse:
+    """Poll the status of a regenerate job.
+
+    Args:
+        job_id (str): Opaque handle returned by POST /api/evaluations/regenerate.
+        org_id (str): Organization ID resolved by the auth dependency.
+
+    Returns:
+        RegenerateStatusResponse: Counters, status, and failure list.
+
+    Raises:
+        HTTPException: 404 when ``job_id`` is unknown or belongs to a
+            different org.
+    """
+    job = REGEN_JOBS.get(job_id)
+    if job is None or job.org_id != org_id:
+        raise HTTPException(status_code=404, detail="Unknown job_id")
+    return RegenerateStatusResponse(
+        job_id=job.job_id,
+        status=job.status,
+        total=job.total,
+        completed=job.completed,
+        failed=job.failed,
+        failures=[
+            RegenerateFailure(session_id=f.session_id, reason=f.reason)
+            for f in job.failures
+        ],
+        started_at=job.started_at,
+        finished_at=job.finished_at,
+    )
+
+
+@core_router.delete("/api/evaluations/regenerate/{job_id}")
+def cancel_regenerate(
+    job_id: str,
+    org_id: str = Depends(default_get_org_id),
+) -> dict[str, str]:
+    """Request cancellation of a running regenerate job.
+
+    Sets the worker's cancel event; the worker checks the flag between
+    sessions and transitions to ``"cancelled"`` on its next iteration.
+
+    Args:
+        job_id (str): Opaque handle returned by POST /api/evaluations/regenerate.
+        org_id (str): Organization ID resolved by the auth dependency.
+
+    Returns:
+        dict[str, str]: ``{"status": "cancelled"}`` on successful flag set.
+
+    Raises:
+        HTTPException: 404 when ``job_id`` is unknown or belongs to a
+            different org.
+    """
+    job = REGEN_JOBS.get(job_id)
+    if job is None or job.org_id != org_id:
+        raise HTTPException(status_code=404, detail="Unknown job_id")
+    REGEN_JOBS.cancel(job_id)
+    return {"status": "cancelled"}
 
 
 @core_router.post(
