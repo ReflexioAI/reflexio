@@ -552,6 +552,7 @@ class PlaybookConsolidator(BaseDeduplicator):
             new_rows.extend(rows)
             handled_new_ids.update(marked_new_ids)
             self._bump_counter(result_counters, decision.kind)
+            self._log_decision(decision, candidates_by_id, existing_by_id)
 
         # Safety fallback: add any NEW entries the LLM did not reference, so a
         # misbehaving model cannot silently drop extracted playbooks.
@@ -898,3 +899,58 @@ class PlaybookConsolidator(BaseDeduplicator):
         """
         field = _COUNTER_BY_KIND[kind]
         setattr(result, field, getattr(result, field) + 1)
+
+    @staticmethod
+    def _log_decision(
+        decision: ConsolidationDecision,
+        candidates_by_id: dict[str, UserPlaybook],
+        existing_by_id: dict[int, UserPlaybook],
+    ) -> None:
+        """Emit a structured per-decision log line for probe ingest.
+
+        Emits ``playbook_consolidation.decision`` with the 5-kind name,
+        new/existing ids, polarity of each side, and trigger_match.
+        Polarity is looked up from the candidate/existing maps; falls back
+        to ``unknown`` if the playbook is not found (should not happen in
+        normal operation).
+
+        Args:
+            decision: The applied consolidation decision.
+            candidates_by_id: Mapping ``"NEW-N"`` -> candidate playbook.
+            existing_by_id: Mapping ``user_playbook_id`` -> existing playbook.
+        """
+        kind = decision.kind
+        # DuplicateDecision uses item_ids, not a single new_id/existing_id.
+        if isinstance(decision, DuplicateDecision):
+            logger.info(
+                "playbook_consolidation.decision kind=%s new_id=%s existing_id=%s "
+                "new_polarity=%s existing_polarity=%s trigger_match=%s",
+                kind,
+                "multi",
+                "multi",
+                "unknown",
+                "unknown",
+                "unknown",
+            )
+            return
+        new_id: str = getattr(decision, "new_id", "")
+        existing_id_raw: int = getattr(decision, "existing_id", 0)
+        new_pb = candidates_by_id.get(new_id)
+        existing_pb = existing_by_id.get(existing_id_raw)
+        new_polarity = new_pb.polarity if new_pb else "unknown"
+        existing_polarity = existing_pb.polarity if existing_pb else "unknown"
+        trigger_match = (
+            new_pb is not None
+            and existing_pb is not None
+            and new_pb.trigger == existing_pb.trigger
+        )
+        logger.info(
+            "playbook_consolidation.decision kind=%s new_id=%s existing_id=%s "
+            "new_polarity=%s existing_polarity=%s trigger_match=%s",
+            kind,
+            new_id,
+            existing_id_raw,
+            new_polarity,
+            existing_polarity,
+            str(trigger_match).lower(),
+        )

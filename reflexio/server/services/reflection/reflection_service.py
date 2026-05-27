@@ -511,6 +511,17 @@ class ReflectionService:
             source_interaction_ids=list(cited.source_interaction_ids),
         )
         warn_if_polarity_content_mismatch(new_playbook)
+        if new_playbook.polarity != cited.polarity:
+            logger.info(
+                "reflection.flip prior_polarity=%s new_polarity=%s playbook_id=%s "
+                'content_excerpt="%s" prior_excerpt="%s" citation_excerpt="%s"',
+                cited.polarity,
+                new_playbook.polarity,
+                cited.user_playbook_id,
+                (new_playbook.content or "")[:120].replace('"', "'"),
+                (cited.content or "")[:120].replace('"', "'"),
+                (decision.new_rationale or "")[:120].replace('"', "'"),
+            )
         storage.save_user_playbooks([new_playbook])
         try:
             archived = storage.archive_user_playbook_by_id(
