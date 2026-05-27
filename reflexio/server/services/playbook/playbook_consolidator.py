@@ -6,8 +6,9 @@ and hybrid search against existing entries in the database.
 import logging
 import os
 from datetime import UTC, datetime
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from reflexio.models.api_schema.retriever_schema import SearchUserPlaybookRequest
 from reflexio.models.api_schema.service_schemas import UserPlaybook
@@ -36,8 +37,14 @@ logger = logging.getLogger(__name__)
 # ===============================
 
 
-class PlaybookConsolidationDuplicateGroup(BaseModel):
-    """A group of duplicate playbook entries to merge, with old entries to delete."""
+# Legacy schema kept alive until E3 rewires apply paths; remove in E3.
+class PlaybookConsolidationDuplicateGroupLegacy(BaseModel):
+    """A group of duplicate playbook entries to merge, with old entries to delete.
+
+    Legacy schema retained so the existing apply path (``_build_deduplicated_results``)
+    and the LLM mock registry keep working until Task E3 rewires the apply path to
+    consume the new ``ConsolidationDecision`` discriminated union.
+    """
 
     item_ids: list[str] = Field(
         description="IDs of items in this group matching prompt format (e.g., 'NEW-0', 'EXISTING-1')"
@@ -52,10 +59,16 @@ class PlaybookConsolidationDuplicateGroup(BaseModel):
     )
 
 
-class PlaybookConsolidationOutput(BaseModel):
-    """Output schema for playbook consolidation with NEW vs EXISTING merge support."""
+# Legacy schema kept alive until E3 rewires apply paths; remove in E3.
+class PlaybookConsolidationOutputLegacy(BaseModel):
+    """Output schema for playbook consolidation with NEW vs EXISTING merge support.
 
-    duplicate_groups: list[PlaybookConsolidationDuplicateGroup] = Field(
+    Legacy two-bucket shape (``duplicate_groups`` + ``unique_ids``) used by the
+    current apply path. Will be replaced in Task E3 by direct consumption of the
+    new ``PlaybookConsolidationOutput`` (discriminated union of decisions).
+    """
+
+    duplicate_groups: list[PlaybookConsolidationDuplicateGroupLegacy] = Field(
         default=[], description="Groups of duplicate playbook entries to merge"
     )
     unique_ids: list[str] = Field(
@@ -66,6 +79,97 @@ class PlaybookConsolidationOutput(BaseModel):
         extra="allow",
         json_schema_extra={"additionalProperties": False},
     )
+
+
+class DuplicateDecision(BaseModel):
+    """Multiple rows collapse into one merged row (same intent)."""
+
+    kind: Literal["duplicate"] = "duplicate"
+    item_ids: list[str] = Field(
+        description="Mix of 'NEW-N' / 'EXISTING-M' ids in the duplicate group"
+    )
+    merged_content: str
+    merged_trigger: str
+    merged_rationale: str
+    merged_polarity: Literal["positive", "negative"]
+    reason: str = ""
+
+    model_config = ConfigDict(json_schema_extra={"additionalProperties": False})
+
+
+class PreferNewDecision(BaseModel):
+    """The new candidate wins: archive existing, insert new as-is."""
+
+    kind: Literal["prefer_new"] = "prefer_new"
+    new_id: str
+    existing_id: int
+    reason: str = ""
+
+    model_config = ConfigDict(json_schema_extra={"additionalProperties": False})
+
+
+class PreferExistingDecision(BaseModel):
+    """The existing row wins: drop the new candidate (storage no-op)."""
+
+    kind: Literal["prefer_existing"] = "prefer_existing"
+    new_id: str
+    existing_id: int
+    reason: str = ""
+
+    model_config = ConfigDict(json_schema_extra={"additionalProperties": False})
+
+
+class DifferentiateDecision(BaseModel):
+    """Both rules valid in distinct contexts: refine both triggers."""
+
+    kind: Literal["differentiate"] = "differentiate"
+    new_id: str
+    existing_id: int
+    refined_new_trigger: str
+    refined_existing_trigger: str
+    reason: str = ""
+
+    @field_validator("refined_new_trigger", "refined_existing_trigger")
+    @classmethod
+    def _non_empty(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("differentiate requires non-empty refined triggers")
+        return v
+
+    model_config = ConfigDict(json_schema_extra={"additionalProperties": False})
+
+
+class IndependentDecision(BaseModel):
+    """Unrelated to any existing row: insert new as-is, no archive."""
+
+    kind: Literal["independent"] = "independent"
+    new_id: str
+    reason: str = ""
+
+    model_config = ConfigDict(json_schema_extra={"additionalProperties": False})
+
+
+ConsolidationDecision = Annotated[
+    DuplicateDecision
+    | PreferNewDecision
+    | PreferExistingDecision
+    | DifferentiateDecision
+    | IndependentDecision,
+    Field(discriminator="kind"),
+]
+
+
+class PlaybookConsolidationOutput(BaseModel):
+    """Output schema for playbook consolidation as a 5-kind discriminated union.
+
+    Each decision is one of ``DuplicateDecision``, ``PreferNewDecision``,
+    ``PreferExistingDecision``, ``DifferentiateDecision``, or
+    ``IndependentDecision``; the ``kind`` literal selects the concrete shape.
+    """
+
+    decisions: list[ConsolidationDecision] = Field(default_factory=list)
+
+    model_config = ConfigDict(json_schema_extra={"additionalProperties": False})
 
 
 class PlaybookConsolidator(BaseDeduplicator):
@@ -106,8 +210,9 @@ class PlaybookConsolidator(BaseDeduplicator):
         return "new_playbooks"
 
     def _get_output_schema_class(self) -> type[BaseModel]:
-        """Return PlaybookConsolidationOutput for new/existing merge."""
-        return PlaybookConsolidationOutput
+        """Return the legacy two-bucket schema until E3 rewires the apply path."""
+        # Legacy schema kept alive until E3 rewires apply paths; remove in E3.
+        return PlaybookConsolidationOutputLegacy
 
     def _format_items_for_prompt(self, playbooks: list[UserPlaybook]) -> str:
         """
@@ -325,7 +430,7 @@ class PlaybookConsolidator(BaseDeduplicator):
 
             log_model_response(logger, "Consolidation response", response)
 
-            if not isinstance(response, PlaybookConsolidationOutput):
+            if not isinstance(response, PlaybookConsolidationOutputLegacy):
                 logger.warning(
                     "Unexpected response type from consolidation LLM: %s",
                     type(response),
@@ -362,7 +467,7 @@ class PlaybookConsolidator(BaseDeduplicator):
         self,
         new_playbooks: list[UserPlaybook],
         existing_playbooks: list[UserPlaybook],
-        dedup_output: PlaybookConsolidationOutput,
+        dedup_output: PlaybookConsolidationOutputLegacy,
         request_id: str,
         agent_version: str,  # noqa: ARG002
     ) -> tuple[list[UserPlaybook], list[int]]:

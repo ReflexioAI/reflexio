@@ -6,8 +6,13 @@ import pytest
 
 from reflexio.models.api_schema.service_schemas import UserPlaybook
 from reflexio.server.services.playbook.playbook_consolidator import (
-    PlaybookConsolidationDuplicateGroup,
-    PlaybookConsolidationOutput,
+    # Legacy schema kept alive until E3 rewires apply paths; remove in E3.
+    PlaybookConsolidationDuplicateGroupLegacy as PlaybookConsolidationDuplicateGroup,
+)
+from reflexio.server.services.playbook.playbook_consolidator import (
+    PlaybookConsolidationOutputLegacy as PlaybookConsolidationOutput,
+)
+from reflexio.server.services.playbook.playbook_consolidator import (
     PlaybookConsolidator,
 )
 from reflexio.server.services.playbook.playbook_service_utils import (
