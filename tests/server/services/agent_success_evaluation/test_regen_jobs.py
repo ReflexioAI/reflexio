@@ -154,3 +154,45 @@ def test_run_regen_observes_cancel_between_sessions():
 
     assert job.status == "cancelled"
     assert job.completed == 2
+
+
+def test_create_succeeds_after_previous_job_completed_within_ttl():
+    """Bug fix: a completed job in the registry must NOT block a new regen.
+
+    Pre-fix: ``has_active`` and ``create`` both checked
+    ``key in _by_org_evaluator``, which stayed populated until TTL eviction
+    (default 1h). That meant users couldn't regenerate again for an hour
+    after a successful run. After the fix, only a job whose ``status`` is
+    still ``"running"`` blocks new submissions.
+    """
+    from reflexio.server.services.agent_success_evaluation.regen_jobs import (
+        RegenJobRegistry,
+    )
+
+    reg = RegenJobRegistry()
+    first = reg.create(org_id="o", evaluation_name="e", from_ts=0, to_ts=1, total=2)
+    first.status = "completed"
+    # Registry still holds the finished job (TTL hasn't run); has_active must
+    # report False because nothing is running anymore.
+    assert reg.has_active("o", "e") is False
+    # And a fresh create must succeed instead of raising.
+    second = reg.create(org_id="o", evaluation_name="e", from_ts=0, to_ts=1, total=3)
+    assert second.job_id != first.job_id
+    assert second.status == "running"
+    assert reg.has_active("o", "e") is True
+    # The previous completed job is still fetchable until TTL eviction.
+    assert reg.get(first.job_id) is not None
+
+
+def test_create_still_blocks_when_previous_job_is_running():
+    """Sanity-check: the gate still fires when the previous job is actually running."""
+    from reflexio.server.services.agent_success_evaluation.regen_jobs import (
+        RegenJobRegistry,
+    )
+
+    reg = RegenJobRegistry()
+    reg.create(org_id="o", evaluation_name="e", from_ts=0, to_ts=1, total=2)
+    import pytest
+
+    with pytest.raises(RuntimeError, match="already running"):
+        reg.create(org_id="o", evaluation_name="e", from_ts=0, to_ts=1, total=2)
