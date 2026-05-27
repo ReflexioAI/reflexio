@@ -186,7 +186,7 @@ class AgentSuccessEvaluator:
         shadow_present = has_shadow_content(all_interactions)
         shadow_grade_enabled = (
             root_config is not None
-            and getattr(root_config, "shadow_mode_enabled", False)
+            and root_config.shadow_mode_enabled
             and shadow_present
         )
 
@@ -331,6 +331,14 @@ class AgentSuccessEvaluator:
         )
 
         log_llm_messages(logger, "Shadow second-pass evaluation", messages)
+
+        logger.info(
+            "event=agent_success_eval_shadow_llm_start session_id=%s evaluation_name=%s "
+            "model=%s",
+            self.service_config.session_id,
+            self.config.evaluation_name,
+            self.default_evaluate_model_name,
+        )
 
         try:
             evaluation_response = self.client.generate_chat_response(

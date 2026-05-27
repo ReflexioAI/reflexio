@@ -12,13 +12,14 @@ from reflexio.server.api_endpoints.request_context import (
     RequestContext,
     get_request_context,
 )
+from reflexio.server.services.storage.storage_base import BaseStorage
 
 router = APIRouter(tags=["stall_state"])
 
 _UNSUPPORTED_DETAIL = "Stall state is not supported by the configured storage backend"
 
 
-def _require_storage(ctx: RequestContext):
+def _require_storage(ctx: RequestContext) -> BaseStorage:
     """Return ``ctx.storage`` or raise 503 when storage isn't configured.
 
     Cloud-mode deployments may run with ``ctx.storage is None`` until the
@@ -34,9 +35,8 @@ def _require_storage(ctx: RequestContext):
     Raises:
         HTTPException: 503 when storage is not configured.
     """
-    if not ctx.is_storage_configured():
+    if not ctx.is_storage_configured() or ctx.storage is None:
         raise HTTPException(status_code=503, detail="Storage not configured")
-    assert ctx.storage is not None  # narrows BaseStorage | None -> BaseStorage
     return ctx.storage
 
 

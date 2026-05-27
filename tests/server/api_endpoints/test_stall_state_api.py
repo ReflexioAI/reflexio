@@ -20,9 +20,11 @@ from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 @pytest.fixture()
 def storage():
     """A real SQLiteStorage instance in a temporary directory."""
-    with tempfile.TemporaryDirectory() as tmp:
-        with patch.object(SQLiteStorage, "_get_embedding", return_value=[0.0] * 512):
-            yield SQLiteStorage(org_id="test-stall", db_path=f"{tmp}/reflexio.db")
+    with (
+        tempfile.TemporaryDirectory() as tmp,
+        patch.object(SQLiteStorage, "_get_embedding", return_value=[0.0] * 512),
+    ):
+        yield SQLiteStorage(org_id="test-stall", db_path=f"{tmp}/reflexio.db")
 
 
 @pytest.fixture()

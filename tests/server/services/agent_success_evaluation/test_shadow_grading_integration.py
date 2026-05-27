@@ -15,7 +15,7 @@ Fixture adaptations vs the plan template:
 """
 
 import tempfile
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
@@ -195,6 +195,82 @@ def test_shadow_grade_skipped_when_flag_off(temp_dir):
         results = evaluator.run()
 
     assert not mock_shadow.called
+    assert len(results) == 1
+    result = results[0]
+    assert result.shadow_is_success is None
+    assert result.shadow_is_escalated is None
+
+
+def test_shadow_grade_calls_use_shadow_true_and_populates_result(temp_dir):
+    """_run_direct_shadow_grade body executes and threads use_shadow=True through."""
+    evaluator = _make_evaluator(temp_dir, shadow_mode_enabled=True, with_shadow=True)
+
+    captured: dict[str, object] = {}
+
+    real_construct = (
+        "reflexio.server.services.agent_success_evaluation"
+        ".agent_success_evaluator"
+        ".construct_agent_success_evaluation_messages_from_sessions"
+    )
+
+    def capture_construct(*args: object, **kwargs: object) -> list[dict[str, str]]:
+        captured["use_shadow"] = kwargs.get("use_shadow")
+        return [{"role": "user", "content": "test"}]
+
+    # call 1 — _evaluate_with_shadow_comparison (uses AgentSuccessEvaluationWithComparisonOutput)
+    # call 2 — _run_direct_shadow_grade (uses AgentSuccessEvaluationOutput)
+    valid_comparison = AgentSuccessEvaluationWithComparisonOutput(
+        is_success=True,
+        better_request="1",
+        is_significantly_better=False,
+    )
+    valid_output = AgentSuccessEvaluationOutput(is_success=True, is_escalated=False)
+    call_count: dict[str, int] = {"n": 0}
+
+    def llm_side_effect(*args: object, **kwargs: object) -> object:
+        call_count["n"] += 1
+        response_format = kwargs.get("response_format")
+        if response_format is AgentSuccessEvaluationWithComparisonOutput:
+            return valid_comparison
+        return valid_output
+
+    evaluator.client.generate_chat_response = Mock(side_effect=llm_side_effect)
+
+    with patch(real_construct, side_effect=capture_construct):
+        results = evaluator.run()
+
+    assert captured.get("use_shadow") is True
+    assert len(results) == 1
+    result = results[0]
+    assert result.shadow_is_success is True
+    assert result.shadow_is_escalated is False
+
+
+def test_shadow_grade_returns_none_when_llm_raises(temp_dir):
+    """_run_direct_shadow_grade returns (None, None) when the LLM call raises."""
+    evaluator = _make_evaluator(temp_dir, shadow_mode_enabled=True, with_shadow=True)
+
+    valid_comparison = AgentSuccessEvaluationWithComparisonOutput(
+        is_success=True,
+        better_request="1",
+        is_significantly_better=False,
+    )
+    call_count: dict[str, int] = {"n": 0}
+
+    def side_effect(*args: object, **kwargs: object) -> object:
+        call_count["n"] += 1
+        response_format = kwargs.get("response_format")
+        if response_format is AgentSuccessEvaluationWithComparisonOutput:
+            # First call — regular combined comparison — succeeds
+            return valid_comparison
+        # Second call — shadow grade — fails
+        raise RuntimeError("simulated provider failure")
+
+    evaluator.client.generate_chat_response = Mock(side_effect=side_effect)
+
+    results = evaluator.run()
+
+    assert results is not None
     assert len(results) == 1
     result = results[0]
     assert result.shadow_is_success is None
