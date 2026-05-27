@@ -494,6 +494,16 @@ def _row_to_eval_result(row: sqlite3.Row) -> AgentSuccessEvaluationResult:
         number_of_correction_per_session=d.get("number_of_correction_per_session") or 0,
         user_turns_to_resolution=d.get("user_turns_to_resolution"),
         is_escalated=bool(d.get("is_escalated", False)),
+        shadow_is_success=(
+            bool(d["shadow_is_success"])
+            if d.get("shadow_is_success") is not None
+            else None
+        ),
+        shadow_is_escalated=(
+            bool(d["shadow_is_escalated"])
+            if d.get("shadow_is_escalated") is not None
+            else None
+        ),
         embedding=[],
     )
 
@@ -652,6 +662,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         self._migrate_expanded_terms()
         self._migrate_agentic_signals()
         self._migrate_agent_playbook_source_windows()
+        self._migrate_evaluation_result_shadow_columns()
         init_stall_state_table(self.conn)
         return True
 
@@ -1136,6 +1147,36 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         )
         self.conn.commit()
 
+    def _migrate_evaluation_result_shadow_columns(self) -> None:
+        """Add shadow_is_success and shadow_is_escalated columns to evaluation results."""
+        cols = {
+            row["name"]
+            for row in self.conn.execute(
+                "PRAGMA table_info(agent_success_evaluation_result)"
+            ).fetchall()
+        }
+        if not cols:
+            return
+        if "shadow_is_success" not in cols:
+            with self._lock:
+                self.conn.execute(
+                    "ALTER TABLE agent_success_evaluation_result "
+                    "ADD COLUMN shadow_is_success INTEGER"
+                )
+                logger.info(
+                    "Added shadow_is_success column to agent_success_evaluation_result"
+                )
+        if "shadow_is_escalated" not in cols:
+            with self._lock:
+                self.conn.execute(
+                    "ALTER TABLE agent_success_evaluation_result "
+                    "ADD COLUMN shadow_is_escalated INTEGER"
+                )
+                logger.info(
+                    "Added shadow_is_escalated column to agent_success_evaluation_result"
+                )
+        self.conn.commit()
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
@@ -1555,6 +1596,8 @@ CREATE TABLE IF NOT EXISTS agent_success_evaluation_result (
     number_of_correction_per_session INTEGER NOT NULL DEFAULT 0,
     user_turns_to_resolution INTEGER,
     is_escalated INTEGER NOT NULL DEFAULT 0,
+    shadow_is_success INTEGER,
+    shadow_is_escalated INTEGER,
     embedding TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_eval_agent_version ON agent_success_evaluation_result(agent_version);
