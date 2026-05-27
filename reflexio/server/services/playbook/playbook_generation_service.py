@@ -264,8 +264,8 @@ class PlaybookGenerationService(
         from reflexio.server.site_var.feature_flags import is_deduplicator_enabled
 
         if is_deduplicator_enabled(self.org_id):
-            from reflexio.server.services.playbook.playbook_deduplicator import (
-                PlaybookDeduplicator,
+            from reflexio.server.services.playbook.playbook_consolidator import (
+                PlaybookConsolidator,
             )
 
             playbook_config = self._configured_playbook_config()
@@ -273,12 +273,12 @@ class PlaybookGenerationService(
                 playbook_config.deduplication_config if playbook_config else None
             )
 
-            deduplicator = PlaybookDeduplicator(
+            consolidator = PlaybookConsolidator(
                 request_context=self.request_context,
                 llm_client=self.client,
                 dedup_config=dedup_config,
             )
-            deduplicated_playbooks, existing_ids_to_delete = deduplicator.deduplicate(
+            deduplicated_playbooks, existing_ids_to_delete = consolidator.deduplicate(
                 [all_playbooks],
                 self.service_config.request_id,  # type: ignore[reportOptionalMemberAccess]
                 self.service_config.agent_version,  # type: ignore[reportOptionalMemberAccess]

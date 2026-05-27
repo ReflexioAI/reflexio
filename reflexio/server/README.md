@@ -228,7 +228,7 @@ Called by API endpoints via `Reflexio`
 - `extractor_config_utils.py`: Shared utility for filtering extractor configs by source, `allow_manual_trigger`, and extractor names
 - `extractor_interaction_utils.py`: Per-extractor utilities for stride_size checking and source filtering
 - `operation_state_utils.py`: Centralized `OperationStateManager` for all `_operation_state` table interactions (progress tracking, concurrency locks, extractor/aggregator bookmarks, simple locks)
-- `deduplication_utils.py`: Shared utilities for LLM-based deduplication (used by ProfileDeduplicator and PlaybookDeduplicator)
+- `deduplication_utils.py`: Shared utilities for LLM-based deduplication (used by ProfileDeduplicator and PlaybookConsolidator)
 - `service_utils.py`: Utilities (`construct_messages_from_interactions()`, `format_interactions_to_history_string()` (prepends tool usage info when `tools_used` is present), `extract_json_from_string()`, `log_model_response()` for colored LLM response logging)
 
 **Operation State Management** (via `OperationStateManager` in `operation_state_utils.py`):
@@ -321,7 +321,7 @@ Key files:
 - `feedback_deduplicator.py`: Deduplicates newly extracted playbooks against existing DB playbooks using LLM
 
 **Flow**:
-- Interactions → PlaybookExtractor (extraction-only) → PlaybookDeduplicator (deduplicates new vs existing DB playbooks) → UserPlaybook (with optional `blocking_issue`) → Storage
+- Interactions → PlaybookExtractor (extraction-only) → PlaybookConsolidator (consolidates new vs existing DB playbooks) → UserPlaybook (with optional `blocking_issue`) → Storage
 - UserPlaybook (manual trigger) → PlaybookAggregator → cluster fingerprint comparison → LLM only for changed clusters → AgentPlaybook (with optional `blocking_issue`) → Storage
 
 **Tool Analysis**: PlaybookExtractor reads `tool_can_use` from root `Config` and passes it to prompts for tool usage analysis and blocking issue detection.
@@ -504,7 +504,7 @@ flowchart TB
     subgraph PlaybookService["PlaybookGenerationService"]
         E --> G1[PlaybookExtractor 1]
         E --> G2[PlaybookExtractor N]
-        G1 --> FD[PlaybookDeduplicator]
+        G1 --> FD[PlaybookConsolidator]
         G2 --> FD
     end
 

@@ -1,5 +1,5 @@
 """
-Playbook deduplication service that merges duplicate user playbook entries using LLM
+Playbook consolidation service that merges duplicate user playbook entries using LLM
 and hybrid search against existing entries in the database.
 """
 
@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 # ===============================
 
 
-class PlaybookDeduplicationDuplicateGroup(BaseModel):
+class PlaybookConsolidationDuplicateGroup(BaseModel):
     """A group of duplicate playbook entries to merge, with old entries to delete."""
 
     item_ids: list[str] = Field(
@@ -52,10 +52,10 @@ class PlaybookDeduplicationDuplicateGroup(BaseModel):
     )
 
 
-class PlaybookDeduplicationOutput(BaseModel):
-    """Output schema for playbook deduplication with NEW vs EXISTING merge support."""
+class PlaybookConsolidationOutput(BaseModel):
+    """Output schema for playbook consolidation with NEW vs EXISTING merge support."""
 
-    duplicate_groups: list[PlaybookDeduplicationDuplicateGroup] = Field(
+    duplicate_groups: list[PlaybookConsolidationDuplicateGroup] = Field(
         default=[], description="Groups of duplicate playbook entries to merge"
     )
     unique_ids: list[str] = Field(
@@ -68,13 +68,13 @@ class PlaybookDeduplicationOutput(BaseModel):
     )
 
 
-class PlaybookDeduplicator(BaseDeduplicator):
+class PlaybookConsolidator(BaseDeduplicator):
     """
-    Deduplicates new user playbook entries against each other and against existing entries
+    Consolidates new user playbook entries against each other and against existing entries
     in the database using hybrid search (vector + FTS) and LLM-based merging.
     """
 
-    DEDUPLICATION_PROMPT_ID = "playbook_deduplication"
+    DEDUPLICATION_PROMPT_ID = "playbook_consolidation"
 
     def __init__(
         self,
@@ -83,18 +83,18 @@ class PlaybookDeduplicator(BaseDeduplicator):
         dedup_config: DeduplicationConfig | None = None,
     ):
         """
-        Initialize the playbook deduplicator.
+        Initialize the playbook consolidator.
 
         Args:
             request_context: Request context with storage and prompt manager
             llm_client: Unified LLM client for LLM calls
-            dedup_config: Optional deduplication search parameters (threshold, top_k)
+            dedup_config: Optional consolidation search parameters (threshold, top_k)
         """
         super().__init__(request_context, llm_client)
         self._dedup_config = dedup_config or DeduplicationConfig()
 
     def _get_prompt_id(self) -> str:
-        """Get the prompt ID for playbook deduplication."""
+        """Get the prompt ID for playbook consolidation."""
         return self.DEDUPLICATION_PROMPT_ID
 
     def _get_item_count_key(self) -> str:
@@ -106,8 +106,8 @@ class PlaybookDeduplicator(BaseDeduplicator):
         return "new_playbooks"
 
     def _get_output_schema_class(self) -> type[BaseModel]:
-        """Return PlaybookDeduplicationOutput for new/existing merge."""
-        return PlaybookDeduplicationOutput
+        """Return PlaybookConsolidationOutput for new/existing merge."""
+        return PlaybookConsolidationOutput
 
     def _format_items_for_prompt(self, playbooks: list[UserPlaybook]) -> str:
         """
@@ -253,7 +253,7 @@ class PlaybookDeduplicator(BaseDeduplicator):
         user_id: str | None = None,
     ) -> tuple[list[UserPlaybook], list[int]]:
         """
-        Deduplicate user playbook entries across extractors and against existing entries in DB.
+        Consolidate user playbook entries across extractors and against existing entries in DB.
 
         Args:
             results: List of entry lists from extractors (each extractor returns list[UserPlaybook])
@@ -262,11 +262,11 @@ class PlaybookDeduplicator(BaseDeduplicator):
             user_id: Optional user ID to scope the existing entry search
 
         Returns:
-            Tuple of (deduplicated entries, list of existing entry IDs to delete after save)
+            Tuple of (consolidated entries, list of existing entry IDs to delete after save)
         """
         # Check if mock mode is enabled
         if os.getenv("MOCK_LLM_RESPONSE", "").lower() == "true":
-            logger.info("Mock mode: skipping deduplication")
+            logger.info("Mock mode: skipping consolidation")
             all_playbooks: list[UserPlaybook] = []
             for result in results:
                 if isinstance(result, list):
@@ -313,7 +313,7 @@ class PlaybookDeduplicator(BaseDeduplicator):
 
             log_llm_messages(
                 logger,
-                "Playbook deduplication",
+                "Playbook consolidation",
                 [{"role": "user", "content": prompt}],
             )
 
@@ -323,11 +323,11 @@ class PlaybookDeduplicator(BaseDeduplicator):
                 response_format=output_schema_class,
             )
 
-            log_model_response(logger, "Deduplication response", response)
+            log_model_response(logger, "Consolidation response", response)
 
-            if not isinstance(response, PlaybookDeduplicationOutput):
+            if not isinstance(response, PlaybookConsolidationOutput):
                 logger.warning(
-                    "Unexpected response type from deduplication LLM: %s",
+                    "Unexpected response type from consolidation LLM: %s",
                     type(response),
                 )
                 return new_playbooks, []
@@ -349,7 +349,7 @@ class PlaybookDeduplicator(BaseDeduplicator):
             request_id,
         )
 
-        # Build deduplicated result
+        # Build consolidated result
         return self._build_deduplicated_results(
             new_playbooks=new_playbooks,
             existing_playbooks=existing_playbooks,
@@ -362,7 +362,7 @@ class PlaybookDeduplicator(BaseDeduplicator):
         self,
         new_playbooks: list[UserPlaybook],
         existing_playbooks: list[UserPlaybook],
-        dedup_output: PlaybookDeduplicationOutput,
+        dedup_output: PlaybookConsolidationOutput,
         request_id: str,
         agent_version: str,  # noqa: ARG002
     ) -> tuple[list[UserPlaybook], list[int]]:
@@ -461,11 +461,11 @@ class PlaybookDeduplicator(BaseDeduplicator):
             )
 
             # Inherit polarity from the canonical (template) row rather than the
-            # LLM-emitted merged_content: the current dedup prompt does not reason
-            # about polarity, so its StructuredPlaybookContent.polarity would just
-            # be the default "positive" and could silently flip a "negative" row's
-            # polarity on merge. This conservative inheritance goes away with the
-            # consolidator (Task E1), which replaces this deduplicator entirely.
+            # LLM-emitted merged_content: the current consolidation prompt does not
+            # reason about polarity, so its StructuredPlaybookContent.polarity would
+            # just be the default "positive" and could silently flip a "negative"
+            # row's polarity on merge. This conservative inheritance goes away once
+            # the consolidation prompt (Task E5) reasons about polarity directly.
             merged_playbook = UserPlaybook(
                 user_playbook_id=0,  # Will be assigned by storage
                 user_id=template_playbook.user_id,

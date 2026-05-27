@@ -169,7 +169,7 @@ class ProfileDeduplicator(BaseDeduplicator):
     Deduplicates new profiles against each other and against existing profiles
     in the database using hybrid search (vector + FTS) and LLM-based merging.
 
-    Follows the same pattern as PlaybookDeduplicator.
+    Follows the same pattern as PlaybookConsolidator.
     """
 
     DEDUPLICATION_PROMPT_ID = "profile_deduplication"

@@ -19,7 +19,7 @@ against THAT request (not the holder's). All three users now see at least
 one raw playbook generated for their distinct corrective signal.
 
 The lock remains per-org so cross-user feedback dedup invariants
-(see playbook_deduplicator) are unchanged.
+(see playbook_consolidator) are unchanged.
 """
 
 from __future__ import annotations

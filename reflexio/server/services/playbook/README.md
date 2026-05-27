@@ -1,5 +1,5 @@
 # Playbook Service
-Description: Playbook extraction, aggregation, and deduplication pipeline
+Description: Playbook extraction, aggregation, and consolidation pipeline
 
 > Part of the [Reflexio Server](../../README.md). See also the [Prompt Bank](../../prompt/prompt_bank/README.md) for prompt template details.
 
@@ -8,7 +8,7 @@ Description: Playbook extraction, aggregation, and deduplication pipeline
 - **Service Orchestrator**: `playbook_generation_service.py` - Manages playbook extraction lifecycle (regular, rerun, manual modes)
 - **Playbook Extractor**: `playbook_extractor.py` - Extracts user playbooks from interactions via LLM
 - **Playbook Aggregator**: `playbook_aggregator.py` - Clusters similar user playbooks and generates aggregated insights
-- **Playbook Deduplicator**: `playbook_deduplicator.py` - Merges duplicate playbooks from multiple extractors using LLM
+- **Playbook Consolidator**: `playbook_consolidator.py` - Merges duplicate playbooks from multiple extractors using LLM
 
 ## Supporting Files
 
@@ -24,7 +24,7 @@ Description: Playbook extraction, aggregation, and deduplication pipeline
 ```
 Interactions
   -> PlaybookExtractor (per-extractor, extraction-only, parallel)
-    -> PlaybookDeduplicator (deduplicates new vs existing DB playbooks)
+    -> PlaybookConsolidator (consolidates new vs existing DB playbooks)
       -> UserPlaybook (with optional blocking_issue) -> Storage
         -> PlaybookAggregator (manual trigger)
           -> AgentPlaybook (aggregated insights) -> Storage
@@ -54,9 +54,9 @@ Triggered manually via `/api/run_playbook_aggregation`. Clusters user playbooks 
 
 **Clustering**: Embeds user playbooks -> HDBSCAN clustering -> falls back to Agglomerative if too few clusters
 
-### Playbook Deduplication (`playbook_deduplicator.py`)
+### Playbook Consolidation (`playbook_consolidator.py`)
 
-Deduplicates newly extracted playbooks against existing playbooks in the database via LLM semantic matching. Identifies duplicates between new extractions and existing DB playbooks, merging where appropriate.
+Consolidates newly extracted playbooks against existing playbooks in the database via LLM semantic matching. Identifies duplicates between new extractions and existing DB playbooks, merging where appropriate.
 
 ## Prompt IDs
 

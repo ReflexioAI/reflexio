@@ -36,7 +36,7 @@ PROMPT_VERSION_MAP: dict[str, tuple[str, str | None]] = {
     "playbook_extraction_context_expert": ("v3.1.0", None),
     "playbook_extraction_main_expert": ("v1.1.0", "playbook_extraction"),
     "playbook_aggregation": ("v2.1.0", "playbook_aggregation"),
-    "playbook_deduplication": ("v2.0.0", "playbook_deduplication"),
+    "playbook_consolidation": ("v2.0.0-deprecated", "playbook_consolidation"),
     "playbook_optimizer_judge": ("v1.0.0", None),
     "profile_update_main": ("v1.0.0", "profile_extraction"),
     "profile_update_instruction_start": ("v1.0.0", None),
@@ -82,17 +82,22 @@ def _get_latest_prompt_version(prompt_id: str) -> str:
 
     Sorted by semver tuple, not lexically — without this v1.10.0 would
     sort BEFORE v1.9.0 and the trip-wire would lock to a stale version.
+
+    Files with a non-numeric suffix (e.g. ``v2.0.0-deprecated.prompt.md``)
+    are preserved verbatim by ``stem.split(".prompt")[0]`` so the trip-wire
+    can pin an intermediate state where the only files in a directory are
+    deprecated placeholders awaiting a fresh prompt in a follow-up task.
     """
     prompt_dir = _PROMPT_BANK_DIR / prompt_id
     if not prompt_dir.is_dir():
         pytest.fail(f"Prompt directory not found: {prompt_dir}")
 
     def _semver_key(p: Path) -> tuple[int, ...]:
+        stem = p.stem.removeprefix("v").removesuffix(".prompt")
+        # Strip non-semver suffix (e.g. "-deprecated") so semver ordering still works.
+        semver_part = stem.split("-", 1)[0]
         try:
-            return tuple(
-                int(x)
-                for x in p.stem.removeprefix("v").removesuffix(".prompt").split(".")
-            )
+            return tuple(int(x) for x in semver_part.split("."))
         except ValueError:
             return (0,)
 

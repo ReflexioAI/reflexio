@@ -2,7 +2,7 @@
 Shared utilities for deduplication services.
 
 This module contains base classes and utility functions used by both
-ProfileDeduplicator and PlaybookDeduplicator.
+ProfileDeduplicator and PlaybookConsolidator.
 """
 
 import logging
