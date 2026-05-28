@@ -16,6 +16,7 @@ from datetime import UTC, datetime
 from reflexio.models.api_schema.braintrust_schema import ImportedScore
 from reflexio.models.api_schema.domain.entities import (
     AgentSuccessEvaluationResult,
+    Request,
 )
 from reflexio.models.api_schema.eval_overview_schema import (
     BraintrustTileRow,
@@ -28,11 +29,15 @@ from reflexio.models.api_schema.eval_overview_schema import (
     PercentWithDelta,
     RuleAttributionRow,
     ScoreDistribution,
+    SuccessRateTrendByGroup,
 )
 from reflexio.models.config_schema import Config
 from reflexio.server.services.evaluation_overview.distribution import (
     BUCKET_LABELS,
     bucket_corrections,
+)
+from reflexio.server.services.evaluation_overview.group_aggregation import (
+    compute_trend_by_group,
 )
 from reflexio.server.services.evaluation_overview.hero_state import (
     compute_hero_state,
@@ -41,6 +46,7 @@ from reflexio.server.services.evaluation_overview.rule_attribution import (
     compute_net_sessions,
 )
 
+_DAY_SECONDS = 24 * 60 * 60
 _WEEK_SECONDS = 7 * 24 * 60 * 60
 _TOP_N_RULES = 5
 
@@ -100,6 +106,11 @@ class EvaluationOverviewService:
         braintrust_tiles = self._build_braintrust_tiles(
             cur_7d_from, request.to_ts, prev_from, prev_to
         )
+        # F2: group-aware success-rate trend curves. Joins each eval result
+        # with its session's first request metadata to bucket sessions into
+        # treatment / control / untagged, then time-buckets each curve at
+        # the same granularity as the hero chart.
+        success_rate_trend_by_group = self._build_group_trend(results, request.bucket)
 
         return GetEvaluationOverviewResponse(
             hero=hero,
@@ -107,6 +118,7 @@ class EvaluationOverviewService:
             rule_attribution=attribution,
             score_distribution=distribution,
             braintrust_tiles=braintrust_tiles,
+            success_rate_trend_by_group=success_rate_trend_by_group,
         )
 
     # --- private helpers ---
@@ -266,6 +278,98 @@ class EvaluationOverviewService:
         # direct attribute. For Plan C-overview, we read it via the storage
         # instance's org_id when present (every BaseStorage carries one).
         return str(getattr(self.storage, "org_id", "") or "")
+
+    def _build_group_trend(
+        self,
+        results: list[AgentSuccessEvaluationResult],
+        bucket: str,
+    ) -> SuccessRateTrendByGroup:
+        """Build the dual+untagged-curve trend payload for the window.
+
+        Joins each eval result with the first request of its session to read
+        ``metadata.reflexio_retrieval_enabled``, then delegates to the pure
+        ``compute_trend_by_group`` aggregator. Returns the default empty
+        ``SuccessRateTrendByGroup`` when ``results`` is empty.
+
+        Args:
+            results (list[AgentSuccessEvaluationResult]): Eval results in the
+                trend window.
+            bucket (str): Bucket granularity literal (``"week"`` or ``"day"``).
+
+        Returns:
+            SuccessRateTrendByGroup: Three curves (any of which may be empty).
+        """
+        if not results:
+            return SuccessRateTrendByGroup()
+        bucket_seconds = _WEEK_SECONDS if bucket == "week" else _DAY_SECONDS
+        outcomes = self._build_group_outcomes(results)
+        return compute_trend_by_group(outcomes, bucket_seconds)
+
+    def _build_group_outcomes(
+        self,
+        results: list[AgentSuccessEvaluationResult],
+    ) -> list[tuple[str, int, bool, dict]]:
+        """Pair each eval result with its session's first-request metadata.
+
+        Caches ``session_id → first_request_metadata`` so storage is hit
+        once per distinct session, not once per result. Sessions without a
+        matching request fall through with an empty-dict metadata, which the
+        downstream aggregator routes to the UNTAGGED bucket.
+
+        Args:
+            results (list[AgentSuccessEvaluationResult]): Eval results to
+                annotate with their session's first-request metadata.
+
+        Returns:
+            list[tuple[str, int, bool, dict]]: Tuples of
+            ``(session_id, created_at, is_success, first_request_metadata)``
+            suitable for :func:`compute_trend_by_group`.
+        """
+        session_ids = {r.session_id for r in results if r.session_id}
+        first_request_metadata: dict[str, dict] = {}
+        for sid in session_ids:
+            reqs = self._get_session_requests(sid)
+            if reqs:
+                first = min(reqs, key=lambda r: r.created_at)
+                first_request_metadata[sid] = first.metadata or {}
+            else:
+                first_request_metadata[sid] = {}
+
+        return [
+            (
+                r.session_id or "",
+                r.created_at,
+                r.is_success,
+                first_request_metadata.get(r.session_id or "", {}),
+            )
+            for r in results
+        ]
+
+    def _get_session_requests(self, session_id: str) -> list[Request]:
+        """Return every request in ``session_id`` regardless of user.
+
+        Uses ``BaseStorage.get_sessions(session_id=...)`` because the
+        per-session, user-id-required ``get_requests_by_session`` doesn't
+        fit our caller (eval results don't carry ``user_id``). All locally
+        testable backends ignore the ``user_id`` filter when it's ``None``,
+        and ``top_k`` is raised well above realistic per-session counts so
+        we don't truncate.
+
+        Args:
+            session_id (str): The session whose requests to fetch.
+
+        Returns:
+            list[Request]: All requests in the session, in storage order.
+        """
+        grouped = self.storage.get_sessions(  # type: ignore[attr-defined]
+            session_id=session_id, top_k=1000
+        )
+        return [
+            entry.request
+            for entries in grouped.values()
+            for entry in entries
+            if entry.request is not None
+        ]
 
     def _build_distribution(
         self,
