@@ -410,8 +410,15 @@ def _row_to_interaction(row: sqlite3.Row) -> Interaction:
 def _row_to_request(row: sqlite3.Row) -> Request:
     d = dict(row)
     metadata_raw = d.get("metadata") or "{}"
-    parsed = _json_loads(metadata_raw)
-    metadata = parsed if isinstance(parsed, dict) else {}
+    try:
+        parsed = _json_loads(metadata_raw)
+        metadata = parsed if isinstance(parsed, dict) else {}
+    except json.JSONDecodeError:
+        logger.warning(
+            "Malformed metadata JSON for request %s; defaulting to empty dict",
+            d.get("request_id"),
+        )
+        metadata = {}
     return Request(
         request_id=d["request_id"],
         user_id=d["user_id"],
