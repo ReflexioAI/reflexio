@@ -7,12 +7,53 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from reflexio.models.api_schema.domain.entities import Request
 from reflexio.models.api_schema.internal_schema import SessionDescriptor
+from reflexio.models.config_schema import Config, StorageConfigSQLite
 from reflexio.server.services.agent_success_evaluation.regen_jobs import (
     RegenJob,
     RegenJobRegistry,
     run_regen,
 )
+
+
+def _stub_storage(descriptors: list[SessionDescriptor]) -> MagicMock:
+    """Build a MagicMock storage that satisfies the F3 sampler.
+
+    Returns the supplied descriptors from ``get_session_ids_in_window`` and
+    one synthetic Request per (user, session) from ``get_requests_by_session``
+    so the sampler can read a first-request created_at and metadata dict.
+    """
+    storage = MagicMock()
+    storage.get_session_ids_in_window.return_value = descriptors
+
+    def _by_session(user_id: str, session_id: str) -> list[Request]:
+        return [
+            Request(
+                request_id=f"req-{session_id}",
+                user_id=user_id,
+                created_at=1_700_000_000,
+                source="src",
+                agent_version="v1",
+                session_id=session_id,
+                metadata={},
+            )
+        ]
+
+    storage.get_requests_by_session.side_effect = _by_session
+    return storage
+
+
+def _request_context(storage: MagicMock) -> MagicMock:
+    """Wire a MagicMock request_context that exposes the storage and a
+    real Config (sampler reads ``eval_sample_n_per_stratum`` and
+    ``eval_concurrency_limit`` off it).
+    """
+    rc = MagicMock(storage=storage)
+    rc.configurator.get_config.return_value = Config(
+        storage_config=StorageConfigSQLite()
+    )
+    return rc
 
 
 def test_registry_create_returns_job_and_records_active():
@@ -61,9 +102,8 @@ def test_run_regen_processes_sessions_and_marks_completed():
         SessionDescriptor("u1", "s1", "v1", "src"),
         SessionDescriptor("u1", "s2", "v1", "src"),
     ]
-    storage = MagicMock()
-    storage.get_session_ids_in_window.return_value = descriptors
-    rc = MagicMock(storage=storage)
+    storage = _stub_storage(descriptors)
+    rc = _request_context(storage)
     llm = MagicMock()
     job = RegenJob(
         job_id="j1",
@@ -90,13 +130,14 @@ def test_run_regen_processes_sessions_and_marks_completed():
 
 
 def test_run_regen_records_failures_and_continues():
-    storage = MagicMock()
-    storage.get_session_ids_in_window.return_value = [
-        SessionDescriptor("u", "good", "v1", ""),
-        SessionDescriptor("u", "bad", "v1", ""),
-        SessionDescriptor("u", "good2", "v1", ""),
-    ]
-    rc = MagicMock(storage=storage)
+    storage = _stub_storage(
+        [
+            SessionDescriptor("u", "good", "v1", ""),
+            SessionDescriptor("u", "bad", "v1", ""),
+            SessionDescriptor("u", "good2", "v1", ""),
+        ]
+    )
+    rc = _request_context(storage)
     job = RegenJob(
         job_id="j",
         org_id="o",
@@ -125,11 +166,10 @@ def test_run_regen_records_failures_and_continues():
 
 
 def test_run_regen_observes_cancel_between_sessions():
-    storage = MagicMock()
-    storage.get_session_ids_in_window.return_value = [
-        SessionDescriptor("u", f"s{i}", "v1", "") for i in range(5)
-    ]
-    rc = MagicMock(storage=storage)
+    storage = _stub_storage(
+        [SessionDescriptor("u", f"s{i}", "v1", "") for i in range(5)]
+    )
+    rc = _request_context(storage)
     job = RegenJob(
         job_id="j",
         org_id="o",
