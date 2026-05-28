@@ -39,12 +39,16 @@ def compute_hero_state(
         shadow_enabled (bool): Value of `Config.shadow_mode_enabled`.
         days_since_first_eval (int | None): Wall-clock days since the first
             ever evaluated session for this org. None when no results exist.
-        n_shadow_in_window (int): Count of evaluation results with a non-null
-            shadow_is_success grade inside the trend window. Caller is
-            responsible for filtering; this function only consumes the count.
+        n_shadow_in_window (int): Count of evaluation results that have a
+            shadow grade inside the trend window. Caller is responsible for
+            filtering; this function only consumes the count.
             Why graded-only: prevents the FULL gate from tripping mid-window-
             flag-flip when sessions exist with shadow_content but no shadow
-            grade.
+            grade. (Note: the direct-grade `shadow_is_success` /
+            `shadow_is_escalated` columns added briefly in May 2026 were
+            retracted before any production deploy — see the deleted
+            migration pair in supabase/data/supabase/migrations/. The
+            per-turn shadow grade in F1 lives on a different surface.)
         total_results (int): Total AgentSuccessEvaluationResult rows in the
             trend window (used only to differentiate EMPTY from SHADOW_OFF).
 
