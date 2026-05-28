@@ -74,5 +74,44 @@ def test_shadow_comparison_verdict_requires_judge_prompt_version():
                 is_significantly_better=False,
             ),
             created_at=datetime.now(UTC),
-            judge_prompt_version="",  # empty string should fail min_length=1
+            judge_prompt_version="",  # empty string rejected by NonEmptyStr
         )
+
+
+def test_shadow_comparison_verdict_rejects_whitespace_judge_prompt_version():
+    """NonEmptyStr rejects whitespace-only strings; Field(min_length=1) wouldn't."""
+    with pytest.raises(ValidationError):
+        ShadowComparisonVerdict(
+            verdict_id=1,
+            interaction_id="i",
+            session_id="s",
+            agent_version="v1",
+            reflexio_is_request_1=True,
+            output=ShadowComparisonOutput(
+                better_request="tie",
+                is_significantly_better=False,
+            ),
+            judge_prompt_version="   ",  # whitespace-only
+            created_at=datetime.now(UTC),
+        )
+
+
+def test_shadow_comparison_output_extras_runtime_policy():
+    """Runtime is lenient — extras pass through without raising.
+
+    The JSON schema sent to the LLM advertises strictness; this asymmetry
+    is intentional (server-side resilience + model-side constraint).
+    """
+    o = ShadowComparisonOutput(
+        better_request="1",
+        is_significantly_better=True,
+        unexpected_field="surprise",  # type: ignore[call-arg]
+    )
+    # No raise; the field is accepted via extra='allow'.
+    assert o.better_request == "1"
+
+
+def test_shadow_comparison_output_json_schema_forbids_extras():
+    """The JSON schema (what we send to the LLM) advertises strictness."""
+    schema = ShadowComparisonOutput.model_json_schema()
+    assert schema.get("additionalProperties") is False

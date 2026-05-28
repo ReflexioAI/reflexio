@@ -340,6 +340,15 @@ class ShadowComparisonOutput(BaseModel):
     is_significantly_better: bool
     comparison_reason: str | None = None
 
+    # Dual-defense extras policy:
+    # - extra="allow" at runtime so the server doesn't crash if the LLM
+    #   returns an unexpected field. We log what we recognize and ignore
+    #   the rest.
+    # - additionalProperties=False in the JSON schema sent to the LLM
+    #   so the structured-output constraint tells the model NOT to add
+    #   extra fields in the first place.
+    # This matches the convention from the (now-removed) session-level
+    # comparison schema; do not change one without changing the other.
     model_config = ConfigDict(
         extra="allow",
         json_schema_extra={"additionalProperties": False},
@@ -373,5 +382,7 @@ class ShadowComparisonVerdict(BaseModel):
     agent_version: str
     reflexio_is_request_1: bool
     output: ShadowComparisonOutput
-    judge_prompt_version: str = Field(min_length=1)
+    judge_prompt_version: NonEmptyStr
     created_at: datetime
+    """When the judge call returned. Storage layers assume UTC — callers
+    must pass a tz-aware datetime (typically `datetime.now(UTC)`)."""
