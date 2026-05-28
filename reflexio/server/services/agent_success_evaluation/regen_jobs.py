@@ -205,8 +205,25 @@ def _load_first_request(
     cached = cache.get(session_id)
     if cached is not None:
         return cached
-    requests = storage.get_requests_by_session(user_id, session_id)
+    try:
+        requests = storage.get_requests_by_session(user_id, session_id)
+    except Exception as e:  # noqa: BLE001 — per-session resilience boundary
+        logger.warning(
+            "Failed to fetch requests for session %s during F3 sampler candidate "
+            "discovery (%s); falling back to (created_at=0, metadata={}). The "
+            "session will be retried in the per-session loop below.",
+            session_id,
+            e,
+        )
+        cache[session_id] = (0, {})
+        return cache[session_id]
     if not requests:
+        logger.warning(
+            "Session %s has no requests in storage despite being returned by "
+            "get_session_ids_in_window (possible race or contract violation); "
+            "falling back to (created_at=0, metadata={}).",
+            session_id,
+        )
         cache[session_id] = (0, {})
         return cache[session_id]
     first = min(requests, key=lambda r: r.created_at)

@@ -183,3 +183,62 @@ def test_run_regen_no_sampling_when_below_cap(
     assert job.sampled_count == 10
     assert job.completed == 10
     assert job.status == "completed"
+
+
+def test_run_regen_continues_when_one_session_storage_lookup_fails(
+    monkeypatch: pytest.MonkeyPatch, storage: SQLiteStorage
+) -> None:
+    """A storage glitch on one session's metadata lookup must not abort
+    the whole job — the session is sampled with fallback metadata and the
+    per-session loop reports its own failure (or success) for it.
+    """
+    ts = 1_700_000_000
+    for i in range(5):
+        _seed(storage, f"ok-{i}", ts, {"reflexio_retrieval_enabled": True})
+
+    real_get = storage.get_requests_by_session
+    poison_session = "ok-2"
+
+    def flaky_get_requests_by_session(user_id: str, session_id: str) -> list[Request]:
+        if session_id == poison_session:
+            raise RuntimeError("simulated transient DB error")
+        return real_get(user_id, session_id)
+
+    monkeypatch.setattr(
+        storage, "get_requests_by_session", flaky_get_requests_by_session
+    )
+
+    calls: list[str] = []
+
+    def fake_run(**kwargs: object) -> None:
+        calls.append(str(kwargs["session_id"]))
+
+    monkeypatch.setattr(regen_jobs, "run_group_evaluation", fake_run)
+
+    config = Config(
+        storage_config=StorageConfigSQLite(),
+        eval_sample_n_per_stratum=200,
+        eval_concurrency_limit=2,
+    )
+    rc = _build_request_context(storage, config)
+    job = RegenJob(
+        job_id="j-flaky",
+        org_id="0",
+        evaluation_name="overall",
+        from_ts=ts - 1,
+        to_ts=ts + 1,
+        status="running",
+        total=0,
+    )
+
+    run_regen(
+        job=job,
+        request_context=rc,  # type: ignore[arg-type]  # SimpleNamespace stand-in
+        llm_client=None,  # type: ignore[arg-type]
+        rng=random.Random(0),  # noqa: S311 — sampling, not crypto
+    )
+
+    # All 5 sessions still dispatched to run_group_evaluation; the job
+    # didn't error out at the candidate-discovery stage.
+    assert len(calls) == 5
+    assert job.status != "error"
