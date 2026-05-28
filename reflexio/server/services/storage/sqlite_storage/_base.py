@@ -664,6 +664,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         self._migrate_agentic_signals()
         self._migrate_agent_playbook_source_windows()
         self._migrate_request_metadata()
+        self._migrate_shadow_comparison_verdicts()
         init_stall_state_table(self.conn)
         return True
 
@@ -1167,6 +1168,45 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             )
             logger.info("Added metadata column to requests")
         self.conn.commit()
+
+    def _migrate_shadow_comparison_verdicts(self) -> None:
+        """F1: create the shadow_comparison_verdicts table if missing.
+
+        Idempotent; safe to run on every startup. The PRAGMA-LBYL guard
+        avoids running the CREATE statements on every boot for
+        already-migrated DBs — mirrors the :meth:`_migrate_request_metadata`
+        pattern. The ``CREATE TABLE IF NOT EXISTS`` in :data:`_DDL` will
+        also create this table on a fresh database, so this helper is a
+        no-op there; its purpose is explicit symmetry with the per-feature
+        migration convention and a single named hook the disk/supabase
+        backends in Tasks 6/7 can mirror.
+        """
+        cur = self.conn.execute("PRAGMA table_info(shadow_comparison_verdicts)")
+        cols = cur.fetchall()
+        if cols:
+            return
+        self.conn.executescript("""
+            CREATE TABLE IF NOT EXISTS shadow_comparison_verdicts (
+                verdict_id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                interaction_id          TEXT    NOT NULL,
+                session_id              TEXT    NOT NULL,
+                agent_version           TEXT    NOT NULL,
+                reflexio_is_request_1   INTEGER NOT NULL,
+                better_request          TEXT    NOT NULL CHECK (better_request IN ('1','2','tie')),
+                is_significantly_better INTEGER NOT NULL,
+                comparison_reason       TEXT,
+                judge_prompt_version    TEXT    NOT NULL,
+                created_at              TEXT    NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_shadow_verdicts_session
+                ON shadow_comparison_verdicts (session_id, agent_version);
+            CREATE INDEX IF NOT EXISTS idx_shadow_verdicts_created_at
+                ON shadow_comparison_verdicts (created_at);
+            CREATE INDEX IF NOT EXISTS idx_shadow_verdicts_prompt_v
+                ON shadow_comparison_verdicts (judge_prompt_version);
+        """)
+        self.conn.commit()
+        logger.info("Created shadow_comparison_verdicts table (F1 migration)")
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -1751,5 +1791,28 @@ CREATE TABLE IF NOT EXISTS imported_score (
 CREATE INDEX IF NOT EXISTS idx_imported_score_session
     ON imported_score (org_id, session_id) WHERE session_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_imported_score_ts ON imported_score (org_id, ts);
+
+-- ============================================================================
+-- Per-turn shadow comparison verdicts (F1)
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS shadow_comparison_verdicts (
+    verdict_id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    interaction_id          TEXT    NOT NULL,
+    session_id              TEXT    NOT NULL,
+    agent_version           TEXT    NOT NULL,
+    reflexio_is_request_1   INTEGER NOT NULL,
+    better_request          TEXT    NOT NULL CHECK (better_request IN ('1','2','tie')),
+    is_significantly_better INTEGER NOT NULL,
+    comparison_reason       TEXT,
+    judge_prompt_version    TEXT    NOT NULL,
+    created_at              TEXT    NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_shadow_verdicts_session
+    ON shadow_comparison_verdicts (session_id, agent_version);
+CREATE INDEX IF NOT EXISTS idx_shadow_verdicts_created_at
+    ON shadow_comparison_verdicts (created_at);
+CREATE INDEX IF NOT EXISTS idx_shadow_verdicts_prompt_v
+    ON shadow_comparison_verdicts (judge_prompt_version);
 
 """

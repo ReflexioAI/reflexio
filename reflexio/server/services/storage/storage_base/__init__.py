@@ -6,6 +6,7 @@ from ._operations import OperationMixin
 from ._playbook import PlaybookMixin
 from ._profiles import ProfileMixin
 from ._requests import RequestMixin
+from ._shadow_verdicts import ShadowVerdictsMixin
 from ._share_links import ShareLinkMixin
 from ._stall_state import StallStateMixin
 
@@ -18,6 +19,7 @@ class BaseStorage(
     ExtrasMixin,
     ShareLinkMixin,
     StallStateMixin,
+    ShadowVerdictsMixin,
     BaseStorageCore,
 ):
     """Base class for storage."""
@@ -103,6 +105,7 @@ class BaseStorage(
 __all__ = [
     "BaseStorage",
     "PlaybookMixin",
+    "ShadowVerdictsMixin",
     "ShareLinkMixin",
     "StallStateMixin",
     "matches_status_filter",
