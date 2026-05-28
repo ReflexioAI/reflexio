@@ -182,6 +182,12 @@ class Request(BaseModel):
     source: str = ""
     agent_version: str = ""
     session_id: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    """Free-form per-request metadata. Conventional keys:
+    - `reflexio_retrieval_enabled` (bool): set by customer integration code to
+      indicate whether Reflexio retrieval was used for this session. Read by
+      F2's group-by aggregator from the first request of each session.
+    """
 
 
 # information about the user profile generated from the user interaction
