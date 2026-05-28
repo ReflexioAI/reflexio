@@ -125,12 +125,50 @@ class BraintrustTileRow(BaseModel):
     delta: float
 
 
+class TrendPoint(BaseModel):
+    """One point on a grouped success-rate trend curve (F2).
+
+    Args:
+        ts (int): Unix epoch seconds — bucket start.
+        rate (float): Success rate for sessions in this bucket, [0.0, 1.0].
+        n (int): Session count backing the rate. Must be non-negative.
+    """
+
+    ts: int
+    rate: float
+    n: int = Field(ge=0)
+
+
+class SuccessRateTrendByGroup(BaseModel):
+    """Group-split trend data for the dashboard's dual-curve chart (F2).
+
+    Grouping is by ``Request.metadata.reflexio_retrieval_enabled``, read from
+    the first request of each session in the window. Sessions whose first
+    request has the key absent OR a non-bool value land in ``untagged``.
+
+    Args:
+        treatment (list[TrendPoint]): Curve for sessions where the first
+            request had ``metadata.reflexio_retrieval_enabled = True``.
+        control (list[TrendPoint]): Curve for ``... = False``.
+        untagged (list[TrendPoint]): Curve for sessions where the key is
+            absent or non-bool — surfaced (not silently coerced) so
+            customers can see how many of their sessions are untagged.
+    """
+
+    treatment: list[TrendPoint] = Field(default_factory=list)
+    control: list[TrendPoint] = Field(default_factory=list)
+    untagged: list[TrendPoint] = Field(default_factory=list)
+
+
 class GetEvaluationOverviewResponse(BaseModel):
     hero: HeroBlock
     context_tiles: ContextTile
     rule_attribution: list[RuleAttributionRow]
     score_distribution: ScoreDistribution
     braintrust_tiles: list[BraintrustTileRow] = Field(default_factory=list)
+    success_rate_trend_by_group: SuccessRateTrendByGroup = Field(
+        default_factory=SuccessRateTrendByGroup
+    )
 
 
 # ---------------------------------------------------------------------------
