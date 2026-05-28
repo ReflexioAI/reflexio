@@ -56,7 +56,10 @@ def _create_mock_completion(
         content = str(registry["boolean_evaluation"].minimal_valid)
     elif "policy consolidation" in prompt_content:
         content = json.dumps(registry["playbook_aggregation"].minimal_valid)
-    elif "is_success to True" in prompt_content and "is_escalated to True" in prompt_content:
+    elif (
+        "is_success to True" in prompt_content
+        and "is_escalated to True" in prompt_content
+    ):
         # Anchor on two markers from the agent_success_evaluation prompt
         # body — present in every variant of the success-eval prompt.
         content = json.dumps(registry["agent_success_evaluation"].minimal_valid)

@@ -145,7 +145,7 @@ class TestSetConfig:
         )
 
         response = mixin.set_config(
-            {"storage_config": {"dir_path": "/var/data/test_storage"}}
+            {"storage_config": {"db_path": "/var/data/test.db"}}
         )
 
         assert response.success is True

@@ -73,7 +73,6 @@ from reflexio.models.config_schema import (
     PlaybookConfig,
     ProfileExtractorConfig,
     StorageConfig,
-    StorageConfigDisk,
     StorageConfigPostgres,
     StorageConfigSQLite,
     StorageConfigSupabase,
@@ -153,7 +152,6 @@ __all__ = [
     "SearchAgentPlaybooksViewResponse",
     # Config types
     "StorageConfigTest",
-    "StorageConfigDisk",
     "StorageConfigSQLite",
     "StorageConfigSupabase",
     "StorageConfigPostgres",

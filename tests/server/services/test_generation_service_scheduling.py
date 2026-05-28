@@ -70,6 +70,8 @@ def test_schedules_with_correct_key_when_session_id_present(
     scheduler.schedule.assert_called_once()
     call_args = scheduler.schedule.call_args
     key = call_args[0][0] if call_args[0] else call_args.kwargs.get("key")
-    callback = call_args[0][1] if len(call_args[0]) > 1 else call_args.kwargs.get("callback")
+    callback = (
+        call_args[0][1] if len(call_args[0]) > 1 else call_args.kwargs.get("callback")
+    )
     assert key == ("org_test", "user_test", "sess_42")
     assert callable(callback)

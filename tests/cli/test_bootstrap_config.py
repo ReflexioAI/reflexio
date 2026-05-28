@@ -37,11 +37,11 @@ class TestResolveStorage:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("REFLEXIO_STORAGE", "postgres")
-        _write_config(str(tmp_path), "self-host-org", "disk")
+        _write_config(str(tmp_path), "self-host-org", "sqlite")
         # Patch home to use tmp_path for config lookup
         with patch(
             "reflexio.cli.bootstrap_config.load_storage_from_config",
-            return_value="disk",
+            return_value="supabase",
         ):
             assert resolve_storage("sqlite") == "sqlite"
 
@@ -59,9 +59,9 @@ class TestResolveStorage:
         monkeypatch.delenv("REFLEXIO_STORAGE", raising=False)
         with patch(
             "reflexio.cli.bootstrap_config.load_storage_from_config",
-            return_value="disk",
+            return_value="postgres",
         ):
-            assert resolve_storage(None) == "disk"
+            assert resolve_storage(None) == "postgres"
 
     def test_default_when_nothing_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("REFLEXIO_STORAGE", raising=False)
@@ -79,7 +79,6 @@ class TestResolveStorage:
         assert resolve_storage("SQLite") == "sqlite"
         assert resolve_storage("SUPABASE") == "supabase"
         assert resolve_storage("POSTGRES") == "postgres"
-        assert resolve_storage("Disk") == "disk"
 
     def test_env_var_case_insensitive(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("REFLEXIO_STORAGE", "SUPABASE")
@@ -95,9 +94,9 @@ class TestResolveStorage:
         monkeypatch.setenv("REFLEXIO_STORAGE", "invalid_backend")
         with patch(
             "reflexio.cli.bootstrap_config.load_storage_from_config",
-            return_value="disk",
+            return_value="postgres",
         ):
-            assert resolve_storage(None) == "disk"
+            assert resolve_storage(None) == "postgres"
 
     def test_empty_env_var_falls_to_config(
         self, monkeypatch: pytest.MonkeyPatch
@@ -105,9 +104,9 @@ class TestResolveStorage:
         monkeypatch.setenv("REFLEXIO_STORAGE", "")
         with patch(
             "reflexio.cli.bootstrap_config.load_storage_from_config",
-            return_value="disk",
+            return_value="postgres",
         ):
-            assert resolve_storage(None) == "disk"
+            assert resolve_storage(None) == "postgres"
 
 
 # ---------------------------------------------------------------------------
@@ -122,11 +121,6 @@ class TestSaveAndLoadStorage:
         save_storage_to_config("sqlite", org_id="test-org", base_dir=str(tmp_path))
         result = load_storage_from_config(org_id="test-org", base_dir=str(tmp_path))
         assert result == "sqlite"
-
-    def test_round_trip_disk(self, tmp_path: Path) -> None:
-        save_storage_to_config("disk", org_id="test-org", base_dir=str(tmp_path))
-        result = load_storage_from_config(org_id="test-org", base_dir=str(tmp_path))
-        assert result == "disk"
 
     def test_round_trip_supabase_with_creds(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -179,8 +173,16 @@ class TestSaveAndLoadStorage:
         )
         storage_obj.save_config(config)
 
-        # Now update storage to disk
-        save_storage_to_config("disk", org_id="test-org", base_dir=str(tmp_path))
+        # Now update storage to postgres (via env var)
+        import os
+
+        os.environ["REFLEXIO_POSTGRES_DB_URL"] = "postgresql://localhost/test"
+        try:
+            save_storage_to_config(
+                "postgres", org_id="test-org", base_dir=str(tmp_path)
+            )
+        finally:
+            os.environ.pop("REFLEXIO_POSTGRES_DB_URL", None)
 
         # Verify extractor and context are preserved
         reloaded = storage_obj.load_config()
@@ -192,7 +194,7 @@ class TestSaveAndLoadStorage:
         )
         assert (
             load_storage_from_config(org_id="test-org", base_dir=str(tmp_path))
-            == "disk"
+            == "postgres"
         )
 
     def test_load_returns_none_when_no_file(self, tmp_path: Path) -> None:

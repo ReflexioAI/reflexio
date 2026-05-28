@@ -277,7 +277,6 @@ client.set_config(reflexio.SetConfigRequest(
 
 Reflexio integrates with popular AI agent frameworks out of the box:
 
-- **[Claude Code](reflexio/integrations/claude_code/README.md)** -- Hook into Claude Code sessions to automatically capture corrections and preferences.
 - **[LangChain](reflexio/integrations/langchain/README.md)** -- Drop-in callbacks for LangChain chains and agents.
 - **[OpenClaw](reflexio/integrations/openclaw/README.md)** -- Native integration with the OpenClaw agent framework.
 

@@ -11,7 +11,6 @@ from reflexio.models.config_schema import (
     Config,
     PlaybookConfig,
     ProfileExtractorConfig,
-    StorageConfigDisk,
     StorageConfigSQLite,
 )
 from reflexio.server.services.configurator.config_storage import ConfigStorage
@@ -40,11 +39,8 @@ class LocalFileConfigStorage(ConfigStorage):
             self.base_dir = str(reflexio_home() / "configs")
             self.config_file = str(Path(self.base_dir) / f"config_{org_id}.json")
 
-    def _default_storage_config(self) -> StorageConfigSQLite | StorageConfigDisk:
-        """Select default storage config based on REFLEXIO_STORAGE env var."""
-        backend = os.environ.get("REFLEXIO_STORAGE", "sqlite").lower()
-        if backend == "disk":
-            return StorageConfigDisk(dir_path=self.base_dir)
+    def _default_storage_config(self) -> StorageConfigSQLite:
+        """Return the default storage config (always SQLite for local file storage)."""
         return StorageConfigSQLite()
 
     def get_default_config(self) -> Config:

@@ -34,8 +34,8 @@ class BaseStorage(
         in-flight task's rows.
 
         The default implementation composes existing per-user / by-ids
-        primitives so any backend that implements those (sqlite, disk,
-        supabase, postgres, ...) gets correct behaviour for free.
+        primitives so any backend that implements those (sqlite, supabase,
+        postgres, ...) gets correct behaviour for free.
         Subclasses MAY override for atomic / transactional efficiency.
 
         Args:

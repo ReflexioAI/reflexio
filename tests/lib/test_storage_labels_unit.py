@@ -8,7 +8,6 @@ regression here could leak secrets into logs or bug reports.
 
 from reflexio.lib._storage_labels import describe_storage, mask_secret, mask_url
 from reflexio.models.config_schema import (
-    StorageConfigDisk,
     StorageConfigSQLite,
 )
 
@@ -27,11 +26,6 @@ class TestDescribeStorage:
         storage_type, label = describe_storage(StorageConfigSQLite(db_path="/tmp/x.db"))
         assert storage_type == "sqlite"
         assert label == "/tmp/x.db"
-
-    def test_disk_with_dir_path(self):
-        storage_type, label = describe_storage(StorageConfigDisk(dir_path="/tmp/data"))
-        assert storage_type == "disk"
-        assert label == "/tmp/data"
 
     def test_supabase_matched_by_class_name(self):
         """StorageConfigSupabase is enterprise-only — we match by name.

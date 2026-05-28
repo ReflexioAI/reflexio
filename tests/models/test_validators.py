@@ -331,13 +331,6 @@ class TestNonEmptyStr:
         with pytest.raises(ValidationError, match="empty"):
             AnthropicConfig(api_key="")
 
-    def test_storage_config_non_empty(self):
-        """StorageConfigDisk.dir_path rejects empty string."""
-        from reflexio.models.config_schema import StorageConfigDisk
-
-        with pytest.raises(ValidationError, match="empty"):
-            StorageConfigDisk(dir_path="")
-
     def test_tool_use_config_non_empty(self):
         """ToolUseConfig fields reject empty strings."""
         with pytest.raises(ValidationError):

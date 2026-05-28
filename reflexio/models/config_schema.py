@@ -185,19 +185,11 @@ class StorageConfigManagedSupabase(BaseModel):
     schema_present: bool = True
 
 
-class StorageConfigDisk(BaseModel):
-    """Disk-based storage with file-based entities and QMD search."""
-
-    dir_path: NonEmptyStr
-    qmd_binary: str = "qmd"
-
-
 StorageConfig = (
     StorageConfigSQLite
     | StorageConfigSupabase
     | StorageConfigPostgres
     | StorageConfigManagedSupabase
-    | StorageConfigDisk
     | None
 )
 
@@ -653,6 +645,7 @@ class Config(BaseModel):
             "deduplicates internally."
         ),
     )
+
     @model_validator(mode="before")
     @classmethod
     def _migrate_field_names(cls, data: Any) -> Any:

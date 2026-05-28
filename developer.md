@@ -99,7 +99,7 @@ client = ReflexioClient(url_endpoint=f"http://localhost:{BACKEND_PORT}")
 Copy `.env.example` to `.env` and fill in values. Key variables:
 
 - **LLM API keys**: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, etc.
-- **Storage**: `LOCAL_STORAGE_PATH` (defaults to `~/.reflexio/data`) — houses disk-storage artifacts and the SQLite DB file.
+- **Storage**: `LOCAL_STORAGE_PATH` (defaults to `~/.reflexio/data`) — houses the SQLite DB file.
 - **Storage backend**: `REFLEXIO_STORAGE` — `sqlite` (default) or `supabase`. Selects the data storage backend independently from auth configuration.
 - **Testing**: `IS_TEST_ENV`, `DEBUG_LOG_TO_CONSOLE`, `MOCK_LLM_RESPONSE`
 

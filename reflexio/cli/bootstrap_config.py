@@ -16,7 +16,7 @@ from .paths import reflexio_home
 
 logger = logging.getLogger(__name__)
 
-_VALID_STORAGE_BACKENDS = frozenset({"sqlite", "supabase", "postgres", "disk"})
+_VALID_STORAGE_BACKENDS = frozenset({"sqlite", "supabase", "postgres"})
 _DEFAULT_ORG_ID = "self-host-org"
 _DEFAULT_STORAGE = "sqlite"
 
@@ -29,7 +29,6 @@ def _ensure_type_map() -> dict[type, str]:
     """Lazy-build the StorageConfig type → backend string map."""
     if not _TYPE_TO_BACKEND:
         from reflexio.models.config_schema import (
-            StorageConfigDisk,
             StorageConfigPostgres,
             StorageConfigSQLite,
             StorageConfigSupabase,
@@ -40,7 +39,6 @@ def _ensure_type_map() -> dict[type, str]:
                 StorageConfigSQLite: "sqlite",
                 StorageConfigSupabase: "supabase",
                 StorageConfigPostgres: "postgres",
-                StorageConfigDisk: "disk",
             }
         )
     return _TYPE_TO_BACKEND
@@ -81,7 +79,7 @@ def load_storage_from_config(
         base_dir: Override base directory (for testing). If None, uses ~/.reflexio/.
 
     Returns:
-        Storage backend string ("sqlite", "supabase", "postgres", "disk") or None if
+        Storage backend string ("sqlite", "supabase", "postgres") or None if
         no config file exists or storage_config is unset.
     """
     config_path = _config_dir(base_dir) / f"config_{org_id}.json"
@@ -119,12 +117,11 @@ def save_storage_to_config(
     All other fields (extractors, api_keys, etc.) are preserved.
 
     Args:
-        storage_type: Backend name ("sqlite", "supabase", "postgres", "disk").
+        storage_type: Backend name ("sqlite", "supabase", "postgres").
         org_id: Organization ID for the config file name.
         base_dir: Override base directory (for testing).
     """
     from reflexio.models.config_schema import (
-        StorageConfigDisk,
         StorageConfigPostgres,
         StorageConfigSQLite,
         StorageConfigSupabase,
@@ -169,11 +166,6 @@ def save_storage_to_config(
                     "Postgres storage requested but REFLEXIO_POSTGRES_DB_URL "
                     "is missing. Keeping existing storage config."
                 )
-        case "disk":
-            env_dir = os.environ.get("LOCAL_STORAGE_PATH", "").strip()
-            fallback_dir = str(_config_dir(base_dir).parent / "disk-storage")
-            dir_path = env_dir or fallback_dir
-            config.storage_config = StorageConfigDisk(dir_path=dir_path)
         case _:
             raise ValueError(f"Unknown storage type: {storage_type}")
 

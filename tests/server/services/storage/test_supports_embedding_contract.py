@@ -6,7 +6,6 @@ backend that implements ``_get_embedding`` must declare ``supports_embedding =
 True``; backends that don't must leave it at the ``False`` default.
 """
 
-from reflexio.server.services.storage.disk_storage import DiskStorageBase
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorageBase
 from reflexio.server.services.storage.storage_base import BaseStorage
 from reflexio.server.services.storage.storage_base._base import BaseStorageCore
@@ -25,16 +24,10 @@ def test_sqlite_storage_declares_embedding_support() -> None:
     assert hasattr(SQLiteStorageBase, "_get_embedding")
 
 
-def test_disk_storage_does_not_declare_embedding_support() -> None:
-    """Disk storage does not implement ``_get_embedding``; the flag stays False."""
-    assert DiskStorageBase.supports_embedding is False
-    assert not hasattr(DiskStorageBase, "_get_embedding")
-
-
 def test_flag_and_method_agree_for_each_concrete_backend() -> None:
     """For every BaseStorage subclass, ``supports_embedding`` must match
     whether ``_get_embedding`` is actually defined. Prevents silent drift."""
-    backends: list[type[BaseStorage]] = [SQLiteStorageBase, DiskStorageBase]
+    backends: list[type[BaseStorage]] = [SQLiteStorageBase]
     for backend in backends:
         has_method = hasattr(backend, "_get_embedding")
         assert backend.supports_embedding is has_method, (

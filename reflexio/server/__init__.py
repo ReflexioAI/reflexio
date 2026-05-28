@@ -27,7 +27,7 @@ OPENAI_API_KEY = os.environ.get(
     "",
 ).strip()
 
-# Local storage directory — houses disk-storage artifacts and SQLite DB files.
+# Local storage directory — houses the SQLite DB file.
 
 LOCAL_STORAGE_PATH = (
     os.environ.get("LOCAL_STORAGE_PATH", "").strip() or _DEFAULT_DATA_DIR
