@@ -331,6 +331,7 @@ def _weekly_buckets(
     out: list[HeroBucket] = []
     for ts in sorted(buckets):
         week_results = buckets[ts]
+        avg_corr = _mean(r.number_of_correction_per_session for r in week_results)
         out.append(
             HeroBucket(
                 ts=ts,
@@ -338,6 +339,7 @@ def _weekly_buckets(
                 shadow_rate=None,
                 regular_n=len(week_results),
                 shadow_n=0,
+                avg_corrections=avg_corr,
             )
         )
     return out

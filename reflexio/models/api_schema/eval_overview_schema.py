@@ -17,13 +17,20 @@ BucketLiteral = Literal["day", "week"]
 
 
 class HeroBucket(BaseModel):
-    """One point on the trend chart in the hero block."""
+    """One point on the trend chart in the hero block.
+
+    ``avg_corrections`` is the mean of ``number_of_correction_per_session``
+    across this bucket's evaluation results. Surfaced so the frontend can
+    plot a "corrections over time" line beside the success-rate trend.
+    Lower is better.
+    """
 
     ts: int
     regular_rate: float
     shadow_rate: float | None
     regular_n: int
     shadow_n: int
+    avg_corrections: float = 0.0
 
 
 class HeroBlock(BaseModel):
