@@ -5,9 +5,11 @@ checks completion status, runs evaluation, and marks the group as evaluated.
 """
 
 import logging
+import random
 from collections import defaultdict
 from datetime import UTC, datetime
 
+from reflexio.models.api_schema.domain.entities import Interaction
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient
@@ -22,6 +24,7 @@ from reflexio.server.services.agent_success_evaluation.agent_success_evaluation_
 from reflexio.server.services.agent_success_evaluation.delayed_group_evaluator import (
     _EFFECTIVE_DELAY_SECONDS,
 )
+from reflexio.server.services.shadow_comparison.judge import ShadowComparisonJudge
 
 logger = logging.getLogger(__name__)
 
@@ -226,6 +229,20 @@ def run_group_evaluation(
         )
         return
 
+    # F1: per-turn shadow comparison. Dispatched only AFTER the regular
+    # success eval succeeds — a session whose success grade is unreliable
+    # would yield noisy verdicts that mislead the headline metric. The
+    # dispatch loop swallows per-interaction failures so one judge call
+    # cannot abort an entire batch.
+    _dispatch_shadow_comparison_judge(
+        storage=storage,
+        interactions=all_interactions,
+        session_id=session_id,
+        agent_version=agent_version,
+        request_context=request_context,
+        llm_client=llm_client,
+    )
+
     # 6. New rows saved successfully — now safe to remove the captured prior
     # rows. New rows have fresh auto-increment result_ids that do not overlap
     # with old_result_ids, so this cannot delete the regenerated verdict.
@@ -249,3 +266,86 @@ def run_group_evaluation(
         {"evaluated": True, "evaluated_at": evaluated_at},
     )
     logger.info("Marked session %s as evaluated at %d", session_id, evaluated_at)
+
+
+def _dispatch_shadow_comparison_judge(
+    *,
+    storage,  # noqa: ANN001 — BaseStorage; imported lazily to avoid cycles
+    interactions: list[Interaction],
+    session_id: str,
+    agent_version: str,
+    request_context: RequestContext,
+    llm_client: LiteLLMClient,
+) -> None:
+    """F1: grade each shadow-bearing interaction with the per-turn judge.
+
+    Iterates the session's interactions, skips any without ``shadow_content``,
+    invokes :class:`ShadowComparisonJudge.judge_turn`, and persists each
+    returned verdict via ``storage.save_shadow_comparison_verdict``. Per-
+    interaction exceptions are logged and the loop continues — partial
+    verdict sets are strictly better than nothing for the headline metric.
+
+    Args:
+        storage: The session storage. Must implement
+            ``save_shadow_comparison_verdict`` (currently SQLite + Supabase
+            + disk; backends without it surface ``NotImplementedError`` at
+            save time and the loop logs+continues).
+        interactions (list[Interaction]): Every interaction in the session,
+            in chronological order. Only those with non-empty
+            ``shadow_content`` are graded.
+        session_id (str): Denormalized onto each verdict.
+        agent_version (str): Denormalized onto each verdict.
+        request_context (RequestContext): Provides the configurator (for
+            the pinned ``shadow_comparison_judge_prompt_version``) and the
+            shared ``prompt_manager``.
+        llm_client (LiteLLMClient): The unified LLM client the judge uses
+            for the structured-output call.
+
+    Returns:
+        None: Verdicts are persisted as a side effect; the caller does not
+            need the count for control flow.
+    """
+    config = request_context.configurator.get_config()  # type: ignore[reportOptionalMemberAccess]
+    judge = ShadowComparisonJudge(
+        llm_client=llm_client,
+        prompt_manager=request_context.prompt_manager,  # type: ignore[reportOptionalMemberAccess]
+        prompt_version=config.shadow_comparison_judge_prompt_version,
+    )
+    rng = random.Random()  # noqa: S311 — position randomization, not crypto
+    saved_count = 0
+
+    for interaction in interactions:
+        if not interaction.shadow_content:
+            continue
+        try:
+            verdict = judge.judge_turn(
+                interaction=interaction,
+                session_id=session_id,
+                agent_version=agent_version,
+                rng=rng,
+            )
+        except Exception as exc:  # noqa: BLE001 — judge failure must not abort batch
+            logger.warning(
+                "F1 shadow_comparison dispatch failed for interaction %s: %s",
+                interaction.interaction_id,
+                exc,
+            )
+            continue
+        if verdict is None:
+            continue
+        try:
+            storage.save_shadow_comparison_verdict(verdict)
+            saved_count += 1
+        except Exception as exc:  # noqa: BLE001 — single-row save failure must not abort batch
+            logger.warning(
+                "F1 shadow_comparison verdict save failed for interaction %s: %s",
+                interaction.interaction_id,
+                exc,
+            )
+
+    if saved_count:
+        logger.info(
+            "F1: saved %d shadow_comparison verdict(s) for session=%s",
+            saved_count,
+            session_id,
+        )
