@@ -93,3 +93,63 @@ def test_service_returns_empty_state_when_no_results() -> None:
     assert response.hero.state == "empty"
     assert response.context_tiles.success.current == 0.0
     assert response.rule_attribution == []
+
+
+def test_service_uses_first_ever_eval_for_hero_age() -> None:
+    """A narrow window should not make a mature org look newly onboarded."""
+    now = int(time.time())
+    storage = MagicMock()
+    storage.get_agent_success_evaluation_results.return_value = [
+        _eval_result(
+            result_id=1,
+            session_id="old",
+            is_success=True,
+            created_at=now - 10 * 24 * 60 * 60,
+        ),
+        _eval_result(
+            result_id=2, session_id="current", is_success=True, created_at=now
+        ),
+    ]
+    storage.get_playbook_application_stats.return_value = []
+    storage.get_interactions_by_session.return_value = []
+    storage.get_imported_scores.return_value = []
+    storage.get_sessions.return_value = {}
+    config = Config(storage_config=StorageConfigSQLite())
+
+    svc = EvaluationOverviewService(storage=storage, config=config)
+    response = svc.run(GetEvaluationOverviewRequest(from_ts=now - 60, to_ts=now))
+
+    assert response.hero.state == "shadow_off"
+
+
+def test_service_honors_day_bucket_for_hero_trend() -> None:
+    day = 24 * 60 * 60
+    storage = MagicMock()
+    storage.get_agent_success_evaluation_results.return_value = [
+        _eval_result(result_id=1, session_id="s1", is_success=True, created_at=day),
+        _eval_result(
+            result_id=2,
+            session_id="s2",
+            is_success=False,
+            created_at=day + 3600,
+        ),
+        _eval_result(
+            result_id=3,
+            session_id="s3",
+            is_success=True,
+            created_at=2 * day,
+        ),
+    ]
+    storage.get_playbook_application_stats.return_value = []
+    storage.get_interactions_by_session.return_value = []
+    storage.get_imported_scores.return_value = []
+    storage.get_sessions.return_value = {}
+    config = Config(storage_config=StorageConfigSQLite())
+
+    svc = EvaluationOverviewService(storage=storage, config=config)
+    response = svc.run(
+        GetEvaluationOverviewRequest(from_ts=0, to_ts=3 * day, bucket="day")
+    )
+
+    assert [bucket.ts for bucket in response.hero.buckets] == [day, 2 * day]
+    assert [bucket.regular_n for bucket in response.hero.buckets] == [2, 1]

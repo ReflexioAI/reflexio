@@ -31,7 +31,6 @@ def _load() -> MultiFernet | None:
     global _MULTI, _LOADED
     if _LOADED:
         return _MULTI
-    _LOADED = True
     raw = os.environ.get(_ENV_KEY, "").strip()
     if not raw:
         logger.info(
@@ -39,6 +38,7 @@ def _load() -> MultiFernet | None:
             "(suitable only for local development).",
             _ENV_KEY,
         )
+        _LOADED = True
         return None
     fernets = []
     for k in raw.split(","):
@@ -50,8 +50,9 @@ def _load() -> MultiFernet | None:
         except Exception:  # noqa: BLE001
             logger.warning("Discarding invalid Fernet key in %s", _ENV_KEY)
     if not fernets:
-        return None
+        raise RuntimeError(f"{_ENV_KEY} is set but contains no valid Fernet keys")
     _MULTI = MultiFernet(fernets)
+    _LOADED = True
     return _MULTI
 
 

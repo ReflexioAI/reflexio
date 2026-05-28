@@ -16,7 +16,10 @@ from reflexio.models.api_schema.braintrust_schema import (
     SelectProjectsRequest,
 )
 from reflexio.server.services.braintrust import _encryption
-from reflexio.server.services.braintrust.client import BraintrustAuthError
+from reflexio.server.services.braintrust.client import (
+    BraintrustAuthError,
+    BraintrustHTTPError,
+)
 from reflexio.server.services.braintrust.service import (
     BraintrustConnectorService,
     _scores_from_spans,
@@ -50,12 +53,8 @@ def _stub_client_factory(*, valid: bool = True, payload: dict[str, Any] | None =
     workspace with one project containing one experiment + two spans.
     """
     payload = payload or {}
-    orgs = payload.get(
-        "organizations", [{"id": "ws_1", "name": "My Workspace"}]
-    )
-    projects = payload.get(
-        "projects", [{"id": "p_1", "name": "Production"}]
-    )
+    orgs = payload.get("organizations", [{"id": "ws_1", "name": "My Workspace"}])
+    projects = payload.get("projects", [{"id": "p_1", "name": "Production"}])
     experiments = payload.get(
         "experiments", [{"id": "exp_1", "name": "v1", "created_at": 1700000000}]
     )
@@ -104,6 +103,17 @@ def test_connect_returns_workspaces_for_valid_key() -> None:
     assert response.workspaces[0].projects[0].project_id == "p_1"
     # Nothing persisted yet
     assert storage.connections == {}
+
+
+def test_connect_closes_client() -> None:
+    storage = _InMemoryStorage()
+    client = _stub_client_factory()("sk-valid")
+    svc = BraintrustConnectorService(
+        storage=storage, org_id="org_t", client_factory=lambda _key: client
+    )
+    response = svc.connect(ConnectBraintrustRequest(api_key="sk-valid"))
+    assert response.success is True
+    client.close.assert_called_once()
 
 
 def test_connect_returns_failure_for_invalid_key() -> None:
@@ -179,7 +189,9 @@ def test_status_reflects_persisted_connection(monkeypatch) -> None:
     )
     svc.select_projects(
         SelectProjectsRequest(
-            api_key="sk", workspace_id="ws_1", workspace_name="WS",
+            api_key="sk",
+            workspace_id="ws_1",
+            workspace_name="WS",
             project_ids=["p_1", "p_2"],
         )
     )
@@ -196,9 +208,7 @@ def test_disconnect_removes_the_row(monkeypatch) -> None:
     svc = BraintrustConnectorService(
         storage=storage, org_id="org_t", client_factory=_stub_client_factory()
     )
-    svc.select_projects(
-        SelectProjectsRequest(api_key="sk", workspace_id="ws_1")
-    )
+    svc.select_projects(SelectProjectsRequest(api_key="sk", workspace_id="ws_1"))
     svc.disconnect()
     assert svc.status().connected is False
 
@@ -211,9 +221,7 @@ def test_sync_once_writes_imported_scores(monkeypatch) -> None:
         storage=storage, org_id="org_t", client_factory=_stub_client_factory()
     )
     svc.select_projects(
-        SelectProjectsRequest(
-            api_key="sk", workspace_id="ws_1", project_ids=["p_1"]
-        )
+        SelectProjectsRequest(api_key="sk", workspace_id="ws_1", project_ids=["p_1"])
     )
 
     response = svc.sync_once()
@@ -232,9 +240,63 @@ def test_sync_once_writes_imported_scores(monkeypatch) -> None:
     assert storage.connections["org_t"].last_sync_ts is not None
 
 
+def test_sync_once_uses_last_successful_sync_ts(monkeypatch) -> None:
+    monkeypatch.delenv("REFLEXIO_FERNET_KEYS", raising=False)
+    _encryption._reset_for_test()
+    storage = _InMemoryStorage()
+    client = MagicMock()
+    client.list_experiments.return_value = []
+    svc = BraintrustConnectorService(
+        storage=storage, org_id="org_t", client_factory=lambda _key: client
+    )
+    storage.save_braintrust_connection(
+        BraintrustConnection(
+            org_id="org_t",
+            api_key_enc="sk",
+            workspace_id="ws_1",
+            project_ids=["p_1"],
+            last_sync_ts=12345,
+        )
+    )
+
+    response = svc.sync_once()
+
+    assert response.success is True
+    client.list_experiments.assert_called_once_with("p_1", since_ts=12345)
+    client.close.assert_called_once()
+
+
+def test_sync_failure_does_not_advance_last_sync_ts(monkeypatch) -> None:
+    monkeypatch.delenv("REFLEXIO_FERNET_KEYS", raising=False)
+    _encryption._reset_for_test()
+    storage = _InMemoryStorage()
+    client = MagicMock()
+    client.list_experiments.side_effect = BraintrustHTTPError(500, "boom")
+    svc = BraintrustConnectorService(
+        storage=storage, org_id="org_t", client_factory=lambda _key: client
+    )
+    storage.save_braintrust_connection(
+        BraintrustConnection(
+            org_id="org_t",
+            api_key_enc="sk",
+            workspace_id="ws_1",
+            project_ids=["p_1"],
+            last_sync_ts=12345,
+        )
+    )
+
+    response = svc.sync_once()
+
+    assert response.success is False
+    assert storage.connections["org_t"].last_sync_ts == 12345
+    assert "boom" in (storage.connections["org_t"].last_error or "")
+    client.close.assert_called_once()
+
+
 def test_sync_once_returns_failure_when_not_connected() -> None:
     svc = BraintrustConnectorService(
-        storage=_InMemoryStorage(), org_id="org_t",
+        storage=_InMemoryStorage(),
+        org_id="org_t",
         client_factory=_stub_client_factory(),
     )
     response = svc.sync_once()

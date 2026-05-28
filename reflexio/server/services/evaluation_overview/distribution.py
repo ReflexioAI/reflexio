@@ -14,7 +14,9 @@ BUCKET_LABELS: tuple[str, ...] = ("0", "1", "2", "3", "4", "5+")
 _BUCKET_COUNT = len(BUCKET_LABELS)
 
 
-def bucket_corrections(corrections: Iterable[int]) -> tuple[int, int, int, int, int, int]:
+def bucket_corrections(
+    corrections: Iterable[int],
+) -> tuple[int, int, int, int, int, int]:
     """Return per-bin counts for the corrections histogram.
 
     Args:
@@ -26,6 +28,6 @@ def bucket_corrections(corrections: Iterable[int]) -> tuple[int, int, int, int, 
     """
     bins = [0] * _BUCKET_COUNT
     for c in corrections:
-        idx = min(_BUCKET_COUNT - 1, c)
+        idx = min(_BUCKET_COUNT - 1, max(0, c))
         bins[idx] += 1
     return tuple(bins)  # type: ignore[return-value]

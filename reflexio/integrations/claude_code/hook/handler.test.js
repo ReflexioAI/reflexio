@@ -196,6 +196,8 @@ test("popMatchingCitations returns [] for empty queue or no match", () => {
 
 test("readCitationState skips corrupt lines and missing files", () => {
 	const tmp = mkdtempSync(join(tmpdir(), "reflexio-hook-"));
+	const prevHome = process.env.HOME;
+	process.env.HOME = tmp;
 	try {
 		// Override SESSIONS_DIR by writing directly to the computed path
 		const sessionId = "test-session-123";
@@ -225,6 +227,7 @@ test("readCitationState skips corrupt lines and missing files", () => {
 		assert.equal(records[0].prompt, "good");
 		assert.equal(records[1].prompt, "ok");
 	} finally {
+		process.env.HOME = prevHome;
 		// Clean up our test file
 		try {
 			rmSync(sessionStateFilePath("test-session-123"));

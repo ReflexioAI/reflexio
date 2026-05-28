@@ -137,6 +137,16 @@ def test_singleton_returns_same_instance() -> None:
         _cron._reset_for_test()
 
 
+def test_singleton_starts_on_first_access() -> None:
+    _cron._reset_for_test()
+    scheduler = get_instance()
+    try:
+        assert scheduler._thread is not None
+        assert scheduler._thread.is_alive()
+    finally:
+        _cron._reset_for_test()
+
+
 def test_reset_for_test_clears_singleton(monkeypatch) -> None:
     monkeypatch.setenv("IS_TEST_ENV", "true")
     s1 = get_instance()

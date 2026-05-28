@@ -83,9 +83,15 @@ class BraintrustSyncScheduler:
     list_connected_orgs: Callable[[], list[str]] = field(default=lambda: [])
     run_sync_for_org: Callable[[str], None] = field(default=lambda _org: None)
 
-    _instance: BraintrustSyncScheduler | None = field(default=None, init=False, repr=False)
-    _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
-    _stop: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
+    _instance: BraintrustSyncScheduler | None = field(
+        default=None, init=False, repr=False
+    )
+    _lock: threading.Lock = field(
+        default_factory=threading.Lock, init=False, repr=False
+    )
+    _stop: threading.Event = field(
+        default_factory=threading.Event, init=False, repr=False
+    )
     _thread: threading.Thread | None = field(default=None, init=False, repr=False)
 
     def start(self) -> None:
@@ -156,6 +162,7 @@ def get_instance(
                 list_connected_orgs=list_connected_orgs or (lambda: []),
                 run_sync_for_org=run_sync_for_org or (lambda _org: None),
             )
+            _INSTANCE.start()
         return _INSTANCE
 
 
@@ -182,9 +189,7 @@ def trigger_tick_now(scheduler: BraintrustSyncScheduler) -> None:
         try:
             scheduler.run_sync_for_org(org_id)
         except Exception:  # noqa: BLE001
-            logger.exception(
-                "trigger_tick_now: sync failed for org=%s", org_id
-            )
+            logger.exception("trigger_tick_now: sync failed for org=%s", org_id)
 
 
 # Tiny no-op `_` reference so unused-import lint doesn't trip on `time`.

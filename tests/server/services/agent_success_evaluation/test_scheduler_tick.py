@@ -15,7 +15,11 @@ def test_scheduler_records_tick_within_one_second() -> None:
 
     # Wake the scheduler to force a loop iteration
     scheduler._wake_event.set()
-    time.sleep(0.5)
+    deadline = time.time() + 2.0
+    while time.time() < deadline:
+        if _eval_health.get_status()["last_tick_monotonic"] is not None:
+            break
+        time.sleep(0.05)
 
     status = _eval_health.get_status()
     assert status["last_tick_monotonic"] is not None

@@ -164,6 +164,10 @@ class DashboardMixin(ReflexioBase):
         """Step 1 of the Braintrust connect flow — validate key, list workspaces."""
         if isinstance(request, dict):
             request = ConnectBraintrustRequest(**request)
+        if not self._is_storage_configured():
+            return ConnectBraintrustResponse(
+                success=False, msg=STORAGE_NOT_CONFIGURED_MSG
+            )
         return self._braintrust_service().connect(request)
 
     def braintrust_select_projects(
@@ -172,18 +176,26 @@ class DashboardMixin(ReflexioBase):
         """Step 2 — persist the connection with selected projects (key encrypted)."""
         if isinstance(request, dict):
             request = SelectProjectsRequest(**request)
+        if not self._is_storage_configured():
+            return SelectProjectsResponse(success=False, msg=STORAGE_NOT_CONFIGURED_MSG)
         return self._braintrust_service().select_projects(request)
 
     def braintrust_status(self) -> BraintrustStatusResponse:
         """Return whether this org is connected to Braintrust + sync state."""
+        if not self._is_storage_configured():
+            return BraintrustStatusResponse(connected=False)
         return self._braintrust_service().status()
 
     def braintrust_disconnect(self) -> None:
         """Delete the persisted Braintrust connection."""
+        if not self._is_storage_configured():
+            return
         self._braintrust_service().disconnect()
 
     def braintrust_sync(self) -> SyncBraintrustResponse:
         """Manual one-shot sync (cron-driven sync is a follow-up)."""
+        if not self._is_storage_configured():
+            return SyncBraintrustResponse(success=False, msg=STORAGE_NOT_CONFIGURED_MSG)
         return self._braintrust_service().sync_once()
 
     def _braintrust_service(self) -> "BraintrustConnectorService":

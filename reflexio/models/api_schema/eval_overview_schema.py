@@ -6,7 +6,7 @@ single round-trip so the frontend renders, never computes.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, Self
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -106,6 +106,13 @@ class GetEvaluationOverviewRequest(BaseModel):
     to_ts: int = Field(ge=0)
     bucket: BucketLiteral = "week"
     include_shadow: bool = True
+
+    @model_validator(mode="after")
+    def validate_time_window(self) -> Self:
+        """Ensure the requested time window is ordered."""
+        if self.from_ts > self.to_ts:
+            raise ValueError("from_ts must be <= to_ts")
+        return self
 
 
 class BraintrustTileRow(BaseModel):

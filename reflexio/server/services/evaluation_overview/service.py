@@ -20,6 +20,7 @@ from reflexio.models.api_schema.domain.entities import (
 )
 from reflexio.models.api_schema.eval_overview_schema import (
     BraintrustTileRow,
+    BucketLiteral,
     ContextTile,
     GetEvaluationOverviewRequest,
     GetEvaluationOverviewResponse,
@@ -99,7 +100,8 @@ class EvaluationOverviewService:
             r for r in all_results if prev_from <= r.created_at < prev_to
         ]
 
-        hero = self._build_hero(results)
+        earliest_eval_ts = min((r.created_at for r in all_results), default=None)
+        hero = self._build_hero(request, results, earliest_eval_ts)
         tiles = self._build_tiles(results_current_7d, results_prev_7d)
         attribution = self._build_attribution(results)
         distribution = self._build_distribution(results_current_7d, results_prev_7d)
@@ -125,13 +127,16 @@ class EvaluationOverviewService:
 
     def _build_hero(
         self,
+        request: GetEvaluationOverviewRequest,
         results: list[AgentSuccessEvaluationResult],
+        earliest_eval_ts: int | None,
     ) -> HeroBlock:
-        if not results:
+        if earliest_eval_ts is None:
             days_since = None
         else:
-            earliest = min(r.created_at for r in results)
-            days_since = (int(datetime.now(UTC).timestamp()) - earliest) // 86_400
+            days_since = (
+                int(datetime.now(UTC).timestamp()) - earliest_eval_ts
+            ) // 86_400
         # Shadow direct-grade has been removed; counterfactual measurement is
         # pending a methodologically sound replacement (see the validity spec).
         # The state machine still runs so the EMPTY / SHADOW_OFF surfaces work,
@@ -148,7 +153,7 @@ class EvaluationOverviewService:
             regular_success_rate_pp=success_rate,
             shadow_success_rate_pp=None,
             delta_pp=None,
-            buckets=_weekly_buckets(results),
+            buckets=_buckets(results, request.bucket),
         )
 
     def _build_tiles(
@@ -421,17 +426,18 @@ def _aggregate_imported_scores(
     return {name: (sum(vs) / len(vs), len(vs)) for name, vs in bucket.items() if vs}
 
 
-def _weekly_buckets(
-    results: list[AgentSuccessEvaluationResult],
+def _buckets(
+    results: list[AgentSuccessEvaluationResult], bucket: BucketLiteral
 ) -> list[HeroBucket]:
-    """Build week-sized buckets across the given results."""
+    """Build day- or week-sized buckets across the given results."""
     if not results:
         return []
     buckets: dict[int, list[AgentSuccessEvaluationResult]] = defaultdict(list)
+    step = _DAY_SECONDS if bucket == "day" else _WEEK_SECONDS
     for r in results:
-        # Anchor each result to the START of its week (epoch-aligned).
-        week_start = (r.created_at // _WEEK_SECONDS) * _WEEK_SECONDS
-        buckets[week_start].append(r)
+        # Anchor each result to the START of its bucket (epoch-aligned).
+        bucket_start = (r.created_at // step) * step
+        buckets[bucket_start].append(r)
     out: list[HeroBucket] = []
     for ts in sorted(buckets):
         week_results = buckets[ts]

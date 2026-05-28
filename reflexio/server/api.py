@@ -1576,8 +1576,10 @@ def get_playbook_application_stats(
     response_model=ConnectBraintrustResponse,
     response_model_exclude_none=True,
 )
+@limiter.limit("10/minute")
 def braintrust_connect(
-    request: ConnectBraintrustRequest,
+    request: Request,
+    payload: ConnectBraintrustRequest,
     org_id: str = Depends(default_get_org_id),
 ) -> ConnectBraintrustResponse:
     """Step 1: validate the Braintrust API key and list workspaces/projects.
@@ -1585,7 +1587,8 @@ def braintrust_connect(
     Persists nothing — call `/api/braintrust/select_projects` to commit.
 
     Args:
-        request (ConnectBraintrustRequest): Customer's Braintrust API key.
+        request (Request): The HTTP request object for rate limiting.
+        payload (ConnectBraintrustRequest): Customer's Braintrust API key.
         org_id (str): Resolved by auth dependency.
 
     Returns:
@@ -1593,7 +1596,7 @@ def braintrust_connect(
             with a message when the key is rejected.
     """
     reflexio = get_reflexio(org_id=org_id)
-    return reflexio.braintrust_connect(request)
+    return reflexio.braintrust_connect(payload)
 
 
 @core_router.post(
@@ -1601,8 +1604,10 @@ def braintrust_connect(
     response_model=SelectProjectsResponse,
     response_model_exclude_none=True,
 )
+@limiter.limit("10/minute")
 def braintrust_select_projects(
-    request: SelectProjectsRequest,
+    request: Request,
+    payload: SelectProjectsRequest,
     org_id: str = Depends(default_get_org_id),
 ) -> SelectProjectsResponse:
     """Step 2: commit the Braintrust connection with selected projects.
@@ -1611,7 +1616,7 @@ def braintrust_select_projects(
     connection until the customer calls DELETE /api/braintrust/connection.
     """
     reflexio = get_reflexio(org_id=org_id)
-    return reflexio.braintrust_select_projects(request)
+    return reflexio.braintrust_select_projects(payload)
 
 
 @core_router.get(
@@ -1628,7 +1633,9 @@ def braintrust_status(
 
 
 @core_router.delete("/api/braintrust/connection")
+@limiter.limit("10/minute")
 def braintrust_disconnect(
+    request: Request,
     org_id: str = Depends(default_get_org_id),
 ) -> dict:
     """Delete the persisted Braintrust connection for the org.
@@ -1649,7 +1656,9 @@ def braintrust_disconnect(
     response_model=SyncBraintrustResponse,
     response_model_exclude_none=True,
 )
+@limiter.limit("10/minute")
 def braintrust_sync(
+    request: Request,
     org_id: str = Depends(default_get_org_id),
 ) -> SyncBraintrustResponse:
     """Trigger a one-shot sync of Braintrust scorer outputs.

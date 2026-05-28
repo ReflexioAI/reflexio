@@ -5092,6 +5092,7 @@ dependencies = [
     { name = "cachetools" },
     { name = "chromadb" },
     { name = "colorlog" },
+    { name = "cryptography" },
     { name = "duckduckgo-search" },
     { name = "einops" },
     { name = "fastapi" },

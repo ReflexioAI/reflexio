@@ -100,11 +100,11 @@ class AgentSuccessEvaluationService(
         Returns:
             list[AgentSuccessConfig]: Agent success configurations to execute.
         """
-        configs = self.configurator.get_config().agent_success_configs  # type: ignore[reportOptionalMemberAccess]
+        configs = self.configurator.get_config().agent_success_configs or []  # type: ignore[reportOptionalMemberAccess]
         name_filter = getattr(self.service_config, "evaluation_name_filter", None)
         if name_filter is None:
-            return configs  # type: ignore[reportReturnType]
-        return [c for c in configs if c.evaluation_name == name_filter]  # type: ignore[reportReturnType]
+            return configs
+        return [c for c in configs if c.evaluation_name == name_filter]
 
     def _create_extractor(
         self,
