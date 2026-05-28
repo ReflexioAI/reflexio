@@ -19,9 +19,9 @@ import typer
 
 app = typer.Typer(
     help=(
-        "Configure Reflexio: run 'init' for plain CLI setup, or use the "
-        "integration commands ('openclaw', 'openai-codex') to also install "
-        "hooks into the host tool."
+        "Configure Reflexio: run 'init' for plain CLI setup, use 'openclaw' "
+        "to install host-tool hooks, or use 'openai-codex' to configure "
+        "Codex OAuth tokens."
     )
 )
 
@@ -388,8 +388,8 @@ def _prompt_local_sqlite(env_path: Path) -> str:
     """Option 1 — local SQLite with a local Reflexio server.
 
     Writes ``REFLEXIO_URL`` pointing at the local server so the CLI
-    and any installed integration hooks (OpenClaw, OpenAI Codex) know
-    where to connect.
+    and any installed integration hooks (e.g., OpenClaw) know where
+    to connect.
 
     Args:
         env_path (Path): Path to the .env file.

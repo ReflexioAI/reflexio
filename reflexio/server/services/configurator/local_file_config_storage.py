@@ -82,21 +82,24 @@ class LocalFileConfigStorage(ConfigStorage):
                 config_content = f.read()
                 data = json.loads(str(config_content))
                 # Detect legacy on-disk configs that used the removed "disk"
-                # storage backend and fall back to the default rather than
-                # raising deep inside Pydantic validation. Without this
-                # guard, every CLI invocation against an older config file
-                # would silently flip to SQLite via the broad-except path
-                # below, hiding the migration entirely.
+                # storage backend and rewrite only the storage_config field
+                # to default SQLite. Other persisted fields (extractors,
+                # prompts, etc.) are preserved so the migration doesn't
+                # silently lose user customizations. Without this guard,
+                # legacy configs would fail Pydantic validation and the
+                # broad-except path below would discard everything.
                 storage_cfg = (
                     data.get("storage_config") if isinstance(data, dict) else None
                 )
                 if isinstance(storage_cfg, dict) and storage_cfg.get("type") == "disk":
                     logger.warning(
                         "Legacy storage_config.type='disk' detected in %s. "
-                        "The disk backend was removed; falling back to default SQLite config.",
+                        "The disk backend was removed; rewriting storage_config "
+                        "to default SQLite and preserving all other fields.",
                         self.config_file,
                     )
-                    return self.get_default_config()
+                    data = dict(data)
+                    data["storage_config"] = self._default_storage_config().model_dump()
                 config: Config = Config(**data)
                 return config
         except Exception:

@@ -201,8 +201,26 @@ def resolve_storage(cli_flag: str | None) -> str:
 
     # 2. Environment variable (from .env or shell)
     env_val = os.environ.get("REFLEXIO_STORAGE")
-    if env_val and env_val.lower() in _VALID_STORAGE_BACKENDS:
-        return env_val.lower()
+    if env_val:
+        env_norm = env_val.lower()
+        if env_norm in _VALID_STORAGE_BACKENDS:
+            return env_norm
+        # Unknown value (e.g., legacy "disk" or a typo). Don't silently fall
+        # through — surface a warning so operators notice that their env var
+        # was ignored. Common case: REFLEXIO_STORAGE=disk left over from a
+        # release that supported the now-removed disk backend.
+        legacy_hint = (
+            " The 'disk' backend was removed; migrate to 'sqlite'."
+            if env_norm == "disk"
+            else ""
+        )
+        logger.warning(
+            "Ignoring unsupported REFLEXIO_STORAGE=%r; falling back to config/default. "
+            "Supported: %s.%s",
+            env_val,
+            ", ".join(sorted(_VALID_STORAGE_BACKENDS)),
+            legacy_hint,
+        )
 
     # 3. Config file
     from_config = load_storage_from_config()
