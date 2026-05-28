@@ -6,9 +6,10 @@ single round-trip so the frontend renders, never computes.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from reflexio.models.api_schema.validators import NonEmptyStr
 
@@ -313,3 +314,64 @@ class GradeOnDemandResponse(BaseModel):
     result_id: int | None = None
     cached: bool = False
     skipped_reason: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Per-turn shadow comparison verdicts (F1)
+# ---------------------------------------------------------------------------
+
+
+class ShadowComparisonOutput(BaseModel):
+    """LLM judge verdict for a per-turn Reflexio-vs-Shadow comparison (F1).
+
+    Args:
+        better_request (Literal["1", "2", "tie"]): Which side the judge
+            picked. Position is randomized per call so "1" and "2" are
+            blind to the judge; the mapping is recorded on
+            ShadowComparisonVerdict.reflexio_is_request_1.
+        is_significantly_better (bool): True if the better side is clearly
+            better; False if marginal/close-but-edges-it. Used to filter
+            the "Top 10 disagreements" widget down to actionable cases.
+        comparison_reason (str | None): 1-2 sentence rationale. Displayed
+            in the drill-down drawer.
+    """
+
+    better_request: Literal["1", "2", "tie"]
+    is_significantly_better: bool
+    comparison_reason: str | None = None
+
+    model_config = ConfigDict(
+        extra="allow",
+        json_schema_extra={"additionalProperties": False},
+    )
+
+
+class ShadowComparisonVerdict(BaseModel):
+    """One per-turn comparison verdict, stored in shadow_comparison_verdicts (F1).
+
+    Args:
+        verdict_id (int): Storage-assigned autoincrement primary key.
+        interaction_id (str): The interaction this verdict grades. Joins
+            to the Interaction.interaction_id for drill-down display.
+        session_id (str): The session containing the interaction.
+        agent_version (str): Pinned for trend-by-version slicing.
+        reflexio_is_request_1 (bool): Position-randomization record. True
+            when the Reflexio response was shown as Request 1 to the judge.
+            The dashboard derives win/loss/tie via:
+                derived_win = (better == "1") == reflexio_is_request_1
+        output (ShadowComparisonOutput): The judge's structured verdict.
+        judge_prompt_version (str): Semver of shadow_comparison prompt
+            used. The dashboard filters to the org's current pinned
+            version (Config.shadow_comparison_judge_prompt_version) so
+            verdicts from a prior rubric never mix into the headline.
+        created_at (datetime): When the judge call returned.
+    """
+
+    verdict_id: int
+    interaction_id: str
+    session_id: str
+    agent_version: str
+    reflexio_is_request_1: bool
+    output: ShadowComparisonOutput
+    judge_prompt_version: str = Field(min_length=1)
+    created_at: datetime
