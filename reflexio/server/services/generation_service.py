@@ -186,13 +186,16 @@ class GenerationService:
                 count_value=len(new_interactions),
             )
 
-            # Store Request
+            # Store Request — propagate customer-stamped metadata so the
+            # eval pipeline (e.g. F2 sticky-group aggregator) can read it
+            # back from the first request of each session.
             new_request = Request(
                 request_id=request_id,
                 user_id=user_id,
                 source=publish_user_interaction_request.source,
                 agent_version=agent_version,
                 session_id=publish_user_interaction_request.session_id or None,
+                metadata=publish_user_interaction_request.metadata,
             )
             self.storage.add_request(new_request)  # type: ignore[reportOptionalMemberAccess]
 

@@ -388,6 +388,7 @@ class ReflexioClient:
         skip_aggregation: bool = False,
         force_extraction: bool = False,
         override_learning_stall: bool = False,
+        metadata: dict[str, Any] | None = None,
     ) -> PublishUserInteractionResponse:
         """Publish user interactions.
 
@@ -429,6 +430,11 @@ class ReflexioClient:
                 Reflexio has recorded a provider auth/billing stall. Keep
                 this False for automatic hook publishes; use it only for an
                 explicit retry after reauth or limit reset.
+            metadata: Optional per-request annotations stamped by the
+                customer. Mirrored onto the stored ``Request`` row so the
+                eval pipeline can read them back. Conventional key:
+                ``reflexio_retrieval_enabled`` (bool) for F2 group
+                assignment. Values must be JSON-encodable.
 
         Returns:
             PublishUserInteractionResponse: Server response. In
@@ -455,6 +461,7 @@ class ReflexioClient:
             skip_aggregation=skip_aggregation,
             force_extraction=force_extraction,
             override_learning_stall=override_learning_stall,
+            metadata=metadata or {},
         )
         result = self._publish_interaction_sync(
             request, wait_for_response=wait_for_response

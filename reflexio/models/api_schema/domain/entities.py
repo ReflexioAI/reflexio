@@ -566,6 +566,20 @@ class PublishUserInteractionRequest(BaseModel):
     )
     force_extraction: bool = False  # when True, bypass all extraction gates (stride_size, cheap pre-filter, LLM should_run) and always run extractors
     override_learning_stall: bool = False  # when True, run extraction even if a provider auth/billing stall is recorded
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    """Per-request annotations stamped by customer integration code.
+
+    Mirrors ``Request.metadata`` — the publish path copies this dict
+    onto the ``Request`` row it creates so the eval pipeline (and the
+    F2 sticky-group aggregator in particular) can read it back from
+    the first request of each session.
+
+    Conventional keys:
+        - ``reflexio_retrieval_enabled`` (bool): F2 group assignment signal.
+
+    Defaults to ``{}`` (never None) for backward compatibility — existing
+    callers that don't pass ``metadata`` keep working unchanged.
+    """
 
 
 # publish user interaction response
