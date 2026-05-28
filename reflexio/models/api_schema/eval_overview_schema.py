@@ -243,6 +243,14 @@ class RegenerateStatusResponse(BaseModel):
         started_at (float): Unix-seconds wall-clock timestamp at job creation.
         finished_at (float | None): Unix-seconds wall-clock timestamp at
             worker exit; ``None`` while ``status == "running"``.
+        total_candidates (int): F3: count of distinct (session, agent_version)
+            candidate tuples discovered in the regen window BEFORE stratified
+            sampling. Defaults to 0 for jobs created before F3 shipped.
+        sampled_count (int): F3: count of candidates retained after stratified
+            sampling. Equal to total_candidates when no stratum exceeded
+            Config.eval_sample_n_per_stratum.
+        concurrency_limit (int): F3: max simultaneous worker threads. Mirrors
+            Config.eval_concurrency_limit at job start.
     """
 
     job_id: str
