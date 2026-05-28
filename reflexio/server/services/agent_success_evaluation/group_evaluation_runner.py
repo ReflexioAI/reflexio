@@ -62,8 +62,13 @@ def run_group_evaluation(
     2. Fetch all requests for the session
     3. Verify completion (latest request created_at >= delay ago; skipped when force_regenerate)
     4. Fetch interactions and build data models
-    5. Run evaluation service
-    6. Mark as evaluated in operation state
+    5. Capture prior result_ids (when regenerating a single evaluator) so they
+       can be removed AFTER the new save lands
+    6. Run evaluation service (which saves new rows)
+    7. On success, delete the captured prior rows by id — the new rows have
+       fresh auto-increment ids that do not overlap. A failure here leaves
+       the session in a consistent pre-regen state instead of zero rows.
+    8. Mark as evaluated in operation state
 
     Args:
         org_id: Organization ID
@@ -80,8 +85,9 @@ def run_group_evaluation(
             AgentSuccessConfig.evaluation_name. Propagated to the service via
             AgentSuccessEvaluationRequest.evaluation_name_filter. When combined
             with force_regenerate, any prior result rows for
-            (session_id, evaluation_name, agent_version) are deleted before
-            the new run so the re-evaluation cleanly replaces the old verdict.
+            (session_id, evaluation_name, agent_version) are deleted AFTER
+            the new run saves successfully so a failure mid-regen cannot leave
+            the session with zero eval rows (durability over freshness).
     """
     storage = request_context.storage
     state_key = _build_state_key(org_id, user_id, session_id)
@@ -157,26 +163,35 @@ def run_group_evaluation(
         )
         return
 
-    # 5. Run evaluation
-    # When regenerating a single evaluator, clear any prior result rows for
-    # this (session, evaluation_name, agent_version) so the new run cleanly
-    # replaces the previous verdict instead of leaving stale rows alongside
-    # the regenerated ones.
+    # 5. When regenerating a single evaluator, capture the prior result_ids
+    # so we can delete ONLY them AFTER the new rows have been saved. Doing
+    # the delete before the LLM call risks wiping the session's rows if the
+    # call fails (rate limit, network) and nothing replaces them. The new
+    # rows always get fresh auto-increment ids, so deleting the captured set
+    # afterwards cannot remove the new rows.
+    old_result_ids: list[int] = []
     if force_regenerate and evaluation_name is not None:
-        storage.delete_agent_success_evaluation_results_for_session(  # type: ignore[reportOptionalMemberAccess]
-            session_id=session_id,
-            evaluation_name=evaluation_name,
-            agent_version=agent_version,
+        # Eval rows per (session, name) are tiny (usually 1), so pulling a
+        # generous limit and filtering in-process is cheap and avoids adding
+        # a third query shape to the storage contract.
+        prior_rows = storage.get_agent_success_evaluation_results(  # type: ignore[reportOptionalMemberAccess]
+            limit=10000, agent_version=agent_version
         )
+        old_result_ids = [
+            r.result_id
+            for r in prior_rows
+            if r.session_id == session_id and r.evaluation_name == evaluation_name
+        ]
 
     logger.info(
         "Running group evaluation for session=%s with %d requests and %d interactions"
-        " (force_regenerate=%s, evaluation_name=%s)",
+        " (force_regenerate=%s, evaluation_name=%s, prior_result_ids=%d)",
         session_id,
         len(request_interaction_data_models),
         len(all_interactions),
         force_regenerate,
         evaluation_name,
+        len(old_result_ids),
     )
 
     evaluation_request = AgentSuccessEvaluationRequest(
@@ -194,20 +209,40 @@ def run_group_evaluation(
 
     if evaluation_service.has_run_failures():
         logger.warning(
-            "Group evaluation for session=%s had failures (save_failed=%s); skipping evaluated marker",
+            "Group evaluation for session=%s had failures (save_failed=%s);"
+            " preserving %d prior result row(s) and skipping evaluated marker",
             session_id,
             evaluation_service.last_run_save_failed,
+            len(old_result_ids),
         )
         return
 
     if evaluation_service.last_run_saved_result_count == 0:
         logger.warning(
-            "Group evaluation for session=%s saved no results; skipping evaluated marker",
+            "Group evaluation for session=%s saved no results;"
+            " preserving %d prior result row(s) and skipping evaluated marker",
             session_id,
+            len(old_result_ids),
         )
         return
 
-    # 6. Mark as evaluated
+    # 6. New rows saved successfully — now safe to remove the captured prior
+    # rows. New rows have fresh auto-increment result_ids that do not overlap
+    # with old_result_ids, so this cannot delete the regenerated verdict.
+    if old_result_ids:
+        deleted = storage.delete_agent_success_evaluation_results_by_ids(  # type: ignore[reportOptionalMemberAccess]
+            old_result_ids
+        )
+        logger.info(
+            "Regenerate cleanup: deleted %d prior result row(s) for session=%s"
+            " evaluation_name=%s (expected %d)",
+            deleted,
+            session_id,
+            evaluation_name,
+            len(old_result_ids),
+        )
+
+    # 7. Mark as evaluated
     evaluated_at = int(datetime.now(UTC).timestamp())
     storage.upsert_operation_state(  # type: ignore[reportOptionalMemberAccess]
         state_key,

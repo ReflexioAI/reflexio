@@ -7,15 +7,20 @@ These cover the regenerate flow's behavior at the runner layer:
 - evaluation_name propagates into AgentSuccessEvaluationRequest.evaluation_name_filter
   so the downstream service narrows to a single evaluator instead of running
   every configured rubric.
-- When both kwargs are set, prior result rows for that
-  (session_id, evaluation_name, agent_version) tuple are deleted before the new
-  run so the regenerated verdict cleanly replaces the old one.
+- When both kwargs are set, the runner captures prior result_ids for that
+  (session_id, evaluation_name) BEFORE running the eval, then deletes those
+  rows by id AFTER the new save lands. This guarantees that an LLM/save
+  failure never wipes the session's eval rows.
 """
 
 from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
-from reflexio.models.api_schema.service_schemas import Interaction, Request
+from reflexio.models.api_schema.service_schemas import (
+    AgentSuccessEvaluationResult,
+    Interaction,
+    Request,
+)
 from reflexio.server.services.agent_success_evaluation.group_evaluation_runner import (
     run_group_evaluation,
 )
@@ -62,13 +67,54 @@ def _make_interaction(request_id: str, user_id: str) -> Interaction:
     )
 
 
-def _make_storage(*, with_evaluated_marker: bool) -> MagicMock:
+def _make_prior_result(
+    result_id: int,
+    session_id: str,
+    evaluation_name: str,
+    agent_version: str = "1.0.0",
+) -> AgentSuccessEvaluationResult:
+    """Construct an AgentSuccessEvaluationResult representing a prior-run row.
+
+    Args:
+        result_id (int): Primary key value the storage layer would have assigned.
+        session_id (str): Owning session.
+        evaluation_name (str): Evaluator identifier.
+        agent_version (str): Agent version scope.
+
+    Returns:
+        AgentSuccessEvaluationResult: Minimal valid prior-run row.
+    """
+    return AgentSuccessEvaluationResult(
+        result_id=result_id,
+        session_id=session_id,
+        agent_version=agent_version,
+        evaluation_name=evaluation_name,
+        is_success=True,
+        failure_type=None,
+        failure_reason=None,
+        regular_vs_shadow=None,
+        number_of_correction_per_session=0,
+        user_turns_to_resolution=None,
+        is_escalated=False,
+        embedding=[],
+        created_at=1,
+    )
+
+
+def _make_storage(
+    *,
+    with_evaluated_marker: bool,
+    prior_results: list[AgentSuccessEvaluationResult] | None = None,
+) -> MagicMock:
     """Build a storage mock seeded with one request + one interaction.
 
     Args:
         with_evaluated_marker (bool): When True, get_operation_state returns a
             payload whose operation_state.evaluated is True — simulating a
             session that's already been evaluated.
+        prior_results (list[AgentSuccessEvaluationResult] | None): Optional
+            prior-run rows that get_agent_success_evaluation_results should
+            return — exercises the new "capture old result_ids" path.
 
     Returns:
         MagicMock: A storage stub wired with the standard return values.
@@ -86,7 +132,10 @@ def _make_storage(*, with_evaluated_marker: bool) -> MagicMock:
     storage.get_interactions_by_request_ids.return_value = [
         _make_interaction("req_1", "user_a")
     ]
-    storage.delete_agent_success_evaluation_results_for_session.return_value = 1
+    storage.get_agent_success_evaluation_results.return_value = prior_results or []
+    storage.delete_agent_success_evaluation_results_by_ids.return_value = len(
+        prior_results or []
+    )
     return storage
 
 
@@ -157,8 +206,19 @@ def test_evaluation_name_propagates_into_evaluation_request() -> None:
 
 
 def test_force_regenerate_with_evaluation_name_deletes_prior_results() -> None:
-    """Both kwargs set => prior result rows deleted before re-running."""
-    storage = _make_storage(with_evaluated_marker=True)
+    """Both kwargs set => prior result rows are captured then deleted by id AFTER save.
+
+    The delete is now scoped to the captured prior result_ids (not the
+    (session, name, version) triple) and happens AFTER the new rows have
+    been saved successfully. This avoids the zero-row window that would
+    otherwise be exposed if the LLM/save step failed.
+    """
+    prior = [
+        _make_prior_result(
+            result_id=42, session_id="session_a", evaluation_name="overall_success"
+        )
+    ]
+    storage = _make_storage(with_evaluated_marker=True, prior_results=prior)
     request_context = MagicMock()
     request_context.storage = storage
     llm_client = MagicMock()
@@ -184,16 +244,14 @@ def test_force_regenerate_with_evaluation_name_deletes_prior_results() -> None:
             evaluation_name="overall_success",
         )
 
-    # Scoped delete called exactly once with the targeted tuple.
-    storage.delete_agent_success_evaluation_results_for_session.assert_called_once_with(
-        session_id="session_a",
-        evaluation_name="overall_success",
-        agent_version="1.0.0",
-    )
+    # By-id delete called once with the captured prior result_ids.
+    storage.delete_agent_success_evaluation_results_by_ids.assert_called_once_with([42])
+    # The old triple-scoped delete must NOT be called by the new flow.
+    storage.delete_agent_success_evaluation_results_for_session.assert_not_called()
 
 
 def test_force_regenerate_without_evaluation_name_does_not_delete() -> None:
-    """force_regenerate alone (no evaluator name) must NOT call the scoped delete.
+    """force_regenerate alone (no evaluator name) must NOT call any scoped delete.
 
     Deletion is scoped to a single evaluation_name. A regenerate run that
     re-runs every configured evaluator should leave the storage layer to
@@ -226,9 +284,312 @@ def test_force_regenerate_without_evaluation_name_does_not_delete() -> None:
         )
 
     storage.delete_agent_success_evaluation_results_for_session.assert_not_called()
+    storage.delete_agent_success_evaluation_results_by_ids.assert_not_called()
     service.run.assert_called_once()
     eval_request = service.run.call_args.args[0]
     assert eval_request.evaluation_name_filter is None
+
+
+def test_regenerate_preserves_old_rows_when_llm_run_fails() -> None:
+    """If the eval service reports failures, the prior rows MUST NOT be deleted.
+
+    This is the core durability guarantee: the delete-then-LLM-then-save flow
+    used to wipe rows on any LLM failure. The new ordering captures ids first,
+    saves new rows, and only deletes the captured ids AFTER success.
+    """
+    prior = [
+        _make_prior_result(
+            result_id=99, session_id="session_a", evaluation_name="overall_success"
+        ),
+        _make_prior_result(
+            result_id=100, session_id="session_a", evaluation_name="overall_success"
+        ),
+    ]
+    storage = _make_storage(with_evaluated_marker=True, prior_results=prior)
+    request_context = MagicMock()
+    request_context.storage = storage
+    llm_client = MagicMock()
+
+    with patch(
+        "reflexio.server.services.agent_success_evaluation"
+        ".group_evaluation_runner.AgentSuccessEvaluationService"
+    ) as service_cls:
+        service = MagicMock()
+        # Simulate an LLM/save failure.
+        service.has_run_failures.return_value = True
+        service.last_run_save_failed = True
+        service.last_run_saved_result_count = 0
+        service_cls.return_value = service
+
+        run_group_evaluation(
+            org_id="org_a",
+            user_id="user_a",
+            session_id="session_a",
+            agent_version="1.0.0",
+            source="api",
+            request_context=request_context,
+            llm_client=llm_client,
+            force_regenerate=True,
+            evaluation_name="overall_success",
+        )
+
+    # No delete on either path — old rows remain in storage.
+    storage.delete_agent_success_evaluation_results_by_ids.assert_not_called()
+    storage.delete_agent_success_evaluation_results_for_session.assert_not_called()
+    # Evaluated marker must NOT be written on failure either.
+    storage.upsert_operation_state.assert_not_called()
+
+
+def test_regenerate_preserves_old_rows_when_zero_results_saved() -> None:
+    """If has_run_failures is False but no rows were saved, preserve old rows.
+
+    Symmetric to the failure case: an empty save (e.g. all candidates filtered
+    out) is treated the same as a failure for the purpose of the cleanup
+    delete, because deleting would leave the session with zero rows.
+    """
+    prior = [
+        _make_prior_result(
+            result_id=77, session_id="session_a", evaluation_name="overall_success"
+        )
+    ]
+    storage = _make_storage(with_evaluated_marker=True, prior_results=prior)
+    request_context = MagicMock()
+    request_context.storage = storage
+    llm_client = MagicMock()
+
+    with patch(
+        "reflexio.server.services.agent_success_evaluation"
+        ".group_evaluation_runner.AgentSuccessEvaluationService"
+    ) as service_cls:
+        service = MagicMock()
+        service.has_run_failures.return_value = False
+        service.last_run_saved_result_count = 0
+        service_cls.return_value = service
+
+        run_group_evaluation(
+            org_id="org_a",
+            user_id="user_a",
+            session_id="session_a",
+            agent_version="1.0.0",
+            source="api",
+            request_context=request_context,
+            llm_client=llm_client,
+            force_regenerate=True,
+            evaluation_name="overall_success",
+        )
+
+    storage.delete_agent_success_evaluation_results_by_ids.assert_not_called()
+    storage.upsert_operation_state.assert_not_called()
+
+
+def test_regenerate_happy_path_with_real_sqlite_storage(tmp_path) -> None:
+    """End-to-end: real SQLite storage shows old rows replaced after a successful regen.
+
+    Uses real SQLiteStorage in a temp dir to verify the runner integrates
+    correctly with the actual storage contract (not just MagicMock semantics).
+    """
+    from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
+
+    db_path = tmp_path / "reflexio.db"
+    with patch.object(SQLiteStorage, "_get_embedding", return_value=[0.0] * 512):
+        storage = SQLiteStorage(org_id="test_regen_happy", db_path=str(db_path))
+
+        # Seed: one prior result for (session_a, overall_success, 1.0.0).
+        # failure_type="old_value" lets us distinguish it from the new row.
+        old_row = AgentSuccessEvaluationResult(
+            result_id=0,
+            session_id="session_a",
+            agent_version="1.0.0",
+            evaluation_name="overall_success",
+            is_success=False,
+            failure_type="old_value",
+            failure_reason="prior verdict",
+            regular_vs_shadow=None,
+            number_of_correction_per_session=0,
+            user_turns_to_resolution=None,
+            is_escalated=False,
+            embedding=[],
+            created_at=1,
+        )
+        storage.save_agent_success_evaluation_results([old_row])
+
+        # Seed a request + interaction so the runner can build data models.
+        now = int(datetime.now(UTC).timestamp())
+        storage.add_request(
+            Request(
+                request_id="req_1",
+                user_id="user_a",
+                session_id="session_a",
+                created_at=now - 10_000,
+                source="api",
+                agent_version="1.0.0",
+            )
+        )
+        storage.add_user_interaction(
+            "user_a",
+            Interaction(
+                interaction_id=0,
+                user_id="user_a",
+                request_id="req_1",
+                content="hi",
+                role="user",
+                created_at=now - 9_999,
+            ),
+        )
+
+        request_context = MagicMock()
+        request_context.storage = storage
+        llm_client = MagicMock()
+
+        # Fake the service: on .run(), save a new row imitating the real flow.
+        def fake_run(_request) -> None:
+            storage.save_agent_success_evaluation_results(
+                [
+                    AgentSuccessEvaluationResult(
+                        result_id=0,
+                        session_id="session_a",
+                        agent_version="1.0.0",
+                        evaluation_name="overall_success",
+                        is_success=True,
+                        failure_type="new_value",
+                        failure_reason="fresh verdict",
+                        regular_vs_shadow=None,
+                        number_of_correction_per_session=0,
+                        user_turns_to_resolution=None,
+                        is_escalated=False,
+                        embedding=[],
+                        created_at=now,
+                    )
+                ]
+            )
+
+        with patch(
+            "reflexio.server.services.agent_success_evaluation"
+            ".group_evaluation_runner.AgentSuccessEvaluationService"
+        ) as service_cls:
+            service = MagicMock()
+            service.run.side_effect = fake_run
+            service.has_run_failures.return_value = False
+            service.last_run_saved_result_count = 1
+            service_cls.return_value = service
+
+            run_group_evaluation(
+                org_id="org_a",
+                user_id="user_a",
+                session_id="session_a",
+                agent_version="1.0.0",
+                source="api",
+                request_context=request_context,
+                llm_client=llm_client,
+                force_regenerate=True,
+                evaluation_name="overall_success",
+            )
+
+        # Old row gone, new row in place. Exactly one row for the tuple.
+        remaining = storage.get_agent_success_evaluation_results(limit=100)
+        matching = [
+            r
+            for r in remaining
+            if r.session_id == "session_a"
+            and r.evaluation_name == "overall_success"
+            and r.agent_version == "1.0.0"
+        ]
+        assert len(matching) == 1
+        assert matching[0].failure_type == "new_value"
+
+
+def test_regenerate_failure_preserves_old_rows_with_real_sqlite_storage(
+    tmp_path,
+) -> None:
+    """End-to-end durability: LLM failure leaves the prior row in storage.
+
+    The bug being fixed: a failed regen used to delete old rows BEFORE the
+    new save, leaving the session with zero eval rows. With the new order,
+    a failing service.run() means no delete is attempted and the row is
+    preserved.
+    """
+    from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
+
+    db_path = tmp_path / "reflexio.db"
+    with patch.object(SQLiteStorage, "_get_embedding", return_value=[0.0] * 512):
+        storage = SQLiteStorage(org_id="test_regen_failure", db_path=str(db_path))
+
+        old_row = AgentSuccessEvaluationResult(
+            result_id=0,
+            session_id="session_a",
+            agent_version="1.0.0",
+            evaluation_name="overall_success",
+            is_success=False,
+            failure_type="old_value",
+            failure_reason="prior verdict",
+            regular_vs_shadow=None,
+            number_of_correction_per_session=0,
+            user_turns_to_resolution=None,
+            is_escalated=False,
+            embedding=[],
+            created_at=1,
+        )
+        storage.save_agent_success_evaluation_results([old_row])
+
+        now = int(datetime.now(UTC).timestamp())
+        storage.add_request(
+            Request(
+                request_id="req_1",
+                user_id="user_a",
+                session_id="session_a",
+                created_at=now - 10_000,
+                source="api",
+                agent_version="1.0.0",
+            )
+        )
+        storage.add_user_interaction(
+            "user_a",
+            Interaction(
+                interaction_id=0,
+                user_id="user_a",
+                request_id="req_1",
+                content="hi",
+                role="user",
+                created_at=now - 9_999,
+            ),
+        )
+
+        request_context = MagicMock()
+        request_context.storage = storage
+        llm_client = MagicMock()
+
+        with patch(
+            "reflexio.server.services.agent_success_evaluation"
+            ".group_evaluation_runner.AgentSuccessEvaluationService"
+        ) as service_cls:
+            service = MagicMock()
+            # Simulate the LLM failure path. Service .run() is a no-op (no save).
+            service.has_run_failures.return_value = True
+            service.last_run_save_failed = True
+            service.last_run_saved_result_count = 0
+            service_cls.return_value = service
+
+            run_group_evaluation(
+                org_id="org_a",
+                user_id="user_a",
+                session_id="session_a",
+                agent_version="1.0.0",
+                source="api",
+                request_context=request_context,
+                llm_client=llm_client,
+                force_regenerate=True,
+                evaluation_name="overall_success",
+            )
+
+        # The old row is STILL THERE — durability guaranteed.
+        remaining = storage.get_agent_success_evaluation_results(limit=100)
+        matching = [
+            r
+            for r in remaining
+            if r.session_id == "session_a" and r.evaluation_name == "overall_success"
+        ]
+        assert len(matching) == 1
+        assert matching[0].failure_type == "old_value"
 
 
 def test_force_regenerate_bypasses_completeness_delay_gate() -> None:

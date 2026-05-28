@@ -199,3 +199,62 @@ def test_delete_respects_agent_version_scope(storage: BaseStorage) -> None:
     remaining = storage.get_agent_success_evaluation_results(limit=100)
     versions = {r.agent_version for r in remaining if r.session_id == "s1"}
     assert versions == {"v2"}
+
+
+def test_delete_by_ids_empty_list_is_noop(storage: BaseStorage) -> None:
+    """An empty result_ids list must short-circuit and return 0 without erroring."""
+    _seed_eval_result(storage, "s1", "overall_success")
+    n = storage.delete_agent_success_evaluation_results_by_ids([])
+    assert n == 0
+    # Existing row untouched.
+    remaining = storage.get_agent_success_evaluation_results(limit=100)
+    assert len(remaining) == 1
+
+
+def test_delete_by_ids_removes_only_targeted_rows(storage: BaseStorage) -> None:
+    """Pass a subset of stored result_ids — only those rows are deleted."""
+    _seed_eval_result(storage, "s1", "overall_success")
+    _seed_eval_result(storage, "s1", "safety")
+    _seed_eval_result(storage, "s2", "overall_success")
+
+    all_rows = storage.get_agent_success_evaluation_results(limit=100)
+    # Pick the result_id for the s1/overall_success row.
+    target_ids = [
+        r.result_id
+        for r in all_rows
+        if r.session_id == "s1" and r.evaluation_name == "overall_success"
+    ]
+    assert len(target_ids) == 1
+    assert target_ids[0] != 0  # storage layer assigned a real id
+
+    n = storage.delete_agent_success_evaluation_results_by_ids(target_ids)
+    assert n == 1
+
+    remaining = storage.get_agent_success_evaluation_results(limit=100)
+    pairs = {(r.session_id, r.evaluation_name) for r in remaining}
+    assert pairs == {("s1", "safety"), ("s2", "overall_success")}
+
+
+def test_delete_by_ids_silently_ignores_unknown_ids(storage: BaseStorage) -> None:
+    """Non-existent result_ids must NOT raise; return count of rows actually removed."""
+    _seed_eval_result(storage, "s1", "overall_success")
+    all_rows = storage.get_agent_success_evaluation_results(limit=100)
+    real_id = all_rows[0].result_id
+
+    # Mix a real id with two unknown ids.
+    n = storage.delete_agent_success_evaluation_results_by_ids(
+        [real_id, 99_998, 99_999]
+    )
+    assert n == 1
+
+    remaining = storage.get_agent_success_evaluation_results(limit=100)
+    assert remaining == []
+
+
+def test_delete_by_ids_all_unknown_returns_zero(storage: BaseStorage) -> None:
+    """Calling with only unknown ids returns 0 and does not raise."""
+    _seed_eval_result(storage, "s1", "overall_success")
+    n = storage.delete_agent_success_evaluation_results_by_ids([12_345, 67_890])
+    assert n == 0
+    remaining = storage.get_agent_success_evaluation_results(limit=100)
+    assert len(remaining) == 1

@@ -1354,3 +1354,25 @@ class PlaybookMixin:
             (session_id, evaluation_name, agent_version),
         )
         return cur.rowcount
+
+    @SQLiteStorageBase.handle_exceptions
+    def delete_agent_success_evaluation_results_by_ids(
+        self, result_ids: list[int]
+    ) -> int:
+        """Delete agent success eval result rows by primary key.
+
+        Args:
+            result_ids (list[int]): Primary-key result_ids to delete. An empty
+                list is a no-op that returns 0.
+
+        Returns:
+            int: Number of rows actually deleted (ignores non-existent ids).
+        """
+        if not result_ids:
+            return 0
+        placeholders = ",".join(["?"] * len(result_ids))
+        cur = self._execute(
+            f"DELETE FROM agent_success_evaluation_result WHERE result_id IN ({placeholders})",
+            list(result_ids),
+        )
+        return cur.rowcount

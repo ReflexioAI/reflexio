@@ -1019,9 +1019,12 @@ class PlaybookMixin:
         with self._lock:
             next_id = self._next_id(self._evaluations_dir())
             for i, result in enumerate(results):
+                # Populate the primary key so callers (e.g. the regenerate
+                # flow) can later identify and delete specific rows.
+                result.result_id = next_id + i
                 path = self._entity_path(
                     self._evaluations_dir(),
-                    str(next_id + i),
+                    str(result.result_id),
                 )
                 self._write_entity(path, result)
                 self._write_embedding(path, result.embedding)
@@ -1075,6 +1078,35 @@ class PlaybookMixin:
                     and result.evaluation_name == evaluation_name
                     and result.agent_version == agent_version
                 ):
+                    self._delete_embedding(path)
+                    path.unlink()
+                    deleted += 1
+        return deleted
+
+    def delete_agent_success_evaluation_results_by_ids(
+        self, result_ids: list[int]
+    ) -> int:
+        """Delete agent success eval result files by primary key.
+
+        Reads each entity in the evaluations directory and unlinks (with its
+        embedding sidecar) any whose ``result_id`` appears in ``result_ids``.
+
+        Args:
+            result_ids (list[int]): Primary-key result_ids to delete. An empty
+                list is a no-op that returns 0.
+
+        Returns:
+            int: Number of files actually deleted (non-existent ids are
+            silently ignored).
+        """
+        if not result_ids:
+            return 0
+        target_ids = set(result_ids)
+        deleted = 0
+        with self._lock:
+            for path in self._scan_entities(self._evaluations_dir()):
+                result = self._read_entity(path, AgentSuccessEvaluationResult)
+                if result.result_id in target_ids:
                     self._delete_embedding(path)
                     path.unlink()
                     deleted += 1

@@ -657,3 +657,21 @@ class PlaybookMixin:
             int: Number of rows deleted.
         """
         raise NotImplementedError
+
+    @abstractmethod
+    def delete_agent_success_evaluation_results_by_ids(
+        self, result_ids: list[int]
+    ) -> int:
+        """Delete agent success eval results matching specific result_ids.
+
+        Used by the regenerate flow to remove only the prior-run rows after the
+        new rows have been saved durably (so an LLM/save failure cannot leave
+        the session with zero rows).
+
+        Args:
+            result_ids (list[int]): Primary-key result_ids to delete.
+
+        Returns:
+            int: Number of rows deleted.
+        """
+        raise NotImplementedError
