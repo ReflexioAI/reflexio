@@ -176,6 +176,40 @@ class Interaction(BaseModel):
 
 
 class Request(BaseModel):
+    """A user-issued request that begins or continues a session.
+
+    A Request is the unit of work the agent reacts to. Multiple Requests
+    share a ``session_id`` to form a multi-turn session. The optional
+    ``metadata`` dict carries per-request key/value annotations stamped by
+    customer integration code — distinct from ``playbook_metadata`` (a
+    JSON-encoded string) used by ``Playbook``-family entities elsewhere in
+    this module.
+
+    Attributes:
+        request_id (str): Unique identifier for this request.
+        user_id (str): Owner of the request.
+        created_at (int): Unix epoch seconds at request creation. Defaults
+            to the current UTC time.
+        source (str): Free-form origin tag (integration name, etc.).
+        agent_version (str): The agent version that handled this request.
+        session_id (str | None): Session this request belongs to, or None
+            if the request is not part of a multi-turn session.
+        metadata (dict[str, Any]): Free-form per-request annotations.
+            Always a dict — never None. Conventional keys:
+
+            - ``reflexio_retrieval_enabled`` (bool): F2 group-by signal;
+              customer integration code stamps this to indicate whether
+              Reflexio retrieval was active for the session. Read by the
+              ``/api/get_evaluation_overview`` aggregator from the FIRST
+              request of each session for sticky group assignment.
+
+            Distinct from ``playbook_metadata`` on ``Playbook``-family
+            entities (which is a JSON-encoded string, not a dict).
+            On-the-wire serialization assumes JSON-encodable values;
+            non-JSON values like ``datetime`` or ``set`` will fail at
+            the storage / API boundary.
+    """
+
     request_id: str
     user_id: str
     created_at: int = Field(default_factory=lambda: int(datetime.now(UTC).timestamp()))
@@ -183,11 +217,6 @@ class Request(BaseModel):
     agent_version: str = ""
     session_id: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
-    """Free-form per-request metadata. Conventional keys:
-    - `reflexio_retrieval_enabled` (bool): set by customer integration code to
-      indicate whether Reflexio retrieval was used for this session. Read by
-      F2's group-by aggregator from the first request of each session.
-    """
 
 
 # information about the user profile generated from the user interaction
