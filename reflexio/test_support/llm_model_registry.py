@@ -31,7 +31,6 @@ def _build_registry() -> dict[str, ModelRegistryEntry]:
     """Build the model registry with lazy imports to avoid circular dependencies."""
     from reflexio.server.services.agent_success_evaluation.agent_success_evaluation_constants import (
         AgentSuccessEvaluationOutput,
-        AgentSuccessEvaluationWithComparisonOutput,
     )
     from reflexio.server.services.playbook.playbook_deduplicator import (
         PlaybookDeduplicationOutput,
@@ -108,15 +107,9 @@ def _build_registry() -> dict[str, ModelRegistryEntry]:
                 "is_escalated": False,
             },
         ),
-        "agent_success_evaluation_comparison": ModelRegistryEntry(
-            model_class=AgentSuccessEvaluationWithComparisonOutput,
-            minimal_valid={
-                "is_success": True,
-                "is_escalated": False,
-                "better_request": "1",
-                "is_significantly_better": False,
-            },
-        ),
+        # F1 cleanup: ``agent_success_evaluation_comparison`` was removed along
+        # with the session-level shadow comparison branch. Per-turn shadow
+        # comparison registers its own registry entry alongside its prompt.
         "boolean_evaluation": ModelRegistryEntry(
             model_class=None,
             minimal_valid="true",

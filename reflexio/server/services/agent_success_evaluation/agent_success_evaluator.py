@@ -11,7 +11,6 @@ _AGENT_ROLES = {"agent", "assistant", "system", "tool", "internal"}
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
 from reflexio.models.api_schema.service_schemas import (
     AgentSuccessEvaluationResult,
-    RegularVsShadow,
 )
 from reflexio.models.config_schema import AgentSuccessConfig
 from reflexio.server.api_endpoints.request_context import RequestContext
@@ -19,20 +18,15 @@ from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
 from reflexio.server.services.agent_success_evaluation.agent_success_evaluation_constants import (
     AgentSuccessEvaluationOutput,
-    AgentSuccessEvaluationWithComparisonOutput,
 )
 from reflexio.server.services.agent_success_evaluation.agent_success_evaluation_utils import (
     construct_agent_success_evaluation_messages_from_sessions,
-    construct_agent_success_evaluation_with_comparison_messages,
-    format_interactions_for_request,
-    has_shadow_content,
 )
 from reflexio.server.services.extractor_interaction_utils import (
     filter_interactions_by_source,
     get_effective_source_filter,
 )
 from reflexio.server.services.service_utils import (
-    extract_interactions_from_request_interaction_data_models,
     log_llm_messages,
     log_model_response,
 )
@@ -157,9 +151,13 @@ class AgentSuccessEvaluator:
         """
         Evaluate agent success for the entire session.
 
-        If interactions contain shadow_content, uses a combined prompt that:
-        1. Evaluates the regular version for success
-        2. Compares regular vs shadow to determine which is better
+        F1 cleanup: session-level shadow comparison was retracted because
+        multi-turn shadow content suffers from trajectory contamination
+        (turn 2+ user messages react to the regular response, not the
+        shadow). Per-turn shadow comparison lives in
+        services/shadow_comparison/ — see the F1 spec. The legacy
+        combined-prompt branch is gone; this method now always runs the
+        standalone is_success evaluation.
 
         Args:
             request_interaction_data_models: All request interaction data models in the group
@@ -178,19 +176,6 @@ class AgentSuccessEvaluator:
                 ]
             )
 
-        # Flatten all interactions to check for shadow content
-        all_interactions = extract_interactions_from_request_interaction_data_models(
-            request_interaction_data_models
-        )
-
-        # If shadow_content is present, run the legacy combined-comparison
-        # prompt that populates ``regular_vs_shadow`` on the row. Otherwise
-        # run the single-pass evaluation.
-        if has_shadow_content(all_interactions):
-            return self._evaluate_with_shadow_comparison(
-                request_interaction_data_models,
-                tool_can_use_str,
-            )
         return self._evaluate_regular(
             request_interaction_data_models,
             tool_can_use_str,
@@ -273,154 +258,22 @@ class AgentSuccessEvaluator:
             request_interaction_data_models=request_interaction_data_models,
         )
 
-    def _evaluate_with_shadow_comparison(
-        self,
-        request_interaction_data_models: list[RequestInteractionDataModel],
-        tool_can_use_str: str,
-    ) -> AgentSuccessEvaluationResult | None:
-        """
-        Evaluate agent success with shadow content comparison at group level.
-
-        Uses a combined prompt that:
-        1. Evaluates the regular version for success
-        2. Compares regular vs shadow to determine which is better
-
-        The regular and shadow versions are randomly assigned to Request 1/Request 2
-        to avoid LLM bias toward one position.
-
-        Args:
-            request_interaction_data_models: All request interaction data models in the group
-            tool_can_use_str: Formatted string of available tools
-
-        Returns:
-            Optional[AgentSuccessEvaluationResult]: Evaluation result with regular_vs_shadow comparison
-        """
-        # Flatten all interactions from all request data models
-        all_interactions = extract_interactions_from_request_interaction_data_models(
-            request_interaction_data_models
-        )
-
-        # Randomly decide which is Request 1 vs Request 2 to avoid position bias
-        regular_is_request_1 = random.choice([True, False])  # noqa: S311
-
-        # Format interactions for regular and shadow versions
-        regular_interactions = format_interactions_for_request(
-            all_interactions, use_shadow=False
-        )
-        shadow_interactions = format_interactions_for_request(
-            all_interactions, use_shadow=True
-        )
-
-        # Assign to Request 1 and Request 2 based on random choice
-        if regular_is_request_1:
-            request_1_interactions = regular_interactions
-            request_2_interactions = shadow_interactions
-        else:
-            request_1_interactions = shadow_interactions
-            request_2_interactions = regular_interactions
-
-        logger.info(
-            "Evaluating with shadow comparison. regular_is_request_1=%s",
-            regular_is_request_1,
-        )
-
-        # Build combined prompt
-        messages = construct_agent_success_evaluation_with_comparison_messages(
-            prompt_manager=self.request_context.prompt_manager,
-            request_1_interactions=request_1_interactions,
-            request_2_interactions=request_2_interactions,
-            agent_context_prompt=self.agent_context,
-            success_definition_prompt=(
-                self.config.success_definition_prompt.strip()
-                if self.config.success_definition_prompt
-                else ""
-            ),
-            tool_can_use=tool_can_use_str,
-            metadata_definition_prompt=(
-                self.config.metadata_definition_prompt.strip()
-                if self.config.metadata_definition_prompt
-                else None
-            ),
-            interactions_for_images=all_interactions,
-        )
-
-        messages_dict = messages
-
-        session_request_count = len(request_interaction_data_models)
-        interaction_count = sum(
-            len(rdm.interactions) for rdm in request_interaction_data_models
-        )
-        logger.info(
-            "event=agent_success_eval_comparison_llm_start session_id=%s evaluation_name=%s "
-            "requests=%d interactions=%d model=%s regular_is_request_1=%s",
-            self.service_config.session_id,
-            self.config.evaluation_name,
-            session_request_count,
-            interaction_count,
-            self.default_evaluate_model_name,
-            regular_is_request_1,
-        )
-        log_llm_messages(
-            logger, "Agent success evaluation with comparison", messages_dict
-        )
-
-        # Use Pydantic model for structured output
-        evaluation_response = self.client.generate_chat_response(
-            messages=messages_dict,
-            model=self.default_evaluate_model_name,
-            response_format=AgentSuccessEvaluationWithComparisonOutput,
-        )
-
-        if not evaluation_response:
-            logger.info(
-                "No evaluation can be generated for session %s",
-                self.service_config.session_id,
-            )
-            return None
-
-        log_model_response(
-            logger,
-            "Agent success evaluation with comparison response",
-            evaluation_response,
-        )
-
-        if not isinstance(
-            evaluation_response, AgentSuccessEvaluationWithComparisonOutput
-        ):
-            logger.warning(
-                "Unexpected response type from evaluation LLM: %s",
-                type(evaluation_response),
-            )
-            return None
-
-        # Map comparison result to RegularVsShadow enum
-        regular_vs_shadow = self._map_comparison_to_enum(
-            better_request=evaluation_response.better_request or "tie",
-            is_significantly_better=evaluation_response.is_significantly_better
-            or False,
-            regular_is_request_1=regular_is_request_1,
-        )
-
-        return self._build_evaluation_result(
-            evaluation_response=evaluation_response,
-            request_interaction_data_models=request_interaction_data_models,
-            regular_vs_shadow=regular_vs_shadow,
-        )
-
     def _build_evaluation_result(
         self,
-        evaluation_response: AgentSuccessEvaluationOutput
-        | AgentSuccessEvaluationWithComparisonOutput,
+        evaluation_response: AgentSuccessEvaluationOutput,
         request_interaction_data_models: list[RequestInteractionDataModel],
-        regular_vs_shadow: RegularVsShadow | None = None,
     ) -> AgentSuccessEvaluationResult:
         """
         Build an AgentSuccessEvaluationResult from LLM evaluation response and session data.
 
+        F1 cleanup: ``regular_vs_shadow`` is always ``None`` on rows produced by
+        this evaluator. The column is preserved on the result row for historical
+        audit purposes, but per-turn shadow comparison now writes its verdicts
+        to a dedicated table — see ``services/shadow_comparison/``.
+
         Args:
             evaluation_response: The parsed LLM evaluation output
             request_interaction_data_models: All request interaction data models in the session
-            regular_vs_shadow: Optional comparison result for shadow evaluation
 
         Returns:
             AgentSuccessEvaluationResult: The constructed evaluation result
@@ -440,7 +293,7 @@ class AgentSuccessEvaluator:
             is_success=evaluation_response.is_success,
             failure_type=evaluation_response.failure_type or "",
             failure_reason=evaluation_response.failure_reason or "",
-            regular_vs_shadow=regular_vs_shadow,
+            regular_vs_shadow=None,
             number_of_correction_per_session=self._get_correction_count(),
             user_turns_to_resolution=(
                 self._count_user_turns(request_interaction_data_models)
@@ -513,59 +366,6 @@ class AgentSuccessEvaluator:
             )
             return 0
 
-    def _map_comparison_to_enum(
-        self,
-        better_request: str,
-        is_significantly_better: bool,
-        regular_is_request_1: bool,
-    ) -> RegularVsShadow:
-        """
-        Map the LLM's comparison output to the RegularVsShadow enum.
-
-        Args:
-            better_request: "1", "2", or "tie" from LLM response
-            is_significantly_better: Whether the better one is significantly better
-            regular_is_request_1: Whether regular version was assigned to Request 1
-
-        Returns:
-            RegularVsShadow enum value
-        """
-        if better_request == "tie":
-            return RegularVsShadow.TIED
-
-        if better_request == "1":
-            # Request 1 is better
-            if regular_is_request_1:
-                # Regular is Request 1, so regular is better
-                return (
-                    RegularVsShadow.REGULAR_IS_BETTER
-                    if is_significantly_better
-                    else RegularVsShadow.REGULAR_IS_SLIGHTLY_BETTER
-                )
-            # Shadow is Request 1, so shadow is better
-            return (
-                RegularVsShadow.SHADOW_IS_BETTER
-                if is_significantly_better
-                else RegularVsShadow.SHADOW_IS_SLIGHTLY_BETTER
-            )
-        if better_request == "2":
-            # Request 2 is better
-            if regular_is_request_1:
-                # Regular is Request 1, so shadow (Request 2) is better
-                return (
-                    RegularVsShadow.SHADOW_IS_BETTER
-                    if is_significantly_better
-                    else RegularVsShadow.SHADOW_IS_SLIGHTLY_BETTER
-                )
-            # Shadow is Request 1, so regular (Request 2) is better
-            return (
-                RegularVsShadow.REGULAR_IS_BETTER
-                if is_significantly_better
-                else RegularVsShadow.REGULAR_IS_SLIGHTLY_BETTER
-            )
-
-        # Default to tied if unexpected value
-        logger.warning(
-            "Unexpected better_request value: %s, defaulting to TIED", better_request
-        )
-        return RegularVsShadow.TIED
+    # F1 cleanup: ``_map_comparison_to_enum`` was retracted along with
+    # ``_evaluate_with_shadow_comparison``. Per-turn shadow comparison has its
+    # own mapping helpers in ``services/shadow_comparison/``.

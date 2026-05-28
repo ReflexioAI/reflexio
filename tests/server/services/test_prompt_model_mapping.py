@@ -43,10 +43,11 @@ PROMPT_VERSION_MAP: dict[str, tuple[str, str | None]] = {
     "profile_should_generate_override": ("v1.0.0", "boolean_evaluation"),
     "profile_deduplication": ("v1.0.0", "profile_deduplication"),
     "agent_success_evaluation": ("v1.0.0", "agent_success_evaluation"),
-    "agent_success_evaluation_with_comparison": (
-        "v1.0.0",
-        "agent_success_evaluation_comparison",
-    ),
+    # F1 cleanup: the session-level shadow comparison branch was retracted.
+    # The prompt directories remain on disk (marked active: false in their
+    # frontmatter) as historical records, but they no longer drive any
+    # production code path, so they are mapped without a registry key.
+    "agent_success_evaluation_with_comparison": ("v1.0.0", None),
     "shadow_content_evaluation": ("v1.0.0", None),
     "memory_reflection": ("v1.0.0", None),
     "query_reformulation": ("v1.0.0", None),

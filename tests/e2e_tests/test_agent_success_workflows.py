@@ -12,8 +12,6 @@ from reflexio.models.api_schema.retriever_schema import (
 )
 from reflexio.models.api_schema.service_schemas import (
     InteractionData,
-    RegularVsShadow,
-    UserActionType,
 )
 from reflexio.server.services.agent_success_evaluation.group_evaluation_runner import (
     run_group_evaluation,
@@ -430,108 +428,13 @@ def test_multiple_agent_versions_evaluation(
             assert result.created_at > 0
 
 
-@skip_in_precommit
-def test_evaluate_regular_vs_shadow_content(
-    reflexio_instance_agent_success_only: Reflexio,
-    cleanup_agent_success_only: Callable[[], None],
-):
-    """Test agent success evaluation with regular vs shadow content comparison.
-
-    This test verifies:
-    1. Publishing interactions with shadow_content triggers comparison evaluation
-    2. The regular_vs_shadow field is populated in evaluation results
-    3. The comparison result is a valid RegularVsShadow enum value
-    4. Both success evaluation and comparison work in a single LLM call
-    """
-    user_id = "test_user_shadow_comparison"
-    agent_version = "test_agent_shadow"
-    session_id = "test_session_shadow"
-
-    # Create interactions with shadow_content
-    # Regular: Sales rep gives a brief response
-    # Shadow: Sales rep gives a more detailed, helpful response
-    interactions_with_shadow = [
-        InteractionData(
-            content="Hi, I'm looking for information about your software pricing.",
-            role="Customer",
-            user_action=UserActionType.NONE,
-            user_action_description="",
-            interacted_image_url="",
-        ),
-        InteractionData(
-            content="Our pricing starts at $99/month.",
-            shadow_content="Our pricing starts at $99/month for the basic plan, which includes 5 users and 10GB storage. We also have a Pro plan at $199/month with unlimited users and 100GB storage. Would you like me to explain the differences in more detail?",
-            role="Sales Rep",
-            user_action=UserActionType.NONE,
-            user_action_description="",
-            interacted_image_url="",
-        ),
-        InteractionData(
-            content="That sounds interesting, can you tell me more?",
-            role="Customer",
-            user_action=UserActionType.NONE,
-            user_action_description="",
-            interacted_image_url="",
-        ),
-    ]
-
-    # Step 1: Publish interactions with shadow content
-    publish_response = reflexio_instance_agent_success_only.publish_interaction(
-        {
-            "user_id": user_id,
-            "interaction_data_list": interactions_with_shadow,
-            "source": "test_shadow_comparison",
-            "agent_version": agent_version,
-            "session_id": session_id,
-        }
-    )
-    assert publish_response.success is True
-
-    # Step 2: Verify interactions were stored
-    stored_interactions = reflexio_instance_agent_success_only.request_context.storage.get_all_interactions()
-    assert len(stored_interactions) == len(interactions_with_shadow)
-
-    # Verify shadow_content was stored
-    shadow_interactions = [i for i in stored_interactions if i.shadow_content]
-    assert len(shadow_interactions) > 0, "Shadow content should be stored"
-
-    # Trigger group evaluation synchronously (normally delayed)
-    _trigger_group_evaluation(
-        reflexio_instance_agent_success_only,
-        user_id,
-        session_id,
-        agent_version,
-        source="test_shadow_comparison",
-    )
-
-    # Step 3: Get agent success evaluations
-    get_response = (
-        reflexio_instance_agent_success_only.get_agent_success_evaluation_results(
-            GetAgentSuccessEvaluationResultsRequest(agent_version=agent_version)
-        )
-    )
-    assert get_response.success is True
-    assert len(get_response.agent_success_evaluation_results) > 0
-
-    # Step 4: Verify regular_vs_shadow field is populated
-    result = get_response.agent_success_evaluation_results[0]
-    assert result.agent_version == agent_version
-    assert isinstance(result.is_success, bool)
-
-    # The regular_vs_shadow should be populated when shadow content exists
-    assert result.regular_vs_shadow is not None, (
-        "regular_vs_shadow should be populated when shadow content exists"
-    )
-
-    # Step 5: Verify the value is a valid RegularVsShadow enum
-    valid_values = [e.value for e in RegularVsShadow]
-    assert result.regular_vs_shadow in valid_values, (
-        f"regular_vs_shadow should be one of {valid_values}, got {result.regular_vs_shadow}"
-    )
-
-    # Step 6: Log the comparison result for debugging
-    print(f"Evaluation result: is_success={result.is_success}")
-    print(f"Regular vs Shadow comparison: {result.regular_vs_shadow}")
+# F1 cleanup: ``test_evaluate_regular_vs_shadow_content`` was removed along
+# with the session-level shadow comparison branch in
+# ``AgentSuccessEvaluator``. The session-level comparison was retracted because
+# multi-turn shadow content suffers from trajectory contamination (turn 2+ user
+# messages react to the regular response, not the shadow), so the two
+# trajectories are not apples-to-apples. Per-turn shadow comparison has its own
+# e2e coverage under ``tests/e2e_tests/`` for the ``shadow_comparison`` service.
 
 
 @skip_in_precommit

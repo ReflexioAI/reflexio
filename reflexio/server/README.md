@@ -390,7 +390,7 @@ Similar to profiles, user playbooks support versioning:
 Key files:
 - `agent_success_evaluation_service.py`: Service orchestrator (tracks run outcome flags: `last_run_result_count`, `has_run_failures()`)
 - `agent_success_evaluator.py`: Evaluates success at session level (all interactions as one group)
-- `agent_success_evaluation_constants.py`: Output schemas (`AgentSuccessEvaluationOutput`, `AgentSuccessEvaluationWithComparisonOutput`)
+- `agent_success_evaluation_constants.py`: Output schema (`AgentSuccessEvaluationOutput`)
 - `agent_success_evaluation_utils.py`: Message construction utilities
 - `delayed_group_evaluator.py`: `GroupEvaluationScheduler` singleton - min-heap priority queue with daemon thread, defers evaluation until 10 min after last request in session
 - `group_evaluation_runner.py`: `run_group_evaluation()` - fetches all requests/interactions for a session, builds `RequestInteractionDataModel` list, runs evaluation
@@ -401,11 +401,7 @@ Key files:
 
 **Tool Context**: Reads `tool_can_use` from root `Config` level (shared with playbook extraction).
 
-**Shadow Comparison Mode**: When interactions contain `shadow_content`, evaluator automatically:
-1. Randomly assigns regular/shadow to Request 1/2 (avoids position bias)
-2. Evaluates regular version for success
-3. Compares regular vs shadow to determine which is better
-4. Returns `regular_vs_shadow` field with values: `REGULAR_IS_BETTER`, `REGULAR_IS_SLIGHTLY_BETTER`, `SHADOW_IS_BETTER`, `SHADOW_IS_SLIGHTLY_BETTER`, `TIED`
+**Shadow Comparison**: Session-level shadow comparison was retracted in F1 because multi-turn shadow content suffers from trajectory contamination (turn 2+ user messages react to the regular response, not the shadow). The `regular_vs_shadow` field on `AgentSuccessEvaluationResult` is preserved as a nullable historical column but is always `None` on newly produced rows. Per-turn shadow comparison lives in a dedicated `services/shadow_comparison/` judge that writes its verdicts to a separate table — see the F1 spec.
 
 ### Query Reformulator
 
