@@ -653,6 +653,25 @@ class Config(BaseModel):
             "deduplicates internally."
         ),
     )
+    eval_sample_n_per_stratum: int = Field(
+        default=200,
+        gt=0,
+        description=(
+            "F3: stratified-sample cap per (day × group) stratum in the regen "
+            "pipeline. Strata with fewer items are kept whole. Predictable cost "
+            "regardless of traffic volume."
+        ),
+    )
+    eval_concurrency_limit: int = Field(
+        default=10,
+        gt=0,
+        description=(
+            "F3: max simultaneous LLM judge calls in flight per regen job, "
+            "enforced via a ThreadPoolExecutor. Bound to respect provider "
+            "rate limits."
+        ),
+    )
+
     @model_validator(mode="before")
     @classmethod
     def _migrate_field_names(cls, data: Any) -> Any:
