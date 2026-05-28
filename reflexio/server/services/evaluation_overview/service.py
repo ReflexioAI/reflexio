@@ -111,33 +111,6 @@ class EvaluationOverviewService:
 
     # --- private helpers ---
 
-    @staticmethod
-    def _compute_shadow_rate_and_delta(
-        results: list[AgentSuccessEvaluationResult],
-        regular_rate: float,
-    ) -> tuple[float | None, float | None]:
-        """Compute shadow_success_rate_pp and delta_pp from already-loaded results.
-
-        Returns (None, None) when no row in ``results`` has a non-null
-        shadow_is_success — i.e. shadow mode was off, no shadow_content was
-        published, or the shadow grade failed for every session in the window.
-
-        Args:
-            results: Evaluation results for the current window.
-            regular_rate: The regular success rate in percentage points (0–100).
-
-        Returns:
-            A tuple of (shadow_rate_pp, delta_pp), both None when no shadow
-            grades are present.
-        """
-        graded = [r for r in results if r.shadow_is_success is not None]
-        if not graded:
-            return (None, None)
-        shadow_rate = (
-            sum(1 for r in graded if r.shadow_is_success) / len(graded)
-        ) * 100
-        return (shadow_rate, shadow_rate - regular_rate)
-
     def _build_hero(
         self,
         results: list[AgentSuccessEvaluationResult],
@@ -147,20 +120,22 @@ class EvaluationOverviewService:
         else:
             earliest = min(r.created_at for r in results)
             days_since = (int(datetime.now(UTC).timestamp()) - earliest) // 86_400
-        n_shadow_graded = sum(1 for r in results if r.shadow_is_success is not None)
+        # Shadow direct-grade has been removed; counterfactual measurement is
+        # pending a methodologically sound replacement (see the validity spec).
+        # The state machine still runs so the EMPTY / SHADOW_OFF surfaces work,
+        # but the shadow-side fields are always None.
         state = compute_hero_state(
-            shadow_enabled=self.config.shadow_mode_enabled,
+            shadow_enabled=False,
             days_since_first_eval=days_since,
-            n_shadow_in_window=n_shadow_graded,
+            n_shadow_in_window=0,
             total_results=len(results),
         )
         success_rate = _success_rate(results) * 100
-        shadow_rate, delta = self._compute_shadow_rate_and_delta(results, success_rate)
         return HeroBlock(
             state=state.value,  # type: ignore[arg-type]
             regular_success_rate_pp=success_rate,
-            shadow_success_rate_pp=shadow_rate,
-            delta_pp=delta,
+            shadow_success_rate_pp=None,
+            delta_pp=None,
             buckets=_weekly_buckets(results),
         )
 
@@ -356,22 +331,13 @@ def _weekly_buckets(
     out: list[HeroBucket] = []
     for ts in sorted(buckets):
         week_results = buckets[ts]
-        shadow_graded = [r for r in week_results if r.shadow_is_success is not None]
-        if shadow_graded:
-            shadow_rate: float | None = sum(
-                1 for r in shadow_graded if r.shadow_is_success
-            ) / len(shadow_graded)
-            shadow_n = len(shadow_graded)
-        else:
-            shadow_rate = None
-            shadow_n = 0
         out.append(
             HeroBucket(
                 ts=ts,
                 regular_rate=_success_rate(week_results),
-                shadow_rate=shadow_rate,
+                shadow_rate=None,
                 regular_n=len(week_results),
-                shadow_n=shadow_n,
+                shadow_n=0,
             )
         )
     return out

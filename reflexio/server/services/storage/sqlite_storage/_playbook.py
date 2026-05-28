@@ -1293,9 +1293,8 @@ class PlaybookMixin:
                    (session_id, agent_version, evaluation_name, is_success,
                     failure_type, failure_reason, regular_vs_shadow,
                     number_of_correction_per_session, user_turns_to_resolution,
-                    is_escalated, embedding, created_at,
-                    shadow_is_success, shadow_is_escalated)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    is_escalated, embedding, created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     result.session_id,
                     result.agent_version,
@@ -1311,12 +1310,6 @@ class PlaybookMixin:
                     int(result.is_escalated),
                     _json_dumps(result.embedding) if result.embedding else None,
                     created_at_iso,
-                    int(result.shadow_is_success)
-                    if result.shadow_is_success is not None
-                    else None,
-                    int(result.shadow_is_escalated)
-                    if result.shadow_is_escalated is not None
-                    else None,
                 ),
             )
 

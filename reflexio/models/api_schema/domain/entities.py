@@ -358,8 +358,6 @@ class AgentSuccessEvaluationResult(BaseModel):
     number_of_correction_per_session: int = 0
     user_turns_to_resolution: int | None = None
     is_escalated: bool = False
-    shadow_is_success: bool | None = None
-    shadow_is_escalated: bool | None = None
     embedding: EmbeddingVector = []
 
 

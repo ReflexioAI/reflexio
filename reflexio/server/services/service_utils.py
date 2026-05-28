@@ -163,9 +163,7 @@ class MessageConstructionConfig:
     user_prompt_config: PromptConfig | None = None
 
 
-def format_interactions_to_history_string(
-    interactions: list[Interaction], use_shadow: bool = False
-) -> str:
+def format_interactions_to_history_string(interactions: list[Interaction]) -> str:
     """
     Format a list of interactions into a single string representing the interaction history.
 
@@ -175,9 +173,6 @@ def format_interactions_to_history_string(
 
     Args:
         interactions (list[Interaction]): List of interactions to format
-        use_shadow (bool): When True, substitute shadow_content for content on assistant
-            turns that have it. Falls back to content when shadow_content is empty (e.g.
-            user turns always have an empty shadow_content). Defaults to False.
 
     Returns:
         str: A formatted string representing the interaction history, with interactions separated by newlines.
@@ -195,25 +190,18 @@ def format_interactions_to_history_string(
     """
     formatted_interactions = []
     for interaction in interactions:
-        # Resolve which content field to render, with shadow fallback
-        content = (
-            interaction.shadow_content
-            if (use_shadow and interaction.shadow_content)
-            else interaction.content
-        )
-
         # Add text content with tools_used prefix if present
-        if content:
+        if interaction.content:
             if interaction.tools_used:
                 tool_prefix = " ".join(
                     f"[used tool: {t.tool_name}({json.dumps(t.tool_data)})]"
                     for t in interaction.tools_used
                 )
                 formatted_interactions.append(
-                    f"{interaction.role}: ```{tool_prefix} {content}```"
+                    f"{interaction.role}: ```{tool_prefix} {interaction.content}```"
                 )
             else:
-                formatted_interactions.append(f"{interaction.role}: ```{content}```")
+                formatted_interactions.append(f"{interaction.role}: ```{interaction.content}```")
 
         # Add user action
         if interaction.user_action != UserActionType.NONE:
@@ -226,7 +214,6 @@ def format_interactions_to_history_string(
 
 def format_sessions_to_history_string(
     sessions: list[RequestInteractionDataModel],
-    use_shadow: bool = False,
 ) -> str:
     """
     Format interactions grouped by session into a string.
@@ -237,9 +224,6 @@ def format_sessions_to_history_string(
 
     Args:
         sessions (list[RequestInteractionDataModel]): List of request interaction data models to format
-        use_shadow (bool): When True, pass use_shadow=True to the underlying
-            format_interactions_to_history_string call so assistant turns with
-            shadow_content are rendered using that field. Defaults to False.
 
     Returns:
         str: A formatted string with interactions grouped by session.
@@ -323,9 +307,7 @@ def format_sessions_to_history_string(
         all_interactions = sorted(all_interactions, key=lambda i: i.interaction_id)
 
         # Format combined interactions
-        group_interactions = format_interactions_to_history_string(
-            all_interactions, use_shadow=use_shadow
-        )
+        group_interactions = format_interactions_to_history_string(all_interactions)
 
         # Combine header and interactions
         formatted_groups.append(f"{group_header}\n{group_interactions}")
