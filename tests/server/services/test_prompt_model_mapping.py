@@ -74,6 +74,12 @@ PROMPT_VERSION_MAP: dict[str, tuple[str, str | None]] = {
     "rerank_relevance": ("v1.1.0", None),
     # Answer-LLM system prompt for memory-grounded user questions
     "answer_synthesis": ("v1.5.2", None),
+    # F1 — per-turn shadow comparison judge. Produces structured
+    # ShadowComparisonOutput; the mock dispatch lives in the integration
+    # tests rather than the global heuristic mock, so no registry key.
+    "shadow_comparison": ("v1.0.0", None),
+    # Playbook optimizer pairwise judge — pre-existing prompt directory.
+    "playbook_optimizer_judge": ("v1.0.0", None),
 }
 
 
