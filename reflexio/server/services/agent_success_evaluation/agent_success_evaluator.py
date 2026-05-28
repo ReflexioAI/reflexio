@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import random
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 # Roles considered as agent/system-side (not user turns) when counting user turns.
@@ -424,6 +425,14 @@ class AgentSuccessEvaluator:
         Returns:
             AgentSuccessEvaluationResult: The constructed evaluation result
         """
+        # Anchor created_at on the *session's* original time, not on now().
+        # Without this, every regenerate writes new rows with created_at = now()
+        # which makes the trend chart bucketize by "when the eval ran" instead
+        # of "when the session happened" — collapsing all regenerated history
+        # into the current week and breaking the trend story.
+        session_created_at = self._earliest_request_created_at(
+            request_interaction_data_models
+        )
         return AgentSuccessEvaluationResult(
             session_id=self.service_config.session_id,
             agent_version=self.service_config.agent_version,
@@ -439,7 +448,28 @@ class AgentSuccessEvaluator:
                 else None
             ),
             is_escalated=evaluation_response.is_escalated,
+            created_at=session_created_at,
         )
+
+    @staticmethod
+    def _earliest_request_created_at(
+        request_interaction_data_models: list[RequestInteractionDataModel],
+    ) -> int:
+        """Return the earliest request.created_at across the session's requests.
+
+        Falls back to the current epoch time when no request carries a
+        non-zero timestamp — this is mostly defensive: a published session
+        without any request timestamps would also have nothing to bucketize
+        against.
+        """
+        timestamps = [
+            rdm.request.created_at
+            for rdm in request_interaction_data_models
+            if rdm.request.created_at
+        ]
+        if timestamps:
+            return min(timestamps)
+        return int(datetime.now(UTC).timestamp())
 
     def _count_user_turns(
         self,
