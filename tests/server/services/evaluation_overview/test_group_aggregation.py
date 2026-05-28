@@ -195,3 +195,28 @@ def test_lift_negative_when_control_outperforms():
     lift, _ = compute_lift_with_ci(n_t=100, p_t=0.5, n_c=100, p_c=0.6)
     assert lift is not None
     assert abs(lift - (-0.1)) < 1e-9
+
+
+def test_lift_ci_is_capped_at_50pp_for_tiny_samples():
+    """With n=2 each side and opposite-extreme rates, the raw Wald half-width
+    exceeds 0.5; the cap clamps it to 0.5 so the dashboard doesn't show false
+    precision.
+    """
+    # Raw Wald CI for n_t=n_c=2, p_t=1.0, p_c=0.0:
+    #   var = 1*0/2 + 0*1/2 = 0 → ci_half = 0, which is fine (not capped).
+    # Use a case where var > 0 but n is tiny:
+    #   n_t=n_c=2, p_t=0.5, p_c=0.5 → var = 0.25/2 + 0.25/2 = 0.25
+    #   sqrt(0.25) = 0.5; 1.96 * 0.5 = 0.98 → would render ±98pp without the cap.
+    lift, ci_pp = compute_lift_with_ci(n_t=2, p_t=0.5, n_c=2, p_c=0.5)
+    assert lift == 0.0
+    assert ci_pp == 0.5  # clamped from ~0.98 to the cap
+
+
+def test_lift_ci_uncapped_when_below_threshold():
+    """Sanity-check that the cap only fires when raw CI exceeds 0.5."""
+    lift, ci_pp = compute_lift_with_ci(n_t=900, p_t=0.72, n_c=100, p_c=0.58)
+    # Raw CI ≈ 0.1011 — well below the 0.5 cap, so returned as-is.
+    assert lift is not None
+    assert ci_pp is not None
+    assert 0.10 < ci_pp < 0.15
+    assert ci_pp < 0.5  # uncapped

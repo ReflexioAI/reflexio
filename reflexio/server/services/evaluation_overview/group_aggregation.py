@@ -21,9 +21,12 @@ from reflexio.models.api_schema.eval_overview_schema import (
 # Z-value for a 95% Wald CI on a binomial proportion (two-sided).
 _Z_95 = 1.96
 
-# Cap on lift CI half-width when sample size is so small the CI exceeds this;
-# prevents wild ±50pp lines on the chart when n is tiny. Tile copy still shows n.
-_MAX_CI_HALF_WIDTH = 1.0
+# Cap on the lift CI half-width. With very small sample sizes the Wald CI
+# computes to absurd widths (e.g., ±70pp), and rendering that on a
+# dashboard implies false precision. 0.5 (= ±50pp) is the product-meaningful
+# threshold: any wider than that, the user should think "we don't know"
+# and the frontend should consider rendering a low-confidence indicator.
+_MAX_CI_HALF_WIDTH = 0.5
 
 
 class GroupAssignment(StrEnum):
