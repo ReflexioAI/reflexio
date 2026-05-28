@@ -4,6 +4,7 @@ from ._operations import OperationMixin
 from ._playbook import PlaybookMixin
 from ._profiles import ProfileMixin
 from ._requests import RequestMixin
+from ._shadow_verdicts import ShadowVerdictsMixin as DiskShadowVerdictsMixin
 from ._share_links import DiskShareLinkMixin
 
 
@@ -14,6 +15,7 @@ class DiskStorage(
     PlaybookMixin,
     OperationMixin,
     ExtrasMixin,
+    DiskShadowVerdictsMixin,
     DiskStorageBase,
 ):
     """Disk-based storage with entity files and QMD search.
