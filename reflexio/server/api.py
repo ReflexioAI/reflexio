@@ -2055,6 +2055,16 @@ def grade_on_demand(
             skipped_reason="NO_REQUESTS",
         )
 
+    # Two operation_state rows are intentionally written for this session:
+    #   1) `grade_on_demand::{org_id}::{session_id}::{agent_version}::{evaluation_name}`
+    #      — our 24h cache, set below after the result_id is resolved.
+    #   2) `agent_success_group_eval::{org_id}::{user_id}::{session_id}`
+    #      — the runner's own "evaluated" marker, written by
+    #      run_group_evaluation. Future background runs without
+    #      force_regenerate will skip this session as a result.
+    # The cache key namespaces are distinct so the two markers do not
+    # interfere; the explicit force_regenerate=True here is what makes
+    # an on-demand grade always do real work on a cache miss.
     run_group_evaluation(
         org_id=org_id,
         user_id=user_id,
