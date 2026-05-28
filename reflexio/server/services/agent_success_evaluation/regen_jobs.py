@@ -11,6 +11,7 @@ import random
 import threading
 import time
 import uuid
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -271,6 +272,57 @@ def _build_sample_candidates(
     return candidates
 
 
+def _dispatch_one(
+    sc: SampleCandidate,
+    *,
+    job: RegenJob,
+    request_context: RequestContext,
+    llm_client: LiteLLMClient,
+) -> None:
+    """Run the LLM judge for one sampled candidate.
+
+    Honors ``job.cancel_event`` as an early-exit by raising a sentinel
+    ``_CancelledError`` so the dispatcher can distinguish cancellations from
+    real failures.
+
+    Args:
+        sc (SampleCandidate): Session to grade.
+        job (RegenJob): Owning job; the cancel event is read here so
+            workers already dequeued from the pool can bail out fast
+            instead of running the full judge after cancellation.
+        request_context (RequestContext): Storage/config/prompt carrier
+            forwarded to ``run_group_evaluation``.
+        llm_client (LiteLLMClient): Shared LLM client forwarded to
+            ``run_group_evaluation``.
+
+    Raises:
+        _CancelledError: When the cancel event is set before this worker
+            starts its judge call.
+        Exception: Whatever ``run_group_evaluation`` itself raised.
+    """
+    if job.cancel_event.is_set():
+        raise _CancelledError
+    run_group_evaluation(
+        org_id=job.org_id,
+        user_id=sc.user_id,
+        session_id=sc.session_id,
+        agent_version=sc.agent_version,
+        source=sc.source,
+        request_context=request_context,
+        llm_client=llm_client,
+        force_regenerate=True,
+        evaluation_name=job.evaluation_name,
+    )
+
+
+class _CancelledError(Exception):
+    """Sentinel raised by a worker that observed ``job.cancel_event``.
+
+    Distinguishes a clean cancellation (must not count as a failure)
+    from any other exception ``run_group_evaluation`` might raise.
+    """
+
+
 def run_regen(
     *,
     job: RegenJob,
@@ -285,15 +337,19 @@ def run_regen(
     (day-bucket x F2 group) and samples up to
     ``config.eval_sample_n_per_stratum`` per stratum — giving the regen
     pipeline predictable cost regardless of traffic volume. Step 3
-    iterates the sampled subset sequentially; Task 6 will replace this
-    loop with a bounded ``ThreadPoolExecutor``.
+    dispatches the sampled subset through a ``ThreadPoolExecutor`` whose
+    ``max_workers`` is bound by ``config.eval_concurrency_limit``,
+    capping LLM provider rate-limit pressure.
 
-    On normal completion of the sampled loop, sets ``job.status = "completed"``
-    even if individual sessions raised — per-session failures are recorded in
-    ``job.failed`` and ``job.failures``. Sets ``job.status = "error"`` only if
-    the worker itself crashes (e.g. storage misconfigured). Sets
-    ``job.status = "cancelled"`` if the cancel event is observed between
-    sessions.
+    On normal completion of the sampled work, sets
+    ``job.status = "completed"`` even if individual sessions raised —
+    per-session failures are recorded in ``job.failed`` and
+    ``job.failures`` (capped at ``_FAILURE_CAP`` to bound memory). Sets
+    ``job.status = "error"`` only if the worker itself crashes (e.g.
+    storage misconfigured). Sets ``job.status = "cancelled"`` if the
+    cancel event is observed; in-flight futures finish naturally but
+    queued-but-not-started ones are skipped, and observed cancellations
+    do not count as failures.
 
     Args:
         job (RegenJob): Pre-registered job whose counters
@@ -329,23 +385,71 @@ def run_regen(
         )
         job.sampled_count = len(sampled)
 
-        for sc in sampled:
-            if job.cancel_event.is_set():
-                job.status = "cancelled"
-                break
+        observed_cancel = _run_pool(
+            sampled,
+            job=job,
+            request_context=request_context,
+            llm_client=llm_client,
+        )
+        job.status = "cancelled" if observed_cancel else "completed"
+    except Exception:  # noqa: BLE001 — worker boundary
+        job.status = "error"
+        logger.exception("Regen worker crashed for job=%s", job.job_id)
+    finally:
+        job.finished_at = time.time()
+
+
+def _run_pool(
+    sampled: list[SampleCandidate],
+    *,
+    job: RegenJob,
+    request_context: RequestContext,
+    llm_client: LiteLLMClient,
+) -> bool:
+    """Dispatch ``sampled`` through a ThreadPoolExecutor and aggregate results.
+
+    Updates ``job.completed`` / ``job.failed`` / ``job.failures`` (capped
+    at ``_FAILURE_CAP``) as futures resolve. When ``job.cancel_event``
+    fires the pool stops submitting new work; futures already running
+    finish, but their cancellation sentinels are silently dropped.
+
+    Args:
+        sampled (list[SampleCandidate]): Candidates already chosen by
+            the stratified sampler.
+        job (RegenJob): Owning job whose counters this function mutates.
+        request_context (RequestContext): Forwarded to each per-session
+            worker via ``_dispatch_one``.
+        llm_client (LiteLLMClient): Forwarded to each per-session worker
+            via ``_dispatch_one``.
+
+    Returns:
+        bool: ``True`` if cancellation was observed at any point
+        (caller should set ``job.status = "cancelled"``); ``False`` if
+        every submitted future ran to completion (success or failure)
+        without cancellation.
+    """
+    if not sampled:
+        return False
+    max_workers = max(1, job.concurrency_limit)
+    observed_cancel = False
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        future_to_sc: dict[Future[None], SampleCandidate] = {
+            pool.submit(
+                _dispatch_one,
+                sc,
+                job=job,
+                request_context=request_context,
+                llm_client=llm_client,
+            ): sc
+            for sc in sampled
+        }
+        for fut in as_completed(future_to_sc):
+            sc = future_to_sc[fut]
             try:
-                run_group_evaluation(
-                    org_id=job.org_id,
-                    user_id=sc.user_id,
-                    session_id=sc.session_id,
-                    agent_version=sc.agent_version,
-                    source=sc.source,
-                    request_context=request_context,
-                    llm_client=llm_client,
-                    force_regenerate=True,
-                    evaluation_name=job.evaluation_name,
-                )
+                fut.result()
                 job.completed += 1
+            except _CancelledError:
+                observed_cancel = True
             except Exception as e:  # noqa: BLE001 — worker boundary
                 job.failed += 1
                 if len(job.failures) < _FAILURE_CAP:
@@ -353,10 +457,6 @@ def run_regen(
                         JobFailure(session_id=sc.session_id, reason=str(e)[:200])
                     )
                 logger.warning("Regen failed for session=%s: %s", sc.session_id, e)
-        else:
-            job.status = "completed"
-    except Exception:  # noqa: BLE001 — worker boundary
-        job.status = "error"
-        logger.exception("Regen worker crashed for job=%s", job.job_id)
-    finally:
-        job.finished_at = time.time()
+    if job.cancel_event.is_set():
+        observed_cancel = True
+    return observed_cancel
