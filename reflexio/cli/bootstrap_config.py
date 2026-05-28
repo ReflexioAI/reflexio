@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
+from typing import Any
 
 import typer
 
@@ -154,13 +155,25 @@ def save_storage_to_config(
             db_url = os.environ.get("REFLEXIO_POSTGRES_DB_URL", "")
             schema = os.environ.get("REFLEXIO_POSTGRES_SCHEMA", "").strip()
             pool_size_raw = os.environ.get("REFLEXIO_POSTGRES_POOL_SIZE", "").strip()
-            pool_size = int(pool_size_raw) if pool_size_raw.isdigit() else 5
+            pool_size = int(pool_size_raw) if pool_size_raw.isdigit() else 10
+            timeout_raw = os.environ.get(
+                "REFLEXIO_POSTGRES_POOL_ACQUIRE_TIMEOUT", ""
+            ).strip()
+            postgres_kwargs: dict[str, Any] = {
+                "db_url": db_url,
+                "schema": schema or None,
+                "pool_size": pool_size,
+            }
+            if timeout_raw:
+                try:
+                    postgres_kwargs["pool_acquire_timeout"] = float(timeout_raw)
+                except ValueError:
+                    logger.warning(
+                        "Invalid REFLEXIO_POSTGRES_POOL_ACQUIRE_TIMEOUT=%r; using default",
+                        timeout_raw,
+                    )
             if db_url:
-                config.storage_config = StorageConfigPostgres(
-                    db_url=db_url,
-                    schema=schema or None,
-                    pool_size=pool_size,
-                )
+                config.storage_config = StorageConfigPostgres(**postgres_kwargs)
             else:
                 logger.warning(
                     "Postgres storage requested but REFLEXIO_POSTGRES_DB_URL "

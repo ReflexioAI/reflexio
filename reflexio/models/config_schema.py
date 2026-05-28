@@ -175,7 +175,10 @@ class StorageConfigPostgres(BaseModel):
     storage_type: Literal["postgres"] = Field(default="postgres", alias="type")
     db_url: NonEmptyStr
     schema_name: str | None = Field(default=None, alias="schema")
-    pool_size: int = Field(default=5, ge=1)
+    pool_size: int = Field(default=10, ge=1)
+    # Seconds a query waits for a free pooled connection before failing. Bounds the
+    # back-pressure applied when concurrent queries exceed pool_size.
+    pool_acquire_timeout: float = Field(default=30.0, gt=0)
 
 
 class StorageConfigManagedSupabase(BaseModel):
