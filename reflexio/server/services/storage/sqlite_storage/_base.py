@@ -409,6 +409,9 @@ def _row_to_interaction(row: sqlite3.Row) -> Interaction:
 
 def _row_to_request(row: sqlite3.Row) -> Request:
     d = dict(row)
+    metadata_raw = d.get("metadata") or "{}"
+    parsed = _json_loads(metadata_raw)
+    metadata = parsed if isinstance(parsed, dict) else {}
     return Request(
         request_id=d["request_id"],
         user_id=d["user_id"],
@@ -416,6 +419,7 @@ def _row_to_request(row: sqlite3.Row) -> Request:
         source=d.get("source") or "",
         agent_version=d.get("agent_version") or "",
         session_id=d.get("session_id"),
+        metadata=metadata,
     )
 
 
@@ -652,6 +656,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         self._migrate_expanded_terms()
         self._migrate_agentic_signals()
         self._migrate_agent_playbook_source_windows()
+        self._migrate_request_metadata()
         init_stall_state_table(self.conn)
         return True
 
@@ -1136,6 +1141,25 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         )
         self.conn.commit()
 
+    def _migrate_request_metadata(self) -> None:
+        """Add metadata column to requests for databases created before F2.
+
+        The column stores a JSON-encoded dict per request (see Request.metadata
+        in the Pydantic model). Backfill-safe: existing rows pick up the
+        ``'{}'`` default and round-trip as an empty dict.
+        """
+        cols = {
+            row["name"]
+            for row in self.conn.execute("PRAGMA table_info(requests)").fetchall()
+        }
+        if not cols:
+            return
+        if "metadata" not in cols:
+            self.conn.execute(
+                "ALTER TABLE requests ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}'"
+            )
+            logger.info("Added metadata column to requests")
+        self.conn.commit()
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -1492,7 +1516,8 @@ CREATE TABLE IF NOT EXISTS requests (
     created_at TEXT NOT NULL,
     source TEXT NOT NULL DEFAULT '',
     agent_version TEXT NOT NULL DEFAULT '',
-    session_id TEXT
+    session_id TEXT,
+    metadata TEXT NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS idx_requests_user_id ON requests(user_id);
 CREATE INDEX IF NOT EXISTS idx_requests_session_id ON requests(session_id);
