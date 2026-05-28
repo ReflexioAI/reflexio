@@ -161,6 +161,75 @@ class SuccessRateTrendByGroup(BaseModel):
     untagged: list[TrendPoint] = Field(default_factory=list)
 
 
+class ShadowWinRateTrendPoint(BaseModel):
+    """One daily bucket of per-turn shadow-comparison verdicts (F1).
+
+    Args:
+        date (str): ISO date for the bucket start (``YYYY-MM-DD``), UTC.
+        n (int): Total verdicts in this bucket.
+        wins (int): Reflexio wins.
+        losses (int): Reflexio losses.
+        ties (int): Ties.
+    """
+
+    date: str
+    n: int = Field(ge=0)
+    wins: int = Field(ge=0)
+    losses: int = Field(ge=0)
+    ties: int = Field(ge=0)
+
+
+class ShadowWinRateTrendWindowTotal(BaseModel):
+    """Aggregate of all shadow verdicts in the trend window (F1).
+
+    Args:
+        n (int): Total verdicts in the window.
+        wins (int): Reflexio wins.
+        losses (int): Reflexio losses.
+        ties (int): Ties.
+        win_rate (float): ``wins / n``; ``0.0`` when ``n == 0``.
+        net_win (float): ``(wins - losses) / n``; ``0.0`` when ``n == 0``.
+    """
+
+    n: int = Field(ge=0)
+    wins: int = Field(ge=0)
+    losses: int = Field(ge=0)
+    ties: int = Field(ge=0)
+    win_rate: float = Field(ge=0.0, le=1.0)
+    net_win: float = Field(ge=-1.0, le=1.0)
+
+
+class ShadowWinRateTrend(BaseModel):
+    """F1 shadow win-rate trend payload for the evaluation overview.
+
+    Daily buckets are UTC-aligned and presented in ascending date order.
+    ``judge_prompt_version`` is echoed so the dashboard can show which
+    rubric epoch produced the numbers — verdicts from older rubrics are
+    filtered out at storage time, never silently mixed in.
+
+    Args:
+        daily (list[ShadowWinRateTrendPoint]): Daily buckets (UTC), sorted
+            ascending. Empty when no verdicts exist in the window.
+        window_total (ShadowWinRateTrendWindowTotal): Aggregate over all
+            daily buckets.
+        judge_prompt_version (str): Pinned prompt version the verdicts in
+            this payload were graded under.
+    """
+
+    daily: list[ShadowWinRateTrendPoint] = Field(default_factory=list)
+    window_total: ShadowWinRateTrendWindowTotal = Field(
+        default_factory=lambda: ShadowWinRateTrendWindowTotal(
+            n=0,
+            wins=0,
+            losses=0,
+            ties=0,
+            win_rate=0.0,
+            net_win=0.0,
+        )
+    )
+    judge_prompt_version: str = Field(default="v1.0.0")
+
+
 class GetEvaluationOverviewResponse(BaseModel):
     hero: HeroBlock
     context_tiles: ContextTile
@@ -169,6 +238,9 @@ class GetEvaluationOverviewResponse(BaseModel):
     braintrust_tiles: list[BraintrustTileRow] = Field(default_factory=list)
     success_rate_trend_by_group: SuccessRateTrendByGroup = Field(
         default_factory=SuccessRateTrendByGroup
+    )
+    shadow_win_rate_trend: ShadowWinRateTrend = Field(
+        default_factory=ShadowWinRateTrend
     )
 
 

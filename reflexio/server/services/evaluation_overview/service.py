@@ -29,6 +29,7 @@ from reflexio.models.api_schema.eval_overview_schema import (
     PercentWithDelta,
     RuleAttributionRow,
     ScoreDistribution,
+    ShadowWinRateTrend,
     SuccessRateTrendByGroup,
 )
 from reflexio.models.config_schema import Config
@@ -44,6 +45,9 @@ from reflexio.server.services.evaluation_overview.hero_state import (
 )
 from reflexio.server.services.evaluation_overview.rule_attribution import (
     compute_net_sessions,
+)
+from reflexio.server.services.evaluation_overview.shadow_aggregation import (
+    compute_shadow_win_rate_trend,
 )
 
 _DAY_SECONDS = 24 * 60 * 60
@@ -111,6 +115,12 @@ class EvaluationOverviewService:
         # treatment / control / untagged, then time-buckets each curve at
         # the same granularity as the hero chart.
         success_rate_trend_by_group = self._build_group_trend(results, request.bucket)
+        # F1: per-turn shadow win-rate trend. Filters verdicts to the org's
+        # pinned judge prompt version so a future rubric bump doesn't
+        # silently mix epochs into the headline.
+        shadow_win_rate_trend = self._build_shadow_win_rate_trend(
+            request.from_ts, request.to_ts
+        )
 
         return GetEvaluationOverviewResponse(
             hero=hero,
@@ -119,6 +129,7 @@ class EvaluationOverviewService:
             score_distribution=distribution,
             braintrust_tiles=braintrust_tiles,
             success_rate_trend_by_group=success_rate_trend_by_group,
+            shadow_win_rate_trend=shadow_win_rate_trend,
         )
 
     # --- private helpers ---
@@ -278,6 +289,42 @@ class EvaluationOverviewService:
         # direct attribute. For Plan C-overview, we read it via the storage
         # instance's org_id when present (every BaseStorage carries one).
         return str(getattr(self.storage, "org_id", "") or "")
+
+    def _build_shadow_win_rate_trend(
+        self,
+        from_ts: int,
+        to_ts: int,
+    ) -> ShadowWinRateTrend:
+        """Fetch shadow verdicts in the window and aggregate them per day.
+
+        Filters verdicts to the org's pinned ``shadow_comparison`` prompt
+        version (``Config.shadow_comparison_judge_prompt_version``) so a
+        future rubric bump never silently mixes epochs into the headline.
+        Backends that don't yet implement the verdicts table raise
+        ``NotImplementedError``; we degrade to the empty trend default so
+        the dashboard still renders the rest of the overview.
+
+        Args:
+            from_ts (int): Window start, Unix epoch seconds (UTC).
+            to_ts (int): Window end, Unix epoch seconds (UTC).
+
+        Returns:
+            ShadowWinRateTrend: Daily buckets + window total. Empty when
+                the window has no verdicts or the backend doesn't support
+                verdict storage.
+        """
+        pinned_version = self.config.shadow_comparison_judge_prompt_version
+        try:
+            verdicts = self.storage.get_shadow_comparison_verdicts(  # type: ignore[attr-defined]
+                from_ts=from_ts,
+                to_ts=to_ts,
+                judge_prompt_version=pinned_version,
+            )
+        except NotImplementedError:
+            return ShadowWinRateTrend(judge_prompt_version=pinned_version)
+        return compute_shadow_win_rate_trend(
+            verdicts, judge_prompt_version=pinned_version
+        )
 
     def _build_group_trend(
         self,
