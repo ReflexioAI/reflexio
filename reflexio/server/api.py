@@ -32,6 +32,7 @@ from reflexio.models.api_schema.braintrust_schema import (
 from reflexio.models.api_schema.eval_overview_schema import (
     GetEvaluationOverviewRequest,
     GetEvaluationOverviewResponse,
+    GetRecentShadowComparisonsResponse,
     GradeOnDemandRequest,
     GradeOnDemandResponse,
     RegenerateFailure,
@@ -2095,6 +2096,88 @@ def grade_on_demand(
         cached=False,
         skipped_reason=None,
     )
+
+
+# ---------------------------------------------------------------------------
+# /api/evaluations/shadow_comparisons/recent — F1 drawer + Top 10 widget
+# ---------------------------------------------------------------------------
+#
+# Powers two surfaces on /evaluations:
+#   1. The drawer triggered from the per-turn comparison tile — shows the
+#      N most recent verdicts so customers can spot-check the judge.
+#   2. The "Top 10 disagreements" widget — fetches a wider pool and the
+#      frontend filters to ``is_significantly_better=True`` losses to surface
+#      actionable rule-correction candidates.
+#
+# Filtering is restricted to the org's currently pinned
+# ``shadow_comparison_judge_prompt_version`` so verdicts from an older rubric
+# never mix into the drawer. The 30-day lookback is a defensive cap that lets
+# the storage layer use an index range scan instead of a full table read.
+
+_RECENT_SHADOW_COMPARISONS_LOOKBACK_SECONDS = 30 * 24 * 60 * 60
+_RECENT_SHADOW_COMPARISONS_MAX_LIMIT = 100
+
+
+@core_router.get(
+    "/api/evaluations/shadow_comparisons/recent",
+    response_model=GetRecentShadowComparisonsResponse,
+)
+def get_recent_shadow_comparisons(
+    limit: int = 10,
+    org_id: str = Depends(default_get_org_id),
+) -> GetRecentShadowComparisonsResponse:
+    """Return the N most recent shadow comparison verdicts for the pinned rubric.
+
+    Filters to the org's currently pinned
+    ``Config.shadow_comparison_judge_prompt_version`` so verdicts produced
+    under an older rubric do not mix into the drawer or the Top 10
+    disagreements widget. Storage returns verdicts in ascending ``created_at``
+    order; we reverse to "newest first" and cap at ``limit``.
+
+    Args:
+        limit (int): Max verdicts to return. Clamped to ``[1, 100]``.
+            Default 10 — matches the size of the drawer and Top 10 widget.
+        org_id (str): Tenant identifier resolved by the auth dependency.
+
+    Returns:
+        GetRecentShadowComparisonsResponse: Verdicts in newest-first order.
+            Empty list when the backend does not support the
+            ``shadow_comparison_verdicts`` storage feature, when no verdicts
+            exist in the 30-day window, or when no verdicts match the pinned
+            prompt version.
+
+    Raises:
+        HTTPException: 503 when storage is not configured.
+    """
+    clamped_limit = max(1, min(int(limit), _RECENT_SHADOW_COMPARISONS_MAX_LIMIT))
+    reflexio = get_reflexio(org_id=org_id)
+    storage = reflexio.request_context.storage
+    if storage is None:
+        raise HTTPException(status_code=503, detail="Storage not configured")
+
+    config = reflexio.request_context.configurator.get_config()
+    pinned_version = (
+        config.shadow_comparison_judge_prompt_version
+        if config is not None
+        else "v1.0.0"
+    )
+
+    now = int(datetime.now(UTC).timestamp())
+    try:
+        verdicts = storage.get_shadow_comparison_verdicts(
+            from_ts=now - _RECENT_SHADOW_COMPARISONS_LOOKBACK_SECONDS,
+            to_ts=now,
+            judge_prompt_version=pinned_version,
+        )
+    except NotImplementedError:
+        # Backends that don't support shadow verdicts (e.g., Disk) should
+        # quietly return empty rather than 5xx — the surface degrades to
+        # "no data yet" in the UI.
+        return GetRecentShadowComparisonsResponse(verdicts=[])
+
+    # Storage contract returns ascending — flip to "newest first" and cap.
+    newest_first = list(reversed(verdicts))[:clamped_limit]
+    return GetRecentShadowComparisonsResponse(verdicts=newest_first)
 
 
 @core_router.post(

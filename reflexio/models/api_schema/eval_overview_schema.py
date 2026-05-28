@@ -458,3 +458,17 @@ class ShadowComparisonVerdict(BaseModel):
     created_at: datetime
     """When the judge call returned. Storage layers assume UTC — callers
     must pass a tz-aware datetime (typically `datetime.now(UTC)`)."""
+
+
+class GetRecentShadowComparisonsResponse(BaseModel):
+    """Returned by GET /api/evaluations/shadow_comparisons/recent (F1).
+
+    Args:
+        verdicts (list[ShadowComparisonVerdict]): Recent verdicts for the
+            org's current pinned ``shadow_comparison`` prompt version,
+            newest first. Capped at the ``limit`` query param (default 10,
+            max 100). Empty when the backend does not support the
+            ``shadow_comparison_verdicts`` storage feature.
+    """
+
+    verdicts: list[ShadowComparisonVerdict] = Field(default_factory=list)
