@@ -671,9 +671,8 @@ class Config(BaseModel):
             "rate limits."
         ),
     )
-    shadow_comparison_judge_prompt_version: str = Field(
+    shadow_comparison_judge_prompt_version: NonEmptyStr = Field(
         default="v1.0.0",
-        min_length=1,
         description=(
             "F1: pinned judge prompt version for per-turn shadow comparison. "
             "Verdicts are stored with the version that produced them; the "
