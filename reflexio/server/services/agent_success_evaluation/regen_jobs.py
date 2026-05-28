@@ -346,10 +346,22 @@ def run_regen(
     per-session failures are recorded in ``job.failed`` and
     ``job.failures`` (capped at ``_FAILURE_CAP`` to bound memory). Sets
     ``job.status = "error"`` only if the worker itself crashes (e.g.
-    storage misconfigured). Sets ``job.status = "cancelled"`` if the
-    cancel event is observed; in-flight futures finish naturally but
-    queued-but-not-started ones are skipped, and observed cancellations
-    do not count as failures.
+    storage misconfigured).
+
+    Cancellation semantics:
+      - ``job.cancel_event`` may be set at any time during the worker run.
+      - Futures already executing ``run_group_evaluation`` finish naturally
+        (Python threads cannot be safely interrupted mid-LLM-call).
+      - Futures the pool dequeues AFTER the event is set short-circuit at
+        the dispatch boundary by raising a private ``_CancelledError``,
+        which is silently dropped — not counted as a success or failure.
+      - The post-loop ``job.cancel_event.is_set()`` check is authoritative:
+        even if every submitted future happened to complete before the
+        user clicked cancel, the job is reported as ``"cancelled"``.
+      - Consequence: when the job is cancelled,
+        ``job.completed + job.failed`` may be strictly less than
+        ``job.sampled_count``. Consumers reading
+        ``RegenerateStatusResponse`` must accept this invariant.
 
     Args:
         job (RegenJob): Pre-registered job whose counters
@@ -449,7 +461,10 @@ def _run_pool(
                 fut.result()
                 job.completed += 1
             except _CancelledError:
-                observed_cancel = True
+                # cancel_event was set before this future started; the
+                # post-loop check below is the single source of truth for
+                # the cancelled state. Don't touch counters here.
+                continue
             except Exception as e:  # noqa: BLE001 — worker boundary
                 job.failed += 1
                 if len(job.failures) < _FAILURE_CAP:
