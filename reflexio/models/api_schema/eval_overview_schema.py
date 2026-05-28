@@ -253,3 +253,16 @@ class RegenerateStatusResponse(BaseModel):
     failures: list[RegenerateFailure]
     started_at: float
     finished_at: float | None
+
+    total_candidates: int = Field(default=0, ge=0)
+    """F3: count of distinct (session, agent_version) candidate tuples
+    discovered in the regen window BEFORE stratified sampling."""
+
+    sampled_count: int = Field(default=0, ge=0)
+    """F3: count of candidates retained after stratified sampling. Equal
+    to total_candidates when no stratum exceeded `Config.eval_sample_n_per_stratum`."""
+
+    concurrency_limit: int = Field(default=0, ge=0)
+    """F3: max simultaneous worker threads. Mirrors
+    `Config.eval_concurrency_limit` at job start; reported so the dashboard
+    can show 'n_sampled / concurrency_limit' status legibly."""
