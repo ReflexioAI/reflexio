@@ -4,10 +4,9 @@ Declares the methods every storage implementation MUST implement to expose
 the singleton stall_state row used by the credit-stall notification flow.
 
 The default implementations raise :class:`NotImplementedError`. Concrete
-backends that support the stall_state feature (currently
-:class:`SQLiteStorage`) override these methods via their own mixin. Backends
-that don't support it will surface a clear ``NotImplementedError`` at call
-time rather than ``AttributeError``.
+backends that support the stall_state feature override these methods via
+their own mixin. Backends without stall_state support will surface a clear
+``NotImplementedError`` at call time rather than ``AttributeError``.
 """
 
 from __future__ import annotations

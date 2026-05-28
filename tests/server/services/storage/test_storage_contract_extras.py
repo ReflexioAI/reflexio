@@ -202,7 +202,7 @@ def _backend_supports_application_stats(storage) -> bool:
     """True when the storage backend has a real (non-default) implementation.
 
     The default in ``ExtrasMixin`` returns ``[]`` for any input — backends
-    that haven't been wired up yet (disk, supabase, postgres) hit that path
+    that haven't been wired up yet (supabase, postgres) hit that path
     and have nothing to test.
     """
     return (

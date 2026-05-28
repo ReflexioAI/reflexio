@@ -54,7 +54,7 @@ def read_stall_state(
 
     Raises:
         HTTPException: 503 when storage is not configured, or when the
-            backend does not implement stall_state (e.g. disk storage).
+            backend does not implement stall_state (backends without stall_state support).
     """
     storage = _require_storage(ctx)
     try:
@@ -89,7 +89,7 @@ def post_notified(
 
     Raises:
         HTTPException: 503 when storage is not configured, or when the
-            backend does not implement stall_state (e.g. disk storage).
+            backend does not implement stall_state (backends without stall_state support).
     """
     storage = _require_storage(ctx)
     try:

@@ -603,7 +603,7 @@ from reflexio.server.services.extraction.tools import _maybe_embed_query  # noqa
 
 
 def test_maybe_embed_query_returns_none_when_storage_has_no_embedder():
-    """Disk/local storage backends that don't expose _get_embedding should
+    """Storage backends without an embedder (no `_get_embedding`) should
     gracefully produce None rather than raising."""
     assert _maybe_embed_query(object(), "anything") is None
 

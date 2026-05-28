@@ -1,6 +1,6 @@
 """Abstract ShareLink storage operations.
 
-Each BaseStorage subclass (SQLite, Supabase, Disk) must implement these methods.
+Each BaseStorage subclass (SQLite, Supabase, Postgres) must implement these methods.
 Storage instances are org-scoped, so org_id is not a method parameter.
 """
 

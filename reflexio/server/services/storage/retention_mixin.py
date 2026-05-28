@@ -5,9 +5,6 @@ Concrete SQL backends (SQLite, Postgres, Supabase) mix in
 ``count_retention_target_rows`` / ``delete_oldest_retention_target_rows``
 lives here so the dispatch — limit lookup, key selection, cascade,
 delete — cannot drift across the three backends.
-
-Disk storage has a fundamentally different (file-based) implementation
-and does not use this mixin.
 """
 
 from __future__ import annotations
