@@ -2,6 +2,7 @@ import asyncio
 import logging
 import threading
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import (
@@ -31,6 +32,8 @@ from reflexio.models.api_schema.braintrust_schema import (
 from reflexio.models.api_schema.eval_overview_schema import (
     GetEvaluationOverviewRequest,
     GetEvaluationOverviewResponse,
+    GradeOnDemandRequest,
+    GradeOnDemandResponse,
     RegenerateFailure,
     RegenerateRequest,
     RegenerateStartResponse,
@@ -158,6 +161,9 @@ from reflexio.server.cache.reflexio_cache import (
     invalidate_reflexio_cache,
 )
 from reflexio.server.correlation import correlation_id_var, generate_correlation_id
+from reflexio.server.services.agent_success_evaluation.group_evaluation_runner import (
+    run_group_evaluation,
+)
 from reflexio.server.services.agent_success_evaluation.regen_jobs import (
     REGEN_JOBS,
     run_regen,
@@ -1829,6 +1835,256 @@ def cancel_regenerate(
         raise HTTPException(status_code=404, detail="Unknown job_id")
     REGEN_JOBS.cancel(job_id)
     return {"status": "cancelled"}
+
+
+# ---------------------------------------------------------------------------
+# /api/evaluations/grade_on_demand — single-session click-through grading
+# ---------------------------------------------------------------------------
+#
+# F3 sampling means most sessions in a regen window are NEVER graded —
+# the sampler keeps cost predictable by capping each (day, group) stratum
+# at ``Config.eval_sample_n_per_stratum``. Plan 3 (F1) surfaces a
+# bounded list of sessions in the UI; when a customer clicks one that
+# wasn't in the sampled subset, the frontend hits this endpoint to grade
+# it on demand. The 24h cache prevents repeated clicks from triggering
+# redundant LLM calls.
+
+_GRADE_ON_DEMAND_CACHE_TTL_SECONDS = 24 * 60 * 60
+_GRADE_ON_DEMAND_CACHE_KEY_PREFIX = "grade_on_demand"
+
+
+def _grade_on_demand_cache_key(
+    org_id: str, session_id: str, agent_version: str, evaluation_name: str
+) -> str:
+    """Build the operation_state key for the on-demand grading cache.
+
+    The key embeds every dimension that could change the verdict: org_id
+    (multi-tenant scope), session_id (the unit of work), agent_version
+    (eval results are versioned) and evaluation_name (one session can be
+    graded by multiple evaluators). Changing any dimension cuts a fresh
+    cache lane so customers never see a stale verdict from a different
+    evaluator.
+
+    Args:
+        org_id (str): Tenant identifier from the auth context.
+        session_id (str): Target session.
+        agent_version (str): Agent version filter.
+        evaluation_name (str): Evaluator config name.
+
+    Returns:
+        str: A namespaced key suitable for ``storage.upsert_operation_state``.
+    """
+    return (
+        f"{_GRADE_ON_DEMAND_CACHE_KEY_PREFIX}::{org_id}::{session_id}"
+        f"::{agent_version}::{evaluation_name}"
+    )
+
+
+def _read_grade_on_demand_cache(
+    storage: Any, cache_key: str, *, now: int
+) -> int | None:
+    """Return the cached ``result_id`` if a valid entry exists, else None.
+
+    Returns None on three conditions: no entry, malformed entry, or entry
+    whose ``last_graded_at`` is older than the 24h TTL. Keeps the handler
+    body focused on the happy path.
+
+    Args:
+        storage: The request's storage backend.
+        cache_key (str): Key produced by ``_grade_on_demand_cache_key``.
+        now (int): Current Unix-seconds wall-clock timestamp.
+
+    Returns:
+        int | None: Cached result_id when fresh, else None.
+    """
+    cached_state = storage.get_operation_state(cache_key)
+    if not cached_state:
+        return None
+    state = cached_state.get("operation_state")
+    if not isinstance(state, dict):
+        return None
+    last_graded_at = state.get("last_graded_at")
+    if not isinstance(last_graded_at, int):
+        return None
+    if (now - last_graded_at) >= _GRADE_ON_DEMAND_CACHE_TTL_SECONDS:
+        return None
+    cached_result_id = state.get("result_id")
+    return cached_result_id if isinstance(cached_result_id, int) else None
+
+
+def _resolve_session_user_id(storage: Any, session_id: str) -> str | None:
+    """Look up the user_id that owns a session_id without requiring it as input.
+
+    Uses ``get_sessions(session_id=...)`` because it's the only storage
+    method on ``BaseStorage`` that accepts session_id alone — every other
+    request-fetcher requires a user_id paired with it. Returns None when
+    the session has no requests, signalling NO_REQUESTS to the caller.
+
+    Args:
+        storage: The request's storage backend.
+        session_id (str): The target session whose owner to resolve.
+
+    Returns:
+        str | None: The user_id of the earliest request in the session,
+        or None when no requests exist.
+    """
+    sessions = storage.get_sessions(session_id=session_id, top_k=100)
+    rows = sessions.get(session_id) or []
+    if not rows:
+        return None
+    earliest = min(rows, key=lambda r: r.request.created_at)
+    return earliest.request.user_id
+
+
+def _find_fresh_result_id(
+    storage: Any,
+    *,
+    session_id: str,
+    evaluation_name: str,
+    agent_version: str,
+) -> int | None:
+    """Locate the result_id written by the most-recent grade for this triple.
+
+    The runner writes rows but doesn't return the id. Reading back through
+    ``get_agent_success_evaluation_results`` matches the pattern used by
+    the regen worker's prior-row capture (group_evaluation_runner step 5).
+
+    Args:
+        storage: The request's storage backend.
+        session_id (str): The graded session.
+        evaluation_name (str): The evaluator that produced the row.
+        agent_version (str): The version dimension.
+
+    Returns:
+        int | None: result_id of the latest matching row, or None if the
+        runner wrote nothing.
+    """
+    rows = storage.get_agent_success_evaluation_results(
+        limit=1000, agent_version=agent_version
+    )
+    matched = [
+        r
+        for r in rows
+        if r.session_id == session_id and r.evaluation_name == evaluation_name
+    ]
+    if not matched:
+        return None
+    latest = max(matched, key=lambda r: r.created_at)
+    return latest.result_id
+
+
+@core_router.post(
+    "/api/evaluations/grade_on_demand",
+    response_model=GradeOnDemandResponse,
+    response_model_exclude_none=False,
+)
+def grade_on_demand(
+    payload: GradeOnDemandRequest,
+    org_id: str = Depends(default_get_org_id),
+) -> GradeOnDemandResponse:
+    """Grade a single session synchronously; serve cached results within 24h.
+
+    Flow:
+      1. Validate ``evaluation_name`` against the configured evaluators
+         (400 on miss — symmetric with /regenerate).
+      2. Read the operation_state cache; if a fresh entry exists, return it
+         with ``cached=True``.
+      3. Resolve the session's user_id from storage (skip with ``NO_REQUESTS``
+         when the session is unknown — surfaced as 200 + ``skipped_reason``
+         so the frontend's bounded-list click-through can handle stale ids
+         locally without polluting 5xx telemetry).
+      4. Invoke ``run_group_evaluation(force_regenerate=True)`` so the
+         "already evaluated" short-circuit doesn't suppress a customer's
+         explicit click.
+      5. Find the freshly-written result_id and persist it in the cache
+         with ``last_graded_at`` so future calls within 24h short-circuit.
+
+    Args:
+        payload (GradeOnDemandRequest): Session + version + evaluator triple.
+        org_id (str): Tenant identifier resolved by the auth dependency.
+
+    Returns:
+        GradeOnDemandResponse: Echoes ``session_id`` and carries either
+            a fresh ``result_id`` (``cached=False``), a cached one
+            (``cached=True``), or a ``skipped_reason`` (NO_REQUESTS).
+
+    Raises:
+        HTTPException: 400 when ``evaluation_name`` is not configured
+            for the org. 503 when storage is not configured.
+    """
+    reflexio = get_reflexio(org_id=org_id)
+    config = reflexio.request_context.configurator.get_config()
+    known = (
+        {c.evaluation_name for c in (config.agent_success_configs or [])}
+        if config is not None
+        else set()
+    )
+    if payload.evaluation_name not in known:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown evaluation_name '{payload.evaluation_name}'",
+        )
+
+    storage = reflexio.request_context.storage
+    if storage is None:
+        raise HTTPException(status_code=503, detail="Storage not configured")
+
+    cache_key = _grade_on_demand_cache_key(
+        org_id,
+        payload.session_id,
+        payload.agent_version,
+        payload.evaluation_name,
+    )
+    now = int(datetime.now(UTC).timestamp())
+
+    cached_result_id = _read_grade_on_demand_cache(storage, cache_key, now=now)
+    if cached_result_id is not None:
+        return GradeOnDemandResponse(
+            session_id=payload.session_id,
+            result_id=cached_result_id,
+            cached=True,
+            skipped_reason=None,
+        )
+
+    user_id = _resolve_session_user_id(storage, payload.session_id)
+    if user_id is None:
+        return GradeOnDemandResponse(
+            session_id=payload.session_id,
+            result_id=None,
+            cached=False,
+            skipped_reason="NO_REQUESTS",
+        )
+
+    run_group_evaluation(
+        org_id=org_id,
+        user_id=user_id,
+        session_id=payload.session_id,
+        agent_version=payload.agent_version,
+        source=None,
+        request_context=reflexio.request_context,
+        llm_client=reflexio.llm_client,
+        force_regenerate=True,
+        evaluation_name=payload.evaluation_name,
+    )
+
+    result_id = _find_fresh_result_id(
+        storage,
+        session_id=payload.session_id,
+        evaluation_name=payload.evaluation_name,
+        agent_version=payload.agent_version,
+    )
+
+    storage.upsert_operation_state(
+        cache_key,
+        {"last_graded_at": now, "result_id": result_id},
+    )
+
+    return GradeOnDemandResponse(
+        session_id=payload.session_id,
+        result_id=result_id,
+        cached=False,
+        skipped_reason=None,
+    )
 
 
 @core_router.post(

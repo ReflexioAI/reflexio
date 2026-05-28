@@ -274,3 +274,42 @@ class RegenerateStatusResponse(BaseModel):
     """F3: max simultaneous worker threads. Mirrors
     `Config.eval_concurrency_limit` at job start; reported so the dashboard
     can show 'n_sampled / concurrency_limit' status legibly."""
+
+
+# ---------------------------------------------------------------------------
+# /api/evaluations/grade_on_demand — single-session click-through grading
+# ---------------------------------------------------------------------------
+
+
+class GradeOnDemandRequest(BaseModel):
+    """Input for POST /api/evaluations/grade_on_demand.
+
+    Args:
+        session_id (NonEmptyStr): Target session to grade.
+        agent_version (NonEmptyStr): Agent version filter (must be set — eval
+            results are versioned).
+        evaluation_name (NonEmptyStr): Evaluator config name to run.
+    """
+
+    session_id: NonEmptyStr
+    agent_version: NonEmptyStr
+    evaluation_name: NonEmptyStr
+
+
+class GradeOnDemandResponse(BaseModel):
+    """Returned by POST /api/evaluations/grade_on_demand.
+
+    Args:
+        session_id (str): Echo of the requested session.
+        result_id (int | None): The eval result row id, or None if grading
+            was skipped (e.g., session not found, no interactions).
+        cached (bool): True when the response came from the 24h cache
+            window. False on a fresh grade.
+        skipped_reason (str | None): If grading was skipped, the reason
+            (e.g., "NO_REQUESTS"). None on success.
+    """
+
+    session_id: str
+    result_id: int | None = None
+    cached: bool = False
+    skipped_reason: str | None = None
