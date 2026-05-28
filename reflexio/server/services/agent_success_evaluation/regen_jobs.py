@@ -58,6 +58,12 @@ class RegenJob:
     """Unix seconds (wall clock) at job creation — returned to API clients."""
     finished_at: float | None = None
     """Unix seconds (wall clock) when the worker exited; ``None`` while running."""
+    total_candidates: int = 0
+    """Total candidate sessions discovered in the (from_ts, to_ts) window before sampling."""
+    sampled_count: int = 0
+    """Number of sessions actually sampled from the candidate pool for this job."""
+    concurrency_limit: int = 0
+    """Worker concurrency cap applied to this job (0 = unset/sequential)."""
 
 
 class RegenJobRegistry:
