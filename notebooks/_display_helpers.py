@@ -184,14 +184,14 @@ def show_config(config: Config) -> None:
     profile_extractor_name = getattr(profile_extractor, "extractor_name", "Disabled")
     playbook_extractor_name = getattr(playbook_extractor, "extractor_name", "Disabled")
     tools = config.tool_can_use or []
-    success_configs = config.agent_success_configs or []
+    success_evaluator_count = 1 if config.agent_success_config else 0
 
     summary = f"""| Setting | Value |
 |---------|-------|
 | **Profile Extractor** | `{profile_extractor_name}` |
 | **Playbook Extractor** | `{playbook_extractor_name}` |
 | **Tools Registered** | {len(tools)} tools |
-| **Success Evaluators** | {len(success_configs)} configured |
+| **Success Evaluators** | {success_evaluator_count} configured |
 | **Extraction Window** | size={config.window_size}, stride={config.stride_size} |"""
 
     if tools:
