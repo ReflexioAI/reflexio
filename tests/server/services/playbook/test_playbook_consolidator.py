@@ -1,8 +1,9 @@
 """Tests for playbook consolidation service.
 
-Exercises the dispatch-and-apply path of the new ``PlaybookConsolidationOutput``
-discriminated union: ``DuplicateDecision`` is the canonical merge case; other
-kinds are covered by ``test_playbook_consolidator_integration.py`` end-to-end.
+Exercises the dispatch-and-apply path of the ``PlaybookConsolidationOutput``
+discriminated union (4 kinds: ``unify``, ``reject_new``, ``differentiate``,
+``independent``). Storage-end-to-end coverage of all kinds lives in
+``test_playbook_consolidator_integration.py``.
 """
 
 from unittest.mock import MagicMock, patch
@@ -11,10 +12,12 @@ import pytest
 
 from reflexio.models.api_schema.service_schemas import UserPlaybook
 from reflexio.server.services.playbook.playbook_consolidator import (
-    DuplicateDecision,
     IndependentDecision,
     PlaybookConsolidationOutput,
+    PlaybookConsolidationResult,
     PlaybookConsolidator,
+    RejectNewDecision,
+    UnifyDecision,
 )
 
 # ===============================
@@ -66,21 +69,23 @@ def mock_consolidator():
         )
 
 
-def _duplicate(
-    item_ids: list[str],
+def _unify(
+    new_id: str,
+    archive_existing_ids: list[int] | None = None,
     *,
-    merged_content: str = "merged content",
-    merged_trigger: str = "merged trigger",
-    merged_rationale: str = "merged rationale",
-    merged_polarity: str = "positive",
-) -> DuplicateDecision:
-    """Build a ``DuplicateDecision`` with sane defaults for merge-shape tests."""
-    return DuplicateDecision(
-        item_ids=item_ids,
-        merged_content=merged_content,
-        merged_trigger=merged_trigger,
-        merged_rationale=merged_rationale,
-        merged_polarity=merged_polarity,  # type: ignore[arg-type]
+    content: str = "unified content",
+    trigger: str = "unified trigger",
+    rationale: str = "unified rationale",
+    polarity: str = "positive",
+) -> UnifyDecision:
+    """Build a ``UnifyDecision`` with sane defaults for the apply tests."""
+    return UnifyDecision(
+        new_id=new_id,
+        archive_existing_ids=archive_existing_ids or [],
+        content=content,
+        trigger=trigger,
+        rationale=rationale,
+        polarity=polarity,  # type: ignore[arg-type]
     )
 
 
@@ -325,15 +330,116 @@ class TestDeduplicate:
 class TestBuildDeduplicatedResults:
     """Tests for ``_build_deduplicated_results`` decision dispatch."""
 
-    def test_merge_group_combines_source_interaction_ids(self, mock_consolidator):
-        """A duplicate decision merges source_interaction_ids from all NEW members."""
+    def test_unify_pair_replacement(self, mock_consolidator):
+        """Pair replacement (was ``prefer_new``): one NEW + one EXISTING archived.
+
+        Verifies that ``unify`` with a single archived EXISTING produces one
+        inserted row carrying the LLM-supplied content and the existing id is
+        added to the archive list.
+        """
         new_playbooks = [
-            _make_user_playbook(0, source_interaction_ids=[1, 2]),
-            _make_user_playbook(1, source_interaction_ids=[3, 4]),
+            _make_user_playbook(0, content="new content", polarity="positive"),
+        ]
+        existing_playbooks = [
+            _make_user_playbook(
+                1, user_playbook_id=500, content="old content", polarity="positive"
+            ),
         ]
 
         dedup_output = PlaybookConsolidationOutput(
-            decisions=[_duplicate(["NEW-0", "NEW-1"])],
+            decisions=[
+                _unify(
+                    "NEW-0",
+                    archive_existing_ids=[0],
+                    content="final content",
+                    polarity="positive",
+                )
+            ],
+        )
+
+        result, delete_ids = mock_consolidator._build_deduplicated_results(
+            new_playbooks=new_playbooks,
+            existing_playbooks=existing_playbooks,
+            dedup_output=dedup_output,
+            request_id="req1",
+            agent_version="v1",
+        )
+
+        assert len(result) == 1
+        assert result[0].content == "final content"
+        assert delete_ids == [500]
+
+    def test_unify_n_way_merge(self, mock_consolidator):
+        """N-way merge (was ``duplicate``): one NEW + multiple EXISTING archived.
+
+        Verifies that ``unify`` collapses one candidate plus several existing
+        rows into a single inserted row, archiving every referenced EXISTING id.
+        """
+        new_playbooks = [
+            _make_user_playbook(0, source_interaction_ids=[10], polarity="positive"),
+        ]
+        existing_playbooks = [
+            _make_user_playbook(
+                1,
+                user_playbook_id=501,
+                source_interaction_ids=[1],
+                polarity="positive",
+            ),
+            _make_user_playbook(
+                2,
+                user_playbook_id=502,
+                source_interaction_ids=[2],
+                polarity="positive",
+            ),
+        ]
+
+        dedup_output = PlaybookConsolidationOutput(
+            decisions=[
+                _unify(
+                    "NEW-0",
+                    archive_existing_ids=[0, 1],
+                    content="merged content",
+                    polarity="positive",
+                )
+            ],
+        )
+
+        result, delete_ids = mock_consolidator._build_deduplicated_results(
+            new_playbooks=new_playbooks,
+            existing_playbooks=existing_playbooks,
+            dedup_output=dedup_output,
+            request_id="req1",
+            agent_version="v1",
+        )
+
+        assert len(result) == 1
+        assert result[0].content == "merged content"
+        # Both existing rows archived.
+        assert set(delete_ids) == {501, 502}
+        # Source interaction ids combine NEW + every EXISTING member.
+        assert set(result[0].source_interaction_ids) == {10, 1, 2}
+
+    def test_unify_insert_without_archive(self, mock_consolidator):
+        """Insert-without-archive: one NEW + empty archive list.
+
+        The storage layer allows ``unify`` with no archived rows (it produces
+        a single insert and zero archives). The prompt steers the LLM away
+        from this shape — ``independent`` is the right kind here — but the
+        apply path must support it without raising.
+        """
+        new_playbooks = [
+            _make_user_playbook(0, content="solo new", polarity="positive"),
+        ]
+
+        dedup_output = PlaybookConsolidationOutput(
+            decisions=[
+                _unify(
+                    "NEW-0",
+                    archive_existing_ids=[],
+                    content="solo final",
+                    polarity="positive",
+                )
+            ],
         )
 
         result, delete_ids = mock_consolidator._build_deduplicated_results(
@@ -345,8 +451,17 @@ class TestBuildDeduplicatedResults:
         )
 
         assert len(result) == 1
-        assert set(result[0].source_interaction_ids) == {1, 2, 3, 4}
+        assert result[0].content == "solo final"
         assert delete_ids == []
+
+    def test_unify_counter_bumps_once_per_decision(self, mock_consolidator):
+        """``unify_count`` increments by exactly one per applied ``UnifyDecision``,
+        regardless of archive cardinality (0, 1, or N).
+        """
+        result_counters = PlaybookConsolidationResult()
+        for kind in ["unify", "unify", "unify"]:
+            mock_consolidator._bump_counter(result_counters, kind)
+        assert result_counters.unify_count == 3
 
     def test_independent_decisions_passed_through(self, mock_consolidator):
         """``IndependentDecision`` rows insert the candidate unchanged."""
@@ -372,13 +487,15 @@ class TestBuildDeduplicatedResults:
 
         assert len(result) == 2
 
-    def test_existing_playbooks_to_delete(self, mock_consolidator):
-        """A duplicate decision archives EXISTING members for deletion."""
+    def test_reject_new_no_storage_changes(self, mock_consolidator):
+        """``RejectNewDecision`` produces no inserts and no archives."""
         new_playbooks = [_make_user_playbook(0)]
         existing_playbooks = [_make_user_playbook(1, user_playbook_id=999)]
 
         dedup_output = PlaybookConsolidationOutput(
-            decisions=[_duplicate(["NEW-0", "EXISTING-0"])],
+            decisions=[
+                RejectNewDecision(new_id="NEW-0", superseded_by_existing_id=999),
+            ],
         )
 
         result, delete_ids = mock_consolidator._build_deduplicated_results(
@@ -389,8 +506,10 @@ class TestBuildDeduplicatedResults:
             agent_version="v1",
         )
 
-        assert len(result) == 1
-        assert 999 in delete_ids
+        # No insert from reject_new; safety fallback does not re-insert because
+        # the candidate was consumed by the decision.
+        assert result == []
+        assert delete_ids == []
 
     def test_safety_fallback_unhandled_playbooks(self, mock_consolidator):
         """NEW playbooks not referenced by any decision are added via safety fallback."""
@@ -425,51 +544,46 @@ class TestBuildDeduplicatedResults:
 class TestDeduplicateHappyPath:
     """Tests for the full deduplicate() flow with LLM mocks returning PlaybookConsolidationOutput."""
 
-    def test_happy_path_with_duplicates(self, mock_consolidator):
-        """Full happy path: LLM returns a duplicate decision and an independent."""
+    def test_happy_path_with_unify(self, mock_consolidator):
+        """Full happy path: LLM returns a ``unify`` decision and an ``independent``.
+
+        ``unify`` collapses one NEW into one merged row; the other NEW flows
+        through as ``independent``. Combined the batch produces two rows.
+        """
         fb0 = _make_user_playbook(0, content="do X when Y", source_interaction_ids=[10])
-        fb1 = _make_user_playbook(
-            1, content="do X when Y again", source_interaction_ids=[20]
-        )
-        fb2 = _make_user_playbook(2, content="do Z when W", source_interaction_ids=[30])
+        fb1 = _make_user_playbook(2, content="do Z when W", source_interaction_ids=[30])
 
         # No existing playbooks found via search
-        mock_consolidator.client.get_embeddings.return_value = [
-            [0.1],
-            [0.2],
-            [0.3],
-        ]
+        mock_consolidator.client.get_embeddings.return_value = [[0.1], [0.2]]
         mock_consolidator.request_context.storage.search_user_playbooks.return_value = []
 
-        # LLM merges fb0 and fb1, keeps fb2 as independent
+        # LLM unifies fb0 (no archives), keeps fb1 as independent
         mock_consolidator.client.generate_chat_response.return_value = (
             PlaybookConsolidationOutput(
                 decisions=[
-                    _duplicate(
-                        ["NEW-0", "NEW-1"],
-                        merged_content="do X",
-                        merged_trigger="when Y",
+                    _unify(
+                        "NEW-0",
+                        archive_existing_ids=[],
+                        content="do X",
+                        trigger="when Y",
                     ),
-                    IndependentDecision(new_id="NEW-2"),
+                    IndependentDecision(new_id="NEW-1"),
                 ],
             )
         )
 
         with patch.dict("os.environ", {"MOCK_LLM_RESPONSE": "false"}):
             result, delete_ids = mock_consolidator.deduplicate(
-                results=[[fb0, fb1], [fb2]], request_id="req_test", agent_version="v1"
+                results=[[fb0], [fb1]], request_id="req_test", agent_version="v1"
             )
 
-        # 1 merged + 1 independent = 2 playbooks
+        # 1 unified + 1 independent = 2 playbooks
         assert len(result) == 2
         assert delete_ids == []
-
-        # Merged playbook should have combined source_interaction_ids
-        merged = result[0]
-        assert set(merged.source_interaction_ids) == {10, 20}
-
-        # Independent playbook should be fb2
-        assert result[1].content == "do Z when W"
+        # Independent playbook should be fb1
+        assert any(r.content == "do Z when W" for r in result)
+        # Unified playbook should carry the LLM-supplied final content
+        assert any(r.content == "do X" for r in result)
 
     def test_multiple_extractor_results_nested_lists(self, mock_consolidator):
         """Multiple extractor results (nested list of lists) are flattened correctly."""
@@ -503,8 +617,12 @@ class TestDeduplicateHappyPath:
         assert len(result) == 3
         assert delete_ids == []
 
-    def test_all_playbooks_are_duplicates_of_existing(self, mock_consolidator):
-        """A NEW playbook merging with an EXISTING entry archives the existing row."""
+    def test_unify_against_existing_archives_the_existing(self, mock_consolidator):
+        """A NEW unified with an EXISTING entry archives the existing row.
+
+        Carries forward the legacy "all playbooks are duplicates of existing"
+        scenario under the new ``unify`` shape.
+        """
         fb0 = _make_user_playbook(0, content="do X when Y", source_interaction_ids=[10])
         existing_fb = _make_user_playbook(
             99,
@@ -518,14 +636,15 @@ class TestDeduplicateHappyPath:
             existing_fb
         ]
 
-        # LLM merges NEW-0 with EXISTING-0
+        # LLM unifies NEW-0 with EXISTING-0
         mock_consolidator.client.generate_chat_response.return_value = (
             PlaybookConsolidationOutput(
                 decisions=[
-                    _duplicate(
-                        ["NEW-0", "EXISTING-0"],
-                        merged_content="do X",
-                        merged_trigger="when Y",
+                    _unify(
+                        "NEW-0",
+                        archive_existing_ids=[0],
+                        content="do X",
+                        trigger="when Y",
                     ),
                 ],
             )
@@ -536,11 +655,11 @@ class TestDeduplicateHappyPath:
                 results=[[fb0]], request_id="req_test", agent_version="v1"
             )
 
-        # 1 merged playbook replaces both
+        # 1 unified playbook replaces both
         assert len(result) == 1
         # Existing playbook should be marked for deletion
         assert 500 in delete_ids
-        # Merged playbook should combine source_interaction_ids from both
+        # Unified playbook should combine source_interaction_ids from both
         assert set(result[0].source_interaction_ids) == {5, 10}
 
 
@@ -552,68 +671,34 @@ class TestDeduplicateHappyPath:
 class TestBuildDeduplicatedResultsEdgeCases:
     """Extended tests for _build_deduplicated_results edge cases."""
 
-    def test_template_fallback_to_existing_playbook(self, mock_consolidator):
-        """A duplicate decision with only EXISTING members uses an EXISTING row as template."""
-        existing_playbooks = [
-            _make_user_playbook(
-                0,
-                user_playbook_id=100,
-                playbook_name="existing_fb",
-                source_interaction_ids=[5],
-            ),
-        ]
+    def test_unify_with_unknown_existing_position_fails_apply(self, mock_consolidator):
+        """``unify`` referencing an EXISTING-{idx} that doesn't exist is a soft failure.
+
+        Per-decision try/except isolates the failure; safety fallback still
+        re-inserts the NEW candidate as-is so the data is not silently lost.
+        """
+        new_playbooks = [_make_user_playbook(0)]
 
         dedup_output = PlaybookConsolidationOutput(
-            decisions=[
-                _duplicate(
-                    ["EXISTING-0"],
-                    merged_content="merged do",
-                    merged_trigger="merged when",
-                ),
-            ],
+            decisions=[_unify("NEW-0", archive_existing_ids=[99])],
         )
 
         result, delete_ids = mock_consolidator._build_deduplicated_results(
-            new_playbooks=[],
-            existing_playbooks=existing_playbooks,
-            dedup_output=dedup_output,
-            request_id="req1",
-            agent_version="v1",
-        )
-
-        assert len(result) == 1
-        # Template should come from existing playbook
-        assert result[0].playbook_name == "existing_fb"
-        assert 100 in delete_ids
-
-    def test_template_fallback_skips_out_of_range_existing(self, mock_consolidator):
-        """A duplicate decision pointing at no resolvable members yields no row."""
-        dedup_output = PlaybookConsolidationOutput(
-            decisions=[
-                _duplicate(
-                    ["EXISTING-99"],
-                    merged_content="merged do",
-                    merged_trigger="merged when",
-                ),
-            ],
-        )
-
-        result, delete_ids = mock_consolidator._build_deduplicated_results(
-            new_playbooks=[],
+            new_playbooks=new_playbooks,
             existing_playbooks=[],
             dedup_output=dedup_output,
             request_id="req1",
             agent_version="v1",
         )
 
-        # Decision should be skipped entirely since no valid template was found
-        assert len(result) == 0
+        # Decision failed, but safety fallback adds NEW-0 as-is
+        assert len(result) == 1
         assert delete_ids == []
 
     def test_source_interaction_ids_combined_from_new_and_existing(
         self, mock_consolidator
     ):
-        """Source interaction ids combine across NEW + EXISTING duplicate members."""
+        """Source interaction ids combine across NEW + EXISTING unify members."""
         new_playbooks = [
             _make_user_playbook(0, source_interaction_ids=[1, 2]),
         ]
@@ -622,13 +707,7 @@ class TestBuildDeduplicatedResultsEdgeCases:
         ]
 
         dedup_output = PlaybookConsolidationOutput(
-            decisions=[
-                _duplicate(
-                    ["NEW-0", "EXISTING-0"],
-                    merged_content="merged",
-                    merged_trigger="merged condition",
-                ),
-            ],
+            decisions=[_unify("NEW-0", archive_existing_ids=[0], content="merged")],
         )
 
         result, delete_ids = mock_consolidator._build_deduplicated_results(
@@ -644,25 +723,28 @@ class TestBuildDeduplicatedResultsEdgeCases:
         assert 100 in delete_ids
 
     def test_source_interaction_ids_deduplication(self, mock_consolidator):
-        """Duplicate source interaction ids across members are not repeated."""
+        """Duplicate source interaction ids across NEW + EXISTING are not repeated.
+
+        Under the 4-kind redesign, ``unify`` archives only EXISTING rows (it
+        requires exactly one NEW), so this test now combines the candidate's
+        ids with an EXISTING row that shares one id.
+        """
         new_playbooks = [
             _make_user_playbook(0, source_interaction_ids=[1, 2]),
-            _make_user_playbook(1, source_interaction_ids=[2, 3]),
+        ]
+        existing_playbooks = [
+            _make_user_playbook(
+                1, user_playbook_id=200, source_interaction_ids=[2, 3]
+            ),
         ]
 
         dedup_output = PlaybookConsolidationOutput(
-            decisions=[
-                _duplicate(
-                    ["NEW-0", "NEW-1"],
-                    merged_content="merged",
-                    merged_trigger="merged cond",
-                ),
-            ],
+            decisions=[_unify("NEW-0", archive_existing_ids=[0], content="merged")],
         )
 
         result, _ = mock_consolidator._build_deduplicated_results(
             new_playbooks=new_playbooks,
-            existing_playbooks=[],
+            existing_playbooks=existing_playbooks,
             dedup_output=dedup_output,
             request_id="req1",
             agent_version="v1",
@@ -699,31 +781,6 @@ class TestBuildDeduplicatedResultsEdgeCases:
         assert "content_0" in contents
         assert "content_1" in contents
         assert "content_2" in contents
-
-    def test_invalid_item_ids_skipped_in_duplicate(self, mock_consolidator):
-        """Unparseable item ids in a duplicate decision's ``item_ids`` are skipped."""
-        new_playbooks = [_make_user_playbook(0)]
-
-        dedup_output = PlaybookConsolidationOutput(
-            decisions=[
-                _duplicate(
-                    ["BADFORMAT", "NEW-0"],
-                    merged_content="merged",
-                    merged_trigger="merged trigger",
-                ),
-            ],
-        )
-
-        result, _ = mock_consolidator._build_deduplicated_results(
-            new_playbooks=new_playbooks,
-            existing_playbooks=[],
-            dedup_output=dedup_output,
-            request_id="req1",
-            agent_version="v1",
-        )
-
-        # BADFORMAT skipped; NEW-0 absorbed into the merged row
-        assert len(result) == 1
 
     def test_independent_for_unknown_new_id_fails_apply(self, mock_consolidator):
         """``IndependentDecision`` referencing an unknown NEW id is counted as failed.

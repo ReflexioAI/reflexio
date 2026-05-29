@@ -37,7 +37,7 @@ PROMPT_VERSION_MAP: dict[str, tuple[str, str | None]] = {
     "playbook_extraction_context_expert": ("v3.1.0", None),
     "playbook_extraction_main_expert": ("v1.1.0", "playbook_extraction"),
     "playbook_aggregation": ("v2.1.0", "playbook_aggregation"),
-    "playbook_consolidation": ("v1.1.0", "playbook_consolidation"),
+    "playbook_consolidation": ("v2.0.0", "playbook_consolidation"),
     "playbook_optimizer_judge": ("v1.1.0", None),
     "profile_update_main": ("v1.0.0", "profile_extraction"),
     "profile_update_instruction_start": ("v1.0.0", None),

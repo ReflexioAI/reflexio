@@ -22,7 +22,6 @@ from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.services.deduplication_utils import (
     BaseDeduplicator,
     format_dedup_timestamp,
-    parse_item_id,
 )
 
 logger = logging.getLogger(__name__)
@@ -33,39 +32,34 @@ logger = logging.getLogger(__name__)
 # ===============================
 
 
-class DuplicateDecision(BaseModel):
-    """Multiple rows collapse into one merged row (same intent)."""
+class UnifyDecision(BaseModel):
+    """Collapse NEW (+ 0..N EXISTING) into one row with LLM-supplied content.
 
-    kind: Literal["duplicate"] = "duplicate"
-    item_ids: list[str] = Field(
-        description="Mix of 'NEW-N' / 'EXISTING-M' ids in the duplicate group"
-    )
-    merged_content: str
-    merged_trigger: str
-    merged_rationale: str
-    merged_polarity: Literal["positive", "negative"]
+    Subsumes the legacy ``duplicate`` and ``prefer_new`` kinds: the LLM picks
+    the final ``content`` / ``trigger`` / ``rationale`` / ``polarity`` and
+    lists which EXISTING ids (if any) are absorbed. An empty
+    ``archive_existing_ids`` is allowed and behaves as an insert-without-archive
+    distinguished from ``independent`` by the prompt's intent contract.
+    """
+
+    kind: Literal["unify"] = "unify"
+    new_id: str
+    archive_existing_ids: list[int] = Field(default_factory=list)
+    content: str
+    trigger: str
+    rationale: str
+    polarity: Literal["positive", "negative"]
     reason: str = ""
 
     model_config = ConfigDict(json_schema_extra={"additionalProperties": False})
 
 
-class PreferNewDecision(BaseModel):
-    """The new candidate wins: archive existing, insert new as-is."""
+class RejectNewDecision(BaseModel):
+    """The new candidate is redundant; an existing row supersedes it (storage no-op)."""
 
-    kind: Literal["prefer_new"] = "prefer_new"
+    kind: Literal["reject_new"] = "reject_new"
     new_id: str
-    existing_id: int
-    reason: str = ""
-
-    model_config = ConfigDict(json_schema_extra={"additionalProperties": False})
-
-
-class PreferExistingDecision(BaseModel):
-    """The existing row wins: drop the new candidate (storage no-op)."""
-
-    kind: Literal["prefer_existing"] = "prefer_existing"
-    new_id: str
-    existing_id: int
+    superseded_by_existing_id: int
     reason: str = ""
 
     model_config = ConfigDict(json_schema_extra={"additionalProperties": False})
@@ -102,21 +96,17 @@ class IndependentDecision(BaseModel):
 
 
 ConsolidationDecision = Annotated[
-    DuplicateDecision
-    | PreferNewDecision
-    | PreferExistingDecision
-    | DifferentiateDecision
-    | IndependentDecision,
+    UnifyDecision | RejectNewDecision | DifferentiateDecision | IndependentDecision,
     Field(discriminator="kind"),
 ]
 
 
 class PlaybookConsolidationOutput(BaseModel):
-    """Output schema for playbook consolidation as a 5-kind discriminated union.
+    """Output schema for playbook consolidation as a 4-kind discriminated union.
 
-    Each decision is one of ``DuplicateDecision``, ``PreferNewDecision``,
-    ``PreferExistingDecision``, ``DifferentiateDecision``, or
-    ``IndependentDecision``; the ``kind`` literal selects the concrete shape.
+    Each decision is one of ``UnifyDecision``, ``RejectNewDecision``,
+    ``DifferentiateDecision``, or ``IndependentDecision``; the ``kind`` literal
+    selects the concrete shape.
     """
 
     decisions: list[ConsolidationDecision] = Field(default_factory=list)
@@ -132,20 +122,18 @@ class PlaybookConsolidationResult(BaseModel):
     to proceed unaffected.
     """
 
-    duplicates_count: int = 0
-    prefer_new_count: int = 0
-    prefer_existing_count: int = 0
-    differentiates_count: int = 0
-    independents_count: int = 0
+    unify_count: int = 0
+    reject_new_count: int = 0
+    differentiate_count: int = 0
+    independent_count: int = 0
     failed_count: int = 0
 
 
 _COUNTER_BY_KIND: dict[str, str] = {
-    "duplicate": "duplicates_count",
-    "prefer_new": "prefer_new_count",
-    "prefer_existing": "prefer_existing_count",
-    "differentiate": "differentiates_count",
-    "independent": "independents_count",
+    "unify": "unify_count",
+    "reject_new": "reject_new_count",
+    "differentiate": "differentiate_count",
+    "independent": "independent_count",
 }
 
 
@@ -154,13 +142,13 @@ class ConsolidationContractError(ValueError):
 
     Raised by individual ``_apply_*`` methods when an LLM-supplied decision
     breaks a structural contract that the prompt cannot fully enforce — most
-    notably: a ``DuplicateDecision`` cannot group members with opposing
-    polarity (positive vs negative), because doing so would silently flip a
-    recommendation into a prohibition (or vice versa).
+    notably: a ``UnifyDecision`` cannot archive existing rows whose polarity
+    disagrees with the decision's chosen polarity, because doing so would
+    silently flip a recommendation into a prohibition (or vice versa).
 
     The exception carries ``handled_new_ids`` so the caller can suppress the
     safety fallback for those candidate ids; otherwise rejecting a bad
-    duplicate-merge would leave the orphan candidate to be re-inserted as an
+    unify would leave the orphan candidate to be re-inserted as an
     opposing-polarity twin of the existing row, which is exactly the state the
     contract forbids.
     """
@@ -592,13 +580,12 @@ class PlaybookConsolidator(BaseDeduplicator):
                 new_rows.append(candidate)
 
         logger.info(
-            "event=playbook_consolidation_done duplicates=%d prefer_new=%d "
-            "prefer_existing=%d differentiates=%d independents=%d failed=%d",
-            result_counters.duplicates_count,
-            result_counters.prefer_new_count,
-            result_counters.prefer_existing_count,
-            result_counters.differentiates_count,
-            result_counters.independents_count,
+            "event=playbook_consolidation_done unify=%d reject_new=%d "
+            "differentiate=%d independent=%d failed=%d",
+            result_counters.unify_count,
+            result_counters.reject_new_count,
+            result_counters.differentiate_count,
+            result_counters.independent_count,
             result_counters.failed_count,
         )
 
@@ -618,11 +605,12 @@ class PlaybookConsolidator(BaseDeduplicator):
         """Dispatch a single decision to its kind-specific apply method.
 
         Args:
-            decision: The decision to apply (one of five kinds).
+            decision: The decision to apply (one of four kinds).
             candidates_by_id: Mapping ``"NEW-N"`` -> candidate ``UserPlaybook``.
             existing_by_id: Mapping ``user_playbook_id`` -> existing playbook.
             existing_by_position: Mapping ``"EXISTING-M"`` -> existing playbook
-                (used by ``duplicate`` to resolve EXISTING-M ids in ``item_ids``).
+                (used by ``unify`` to resolve EXISTING-M ids for polarity
+                validation against ``archive_existing_ids``).
             archive_ids: Accumulator list mutated with ids to archive/delete.
             seen_archive: Accumulator set guarding ``archive_ids`` against
                 duplicate ids.
@@ -633,8 +621,8 @@ class PlaybookConsolidator(BaseDeduplicator):
             element is the set of ``"NEW-N"`` candidate ids consumed by this
             decision (used to suppress the safety fallback).
         """
-        if isinstance(decision, DuplicateDecision):
-            return self._apply_duplicate(
+        if isinstance(decision, UnifyDecision):
+            return self._apply_unify(
                 decision,
                 candidates_by_id=candidates_by_id,
                 existing_by_position=existing_by_position,
@@ -642,16 +630,8 @@ class PlaybookConsolidator(BaseDeduplicator):
                 seen_archive=seen_archive,
                 request_id=request_id,
             )
-        if isinstance(decision, PreferNewDecision):
-            return self._apply_prefer_new(
-                decision,
-                candidates_by_id=candidates_by_id,
-                existing_by_id=existing_by_id,
-                archive_ids=archive_ids,
-                seen_archive=seen_archive,
-            )
-        if isinstance(decision, PreferExistingDecision):
-            return self._apply_prefer_existing(
+        if isinstance(decision, RejectNewDecision):
+            return self._apply_reject_new(
                 decision,
                 existing_by_id=existing_by_id,
             )
@@ -668,9 +648,9 @@ class PlaybookConsolidator(BaseDeduplicator):
             return self._apply_independent(decision, candidates_by_id=candidates_by_id)
         raise ValueError(f"unknown decision kind: {decision}")
 
-    def _apply_duplicate(
+    def _apply_unify(
         self,
-        decision: DuplicateDecision,
+        decision: UnifyDecision,
         *,
         candidates_by_id: dict[str, UserPlaybook],
         existing_by_position: dict[str, UserPlaybook],
@@ -678,66 +658,54 @@ class PlaybookConsolidator(BaseDeduplicator):
         seen_archive: set[int],
         request_id: str,
     ) -> tuple[list[UserPlaybook], list[str]]:
-        """Collapse multiple rows into one merged row.
+        """Collapse NEW (+ 0..N EXISTING) into one row with LLM-supplied content.
 
-        Archives every ``EXISTING-M`` member's id and emits one new
-        ``UserPlaybook`` built from a template (first ``NEW-N`` member, or the
-        first ``EXISTING-M`` if no NEW members) with the LLM-supplied merged
-        fields. ``polarity`` is taken from ``decision.merged_polarity``.
+        Looks up each ``archive_existing_ids`` entry by position
+        (``EXISTING-{idx}``) and validates that every archived row's polarity
+        matches ``decision.polarity``. Mismatch raises
+        ``ConsolidationContractError``. The new row is built by copying
+        identity/metadata from the NEW candidate and overlaying ``content``,
+        ``trigger``, ``rationale``, and ``polarity`` from the decision.
 
         Args:
-            decision: The ``DuplicateDecision`` to apply.
+            decision: The ``UnifyDecision`` to apply.
             candidates_by_id: Mapping ``"NEW-N"`` -> candidate playbook.
             existing_by_position: Mapping ``"EXISTING-M"`` -> existing playbook.
             archive_ids: Accumulator mutated with EXISTING ids to archive.
             seen_archive: Dedup set for ``archive_ids``.
-            request_id: Request ID stamped on the merged row.
+            request_id: Request ID stamped on the unified row.
 
         Returns:
-            Tuple of ([merged_row], [consumed NEW-N ids]).
+            Tuple of ([unified_row], [consumed NEW-N ids]).
+
+        Raises:
+            KeyError: If ``decision.new_id`` does not resolve to a known
+                candidate, or if an ``archive_existing_ids`` entry has no
+                matching ``EXISTING-{idx}`` row in the position map.
+            ConsolidationContractError: If any archived row's polarity differs
+                from ``decision.polarity`` (same-trigger opposite-polarity
+                merge is the contradiction guard the linchpin contract
+                forbids).
         """
-        new_members: list[UserPlaybook] = []
+        candidate = candidates_by_id.get(decision.new_id)
+        if candidate is None:
+            raise KeyError(f"unify references unknown NEW id: {decision.new_id}")
+
         existing_members: list[UserPlaybook] = []
-        handled_new_ids: list[str] = []
-
-        for item_id in decision.item_ids:
-            parsed = parse_item_id(item_id)
-            if parsed is None:
-                continue
-            prefix, _idx = parsed
-            if prefix == "NEW" and item_id in candidates_by_id:
-                new_members.append(candidates_by_id[item_id])
-                handled_new_ids.append(item_id)
-            elif prefix == "EXISTING" and item_id in existing_by_position:
-                existing_members.append(existing_by_position[item_id])
-
-        # Linchpin contract: members of a duplicate group MUST share polarity.
-        # Opposing polarities for the same trigger are a contradiction that
-        # must route through prefer_new / prefer_existing / differentiate,
-        # never through a silent merge. Raise BEFORE mutating archive_ids so
-        # no side effect leaks when the contract is rejected.
-        member_polarities = {
-            member.polarity for member in (new_members + existing_members)
-        }
-        if len(member_polarities) > 1:
-            raise ConsolidationContractError(
-                "DuplicateDecision groups members with mismatched polarities "
-                f"{sorted(member_polarities)}; opposing-polarity pairs must use "
-                "prefer_new / prefer_existing / differentiate",
-                handled_new_ids=handled_new_ids,
-            )
-
-        template = (
-            new_members[0]
-            if new_members
-            else (existing_members[0] if existing_members else None)
-        )
-        if template is None:
-            logger.warning(
-                "event=consolidation_duplicate_no_template item_ids=%s",
-                decision.item_ids,
-            )
-            return [], []
+        for existing_position in decision.archive_existing_ids:
+            existing = existing_by_position.get(f"EXISTING-{existing_position}")
+            if existing is None:
+                raise ValueError(
+                    f"unify references unknown existing_id={existing_position}"
+                )
+            if existing.polarity != decision.polarity:
+                raise ConsolidationContractError(
+                    f"unify polarity mismatch: archived EXISTING-{existing_position} "
+                    f"has polarity={existing.polarity} but "
+                    f"decision.polarity={decision.polarity}",
+                    handled_new_ids=[decision.new_id],
+                )
+            existing_members.append(existing)
 
         for existing in existing_members:
             pid = existing.user_playbook_id
@@ -745,90 +713,58 @@ class PlaybookConsolidator(BaseDeduplicator):
                 seen_archive.add(pid)
                 archive_ids.append(pid)
 
-        combined_source_ids = self._merge_source_ids(new_members + existing_members)
-        merged_row = UserPlaybook(
+        combined_source_ids = self._merge_source_ids([candidate, *existing_members])
+        unified_row = UserPlaybook(
             user_playbook_id=0,
-            user_id=template.user_id,
-            agent_version=template.agent_version,
+            user_id=candidate.user_id,
+            agent_version=candidate.agent_version,
             request_id=request_id,
-            playbook_name=template.playbook_name,
+            playbook_name=candidate.playbook_name,
             created_at=int(datetime.now(UTC).timestamp()),
-            content=decision.merged_content,
-            trigger=decision.merged_trigger,
-            rationale=decision.merged_rationale,
-            blocking_issue=template.blocking_issue,
-            polarity=decision.merged_polarity,
-            status=template.status,
-            source=template.source,
+            content=decision.content,
+            trigger=decision.trigger,
+            rationale=decision.rationale,
+            blocking_issue=candidate.blocking_issue,
+            polarity=decision.polarity,
+            status=candidate.status,
+            source=candidate.source,
             source_interaction_ids=combined_source_ids,
         )
-        return [merged_row], handled_new_ids
+        return [unified_row], [decision.new_id]
 
-    def _apply_prefer_new(
+    def _apply_reject_new(
         self,
-        decision: PreferNewDecision,
-        *,
-        candidates_by_id: dict[str, UserPlaybook],
-        existing_by_id: dict[int, UserPlaybook],
-        archive_ids: list[int],
-        seen_archive: set[int],
-    ) -> tuple[list[UserPlaybook], list[str]]:
-        """Archive the existing row and insert the new candidate unchanged.
-
-        Args:
-            decision: The ``PreferNewDecision`` to apply.
-            candidates_by_id: Mapping ``"NEW-N"`` -> candidate playbook.
-            existing_by_id: Mapping ``user_playbook_id`` -> existing playbook.
-            archive_ids: Accumulator mutated with the existing id to archive.
-            seen_archive: Dedup set for ``archive_ids``.
-
-        Returns:
-            Tuple of ([candidate row], [consumed NEW-N id]).
-        """
-        candidate = candidates_by_id.get(decision.new_id)
-        if candidate is None:
-            raise KeyError(f"prefer_new references unknown NEW id: {decision.new_id}")
-        if (
-            decision.existing_id in existing_by_id
-            and decision.existing_id not in seen_archive
-        ):
-            seen_archive.add(decision.existing_id)
-            archive_ids.append(decision.existing_id)
-        return [candidate], [decision.new_id]
-
-    def _apply_prefer_existing(
-        self,
-        decision: PreferExistingDecision,
+        decision: RejectNewDecision,
         *,
         existing_by_id: dict[int, UserPlaybook],
     ) -> tuple[list[UserPlaybook], list[str]]:
         """No-op apply: the existing row wins and the new candidate is dropped.
 
-        If ``decision.existing_id`` does not resolve to a known existing row,
-        the decision is treated as malformed: we log a warning and return
-        ``([], [])`` so the safety fallback re-inserts the candidate rather
-        than silently dropping extracted data.
+        If ``decision.superseded_by_existing_id`` does not resolve to a known
+        existing row, the decision is treated as malformed: we log a warning
+        and return ``([], [])`` so the safety fallback re-inserts the candidate
+        rather than silently dropping extracted data.
 
         Args:
-            decision: The ``PreferExistingDecision`` to apply.
+            decision: The ``RejectNewDecision`` to apply.
             existing_by_id: Mapping ``user_playbook_id`` -> existing playbook,
-                used to validate ``decision.existing_id``.
+                used to validate ``decision.superseded_by_existing_id``.
 
         Returns:
             Tuple of ([], [consumed NEW-N id]) when the existing id resolves,
             or ``([], [])`` when the existing id is unknown.
         """
-        if decision.existing_id not in existing_by_id:
+        if decision.superseded_by_existing_id not in existing_by_id:
             logger.warning(
-                "event=consolidation_prefer_existing_invalid new_id=%s existing_id=%d",
+                "event=consolidation_reject_new_invalid new_id=%s existing_id=%d",
                 decision.new_id,
-                decision.existing_id,
+                decision.superseded_by_existing_id,
             )
             return [], []
         logger.info(
-            "event=consolidation_prefer_existing new_id=%s existing_id=%d",
+            "event=consolidation_reject_new new_id=%s existing_id=%d",
             decision.new_id,
-            decision.existing_id,
+            decision.superseded_by_existing_id,
         )
         return [], [decision.new_id]
 
@@ -940,8 +876,8 @@ class PlaybookConsolidator(BaseDeduplicator):
 
         Args:
             result: The result counters object to mutate.
-            kind: One of ``duplicate``, ``prefer_new``, ``prefer_existing``,
-                ``differentiate``, or ``independent``.
+            kind: One of ``unify``, ``reject_new``, ``differentiate``, or
+                ``independent``.
         """
         field = _COUNTER_BY_KIND[kind]
         setattr(result, field, getattr(result, field) + 1)
@@ -954,7 +890,7 @@ class PlaybookConsolidator(BaseDeduplicator):
     ) -> None:
         """Emit a structured per-decision log line for probe ingest.
 
-        Emits ``playbook_consolidation.decision`` with the 5-kind name,
+        Emits ``playbook_consolidation.decision`` with the 4-kind name,
         new/existing ids, polarity of each side, and trigger_match.
         Polarity is looked up from the candidate/existing maps; falls back
         to ``unknown`` if the playbook is not found (should not happen in
@@ -966,24 +902,37 @@ class PlaybookConsolidator(BaseDeduplicator):
             existing_by_id: Mapping ``user_playbook_id`` -> existing playbook.
         """
         kind = decision.kind
-        # DuplicateDecision uses item_ids, not a single new_id/existing_id.
-        if isinstance(decision, DuplicateDecision):
+        new_id: str = getattr(decision, "new_id", "")
+        new_pb = candidates_by_id.get(new_id)
+        new_polarity = new_pb.polarity if new_pb else "unknown"
+
+        # UnifyDecision archives by position (EXISTING-{idx}) rather than a
+        # single existing_id; log a synthetic "multi" with the chosen polarity
+        # so the probe parser sees one line per decision regardless of arity.
+        if isinstance(decision, UnifyDecision):
+            existing_id_label: str = (
+                "multi" if decision.archive_existing_ids else "none"
+            )
             logger.info(
                 "playbook_consolidation.decision kind=%s new_id=%s existing_id=%s "
                 "new_polarity=%s existing_polarity=%s trigger_match=%s",
                 kind,
-                "multi",
-                "multi",
-                "unknown",
-                "unknown",
+                new_id,
+                existing_id_label,
+                new_polarity,
+                decision.polarity,
                 "unknown",
             )
             return
-        new_id: str = getattr(decision, "new_id", "")
-        existing_id_raw: int = getattr(decision, "existing_id", 0)
-        new_pb = candidates_by_id.get(new_id)
+
+        # RejectNewDecision exposes ``superseded_by_existing_id``; the other
+        # two surviving kinds expose ``existing_id`` directly.
+        existing_id_raw: int = getattr(
+            decision,
+            "existing_id",
+            getattr(decision, "superseded_by_existing_id", 0),
+        )
         existing_pb = existing_by_id.get(existing_id_raw)
-        new_polarity = new_pb.polarity if new_pb else "unknown"
         existing_polarity = existing_pb.polarity if existing_pb else "unknown"
         trigger_match = (
             new_pb is not None
