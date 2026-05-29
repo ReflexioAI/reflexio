@@ -57,6 +57,7 @@ from reflexio.models.config_schema import (
     PlaybookConfig,
     PlaybookOptimizerConfig,
     ProfileExtractorConfig,
+    StorageConfigManagedSupabase,
     StorageConfigSQLite,
     ToolUseConfig,
 )
@@ -724,6 +725,15 @@ class TestCrossFieldValidators:
         assert config.pending_tool_call_config.enabled is False
         assert config.pending_tool_call_config.human_input_enabled is False
         assert config.pending_tool_call_config.max_pending_followups_per_scope == 10
+
+    def test_pending_tool_calls_allow_managed_supabase_storage(self):
+        """Managed Supabase is database-backed and supports pending tool calls."""
+        config = Config(
+            storage_config=StorageConfigManagedSupabase(managed_by="platform"),
+            pending_tool_call_config=PendingToolCallConfig(enabled=True),
+        )
+
+        assert config.pending_tool_call_config.enabled is True
 
     def test_pending_tool_call_config_validates_positive_limits(self):
         """PendingToolCallConfig rejects non-positive timeout and cap values."""

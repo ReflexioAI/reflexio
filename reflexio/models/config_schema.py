@@ -819,7 +819,12 @@ class Config(BaseModel):
         """Pending tool calls require a database-backed storage backend."""
         if self.pending_tool_call_config.enabled and not isinstance(
             self.storage_config,
-            (StorageConfigSQLite, StorageConfigSupabase, StorageConfigPostgres),
+            (
+                StorageConfigSQLite,
+                StorageConfigSupabase,
+                StorageConfigPostgres,
+                StorageConfigManagedSupabase,
+            ),
         ):
             raise ValueError(
                 "pending_tool_call_config.enabled requires sqlite, supabase, or postgres storage"

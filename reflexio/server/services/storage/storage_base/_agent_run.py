@@ -36,6 +36,9 @@ class PendingToolCallStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
+NOT_APPLICABLE_ANSWER = "User does not have information about this question."
+
+
 class RunToolDependencyKind(StrEnum):
     FOLLOWUP = "followup"
 
@@ -174,6 +177,14 @@ def build_pending_tool_call_dedup_key(
     return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
 
 
+def not_applicable_tool_result() -> dict[str, Any]:
+    return {"answer": NOT_APPLICABLE_ANSWER, "not_applicable": True}
+
+
+def is_not_applicable_tool_result(result: dict[str, Any] | None) -> bool:
+    return isinstance(result, dict) and result.get("not_applicable") is True
+
+
 def embedding_similarity(a: list[float] | None, b: list[float] | None) -> float | None:
     """Cosine similarity for optional embedding vectors."""
     if not a or not b or len(a) != len(b):
@@ -300,6 +311,25 @@ class AgentRunMixin:
         call_id: str,
         *,
         result: dict[str, Any],
+        resolved_at: datetime | None = None,
+        valid_for_seconds: int,
+    ) -> PendingToolCallRecord | None:
+        raise NotImplementedError(f"{type(self).__name__} does not support agent runs")
+
+    def update_resolved_pending_tool_call_result(
+        self,
+        call_id: str,
+        *,
+        result: dict[str, Any],
+        resolved_at: datetime | None = None,
+        valid_for_seconds: int,
+    ) -> PendingToolCallRecord | None:
+        raise NotImplementedError(f"{type(self).__name__} does not support agent runs")
+
+    def mark_pending_tool_call_not_applicable(
+        self,
+        call_id: str,
+        *,
         resolved_at: datetime | None = None,
         valid_for_seconds: int,
     ) -> PendingToolCallRecord | None:

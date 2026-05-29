@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import tempfile
 import time
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
@@ -34,6 +35,7 @@ from reflexio.server.services.storage.storage_base import (
     build_pending_tool_call_dedup_key,
     build_scope_hash,
     human_feedback_scope,
+    not_applicable_tool_result,
 )
 
 
@@ -188,6 +190,262 @@ def test_resolve_pending_tool_call_is_idempotent_and_schedules_resume(
     run = storage.get_agent_run("run_1")
     assert run is not None
     assert run.status == AgentRunStatus.RESUME_READY
+
+
+def test_update_resolved_pending_tool_call_answer_schedules_resume(client, storage):
+    now = datetime(2026, 5, 28, tzinfo=UTC)
+    storage.create_agent_run(_agent_run("run_1", AgentRunStatus.FINALIZED))
+    storage.create_pending_tool_call(
+        replace(
+            _pending_call("ptc_1", now=now),
+            status=PendingToolCallStatus.RESOLVED,
+            result={"answer": "Old answer", "not_applicable": True},
+            resolved_at=now - timedelta(minutes=10),
+            valid_until=now + timedelta(hours=1),
+        )
+    )
+    storage.attach_run_tool_dependency(
+        RunToolDependencyRecord(
+            run_id="run_1",
+            pending_tool_call_id="ptc_1",
+            resolved_at=now - timedelta(minutes=10),
+            consumed_at=now - timedelta(minutes=5),
+        )
+    )
+
+    response = client.patch(
+        "/api/pending_tool_calls/ptc_1/answer",
+        json={"answer": "AWS ECS", "valid_for_seconds": 3600},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["result"] == {"answer": "AWS ECS"}
+    run = storage.get_agent_run("run_1")
+    deps = storage.list_run_tool_dependencies("run_1")
+    assert run is not None
+    assert run.status == AgentRunStatus.RESUME_READY
+    assert deps[0].resolved_at is not None
+    assert deps[0].consumed_at is None
+
+
+def test_update_resolved_pending_tool_call_answer_rejects_question_text(
+    client, storage
+):
+    now = datetime(2026, 5, 28, tzinfo=UTC)
+    storage.create_pending_tool_call(
+        replace(
+            _pending_call("ptc_1", now=now),
+            status=PendingToolCallStatus.RESOLVED,
+            result={"answer": "Old answer"},
+            resolved_at=now,
+            valid_until=now + timedelta(hours=1),
+        )
+    )
+
+    response = client.patch(
+        "/api/pending_tool_calls/ptc_1/answer",
+        json={"answer": "AWS ECS", "question_text": "Can this change?"},
+    )
+
+    assert response.status_code == 422
+
+
+def test_update_resolved_pending_tool_call_answer_is_idempotent_after_conflict(
+    client,
+    storage,
+    monkeypatch,
+):
+    now = datetime(2026, 5, 28, tzinfo=UTC)
+    storage.create_pending_tool_call(
+        replace(
+            _pending_call("ptc_1", now=now),
+            status=PendingToolCallStatus.RESOLVED,
+            result={"answer": "AWS ECS"},
+            resolved_at=now,
+            valid_until=now + timedelta(hours=1),
+        )
+    )
+    monkeypatch.setattr(
+        storage,
+        "update_resolved_pending_tool_call_result",
+        MagicMock(return_value=None),
+    )
+
+    response = client.patch(
+        "/api/pending_tool_calls/ptc_1/answer",
+        json={"answer": "AWS ECS"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["result"] == {"answer": "AWS ECS"}
+
+
+def test_update_resolved_pending_tool_call_answer_conflict_rechecks_result(
+    client,
+    storage,
+    monkeypatch,
+):
+    now = datetime(2026, 5, 28, tzinfo=UTC)
+    storage.create_pending_tool_call(
+        replace(
+            _pending_call("ptc_1", now=now),
+            status=PendingToolCallStatus.RESOLVED,
+            result={"answer": "Old answer"},
+            resolved_at=now,
+            valid_until=now + timedelta(hours=1),
+        )
+    )
+    monkeypatch.setattr(
+        storage,
+        "update_resolved_pending_tool_call_result",
+        MagicMock(return_value=None),
+    )
+
+    response = client.patch(
+        "/api/pending_tool_calls/ptc_1/answer",
+        json={"answer": "AWS ECS"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == (
+        "Pending tool call already resolved with a different result"
+    )
+
+
+def test_mark_pending_tool_call_not_applicable_finalizes_only_na_run(
+    client, storage
+):
+    now = datetime(2026, 5, 28, tzinfo=UTC)
+    storage.create_agent_run(_agent_run("run_1", AgentRunStatus.FINALIZED_PENDING_TOOL))
+    storage.create_pending_tool_call(_pending_call("ptc_1", now=now))
+    storage.attach_run_tool_dependency(
+        RunToolDependencyRecord(run_id="run_1", pending_tool_call_id="ptc_1")
+    )
+
+    response = client.post("/api/pending_tool_calls/ptc_1/not_applicable", json={})
+
+    assert response.status_code == 200
+    assert response.json()["result"] == {
+        "answer": "User does not have information about this question.",
+        "not_applicable": True,
+    }
+    run = storage.get_agent_run("run_1")
+    deps = storage.list_run_tool_dependencies("run_1")
+    assert run is not None
+    assert run.status == AgentRunStatus.FINALIZED
+    assert deps[0].resolved_at is not None
+    assert deps[0].consumed_at is not None
+
+
+def test_mark_pending_tool_call_not_applicable_keeps_mixed_pending_run_pending(
+    client, storage
+):
+    now = datetime(2026, 5, 28, tzinfo=UTC)
+    second = _pending_call("ptc_2", now=now)
+    storage.create_agent_run(_agent_run("run_1", AgentRunStatus.FINALIZED_PENDING_TOOL))
+    storage.create_pending_tool_call(_pending_call("ptc_1", now=now))
+    storage.create_pending_tool_call(
+        replace(
+            second,
+            question_text="Which region?",
+            args={"question": "Which region?"},
+            dedup_key=build_pending_tool_call_dedup_key(
+                tool_name="ask_human",
+                question_text="Which region?",
+            ),
+        )
+    )
+    storage.attach_run_tool_dependency(
+        RunToolDependencyRecord(run_id="run_1", pending_tool_call_id="ptc_1")
+    )
+    storage.attach_run_tool_dependency(
+        RunToolDependencyRecord(run_id="run_1", pending_tool_call_id="ptc_2")
+    )
+
+    response = client.post("/api/pending_tool_calls/ptc_1/not_applicable", json={})
+
+    assert response.status_code == 200
+    run = storage.get_agent_run("run_1")
+    assert run is not None
+    assert run.status == AgentRunStatus.FINALIZED_PENDING_TOOL
+
+
+def test_mark_pending_tool_call_not_applicable_is_idempotent_after_conflict(
+    client,
+    storage,
+    monkeypatch,
+):
+    now = datetime(2026, 5, 28, tzinfo=UTC)
+    storage.create_pending_tool_call(
+        replace(
+            _pending_call("ptc_1", now=now),
+            status=PendingToolCallStatus.RESOLVED,
+            result=not_applicable_tool_result(),
+            resolved_at=now,
+            valid_until=now + timedelta(hours=1),
+        )
+    )
+    monkeypatch.setattr(
+        storage,
+        "mark_pending_tool_call_not_applicable",
+        MagicMock(return_value=None),
+    )
+
+    response = client.post("/api/pending_tool_calls/ptc_1/not_applicable", json={})
+
+    assert response.status_code == 200
+    assert response.json()["result"] == not_applicable_tool_result()
+
+
+def test_mark_pending_tool_call_not_applicable_conflict_rechecks_result(
+    client,
+    storage,
+    monkeypatch,
+):
+    now = datetime(2026, 5, 28, tzinfo=UTC)
+    storage.create_pending_tool_call(
+        replace(
+            _pending_call("ptc_1", now=now),
+            status=PendingToolCallStatus.RESOLVED,
+            result={"answer": "Known answer"},
+            resolved_at=now,
+            valid_until=now + timedelta(hours=1),
+        )
+    )
+    monkeypatch.setattr(
+        storage,
+        "mark_pending_tool_call_not_applicable",
+        MagicMock(return_value=None),
+    )
+
+    response = client.post("/api/pending_tool_calls/ptc_1/not_applicable", json={})
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == (
+        "Pending tool call could not be marked not applicable"
+    )
+
+
+def test_mark_pending_tool_call_not_applicable_drains_resume_worker(client, storage):
+    now = datetime(2026, 5, 28, tzinfo=UTC)
+    storage.create_pending_tool_call(_pending_call("ptc_1", now=now))
+
+    with (
+        patch(
+            "reflexio.server.api_endpoints.pending_tool_call_api."
+            "is_resumable_extraction_enabled",
+            return_value=True,
+        ),
+        patch(
+            "reflexio.server.api_endpoints.pending_tool_call_api."
+            "ExtractionResumeWorker"
+        ) as worker_cls,
+    ):
+        response = client.post("/api/pending_tool_calls/ptc_1/not_applicable", json={})
+
+    assert response.status_code == 200
+    worker_cls.assert_called_once()
+    worker_cls.return_value.drain.assert_called_once()
 
 
 def test_resolve_pending_tool_call_rejects_different_result(client, storage):

@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from reflexio.server.services.storage.storage_base import (
     PendingToolCallRecord,
@@ -64,5 +64,20 @@ class PendingToolCallListResponse(BaseModel):
 
 
 class ResolvePendingToolCallRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     result: dict[str, Any]
+    valid_for_seconds: int | None = Field(default=None, gt=0)
+
+
+class UpdatePendingToolCallAnswerRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    answer: str = Field(min_length=1)
+    valid_for_seconds: int | None = Field(default=None, gt=0)
+
+
+class MarkPendingToolCallNotApplicableRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     valid_for_seconds: int | None = Field(default=None, gt=0)

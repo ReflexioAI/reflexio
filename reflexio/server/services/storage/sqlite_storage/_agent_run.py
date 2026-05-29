@@ -17,6 +17,7 @@ from reflexio.server.services.storage.storage_base import (
     RunToolDependencyKind,
     RunToolDependencyRecord,
     embedding_similarity,
+    not_applicable_tool_result,
 )
 
 from ._base import SQLiteStorageBase, _json_dumps, _json_loads
@@ -172,6 +173,93 @@ class SQLiteAgentRunMixin:
                 now_s,
                 AgentRunStatus.FINALIZED_PENDING_TOOL.value,
                 PendingToolCallStatus.PENDING.value,
+            ),
+        )
+
+    def _mark_runs_ready_with_actionable_dependencies_unlocked(
+        self, now_s: str, *, pending_tool_call_id: str
+    ) -> None:
+        self.conn.execute(
+            """
+            UPDATE _agent_runs
+            SET status = ?,
+                updated_at = ?
+            WHERE status IN (?, ?)
+              AND EXISTS (
+                SELECT 1
+                FROM _run_tool_dependencies changed
+                WHERE changed.run_id = _agent_runs.id
+                  AND changed.pending_tool_call_id = ?
+              )
+              AND EXISTS (
+                SELECT 1
+                FROM _run_tool_dependencies d
+                JOIN _pending_tool_calls p
+                  ON p.id = d.pending_tool_call_id
+                WHERE d.run_id = _agent_runs.id
+                  AND d.resolved_at IS NOT NULL
+                  AND d.consumed_at IS NULL
+                  AND p.status = ?
+                  AND COALESCE(json_extract(p.result, '$.not_applicable'), 0) != 1
+              )
+            """,
+            (
+                AgentRunStatus.RESUME_READY.value,
+                now_s,
+                AgentRunStatus.FINALIZED.value,
+                AgentRunStatus.FINALIZED_PENDING_TOOL.value,
+                pending_tool_call_id,
+                PendingToolCallStatus.RESOLVED.value,
+            ),
+        )
+
+    def _finalize_runs_without_actionable_dependencies_unlocked(
+        self, now_s: str, *, pending_tool_call_id: str
+    ) -> None:
+        self.conn.execute(
+            """
+            UPDATE _agent_runs
+            SET status = ?,
+                finalized_at = COALESCE(finalized_at, ?),
+                updated_at = ?
+            WHERE status IN (?, ?)
+              AND EXISTS (
+                SELECT 1
+                FROM _run_tool_dependencies changed
+                WHERE changed.run_id = _agent_runs.id
+                  AND changed.pending_tool_call_id = ?
+              )
+              AND NOT EXISTS (
+                SELECT 1
+                FROM _run_tool_dependencies d
+                JOIN _pending_tool_calls p
+                  ON p.id = d.pending_tool_call_id
+                WHERE d.run_id = _agent_runs.id
+                  AND d.resolved_at IS NULL
+                  AND d.consumed_at IS NULL
+                  AND p.status = ?
+              )
+              AND NOT EXISTS (
+                SELECT 1
+                FROM _run_tool_dependencies d
+                JOIN _pending_tool_calls p
+                  ON p.id = d.pending_tool_call_id
+                WHERE d.run_id = _agent_runs.id
+                  AND d.resolved_at IS NOT NULL
+                  AND d.consumed_at IS NULL
+                  AND p.status = ?
+                  AND COALESCE(json_extract(p.result, '$.not_applicable'), 0) != 1
+              )
+            """,
+            (
+                AgentRunStatus.FINALIZED.value,
+                now_s,
+                now_s,
+                AgentRunStatus.FINALIZED_PENDING_TOOL.value,
+                AgentRunStatus.RESUME_READY.value,
+                pending_tool_call_id,
+                PendingToolCallStatus.PENDING.value,
+                PendingToolCallStatus.RESOLVED.value,
             ),
         )
 
@@ -822,6 +910,138 @@ class SQLiteAgentRunMixin:
         return self.get_pending_tool_call(call_id)
 
     @SQLiteStorageBase.handle_exceptions
+    def update_resolved_pending_tool_call_result(
+        self,
+        call_id: str,
+        *,
+        result: dict[str, Any],
+        resolved_at: datetime | None = None,
+        valid_for_seconds: int,
+    ) -> PendingToolCallRecord | None:
+        resolved = resolved_at or datetime.now(UTC)
+        valid_until = resolved + timedelta(seconds=valid_for_seconds)
+        now_s = _dt_str(resolved) or self._current_timestamp()
+        with self._lock:
+            self.conn.execute("BEGIN IMMEDIATE")
+            try:
+                cur = self.conn.execute(
+                    """
+                    UPDATE _pending_tool_calls
+                    SET result = ?, resolved_at = ?, valid_until = ?
+                    WHERE id = ?
+                      AND status = ?
+                    """,
+                    (
+                        _json_dumps(result),
+                        _dt_str(resolved),
+                        _dt_str(valid_until),
+                        call_id,
+                        PendingToolCallStatus.RESOLVED.value,
+                    ),
+                )
+                if cur.rowcount == 0:
+                    self.conn.commit()
+                    return self.get_pending_tool_call(call_id)
+                self.conn.execute(
+                    """
+                    UPDATE _pending_tool_calls
+                    SET status = ?,
+                        superseded_by = ?
+                    WHERE id != ?
+                      AND status = ?
+                      AND (valid_until IS NULL OR valid_until > ?)
+                      AND (org_id, scope_hash, tool_name, dedup_key) = (
+                        SELECT org_id, scope_hash, tool_name, dedup_key
+                        FROM _pending_tool_calls
+                        WHERE id = ?
+                      )
+                    """,
+                    (
+                        PendingToolCallStatus.SUPERSEDED.value,
+                        call_id,
+                        call_id,
+                        PendingToolCallStatus.RESOLVED.value,
+                        _dt_str(resolved),
+                        call_id,
+                    ),
+                )
+                self.conn.execute(
+                    """
+                    UPDATE _run_tool_dependencies
+                    SET resolved_at = ?,
+                        consumed_at = NULL
+                    WHERE pending_tool_call_id = ?
+                    """,
+                    (_dt_str(resolved), call_id),
+                )
+                self._mark_runs_ready_with_actionable_dependencies_unlocked(
+                    now_s, pending_tool_call_id=call_id
+                )
+            except Exception:
+                self.conn.rollback()
+                raise
+            else:
+                self.conn.commit()
+        return self.get_pending_tool_call(call_id)
+
+    @SQLiteStorageBase.handle_exceptions
+    def mark_pending_tool_call_not_applicable(
+        self,
+        call_id: str,
+        *,
+        resolved_at: datetime | None = None,
+        valid_for_seconds: int,
+    ) -> PendingToolCallRecord | None:
+        resolved = resolved_at or datetime.now(UTC)
+        valid_until = resolved + timedelta(seconds=valid_for_seconds)
+        now_s = _dt_str(resolved) or self._current_timestamp()
+        with self._lock:
+            self.conn.execute("BEGIN IMMEDIATE")
+            try:
+                cur = self.conn.execute(
+                    """
+                    UPDATE _pending_tool_calls
+                    SET status = ?, result = ?, resolved_at = ?, valid_until = ?
+                    WHERE id = ?
+                      AND status IN (?, ?)
+                    """,
+                    (
+                        PendingToolCallStatus.RESOLVED.value,
+                        _json_dumps(not_applicable_tool_result()),
+                        _dt_str(resolved),
+                        _dt_str(valid_until),
+                        call_id,
+                        PendingToolCallStatus.PENDING.value,
+                        PendingToolCallStatus.RESOLVED.value,
+                    ),
+                )
+                if cur.rowcount == 0:
+                    self.conn.commit()
+                    return self.get_pending_tool_call(call_id)
+                self.conn.execute(
+                    """
+                    UPDATE _run_tool_dependencies
+                    SET resolved_at = COALESCE(resolved_at, ?),
+                        consumed_at = ?
+                    WHERE pending_tool_call_id = ?
+                      AND consumed_at IS NULL
+                    """,
+                    (_dt_str(resolved), _dt_str(resolved), call_id),
+                )
+                self._mark_runs_ready_with_actionable_dependencies_unlocked(
+                    now_s, pending_tool_call_id=call_id
+                )
+                self._finalize_runs_without_actionable_dependencies_unlocked(
+                    now_s, pending_tool_call_id=call_id
+                )
+            except Exception:
+                self.conn.rollback()
+                raise
+            else:
+                self.conn.commit()
+        return self.get_pending_tool_call(call_id)
+
+    @SQLiteStorageBase.handle_exceptions
     def claim_ready_agent_run(
         self,
         *,
@@ -852,6 +1072,7 @@ class SQLiteAgentRunMixin:
                       AND d.resolved_at IS NOT NULL
                       AND d.consumed_at IS NULL
                       AND p.status = ?
+                      AND COALESCE(json_extract(p.result, '$.not_applicable'), 0) != 1
                   )
                 ORDER BY
                     r.org_id ASC,
@@ -998,8 +1219,23 @@ class SQLiteAgentRunMixin:
         rows = self._fetchall(
             """
             SELECT DISTINCT org_id FROM (
+                SELECT r.org_id
+                FROM _agent_runs r
+                WHERE r.status IN (?, ?)
+                  AND EXISTS (
+                    SELECT 1
+                    FROM _run_tool_dependencies d
+                    JOIN _pending_tool_calls p
+                      ON p.id = d.pending_tool_call_id
+                    WHERE d.run_id = r.id
+                      AND d.resolved_at IS NOT NULL
+                      AND d.consumed_at IS NULL
+                      AND p.status = ?
+                      AND COALESCE(json_extract(p.result, '$.not_applicable'), 0) != 1
+                  )
+                UNION
                 SELECT org_id FROM _agent_runs
-                WHERE status IN (?, ?, ?, ?, ?)
+                WHERE status IN (?, ?, ?)
                 UNION
                 SELECT org_id FROM _pending_tool_calls
                 WHERE status = ?
@@ -1012,6 +1248,7 @@ class SQLiteAgentRunMixin:
             (
                 AgentRunStatus.RESUME_READY.value,
                 AgentRunStatus.RESUMING.value,
+                PendingToolCallStatus.RESOLVED.value,
                 AgentRunStatus.FINALIZATION_FAILED.value,
                 AgentRunStatus.FINALIZING.value,
                 AgentRunStatus.AGENT_COMPLETED.value,

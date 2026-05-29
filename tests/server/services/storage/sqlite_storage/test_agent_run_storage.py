@@ -156,6 +156,146 @@ def test_sqlite_resolve_marks_linked_finalized_run_resume_ready(storage):
     assert pending.result == {"answer": "AWS ECS"}
 
 
+def test_sqlite_update_resolved_answer_resets_consumed_dependency(storage):
+    now = datetime(2026, 5, 28, tzinfo=UTC)
+    storage.create_agent_run(_agent_run("run_1", AgentRunStatus.FINALIZED))
+    storage.create_pending_tool_call(
+        replace(
+            _pending_call("ptc_1", now=now),
+            status=PendingToolCallStatus.RESOLVED,
+            result={"answer": "not applicable", "not_applicable": True},
+            resolved_at=now - timedelta(minutes=10),
+            valid_until=now + timedelta(hours=1),
+        )
+    )
+    storage.attach_run_tool_dependency(
+        RunToolDependencyRecord(
+            run_id="run_1",
+            pending_tool_call_id="ptc_1",
+            resolved_at=now - timedelta(minutes=10),
+            consumed_at=now - timedelta(minutes=5),
+        )
+    )
+
+    updated = storage.update_resolved_pending_tool_call_result(
+        "ptc_1",
+        result={"answer": "AWS ECS"},
+        resolved_at=now,
+        valid_for_seconds=3600,
+    )
+
+    run = storage.get_agent_run("run_1")
+    deps = storage.list_run_tool_dependencies("run_1")
+    assert updated is not None
+    assert updated.result == {"answer": "AWS ECS"}
+    assert run is not None
+    assert run.status == AgentRunStatus.RESUME_READY
+    assert deps[0].resolved_at == now
+    assert deps[0].consumed_at is None
+
+
+def test_sqlite_mark_not_applicable_finalizes_run_with_only_na_dependencies(storage):
+    now = datetime(2026, 5, 28, tzinfo=UTC)
+    storage.create_agent_run(_agent_run("run_1", AgentRunStatus.FINALIZED_PENDING_TOOL))
+    storage.create_pending_tool_call(_pending_call("ptc_1", now=now))
+    storage.attach_run_tool_dependency(
+        RunToolDependencyRecord(run_id="run_1", pending_tool_call_id="ptc_1")
+    )
+
+    updated = storage.mark_pending_tool_call_not_applicable(
+        "ptc_1",
+        resolved_at=now,
+        valid_for_seconds=3600,
+    )
+
+    run = storage.get_agent_run("run_1")
+    deps = storage.list_run_tool_dependencies("run_1")
+    assert updated is not None
+    assert updated.status == PendingToolCallStatus.RESOLVED
+    assert updated.result == {
+        "answer": "User does not have information about this question.",
+        "not_applicable": True,
+    }
+    assert run is not None
+    assert run.status == AgentRunStatus.FINALIZED
+    assert deps[0].resolved_at == now
+    assert deps[0].consumed_at == now
+
+
+def test_sqlite_mark_not_applicable_keeps_mixed_pending_run_waiting(storage):
+    now = datetime(2026, 5, 28, tzinfo=UTC)
+    storage.create_agent_run(_agent_run("run_1", AgentRunStatus.FINALIZED_PENDING_TOOL))
+    storage.create_pending_tool_call(_pending_call("ptc_1", now=now))
+    storage.create_pending_tool_call(
+        replace(
+            _pending_call("ptc_2", now=now),
+            question_text="Which region?",
+            args={"question": "Which region?"},
+            dedup_key=build_pending_tool_call_dedup_key(
+                tool_name="ask_human",
+                question_text="Which region?",
+            ),
+        )
+    )
+    storage.attach_run_tool_dependency(
+        RunToolDependencyRecord(run_id="run_1", pending_tool_call_id="ptc_1")
+    )
+    storage.attach_run_tool_dependency(
+        RunToolDependencyRecord(run_id="run_1", pending_tool_call_id="ptc_2")
+    )
+
+    storage.mark_pending_tool_call_not_applicable(
+        "ptc_1",
+        resolved_at=now,
+        valid_for_seconds=3600,
+    )
+
+    run = storage.get_agent_run("run_1")
+    assert run is not None
+    assert run.status == AgentRunStatus.FINALIZED_PENDING_TOOL
+
+
+def test_sqlite_mark_not_applicable_keeps_other_actionable_dependency_ready(storage):
+    now = datetime(2026, 5, 28, tzinfo=UTC)
+    storage.create_agent_run(_agent_run("run_1", AgentRunStatus.FINALIZED_PENDING_TOOL))
+    storage.create_pending_tool_call(_pending_call("ptc_1", now=now))
+    storage.create_pending_tool_call(
+        replace(
+            _pending_call("ptc_2", now=now),
+            question_text="Which region?",
+            args={"question": "Which region?"},
+            dedup_key=build_pending_tool_call_dedup_key(
+                tool_name="ask_human",
+                question_text="Which region?",
+            ),
+            status=PendingToolCallStatus.RESOLVED,
+            result={"answer": "us-west-2"},
+            resolved_at=now - timedelta(minutes=1),
+            valid_until=now + timedelta(hours=1),
+        )
+    )
+    storage.attach_run_tool_dependency(
+        RunToolDependencyRecord(run_id="run_1", pending_tool_call_id="ptc_1")
+    )
+    storage.attach_run_tool_dependency(
+        RunToolDependencyRecord(
+            run_id="run_1",
+            pending_tool_call_id="ptc_2",
+            resolved_at=now - timedelta(minutes=1),
+        )
+    )
+
+    storage.mark_pending_tool_call_not_applicable(
+        "ptc_1",
+        resolved_at=now,
+        valid_for_seconds=3600,
+    )
+
+    run = storage.get_agent_run("run_1")
+    assert run is not None
+    assert run.status == AgentRunStatus.RESUME_READY
+
+
 def test_sqlite_resolve_supersedes_older_valid_answer_for_same_dedup_key(storage):
     now = datetime(2026, 5, 28, tzinfo=UTC)
     storage.create_pending_tool_call(
@@ -262,6 +402,35 @@ def test_sqlite_claim_requires_resolved_unconsumed_dependency(storage):
     )
 
 
+def test_sqlite_claim_ignores_not_applicable_dependencies(storage):
+    now = datetime(2026, 5, 28, tzinfo=UTC)
+    storage.create_agent_run(_agent_run("run_1", AgentRunStatus.RESUME_READY))
+    storage.create_pending_tool_call(
+        replace(
+            _pending_call("ptc_1", now=now),
+            status=PendingToolCallStatus.RESOLVED,
+            result={
+                "answer": "User does not have information about this question.",
+                "not_applicable": True,
+            },
+            resolved_at=now,
+            valid_until=now + timedelta(hours=1),
+        )
+    )
+    storage.attach_run_tool_dependency(
+        RunToolDependencyRecord(
+            run_id="run_1",
+            pending_tool_call_id="ptc_1",
+            resolved_at=now,
+        )
+    )
+
+    assert (
+        storage.claim_ready_agent_run(org_id="org_1", worker_id="worker_1", now=now)
+        is None
+    )
+
+
 def test_sqlite_claim_finalization_failed_requires_committed_output(storage):
     now = datetime(2026, 5, 28, tzinfo=UTC)
     storage.create_agent_run(
@@ -327,6 +496,22 @@ def test_sqlite_list_resumable_work_org_ids_scans_all_orgs(storage):
     # org_a: a run ready to resume.
     storage.create_agent_run(
         _agent_run("ready_run", AgentRunStatus.RESUME_READY, org_id="org_a")
+    )
+    storage.create_pending_tool_call(
+        replace(
+            _pending_call("ready_call", now=now, org_id="org_a"),
+            status=PendingToolCallStatus.RESOLVED,
+            result={"answer": "AWS ECS"},
+            resolved_at=now,
+            valid_until=now + timedelta(hours=1),
+        )
+    )
+    storage.attach_run_tool_dependency(
+        RunToolDependencyRecord(
+            run_id="ready_run",
+            pending_tool_call_id="ready_call",
+            resolved_at=now,
+        )
     )
     # org_b: a run awaiting finalization retry.
     storage.create_agent_run(

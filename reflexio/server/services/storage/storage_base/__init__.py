@@ -1,6 +1,7 @@
 from reflexio.models.api_schema.domain.enums import Status
 
 from ._agent_run import (
+    NOT_APPLICABLE_ANSWER,
     AgentBinding,
     AgentRunMixin,
     AgentRunRecord,
@@ -16,7 +17,9 @@ from ._agent_run import (
     canonical_json,
     embedding_similarity,
     human_feedback_scope,
+    is_not_applicable_tool_result,
     normalize_dedup_text,
+    not_applicable_tool_result,
 )
 from ._base import BaseStorageCore, matches_status_filter
 from ._extras import ExtrasMixin
@@ -127,6 +130,7 @@ __all__ = [
     "AgentRunRecord",
     "AgentRunStatus",
     "BaseStorage",
+    "NOT_APPLICABLE_ANSWER",
     "PendingToolCallRecord",
     "PendingToolCallStatus",
     "PendingToolCallUpsertResult",
@@ -142,6 +146,8 @@ __all__ = [
     "canonical_json",
     "embedding_similarity",
     "human_feedback_scope",
+    "is_not_applicable_tool_result",
     "matches_status_filter",
+    "not_applicable_tool_result",
     "normalize_dedup_text",
 ]
