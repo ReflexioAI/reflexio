@@ -3,10 +3,12 @@ Unit tests for BaseGenerationService class.
 
 Tests the abstract base class by creating a concrete implementation for testing.
 """
+# pyright: reportAttributeAccessIssue=false, reportOptionalMemberAccess=false, reportArgumentType=false
 
 import tempfile
 import time
 from dataclasses import dataclass
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -26,6 +28,8 @@ from reflexio.server.services.base_generation_service import (
     _cheap_should_run_reject,
     _is_pure_slash_command,
 )
+from reflexio.server.services.extraction.outcome import ExtractionOutcome
+from reflexio.server.services.storage.storage_base import AgentRunStatus
 
 # ===============================
 # Test Data Classes
@@ -81,17 +85,24 @@ class MockExtractor:
 class ConcreteGenerationService(BaseGenerationService):
     """Concrete implementation of BaseGenerationService for testing."""
 
-    def __init__(self, llm_client, request_context, extractor_configs=None):
+    def __init__(
+        self, llm_client, request_context, extractor_config=None, extractor_configs=None
+    ):
         super().__init__(llm_client, request_context)
-        self._extractor_configs = extractor_configs or []
+        if extractor_config is not None:
+            self._extractor_config = extractor_config
+        elif extractor_configs:
+            self._extractor_config = extractor_configs[0]
+        else:
+            self._extractor_config = None
         self._processed_results = []
         # For upgrade/downgrade testing
         self._items_by_status = {}
         self._deleted_count = 0
         self._updated_count = 0
 
-    def _load_extractor_configs(self):
-        return self._extractor_configs
+    def _load_extractor_config(self):
+        return self._extractor_config
 
     def _load_generation_service_config(self, request):
         return request
@@ -206,175 +217,131 @@ def base_service(llm_client, request_context):
 
 
 # ===============================
-# Test: _filter_extractor_configs_by_service_config
+# Test: _filter_extractor_config_by_service_config
 # ===============================
 
 
-class TestFilterExtractorConfigsByServiceConfig:
-    """Tests for the _filter_extractor_configs_by_service_config method."""
+class TestFilterExtractorConfigByServiceConfig:
+    """Tests for the _filter_extractor_config_by_service_config method."""
 
     def test_no_filtering_without_source_attribute(self, base_service):
-        """Test that configs are not filtered if service_config has no source attribute."""
-        configs = [
-            MockExtractorConfig(extractor_name="extractor1"),
-            MockExtractorConfig(extractor_name="extractor2"),
-        ]
+        """Test that config is not filtered if service_config has no source attribute."""
+        config = MockExtractorConfig(extractor_name="extractor1")
 
-        # Create service config without source attribute
         class NoSourceConfig:
             pass
 
         service_config = NoSourceConfig()
-        result = base_service._filter_extractor_configs_by_service_config(
-            configs, service_config
+        result = base_service._filter_extractor_config_by_service_config(
+            config, service_config
         )
-        assert len(result) == 2
+        assert result is config
 
     def test_filter_by_source_enabled(self, base_service):
-        """Test filtering extractors by request_sources_enabled."""
-        configs = [
-            MockExtractorConfig(
-                extractor_name="extractor1", request_sources_enabled=["api", "web"]
-            ),
-            MockExtractorConfig(
-                extractor_name="extractor2", request_sources_enabled=["mobile"]
-            ),
-            MockExtractorConfig(extractor_name="extractor3"),  # No source restriction
-        ]
+        """Test filtering extractor by request_sources_enabled."""
+        config = MockExtractorConfig(
+            extractor_name="extractor1", request_sources_enabled=["api", "web"]
+        )
 
         service_config = MockServiceConfig(source="api")
-        result = base_service._filter_extractor_configs_by_service_config(
-            configs, service_config
+        result = base_service._filter_extractor_config_by_service_config(
+            config, service_config
         )
 
-        # extractor1 (api in enabled list) and extractor3 (no restriction) should pass
-        assert len(result) == 2
-        extractor_names = [c.extractor_name for c in result]
-        assert "extractor1" in extractor_names
-        assert "extractor3" in extractor_names
-        assert "extractor2" not in extractor_names
+        assert result is config
+
+    def test_filter_by_source_disabled(self, base_service):
+        """Test that source-mismatched extractor is filtered out."""
+        config = MockExtractorConfig(
+            extractor_name="extractor1", request_sources_enabled=["mobile"]
+        )
+
+        service_config = MockServiceConfig(source="api")
+        result = base_service._filter_extractor_config_by_service_config(
+            config, service_config
+        )
+
+        assert result is None
 
     def test_filter_by_manual_trigger(self, base_service):
-        """Test filtering extractors by manual_trigger flag."""
-        configs = [
-            MockExtractorConfig(extractor_name="extractor1", manual_trigger=True),
-            MockExtractorConfig(extractor_name="extractor2", manual_trigger=False),
-            MockExtractorConfig(extractor_name="extractor3"),  # Default False
-        ]
+        """Test filtering extractor by manual_trigger flag."""
+        config = MockExtractorConfig(extractor_name="extractor1", manual_trigger=True)
 
-        # allow_manual_trigger=False - manual_trigger=True extractors should be skipped
         service_config = MockServiceConfig(allow_manual_trigger=False)
-        result = base_service._filter_extractor_configs_by_service_config(
-            configs, service_config
+        result = base_service._filter_extractor_config_by_service_config(
+            config, service_config
         )
 
-        assert len(result) == 2
-        extractor_names = [c.extractor_name for c in result]
-        assert "extractor2" in extractor_names
-        assert "extractor3" in extractor_names
-        assert "extractor1" not in extractor_names
+        assert result is None
 
     def test_manual_trigger_allowed_when_allow_manual_trigger_true(self, base_service):
-        """Test that manual_trigger extractors are allowed when allow_manual_trigger=True."""
-        configs = [
-            MockExtractorConfig(extractor_name="extractor1", manual_trigger=True),
-            MockExtractorConfig(extractor_name="extractor2", manual_trigger=False),
-        ]
+        """Test that manual_trigger extractor is allowed when requested."""
+        config = MockExtractorConfig(extractor_name="extractor1", manual_trigger=True)
 
         service_config = MockServiceConfig(allow_manual_trigger=True)
-        result = base_service._filter_extractor_configs_by_service_config(
-            configs, service_config
+        result = base_service._filter_extractor_config_by_service_config(
+            config, service_config
         )
 
-        assert len(result) == 2
-        extractor_names = [c.extractor_name for c in result]
-        assert "extractor1" in extractor_names
-        assert "extractor2" in extractor_names
+        assert result is config
 
-    def test_filter_by_extractor_names(self, base_service):
-        """Test filtering extractors by extractor_names list in service_config."""
-        configs = [
-            MockExtractorConfig(extractor_name="extractor1"),
-            MockExtractorConfig(extractor_name="extractor2"),
-            MockExtractorConfig(extractor_name="extractor3"),
-        ]
+    def test_filter_by_matching_extractor_name(self, base_service):
+        """Test explicit extractor name filters."""
+        config = MockExtractorConfig(extractor_name="extractor1")
 
-        service_config = MockServiceConfig(extractor_names=["extractor1", "extractor3"])
-        result = base_service._filter_extractor_configs_by_service_config(
-            configs, service_config
+        service_config = MockServiceConfig(extractor_names=["extractor1"])
+        result = base_service._filter_extractor_config_by_service_config(
+            config, service_config
         )
 
-        assert len(result) == 2
-        extractor_names = [c.extractor_name for c in result]
-        assert "extractor1" in extractor_names
-        assert "extractor3" in extractor_names
-        assert "extractor2" not in extractor_names
+        assert result is config
+
+    def test_filter_by_non_matching_extractor_name(self, base_service):
+        """Test explicit extractor name mismatch filters out the config."""
+        config = MockExtractorConfig(extractor_name="extractor1")
+
+        service_config = MockServiceConfig(extractor_names=["extractor2"])
+        result = base_service._filter_extractor_config_by_service_config(
+            config, service_config
+        )
+
+        assert result is None
 
     def test_combined_filtering(self, base_service):
         """Test that all filter conditions are applied together."""
-        configs = [
-            MockExtractorConfig(
-                extractor_name="extractor1",
-                request_sources_enabled=["api"],
-                manual_trigger=False,
-            ),
-            MockExtractorConfig(
-                extractor_name="extractor2",
-                request_sources_enabled=["mobile"],
-                manual_trigger=False,
-            ),
-            MockExtractorConfig(
-                extractor_name="extractor3",
-                request_sources_enabled=["api"],
-                manual_trigger=True,
-            ),
-        ]
+        config = MockExtractorConfig(
+            extractor_name="extractor1",
+            request_sources_enabled=["api"],
+            manual_trigger=False,
+        )
 
-        # Source=api, allow_manual_trigger=False, filter by name
         service_config = MockServiceConfig(
             source="api",
             allow_manual_trigger=False,
-            extractor_names=["extractor1", "extractor3"],
+            extractor_names=["extractor1"],
         )
-        result = base_service._filter_extractor_configs_by_service_config(
-            configs, service_config
+        result = base_service._filter_extractor_config_by_service_config(
+            config, service_config
         )
 
-        # Only extractor1 passes all filters:
-        # - extractor2: wrong source
-        # - extractor3: manual_trigger=True but allow_manual_trigger=False
-        assert len(result) == 1
-        assert result[0].extractor_name == "extractor1"
-
-    def test_empty_configs_list(self, base_service):
-        """Test filtering with empty configs list."""
-        configs = []
-        service_config = MockServiceConfig(source="api")
-        result = base_service._filter_extractor_configs_by_service_config(
-            configs, service_config
-        )
-        assert len(result) == 0
+        assert result is config
 
     def test_none_source_in_service_config(self, base_service):
         """Test filtering when source is None in service_config."""
-        configs = [
-            MockExtractorConfig(
-                extractor_name="extractor1", request_sources_enabled=["api"]
-            ),
-            MockExtractorConfig(extractor_name="extractor2"),
-        ]
-
-        service_config = MockServiceConfig(source=None)
-        result = base_service._filter_extractor_configs_by_service_config(
-            configs, service_config
+        config = MockExtractorConfig(
+            extractor_name="extractor1", request_sources_enabled=["api"]
         )
 
-        # Both should pass since source is None (no filtering by source)
-        assert len(result) == 2
+        service_config = MockServiceConfig(source=None)
+        result = base_service._filter_extractor_config_by_service_config(
+            config, service_config
+        )
+
+        assert result is config
 
 
 # ===============================
-# Test: _filter_configs_by_stride
+# Test: _filter_config_by_stride
 # ===============================
 
 
@@ -385,8 +352,8 @@ class StrideEnabledService(ConcreteGenerationService):
         return "test_extractor"
 
 
-class TestFilterConfigsByStride:
-    """Tests for the _filter_configs_by_stride method."""
+class TestFilterConfigByStride:
+    """Tests for the _filter_config_by_stride method."""
 
     def _make_request_interaction_models(self, n_interactions: int):
         """Create mock RequestInteractionDataModel objects with n interactions."""
@@ -420,65 +387,46 @@ class TestFilterConfigsByStride:
             )
         ]
 
-    def test_returns_all_configs_when_no_service_name(
-        self, llm_client, request_context
-    ):
-        """Verify _filter_configs_by_stride returns all configs unchanged when
+    def test_returns_config_when_no_service_name(self, llm_client, request_context):
+        """Verify _filter_config_by_stride returns config unchanged when
         _get_extractor_state_service_name() returns None (e.g., AgentSuccessEvaluationService).
         """
         service = ConcreteGenerationService(
             llm_client,
             request_context,
-            extractor_configs=[
-                MockExtractorConfig(extractor_name="ext1"),
-                MockExtractorConfig(extractor_name="ext2"),
-            ],
+            extractor_config=MockExtractorConfig(extractor_name="ext1"),
         )
         service.service_config = MockServiceConfig()
 
-        configs = [
-            MockExtractorConfig(extractor_name="ext1"),
-            MockExtractorConfig(extractor_name="ext2"),
-        ]
-        result = service._filter_configs_by_stride(configs)
-        assert len(result) == 2
-        assert result is configs  # Same list object returned, no filtering
+        config = MockExtractorConfig(extractor_name="ext1")
+        result = service._filter_config_by_stride(config)
+        assert result is config
 
-    def test_returns_all_configs_when_auto_run_false(self, llm_client, request_context):
-        """Verify all configs pass when auto_run=False (rerun/manual mode)."""
+    def test_returns_config_when_auto_run_false(self, llm_client, request_context):
+        """Verify config passes when auto_run=False (rerun/manual mode)."""
         service = StrideEnabledService(
             llm_client,
             request_context,
-            extractor_configs=[],
         )
         service.service_config = MockServiceConfig(auto_run=False)
 
-        configs = [
-            MockExtractorConfig(extractor_name="ext1"),
-            MockExtractorConfig(extractor_name="ext2"),
-        ]
-        result = service._filter_configs_by_stride(configs)
-        assert len(result) == 2
-        assert result is configs  # Same list object returned, no filtering
+        config = MockExtractorConfig(extractor_name="ext1")
+        result = service._filter_config_by_stride(config)
+        assert result is config
 
-    def test_returns_all_configs_when_force_extraction_true(
+    def test_returns_config_when_force_extraction_true(
         self, llm_client, request_context
     ):
-        """Verify all configs pass when force_extraction=True (agent-curated publish)."""
+        """Verify config passes when force_extraction=True (agent-curated publish)."""
         service = StrideEnabledService(
             llm_client,
             request_context,
-            extractor_configs=[],
         )
         service.service_config = MockServiceConfig(force_extraction=True)
 
-        configs = [
-            MockExtractorConfig(extractor_name="ext1"),
-            MockExtractorConfig(extractor_name="ext2"),
-        ]
-        result = service._filter_configs_by_stride(configs)
-        assert len(result) == 2
-        assert result is configs  # Same list object returned, no filtering
+        config = MockExtractorConfig(extractor_name="ext1")
+        result = service._filter_config_by_stride(config)
+        assert result is config
 
     def _setup_stride_size_service(
         self, llm_client, request_context, n_new_interactions
@@ -502,66 +450,46 @@ class TestFilterConfigsByStride:
         service = StrideEnabledService(
             llm_client,
             request_context,
-            extractor_configs=[],
         )
         return service  # noqa: RET504
 
-    def test_filters_configs_when_stride_size_not_met(
-        self, llm_client, request_context
-    ):
-        """Verify configs are dropped when new interaction count < stride_size."""
+    def test_filters_config_when_stride_size_not_met(self, llm_client, request_context):
+        """Verify config is dropped when new interaction count < stride_size."""
         service = self._setup_stride_size_service(llm_client, request_context, 2)
         service.service_config = MockServiceConfig(auto_run=True, source="api")
 
-        configs = [
-            MockExtractorConfig(extractor_name="ext1"),
-        ]
-        result = service._filter_configs_by_stride(configs)
-        assert len(result) == 0
+        config = MockExtractorConfig(extractor_name="ext1")
+        result = service._filter_config_by_stride(config)
+        assert result is None
 
-    def test_passes_configs_when_stride_size_met(self, llm_client, request_context):
-        """Verify configs pass through when new interaction count >= stride_size."""
+    def test_passes_config_when_stride_size_met(self, llm_client, request_context):
+        """Verify config passes through when new interaction count >= stride_size."""
         service = self._setup_stride_size_service(llm_client, request_context, 6)
         service.service_config = MockServiceConfig(auto_run=True, source="api")
 
-        configs = [
-            MockExtractorConfig(extractor_name="ext1"),
-        ]
-        result = service._filter_configs_by_stride(configs)
-        assert len(result) == 1
-        assert result[0].extractor_name == "ext1"
+        config = MockExtractorConfig(extractor_name="ext1")
+        result = service._filter_config_by_stride(config)
+        assert result is config
 
     def test_handles_source_skip(self, llm_client, request_context):
-        """Verify configs that fail source filtering in stride_size check are skipped."""
+        """Verify config that fails source filtering in stride_size check is skipped."""
         service = self._setup_stride_size_service(llm_client, request_context, 10)
         service.service_config = MockServiceConfig(auto_run=True, source="api")
 
-        # ext1 has sources_enabled=["mobile"] but triggering source is "api" -> should be skipped
-        # ext2 has no source restriction -> should pass stride_size check
-        configs = [
-            MockExtractorConfig(
-                extractor_name="ext1", request_sources_enabled=["mobile"]
-            ),
-            MockExtractorConfig(extractor_name="ext2"),
-        ]
-        result = service._filter_configs_by_stride(configs)
-        # ext1 skipped by source filter, ext2 passes stride_size
-        assert len(result) == 1
-        assert result[0].extractor_name == "ext2"
+        config = MockExtractorConfig(
+            extractor_name="ext1", request_sources_enabled=["mobile"]
+        )
+        result = service._filter_config_by_stride(config)
+        assert result is None
 
     def test_uses_per_extractor_stride_size_override(self, llm_client, request_context):
         """Verify per-extractor stride_size override is respected."""
         service = self._setup_stride_size_service(llm_client, request_context, 3)
         service.service_config = MockServiceConfig(auto_run=True, source="api")
 
-        # 3 new interactions: ext1 (stride_size=2 -> passes), ext2 (default stride_size=5 -> fails)
-        configs = [
-            MockExtractorConfig(extractor_name="ext1", stride_size_override=2),
-            MockExtractorConfig(extractor_name="ext2"),
-        ]
-        result = service._filter_configs_by_stride(configs)
-        assert len(result) == 1
-        assert result[0].extractor_name == "ext1"
+        config = MockExtractorConfig(extractor_name="ext1", stride_size_override=2)
+        result = service._filter_config_by_stride(config)
+        assert result is config
 
 
 # ===============================
@@ -582,8 +510,8 @@ class TestShouldRunBeforeExtraction:
         service = ConcreteGenerationService(llm_client, request_context)
         service.service_config = MockServiceConfig(auto_run=True)
 
-        configs = [MockExtractorConfig(extractor_name="test")]
-        result = service._should_run_before_extraction(configs)
+        config = MockExtractorConfig(extractor_name="test")
+        result = service._should_run_before_extraction(config)
 
         assert result is True
 
@@ -607,7 +535,7 @@ class TestShouldRunBeforeExtraction:
         llm_client.generate_chat_response = llm_call_spy
 
         result = service._should_run_before_extraction(
-            [MockExtractorConfig(extractor_name="test")]
+            MockExtractorConfig(extractor_name="test")
         )
 
         assert result is True
@@ -628,10 +556,7 @@ class TestRun:
         service = ConcreteGenerationService(
             llm_client,
             request_context,
-            extractor_configs=[
-                MockExtractorConfig(extractor_name="extractor1"),
-                MockExtractorConfig(extractor_name="extractor2"),
-            ],
+            extractor_config=MockExtractorConfig(extractor_name="extractor1"),
         )
 
         request = MockServiceConfig(
@@ -642,8 +567,8 @@ class TestRun:
 
         service.run(request)
 
-        # _process_results called once with all results after all extractors complete
-        assert len(service._processed_results) == 2
+        assert len(service._processed_results) == 1
+        assert service._processed_results[0]["extractor_name"] == "extractor1"
 
     def test_run_with_none_request(self, base_service):
         """Test that run() handles None request gracefully."""
@@ -661,7 +586,7 @@ class TestRun:
         service = ConcreteGenerationService(
             llm_client,
             request_context,
-            extractor_configs=[MockExtractorConfig(extractor_name="extractor1")],
+            extractor_config=MockExtractorConfig(extractor_name="extractor1"),
         )
 
         request = MockServiceConfig(
@@ -676,11 +601,9 @@ class TestRun:
         # The mock extractor returns a result, so we expect 1 result
         assert len(service._processed_results) == 1
 
-    def test_run_without_extractor_configs(self, llm_client, request_context):
-        """Test run() when no extractor configs are available."""
-        service = ConcreteGenerationService(
-            llm_client, request_context, extractor_configs=[]
-        )
+    def test_run_without_extractor_config(self, llm_client, request_context):
+        """Test run() when no extractor config is available."""
+        service = ConcreteGenerationService(llm_client, request_context)
 
         request = MockServiceConfig(
             request_interaction_data_models=[MagicMock()],
@@ -696,7 +619,7 @@ class TestRun:
         service = ConcreteGenerationService(
             llm_client,
             request_context,
-            extractor_configs=[MockExtractorConfig(extractor_name="extractor1")],
+            extractor_config=MockExtractorConfig(extractor_name="extractor1"),
         )
 
         request = MockServiceConfig(
@@ -710,19 +633,14 @@ class TestRun:
         assert service.service_config is not None
         assert service.service_config.user_id == "test_user"
 
-    def test_run_filters_extractor_configs(self, llm_client, request_context):
+    def test_run_filters_extractor_config(self, llm_client, request_context):
         """Test that run() applies config filtering before creating extractors."""
         service = ConcreteGenerationService(
             llm_client,
             request_context,
-            extractor_configs=[
-                MockExtractorConfig(
-                    extractor_name="extractor1", request_sources_enabled=["api"]
-                ),
-                MockExtractorConfig(
-                    extractor_name="extractor2", request_sources_enabled=["mobile"]
-                ),
-            ],
+            extractor_config=MockExtractorConfig(
+                extractor_name="extractor1", request_sources_enabled=["api"]
+            ),
         )
 
         request = MockServiceConfig(
@@ -732,19 +650,36 @@ class TestRun:
 
         service.run(request)
 
-        # Only extractor1 should run since source is "api"
         assert len(service._processed_results) == 1
         assert service._processed_results[0]["extractor_name"] == "extractor1"
 
-    def test_run_raises_when_all_extractors_fail(self, llm_client, request_context):
-        """Test that run() raises when all extractors fail."""
+    def test_run_skips_filtered_extractor_config(self, llm_client, request_context):
+        """Test that run() skips source-mismatched config."""
         service = ConcreteGenerationService(
             llm_client,
             request_context,
-            extractor_configs=[
-                MockExtractorConfig(extractor_name="extractor1"),
-                MockExtractorConfig(extractor_name="extractor2"),
-            ],
+            extractor_config=MockExtractorConfig(
+                extractor_name="extractor1", request_sources_enabled=["mobile"]
+            ),
+        )
+
+        request = MockServiceConfig(
+            source="api",
+            request_interaction_data_models=[MagicMock()],
+        )
+
+        service.run(request)
+
+        assert len(service._processed_results) == 0
+
+    def test_run_raises_when_configured_extractor_fails(
+        self, llm_client, request_context
+    ):
+        """Test that run() raises when the configured extractor fails."""
+        service = ConcreteGenerationService(
+            llm_client,
+            request_context,
+            extractor_config=MockExtractorConfig(extractor_name="extractor1"),
         )
         service._create_extractor = MagicMock(
             side_effect=lambda extractor_config, service_config: MockExtractor(  # noqa: ARG005
@@ -760,35 +695,6 @@ class TestRun:
 
         with pytest.raises(ExtractorExecutionError):
             service.run(request)
-
-    def test_run_partial_success_when_some_extractors_fail(
-        self, llm_client, request_context
-    ):
-        """Test that run() succeeds when at least one extractor returns a result."""
-        service = ConcreteGenerationService(
-            llm_client,
-            request_context,
-            extractor_configs=[
-                MockExtractorConfig(extractor_name="extractor1"),
-                MockExtractorConfig(extractor_name="extractor2"),
-            ],
-        )
-        service._create_extractor = MagicMock(
-            side_effect=lambda extractor_config, service_config: MockExtractor(  # noqa: ARG005
-                result={"extractor_name": extractor_config.extractor_name},
-                should_raise=extractor_config.extractor_name == "extractor1",
-            )
-        )
-
-        request = MockServiceConfig(
-            user_id="test_user",
-            request_id="test_request",
-            request_interaction_data_models=[MagicMock()],
-        )
-
-        service.run(request)
-        assert len(service._processed_results) == 1
-        assert service._processed_results[0]["extractor_name"] == "extractor2"
 
 
 # ===============================
@@ -1819,7 +1725,7 @@ class TestCancellationInBatch:
 
 
 class TestSequentialExecution:
-    """Tests for the sequential extractor execution in _run_generation."""
+    """Tests for the single configured extractor execution in _run_generation."""
 
     def test_sequential_single_extractor(self, llm_client, request_context):
         """Test sequential execution with a single extractor."""
@@ -1840,10 +1746,10 @@ class TestSequentialExecution:
         # Single extractor should produce one result
         assert len(service._processed_results) == 1
 
-    def test_sequential_multiple_extractors_all_succeed(
+    def test_legacy_multiple_configs_run_first_config_only(
         self, llm_client, request_context
     ):
-        """Test that all extractors run sequentially and each result is saved."""
+        """Test that legacy config lists normalize to the first config."""
         call_order = []
 
         class TrackingExtractor:
@@ -1886,14 +1792,12 @@ class TestSequentialExecution:
 
         service.run(request)
 
-        # Extractors ran sequentially
-        assert call_order == ["ext1", "ext2", "ext3"]
-        # _process_results called once with all 3 results
+        assert call_order == ["ext1"]
         assert len(service._process_calls) == 1
-        assert len(service._process_calls[0]) == 3
+        assert service._process_calls[0] == [{"name": "ext1"}]
 
-    def test_sequential_partial_failure(self, llm_client, request_context):
-        """Test that failure in one extractor doesn't stop others."""
+    def test_configured_extractor_failure_raises(self, llm_client, request_context):
+        """Test that failure in the configured extractor fails the run."""
 
         class PartialService(ConcreteGenerationService):
             def __init__(self, *args, **kwargs):
@@ -1914,18 +1818,16 @@ class TestSequentialExecution:
             llm_client,
             request_context,
             extractor_configs=[
-                MockExtractorConfig(extractor_name="ext1"),
                 MockExtractorConfig(extractor_name="failing"),
                 MockExtractorConfig(extractor_name="ext3"),
             ],
         )
 
         request = MockServiceConfig(user_id="test_user", request_id="test_request")
-        service.run(request)
 
-        # _process_results called once with the 2 successful results
-        assert len(service._process_calls) == 1
-        assert len(service._process_calls[0]) == 2
+        with pytest.raises(ExtractorExecutionError):
+            service.run(request)
+        assert service._process_calls == []
 
     def test_sequential_all_fail_raises(self, llm_client, request_context):
         """Test that all extractors failing raises ExtractorExecutionError."""
@@ -2011,7 +1913,7 @@ class TestSequentialExecution:
         request = MockServiceConfig(user_id="test_user", request_id="test_request")
         service.run(request)
 
-        assert observed_incremental == [False, False, False]
+        assert observed_incremental == [False]
 
     def test_sequential_does_not_pass_previously_extracted(
         self, llm_client, request_context
@@ -2042,7 +1944,7 @@ class TestSequentialExecution:
         request = MockServiceConfig(user_id="test_user", request_id="test_request")
         service.run(request)
 
-        assert observed_previously == [[], [], []]
+        assert observed_previously == [[]]
 
     def test_sequential_none_results_do_not_create_incremental_state(
         self, llm_client, request_context
@@ -2076,12 +1978,140 @@ class TestSequentialExecution:
         request = MockServiceConfig(user_id="test_user", request_id="test_request")
         service.run(request)
 
-        assert observed_previously == [[], [], []]
+        assert observed_previously == [[]]
 
-    def test_sequential_timeout_does_not_block_following_extractors(
+    def test_sequential_completed_outcome_is_unwrapped(
+        self, llm_client, request_context
+    ):
+        """ExtractionOutcome.completed contributes its item list as one result."""
+
+        class OutcomeService(ConcreteGenerationService):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self._process_calls = []
+
+            def _create_extractor(self, extractor_config, service_config):
+                return MockExtractor(
+                    result=ExtractionOutcome.completed(
+                        [{"name": extractor_config.extractor_name}]
+                    )
+                )
+
+            def _process_results(self, results):
+                self._process_calls.append(list(results))
+
+        service = OutcomeService(
+            llm_client,
+            request_context,
+            extractor_configs=[MockExtractorConfig(extractor_name="ext1")],
+        )
+
+        request = MockServiceConfig(user_id="test_user", request_id="test_request")
+        service.run(request)
+
+        assert service._process_calls == [[[{"name": "ext1"}]]]
+
+    def test_sequential_empty_outcome_is_success_without_processing(
+        self, llm_client, request_context
+    ):
+        """ExtractionOutcome.empty is a successful run with no persisted output."""
+
+        class EmptyOutcomeService(ConcreteGenerationService):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self._process_calls = []
+
+            def _create_extractor(self, extractor_config, service_config):
+                return MockExtractor(result=ExtractionOutcome.empty())
+
+            def _process_results(self, results):
+                self._process_calls.append(list(results))
+
+        service = EmptyOutcomeService(
+            llm_client,
+            request_context,
+            extractor_configs=[MockExtractorConfig(extractor_name="ext1")],
+        )
+
+        request = MockServiceConfig(user_id="test_user", request_id="test_request")
+        service.run(request)
+
+        assert service._process_calls == []
+        assert service._last_extractor_run_stats == {
+            "total": 1,
+            "failed": 0,
+            "timed_out": 0,
+        }
+
+    def test_extraction_outcome_run_finalizes_after_processing(
+        self, llm_client, request_context
+    ):
+        """A resumable run is marked finalized only after result processing."""
+
+        class OutcomeService(ConcreteGenerationService):
+            def _create_extractor(self, extractor_config, service_config):
+                return MockExtractor(
+                    result=ExtractionOutcome.completed([{"name": "x"}], run_id="run_1")
+                )
+
+        service = OutcomeService(
+            llm_client,
+            request_context,
+            extractor_configs=[MockExtractorConfig(extractor_name="ext1")],
+        )
+        service.storage = MagicMock()
+        service.storage.get_agent_run.return_value = SimpleNamespace(
+            pending_tool_call_ids=[],
+            committed_output={"items": []},
+            finalization_attempts=0,
+        )
+
+        service.run(MockServiceConfig(user_id="test_user", request_id="test_request"))
+
+        service.storage.update_agent_run_status.assert_called_with(
+            "run_1",
+            AgentRunStatus.FINALIZED,
+            pending_tool_call_ids=[],
+        )
+
+    def test_extraction_outcome_finalization_failure_marks_run_retryable(
+        self, llm_client, request_context
+    ):
+        """Finalization failure is tracked on the agent run for later retry."""
+
+        class FailingFinalizeService(ConcreteGenerationService):
+            def _create_extractor(self, extractor_config, service_config):
+                return MockExtractor(
+                    result=ExtractionOutcome.completed([{"name": "x"}], run_id="run_1")
+                )
+
+            def _process_results(self, results):
+                raise RuntimeError("persist failed")
+
+        service = FailingFinalizeService(
+            llm_client,
+            request_context,
+            extractor_configs=[MockExtractorConfig(extractor_name="ext1")],
+        )
+        service.storage = MagicMock()
+        service.storage.get_agent_run.return_value = SimpleNamespace(
+            pending_tool_call_ids=[],
+            committed_output={"items": []},
+            finalization_attempts=0,
+        )
+
+        service.run(MockServiceConfig(user_id="test_user", request_id="test_request"))
+
+        _, status = service.storage.update_agent_run_status.call_args.args[:2]
+        kwargs = service.storage.update_agent_run_status.call_args.kwargs
+        assert status == AgentRunStatus.FINALIZATION_FAILED
+        assert kwargs["last_error"] == "persist failed"
+        assert kwargs["increment_finalization_attempts"] is True
+
+    def test_configured_extractor_timeout_fails_generation(
         self, llm_client, request_context, monkeypatch
     ):
-        """Test that timed-out extractors are skipped and later extractors still run."""
+        """Test that a timed-out configured extractor fails generation."""
         monkeypatch.setattr(
             "reflexio.server.services.base_generation_service.EXTRACTOR_TIMEOUT_SECONDS",
             0.01,
@@ -2115,10 +2145,11 @@ class TestSequentialExecution:
         )
 
         request = MockServiceConfig(user_id="test_user", request_id="test_request")
-        service.run(request)
 
-        assert len(service._process_calls) == 1
-        assert service._process_calls[0] == [{"name": "fast"}]
+        with pytest.raises(ExtractorExecutionError):
+            service.run(request)
+        assert service._process_calls == []
+        assert service._last_extractor_run_stats["total"] == 1
         assert service._last_extractor_run_stats["failed"] == 1
         assert service._last_extractor_run_stats["timed_out"] == 1
 

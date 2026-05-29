@@ -784,11 +784,13 @@ def _format_raw_turns(
         # the raw turns against an absolute anchor — without it, the LLM ends
         # up quoting the relative phrase verbatim instead of computing the
         # date (the multi-hop temporal failure pattern).
-        timestamps = [
-            getattr(i, "created_at", 0)
-            for i in sess_interactions
-            if getattr(i, "created_at", 0)
-        ]
+        timestamps: list[float] = []
+        for interaction in sess_interactions:
+            created_at = getattr(interaction, "created_at", None)
+            if isinstance(created_at, datetime):
+                timestamps.append(created_at.timestamp())
+            elif isinstance(created_at, int | float):
+                timestamps.append(float(created_at))
         date_suffix = ""
         if timestamps:
             try:

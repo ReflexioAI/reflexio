@@ -101,9 +101,7 @@ class BraintrustClient:
         Returns:
             list[dict]: Each item has at least `id` and `name`.
         """
-        return self._unwrap(
-            self._get("/v1/project", params={"org_id": workspace_id})
-        )
+        return self._unwrap(self._get("/v1/project", params={"org_id": workspace_id}))
 
     def list_experiments(
         self, project_id: str, since_ts: int | None = None
@@ -142,7 +140,10 @@ class BraintrustClient:
         self, path: str, *, params: dict[str, Any] | None = None
     ) -> httpx.Response:
         url = f"{self.base_url}{path}"
-        response = self._client.get(url, params=params)
+        try:
+            response = self._client.get(url, params=params)
+        except httpx.RequestError as e:
+            raise BraintrustHTTPError(503, str(e)) from e
         if response.status_code in (401, 403):
             raise BraintrustAuthError(
                 f"Braintrust rejected the API key (HTTP {response.status_code})"

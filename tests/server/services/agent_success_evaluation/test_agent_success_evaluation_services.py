@@ -29,6 +29,7 @@ from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.services.agent_success_evaluation.agent_success_evaluation_service import (
     AgentSuccessEvaluationService,
+    AgentSuccessGenerationServiceConfig,
 )
 from reflexio.server.services.agent_success_evaluation.agent_success_evaluation_utils import (
     AgentSuccessEvaluationRequest,
@@ -72,6 +73,66 @@ def mock_chat_completion():
         yield
 
 
+def _make_agent_success_service(temp_dir: str) -> AgentSuccessEvaluationService:
+    llm_config = LiteLLMConfig(model="gpt-4o-mini")
+    llm_client = LiteLLMClient(llm_config)
+    return AgentSuccessEvaluationService(
+        llm_client=llm_client,
+        request_context=RequestContext(org_id="0", storage_base_dir=temp_dir),
+    )
+
+
+def test_loads_singular_agent_success_config():
+    """The service loads the canonical single success evaluator config."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        service = _make_agent_success_service(temp_dir)
+        success_config = AgentSuccessConfig(
+            evaluation_name="overall_success",
+            success_definition_prompt="Evaluate task success",
+        )
+        service.configurator.set_config_by_name("agent_success_config", success_config)
+        service.service_config = AgentSuccessGenerationServiceConfig(
+            session_id="test_group",
+            agent_version="1.0",
+            request_interaction_data_models=[],
+        )
+
+        assert service._load_extractor_config() == success_config
+
+
+def test_loads_no_agent_success_config_when_disabled():
+    """A null single success evaluator config disables evaluation."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        service = _make_agent_success_service(temp_dir)
+        service.configurator.set_config_by_name("agent_success_config", None)
+        service.service_config = AgentSuccessGenerationServiceConfig(
+            session_id="test_group",
+            agent_version="1.0",
+            request_interaction_data_models=[],
+        )
+
+        assert service._load_extractor_config() is None
+
+
+def test_loads_no_agent_success_config_when_name_filter_mismatches():
+    """Regenerate filters out the configured evaluator when names do not match."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        service = _make_agent_success_service(temp_dir)
+        success_config = AgentSuccessConfig(
+            evaluation_name="overall_success",
+            success_definition_prompt="Evaluate task success",
+        )
+        service.configurator.set_config_by_name("agent_success_config", success_config)
+        service.service_config = AgentSuccessGenerationServiceConfig(
+            session_id="test_group",
+            agent_version="1.0",
+            request_interaction_data_models=[],
+            evaluation_name_filter="other_success",
+        )
+
+        assert service._load_extractor_config() is None
+
+
 def test_evaluate_agent_success(mock_chat_completion):
     """Test successful agent success evaluation generation."""
     user_id = "test_user_id"
@@ -99,7 +160,7 @@ def test_evaluate_agent_success(mock_chat_completion):
             success_definition_prompt="Evaluate if the agent successfully completed the task",
         )
         agent_success_service.configurator.set_config_by_name(
-            "agent_success_configs", [success_config]
+            "agent_success_config", success_config
         )
         agent_success_service.configurator.set_config_by_name(
             "tool_can_use",
@@ -151,7 +212,7 @@ def test_empty_interactions(mock_chat_completion):
             success_definition_prompt="Evaluate if the agent successfully completed the task",
         )
         agent_success_service.configurator.set_config_by_name(
-            "agent_success_configs", [success_config]
+            "agent_success_config", success_config
         )
 
         # Create evaluation request with empty request_interaction_data_models
@@ -236,7 +297,7 @@ def test_error_handling(mock_chat_completion):
             success_definition_prompt="Evaluate if the agent successfully completed the task",
         )
         agent_success_service.configurator.set_config_by_name(
-            "agent_success_configs", [success_config]
+            "agent_success_config", success_config
         )
 
         # Create request interaction data model
@@ -267,8 +328,8 @@ def test_error_handling(mock_chat_completion):
                 agent_success_service.run(evaluation_request)
 
 
-def test_multiple_configs(mock_chat_completion):
-    """Test that multiple configs can be processed."""
+def test_configured_success_evaluator_runs(mock_chat_completion):
+    """Test that the configured success evaluator can be processed."""
     user_id = "test_user_id"
     org_id = "0"
     interaction = Interaction(
@@ -288,17 +349,12 @@ def test_multiple_configs(mock_chat_completion):
             request_context=RequestContext(org_id=org_id, storage_base_dir=temp_dir),
         )
 
-        # Set up multiple agent success configs
-        success_config_1 = AgentSuccessConfig(
+        success_config = AgentSuccessConfig(
             evaluation_name="task_completion",
             success_definition_prompt="Evaluate if the agent completed the task",
         )
-        success_config_2 = AgentSuccessConfig(
-            evaluation_name="user_satisfaction",
-            success_definition_prompt="Evaluate if the user was satisfied",
-        )
         agent_success_service.configurator.set_config_by_name(
-            "agent_success_configs", [success_config_1, success_config_2]
+            "agent_success_config", success_config
         )
 
         # Create request interaction data model
@@ -315,7 +371,7 @@ def test_multiple_configs(mock_chat_completion):
             request_interaction_data_models=[request_interaction],
         )
 
-        # The service should run without errors with multiple configs
+        # The service should run without errors with the configured evaluator.
         agent_success_service.run(evaluation_request)
 
         # Verify the service ran successfully
@@ -350,7 +406,7 @@ def test_with_tool_configs(mock_chat_completion):
             metadata_definition_prompt="Include tool usage statistics",
         )
         agent_success_service.configurator.set_config_by_name(
-            "agent_success_configs", [success_config]
+            "agent_success_config", success_config
         )
         agent_success_service.configurator.set_config_by_name(
             "tool_can_use",
@@ -405,7 +461,7 @@ def test_none_request():
             success_definition_prompt="Evaluate if the agent successfully completed the task",
         )
         agent_success_service.configurator.set_config_by_name(
-            "agent_success_configs", [success_config]
+            "agent_success_config", success_config
         )
 
         # Run with None request
@@ -456,7 +512,7 @@ def test_agent_success_message_construction_with_interactions():
             success_definition_prompt="Evaluate if the agent successfully completed the task",
         )
         agent_success_service.configurator.set_config_by_name(
-            "agent_success_configs", [success_config]
+            "agent_success_config", success_config
         )
         agent_success_service.configurator.set_config_by_name(
             "tool_can_use",

@@ -176,7 +176,12 @@ def start(
     ] = False,
     storage: Annotated[
         str | None,
-        typer.Option(help="Data storage backend: sqlite (default), supabase, or disk"),
+        typer.Option(
+            help=(
+                "Storage backend to use (sqlite, supabase, or postgres). "
+                "See deployment docs for additional enterprise backends."
+            )
+        ),
     ] = None,
     workers: Annotated[
         int,

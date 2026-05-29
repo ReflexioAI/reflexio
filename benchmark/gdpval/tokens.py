@@ -12,16 +12,17 @@ a straight dict diff.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
-from typing import Any, Mapping
+from typing import Any
 
 from benchmark.gdpval.config import ensure_openspace_importable
 
 ensure_openspace_importable()
 
 # Re-export OpenSpace's TokenTracker for the OpenSpace adapter.
-from gdpval_bench.token_tracker import TokenTracker  # noqa: E402
 from gdpval_bench.token_tracker import TokenStats as OpenSpaceTokenStats  # noqa: E402
+from gdpval_bench.token_tracker import TokenTracker  # noqa: E402
 
 
 @dataclass
@@ -62,7 +63,9 @@ def stats_from_openspace(os_stats: OpenSpaceTokenStats) -> TokenStats:
     )
 
 
-def stats_from_hermes_result(result: Mapping[str, Any], wall_time_sec: float) -> TokenStats:
+def stats_from_hermes_result(
+    result: Mapping[str, Any], wall_time_sec: float
+) -> TokenStats:
     """Build TokenStats from Hermes's `run_conversation()` result dict.
 
     Hermes returns usage totals directly in the result dict (see `run_agent.py:10202`),
@@ -83,7 +86,9 @@ def stats_from_hermes_result(result: Mapping[str, Any], wall_time_sec: float) ->
         TokenStats: Normalized stats in the same shape as the OpenSpace path.
     """
     prompt = int(result.get("input_tokens") or result.get("prompt_tokens") or 0)
-    completion = int(result.get("output_tokens") or result.get("completion_tokens") or 0)
+    completion = int(
+        result.get("output_tokens") or result.get("completion_tokens") or 0
+    )
     return TokenStats(
         prompt_tokens=prompt,
         completion_tokens=completion,
@@ -94,4 +99,9 @@ def stats_from_hermes_result(result: Mapping[str, Any], wall_time_sec: float) ->
     )
 
 
-__all__ = ["TokenStats", "TokenTracker", "stats_from_openspace", "stats_from_hermes_result"]
+__all__ = [
+    "TokenStats",
+    "TokenTracker",
+    "stats_from_openspace",
+    "stats_from_hermes_result",
+]

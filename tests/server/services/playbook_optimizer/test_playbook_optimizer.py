@@ -6,7 +6,7 @@ import threading
 import time
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -19,7 +19,6 @@ from reflexio.models.api_schema.domain import (
     PlaybookOptimizationJob,
     PlaybookStatus,
     Request,
-    Status,
     UserPlaybook,
 )
 from reflexio.models.config_schema import (
@@ -1221,32 +1220,6 @@ def test_commit_thresholds_only_count_winner_candidate(tmp_path):
         0.95,
         config,
     )
-
-
-def test_disk_any_user_playbook_lookup_none_status_filter_means_all(tmp_path):
-    from reflexio.server.services.storage.disk_storage import DiskStorage
-
-    with patch(
-        "reflexio.server.services.storage.disk_storage._base.QMDClient",
-        return_value=MagicMock(),
-    ):
-        storage = DiskStorage(org_id="opt-disk-test", base_dir=str(tmp_path))
-
-    archived = UserPlaybook(
-        user_playbook_id=7,
-        user_id="u1",
-        agent_version="v1",
-        request_id="r1",
-        playbook_name="support",
-        content="archived source",
-        status=Status.ARCHIVED,
-    )
-    storage.save_user_playbooks([archived])
-
-    assert storage.get_user_playbooks_by_ids_any_user([7], status_filter=None) == [
-        archived
-    ]
-    assert storage.get_user_playbooks_by_ids_any_user([7], status_filter=[None]) == []
 
 
 def test_scheduler_applies_abort_cooldown():

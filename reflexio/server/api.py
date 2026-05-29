@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import logging
 import threading
 from collections.abc import Callable
@@ -154,6 +155,7 @@ from reflexio.server._auth import DEFAULT_ORG_ID, default_get_org_id
 from reflexio.server.api_endpoints import (
     account_api,
     health_api,
+    pending_tool_call_api,
     publisher_api,
     stall_state_api,
 )
@@ -171,39 +173,6 @@ from reflexio.server.services.agent_success_evaluation.regen_jobs import (
 )
 
 logger = logging.getLogger(__name__)
-
-_LEGACY_EXTRACTOR_PARTIAL_FIELDS: tuple[tuple[str, str], ...] = (
-    ("profile_extractor_configs", "profile_extractor_config"),
-    ("user_playbook_extractor_configs", "user_playbook_extractor_config"),
-    ("playbook_configs", "user_playbook_extractor_config"),
-    ("agent_feedback_configs", "user_playbook_extractor_config"),
-)
-
-
-def _normalize_legacy_extractor_partial(partial: dict[str, Any]) -> dict[str, Any]:
-    """Map legacy extractor list keys in PATCH payloads to canonical fields.
-
-    ``/api/update_config`` merges partial payloads over a serialized existing
-    config that already contains canonical extractor fields. Schema-level
-    migration cannot tell which keys came from the client, so legacy keys are
-    normalized before the merge.
-    """
-    normalized = dict(partial)
-    for legacy_name, canonical_name in _LEGACY_EXTRACTOR_PARTIAL_FIELDS:
-        if legacy_name not in partial:
-            continue
-        if canonical_name in partial or canonical_name in normalized:
-            normalized.pop(legacy_name, None)
-            continue
-
-        legacy_value = partial[legacy_name]
-        if isinstance(legacy_value, list):
-            normalized[canonical_name] = legacy_value[0] if legacy_value else None
-        else:
-            normalized[canonical_name] = legacy_value
-        normalized.pop(legacy_name, None)
-    return normalized
-
 
 # Re-exported for backwards compatibility — callers that did
 # ``from reflexio.server.api import default_get_org_id`` or ``DEFAULT_ORG_ID``
@@ -1257,8 +1226,7 @@ def update_config(
     existing = reflexio.request_context.configurator.get_config().model_dump(
         mode="python"
     )
-    normalized_partial = _normalize_legacy_extractor_partial(partial)
-    merged = {**existing, **normalized_partial}
+    merged = {**existing, **partial}
     # Pydantic validates the merged shape and rejects unknown / malformed
     # fields here, before storage validation in reflexio.set_config.
     # Convert ValidationError into 422 so callers passing a partial that
@@ -1583,8 +1551,10 @@ def get_playbook_application_stats(
     response_model=ConnectBraintrustResponse,
     response_model_exclude_none=True,
 )
+@limiter.limit("10/minute")
 def braintrust_connect(
-    request: ConnectBraintrustRequest,
+    request: Request,
+    payload: ConnectBraintrustRequest,
     org_id: str = Depends(default_get_org_id),
 ) -> ConnectBraintrustResponse:
     """Step 1: validate the Braintrust API key and list workspaces/projects.
@@ -1592,7 +1562,8 @@ def braintrust_connect(
     Persists nothing — call `/api/braintrust/select_projects` to commit.
 
     Args:
-        request (ConnectBraintrustRequest): Customer's Braintrust API key.
+        request (Request): The HTTP request object for rate limiting.
+        payload (ConnectBraintrustRequest): Customer's Braintrust API key.
         org_id (str): Resolved by auth dependency.
 
     Returns:
@@ -1600,7 +1571,7 @@ def braintrust_connect(
             with a message when the key is rejected.
     """
     reflexio = get_reflexio(org_id=org_id)
-    return reflexio.braintrust_connect(request)
+    return reflexio.braintrust_connect(payload)
 
 
 @core_router.post(
@@ -1608,8 +1579,10 @@ def braintrust_connect(
     response_model=SelectProjectsResponse,
     response_model_exclude_none=True,
 )
+@limiter.limit("10/minute")
 def braintrust_select_projects(
-    request: SelectProjectsRequest,
+    request: Request,
+    payload: SelectProjectsRequest,
     org_id: str = Depends(default_get_org_id),
 ) -> SelectProjectsResponse:
     """Step 2: commit the Braintrust connection with selected projects.
@@ -1618,7 +1591,7 @@ def braintrust_select_projects(
     connection until the customer calls DELETE /api/braintrust/connection.
     """
     reflexio = get_reflexio(org_id=org_id)
-    return reflexio.braintrust_select_projects(request)
+    return reflexio.braintrust_select_projects(payload)
 
 
 @core_router.get(
@@ -1635,7 +1608,9 @@ def braintrust_status(
 
 
 @core_router.delete("/api/braintrust/connection")
+@limiter.limit("10/minute")
 def braintrust_disconnect(
+    request: Request,
     org_id: str = Depends(default_get_org_id),
 ) -> dict:
     """Delete the persisted Braintrust connection for the org.
@@ -1656,7 +1631,9 @@ def braintrust_disconnect(
     response_model=SyncBraintrustResponse,
     response_model_exclude_none=True,
 )
+@limiter.limit("10/minute")
 def braintrust_sync(
+    request: Request,
     org_id: str = Depends(default_get_org_id),
 ) -> SyncBraintrustResponse:
     """Trigger a one-shot sync of Braintrust scorer outputs.
@@ -1725,11 +1702,8 @@ def start_regenerate(
     """
     reflexio = get_reflexio(org_id=org_id)
     config = reflexio.request_context.configurator.get_config()
-    known = (
-        {c.evaluation_name for c in (config.agent_success_configs or [])}
-        if config is not None
-        else set()
-    )
+    success_config = getattr(config, "agent_success_config", None)
+    known = {success_config.evaluation_name} if success_config else set()
     if payload.evaluation_name not in known:
         raise HTTPException(
             status_code=400,
@@ -2015,11 +1989,8 @@ def grade_on_demand(
     """
     reflexio = get_reflexio(org_id=org_id)
     config = reflexio.request_context.configurator.get_config()
-    known = (
-        {c.evaluation_name for c in (config.agent_success_configs or [])}
-        if config is not None
-        else set()
-    )
+    success_config = getattr(config, "agent_success_config", None)
+    known = {success_config.evaluation_name} if success_config else set()
     if payload.evaluation_name not in known:
         raise HTTPException(
             status_code=400,
@@ -2555,12 +2526,44 @@ def create_app(
     from collections.abc import AsyncIterator
     from contextlib import asynccontextmanager
 
+    from reflexio.server._auth import default_get_org_id
+    from reflexio.server.api_endpoints.request_context import RequestContext
     from reflexio.server.llm.model_defaults import validate_llm_availability
+    from reflexio.server.services.extraction.resume_scheduler import (
+        maybe_start_resume_scheduler,
+    )
+
+    def _lifespan_org_id() -> str:
+        if get_org_id is None:
+            return default_get_org_id()
+        try:
+            signature = inspect.signature(get_org_id)
+        except (TypeError, ValueError):
+            return default_get_org_id()
+        if signature.parameters:
+            return default_get_org_id()
+        try:
+            return str(get_org_id())
+        except Exception:
+            logger.exception("Failed to resolve lifespan org_id; using default org")
+            return default_get_org_id()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
         validate_llm_availability()
-        yield
+        # The scheduler discovers every org with resumable work each tick and
+        # drives a per-org worker with org-scoped claims, so it is not limited
+        # to the bootstrap org. The bootstrap org is only used to read config
+        # and to seed cross-org discovery.
+        scheduler = maybe_start_resume_scheduler(
+            lambda org_id: RequestContext(org_id=org_id),
+            bootstrap_org_id=_lifespan_org_id(),
+        )
+        try:
+            yield
+        finally:
+            if scheduler is not None:
+                scheduler.stop()
 
     app = FastAPI(docs_url="/docs", lifespan=lifespan)
 
@@ -2621,6 +2624,9 @@ def create_app(
 
     # Include stall_state routes
     app.include_router(stall_state_api.router)
+
+    # Include pending tool call routes
+    app.include_router(pending_tool_call_api.router)
 
     # Include additional routers
     for router in additional_routers or []:

@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
+from typing import Any
 
 import typer
 
@@ -16,7 +17,7 @@ from .paths import reflexio_home
 
 logger = logging.getLogger(__name__)
 
-_VALID_STORAGE_BACKENDS = frozenset({"sqlite", "supabase", "postgres", "disk"})
+_VALID_STORAGE_BACKENDS = frozenset({"sqlite", "supabase", "postgres"})
 _DEFAULT_ORG_ID = "self-host-org"
 _DEFAULT_STORAGE = "sqlite"
 
@@ -29,7 +30,6 @@ def _ensure_type_map() -> dict[type, str]:
     """Lazy-build the StorageConfig type → backend string map."""
     if not _TYPE_TO_BACKEND:
         from reflexio.models.config_schema import (
-            StorageConfigDisk,
             StorageConfigPostgres,
             StorageConfigSQLite,
             StorageConfigSupabase,
@@ -40,7 +40,6 @@ def _ensure_type_map() -> dict[type, str]:
                 StorageConfigSQLite: "sqlite",
                 StorageConfigSupabase: "supabase",
                 StorageConfigPostgres: "postgres",
-                StorageConfigDisk: "disk",
             }
         )
     return _TYPE_TO_BACKEND
@@ -81,7 +80,7 @@ def load_storage_from_config(
         base_dir: Override base directory (for testing). If None, uses ~/.reflexio/.
 
     Returns:
-        Storage backend string ("sqlite", "supabase", "postgres", "disk") or None if
+        Storage backend string ("sqlite", "supabase", "postgres") or None if
         no config file exists or storage_config is unset.
     """
     config_path = _config_dir(base_dir) / f"config_{org_id}.json"
@@ -119,12 +118,11 @@ def save_storage_to_config(
     All other fields (extractors, api_keys, etc.) are preserved.
 
     Args:
-        storage_type: Backend name ("sqlite", "supabase", "postgres", "disk").
+        storage_type: Backend name ("sqlite", "supabase", "postgres").
         org_id: Organization ID for the config file name.
         base_dir: Override base directory (for testing).
     """
     from reflexio.models.config_schema import (
-        StorageConfigDisk,
         StorageConfigPostgres,
         StorageConfigSQLite,
         StorageConfigSupabase,
@@ -157,23 +155,45 @@ def save_storage_to_config(
             db_url = os.environ.get("REFLEXIO_POSTGRES_DB_URL", "")
             schema = os.environ.get("REFLEXIO_POSTGRES_SCHEMA", "").strip()
             pool_size_raw = os.environ.get("REFLEXIO_POSTGRES_POOL_SIZE", "").strip()
-            pool_size = int(pool_size_raw) if pool_size_raw.isdigit() else 5
-            if db_url:
-                config.storage_config = StorageConfigPostgres(
-                    db_url=db_url,
-                    schema=schema or None,
-                    pool_size=pool_size,
+            pool_size = int(pool_size_raw) if pool_size_raw.isdigit() else 10
+            if pool_size < 1:
+                logger.warning(
+                    "Invalid REFLEXIO_POSTGRES_POOL_SIZE=%r (must be >= 1); using default",
+                    pool_size_raw,
                 )
+                pool_size = 10
+            timeout_raw = os.environ.get(
+                "REFLEXIO_POSTGRES_POOL_ACQUIRE_TIMEOUT", ""
+            ).strip()
+            postgres_kwargs: dict[str, Any] = {
+                "db_url": db_url,
+                "schema": schema or None,
+                "pool_size": pool_size,
+            }
+            if timeout_raw:
+                try:
+                    timeout = float(timeout_raw)
+                except ValueError:
+                    logger.warning(
+                        "Invalid REFLEXIO_POSTGRES_POOL_ACQUIRE_TIMEOUT=%r; using default",
+                        timeout_raw,
+                    )
+                else:
+                    if timeout > 0:
+                        postgres_kwargs["pool_acquire_timeout"] = timeout
+                    else:
+                        logger.warning(
+                            "Invalid REFLEXIO_POSTGRES_POOL_ACQUIRE_TIMEOUT=%r "
+                            "(must be > 0); using default",
+                            timeout_raw,
+                        )
+            if db_url:
+                config.storage_config = StorageConfigPostgres(**postgres_kwargs)
             else:
                 logger.warning(
                     "Postgres storage requested but REFLEXIO_POSTGRES_DB_URL "
                     "is missing. Keeping existing storage config."
                 )
-        case "disk":
-            env_dir = os.environ.get("LOCAL_STORAGE_PATH", "").strip()
-            fallback_dir = str(_config_dir(base_dir).parent / "disk-storage")
-            dir_path = env_dir or fallback_dir
-            config.storage_config = StorageConfigDisk(dir_path=dir_path)
         case _:
             raise ValueError(f"Unknown storage type: {storage_type}")
 
@@ -209,8 +229,26 @@ def resolve_storage(cli_flag: str | None) -> str:
 
     # 2. Environment variable (from .env or shell)
     env_val = os.environ.get("REFLEXIO_STORAGE")
-    if env_val and env_val.lower() in _VALID_STORAGE_BACKENDS:
-        return env_val.lower()
+    if env_val:
+        env_norm = env_val.lower()
+        if env_norm in _VALID_STORAGE_BACKENDS:
+            return env_norm
+        # Unknown value (e.g., legacy "disk" or a typo). Don't silently fall
+        # through — surface a warning so operators notice that their env var
+        # was ignored. Common case: REFLEXIO_STORAGE=disk left over from a
+        # release that supported the now-removed disk backend.
+        legacy_hint = (
+            " The 'disk' backend was removed; migrate to 'sqlite'."
+            if env_norm == "disk"
+            else ""
+        )
+        logger.warning(
+            "Ignoring unsupported REFLEXIO_STORAGE=%r; falling back to config/default. "
+            "Supported: %s.%s",
+            env_val,
+            ", ".join(sorted(_VALID_STORAGE_BACKENDS)),
+            legacy_hint,
+        )
 
     # 3. Config file
     from_config = load_storage_from_config()

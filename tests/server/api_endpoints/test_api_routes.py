@@ -290,17 +290,11 @@ class TestUpdateConfigRoute:
         mock_invalidate.assert_not_called()
 
     # -----------------------------------------------------------------
-    # R4: nested-list shallow-merge semantics
+    # R4: singular nested config patch semantics
     # -----------------------------------------------------------------
     @staticmethod
     def _existing_config_with_playbooks() -> Config:
-        """Existing config with a populated playbook_configs list.
-
-        Used to verify that PATCHing a *sibling* top-level field
-        preserves the playbook_configs list, AND that PATCHing
-        playbook_configs itself replaces the list wholesale (no deep
-        merge into list-of-dicts).
-        """
+        """Existing config with a populated playbook extractor config."""
         from reflexio.models.config_schema import (
             PlaybookAggregatorConfig,
             UserPlaybookExtractorConfig,
@@ -319,40 +313,29 @@ class TestUpdateConfigRoute:
             ),
         )
 
-    def test_nested_list_replaced_wholesale_when_patched(
+    def test_nested_config_requires_full_payload_when_patched(
         self, client, patched_reflexio, mock_reflexio
     ):
-        """PATCH'ing user_playbook_extractor_configs replaces the entire list.
-
-        This is the documented behavior: a partial that re-sends the
-        list with only one inner field set will FAIL Pydantic
-        validation because required fields like ``extractor_name`` and
-        ``extraction_definition_prompt`` are missing. Callers cannot
-        target a nested-list field with PATCH; they must round-trip
-        the full config via /api/get_config + /api/set_config.
-        """
+        """PATCH'ing a nested config requires the full nested object."""
         existing = self._existing_config_with_playbooks()
         self._wire_mock(mock_reflexio, existing)
 
-        # Try to flip just the inner aggregation_config field
         response = client.post(
             "/api/update_config",
             json={
-                "user_playbook_extractor_configs": [
-                    {"aggregation_config": {"min_cluster_size": 99}}
-                ]
+                "user_playbook_extractor_config": {
+                    "aggregation_config": {"min_cluster_size": 99}
+                }
             },
         )
 
-        # Pydantic rejects: extractor_name and extraction_definition_prompt
-        # are required on UserPlaybookExtractorConfig.
         assert response.status_code in {400, 422}, response.text
         mock_reflexio.set_config.assert_not_called()
 
-    def test_legacy_extractor_lists_override_existing_canonical_config(
+    def test_singular_extractor_configs_override_existing_config(
         self, client, patched_reflexio, mock_reflexio
     ):
-        """Legacy list fields in PATCH payloads update the singular config."""
+        """Singular extractor config fields update existing config."""
         existing = self._existing_config()
         self._wire_mock(mock_reflexio, existing)
 
@@ -360,18 +343,14 @@ class TestUpdateConfigRoute:
             response = client.post(
                 "/api/update_config",
                 json={
-                    "profile_extractor_configs": [
-                        {
-                            "extractor_name": "legacy_profile",
-                            "extraction_definition_prompt": "profile facts",
-                        }
-                    ],
-                    "user_playbook_extractor_configs": [
-                        {
-                            "extractor_name": "legacy_playbook",
-                            "extraction_definition_prompt": "playbook rules",
-                        }
-                    ],
+                    "profile_extractor_config": {
+                        "extractor_name": "profile",
+                        "extraction_definition_prompt": "profile facts",
+                    },
+                    "user_playbook_extractor_config": {
+                        "extractor_name": "playbook",
+                        "extraction_definition_prompt": "playbook rules",
+                    },
                 },
             )
 
@@ -379,14 +358,14 @@ class TestUpdateConfigRoute:
         merged = mock_reflexio.set_config.call_args.args[0]
         assert isinstance(merged, Config)
         assert merged.profile_extractor_config is not None
-        assert merged.profile_extractor_config.extractor_name == "legacy_profile"
+        assert merged.profile_extractor_config.extractor_name == "profile"
         assert merged.user_playbook_extractor_config is not None
-        assert merged.user_playbook_extractor_config.extractor_name == "legacy_playbook"
+        assert merged.user_playbook_extractor_config.extractor_name == "playbook"
 
-    def test_legacy_empty_extractor_lists_disable_existing_extractors(
+    def test_null_extractor_configs_disable_existing_extractors(
         self, client, patched_reflexio, mock_reflexio
     ):
-        """Legacy empty list fields in PATCH payloads disable extraction."""
+        """Null singular extractor config fields disable extraction."""
         existing = self._existing_config_with_playbooks()
         self._wire_mock(mock_reflexio, existing)
 
@@ -394,8 +373,8 @@ class TestUpdateConfigRoute:
             response = client.post(
                 "/api/update_config",
                 json={
-                    "profile_extractor_configs": [],
-                    "user_playbook_extractor_configs": [],
+                    "profile_extractor_config": None,
+                    "user_playbook_extractor_config": None,
                 },
             )
 
@@ -404,18 +383,11 @@ class TestUpdateConfigRoute:
         assert isinstance(merged, Config)
         assert merged.profile_extractor_config is None
         assert merged.user_playbook_extractor_config is None
-        assert merged.profile_extractor_configs == []
-        assert merged.user_playbook_extractor_configs == []
 
-    def test_nested_list_preserved_when_patching_unrelated_field(
+    def test_nested_config_preserved_when_patching_unrelated_field(
         self, client, patched_reflexio, mock_reflexio
     ):
-        """PATCH'ing a sibling field preserves the existing playbook_configs.
-
-        This is the safe pattern: top-level-shallow-merge means any
-        key not in the partial keeps its current value, including
-        nested-list fields like ``user_playbook_extractor_configs``.
-        """
+        """PATCH'ing a sibling field preserves the existing playbook config."""
         existing = self._existing_config_with_playbooks()
         self._wire_mock(mock_reflexio, existing)
 
@@ -430,10 +402,8 @@ class TestUpdateConfigRoute:
         assert isinstance(merged, Config)
         # The partial-touched field changed
         assert merged.extraction_backend == "agentic"
-        # Untouched nested list is preserved
-        assert merged.user_playbook_extractor_configs is not None
-        assert len(merged.user_playbook_extractor_configs) == 1
-        agg = merged.user_playbook_extractor_configs[0].aggregation_config
+        assert merged.user_playbook_extractor_config is not None
+        agg = merged.user_playbook_extractor_config.aggregation_config
         assert agg is not None
         assert agg.min_cluster_size == 2
         assert agg.clustering_similarity == 0.45

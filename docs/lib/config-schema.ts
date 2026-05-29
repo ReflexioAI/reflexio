@@ -103,9 +103,9 @@ export interface ReflexioConfig {
   storage_config: StorageConfigSQLite | null;
   agent_context_prompt: string | null;
   tool_can_use: ToolUseConfig[] | null;
-  profile_extractor_configs: ProfileExtractorConfig[] | null;
-  user_playbook_extractor_configs: UserPlaybookExtractorConfig[] | null;
-  agent_success_configs: AgentSuccessConfig[] | null;
+  profile_extractor_config: ProfileExtractorConfig | null;
+  user_playbook_extractor_config: UserPlaybookExtractorConfig | null;
+  agent_success_config: AgentSuccessConfig | null;
   extraction_preset: ExtractionPreset | null;
   window_size: number;
   stride_size: number;
@@ -135,9 +135,9 @@ export function defaultConfig(): ReflexioConfig {
     storage_config: { db_path: null },
     agent_context_prompt: null,
     tool_can_use: null,
-    profile_extractor_configs: [],
-    user_playbook_extractor_configs: [],
-    agent_success_configs: null,
+    profile_extractor_config: defaultProfileExtractor(),
+    user_playbook_extractor_config: defaultPlaybookExtractor(),
+    agent_success_config: null,
     extraction_preset: null,
     window_size: 10,
     stride_size: 5,
@@ -247,22 +247,36 @@ export function serializeConfig(config: ReflexioConfig): unknown {
     return Object.values(out).some((v) => v !== null) ? out : null;
   };
 
+  const cleanExtractor = <
+    T extends {
+      extraction_definition_prompt: string;
+      context_prompt: string | null;
+      metadata_definition_prompt: string | null;
+    },
+  >(
+    extractor: T | null,
+  ): T | null => {
+    if (!extractor || extractor.extraction_definition_prompt.trim() === "") {
+      return null;
+    }
+    return {
+      ...extractor,
+      context_prompt: clean(extractor.context_prompt),
+      metadata_definition_prompt: clean(extractor.metadata_definition_prompt),
+    };
+  };
+
   return {
     storage_config: config.storage_config
       ? { db_path: clean(config.storage_config.db_path) }
       : null,
     agent_context_prompt: clean(config.agent_context_prompt),
     tool_can_use: config.tool_can_use?.length ? config.tool_can_use : null,
-    profile_extractor_configs: config.profile_extractor_configs?.length
-      ? config.profile_extractor_configs
-      : null,
-    user_playbook_extractor_configs: config.user_playbook_extractor_configs
-      ?.length
-      ? config.user_playbook_extractor_configs
-      : null,
-    agent_success_configs: config.agent_success_configs?.length
-      ? config.agent_success_configs
-      : null,
+    profile_extractor_config: cleanExtractor(config.profile_extractor_config),
+    user_playbook_extractor_config: cleanExtractor(
+      config.user_playbook_extractor_config,
+    ),
+    agent_success_config: config.agent_success_config,
     extraction_preset: config.extraction_preset,
     window_size: config.window_size,
     stride_size: config.stride_size,

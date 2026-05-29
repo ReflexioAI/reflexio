@@ -6,6 +6,7 @@ Exercises both branches: env-var unset (passthrough) and env-var set
 
 import os
 
+import pytest
 from cryptography.fernet import Fernet
 
 from reflexio.server.services.braintrust import _encryption
@@ -32,12 +33,11 @@ def test_roundtrip_with_fernet_key(monkeypatch) -> None:
 
 
 def test_invalid_key_in_env_is_discarded(monkeypatch) -> None:
-    """A malformed Fernet key is dropped; passthrough behavior remains."""
+    """A malformed Fernet key fails closed instead of storing plaintext."""
     monkeypatch.setenv("REFLEXIO_FERNET_KEYS", "not-a-real-fernet-key")
     _encryption._reset_for_test()
-    # No valid keys → passthrough.
-    assert _encryption.encrypt("v") == "v"
-    assert _encryption.decrypt("v") == "v"
+    with pytest.raises(RuntimeError, match="no valid Fernet keys"):
+        _encryption.encrypt("v")
 
 
 def test_finalize_env_cleanup() -> None:

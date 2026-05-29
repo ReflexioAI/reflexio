@@ -137,6 +137,13 @@ class TestSetConfig:
     def test_set_config_dict_input(self):
         """Accepts dict input and auto-converts to Config."""
         mixin = _make_config_mixin()
+        # normalize_config_payload is identity in the base configurator; the
+        # MagicMock default would otherwise return another MagicMock and break
+        # the **kwargs expansion below.
+        payload = {"storage_config": {"db_path": "/var/data/test.db"}}
+        mixin.request_context.configurator.normalize_config_payload.return_value = (
+            payload
+        )
         mixin.request_context.configurator.get_current_storage_configuration.return_value = MagicMock()
         mixin.request_context.configurator.is_storage_config_ready_to_test.return_value = True
         mixin.request_context.configurator.test_and_init_storage_config.return_value = (
@@ -144,9 +151,7 @@ class TestSetConfig:
             None,
         )
 
-        response = mixin.set_config(
-            {"storage_config": {"dir_path": "/var/data/test_storage"}}
-        )
+        response = mixin.set_config(payload)
 
         assert response.success is True
 

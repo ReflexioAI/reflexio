@@ -54,7 +54,7 @@ def _add_request_with_interactions(
 ) -> str:
     """Create a request + 2 interactions (1 user, 1 assistant); return request_id."""
     request_id = request_id or f"req_{uuid.uuid4().hex[:8]}"
-    ts = created_at or _now()
+    ts = _now() if created_at is None else created_at
     store.add_request(
         Request(
             request_id=request_id,
@@ -114,7 +114,9 @@ def test_count_sessions_with_shadow_content_counts_distinct_sessions(
     _add_request_with_interactions(
         storage, session_id="s_shadow_2", shadow_content_for_assistant="shadow-c"
     )
-    _add_request_with_interactions(storage, session_id="s_no_shadow")  # no shadow → not counted
+    _add_request_with_interactions(
+        storage, session_id="s_no_shadow"
+    )  # no shadow → not counted
     assert storage.count_sessions_with_shadow_content(0, _now() + 60) == 2
 
 
@@ -213,9 +215,7 @@ def test_braintrust_connection_get_unknown_returns_none(
 
 
 def test_braintrust_connection_delete_is_idempotent(storage: SQLiteStorage) -> None:
-    conn = BraintrustConnection(
-        org_id="org_z", api_key_enc="k", workspace_id="ws"
-    )
+    conn = BraintrustConnection(org_id="org_z", api_key_enc="k", workspace_id="ws")
     storage.save_braintrust_connection(conn)
     storage.delete_braintrust_connection("org_z")
     assert storage.get_braintrust_connection("org_z") is None

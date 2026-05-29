@@ -85,6 +85,18 @@ def test_http_error_raises_with_status_and_body() -> None:
     assert "boom" in exc.value.body
 
 
+def test_transport_error_is_normalized_to_http_error() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:  # noqa: ARG001
+        raise httpx.ConnectError("network down")
+
+    c = BraintrustClient("sk")
+    c._client = httpx.Client(transport=httpx.MockTransport(handler))
+    with pytest.raises(BraintrustHTTPError) as exc:
+        c.list_organizations()
+    assert exc.value.status_code == 503
+    assert "network down" in exc.value.body
+
+
 def test_auth_error_is_raised_on_403_for_list_methods() -> None:
     c = BraintrustClient("sk-bad")
     c._client = _stub_client(status=403, payload={"error": "Forbidden"})

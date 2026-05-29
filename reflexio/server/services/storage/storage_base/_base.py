@@ -66,7 +66,6 @@ class BaseStorageCore(ABC):  # noqa: B024
         return False
 
     # `count_retention_target_rows` and `delete_oldest_retention_target_rows`
-    # are provided by `RetentionMixin` for SQL backends and overridden in
-    # `DiskStorageBase` for file-based storage. They are intentionally not
-    # declared abstract here so that test doubles can subclass BaseStorage
-    # without implementing retention.
+    # are provided by concrete backends via `RetentionMixin`. They are
+    # intentionally not declared abstract here so that test doubles can
+    # subclass BaseStorage without implementing retention.

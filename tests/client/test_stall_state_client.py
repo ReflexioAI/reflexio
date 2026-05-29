@@ -1,4 +1,5 @@
 """ReflexioClient methods for stall_state."""
+# pyright: reportAttributeAccessIssue=false
 
 from __future__ import annotations
 

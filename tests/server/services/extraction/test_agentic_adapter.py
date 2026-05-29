@@ -12,6 +12,7 @@ Additional unit tests cover:
 - agent failure degrades to warning (not exception)
 - hard violations surface as warnings
 """
+# pyright: reportCallIssue=false
 
 from __future__ import annotations
 
@@ -1047,4 +1048,4 @@ def test_config_default_skip_extraction_axes_is_empty():
     an empty skip_extraction_axes set, so existing behaviour is unchanged.
     """
     cfg = Config(storage_config=StorageConfigSQLite())
-    assert cfg.skip_extraction_axes == set()
+    assert cfg.skip_extraction_axes == []

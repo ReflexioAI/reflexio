@@ -51,6 +51,8 @@ from reflexio.models.config_schema import (
     Config,
     CustomEndpointConfig,
     OpenAIConfig,
+    PendingToolCallConfig,
+    PendingToolCallToolOverrideConfig,
     PlaybookAggregatorConfig,
     PlaybookConfig,
     PlaybookOptimizerConfig,
@@ -330,13 +332,6 @@ class TestNonEmptyStr:
         """API key fields reject empty strings."""
         with pytest.raises(ValidationError, match="empty"):
             AnthropicConfig(api_key="")
-
-    def test_storage_config_non_empty(self):
-        """StorageConfigDisk.dir_path rejects empty string."""
-        from reflexio.models.config_schema import StorageConfigDisk
-
-        with pytest.raises(ValidationError, match="empty"):
-            StorageConfigDisk(dir_path="")
 
     def test_tool_use_config_non_empty(self):
         """ToolUseConfig fields reject empty strings."""
@@ -703,14 +698,8 @@ class TestCrossFieldValidators:
             config.user_playbook_extractor_config.extractor_name
             == "default_playbook_extractor"
         )
-        assert config.profile_extractor_configs is not None
-        assert config.user_playbook_extractor_configs is not None
-        assert config.profile_extractor_configs[0].extractor_name == (
-            "default_profile_extractor"
-        )
-        assert config.user_playbook_extractor_configs[0].extractor_name == (
-            "default_playbook_extractor"
-        )
+        assert isinstance(config.pending_tool_call_config, PendingToolCallConfig)
+        assert config.pending_tool_call_config.enabled is False
 
     def test_config_disables_extractors_when_null(self):
         """Config: null extractor fields explicitly disable extraction."""
@@ -722,23 +711,49 @@ class TestCrossFieldValidators:
 
         assert config.profile_extractor_config is None
         assert config.user_playbook_extractor_config is None
-        assert config.profile_extractor_configs == []
-        assert config.user_playbook_extractor_configs == []
 
-    def test_config_disables_extractors_when_legacy_lists_are_empty(self):
-        """Config: empty legacy extractor lists explicitly disable extraction."""
+    def test_config_defaults_pending_tool_call_config_when_null(self):
+        """Config: null pending_tool_call_config falls back to disabled defaults."""
         config = Config.model_validate(
             {
                 "storage_config": StorageConfigSQLite(),
-                "profile_extractor_configs": [],
-                "user_playbook_extractor_configs": [],
+                "pending_tool_call_config": None,
             }
         )
 
-        assert config.profile_extractor_config is None
-        assert config.user_playbook_extractor_config is None
-        assert config.profile_extractor_configs == []
-        assert config.user_playbook_extractor_configs == []
+        assert config.pending_tool_call_config.enabled is False
+        assert config.pending_tool_call_config.human_input_enabled is False
+        assert config.pending_tool_call_config.max_pending_followups_per_scope == 10
+
+    def test_pending_tool_call_config_validates_positive_limits(self):
+        """PendingToolCallConfig rejects non-positive timeout and cap values."""
+        with pytest.raises(ValidationError):
+            PendingToolCallConfig(max_pending_followups_per_scope=0)
+        with pytest.raises(ValidationError):
+            PendingToolCallConfig(pending_ttl_seconds=0)
+        with pytest.raises(ValidationError):
+            PendingToolCallConfig(similarity_threshold=1.1)
+
+    def test_pending_tool_call_config_applies_per_tool_overrides(self):
+        """Per-tool overrides leave base config untouched and resolve by tool name."""
+        config = PendingToolCallConfig(
+            pending_ttl_seconds=60,
+            similarity_threshold=0.2,
+            tool_overrides={
+                "ask_human": PendingToolCallToolOverrideConfig(
+                    pending_ttl_seconds=120,
+                    similarity_threshold=0.8,
+                )
+            },
+        )
+
+        ask_human = config.for_tool("ask_human")
+        other_tool = config.for_tool("other_tool")
+
+        assert ask_human.pending_ttl_seconds == 120
+        assert ask_human.similarity_threshold == 0.8
+        assert other_tool.pending_ttl_seconds == 60
+        assert other_tool.similarity_threshold == 0.2
 
     def test_config_accepts_singular_extractor_fields(self):
         """Config: singular extractor fields validate and serialize."""
@@ -764,71 +779,22 @@ class TestCrossFieldValidators:
         assert (
             dumped["user_playbook_extractor_config"]["extractor_name"] == "playbook_one"
         )
-        assert dumped["profile_extractor_configs"][0]["extractor_name"] == "profile_one"
-        assert (
-            dumped["user_playbook_extractor_configs"][0]["extractor_name"]
-            == "playbook_one"
+
+    def test_config_accepts_singular_agent_success_config(self):
+        """Config: singular agent success config validates and serializes."""
+        success_config = AgentSuccessConfig(
+            evaluation_name="success_one",
+            success_definition_prompt="task completed",
         )
 
-    def test_config_legacy_multi_extractor_lists_keep_first_entry(self):
-        """Config: legacy multi-entry extractor lists are accepted first-entry wins."""
-        config = Config.model_validate(
-            {
-                "storage_config": StorageConfigSQLite(),
-                "profile_extractor_configs": [
-                    ProfileExtractorConfig(
-                        extractor_name="profile_first",
-                        extraction_definition_prompt="first",
-                    ),
-                    ProfileExtractorConfig(
-                        extractor_name="profile_second",
-                        extraction_definition_prompt="second",
-                    ),
-                ],
-                "user_playbook_extractor_configs": [
-                    PlaybookConfig(
-                        extractor_name="playbook_first",
-                        extraction_definition_prompt="first",
-                    ),
-                    PlaybookConfig(
-                        extractor_name="playbook_second",
-                        extraction_definition_prompt="second",
-                    ),
-                ],
-            }
+        config = Config(
+            storage_config=StorageConfigSQLite(),
+            agent_success_config=success_config,
         )
 
-        assert config.profile_extractor_config is not None
-        assert config.profile_extractor_config.extractor_name == "profile_first"
-        assert [c.extractor_name for c in config.profile_extractor_configs] == [
-            "profile_first"
-        ]
-        assert config.user_playbook_extractor_config is not None
-        assert config.user_playbook_extractor_config.extractor_name == "playbook_first"
-        assert [c.extractor_name for c in config.user_playbook_extractor_configs] == [
-            "playbook_first"
-        ]
-
-    def test_config_accepts_legacy_playbook_aliases_first_entry_wins(self):
-        """Config: legacy playbook alias fields normalize to the singular extractor."""
-        config = Config.model_validate(
-            {
-                "storage_config": StorageConfigSQLite(),
-                "playbook_configs": [
-                    {
-                        "playbook_name": "legacy_first",
-                        "playbook_definition_prompt": "first",
-                    },
-                    {
-                        "playbook_name": "legacy_second",
-                        "playbook_definition_prompt": "second",
-                    },
-                ],
-            }
-        )
-
-        assert config.user_playbook_extractor_config is not None
-        assert config.user_playbook_extractor_config.extractor_name == "legacy_first"
+        dumped = config.model_dump()
+        assert config.agent_success_config == success_config
+        assert dumped["agent_success_config"]["evaluation_name"] == "success_one"
 
     def test_playbook_optimizer_accepts_webhook_backend(self):
         """PlaybookOptimizerConfig: webhook-only assistant backend is valid."""

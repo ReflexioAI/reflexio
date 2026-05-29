@@ -481,83 +481,72 @@ export function ProfileExtractorsSection({
   value,
   setConfig,
 }: {
-  value: ProfileExtractorConfig[] | null;
+  value: ProfileExtractorConfig | null;
   setConfig: SetConfig;
 }) {
-  const items = value ?? [];
-  const updateAt = (idx: number, patch: Partial<ProfileExtractorConfig>) => {
+  const enabled = value !== null;
+  const current = value ?? defaultProfileExtractor();
+  const update = (patch: Partial<ProfileExtractorConfig>) => {
     setConfig((prev) => {
-      const next = [...(prev.profile_extractor_configs ?? [])];
-      next[idx] = { ...next[idx], ...patch };
-      return { ...prev, profile_extractor_configs: next };
+      const existing = prev.profile_extractor_config ?? defaultProfileExtractor();
+      return { ...prev, profile_extractor_config: { ...existing, ...patch } };
     });
   };
-  const removeAt = (idx: number) => {
-    setConfig((prev) => {
-      const next = [...(prev.profile_extractor_configs ?? [])];
-      next.splice(idx, 1);
-      return { ...prev, profile_extractor_configs: next };
-    });
-  };
-  const add = () => {
+  const setEnabled = (checked: boolean) => {
     setConfig((prev) => ({
       ...prev,
-      profile_extractor_configs: [
-        ...(prev.profile_extractor_configs ?? []),
-        defaultProfileExtractor(),
-      ],
+      profile_extractor_config: checked
+        ? (prev.profile_extractor_config ?? defaultProfileExtractor())
+        : null,
     }));
   };
 
   return (
     <Section
-      title="Profile extractors"
-      description="Extract user-level memory (role, preferences, stable facts). At least one is required; a default is seeded if you remove them all."
+      title="Profile extractor"
+      description="Extract user-level memory (role, preferences, stable facts)."
     >
-      {items.length === 0 && (
-        <p className="text-xs text-muted-foreground italic">
-          No profile extractors configured — a default will be seeded on save.
-        </p>
-      )}
-      {items.map((item, idx) => (
-        <ListItemCard
-          key={idx}
-          title={item.extractor_name || "(unnamed)"}
-          onRemove={() => removeAt(idx)}
-        >
+      <SwitchField
+        checked={enabled}
+        onCheckedChange={setEnabled}
+        label="Enable profile extraction"
+        hint="Runs one configured profile extractor for user-level memory."
+      />
+      {enabled && (
+        <div className="space-y-4">
           <FieldRow label="Name">
             <TextField
-              value={item.extractor_name}
-              onChange={(v) => updateAt(idx, { extractor_name: v ?? "" })}
+              value={current.extractor_name}
+              onChange={(v) => update({ extractor_name: v ?? "" })}
             />
           </FieldRow>
           <FieldRow label="Extraction definition prompt">
             <TextAreaField
-              value={item.extraction_definition_prompt}
+              value={current.extraction_definition_prompt}
               onChange={(v) =>
-                updateAt(idx, { extraction_definition_prompt: v ?? "" })
+                update({ extraction_definition_prompt: v ?? "" })
               }
               rows={4}
             />
           </FieldRow>
           <FieldRow label="Context prompt (optional)">
             <TextAreaField
-              value={item.context_prompt}
-              onChange={(v) => updateAt(idx, { context_prompt: v })}
+              value={current.context_prompt}
+              onChange={(v) => update({ context_prompt: v })}
               rows={2}
             />
           </FieldRow>
           <SwitchField
             label="Manual trigger only"
             hint="Skip automatic extraction — only run when triggered manually."
-            checked={item.manual_trigger}
-            onCheckedChange={(c) => updateAt(idx, { manual_trigger: c })}
+            checked={current.manual_trigger}
+            onCheckedChange={(c) => update({ manual_trigger: c })}
           />
           <div className="grid grid-cols-2 gap-3">
             <FieldRow label="Window size override">
               <NumberField
-                value={item.window_size_override}
-                onChange={(v) => updateAt(idx, { window_size_override: v })}
+                value={current.window_size_override}
+                onChange={(v) => update({ window_size_override: v })}
                 min={1}
                 allowNull
                 placeholder="(inherit)"
@@ -565,17 +554,16 @@ export function ProfileExtractorsSection({
             </FieldRow>
             <FieldRow label="Stride override">
               <NumberField
-                value={item.stride_size_override}
-                onChange={(v) => updateAt(idx, { stride_size_override: v })}
+                value={current.stride_size_override}
+                onChange={(v) => update({ stride_size_override: v })}
                 min={1}
                 allowNull
                 placeholder="(inherit)"
               />
             </FieldRow>
           </div>
-        </ListItemCard>
-      ))}
-      <AddButton label="Add profile extractor" onClick={add} />
+        </div>
+      )}
     </Section>
   );
 }
@@ -584,79 +572,68 @@ export function PlaybookExtractorsSection({
   value,
   setConfig,
 }: {
-  value: UserPlaybookExtractorConfig[] | null;
+  value: UserPlaybookExtractorConfig | null;
   setConfig: SetConfig;
 }) {
-  const items = value ?? [];
-  const updateAt = (
-    idx: number,
-    patch: Partial<UserPlaybookExtractorConfig>
-  ) => {
+  const enabled = value !== null;
+  const current = value ?? defaultPlaybookExtractor();
+  const update = (patch: Partial<UserPlaybookExtractorConfig>) => {
     setConfig((prev) => {
-      const next = [...(prev.user_playbook_extractor_configs ?? [])];
-      next[idx] = { ...next[idx], ...patch };
-      return { ...prev, user_playbook_extractor_configs: next };
+      const existing =
+        prev.user_playbook_extractor_config ?? defaultPlaybookExtractor();
+      return {
+        ...prev,
+        user_playbook_extractor_config: { ...existing, ...patch },
+      };
     });
   };
-  const removeAt = (idx: number) => {
-    setConfig((prev) => {
-      const next = [...(prev.user_playbook_extractor_configs ?? [])];
-      next.splice(idx, 1);
-      return { ...prev, user_playbook_extractor_configs: next };
-    });
-  };
-  const add = () => {
+  const setEnabled = (checked: boolean) => {
     setConfig((prev) => ({
       ...prev,
-      user_playbook_extractor_configs: [
-        ...(prev.user_playbook_extractor_configs ?? []),
-        defaultPlaybookExtractor(),
-      ],
+      user_playbook_extractor_config: checked
+        ? (prev.user_playbook_extractor_config ?? defaultPlaybookExtractor())
+        : null,
     }));
   };
 
   return (
     <Section
-      title="Playbook extractors"
-      description="Extract behavioral rules for the agent (what works, what doesn't). Defaults are seeded if empty."
+      title="Playbook extractor"
+      description="Extract behavioral rules for the agent (what works, what doesn't)."
       defaultOpen={false}
     >
-      {items.length === 0 && (
-        <p className="text-xs text-muted-foreground italic">
-          No playbook extractors configured — a default will be seeded on save.
-        </p>
-      )}
-      {items.map((item, idx) => (
-        <ListItemCard
-          key={idx}
-          title={item.extractor_name || "(unnamed)"}
-          onRemove={() => removeAt(idx)}
-        >
+      <SwitchField
+        checked={enabled}
+        onCheckedChange={setEnabled}
+        label="Enable playbook extraction"
+        hint="Runs one configured playbook extractor for agent guidance."
+      />
+      {enabled && (
+        <div className="space-y-4">
           <FieldRow label="Name">
             <TextField
-              value={item.extractor_name}
-              onChange={(v) => updateAt(idx, { extractor_name: v ?? "" })}
+              value={current.extractor_name}
+              onChange={(v) => update({ extractor_name: v ?? "" })}
             />
           </FieldRow>
           <FieldRow label="Extraction definition prompt">
             <TextAreaField
-              value={item.extraction_definition_prompt}
+              value={current.extraction_definition_prompt}
               onChange={(v) =>
-                updateAt(idx, { extraction_definition_prompt: v ?? "" })
+                update({ extraction_definition_prompt: v ?? "" })
               }
               rows={4}
             />
           </FieldRow>
           <FieldRow label="Context prompt (optional)">
             <TextAreaField
-              value={item.context_prompt}
-              onChange={(v) => updateAt(idx, { context_prompt: v })}
+              value={current.context_prompt}
+              onChange={(v) => update({ context_prompt: v })}
               rows={2}
             />
           </FieldRow>
-        </ListItemCard>
-      ))}
-      <AddButton label="Add playbook extractor" onClick={add} />
+        </div>
+      )}
     </Section>
   );
 }
@@ -665,31 +642,23 @@ export function AgentSuccessSection({
   value,
   setConfig,
 }: {
-  value: AgentSuccessConfig[] | null;
+  value: AgentSuccessConfig | null;
   setConfig: SetConfig;
 }) {
-  const items = value ?? [];
-  const updateAt = (idx: number, patch: Partial<AgentSuccessConfig>) => {
+  const enabled = value !== null;
+  const current = value ?? defaultAgentSuccess();
+  const update = (patch: Partial<AgentSuccessConfig>) => {
     setConfig((prev) => {
-      const next = [...(prev.agent_success_configs ?? [])];
-      next[idx] = { ...next[idx], ...patch };
-      return { ...prev, agent_success_configs: next };
+      const existing = prev.agent_success_config ?? defaultAgentSuccess();
+      return { ...prev, agent_success_config: { ...existing, ...patch } };
     });
   };
-  const removeAt = (idx: number) => {
-    setConfig((prev) => {
-      const next = [...(prev.agent_success_configs ?? [])];
-      next.splice(idx, 1);
-      return { ...prev, agent_success_configs: next.length ? next : null };
-    });
-  };
-  const add = () => {
+  const setEnabled = (checked: boolean) => {
     setConfig((prev) => ({
       ...prev,
-      agent_success_configs: [
-        ...(prev.agent_success_configs ?? []),
-        defaultAgentSuccess(),
-      ],
+      agent_success_config: checked
+        ? (prev.agent_success_config ?? defaultAgentSuccess())
+        : null,
     }));
   };
 
@@ -699,34 +668,31 @@ export function AgentSuccessSection({
       description="Define what 'success' means for the agent so Reflexio can score interactions."
       defaultOpen={false}
     >
-      {items.length === 0 && (
-        <p className="text-xs text-muted-foreground italic">
-          No evaluations configured.
-        </p>
-      )}
-      {items.map((item, idx) => (
-        <ListItemCard
-          key={idx}
-          title={item.evaluation_name || "(unnamed)"}
-          onRemove={() => removeAt(idx)}
-        >
+      <SwitchField
+        checked={enabled}
+        onCheckedChange={setEnabled}
+        label="Enable success evaluation"
+        hint="Runs the configured evaluator for sampled interactions."
+      />
+      {enabled && (
+        <div className="space-y-4">
           <FieldRow label="Evaluation name">
             <TextField
-              value={item.evaluation_name}
-              onChange={(v) => updateAt(idx, { evaluation_name: v ?? "" })}
+              value={current.evaluation_name}
+              onChange={(v) => update({ evaluation_name: v ?? "" })}
             />
           </FieldRow>
           <FieldRow label="Success definition prompt">
             <TextAreaField
-              value={item.success_definition_prompt}
+              value={current.success_definition_prompt}
               onChange={(v) =>
-                updateAt(idx, { success_definition_prompt: v ?? "" })
+                update({ success_definition_prompt: v ?? "" })
               }
               rows={4}
             />
           </FieldRow>
           <FieldRow
-            label={`Sampling rate (${(item.sampling_rate * 100).toFixed(0)}%)`}
+            label={`Sampling rate (${(current.sampling_rate * 100).toFixed(0)}%)`}
             hint="Fraction of interactions sampled for evaluation."
           >
             <input
@@ -734,16 +700,15 @@ export function AgentSuccessSection({
               min={0}
               max={1}
               step={0.05}
-              value={item.sampling_rate}
+              value={current.sampling_rate}
               onChange={(e) =>
-                updateAt(idx, { sampling_rate: Number(e.target.value) })
+                update({ sampling_rate: Number(e.target.value) })
               }
               className="w-full"
             />
           </FieldRow>
-        </ListItemCard>
-      ))}
-      <AddButton label="Add evaluation" onClick={add} />
+        </div>
+      )}
     </Section>
   );
 }

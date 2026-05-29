@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from reflexio.models.config_schema import (
     StorageConfig,
-    StorageConfigDisk,
     StorageConfigSQLite,
 )
 
@@ -19,13 +18,14 @@ def describe_storage(
 ) -> tuple[str | None, str | None]:
     """Map a ``StorageConfig`` to a ``(storage_type, masked_label)`` pair.
 
-    The type is a short slug ("sqlite", "disk", "supabase", "local_dir")
-    suitable for grouping; the label is a short, human-readable string
-    with any secret material masked so it's safe to print anywhere.
+    The type is a short slug ("sqlite", "supabase", "postgres",
+    "local_dir") suitable for grouping; the label is a short,
+    human-readable string with any secret material masked so it's safe
+    to print anywhere.
 
-    Enterprise-only storage types (Supabase, S3) are matched by class name
-    so we don't take a hard import dependency on ``reflexio_ext`` from the
-    open-source package.
+    Enterprise-only storage types (Supabase, Postgres, local directory)
+    are matched by class name so we don't take a hard import dependency
+    on ``reflexio_ext`` from the open-source package.
 
     Args:
         storage_config: The storage configuration to describe.
@@ -41,8 +41,6 @@ def describe_storage(
 
     if isinstance(storage_config, StorageConfigSQLite):
         return "sqlite", storage_config.db_path or "<default sqlite>"
-    if isinstance(storage_config, StorageConfigDisk):
-        return "disk", storage_config.dir_path or "<default dir>"
 
     if cls_name == "StorageConfigSupabase":
         url = getattr(storage_config, "url", None)

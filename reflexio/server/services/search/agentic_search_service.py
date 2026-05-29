@@ -173,8 +173,8 @@ class AgenticSearchService:
         # Reject requests missing the user_id rather than silently coercing
         # to empty strings. An empty user_id flows into storage operations
         # (storage.get_user_profile, storage.add_user_profile) and would
-        # either return cross-user data on SqliteStorage or write to an
-        # unintended path on DiskStorage. Surface the bug at the boundary.
+        # return cross-user data on SQLiteStorage. Surface the bug at the
+        # boundary.
         # agent_version is NOT required — it scopes AgentPlaybook reads
         # (cross-user rules), and an empty value just means "no AgentPlaybook
         # scope filter," which is safe.

@@ -109,7 +109,7 @@ def test_refresh_profiles_for_user(mock_chat_completion):
             metadata_definition_prompt="test",
         )
         profile_generation_service.configurator.set_config_by_name(
-            "profile_extractor_configs", [profile_extractor_config]
+            "profile_extractor_config", profile_extractor_config
         )
         profile_generation_service.configurator.set_config_by_name("window_size", 100)
 
@@ -181,7 +181,7 @@ def test_test_refresh_profiles_for_user_with_image_encoding(mock_chat_completion
             metadata_definition_prompt="test",
         )
         profile_generation_service.configurator.set_config_by_name(
-            "profile_extractor_configs", [profile_extractor_config]
+            "profile_extractor_config", profile_extractor_config
         )
         profile_generation_service.configurator.set_config_by_name("window_size", 100)
 
@@ -268,7 +268,7 @@ def test_profile_extraction_message_construction():
                 metadata_definition_prompt="cuisine type",
             )
             profile_generation_service.configurator.set_config_by_name(
-                "profile_extractor_configs", [profile_extractor_config]
+                "profile_extractor_config", profile_extractor_config
             )
             profile_generation_service.configurator.set_config_by_name(
                 "window_size", 100
@@ -433,7 +433,7 @@ def test_refresh_profiles_with_output_pending_status(mock_chat_completion):
             metadata_definition_prompt="test",
         )
         profile_generation_service.configurator.set_config_by_name(
-            "profile_extractor_configs", [profile_extractor_config]
+            "profile_extractor_config", profile_extractor_config
         )
         profile_generation_service.configurator.set_config_by_name("window_size", 100)
 
@@ -573,7 +573,7 @@ def test_run_manual_regular_no_window_size(mock_chat_completion):
             metadata_definition_prompt="test",
         )
         profile_generation_service.configurator.set_config_by_name(
-            "profile_extractor_configs", [profile_extractor_config]
+            "profile_extractor_config", profile_extractor_config
         )
         # window_size is not configured
 
@@ -630,7 +630,7 @@ def test_run_manual_regular_no_interactions(mock_chat_completion):
             metadata_definition_prompt="test",
         )
         profile_generation_service.configurator.set_config_by_name(
-            "profile_extractor_configs", [profile_extractor_config]
+            "profile_extractor_config", profile_extractor_config
         )
         profile_generation_service.configurator.set_config_by_name("window_size", 100)
 
@@ -671,7 +671,7 @@ def test_run_manual_regular_with_interactions(mock_chat_completion):
             metadata_definition_prompt="test",
         )
         profile_generation_service.configurator.set_config_by_name(
-            "profile_extractor_configs", [profile_extractor_config]
+            "profile_extractor_config", profile_extractor_config
         )
         profile_generation_service.configurator.set_config_by_name("window_size", 100)
 
@@ -745,7 +745,7 @@ def test_run_manual_regular_with_source_filter(mock_chat_completion):
             metadata_definition_prompt="test",
         )
         profile_generation_service.configurator.set_config_by_name(
-            "profile_extractor_configs", [profile_extractor_config]
+            "profile_extractor_config", profile_extractor_config
         )
         profile_generation_service.configurator.set_config_by_name("window_size", 100)
 

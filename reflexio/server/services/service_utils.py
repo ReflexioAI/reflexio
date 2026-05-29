@@ -201,7 +201,9 @@ def format_interactions_to_history_string(interactions: list[Interaction]) -> st
                     f"{interaction.role}: ```{tool_prefix} {interaction.content}```"
                 )
             else:
-                formatted_interactions.append(f"{interaction.role}: ```{interaction.content}```")
+                formatted_interactions.append(
+                    f"{interaction.role}: ```{interaction.content}```"
+                )
 
         # Add user action
         if interaction.user_action != UserActionType.NONE:

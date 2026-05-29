@@ -1,8 +1,8 @@
 import contextlib
 import json
+import logging
 import os
 import time
-import traceback
 from pathlib import Path
 from typing import Any
 
@@ -11,10 +11,12 @@ from reflexio.models.config_schema import (
     Config,
     PlaybookConfig,
     ProfileExtractorConfig,
-    StorageConfigDisk,
     StorageConfigSQLite,
+    normalize_legacy_config_shape,
 )
 from reflexio.server.services.configurator.config_storage import ConfigStorage
+
+logger = logging.getLogger(__name__)
 
 
 class LocalFileConfigStorage(ConfigStorage):
@@ -40,19 +42,16 @@ class LocalFileConfigStorage(ConfigStorage):
             self.base_dir = str(reflexio_home() / "configs")
             self.config_file = str(Path(self.base_dir) / f"config_{org_id}.json")
 
-    def _default_storage_config(self) -> StorageConfigSQLite | StorageConfigDisk:
-        """Select default storage config based on REFLEXIO_STORAGE env var."""
-        backend = os.environ.get("REFLEXIO_STORAGE", "sqlite").lower()
-        if backend == "disk":
-            return StorageConfigDisk(dir_path=self.base_dir)
+    def _default_storage_config(self) -> StorageConfigSQLite:
+        """Return the default storage config (always SQLite for local file storage)."""
         return StorageConfigSQLite()
 
     def get_default_config(self) -> Config:
         """
-        Returns a default configuration with storage based on REFLEXIO_STORAGE env var.
+        Returns a default configuration with SQLite storage.
 
         Returns:
-            Config: Default configuration with appropriate storage type
+            Config: Default configuration with SQLite storage
         """
         return Config(
             storage_config=self._default_storage_config(),
@@ -82,13 +81,39 @@ class LocalFileConfigStorage(ConfigStorage):
         try:
             with Path(self.config_file).open(encoding="utf-8") as f:
                 config_content = f.read()
-                config: Config = Config(**json.loads(str(config_content)))
+                data = json.loads(str(config_content))
+                # Upgrade retired list-valued extractor fields (e.g.
+                # agent_success_configs) to their singular replacements before
+                # validation. Without this, Config would drop the unknown legacy
+                # keys and silently lose the user's customization.
+                if isinstance(data, dict):
+                    data = normalize_legacy_config_shape(data)
+                # Detect legacy on-disk configs that used the removed "disk"
+                # storage backend and rewrite only the storage_config field
+                # to default SQLite. Other persisted fields (extractors,
+                # prompts, etc.) are preserved so the migration doesn't
+                # silently lose user customizations. Without this guard,
+                # legacy configs would fail Pydantic validation and the
+                # broad-except path below would discard everything.
+                storage_cfg = (
+                    data.get("storage_config") if isinstance(data, dict) else None
+                )
+                if isinstance(storage_cfg, dict) and storage_cfg.get("type") == "disk":
+                    logger.warning(
+                        "Legacy storage_config.type='disk' detected in %s. "
+                        "The disk backend was removed; rewriting storage_config "
+                        "to default SQLite and preserving all other fields.",
+                        self.config_file,
+                    )
+                    data = dict(data)
+                    data["storage_config"] = self._default_storage_config().model_dump()
+                config: Config = Config(**data)
                 return config
-        except Exception as e:
-            print(f"{str(e)}")
-            tbs = traceback.format_exc().split("\n")
-            for tb in tbs:
-                print(f"  {tb}")
+        except Exception:
+            logger.exception(
+                "Failed to load config from %s; falling back to default config.",
+                self.config_file,
+            )
             # Create a default config if anything goes wrong.
             return self.get_default_config()
 

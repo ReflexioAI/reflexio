@@ -101,3 +101,16 @@ def is_deduplicator_enabled(org_id: str) -> bool:
         bool: True if deduplicator is enabled
     """
     return is_feature_enabled(org_id, "deduplicator")
+
+
+def is_resumable_extraction_agent_enabled(org_id: str) -> bool:
+    """
+    Convenience check for whether classic extraction should use the resumable agent.
+
+    Args:
+        org_id (str): The organization ID to check
+
+    Returns:
+        bool: True if the resumable extraction agent is enabled
+    """
+    return is_feature_enabled(org_id, "resumable_extraction_agent")

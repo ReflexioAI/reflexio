@@ -100,7 +100,7 @@ class CascadeRef:
 
 # Maps a retention target → its dependent tables that must be deleted first
 # when retention removes rows. Keep in sync with the storage backends that
-# rely on it (Postgres, Supabase, and the SQLite/Disk bespoke implementations).
+# rely on it (Postgres, Supabase, and the SQLite bespoke implementations).
 RETENTION_CASCADES: dict[str, tuple[CascadeRef, ...]] = {
     "requests": (CascadeRef("interactions", "request_id"),),
     "user_playbooks": (

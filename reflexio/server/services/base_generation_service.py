@@ -11,6 +11,8 @@ import uuid
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Any, Generic, TypeVar
 
@@ -18,6 +20,7 @@ from reflexio.models.api_schema.internal_schema import RequestInteractionDataMod
 from reflexio.models.api_schema.service_schemas import Status
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient
+from reflexio.server.services.extraction.outcome import ExtractionOutcome
 from reflexio.server.services.extractor_config_utils import (
     filter_extractor_configs,
     get_extractor_name,
@@ -29,6 +32,7 @@ from reflexio.server.services.extractor_interaction_utils import (
 )
 from reflexio.server.services.operation_state_utils import OperationStateManager
 from reflexio.server.services.service_utils import log_llm_messages, log_model_response
+from reflexio.server.services.storage.storage_base import AgentRunStatus
 from reflexio.server.usage_metrics import record_usage_event
 
 
@@ -40,7 +44,7 @@ class StatusChangeOperation(StrEnum):
 
 
 class ExtractorExecutionError(RuntimeError):
-    """Raised when all extractors fail for a request/user context."""
+    """Raised when the configured extractor fails for a request/user context."""
 
 
 logger = logging.getLogger(__name__)
@@ -149,13 +153,20 @@ TGenerationServiceConfig = TypeVar("TGenerationServiceConfig")
 TRequest = TypeVar("TRequest")
 
 
+@dataclass(frozen=True)
+class PreparedGenerationRun(Generic[TExtractorConfig]):  # noqa: UP046
+    extractor_config: TExtractorConfig
+    extractor_name: str
+    identifier: str
+
+
 # Unified base class for all generation services (evaluation, playbook, profile)
 class BaseGenerationService(
     ABC,
     Generic[TExtractorConfig, TExtractor, TGenerationServiceConfig, TRequest],  # noqa: UP046
 ):
     """
-    Base class for generation services that run multiple extractors sequentially.
+    Base class for generation services that run one configured extractor.
 
     This unified class supports two types of services:
     1. Evaluation services (playbook, agent success) - process interactions and save UserPlaybook
@@ -168,9 +179,9 @@ class BaseGenerationService(
         TRequest: The request type (e.g., ProfileGenerationRequest, PlaybookGenerationRequest, AgentSuccessEvaluationRequest)
 
     Child classes must implement:
-    - _load_extractor_configs(): Load extractor configurations from configurator
+    - _load_extractor_config(): Load extractor configuration from configurator
     - _load_generation_service_config(): Extract parameters from request and return GenerationServiceConfig
-    - _create_extractor(): Create extractor instances with extractor config and service config
+    - _create_extractor(): Create extractor instance with extractor config and service config
     - _get_service_name(): Get service name for logging
     - _process_results(): Process and save results (can access self.service_config)
     """
@@ -197,6 +208,7 @@ class BaseGenerationService(
             "failed": 0,
             "timed_out": 0,
         }
+        self._last_extraction_run_ids: list[str] = []
 
     def _usage_pipeline(self) -> str | None:
         service_name = self._get_service_name()
@@ -243,22 +255,18 @@ class BaseGenerationService(
         )
 
     @staticmethod
-    def _count_generated_results(results: list) -> int:
-        count = 0
-        for result in results:
-            if isinstance(result, list):
-                count += len(result)
-            elif result:
-                count += 1
-        return count
+    def _count_generated_results(result: Any) -> int:
+        if isinstance(result, list):
+            return len(result)
+        return 1 if result else 0
 
     @abstractmethod
-    def _load_extractor_configs(self) -> list[TExtractorConfig]:
+    def _load_extractor_config(self) -> TExtractorConfig | None:
         """
-        Load extractor configurations from the configurator.
+        Load extractor configuration from the configurator.
 
         Returns:
-            List of extractor configuration objects (from YAML)
+            Extractor configuration object from YAML, or None when disabled.
         """
 
     @abstractmethod
@@ -325,6 +333,11 @@ class BaseGenerationService(
             results: List of all results from extractors (one per successful extractor)
         """
 
+    def _finalize_extracted_items(self, items: list) -> None:
+        """Persist already-flattened extracted items through the service path."""
+        if items:
+            self._process_results([items])
+
     @abstractmethod
     def _should_track_in_progress(self) -> bool:
         """
@@ -352,32 +365,22 @@ class BaseGenerationService(
             Optional[str]: Scope ID (e.g., user_id) or None for org-level scope
         """
 
-    def _filter_extractor_configs_by_service_config(
+    def _filter_extractor_config_by_service_config(
         self,
-        extractor_configs: list[TExtractorConfig],
+        extractor_config: TExtractorConfig,
         service_config: TGenerationServiceConfig,
-    ) -> list[TExtractorConfig]:
+    ) -> TExtractorConfig | None:
         """
-        Filter extractor configs based on request_sources_enabled and manual_trigger fields.
-
-        Args:
-            extractor_configs: List of extractor configuration objects from YAML
-            service_config: Runtime service configuration containing the source and allow_manual_trigger flag
-
-        Returns:
-            Filtered list of extractor configs that should run for the given source and trigger mode
+        Filter the extractor config based on request_sources_enabled, manual_trigger,
+        and explicit extractor name filters.
         """
-        # Extract filtering parameters from service_config
-        source = getattr(service_config, "source", None)
-        allow_manual_trigger = getattr(service_config, "allow_manual_trigger", False)
-        extractor_names = getattr(service_config, "extractor_names", None)
-
-        return filter_extractor_configs(
-            extractor_configs=extractor_configs,
-            source=source,
-            allow_manual_trigger=allow_manual_trigger,
-            extractor_names=extractor_names,
+        filtered = filter_extractor_configs(
+            extractor_configs=[extractor_config],
+            source=getattr(service_config, "source", None),
+            allow_manual_trigger=getattr(service_config, "allow_manual_trigger", False),
+            extractor_names=getattr(service_config, "extractor_names", None),
         )
+        return filtered[0] if filtered else None
 
     def _get_extractor_state_service_name(self) -> str | None:
         """
@@ -392,34 +395,31 @@ class BaseGenerationService(
         """
         return None
 
-    def _filter_configs_by_stride(
-        self, extractor_configs: list[TExtractorConfig]
-    ) -> list[TExtractorConfig]:
+    def _filter_config_by_stride(
+        self, extractor_config: TExtractorConfig
+    ) -> TExtractorConfig | None:
         """
-        Filter extractor configs by stride_size check before the should_run LLM call.
+        Filter extractor config by stride_size check before the should_run LLM call.
 
         Skips filtering when:
         - _get_extractor_state_service_name() returns None (service doesn't support stride_size)
         - auto_run is False (rerun/manual flows skip stride_size)
 
-        For each config, resolves window_size/stride_size params and checks if enough new
-        interactions exist since the last run. Only configs that pass stride_size are returned.
-
         Args:
-            extractor_configs: List of extractor configs after source/manual_trigger filtering
+            extractor_config: Extractor config after source/manual_trigger filtering
 
         Returns:
-            List of extractor configs that pass the stride_size check
+            Extractor config when it passes the stride_size check, otherwise None.
         """
         state_service_name = self._get_extractor_state_service_name()
         if state_service_name is None:
-            return extractor_configs
+            return extractor_config
 
         if not getattr(self.service_config, "auto_run", True):
-            return extractor_configs
+            return extractor_config
 
         if getattr(self.service_config, "force_extraction", False):
-            return extractor_configs
+            return extractor_config
 
         root_config = self.request_context.configurator.get_config()
         global_window_size = (
@@ -435,41 +435,38 @@ class BaseGenerationService(
             state_service_name,  # type: ignore[reportArgumentType]
         )
 
-        passing_configs: list[TExtractorConfig] = []
-        for config in extractor_configs:
-            name = get_extractor_name(config)
-            _, stride_size = get_extractor_window_params(
-                config, global_window_size, global_stride_size
-            )
+        name = get_extractor_name(extractor_config)
+        _, stride_size = get_extractor_window_params(
+            extractor_config, global_window_size, global_stride_size
+        )
 
-            # Resolve effective source filter for this extractor
-            should_skip, effective_source = get_effective_source_filter(
-                config, getattr(self.service_config, "source", None)
-            )
-            if should_skip:
-                continue
+        # Resolve effective source filter for this extractor
+        should_skip, effective_source = get_effective_source_filter(
+            extractor_config, getattr(self.service_config, "source", None)
+        )
+        if should_skip:
+            return None
 
-            (
-                _,
-                new_interactions,
-            ) = state_manager.get_extractor_state_with_new_interactions(
-                extractor_name=name,
-                user_id=getattr(self.service_config, "user_id", None),
-                sources=effective_source,
-            )
-            new_count = sum(len(ri.interactions) for ri in new_interactions)
+        (
+            _,
+            new_interactions,
+        ) = state_manager.get_extractor_state_with_new_interactions(
+            extractor_name=name,
+            user_id=getattr(self.service_config, "user_id", None),
+            sources=effective_source,
+        )
+        new_count = sum(len(ri.interactions) for ri in new_interactions)
 
-            if should_extractor_run_by_stride(new_count, stride_size):
-                passing_configs.append(config)
-            else:
-                logger.info(
-                    "Stride pre-filter: skipping extractor '%s' (new=%d, stride_size=%s)",
-                    name,
-                    new_count,
-                    stride_size,
-                )
+        if should_extractor_run_by_stride(new_count, stride_size):
+            return extractor_config
 
-        return passing_configs
+        logger.info(
+            "Stride pre-filter: skipping extractor '%s' (new=%d, stride_size=%s)",
+            name,
+            new_count,
+            stride_size,
+        )
+        return None
 
     # ===============================
     # In-progress state management via OperationStateManager
@@ -657,7 +654,7 @@ class BaseGenerationService(
         Run the actual generation logic.
 
         Orchestrates validation, config loading, extractor execution, and result
-        processing by delegating to _prepare_generation_run and _execute_extractors.
+        processing by delegating to _prepare_generation_run and _execute_extractor.
 
         Args:
             request: The request object containing parameters
@@ -668,21 +665,32 @@ class BaseGenerationService(
 
         generation_start = time.perf_counter()
         try:
-            extractor_configs, identifier = self._prepare_generation_run(request)
-            if extractor_configs is None:
+            prepared = self._prepare_generation_run(request)
+            if prepared is None:
                 return
 
             self._record_generation_event(
                 event_name="generation_started",
                 outcome="started",
-                count_value=len(extractor_configs),
-                metadata={"identifier": identifier},
+                count_value=1,
+                metadata={
+                    "identifier": prepared.identifier,
+                    "extractor_name": prepared.extractor_name,
+                },
             )
-            all_results = self._execute_extractors(extractor_configs, identifier)
-            generated_count = self._count_generated_results(all_results)
+            self._last_extraction_run_ids = []
+            result = self._execute_extractor(
+                prepared.extractor_config, prepared.identifier
+            )
+            generated_count = self._count_generated_results(result)
 
-            if all_results:
-                self._process_results(all_results)
+            try:
+                if result:
+                    self._process_results([result])
+                self._finalize_extraction_runs()
+            except Exception as exc:
+                self._mark_extraction_runs_finalization_failed(exc)
+                raise
 
             self._record_generation_event(
                 event_name="generation_succeeded",
@@ -690,9 +698,14 @@ class BaseGenerationService(
                 count_value=generated_count,
                 duration_ms=int((time.perf_counter() - generation_start) * 1000),
                 metadata={
-                    "identifier": identifier,
-                    "extractor_count": len(extractor_configs),
-                    "extractor_run_stats": self._last_extractor_run_stats,
+                    "identifier": prepared.identifier,
+                    "extractor_name": prepared.extractor_name,
+                    "extractor_failed": bool(
+                        self._last_extractor_run_stats.get("failed")
+                    ),
+                    "extractor_timed_out": bool(
+                        self._last_extractor_run_stats.get("timed_out")
+                    ),
                 },
             )
 
@@ -714,64 +727,62 @@ class BaseGenerationService(
 
     def _prepare_generation_run(
         self, request: TRequest
-    ) -> tuple[list[TExtractorConfig] | None, str]:
+    ) -> PreparedGenerationRun[TExtractorConfig] | None:
         """
-        Validate request, load config, filter extractor configs, and run pre-extraction checks.
+        Validate request, load config, filter extractor config, and run pre-extraction checks.
 
-        Loads the generation service config from the request, loads and filters extractor
-        configs by source, manual trigger, and stride_size, then runs the pre-extraction gate.
+        Loads the generation service config from the request, loads and filters the
+        extractor config by source, manual trigger, and stride_size, then runs the
+        pre-extraction gate.
 
         Args:
             request: The request object containing parameters
 
         Returns:
-            tuple: (extractor_configs, identifier) where extractor_configs is None if
-                generation should be skipped, or the filtered list of configs to execute.
-                identifier is a string for logging context.
+            PreparedGenerationRun when generation should proceed, otherwise None.
         """
         self.service_config = self._load_generation_service_config(request)
 
-        extractor_configs = self._load_extractor_configs()
-        if not extractor_configs:
-            logger.warning("No %s extractor configs found", self._get_service_name())
-            return None, ""
+        extractor_config = self._load_extractor_config()
+        if extractor_config is None:
+            logger.warning("No %s extractor config found", self._get_service_name())
+            return None
 
-        extractor_configs = self._filter_extractor_configs_by_service_config(
-            extractor_configs, self.service_config
+        extractor_config = self._filter_extractor_config_by_service_config(
+            extractor_config, self.service_config
         )
 
-        if not extractor_configs:
+        if extractor_config is None:
             source = getattr(self.service_config, "source", "N/A")
             source_display = source or "N/A"
             logger.info(
-                "No %s extractor configs enabled for source: %s",
+                "No %s extractor config enabled for source: %s",
                 self._get_service_name(),
                 source_display,
             )
-            return None, ""
+            return None
 
-        extractor_configs = self._filter_configs_by_stride(extractor_configs)
-        if not extractor_configs:
+        extractor_config = self._filter_config_by_stride(extractor_config)
+        if extractor_config is None:
             logger.info(
-                "No extractor configs passed stride_size check for %s",
+                "Extractor config did not pass stride_size check for %s",
                 self._get_service_name(),
             )
-            return None, ""
+            return None
 
         identifier = getattr(self.service_config, "user_id", None) or getattr(
             self.service_config, "request_id", "unknown"
         )
+        extractor_name = get_extractor_name(extractor_config)
 
-        should_run = self._should_run_before_extraction(extractor_configs)
+        should_run = self._should_run_before_extraction(extractor_config)
         self._record_generation_event(
             event_name="generation_gate_evaluated",
             outcome="should_run" if should_run else "should_skip",
-            count_value=len(extractor_configs),
+            count_value=1,
             metadata={
                 "identifier": identifier,
-                "extractor_names": [
-                    get_extractor_name(config) for config in extractor_configs
-                ],
+                "extractor_name": extractor_name,
             },
         )
 
@@ -781,102 +792,138 @@ class BaseGenerationService(
                 self._get_service_name(),
                 identifier,
             )
-            return None, identifier
+            return None
 
-        return extractor_configs, identifier
+        return PreparedGenerationRun(
+            extractor_config=extractor_config,
+            extractor_name=extractor_name,
+            identifier=identifier,
+        )
 
-    def _execute_extractors(
+    def _execute_extractor(
         self,
-        extractor_configs: list[TExtractorConfig],
+        extractor_config: TExtractorConfig,
         identifier: str,
-    ) -> list:
+    ) -> Any | None:
         """
-        Run extractors sequentially with timeout and error handling.
+        Run the configured extractor with timeout and error handling.
 
-        Each extractor runs independently in a thread pool with a timeout guard.
-        Updates _last_extractor_run_stats and raises ExtractorExecutionError if
-        all extractors fail.
+        The extractor runs in a thread pool with a timeout guard so providers that
+        ignore their own timeout cannot block generation forever.
 
         Args:
-            extractor_configs: Filtered list of extractor configs to execute
+            extractor_config: Filtered extractor config to execute
             identifier: Logging context identifier (user_id or request_id)
 
         Returns:
-            list: Results from successful extractors (may be empty if none produced output
-                but at least one succeeded without error)
+            Extractor result, or None if the extractor succeeded with no output.
 
         Raises:
-            ExtractorExecutionError: If every extractor fails with an exception
+            ExtractorExecutionError: If the extractor fails with an exception or timeout.
         """
         if (
             self.service_config is None
         ):  # pragma: no cover — set by _prepare_generation_run
-            raise RuntimeError("service_config must be set before executing extractors")
+            raise RuntimeError("service_config must be set before executing extractor")
 
-        all_results: list = []
-        run_stats = {"total": len(extractor_configs), "failed": 0, "timed_out": 0}
-
-        for config in extractor_configs:
-            extractor = self._create_extractor(config, self.service_config)
-            executor: ThreadPoolExecutor | None = None
-            try:
-                executor = ThreadPoolExecutor(max_workers=1)
-                # Copy context so correlation ID propagates to worker thread
-                ctx = contextvars.copy_context()
-                future = executor.submit(ctx.run, extractor.run)  # type: ignore[reportAttributeAccessIssue]
-                result = future.result(timeout=EXTRACTOR_TIMEOUT_SECONDS)
-                if result:
-                    all_results.append(result)
-            except FuturesTimeoutError:
-                run_stats["failed"] += 1
-                run_stats["timed_out"] += 1
-                logger.error(
-                    "Extractor timed out after %d seconds for %s identifier=%s",
-                    EXTRACTOR_TIMEOUT_SECONDS,
+        self._last_extractor_run_stats = {"total": 1, "failed": 0, "timed_out": 0}
+        extractor = self._create_extractor(extractor_config, self.service_config)
+        executor: ThreadPoolExecutor | None = None
+        try:
+            executor = ThreadPoolExecutor(max_workers=1)
+            # Copy context so correlation ID propagates to worker thread
+            ctx = contextvars.copy_context()
+            future = executor.submit(ctx.run, extractor.run)  # type: ignore[reportAttributeAccessIssue]
+            result = future.result(timeout=EXTRACTOR_TIMEOUT_SECONDS)
+            if isinstance(result, ExtractionOutcome):
+                if result.run_id:
+                    self._last_extraction_run_ids.append(result.run_id)
+                if result.status == "completed" and result.items:
+                    return result.items
+                logger.info(
+                    "No results generated for %s identifier: %s",
                     self._get_service_name(),
                     identifier,
                 )
-                continue
-            except Exception as e:
-                run_stats["failed"] += 1
-                logger.error(
-                    "Extractor failed for %s identifier=%s: %s (type=%s)",
-                    self._get_service_name(),
-                    identifier,
-                    str(e),
-                    type(e).__name__,
-                )
-                continue
-            finally:
-                if executor is not None:
-                    executor.shutdown(wait=False, cancel_futures=True)
-
-        self._last_extractor_run_stats = run_stats
-
-        if not all_results:
-            all_extractors_failed = (
-                run_stats["total"] > 0 and run_stats["failed"] == run_stats["total"]
-            )
-            if all_extractors_failed:
-                error_msg = (
-                    f"All extractors failed for {self._get_service_name()} "
-                    f"identifier={identifier}"
-                )
-                logger.error(error_msg)
-                raise ExtractorExecutionError(error_msg)
+                return None
+            if result:
+                return result
             logger.info(
                 "No results generated for %s identifier: %s",
                 self._get_service_name(),
                 identifier,
             )
+            return None
+        except FuturesTimeoutError as exc:
+            self._last_extractor_run_stats = {"total": 1, "failed": 1, "timed_out": 1}
+            error_msg = (
+                f"Extractor timed out after {EXTRACTOR_TIMEOUT_SECONDS} seconds "
+                f"for {self._get_service_name()} identifier={identifier}"
+            )
+            logger.error(error_msg)
+            raise ExtractorExecutionError(error_msg) from exc
+        except Exception as exc:
+            self._last_extractor_run_stats = {"total": 1, "failed": 1, "timed_out": 0}
+            error_msg = (
+                f"Extractor failed for {self._get_service_name()} "
+                f"identifier={identifier}: {exc} (type={type(exc).__name__})"
+            )
+            logger.error(error_msg)
+            raise ExtractorExecutionError(error_msg) from exc
+        finally:
+            if executor is not None:
+                executor.shutdown(wait=False, cancel_futures=True)
 
-        return all_results
+    def _finalize_extraction_runs(self) -> None:
+        if self.storage is None:
+            return
+        for run_id in self._last_extraction_run_ids:
+            run = self.storage.get_agent_run(run_id)
+            if run is None:
+                continue
+            status = (
+                AgentRunStatus.FINALIZED_PENDING_TOOL
+                if run.pending_tool_call_ids
+                else AgentRunStatus.FINALIZED
+            )
+            self.storage.update_agent_run_status(
+                run_id,
+                status,
+                pending_tool_call_ids=run.pending_tool_call_ids,
+            )
 
-    def _should_run_before_extraction(
-        self, extractor_configs: list[TExtractorConfig]
-    ) -> bool:
+    def _mark_extraction_runs_finalization_failed(self, exc: Exception) -> None:
+        if self.storage is None:
+            return
+        root_config = self.request_context.configurator.get_config()
+        pending_config = getattr(root_config, "pending_tool_call_config", None)
+        for run_id in self._last_extraction_run_ids:
+            run = self.storage.get_agent_run(run_id)
+            if run is None or run.committed_output is None:
+                continue
+            next_attempt_count = run.finalization_attempts + 1
+            max_attempts = (
+                pending_config.max_finalization_attempts
+                if pending_config is not None
+                else 3
+            )
+            status = (
+                AgentRunStatus.FAILED
+                if next_attempt_count >= max_attempts
+                else AgentRunStatus.FINALIZATION_FAILED
+            )
+            delay_seconds = min(300, max(1, 2 ** max(0, next_attempt_count - 1)))
+            self.storage.update_agent_run_status(
+                run_id,
+                status,
+                next_resume_at=datetime.now(UTC) + timedelta(seconds=delay_seconds),
+                last_error=str(exc),
+                increment_finalization_attempts=True,
+            )
+
+    def _should_run_before_extraction(self, extractor_config: TExtractorConfig) -> bool:
         """
-        Pre-extraction check called before the sequential extraction loop.
+        Pre-extraction check called before extractor execution.
 
         Template method that:
         1. Skips for non-auto runs and mock mode
@@ -891,7 +938,7 @@ class BaseGenerationService(
         no prompt hook is provided.
 
         Args:
-            extractor_configs: List of enabled extractor configs that will be run
+            extractor_config: Enabled extractor config that will be run
 
         Returns:
             bool: True if extraction should proceed, False to skip
@@ -921,8 +968,8 @@ class BaseGenerationService(
             return True
 
         # Collect scoped interactions
-        session_data_models, scoped_configs = (
-            self._collect_scoped_interactions_for_precheck(extractor_configs)
+        session_data_models, scoped_config = (
+            self._collect_scoped_interactions_for_precheck(extractor_config)
         )
         if not session_data_models:
             logger.info(
@@ -946,7 +993,7 @@ class BaseGenerationService(
             return False
 
         # Build prompt via subclass hook
-        prompt = self._build_should_run_prompt(scoped_configs, session_data_models)
+        prompt = self._build_should_run_prompt(scoped_config, session_data_models)
         if not prompt:
             return True  # No prompt means no check needed, proceed
 
@@ -956,11 +1003,11 @@ class BaseGenerationService(
         try:
             should_start = time.perf_counter()
             logger.info(
-                "event=consolidated_should_run_start service=%s identifier=%s model=%s extractors=%d",
+                "event=consolidated_should_run_start service=%s identifier=%s model=%s extractor=%s",
                 self._get_service_name(),
                 identifier,
                 should_run_model,
-                len(extractor_configs),
+                get_extractor_name(extractor_config),
             )
             log_llm_messages(
                 logger,
@@ -996,7 +1043,7 @@ class BaseGenerationService(
 
     def _build_should_run_prompt(
         self,
-        scoped_configs: list[TExtractorConfig],  # noqa: ARG002
+        scoped_config: TExtractorConfig,  # noqa: ARG002
         session_data_models: list[RequestInteractionDataModel],  # noqa: ARG002
     ) -> str | None:
         """
@@ -1006,7 +1053,7 @@ class BaseGenerationService(
         and prompt rendering. Return None if no check is needed (always proceed).
 
         Args:
-            scoped_configs: Extractor configs that had scoped interactions
+            scoped_config: Extractor config that had scoped interactions
             session_data_models: Deduplicated request interaction data models
 
         Returns:
@@ -1015,8 +1062,8 @@ class BaseGenerationService(
         return None
 
     def _collect_scoped_interactions_for_precheck(
-        self, extractor_configs: list[TExtractorConfig]
-    ) -> tuple[list[RequestInteractionDataModel], list[TExtractorConfig]]:
+        self, extractor_config: TExtractorConfig
+    ) -> tuple[list[RequestInteractionDataModel], TExtractorConfig]:
         """
         Collect interactions for consolidated pre-check using extractor-scoped filters.
 
@@ -1024,10 +1071,10 @@ class BaseGenerationService(
         does not skip valid extraction because of an unrelated fixed interaction slice.
 
         Args:
-            extractor_configs: Enabled extractor configs after request-level filtering
+            extractor_config: Enabled extractor config after request-level filtering
 
         Returns:
-            tuple: (deduplicated session data models, extractor configs that had scoped interactions)
+            tuple: (session data models, extractor config)
         """
         root_config = self.request_context.configurator.get_config()
         global_window_size = (
@@ -1037,44 +1084,27 @@ class BaseGenerationService(
             getattr(root_config, "stride_size", None) if root_config else None
         )
 
-        deduped_sessions: dict[str, RequestInteractionDataModel] = {}
-        scoped_configs: list[TExtractorConfig] = []
         extra_kwargs = self._get_precheck_interaction_query_kwargs()
 
-        for config in extractor_configs:
-            should_skip, effective_source = get_effective_source_filter(
-                config, getattr(self.service_config, "source", None)
-            )
-            if should_skip:
-                continue
+        should_skip, effective_source = get_effective_source_filter(
+            extractor_config, getattr(self.service_config, "source", None)
+        )
+        if should_skip:
+            return [], extractor_config
 
-            window_size, _ = get_extractor_window_params(
-                config, global_window_size, global_stride_size
-            )
-            fetch_k = window_size
-            session_data_models, _ = self.storage.get_last_k_interactions_grouped(  # type: ignore[reportOptionalMemberAccess]
-                user_id=getattr(self.service_config, "user_id", None),
-                k=fetch_k,
-                sources=effective_source,
-                start_time=getattr(self.service_config, "rerun_start_time", None),
-                end_time=getattr(self.service_config, "rerun_end_time", None),
-                **extra_kwargs,
-            )
-            if not session_data_models:
-                continue
+        window_size, _ = get_extractor_window_params(
+            extractor_config, global_window_size, global_stride_size
+        )
+        session_data_models, _ = self.storage.get_last_k_interactions_grouped(  # type: ignore[reportOptionalMemberAccess]
+            user_id=getattr(self.service_config, "user_id", None),
+            k=window_size,
+            sources=effective_source,
+            start_time=getattr(self.service_config, "rerun_start_time", None),
+            end_time=getattr(self.service_config, "rerun_end_time", None),
+            **extra_kwargs,
+        )
 
-            scoped_configs.append(config)
-            for data_model in session_data_models:
-                request_id = getattr(data_model.request, "request_id", None)
-                dedupe_key = (
-                    request_id
-                    or data_model.session_id
-                    or f"scoped_group_{len(deduped_sessions)}"
-                )
-                if dedupe_key not in deduped_sessions:
-                    deduped_sessions[dedupe_key] = data_model
-
-        return list(deduped_sessions.values()), scoped_configs
+        return session_data_models, extractor_config
 
     def _get_precheck_interaction_query_kwargs(self) -> dict:
         """

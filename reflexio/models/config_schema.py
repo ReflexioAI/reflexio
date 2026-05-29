@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from enum import IntEnum, StrEnum
 from typing import Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .api_schema.validators import (
     NonEmptyStr,
@@ -58,8 +58,6 @@ _CONFIG_FIELD_MIGRATION: dict[str, str] = {
     "batch_interval": "stride_size",
     "extraction_window_size": "window_size",
     "extraction_window_stride": "stride_size",
-    "playbook_configs": "user_playbook_extractor_configs",
-    "agent_feedback_configs": "user_playbook_extractor_configs",
 }
 
 _AGGREGATOR_FIELD_MIGRATION: dict[str, str] = {
@@ -100,6 +98,44 @@ def _migrate_dict(data: Any, mapping: dict[str, str]) -> Any:
             if old in data and new not in data:
                 data[new] = data.pop(old)
     return data
+
+
+# Retired list-valued config fields and the singular field that replaced them.
+# The first configured entry wins when an old list contains multiple items.
+_LEGACY_SINGLE_CONFIG_FIELDS: tuple[tuple[str, str], ...] = (
+    ("profile_extractor_configs", "profile_extractor_config"),
+    ("user_playbook_extractor_configs", "user_playbook_extractor_config"),
+    ("playbook_configs", "user_playbook_extractor_config"),
+    ("agent_feedback_configs", "user_playbook_extractor_config"),
+    ("agent_success_configs", "agent_success_config"),
+)
+
+
+def _first_config_entry(value: Any) -> Any:
+    if isinstance(value, list):
+        return value[0] if value else None
+    return value
+
+
+def normalize_legacy_config_shape(data: dict[str, Any]) -> dict[str, Any]:
+    """Map retired list-valued config fields onto current singular fields.
+
+    This is a stored-data upgrade path applied at storage load boundaries: any
+    config persisted before the single-extractor refactor still carries list
+    keys (e.g. ``agent_success_configs``) that ``Config`` would otherwise drop
+    as unknown fields, silently losing the user's customization. Legacy keys are
+    removed from the returned payload and the first configured entry wins.
+
+    Returns a shallow copy; the caller's dict is not mutated.
+    """
+    normalized = dict(data)
+    for legacy_field, current_field in _LEGACY_SINGLE_CONFIG_FIELDS:
+        if legacy_field not in normalized:
+            continue
+        if current_field not in normalized:
+            normalized[current_field] = _first_config_entry(normalized[legacy_field])
+        del normalized[legacy_field]
+    return normalized
 
 
 class _ExtractorWindowOverrideCompatMixin:
@@ -175,7 +211,10 @@ class StorageConfigPostgres(BaseModel):
     storage_type: Literal["postgres"] = Field(default="postgres", alias="type")
     db_url: NonEmptyStr
     schema_name: str | None = Field(default=None, alias="schema")
-    pool_size: int = Field(default=5, ge=1)
+    pool_size: int = Field(default=10, ge=1)
+    # Seconds a query waits for a free pooled connection before failing. Bounds the
+    # back-pressure applied when concurrent queries exceed pool_size.
+    pool_acquire_timeout: float = Field(default=30.0, gt=0)
 
 
 class StorageConfigManagedSupabase(BaseModel):
@@ -185,19 +224,11 @@ class StorageConfigManagedSupabase(BaseModel):
     schema_present: bool = True
 
 
-class StorageConfigDisk(BaseModel):
-    """Disk-based storage with file-based entities and QMD search."""
-
-    dir_path: NonEmptyStr
-    qmd_binary: str = "qmd"
-
-
 StorageConfig = (
     StorageConfigSQLite
     | StorageConfigSupabase
     | StorageConfigPostgres
     | StorageConfigManagedSupabase
-    | StorageConfigDisk
     | None
 )
 
@@ -528,6 +559,67 @@ class PlaybookOptimizerConfig(BaseModel):
         return self
 
 
+@dataclass(frozen=True)
+class EffectivePendingToolCallConfig:
+    """Resolved pending-tool-call settings after applying tool overrides."""
+
+    max_pending_followups_per_scope: int
+    pending_ttl_seconds: int
+    dedup_cache_seconds: int
+    prior_answer_valid_seconds: int
+    similarity_threshold: float
+
+
+class PendingToolCallToolOverrideConfig(BaseModel):
+    """Optional per-tool pending-call limits."""
+
+    max_pending_followups_per_scope: int | None = Field(default=None, gt=0)
+    pending_ttl_seconds: int | None = Field(default=None, gt=0)
+    dedup_cache_seconds: int | None = Field(default=None, gt=0)
+    prior_answer_valid_seconds: int | None = Field(default=None, gt=0)
+    similarity_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
+
+
+class PendingToolCallConfig(BaseModel):
+    """Configuration for non-blocking pending tool calls."""
+
+    enabled: bool = False
+    human_input_enabled: bool = False
+    prior_knowledge_injection_enabled: bool = False
+    max_pending_followups_per_scope: int = Field(default=10, gt=0)
+    pending_ttl_seconds: int = Field(default=86_400, gt=0)
+    dedup_cache_seconds: int = Field(default=300, gt=0)
+    prior_answer_valid_seconds: int = Field(default=2_592_000, gt=0)
+    similarity_threshold: float = Field(default=0.0, ge=0.0, le=1.0)
+    resume_poll_interval_seconds: float = Field(default=5.0, gt=0)
+    resume_claim_ttl_seconds: int = Field(default=600, gt=0)
+    max_resume_attempts: int = Field(default=3, ge=0)
+    max_finalization_attempts: int = Field(default=3, ge=0)
+    hmac_secrets: list[str] = Field(default_factory=list)
+    tool_overrides: dict[str, PendingToolCallToolOverrideConfig] = Field(
+        default_factory=dict
+    )
+
+    def for_tool(self, tool_name: str) -> EffectivePendingToolCallConfig:
+        """Return base settings with an optional exact tool-name override."""
+        override = self.tool_overrides.get(tool_name)
+
+        def _value(name: str) -> Any:
+            if override is not None:
+                override_value = getattr(override, name)
+                if override_value is not None:
+                    return override_value
+            return getattr(self, name)
+
+        return EffectivePendingToolCallConfig(
+            max_pending_followups_per_scope=_value("max_pending_followups_per_scope"),
+            pending_ttl_seconds=_value("pending_ttl_seconds"),
+            dedup_cache_seconds=_value("dedup_cache_seconds"),
+            prior_answer_valid_seconds=_value("prior_answer_valid_seconds"),
+            similarity_threshold=_value("similarity_threshold"),
+        )
+
+
 class LLMConfig(BaseModel):
     """
     LLM model configuration overrides.
@@ -562,27 +654,11 @@ def _default_profile_extractor_config() -> ProfileExtractorConfig:
     )
 
 
-def _default_profile_extractor_configs() -> list[ProfileExtractorConfig]:
-    """Deprecated list-shaped default kept for compatibility."""
-    return [_default_profile_extractor_config()]
-
-
 def _default_user_playbook_extractor_config() -> UserPlaybookExtractorConfig:
     return UserPlaybookExtractorConfig(
         extractor_name="default_playbook_extractor",
         extraction_definition_prompt="Extract playbook rules about agent performance, including areas where the agent was helpful, areas for improvement, and any issues encountered during the interaction.",
     )
-
-
-def _default_user_playbook_extractor_configs() -> list[UserPlaybookExtractorConfig]:
-    """Deprecated list-shaped default kept for compatibility."""
-    return [_default_user_playbook_extractor_config()]
-
-
-def _first_or_none(value: Any) -> Any:
-    if isinstance(value, list):
-        return value[0] if value else None
-    return value
 
 
 class Config(BaseModel):
@@ -602,7 +678,7 @@ class Config(BaseModel):
         default_factory=_default_user_playbook_extractor_config
     )
     # agent level success
-    agent_success_configs: list[AgentSuccessConfig] | None = None
+    agent_success_config: AgentSuccessConfig | None = None
     # extraction preset — selects bundled window_size/stride_size values
     extraction_preset: ExtractionPreset | None = None
     # extraction parameters
@@ -617,6 +693,10 @@ class Config(BaseModel):
     # Optional GEPA-backed playbook content optimizer
     playbook_optimizer_config: PlaybookOptimizerConfig = Field(
         default_factory=PlaybookOptimizerConfig
+    )
+    # Optional non-blocking async information tools for classic extraction.
+    pending_tool_call_config: PendingToolCallConfig = Field(
+        default_factory=PendingToolCallConfig
     )
     # Skip the LLM pre-extraction eligibility check (always run extraction)
     skip_should_run_check: bool = False
@@ -692,20 +772,6 @@ class Config(BaseModel):
         """
         data = _migrate_dict(data, _CONFIG_FIELD_MIGRATION)
         if isinstance(data, dict):
-            if (
-                "profile_extractor_config" not in data
-                and "profile_extractor_configs" in data
-            ):
-                data["profile_extractor_config"] = _first_or_none(
-                    data["profile_extractor_configs"]
-                )
-            if (
-                "user_playbook_extractor_config" not in data
-                and "user_playbook_extractor_configs" in data
-            ):
-                data["user_playbook_extractor_config"] = _first_or_none(
-                    data["user_playbook_extractor_configs"]
-                )
             for key in (
                 "window_size",
                 "stride_size",
@@ -713,6 +779,7 @@ class Config(BaseModel):
                 "search_backend",
                 "reflection_config",
                 "playbook_optimizer_config",
+                "pending_tool_call_config",
             ):
                 if key in data and data[key] is None:
                     del data[key]
@@ -747,6 +814,18 @@ class Config(BaseModel):
             raise ValueError("stride_size must be <= window_size")
         return self
 
+    @model_validator(mode="after")
+    def check_pending_tool_calls_storage_backend(self) -> Self:
+        """Pending tool calls require a database-backed storage backend."""
+        if self.pending_tool_call_config.enabled and not isinstance(
+            self.storage_config,
+            (StorageConfigSQLite, StorageConfigSupabase, StorageConfigPostgres),
+        ):
+            raise ValueError(
+                "pending_tool_call_config.enabled requires sqlite, supabase, or postgres storage"
+            )
+        return self
+
     @property
     def batch_size(self) -> int:
         """Deprecated alias for window_size."""
@@ -764,29 +843,3 @@ class Config(BaseModel):
     @batch_interval.setter
     def batch_interval(self, value: int) -> None:
         self.stride_size = value
-
-    @computed_field  # type: ignore[prop-decorator]
-    @property
-    def profile_extractor_configs(self) -> list[ProfileExtractorConfig]:
-        """Deprecated list view for callers that still expect extractor lists."""
-        return [self.profile_extractor_config] if self.profile_extractor_config else []
-
-    @profile_extractor_configs.setter
-    def profile_extractor_configs(
-        self, value: list[ProfileExtractorConfig] | None
-    ) -> None:
-        self.profile_extractor_config = _first_or_none(value)
-
-    @computed_field  # type: ignore[prop-decorator]
-    @property
-    def user_playbook_extractor_configs(self) -> list[UserPlaybookExtractorConfig]:
-        """Deprecated list view for callers that still expect extractor lists."""
-        if self.user_playbook_extractor_config is None:
-            return []
-        return [self.user_playbook_extractor_config]
-
-    @user_playbook_extractor_configs.setter
-    def user_playbook_extractor_configs(
-        self, value: list[UserPlaybookExtractorConfig] | None
-    ) -> None:
-        self.user_playbook_extractor_config = _first_or_none(value)

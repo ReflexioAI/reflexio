@@ -513,9 +513,7 @@ class ExtrasMixin:
         )
 
     @SQLiteStorageBase.handle_exceptions
-    def get_braintrust_connection(
-        self, org_id: str
-    ) -> BraintrustConnection | None:
+    def get_braintrust_connection(self, org_id: str) -> BraintrustConnection | None:
         """Fetch the org's Braintrust connection or None if not connected."""
         rows = self._fetchall(
             """SELECT api_key_enc, workspace_id, workspace_name, project_ids,
@@ -540,9 +538,7 @@ class ExtrasMixin:
     @SQLiteStorageBase.handle_exceptions
     def delete_braintrust_connection(self, org_id: str) -> None:
         """Delete the org's connection (idempotent)."""
-        self._execute(
-            "DELETE FROM braintrust_connection WHERE org_id = ?", (org_id,)
-        )
+        self._execute("DELETE FROM braintrust_connection WHERE org_id = ?", (org_id,))
 
     @SQLiteStorageBase.handle_exceptions
     def save_imported_scores(self, scores: list[ImportedScore]) -> None:

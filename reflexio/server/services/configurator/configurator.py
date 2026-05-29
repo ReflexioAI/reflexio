@@ -7,7 +7,6 @@ from typing import Any
 
 from reflexio.models.config_schema import (
     StorageConfig,
-    StorageConfigDisk,
     StorageConfigSQLite,
 )
 from reflexio.server.services.configurator.base_configurator import BaseConfigurator
@@ -15,7 +14,6 @@ from reflexio.server.services.configurator.config_storage import ConfigStorage
 from reflexio.server.services.configurator.local_file_config_storage import (
     LocalFileConfigStorage,
 )
-from reflexio.server.services.storage.disk_storage import DiskStorage
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 from reflexio.server.services.storage.storage_base import BaseStorage
 
@@ -52,28 +50,15 @@ def _create_sqlite_storage(
     )
 
 
-def _create_disk_storage(
-    configurator: BaseConfigurator, config: StorageConfigDisk
-) -> BaseStorage:
-    logger.info("Using disk storage (markdown + QMD) for org %s", configurator.org_id)
-    return DiskStorage(
-        org_id=configurator.org_id,
-        base_dir=configurator.base_dir,
-        config=config,
-    )
-
-
 class DefaultConfigurator(BaseConfigurator):
-    """OS configurator with LocalJson config storage and Local+SQLite data storage."""
+    """OS configurator with LocalJson config storage and SQLite data storage."""
 
     _STORAGE_FACTORIES: dict[type[StorageConfig], Callable[..., BaseStorage]] = {
         StorageConfigSQLite: _create_sqlite_storage,
-        StorageConfigDisk: _create_disk_storage,
     }
 
     _STORAGE_READINESS_CHECKS: dict[type[StorageConfig], Callable[[Any], bool]] = {
         StorageConfigSQLite: lambda _: True,  # db_path defaults via env var if None
-        StorageConfigDisk: lambda c: bool(c.dir_path),
     }
 
     def _select_config_storage(

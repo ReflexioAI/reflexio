@@ -16,9 +16,7 @@ def _client() -> TestClient:
 
 def test_braintrust_status_returns_disconnected_on_fresh_app() -> None:
     """A fresh in-memory app reports `connected=False`."""
-    response = _client().get(
-        "/api/braintrust/status", headers={"User-Agent": "test"}
-    )
+    response = _client().get("/api/braintrust/status", headers={"User-Agent": "test"})
     assert response.status_code == 200
     body = response.json()
     assert body["connected"] is False
@@ -29,9 +27,7 @@ def test_braintrust_status_returns_disconnected_on_fresh_app() -> None:
 
 def test_braintrust_sync_returns_failure_when_not_connected() -> None:
     """POST /sync against a disconnected org returns success=False with a message."""
-    response = _client().post(
-        "/api/braintrust/sync", headers={"User-Agent": "test"}
-    )
+    response = _client().post("/api/braintrust/sync", headers={"User-Agent": "test"})
     assert response.status_code == 200
     body = response.json()
     assert body["success"] is False

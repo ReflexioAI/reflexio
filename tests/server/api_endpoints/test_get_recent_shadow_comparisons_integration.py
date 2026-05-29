@@ -194,9 +194,7 @@ def test_filters_to_pinned_judge_prompt_version(client_with_org):
     # Anchor verdicts a few seconds in the past so the integer-second
     # truncation in the endpoint's ``to_ts = int(now.timestamp())`` can't
     # accidentally exclude a verdict that was saved with microseconds.
-    anchor = datetime.fromtimestamp(
-        int(datetime.now(UTC).timestamp()) - 5, tz=UTC
-    )
+    anchor = datetime.fromtimestamp(int(datetime.now(UTC).timestamp()) - 5, tz=UTC)
     storage.save_shadow_comparison_verdict(
         _make_verdict(
             interaction_id=f"pinned-{pinned_version[-6:]}",

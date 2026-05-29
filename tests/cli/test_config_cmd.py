@@ -135,10 +135,10 @@ class TestConfigLocal:
         assert result.exit_code == 0, result.output
         assert "mode: cloud" in result.output
 
-    def test_local_mode_for_disk(self, runner: CliRunner, cli_app) -> None:
+    def test_local_mode_for_sqlite(self, runner: CliRunner, cli_app) -> None:
         with (
-            patch(self._PATCH_LOAD, return_value="disk"),
-            patch(self._PATCH_RESOLVE, return_value="disk"),
+            patch(self._PATCH_LOAD, return_value="sqlite"),
+            patch(self._PATCH_RESOLVE, return_value="sqlite"),
         ):
             result = runner.invoke(cli_app, ["config", "local"])
         assert result.exit_code == 0, result.output

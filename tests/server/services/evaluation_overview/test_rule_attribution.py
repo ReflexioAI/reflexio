@@ -161,7 +161,11 @@ def test_cited_session_ids_dedupes_within_same_session() -> None:
 def test_default_cited_session_ids_is_empty_tuple() -> None:
     """Backward-compat: the field defaults to () and the dataclass is hashable."""
     attrib = RuleAttribution(
-        rule_id="r", kind="playbook", title="t", successes_with=0, failures_with=0,
+        rule_id="r",
+        kind="playbook",
+        title="t",
+        successes_with=0,
+        failures_with=0,
     )
     assert attrib.cited_session_ids == ()
     # Frozen + tuple-typed default keeps it hashable

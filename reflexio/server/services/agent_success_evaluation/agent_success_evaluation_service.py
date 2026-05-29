@@ -28,8 +28,8 @@ class AgentSuccessGenerationServiceConfig:
         request_interaction_data_models: The interactions to evaluate
         source: Source of the interactions
         evaluation_name_filter: Optional evaluator-name filter. When set,
-            _load_extractor_configs narrows to the single AgentSuccessConfig
-            whose evaluation_name matches; all others are skipped.
+            _load_extractor_config returns the configured AgentSuccessConfig only
+            when its evaluation_name matches.
     """
 
     session_id: str
@@ -48,8 +48,7 @@ class AgentSuccessEvaluationService(
     ]
 ):
     """
-    Service for evaluating agent success across multiple evaluation criteria.
-    Runs multiple AgentSuccessEvaluator instances sequentially.
+    Service for evaluating agent success with the configured evaluator.
     """
 
     def __init__(
@@ -88,9 +87,13 @@ class AgentSuccessEvaluationService(
             evaluation_name_filter=request.evaluation_name_filter,
         )
 
-    def _load_extractor_configs(self) -> list[AgentSuccessConfig]:
+    def _load_extractor_config(self) -> AgentSuccessConfig | None:
         """
-        Load agent success configs from configurator.
+        Load agent success config from configurator.
+
+        When the active service_config carries an evaluation_name_filter
+        (set by run_group_evaluation in regenerate mode), return None when
+        the configured evaluator's name does not match.
 
         When the active service_config carries an evaluation_name_filter
         (set by run_group_evaluation in regenerate mode), skip every config
@@ -98,13 +101,17 @@ class AgentSuccessEvaluationService(
         re-runs the targeted evaluator instead of every configured rubric.
 
         Returns:
-            list[AgentSuccessConfig]: Agent success configurations to execute.
+            AgentSuccessConfig | None: Configured evaluator, or None when disabled
+            or filtered out.
         """
-        configs = self.configurator.get_config().agent_success_configs  # type: ignore[reportOptionalMemberAccess]
+        root_config = self.configurator.get_config()
+        config = getattr(root_config, "agent_success_config", None)
         name_filter = getattr(self.service_config, "evaluation_name_filter", None)
         if name_filter is None:
-            return configs  # type: ignore[reportReturnType]
-        return [c for c in configs if c.evaluation_name == name_filter]  # type: ignore[reportReturnType]
+            return config
+        if config and config.evaluation_name == name_filter:
+            return config
+        return None
 
     def _create_extractor(
         self,

@@ -6,6 +6,7 @@ import {
   useState,
   useEffect,
   useCallback,
+  useRef,
   ReactNode,
 } from "react";
 
@@ -20,10 +21,11 @@ interface SettingsContextValue extends Settings {
 const SettingsContext = createContext<SettingsContextValue | null>(null);
 
 const STORAGE_KEY = "reflexio-docs-settings";
+const DEFAULT_SETTINGS: Settings = { apiEndpoint: "http://localhost:8081" };
 
 function loadSettings(): Settings {
   if (typeof window === "undefined") {
-    return { apiEndpoint: "http://localhost:8081" };
+    return DEFAULT_SETTINGS;
   }
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
@@ -31,25 +33,36 @@ function loadSettings(): Settings {
   } catch {
     // ignore
   }
-  return { apiEndpoint: "http://localhost:8081" };
+  return DEFAULT_SETTINGS;
 }
 
 export function SettingsProvider({ children }: { children: ReactNode }) {
-  const [settings, setSettings] = useState<Settings>({
-    apiEndpoint: "http://localhost:8081",
-  });
-  const [mounted, setMounted] = useState(false);
+  const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
+  const hasLoadedClientSettings = useRef(false);
+  const [clientSettingsLoaded, setClientSettingsLoaded] = useState(false);
 
   useEffect(() => {
-    setSettings(loadSettings());
-    setMounted(true);
+    let isMounted = true;
+    queueMicrotask(() => {
+      if (!isMounted) return;
+      setSettings(loadSettings());
+      hasLoadedClientSettings.current = true;
+      setClientSettingsLoaded(true);
+    });
+    return () => {
+      isMounted = false;
+    };
   }, []);
 
   useEffect(() => {
-    if (mounted) {
+    if (
+      typeof window !== "undefined" &&
+      hasLoadedClientSettings.current &&
+      clientSettingsLoaded
+    ) {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
     }
-  }, [settings, mounted]);
+  }, [settings, clientSettingsLoaded]);
 
   const setApiEndpoint = useCallback((endpoint: string) => {
     setSettings((prev) => ({ ...prev, apiEndpoint: endpoint }));

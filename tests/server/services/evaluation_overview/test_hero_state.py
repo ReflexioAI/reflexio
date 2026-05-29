@@ -59,4 +59,3 @@ def test_full_when_all_thresholds_met() -> None:
         total_results=800,
     )
     assert state == HeroState.FULL
-

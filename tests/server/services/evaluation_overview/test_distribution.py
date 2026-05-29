@@ -21,3 +21,8 @@ def test_counts_each_bucket() -> None:
 def test_empty_input_yields_all_zero_bins() -> None:
     """No data → six zero-height bars (preserves chart shape)."""
     assert bucket_corrections([]) == (0, 0, 0, 0, 0, 0)
+
+
+def test_negative_corrections_clamp_to_zero_bin() -> None:
+    """Defensively treat negative values as zero instead of indexing from the end."""
+    assert bucket_corrections([-3, 0, 5]) == (2, 0, 0, 0, 0, 1)

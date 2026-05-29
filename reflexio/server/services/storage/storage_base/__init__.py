@@ -1,5 +1,23 @@
 from reflexio.models.api_schema.domain.enums import Status
 
+from ._agent_run import (
+    AgentBinding,
+    AgentRunMixin,
+    AgentRunRecord,
+    AgentRunStatus,
+    PendingToolCallRecord,
+    PendingToolCallStatus,
+    PendingToolCallUpsertResult,
+    PriorAnswerMatch,
+    RunToolDependencyKind,
+    RunToolDependencyRecord,
+    build_pending_tool_call_dedup_key,
+    build_scope_hash,
+    canonical_json,
+    embedding_similarity,
+    human_feedback_scope,
+    normalize_dedup_text,
+)
 from ._base import BaseStorageCore, matches_status_filter
 from ._extras import ExtrasMixin
 from ._operations import OperationMixin
@@ -12,6 +30,7 @@ from ._stall_state import StallStateMixin
 
 
 class BaseStorage(
+    AgentRunMixin,
     ProfileMixin,
     RequestMixin,
     PlaybookMixin,
@@ -36,8 +55,8 @@ class BaseStorage(
         in-flight task's rows.
 
         The default implementation composes existing per-user / by-ids
-        primitives so any backend that implements those (sqlite, disk,
-        supabase, postgres, ...) gets correct behaviour for free.
+        primitives so any backend that implements those (sqlite, supabase,
+        postgres, ...) gets correct behaviour for free.
         Subclasses MAY override for atomic / transactional efficiency.
 
         Args:
@@ -103,10 +122,26 @@ class BaseStorage(
 
 
 __all__ = [
+    "AgentBinding",
+    "AgentRunMixin",
+    "AgentRunRecord",
+    "AgentRunStatus",
     "BaseStorage",
+    "PendingToolCallRecord",
+    "PendingToolCallStatus",
+    "PendingToolCallUpsertResult",
     "PlaybookMixin",
+    "PriorAnswerMatch",
+    "RunToolDependencyKind",
+    "RunToolDependencyRecord",
     "ShadowVerdictsMixin",
     "ShareLinkMixin",
     "StallStateMixin",
+    "build_pending_tool_call_dedup_key",
+    "build_scope_hash",
+    "canonical_json",
+    "embedding_similarity",
+    "human_feedback_scope",
     "matches_status_filter",
+    "normalize_dedup_text",
 ]

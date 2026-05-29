@@ -410,9 +410,9 @@ class TestAggregatorRunWithChangeDetection:
         mock_playbook_config = MagicMock()
         mock_playbook_config.extractor_name = "test_playbook"
         mock_playbook_config.aggregation_config = config
-        mock_configurator.get_config.return_value.user_playbook_extractor_configs = [
+        mock_configurator.get_config.return_value.user_playbook_extractor_config = (
             mock_playbook_config
-        ]
+        )
 
         # Setup storage methods
         mock_storage.get_user_playbooks.return_value = user_playbooks

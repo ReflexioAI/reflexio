@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import MagicMock
 
 import pytest
 
 from reflexio.models.api_schema.domain.entities import AgentPlaybook, PlaybookStatus
 from reflexio.models.api_schema.retriever_schema import UnifiedSearchRequest
+from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.tools import ToolLoopTrace, ToolLoopTurn
 from reflexio.server.services.extraction.plan import ExtractionCtx
 from reflexio.server.services.extraction.tools import (
@@ -216,7 +218,10 @@ def test_agentic_fetch_entities_excludes_rejected_by_default():
     )
     svc = AgenticSearchService(
         llm_client=MagicMock(),
-        request_context=SimpleNamespace(storage=storage, prompt_manager=MagicMock()),
+        request_context=cast(
+            RequestContext,
+            SimpleNamespace(storage=storage, prompt_manager=MagicMock()),
+        ),
     )
     trace = ToolLoopTrace(
         turns=[

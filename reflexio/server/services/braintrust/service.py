@@ -44,6 +44,7 @@ def _default_client_factory(api_key: str) -> BraintrustClient:
     base_url = os.environ.get("BRAINTRUST_BASE_URL", "").strip() or DEFAULT_BASE_URL
     return BraintrustClient(api_key, base_url=base_url)
 
+
 logger = logging.getLogger(__name__)
 
 
@@ -74,9 +75,7 @@ class BraintrustConnectorService:
     # Public API
     # ------------------------------------------------------------------
 
-    def connect(
-        self, request: ConnectBraintrustRequest
-    ) -> ConnectBraintrustResponse:
+    def connect(self, request: ConnectBraintrustRequest) -> ConnectBraintrustResponse:
         """Step 1: validate the API key and return the workspace/project tree.
 
         Persists nothing — the caller chooses which projects to sync and
@@ -97,14 +96,12 @@ class BraintrustConnectorService:
             return ConnectBraintrustResponse(
                 success=False, msg=f"Braintrust HTTP error: {e}"
             )
+        finally:
+            client.close()
 
-        return ConnectBraintrustResponse(
-            success=True, workspaces=workspaces, msg=""
-        )
+        return ConnectBraintrustResponse(success=True, workspaces=workspaces, msg="")
 
-    def select_projects(
-        self, request: SelectProjectsRequest
-    ) -> SelectProjectsResponse:
+    def select_projects(self, request: SelectProjectsRequest) -> SelectProjectsResponse:
         """Step 2: persist the connection with the selected projects.
 
         Stores the API key encrypted. Overwrites any existing connection
@@ -160,10 +157,12 @@ class BraintrustConnectorService:
                 success=False, msg=f"Failed to decrypt API key: {e}"
             )
 
-        client = self.client_factory(api_key)
-        since_ts = max(0, int(time.time()) - backfill_days * 24 * 60 * 60)
+        since_ts = connection.last_sync_ts
+        if since_ts is None:
+            since_ts = max(0, int(time.time()) - backfill_days * 24 * 60 * 60)
 
         all_scores: list[ImportedScore] = []
+        client = self.client_factory(api_key)
         try:
             for project_id in connection.project_ids:
                 experiments = client.list_experiments(project_id, since_ts=since_ts)
@@ -178,6 +177,8 @@ class BraintrustConnectorService:
         except BraintrustHTTPError as e:
             self._persist_sync_outcome(connection, error=str(e))
             return SyncBraintrustResponse(success=False, msg=str(e))
+        finally:
+            client.close()
 
         self.storage.save_imported_scores(all_scores)  # type: ignore[attr-defined]
         self._persist_sync_outcome(connection, error=None)
@@ -226,12 +227,10 @@ class BraintrustConnectorService:
     def _persist_sync_outcome(
         self, connection: BraintrustConnection, *, error: str | None
     ) -> None:
-        updated = connection.model_copy(
-            update={
-                "last_sync_ts": int(time.time()),
-                "last_error": error,
-            }
-        )
+        update: dict[str, int | str | None] = {"last_error": error}
+        if error is None:
+            update["last_sync_ts"] = int(time.time())
+        updated = connection.model_copy(update=update)
         self._save_connection(updated)
 
 

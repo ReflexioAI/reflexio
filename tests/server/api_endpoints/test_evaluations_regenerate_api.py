@@ -88,10 +88,12 @@ def test_delete_cancels_running_job(client_with_org_and_evaluator):
         "from_ts": 0,
         "to_ts": 9_999_999_999,
     }
-    resp = client.post("/api/evaluations/regenerate", json=body)
-    assert resp.status_code == 200, resp.text
-    job_id = resp.json()["job_id"]
+    with patch("reflexio.server.api.threading.Thread") as thread_cls:
+        thread_cls.return_value.start = lambda: None
+        resp = client.post("/api/evaluations/regenerate", json=body)
+        assert resp.status_code == 200, resp.text
+        job_id = resp.json()["job_id"]
 
-    delete_resp = client.delete(f"/api/evaluations/regenerate/{job_id}")
-    assert delete_resp.status_code == 200
-    assert delete_resp.json()["status"] == "cancelled"
+        delete_resp = client.delete(f"/api/evaluations/regenerate/{job_id}")
+        assert delete_resp.status_code == 200
+        assert delete_resp.json()["status"] == "cancelled"

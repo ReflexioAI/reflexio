@@ -18,7 +18,7 @@ def test_endpoint_returns_empty_state_on_fresh_app() -> None:
 
     assert response.status_code == 200
     body = response.json()
-    assert body["hero"]["state"] in ("full", "early", "shadow_off", "empty")
+    assert body["hero"]["state"] in ("empty", "shadow_off")
     assert "context_tiles" in body
     assert "rule_attribution" in body
     assert body["score_distribution"]["labels"] == ["0", "1", "2", "3", "4", "5+"]

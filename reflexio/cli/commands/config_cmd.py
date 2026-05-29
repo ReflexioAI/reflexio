@@ -117,7 +117,7 @@ def show_local(ctx: typer.Context) -> None:
     resolved = resolve_storage(None)  # full resolution without CLI flag
     config_path = default_config_path()
     config_exists = config_path.exists()
-    resolved_mode = "local" if resolved in ("sqlite", "disk") else "cloud"
+    resolved_mode = "local" if resolved == "sqlite" else "cloud"
 
     json_mode: bool = ctx.obj.json_mode
 

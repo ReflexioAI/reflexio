@@ -63,7 +63,7 @@ Start and stop the backend, docs server, and optional local embedding daemon.
 
 ```shell
 uv run reflexio services start                          # backend :8081, docs :8082
-uv run reflexio services start --storage sqlite         # sqlite (default) | supabase | disk
+uv run reflexio services start --storage sqlite         # sqlite (default) | supabase | postgres
 uv run reflexio services start --backend-port 9000 --docs-port 9001
 uv run reflexio services start --only backend --no-reload
 uv run reflexio embeddings serve --port 8072            # OpenAI-compatible local embeddings

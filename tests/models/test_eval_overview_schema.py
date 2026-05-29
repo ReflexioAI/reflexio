@@ -1,5 +1,8 @@
 """Schema sanity for /api/get_evaluation_overview request/response models."""
 
+import pytest
+from pydantic import ValidationError
+
 from reflexio.models.api_schema.eval_overview_schema import (
     GetEvaluationOverviewRequest,
     GetEvaluationOverviewResponse,
@@ -10,6 +13,11 @@ def test_request_defaults_bucket_to_week_and_include_shadow_to_true() -> None:
     req = GetEvaluationOverviewRequest(from_ts=0, to_ts=10)
     assert req.bucket == "week"
     assert req.include_shadow is True
+
+
+def test_request_rejects_inverted_time_window() -> None:
+    with pytest.raises(ValidationError, match="from_ts must be <= to_ts"):
+        GetEvaluationOverviewRequest(from_ts=10, to_ts=1)
 
 
 def test_response_round_trips_full_payload() -> None:

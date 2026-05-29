@@ -34,7 +34,12 @@ type Status =
 function hydrate(raw: unknown): ReflexioConfig {
   const base = defaultConfig();
   if (!raw || typeof raw !== "object") return base;
-  return { ...base, ...(raw as Partial<ReflexioConfig>) };
+  const incoming = raw as Partial<ReflexioConfig>;
+  return {
+    ...base,
+    ...incoming,
+    agent_success_config: incoming.agent_success_config ?? null,
+  };
 }
 
 function errorMessage(err: unknown): string {
@@ -126,15 +131,15 @@ export function ConfigEditor() {
           <APIKeysSection value={config.api_key_config} setConfig={setConfig} />
           <LLMModelsSection value={config.llm_config} setConfig={setConfig} />
           <ProfileExtractorsSection
-            value={config.profile_extractor_configs}
+            value={config.profile_extractor_config}
             setConfig={setConfig}
           />
           <PlaybookExtractorsSection
-            value={config.user_playbook_extractor_configs}
+            value={config.user_playbook_extractor_config}
             setConfig={setConfig}
           />
           <AgentSuccessSection
-            value={config.agent_success_configs}
+            value={config.agent_success_config}
             setConfig={setConfig}
           />
           <ToolsSection value={config.tool_can_use} setConfig={setConfig} />

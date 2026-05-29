@@ -4,7 +4,9 @@
 Simple test script to verify the new config storage classes work correctly.
 """
 
+import json
 import tempfile
+from pathlib import Path
 
 from reflexio.models.config_schema import (
     Config,
@@ -86,6 +88,54 @@ def test_configurator_integration():
     print("  Configurator integration tests passed!")
 
 
+def test_load_config_upgrades_legacy_list_shape():
+    """Legacy list-shaped extractor fields on disk are migrated to singular fields.
+
+    Configs persisted before the single-extractor refactor store
+    ``*_extractor_configs`` lists and ``agent_success_configs``. Without
+    migration at the load boundary, ``Config`` would drop these unknown keys and
+    silently lose the user's customization.
+    """
+    with tempfile.TemporaryDirectory() as temp_dir:
+        org_id = "legacy_org"
+        storage = LocalFileConfigStorage(org_id=org_id, base_dir=temp_dir)
+
+        legacy_payload = {
+            "storage_config": StorageConfigSQLite().model_dump(),
+            "profile_extractor_configs": [
+                {
+                    "extractor_name": "legacy_profile",
+                    "extraction_definition_prompt": "Extract legacy profile data.",
+                }
+            ],
+            "user_playbook_extractor_configs": [
+                {
+                    "extractor_name": "legacy_playbook",
+                    "extraction_definition_prompt": "Extract legacy playbook rules.",
+                }
+            ],
+            "agent_success_configs": [
+                {
+                    "evaluation_name": "legacy_success",
+                    "success_definition_prompt": "Evaluate legacy agent success.",
+                }
+            ],
+        }
+        Path(storage.config_file).parent.mkdir(parents=True, exist_ok=True)
+        Path(storage.config_file).write_text(
+            json.dumps(legacy_payload), encoding="utf-8"
+        )
+
+        loaded = storage.load_config()
+
+        assert loaded.profile_extractor_config is not None
+        assert loaded.profile_extractor_config.extractor_name == "legacy_profile"
+        assert loaded.user_playbook_extractor_config is not None
+        assert loaded.user_playbook_extractor_config.extractor_name == "legacy_playbook"
+        assert loaded.agent_success_config is not None
+        assert loaded.agent_success_config.evaluation_name == "legacy_success"
+
+
 def test_load_config():
     """Test that the configurator loads the config correctly."""
     print("Testing load_config...")
@@ -94,7 +144,7 @@ def test_load_config():
         storage_config=StorageConfigSQLite(
             db_path="/tmp/test.db",
         ),
-        profile_extractor_configs=[],
+        profile_extractor_config=None,
     )
 
     json_config = new_config.model_dump_json()

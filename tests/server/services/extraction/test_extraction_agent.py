@@ -289,7 +289,10 @@ def test_extraction_agent_emits_summary_info_line(
         )
 
     summary = [
-        r for r in caplog.records if r.getMessage().startswith("extraction_agent[")
+        r
+        for r in caplog.records
+        if r.getMessage().startswith("extraction_agent[")
+        and " loop_done " in r.getMessage()
     ]
     assert len(summary) == 1, (
         f"Expected 1 summary line, got: {[r.getMessage() for r in summary]}"
@@ -299,9 +302,17 @@ def test_extraction_agent_emits_summary_info_line(
     assert "turns=" in msg
     assert "tools={" in msg
     assert "outcome=" in msg
-    assert "applied=" in msg
-    assert "violations=" in msg
     assert "usage={" in msg
+    committed = [
+        r
+        for r in caplog.records
+        if r.getMessage().startswith("extraction_agent[")
+        and " committed " in r.getMessage()
+    ]
+    assert len(committed) == 1
+    committed_msg = committed[0].getMessage()
+    assert "applied=" in committed_msg
+    assert "violations=" in committed_msg
 
 
 def test_extraction_agent_threads_request_id_into_profile(

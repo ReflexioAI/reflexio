@@ -20,6 +20,7 @@ from reflexio.models.api_schema.domain.entities import (
 )
 from reflexio.models.api_schema.eval_overview_schema import (
     BraintrustTileRow,
+    BucketLiteral,
     ContextTile,
     GetEvaluationOverviewRequest,
     GetEvaluationOverviewResponse,
@@ -103,7 +104,8 @@ class EvaluationOverviewService:
             r for r in all_results if prev_from <= r.created_at < prev_to
         ]
 
-        hero = self._build_hero(results, request.bucket)
+        earliest_eval_ts = min((r.created_at for r in all_results), default=None)
+        hero = self._build_hero(request, results, earliest_eval_ts)
         tiles = self._build_tiles(results_current_7d, results_prev_7d)
         attribution = self._build_attribution(results)
         distribution = self._build_distribution(results_current_7d, results_prev_7d)
@@ -136,14 +138,16 @@ class EvaluationOverviewService:
 
     def _build_hero(
         self,
+        request: GetEvaluationOverviewRequest,
         results: list[AgentSuccessEvaluationResult],
-        bucket: str,
+        earliest_eval_ts: int | None,
     ) -> HeroBlock:
-        if not results:
+        if earliest_eval_ts is None:
             days_since = None
         else:
-            earliest = min(r.created_at for r in results)
-            days_since = (int(datetime.now(UTC).timestamp()) - earliest) // 86_400
+            days_since = (
+                int(datetime.now(UTC).timestamp()) - earliest_eval_ts
+            ) // 86_400
         # Shadow direct-grade has been removed; counterfactual measurement is
         # pending a methodologically sound replacement (see the validity spec).
         # The state machine still runs so the EMPTY / SHADOW_OFF surfaces work,
@@ -160,7 +164,7 @@ class EvaluationOverviewService:
             regular_success_rate_pp=success_rate,
             shadow_success_rate_pp=None,
             delta_pp=None,
-            buckets=_compute_hero_buckets(results, bucket),
+            buckets=_buckets(results, request.bucket),
         )
 
     def _build_tiles(
@@ -469,11 +473,10 @@ def _aggregate_imported_scores(
     return {name: (sum(vs) / len(vs), len(vs)) for name, vs in bucket.items() if vs}
 
 
-def _compute_hero_buckets(
-    results: list[AgentSuccessEvaluationResult],
-    bucket: str,
+def _buckets(
+    results: list[AgentSuccessEvaluationResult], bucket: BucketLiteral
 ) -> list[HeroBucket]:
-    """Build time-bucketed HeroBucket rows from eval results.
+    """Build day- or week-sized buckets across the given results.
 
     Bucket granularity follows the request: ``"day"`` for the frontend's
     daily trend mode (tooltip activates on every X position, smoother
@@ -483,10 +486,11 @@ def _compute_hero_buckets(
     """
     if not results:
         return []
-    bucket_seconds = _DAY_SECONDS if bucket == "day" else _WEEK_SECONDS
     buckets: dict[int, list[AgentSuccessEvaluationResult]] = defaultdict(list)
+    step = _DAY_SECONDS if bucket == "day" else _WEEK_SECONDS
     for r in results:
-        bucket_start = (r.created_at // bucket_seconds) * bucket_seconds
+        # Anchor each result to the START of its bucket (epoch-aligned).
+        bucket_start = (r.created_at // step) * step
         buckets[bucket_start].append(r)
     out: list[HeroBucket] = []
     for ts in sorted(buckets):

@@ -13,6 +13,12 @@ from reflexio.models.api_schema.service_schemas import (
 from reflexio.models.config_schema import ProfileExtractorConfig
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient
+from reflexio.server.services.extraction.outcome import ExtractionOutcome
+from reflexio.server.services.extraction.resumable_agent import (
+    is_resumable_extraction_enabled,
+    prompt_manager_with_resumable_versions,
+    run_resumable_extraction_agent,
+)
 from reflexio.server.services.extraction.tools import new_profile_id
 from reflexio.server.services.extractor_interaction_utils import (
     get_effective_source_filter,
@@ -79,6 +85,7 @@ class ProfileExtractor:
         self.config: ProfileExtractorConfig = extractor_config
         self.service_config: ProfileGenerationServiceConfig = service_config
         self.agent_context = agent_context
+        self._last_resumable_run_id: str | None = None
 
         # Get LLM config overrides from configuration
         config = self.request_context.configurator.get_config()
@@ -181,7 +188,7 @@ class ProfileExtractor:
             user_id=self.service_config.user_id,
         )
 
-    def run(self) -> list[UserProfile] | None:
+    def run(self) -> list[UserProfile] | ExtractionOutcome[UserProfile] | None:
         """
         Extract profiles from request interaction groups.
 
@@ -226,18 +233,36 @@ class ProfileExtractor:
             ) from e
 
         logger.info("Generated raw profiles: %s", raw_profiles)
-        if raw_profiles:
+        if isinstance(raw_profiles, ExtractionOutcome):
             user_profiles = self._convert_raw_to_user_profiles(
-                raw_profiles=raw_profiles,
+                raw_profiles=raw_profiles.items,
                 user_id=self.service_config.user_id,
                 request_id=self.service_config.request_id,
             )
-
-            # Update operation state after successful processing
+            self._update_operation_state(request_interaction_data_models)
+            return ExtractionOutcome.completed(
+                user_profiles, run_id=raw_profiles.run_id
+            )
+        user_profiles = self._convert_raw_to_user_profiles(
+            raw_profiles=raw_profiles or [],
+            user_id=self.service_config.user_id,
+            request_id=self.service_config.request_id,
+        )
+        if raw_profiles:
+            # Update operation state (bookmark) only when output was produced.
             self._update_operation_state(request_interaction_data_models)
 
-            return user_profiles or None
-        return None
+        # A resumable run must always surface its run_id so the generation
+        # service can finalize the _agent_runs row (FINALIZED_PENDING_TOOL when
+        # the agent created a follow-up ask and finished with empty output).
+        # Dropping the run_id here would orphan the run in AGENT_COMPLETED and
+        # sever the resolve -> resume chain. Mirrors PlaybookExtractor.run().
+        if self._last_resumable_run_id:
+            return ExtractionOutcome.completed(
+                user_profiles,
+                run_id=self._last_resumable_run_id,
+            )
+        return user_profiles or None
 
     def _convert_raw_to_user_profiles(
         self,
@@ -312,8 +337,15 @@ class ProfileExtractor:
                 request_interaction_data_models=request_interaction_data_models,
             )
 
+        resumable_enabled = is_resumable_extraction_enabled(self.request_context)
+        prompt_manager = (
+            prompt_manager_with_resumable_versions(self.request_context.prompt_manager)
+            if resumable_enabled
+            else self.request_context.prompt_manager
+        )
+
         messages = construct_profile_extraction_messages_from_sessions(
-            prompt_manager=self.request_context.prompt_manager,
+            prompt_manager=prompt_manager,
             request_interaction_data_models=request_interaction_data_models,
             agent_context_prompt=self.agent_context,
             context_prompt=(
@@ -352,6 +384,33 @@ class ProfileExtractor:
         )
 
         log_llm_messages(logger, "Profile extraction", messages_dict)
+
+        if resumable_enabled:
+            result = run_resumable_extraction_agent(
+                request_context=self.request_context,
+                client=self.client,
+                extractor_kind="profile",
+                extractor_name=self.config.extractor_name,
+                user_id=self.service_config.user_id,
+                request_id=self.service_config.request_id,
+                agent_version=None,
+                source=self.service_config.source,
+                request_interaction_data_models=request_interaction_data_models,
+                extractor_config=self.config,
+                service_config=self.service_config,
+                agent_context=self.agent_context,
+                messages=messages_dict,
+                output_schema=StructuredProfilesOutput,
+                log_label="Profile extraction",
+            )
+            if not isinstance(result.output, StructuredProfilesOutput):
+                raise RuntimeError(
+                    f"Resumable profile extraction did not finish: {result.finished_reason}"
+                )
+            profiles = result.output.profiles or []
+            raw_profiles = [p.model_dump() for p in profiles] if profiles else []
+            self._last_resumable_run_id = result.run_id
+            return raw_profiles
 
         # Use StructuredProfilesOutput schema for structured output
         extract_start = time.perf_counter()

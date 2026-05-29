@@ -5,5 +5,9 @@
     "deduplicator": {
         "enabled": true,
         "enabled_org_ids": []
+    },
+    "resumable_extraction_agent": {
+        "enabled": false,
+        "enabled_org_ids": []
     }
 }

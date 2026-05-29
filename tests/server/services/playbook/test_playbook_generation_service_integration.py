@@ -76,15 +76,13 @@ def mock_request_context():
     # Mock get_last_k_interactions_grouped to return empty by default
     context.storage.get_last_k_interactions_grouped.return_value = ([], [])
     context.configurator = MagicMock()
-    context.configurator.get_config.return_value.user_playbook_extractor_configs = [
+    context.configurator.get_config.return_value.user_playbook_extractor_config = (
         PlaybookConfig(
             extractor_name="test_playbook",
             extraction_definition_prompt="Test playbook definition",
-            aggregation_config=PlaybookAggregatorConfig(
-                min_cluster_size=2,
-            ),
+            aggregation_config=PlaybookAggregatorConfig(min_cluster_size=2),
         )
-    ]
+    )
     # Mock window_size for extractor
     context.configurator.get_config.return_value.window_size = 100
     context.prompt_manager = PromptManager()
@@ -254,7 +252,7 @@ def test_playbook_generation_with_no_playbook_config(
     _setup_mock_chat_completion(playbook_generation_service)
 
     # Set empty playbook config
-    mock_request_context.configurator.get_config.return_value.user_playbook_extractor_configs = []
+    mock_request_context.configurator.get_config.return_value.user_playbook_extractor_config = None
 
     # Create request interaction data model
     request_interaction_data_model = create_request_interaction_data_model(
