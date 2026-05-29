@@ -118,12 +118,8 @@ def test_search_user_playbooks_populates_known_ids(seeded_storage, ctx):
     assert hit_ids.issubset(ctx.known_ids)
 
 
-def test_search_user_playbooks_projection_exposes_polarity(seeded_storage, ctx):
-    """The LLM-facing projection MUST expose `polarity` so the agent can
-    detect contradictions / like-with-like duplicates before writing a new
-    rule. Without this, search results are polarity-blind and the agentic
-    loop cannot tell a positive rule from a negative one with similar content.
-    """
+def test_search_user_playbooks_projection_omits_internal_polarity(seeded_storage, ctx):
+    """The LLM-facing projection keeps polarity as an internal derived field."""
     result = _handle_search_user_playbooks(
         SearchUserPlaybooksArgs(query="code examples", top_k=10),
         seeded_storage,
@@ -132,15 +128,11 @@ def test_search_user_playbooks_projection_exposes_polarity(seeded_storage, ctx):
     hits = result["hits"]
     assert hits, "expected at least one hit from seeded storage"
     for hit in hits:
-        assert "polarity" in hit, f"projection missing polarity: {hit}"
-        assert hit["polarity"] in {"positive", "negative"}
+        assert "polarity" not in hit, f"projection leaked polarity: {hit}"
 
 
-def test_project_user_playbook_falls_back_to_positive_for_legacy_rows():
-    """Legacy playbook rows pre-dating the polarity column must project as
-    `"positive"` so the agent gets a stable, well-defined value rather than
-    `None` or a KeyError.
-    """
+def test_project_user_playbook_keeps_legacy_rows_without_polarity():
+    """Legacy rows without a polarity attribute remain projectable."""
     from types import SimpleNamespace
 
     from reflexio.server.services.extraction.tools import (
@@ -156,7 +148,13 @@ def test_project_user_playbook_falls_back_to_positive_for_legacy_rows():
         # No `polarity` attribute — simulates a legacy row.
     )
     projection = _project_user_playbook_for_llm(legacy_pb)
-    assert projection["polarity"] == "positive"
+    assert projection == {
+        "id": "42",
+        "trigger": "t",
+        "content": "c",
+        "rationale": "r",
+        "last_modified": 123,
+    }
 
 
 def test_search_agent_playbooks_bumps_search_count(seeded_storage, ctx):

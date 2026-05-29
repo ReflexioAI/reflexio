@@ -1,21 +1,21 @@
 """
-Integration tests for polarity emission by the agentic extraction loop.
+Integration tests for derived polarity in the agentic extraction loop.
 
 These tests drive ``ExtractionAgent.run`` end-to-end with the playbook tool
 registry, real SQLite storage, and a scripted (mocked) LLM. They cover the two
 behaviours D3's prompt guidance is meant to elicit:
 
-* A failure window — clear user pushback — produces a ``create_user_playbook``
-  tool call with ``polarity="negative"``; the corresponding ``UserPlaybook``
-  lands in storage with ``polarity == "negative"``.
+* A failure window — clear user pushback — produces an Avoid-prefixed
+  ``create_user_playbook`` tool call; the corresponding ``UserPlaybook`` lands
+  in storage with derived ``polarity == "negative"``.
 * An existing positive playbook on the same trigger PLUS a failure window
   results in the agent calling ``delete_user_playbook(existing_id)`` AND
-  ``create_user_playbook(polarity="negative")``; storage reflects the
-  delete-then-create reconciliation.
+  ``create_user_playbook`` with avoidance wording; storage reflects the
+  delete-then-create reconciliation with derived negative polarity.
 
 The LLM is mocked, so these tests don't validate that an LLM would CHOOSE this
 tool-call sequence — they validate that the agent's plan-apply path correctly
-threads polarity into storage and correctly handles a delete-then-create
+derives polarity before storage and correctly handles a delete-then-create
 sequence emitted by the agent.
 """
 
@@ -154,14 +154,13 @@ def test_agentic_loop_failure_window_emits_negative_playbook(
 
     Scripted LLM tool-call sequence:
       1. ``search_user_playbooks`` — returns empty (no existing playbooks).
-      2. ``create_user_playbook`` with ``polarity="negative"`` and
-         Avoid-prefixed content.
+      2. ``create_user_playbook`` with Avoid-prefixed content and failure
+         rationale.
       3. ``finish``.
 
     Asserts that after ``ExtractionAgent.run`` the storage contains exactly one
     ``UserPlaybook`` with ``polarity == "negative"`` — confirming the polarity
-    field threads all the way from the LLM tool call through
-    ``CreateUserPlaybookOp`` and ``apply_plan_op`` into the persisted entity.
+    value is derived from content/rationale before the entity is persisted.
     """
     llm_client.generate_chat_response.side_effect = [
         _mk_tool_response(
@@ -183,7 +182,6 @@ def test_agentic_loop_failure_window_emits_negative_playbook(
                         "content": "Avoid asking the user to confirm a cancellation more than once",
                         "rationale": "User pushed back on repeated confirmation prompts",
                         "source_span": "I already said yes, stop asking me to confirm.",
-                        "polarity": "negative",
                     },
                 )
             ]
@@ -215,8 +213,7 @@ def test_agentic_loop_failure_window_emits_negative_playbook(
     playbooks = temp_storage.get_user_playbooks(user_id=user_id)
     assert len(playbooks) == 1, f"Expected one persisted UserPlaybook, got: {playbooks}"
     assert playbooks[0].polarity == "negative", (
-        "polarity must thread from tool args through CreateUserPlaybookOp into "
-        f"storage; got {playbooks[0].polarity!r}"
+        f"polarity must be derived before storage; got {playbooks[0].polarity!r}"
     )
     assert playbooks[0].content.startswith("Avoid"), (
         "Negative-polarity content should preserve its Avoid-prefix end-to-end; "
@@ -236,7 +233,7 @@ def test_agentic_loop_existing_positive_plus_failure_deletes_then_creates_negati
       1. ``search_user_playbooks`` — returns the seed (and adds its id to
          ``ctx.known_ids`` so invariant B accepts the subsequent delete).
       2. ``delete_user_playbook(id=<seed_id>)``.
-      3. ``create_user_playbook(polarity="negative", ...)``.
+      3. ``create_user_playbook`` with avoidance wording.
       4. ``finish``.
 
     Asserts the final storage state:
@@ -244,11 +241,11 @@ def test_agentic_loop_existing_positive_plus_failure_deletes_then_creates_negati
       * Exactly one playbook remains, with ``polarity == "negative"`` and an
         Avoid-prefixed content body.
 
-    This exercises the apply-path for the polarity-aware reconciliation that
+    This exercises the apply-path for the orientation-aware reconciliation that
     D3 added to the playbook extraction prompt — the LLM is mocked, so this
     test doesn't verify the LLM would CHOOSE this sequence; it verifies the
-    pipeline correctly handles a delete-then-create sequence with polarity
-    threading.
+    pipeline correctly handles a delete-then-create sequence with derived
+    polarity.
     """
     from reflexio.models.api_schema.domain.entities import UserPlaybook
 
@@ -301,7 +298,6 @@ def test_agentic_loop_existing_positive_plus_failure_deletes_then_creates_negati
                         "content": "Avoid recommending X when the user has said no",
                         "rationale": "Window shows user pushback on recommending X",
                         "source_span": "I told you no, stop suggesting X.",
-                        "polarity": "negative",
                     },
                 )
             ]

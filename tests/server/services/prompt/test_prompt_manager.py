@@ -333,4 +333,4 @@ class TestPromptManager:
         assert "Do not add markdown headings" in rendered
         assert "extra top-level keys" in rendered
         assert "separate entries for those independent lessons" in rendered
-        assert '"polarity": "positive | negative"' in rendered
+        assert "Do not add a separate polarity field" in rendered

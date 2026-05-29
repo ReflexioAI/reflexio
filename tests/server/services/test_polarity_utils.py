@@ -5,6 +5,7 @@ import pytest
 from reflexio.models.api_schema.domain.entities import UserPlaybook
 from reflexio.server.services.polarity_utils import (
     NEGATIVE_PREFIXES,
+    infer_playbook_polarity,
     looks_negative,
     warn_if_polarity_content_mismatch,
 )
@@ -57,6 +58,37 @@ def test_polarity_mismatch_emits_warning(caplog: pytest.LogCaptureFixture) -> No
     with caplog.at_level(logging.WARNING):
         warn_if_polarity_content_mismatch(pb)
     assert any("polarity_content_mismatch" in r.message for r in caplog.records)
+
+
+def test_infer_playbook_polarity_defaults_positive() -> None:
+    assert (
+        infer_playbook_polarity(
+            "Use the narrow verification before broad checks.",
+            "The session succeeded after the focused check.",
+        )
+        == "positive"
+    )
+
+
+def test_infer_playbook_polarity_negative_requires_avoidance_and_failure_evidence() -> (
+    None
+):
+    assert (
+        infer_playbook_polarity(
+            "Avoid broad setup before the target behavior is isolated.",
+            "The session showed unrelated setup failures consumed extra turns.",
+        )
+        == "negative"
+    )
+
+
+def test_infer_playbook_polarity_avoidance_without_failure_evidence_stays_positive() -> (
+    None
+):
+    assert (
+        infer_playbook_polarity("Avoid broad setup.", "Use the focused path.")
+        == "positive"
+    )
 
 
 def test_negative_prefixes_constant_matches_docstring() -> None:

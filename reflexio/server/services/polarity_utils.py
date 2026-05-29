@@ -19,14 +19,11 @@ logger = logging.getLogger(__name__)
 
 NEGATIVE_PREFIXES: tuple[str, ...] = ("Avoid", "Do not", "Don't", "Never")
 NEGATIVE_EVIDENCE_TERMS: tuple[str, ...] = (
-    "avoid",
-    "do not",
-    "don't",
-    "never",
     "failed",
     "failure",
     "rejected",
     "refuted",
+    "pushback",
     "pushed back",
     "self-corrected",
     "disliked",
@@ -48,9 +45,8 @@ def _content_fingerprint(content: str) -> str:
 def looks_negative(content: str) -> bool:
     """Heuristic check: does the content's leading word look negative-framed?
 
-    NOT the source of truth for polarity. Use ``UserPlaybook.polarity``.
-    Used only by ``warn_if_polarity_content_mismatch`` to detect prompt
-    drift.
+    This is a framing signal. ``infer_playbook_polarity`` combines it with
+    failure evidence before deriving internal polarity.
 
     Args:
         content (str): The playbook's content text.

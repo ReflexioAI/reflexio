@@ -5,8 +5,8 @@ These tests verify the end-to-end polarity flow from LLM response through
 ``PlaybookExtractor.run()`` to the produced ``UserPlaybook`` objects:
 
 * Neutral / no-failure windows produce playbooks with ``polarity="positive"``
-  via the schema default — confirming the default-polarity threading.
-* Failure-evidence windows with explicit ``polarity="negative"`` LLM output
+  via internal derivation.
+* Failure-evidence windows with avoidance wording and rationale
   produce playbooks with negative polarity AND content prefixed by one of
   ``NEGATIVE_PREFIXES`` — confirming the negative path is preserved end-to-end.
 """
@@ -225,17 +225,16 @@ def test_classic_extractor_emits_positive_when_no_failure_evidence(
 ):
     """Window with neutral interactions → extracted playbooks have polarity=positive.
 
-    Validates the default-polarity threading end-to-end: the LLM emits a
-    ``StructuredPlaybookContent`` without an explicit ``polarity`` field, so the
-    schema default ``"positive"`` flows through ``_build_user_playbook`` into
-    the resulting ``UserPlaybook``.
+    Validates the default orientation end-to-end: the LLM emits
+    ``StructuredPlaybookContent`` without an explicit ``polarity`` field, and
+    ``_build_user_playbook`` derives the resulting ``UserPlaybook`` polarity.
     """
     request_context.storage.get_last_k_interactions_grouped.return_value = (
         neutral_request_interaction_models,
         [],
     )
 
-    # LLM emits entries without explicit polarity — relies on the default.
+    # LLM emits entries without explicit polarity — polarity is derived.
     mock_llm_client.generate_chat_response.return_value = StructuredPlaybookList(
         playbooks=[
             StructuredPlaybookContent(
@@ -260,7 +259,7 @@ def test_classic_extractor_emits_positive_when_no_failure_evidence(
 
     assert len(result) == 2, "Expected two playbooks from the neutral window"
     assert all(playbook.polarity == "positive" for playbook in result), (
-        "All playbooks must default to polarity=positive when LLM omits the field"
+        "All action-style playbooks must derive polarity=positive"
     )
 
 
@@ -273,9 +272,9 @@ def test_classic_extractor_emits_negative_on_clear_failure(
 ):
     """Window with user pushback → at least one playbook has polarity=negative.
 
-    Validates that negative polarity is preserved end-to-end when the LLM emits
-    it: the emitted ``UserPlaybook`` must have ``polarity == "negative"`` AND
-    content starting with one of ``NEGATIVE_PREFIXES``
+    Validates that negative polarity is derived end-to-end when the LLM writes
+    an avoidance rule: the emitted ``UserPlaybook`` must have
+    ``polarity == "negative"`` AND content starting with one of ``NEGATIVE_PREFIXES``
     (``"Avoid"``/``"Do not"``/``"Don't"``/``"Never"``).
     """
     request_context.storage.get_last_k_interactions_grouped.return_value = (
@@ -288,7 +287,7 @@ def test_classic_extractor_emits_negative_on_clear_failure(
             StructuredPlaybookContent(
                 trigger="user confirms a cancellation request",
                 content="Avoid asking the user to confirm a cancellation more than once",
-                polarity="negative",
+                rationale="User pushed back on repeated confirmation prompts.",
             ),
             # Companion positive entry — verifies a mixed-polarity window
             # produces the right mix downstream.
