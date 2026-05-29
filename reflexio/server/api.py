@@ -167,40 +167,6 @@ from reflexio.server.services.agent_success_evaluation.regen_jobs import (
 
 logger = logging.getLogger(__name__)
 
-_LEGACY_EXTRACTOR_PARTIAL_FIELDS: tuple[tuple[str, str], ...] = (
-    ("profile_extractor_configs", "profile_extractor_config"),
-    ("user_playbook_extractor_configs", "user_playbook_extractor_config"),
-    ("playbook_configs", "user_playbook_extractor_config"),
-    ("agent_feedback_configs", "user_playbook_extractor_config"),
-    ("agent_success_configs", "agent_success_config"),
-)
-
-
-def _normalize_legacy_extractor_partial(partial: dict[str, Any]) -> dict[str, Any]:
-    """Map legacy extractor list keys in PATCH payloads to canonical fields.
-
-    ``/api/update_config`` merges partial payloads over a serialized existing
-    config that already contains canonical extractor fields. Schema-level
-    migration cannot tell which keys came from the client, so legacy keys are
-    normalized before the merge.
-    """
-    normalized = dict(partial)
-    for legacy_name, canonical_name in _LEGACY_EXTRACTOR_PARTIAL_FIELDS:
-        if legacy_name not in partial:
-            continue
-        if canonical_name in partial or canonical_name in normalized:
-            normalized.pop(legacy_name, None)
-            continue
-
-        legacy_value = partial[legacy_name]
-        if isinstance(legacy_value, list):
-            normalized[canonical_name] = legacy_value[0] if legacy_value else None
-        else:
-            normalized[canonical_name] = legacy_value
-        normalized.pop(legacy_name, None)
-    return normalized
-
-
 # Re-exported for backwards compatibility — callers that did
 # ``from reflexio.server.api import default_get_org_id`` or ``DEFAULT_ORG_ID``
 # continue to work.
@@ -1253,8 +1219,7 @@ def update_config(
     existing = reflexio.request_context.configurator.get_config().model_dump(
         mode="python"
     )
-    normalized_partial = _normalize_legacy_extractor_partial(partial)
-    merged = {**existing, **normalized_partial}
+    merged = {**existing, **partial}
     # Pydantic validates the merged shape and rejects unknown / malformed
     # fields here, before storage validation in reflexio.set_config.
     # Convert ValidationError into 422 so callers passing a partial that
@@ -1731,11 +1696,6 @@ def start_regenerate(
     reflexio = get_reflexio(org_id=org_id)
     config = reflexio.request_context.configurator.get_config()
     success_config = getattr(config, "agent_success_config", None)
-    if success_config is None or not isinstance(
-        getattr(success_config, "evaluation_name", None), str
-    ):
-        legacy_configs = getattr(config, "agent_success_configs", None)
-        success_config = legacy_configs[0] if legacy_configs else None
     known = {success_config.evaluation_name} if success_config else set()
     if payload.evaluation_name not in known:
         raise HTTPException(

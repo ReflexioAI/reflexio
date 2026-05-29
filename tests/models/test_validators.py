@@ -57,7 +57,6 @@ from reflexio.models.config_schema import (
     PlaybookConfig,
     PlaybookOptimizerConfig,
     ProfileExtractorConfig,
-    StorageConfigDisk,
     StorageConfigSQLite,
     ToolUseConfig,
 )
@@ -699,14 +698,6 @@ class TestCrossFieldValidators:
             config.user_playbook_extractor_config.extractor_name
             == "default_playbook_extractor"
         )
-        assert config.profile_extractor_configs is not None
-        assert config.user_playbook_extractor_configs is not None
-        assert config.profile_extractor_configs[0].extractor_name == (
-            "default_profile_extractor"
-        )
-        assert config.user_playbook_extractor_configs[0].extractor_name == (
-            "default_playbook_extractor"
-        )
         assert isinstance(config.pending_tool_call_config, PendingToolCallConfig)
         assert config.pending_tool_call_config.enabled is False
 
@@ -720,8 +711,6 @@ class TestCrossFieldValidators:
 
         assert config.profile_extractor_config is None
         assert config.user_playbook_extractor_config is None
-        assert config.profile_extractor_configs == []
-        assert config.user_playbook_extractor_configs == []
 
     def test_config_defaults_pending_tool_call_config_when_null(self):
         """Config: null pending_tool_call_config falls back to disabled defaults."""
@@ -766,29 +755,6 @@ class TestCrossFieldValidators:
         assert other_tool.pending_ttl_seconds == 60
         assert other_tool.similarity_threshold == 0.2
 
-    def test_pending_tool_calls_reject_disk_storage(self):
-        """Pending tool calls are supported only by database-backed storage."""
-        with pytest.raises(ValidationError, match="sqlite, supabase, or postgres"):
-            Config(
-                storage_config=StorageConfigDisk(dir_path="/tmp/reflexio"),
-                pending_tool_call_config=PendingToolCallConfig(enabled=True),
-            )
-
-    def test_config_disables_extractors_when_legacy_lists_are_empty(self):
-        """Config: empty legacy extractor lists explicitly disable extraction."""
-        config = Config.model_validate(
-            {
-                "storage_config": StorageConfigSQLite(),
-                "profile_extractor_configs": [],
-                "user_playbook_extractor_configs": [],
-            }
-        )
-
-        assert config.profile_extractor_config is None
-        assert config.user_playbook_extractor_config is None
-        assert config.profile_extractor_configs == []
-        assert config.user_playbook_extractor_configs == []
-
     def test_config_accepts_singular_extractor_fields(self):
         """Config: singular extractor fields validate and serialize."""
         profile_config = ProfileExtractorConfig(
@@ -813,50 +779,6 @@ class TestCrossFieldValidators:
         assert (
             dumped["user_playbook_extractor_config"]["extractor_name"] == "playbook_one"
         )
-        assert dumped["profile_extractor_configs"][0]["extractor_name"] == "profile_one"
-        assert (
-            dumped["user_playbook_extractor_configs"][0]["extractor_name"]
-            == "playbook_one"
-        )
-
-    def test_config_legacy_multi_extractor_lists_keep_first_entry(self):
-        """Config: legacy multi-entry extractor lists are accepted first-entry wins."""
-        config = Config.model_validate(
-            {
-                "storage_config": StorageConfigSQLite(),
-                "profile_extractor_configs": [
-                    ProfileExtractorConfig(
-                        extractor_name="profile_first",
-                        extraction_definition_prompt="first",
-                    ),
-                    ProfileExtractorConfig(
-                        extractor_name="profile_second",
-                        extraction_definition_prompt="second",
-                    ),
-                ],
-                "user_playbook_extractor_configs": [
-                    PlaybookConfig(
-                        extractor_name="playbook_first",
-                        extraction_definition_prompt="first",
-                    ),
-                    PlaybookConfig(
-                        extractor_name="playbook_second",
-                        extraction_definition_prompt="second",
-                    ),
-                ],
-            }
-        )
-
-        assert config.profile_extractor_config is not None
-        assert config.profile_extractor_config.extractor_name == "profile_first"
-        assert [c.extractor_name for c in config.profile_extractor_configs] == [
-            "profile_first"
-        ]
-        assert config.user_playbook_extractor_config is not None
-        assert config.user_playbook_extractor_config.extractor_name == "playbook_first"
-        assert [c.extractor_name for c in config.user_playbook_extractor_configs] == [
-            "playbook_first"
-        ]
 
     def test_config_accepts_singular_agent_success_config(self):
         """Config: singular agent success config validates and serializes."""
@@ -873,64 +795,6 @@ class TestCrossFieldValidators:
         dumped = config.model_dump()
         assert config.agent_success_config == success_config
         assert dumped["agent_success_config"]["evaluation_name"] == "success_one"
-        assert dumped["agent_success_configs"][0]["evaluation_name"] == "success_one"
-
-    def test_config_legacy_agent_success_list_keeps_first_entry(self):
-        """Config: legacy multi-entry success config lists are first-entry wins."""
-        config = Config.model_validate(
-            {
-                "storage_config": StorageConfigSQLite(),
-                "agent_success_configs": [
-                    AgentSuccessConfig(
-                        evaluation_name="success_first",
-                        success_definition_prompt="first",
-                    ),
-                    AgentSuccessConfig(
-                        evaluation_name="success_second",
-                        success_definition_prompt="second",
-                    ),
-                ],
-            }
-        )
-
-        assert config.agent_success_config is not None
-        assert config.agent_success_config.evaluation_name == "success_first"
-        assert [c.evaluation_name for c in config.agent_success_configs] == [
-            "success_first"
-        ]
-
-    def test_config_empty_legacy_agent_success_list_disables_evaluation(self):
-        """Config: empty legacy success config list normalizes to disabled."""
-        config = Config.model_validate(
-            {
-                "storage_config": StorageConfigSQLite(),
-                "agent_success_configs": [],
-            }
-        )
-
-        assert config.agent_success_config is None
-        assert config.agent_success_configs == []
-
-    def test_config_accepts_legacy_playbook_aliases_first_entry_wins(self):
-        """Config: legacy playbook alias fields normalize to the singular extractor."""
-        config = Config.model_validate(
-            {
-                "storage_config": StorageConfigSQLite(),
-                "playbook_configs": [
-                    {
-                        "playbook_name": "legacy_first",
-                        "playbook_definition_prompt": "first",
-                    },
-                    {
-                        "playbook_name": "legacy_second",
-                        "playbook_definition_prompt": "second",
-                    },
-                ],
-            }
-        )
-
-        assert config.user_playbook_extractor_config is not None
-        assert config.user_playbook_extractor_config.extractor_name == "legacy_first"
 
     def test_playbook_optimizer_accepts_webhook_backend(self):
         """PlaybookOptimizerConfig: webhook-only assistant backend is valid."""

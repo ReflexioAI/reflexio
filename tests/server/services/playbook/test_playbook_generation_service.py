@@ -105,7 +105,7 @@ def test_generate_playbook(mock_chat_completion):
             ),
         )
         playbook_generation_service.configurator.set_config_by_name(
-            "user_playbook_extractor_configs", [playbook_config]
+            "user_playbook_extractor_config", playbook_config
         )
         playbook_generation_service.configurator.set_config_by_name("window_size", 100)
 
@@ -157,7 +157,7 @@ def test_empty_interactions(mock_chat_completion):
             ),
         )
         playbook_generation_service.configurator.set_config_by_name(
-            "user_playbook_extractor_configs", [playbook_config]
+            "user_playbook_extractor_config", playbook_config
         )
 
         # Create playbook generation request with empty request interaction data models
@@ -244,7 +244,7 @@ def test_error_handling(mock_chat_completion):
             ),
         )
         playbook_generation_service.configurator.set_config_by_name(
-            "user_playbook_extractor_configs", [playbook_config]
+            "user_playbook_extractor_config", playbook_config
         )
 
         # Create request interaction data model
@@ -305,7 +305,7 @@ def test_run_manual_regular_no_window_size(mock_chat_completion):
             ),
         )
         playbook_generation_service.configurator.set_config_by_name(
-            "user_playbook_extractor_configs", [playbook_config]
+            "user_playbook_extractor_config", playbook_config
         )
         # window_size is not configured
 
@@ -362,7 +362,7 @@ def test_run_manual_regular_no_interactions(mock_chat_completion):
             ),
         )
         playbook_generation_service.configurator.set_config_by_name(
-            "user_playbook_extractor_configs", [playbook_config]
+            "user_playbook_extractor_config", playbook_config
         )
         playbook_generation_service.configurator.set_config_by_name("window_size", 100)
 
@@ -405,7 +405,7 @@ def test_run_manual_regular_with_interactions(mock_chat_completion):
             allow_manual_trigger=True,  # Required for manual generation
         )
         playbook_generation_service.configurator.set_config_by_name(
-            "user_playbook_extractor_configs", [playbook_config]
+            "user_playbook_extractor_config", playbook_config
         )
         playbook_generation_service.configurator.set_config_by_name("window_size", 100)
 
@@ -466,7 +466,7 @@ def test_run_manual_regular_with_source_filter(mock_chat_completion):
             allow_manual_trigger=True,  # Required for manual generation
         )
         playbook_generation_service.configurator.set_config_by_name(
-            "user_playbook_extractor_configs", [playbook_config]
+            "user_playbook_extractor_config", playbook_config
         )
         playbook_generation_service.configurator.set_config_by_name("window_size", 100)
 
@@ -549,7 +549,7 @@ def test_run_manual_regular_output_pending_status_false(mock_chat_completion):
             allow_manual_trigger=True,  # Required for manual generation
         )
         playbook_generation_service.configurator.set_config_by_name(
-            "user_playbook_extractor_configs", [playbook_config]
+            "user_playbook_extractor_config", playbook_config
         )
         playbook_generation_service.configurator.set_config_by_name("window_size", 100)
 
@@ -807,30 +807,21 @@ def test_collect_scoped_interactions_for_precheck_uses_extractor_scope():
             return_value=([session_id], [])
         )
 
-        extractor_configs = [
-            PlaybookConfig(
-                extractor_name="api_playbook",
-                extraction_definition_prompt="extract api-related playbook",
-                request_sources_enabled=["api"],
-                window_size_override=120,
-                aggregation_config=PlaybookAggregatorConfig(min_cluster_size=2),
-            ),
-            PlaybookConfig(
-                extractor_name="web_playbook",
-                extraction_definition_prompt="extract web-related playbook",
-                request_sources_enabled=["web"],
-                window_size_override=80,
-                aggregation_config=PlaybookAggregatorConfig(min_cluster_size=2),
-            ),
-        ]
+        extractor_config = PlaybookConfig(
+            extractor_name="api_playbook",
+            extraction_definition_prompt="extract api-related playbook",
+            request_sources_enabled=["api"],
+            window_size_override=120,
+            aggregation_config=PlaybookAggregatorConfig(min_cluster_size=2),
+        )
 
         (
             scoped_groups,
-            scoped_configs,
-        ) = service._collect_scoped_interactions_for_precheck(extractor_configs)
+            scoped_config,
+        ) = service._collect_scoped_interactions_for_precheck(extractor_config)
 
         assert len(scoped_groups) == 1
-        assert [c.extractor_name for c in scoped_configs] == ["api_playbook"]
+        assert scoped_config.extractor_name == "api_playbook"
         service.storage.get_last_k_interactions_grouped.assert_called_once()
         _, kwargs = service.storage.get_last_k_interactions_grouped.call_args
         assert kwargs["k"] == 120

@@ -5,7 +5,6 @@ import { Settings, AlertCircle, CheckCircle2, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useSettings } from "@/hooks/use-settings";
 import {
-  AgentSuccessConfig,
   ReflexioConfig,
   defaultConfig,
   serializeConfig,
@@ -35,16 +34,11 @@ type Status =
 function hydrate(raw: unknown): ReflexioConfig {
   const base = defaultConfig();
   if (!raw || typeof raw !== "object") return base;
-  const incoming = raw as Partial<ReflexioConfig> & {
-    agent_success_configs?: AgentSuccessConfig[] | null;
-  };
+  const incoming = raw as Partial<ReflexioConfig>;
   return {
     ...base,
     ...incoming,
-    agent_success_config:
-      "agent_success_config" in incoming
-        ? (incoming.agent_success_config ?? null)
-        : (incoming.agent_success_configs?.[0] ?? null),
+    agent_success_config: incoming.agent_success_config ?? null,
   };
 }
 
@@ -137,11 +131,11 @@ export function ConfigEditor() {
           <APIKeysSection value={config.api_key_config} setConfig={setConfig} />
           <LLMModelsSection value={config.llm_config} setConfig={setConfig} />
           <ProfileExtractorsSection
-            value={config.profile_extractor_configs}
+            value={config.profile_extractor_config}
             setConfig={setConfig}
           />
           <PlaybookExtractorsSection
-            value={config.user_playbook_extractor_configs}
+            value={config.user_playbook_extractor_config}
             setConfig={setConfig}
           />
           <AgentSuccessSection

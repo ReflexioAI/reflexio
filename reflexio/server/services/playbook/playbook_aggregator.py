@@ -1386,13 +1386,6 @@ class PlaybookAggregator:
     ) -> PlaybookAggregatorConfig | None:
         root_config = self.configurator.get_config()
         playbook_config = getattr(root_config, "user_playbook_extractor_config", None)
-        if playbook_config is None or not isinstance(
-            getattr(playbook_config, "extractor_name", None), str
-        ):
-            legacy_configs = getattr(
-                root_config, "user_playbook_extractor_configs", None
-            )
-            playbook_config = legacy_configs[0] if legacy_configs else None
         if not playbook_config:
             return None
         if playbook_config.extractor_name == playbook_name:

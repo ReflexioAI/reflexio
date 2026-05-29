@@ -82,7 +82,7 @@ def client_with_org():
 def client_with_org_and_evaluator(client_with_org):
     """Same as ``client_with_org`` but with one configured AgentSuccessConfig.
 
-    Adds a single ``overall_success`` evaluator entry so the /regenerate
+    Adds the ``overall_success`` evaluator so the /regenerate
     POST passes the "known evaluation_name" gate.
 
     Returns:
@@ -91,14 +91,12 @@ def client_with_org_and_evaluator(client_with_org):
     client, org_id = client_with_org
     reflexio = get_reflexio(org_id=org_id)
     reflexio.request_context.configurator.set_config_by_name(
-        "agent_success_configs",
-        [
-            AgentSuccessConfig(
-                evaluation_name="overall_success",
-                success_definition_prompt=(
-                    "Evaluate whether the agent successfully completed the task."
-                ),
-            )
-        ],
+        "agent_success_config",
+        AgentSuccessConfig(
+            evaluation_name="overall_success",
+            success_definition_prompt=(
+                "Evaluate whether the agent successfully completed the task."
+            ),
+        ),
     )
     return client, org_id

@@ -101,11 +101,6 @@ class AgentSuccessEvaluationService(
         """
         root_config = self.configurator.get_config()
         config = getattr(root_config, "agent_success_config", None)
-        if config is None or not isinstance(
-            getattr(config, "evaluation_name", None), str
-        ):
-            legacy_configs = getattr(root_config, "agent_success_configs", None)
-            config = legacy_configs[0] if legacy_configs else None
         name_filter = getattr(self.service_config, "evaluation_name_filter", None)
         if name_filter is None:
             return config

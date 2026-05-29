@@ -135,15 +135,7 @@ class PlaybookGenerationService(
 
     def _configured_playbook_config(self) -> PlaybookConfig | None:
         root_config = self.configurator.get_config()
-        config = getattr(root_config, "user_playbook_extractor_config", None)
-        if config is None or not isinstance(
-            getattr(config, "extractor_name", None), str
-        ):
-            legacy_configs = getattr(
-                root_config, "user_playbook_extractor_configs", None
-            )
-            config = legacy_configs[0] if legacy_configs else None
-        return config
+        return getattr(root_config, "user_playbook_extractor_config", None)
 
     def _load_extractor_config(self) -> PlaybookConfig | None:
         """

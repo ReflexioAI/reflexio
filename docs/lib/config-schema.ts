@@ -103,10 +103,9 @@ export interface ReflexioConfig {
   storage_config: StorageConfigSQLite | null;
   agent_context_prompt: string | null;
   tool_can_use: ToolUseConfig[] | null;
-  profile_extractor_configs: ProfileExtractorConfig[] | null;
-  user_playbook_extractor_configs: UserPlaybookExtractorConfig[] | null;
+  profile_extractor_config: ProfileExtractorConfig | null;
+  user_playbook_extractor_config: UserPlaybookExtractorConfig | null;
   agent_success_config: AgentSuccessConfig | null;
-  agent_success_configs?: AgentSuccessConfig[] | null;
   extraction_preset: ExtractionPreset | null;
   window_size: number;
   stride_size: number;
@@ -136,8 +135,8 @@ export function defaultConfig(): ReflexioConfig {
     storage_config: { db_path: null },
     agent_context_prompt: null,
     tool_can_use: null,
-    profile_extractor_configs: [],
-    user_playbook_extractor_configs: [],
+    profile_extractor_config: defaultProfileExtractor(),
+    user_playbook_extractor_config: defaultPlaybookExtractor(),
     agent_success_config: null,
     extraction_preset: null,
     window_size: 10,
@@ -254,13 +253,8 @@ export function serializeConfig(config: ReflexioConfig): unknown {
       : null,
     agent_context_prompt: clean(config.agent_context_prompt),
     tool_can_use: config.tool_can_use?.length ? config.tool_can_use : null,
-    profile_extractor_configs: config.profile_extractor_configs?.length
-      ? config.profile_extractor_configs
-      : null,
-    user_playbook_extractor_configs: config.user_playbook_extractor_configs
-      ?.length
-      ? config.user_playbook_extractor_configs
-      : null,
+    profile_extractor_config: config.profile_extractor_config,
+    user_playbook_extractor_config: config.user_playbook_extractor_config,
     agent_success_config: config.agent_success_config,
     extraction_preset: config.extraction_preset,
     window_size: config.window_size,

@@ -74,15 +74,8 @@ def test_profile_extractor_filters_by_source_api(mock_chat_completion):
             request_sources_enabled=["api"],
         )
 
-        # Config 2: only enabled for "webhook" source
-        config2 = ProfileExtractorConfig(
-            extractor_name="webhook_extractor",
-            extraction_definition_prompt="Webhook config",
-            request_sources_enabled=["webhook"],
-        )
-
         profile_generation_service.configurator.set_config_by_name(
-            "profile_extractor_configs", [config1, config2]
+            "profile_extractor_config", config1
         )
         profile_generation_service.configurator.set_config_by_name("window_size", 100)
 
@@ -149,7 +142,7 @@ def test_profile_extractor_filters_by_source_webhook(mock_chat_completion):
         )
 
         profile_generation_service.configurator.set_config_by_name(
-            "profile_extractor_configs", [config]
+            "profile_extractor_config", config
         )
         profile_generation_service.configurator.set_config_by_name("window_size", 100)
 
@@ -215,7 +208,7 @@ def test_profile_extractor_none_enables_all_sources(mock_chat_completion):
         )
 
         profile_generation_service.configurator.set_config_by_name(
-            "profile_extractor_configs", [config]
+            "profile_extractor_config", config
         )
         profile_generation_service.configurator.set_config_by_name("window_size", 100)
 
@@ -281,7 +274,7 @@ def test_profile_extractor_empty_list_enables_all_sources(mock_chat_completion):
         )
 
         profile_generation_service.configurator.set_config_by_name(
-            "profile_extractor_configs", [config]
+            "profile_extractor_config", config
         )
         profile_generation_service.configurator.set_config_by_name("window_size", 100)
 

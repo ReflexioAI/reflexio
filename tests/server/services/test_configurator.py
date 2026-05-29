@@ -36,16 +36,14 @@ def test_init_creates_config_file(temp_dir, test_org_id):
     with open(config_file, encoding="utf-8") as f:
         loaded_config = Config.model_validate(json.load(f))
         assert isinstance(loaded_config.storage_config, StorageConfigSQLite)
-        assert loaded_config.profile_extractor_configs is not None
-        assert len(loaded_config.profile_extractor_configs) == 1
+        assert loaded_config.profile_extractor_config is not None
         assert (
-            loaded_config.profile_extractor_configs[0].extractor_name
+            loaded_config.profile_extractor_config.extractor_name
             == "default_profile_extractor"
         )
-        assert loaded_config.user_playbook_extractor_configs is not None
-        assert len(loaded_config.user_playbook_extractor_configs) == 1
+        assert loaded_config.user_playbook_extractor_config is not None
         assert (
-            loaded_config.user_playbook_extractor_configs[0].extractor_name
+            loaded_config.user_playbook_extractor_config.extractor_name
             == "default_playbook_extractor"
         )
 
@@ -69,16 +67,14 @@ def test_set_and_get_config_by_name(configurator):
             ),
         ),
         (
-            "profile_extractor_configs",
-            [
-                ProfileExtractorConfig(
-                    extractor_name="test_extractor",
-                    should_extract_profile_prompt_override="test",
-                    context_prompt="test",
-                    extraction_definition_prompt="test",
-                    metadata_definition_prompt="test",
-                )
-            ],
+            "profile_extractor_config",
+            ProfileExtractorConfig(
+                extractor_name="test_extractor",
+                should_extract_profile_prompt_override="test",
+                context_prompt="test",
+                extraction_definition_prompt="test",
+                metadata_definition_prompt="test",
+            ),
         ),
     ]
 
@@ -95,7 +91,7 @@ def test_config_persistence(temp_dir, test_org_id):
         storage_config=StorageConfigSQLite(
             db_path="/tmp/test.db",  # noqa: S108
         ),
-        profile_extractor_configs=[],
+        profile_extractor_config=None,
     )
     config1.set_config(new_config)
 

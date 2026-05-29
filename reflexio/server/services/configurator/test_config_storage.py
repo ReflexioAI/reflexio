@@ -94,7 +94,7 @@ def test_load_config():
         storage_config=StorageConfigSQLite(
             db_path="/tmp/test.db",
         ),
-        profile_extractor_configs=[],
+        profile_extractor_config=None,
     )
 
     json_config = new_config.model_dump_json()

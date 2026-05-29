@@ -260,6 +260,7 @@ class BaseGenerationService(
             return len(result)
         return 1 if result else 0
 
+    @abstractmethod
     def _load_extractor_config(self) -> TExtractorConfig | None:
         """
         Load extractor configuration from the configurator.
@@ -267,13 +268,6 @@ class BaseGenerationService(
         Returns:
             Extractor configuration object from YAML, or None when disabled.
         """
-        legacy_loader = getattr(self, "_load_extractor_configs", None)
-        if callable(legacy_loader):
-            configs: Any = legacy_loader()
-            if isinstance(configs, list):
-                return configs[0] if configs else None
-            return None
-        raise NotImplementedError
 
     @abstractmethod
     def _load_generation_service_config(
@@ -371,33 +365,6 @@ class BaseGenerationService(
             Optional[str]: Scope ID (e.g., user_id) or None for org-level scope
         """
 
-    def _filter_extractor_configs_by_service_config(
-        self,
-        extractor_configs: list[TExtractorConfig],
-        service_config: TGenerationServiceConfig,
-    ) -> list[TExtractorConfig]:
-        """
-        Filter extractor configs based on request_sources_enabled and manual_trigger fields.
-
-        Args:
-            extractor_configs: List of extractor configuration objects from YAML
-            service_config: Runtime service configuration containing the source and allow_manual_trigger flag
-
-        Returns:
-            Filtered list of extractor configs that should run for the given source and trigger mode
-        """
-        # Extract filtering parameters from service_config
-        source = getattr(service_config, "source", None)
-        allow_manual_trigger = getattr(service_config, "allow_manual_trigger", False)
-        extractor_names = getattr(service_config, "extractor_names", None)
-
-        return filter_extractor_configs(
-            extractor_configs=extractor_configs,
-            source=source,
-            allow_manual_trigger=allow_manual_trigger,
-            extractor_names=extractor_names,
-        )
-
     def _filter_extractor_config_by_service_config(
         self,
         extractor_config: TExtractorConfig,
@@ -407,8 +374,11 @@ class BaseGenerationService(
         Filter the extractor config based on request_sources_enabled, manual_trigger,
         and explicit extractor name filters.
         """
-        filtered = self._filter_extractor_configs_by_service_config(
-            [extractor_config], service_config
+        filtered = filter_extractor_configs(
+            extractor_configs=[extractor_config],
+            source=getattr(service_config, "source", None),
+            allow_manual_trigger=getattr(service_config, "allow_manual_trigger", False),
+            extractor_names=getattr(service_config, "extractor_names", None),
         )
         return filtered[0] if filtered else None
 
@@ -497,25 +467,6 @@ class BaseGenerationService(
             stride_size,
         )
         return None
-
-    def _filter_configs_by_stride(
-        self, extractor_configs: list[TExtractorConfig]
-    ) -> list[TExtractorConfig]:
-        """Deprecated list-shaped wrapper for older callers/tests."""
-        state_service_name = self._get_extractor_state_service_name()
-        if (
-            state_service_name is None
-            or not getattr(self.service_config, "auto_run", True)
-            or getattr(self.service_config, "force_extraction", False)
-        ):
-            return extractor_configs
-
-        passing: list[TExtractorConfig] = []
-        for config in extractor_configs:
-            filtered = self._filter_config_by_stride(config)
-            if filtered is not None:
-                passing.append(filtered)
-        return passing
 
     # ===============================
     # In-progress state management via OperationStateManager
@@ -923,43 +874,6 @@ class BaseGenerationService(
             if executor is not None:
                 executor.shutdown(wait=False, cancel_futures=True)
 
-    def _execute_extractors(
-        self,
-        extractor_configs: list[TExtractorConfig],
-        identifier: str,
-    ) -> list:
-        """Deprecated list-shaped wrapper for older callers/tests."""
-        all_results: list = []
-        self._last_extraction_run_ids = []
-        run_stats = {"total": len(extractor_configs), "failed": 0, "timed_out": 0}
-        for config in extractor_configs:
-            try:
-                result = self._execute_extractor(config, identifier)
-            except ExtractorExecutionError:
-                run_stats["failed"] += self._last_extractor_run_stats.get("failed", 1)
-                run_stats["timed_out"] += self._last_extractor_run_stats.get(
-                    "timed_out", 0
-                )
-                continue
-            run_stats["failed"] += self._last_extractor_run_stats.get("failed", 0)
-            run_stats["timed_out"] += self._last_extractor_run_stats.get("timed_out", 0)
-            if result:
-                all_results.append(result)
-
-        self._last_extractor_run_stats = run_stats
-        if (
-            extractor_configs
-            and not all_results
-            and run_stats["failed"] == len(extractor_configs)
-        ):
-            error_msg = (
-                f"Configured extractor execution failed for {self._get_service_name()} "
-                f"identifier={identifier}"
-            )
-            logger.error(error_msg)
-            raise ExtractorExecutionError(error_msg)
-        return all_results
-
     def _finalize_extraction_runs(self) -> None:
         if self.storage is None:
             return
@@ -1007,9 +921,7 @@ class BaseGenerationService(
                 increment_finalization_attempts=True,
             )
 
-    def _should_run_before_extraction(
-        self, extractor_config: TExtractorConfig | list[TExtractorConfig]
-    ) -> bool:
+    def _should_run_before_extraction(self, extractor_config: TExtractorConfig) -> bool:
         """
         Pre-extraction check called before extractor execution.
 
@@ -1031,11 +943,6 @@ class BaseGenerationService(
         Returns:
             bool: True if extraction should proceed, False to skip
         """
-        if isinstance(extractor_config, list):
-            if not extractor_config:
-                return False
-            extractor_config = extractor_config[0]
-
         # Skip for non-auto runs (rerun/manual flows always run)
         if not getattr(self.service_config, "auto_run", True):
             return True
@@ -1155,7 +1062,7 @@ class BaseGenerationService(
         return None
 
     def _collect_scoped_interactions_for_precheck(
-        self, extractor_config: TExtractorConfig | list[TExtractorConfig]
+        self, extractor_config: TExtractorConfig
     ) -> tuple[list[RequestInteractionDataModel], TExtractorConfig]:
         """
         Collect interactions for consolidated pre-check using extractor-scoped filters.
@@ -1178,26 +1085,6 @@ class BaseGenerationService(
         )
 
         extra_kwargs = self._get_precheck_interaction_query_kwargs()
-
-        if isinstance(extractor_config, list):
-            deduped_sessions: dict[str, RequestInteractionDataModel] = {}
-            scoped_config = extractor_config[0] if extractor_config else None
-            for config in extractor_config:
-                session_data_models, scoped_config = (
-                    self._collect_scoped_interactions_for_precheck(config)
-                )
-                for data_model in session_data_models:
-                    request_id = getattr(data_model.request, "request_id", None)
-                    dedupe_key = (
-                        request_id
-                        or data_model.session_id
-                        or f"scoped_group_{len(deduped_sessions)}"
-                    )
-                    if dedupe_key not in deduped_sessions:
-                        deduped_sessions[dedupe_key] = data_model
-            if scoped_config is None:
-                raise ValueError("extractor_config list must not be empty")
-            return list(deduped_sessions.values()), scoped_config
 
         should_skip, effective_source = get_effective_source_filter(
             extractor_config, getattr(self.service_config, "source", None)

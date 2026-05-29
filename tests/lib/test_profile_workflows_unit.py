@@ -68,7 +68,7 @@ def reflexio_with_config(temp_storage, ensure_mock_env):
         stride_size_override=1,
     )
     reflexio.request_context.configurator.set_config_by_name(
-        "profile_extractor_configs", [profile_extractor_config]
+        "profile_extractor_config", profile_extractor_config
     )
 
     return reflexio

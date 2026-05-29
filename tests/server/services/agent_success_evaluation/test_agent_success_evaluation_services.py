@@ -160,7 +160,7 @@ def test_evaluate_agent_success(mock_chat_completion):
             success_definition_prompt="Evaluate if the agent successfully completed the task",
         )
         agent_success_service.configurator.set_config_by_name(
-            "agent_success_configs", [success_config]
+            "agent_success_config", success_config
         )
         agent_success_service.configurator.set_config_by_name(
             "tool_can_use",
@@ -212,7 +212,7 @@ def test_empty_interactions(mock_chat_completion):
             success_definition_prompt="Evaluate if the agent successfully completed the task",
         )
         agent_success_service.configurator.set_config_by_name(
-            "agent_success_configs", [success_config]
+            "agent_success_config", success_config
         )
 
         # Create evaluation request with empty request_interaction_data_models
@@ -297,7 +297,7 @@ def test_error_handling(mock_chat_completion):
             success_definition_prompt="Evaluate if the agent successfully completed the task",
         )
         agent_success_service.configurator.set_config_by_name(
-            "agent_success_configs", [success_config]
+            "agent_success_config", success_config
         )
 
         # Create request interaction data model
@@ -328,8 +328,8 @@ def test_error_handling(mock_chat_completion):
                 agent_success_service.run(evaluation_request)
 
 
-def test_multiple_configs(mock_chat_completion):
-    """Test that multiple configs can be processed."""
+def test_configured_success_evaluator_runs(mock_chat_completion):
+    """Test that the configured success evaluator can be processed."""
     user_id = "test_user_id"
     org_id = "0"
     interaction = Interaction(
@@ -349,17 +349,12 @@ def test_multiple_configs(mock_chat_completion):
             request_context=RequestContext(org_id=org_id, storage_base_dir=temp_dir),
         )
 
-        # Set up multiple agent success configs
-        success_config_1 = AgentSuccessConfig(
+        success_config = AgentSuccessConfig(
             evaluation_name="task_completion",
             success_definition_prompt="Evaluate if the agent completed the task",
         )
-        success_config_2 = AgentSuccessConfig(
-            evaluation_name="user_satisfaction",
-            success_definition_prompt="Evaluate if the user was satisfied",
-        )
         agent_success_service.configurator.set_config_by_name(
-            "agent_success_configs", [success_config_1, success_config_2]
+            "agent_success_config", success_config
         )
 
         # Create request interaction data model
@@ -376,7 +371,7 @@ def test_multiple_configs(mock_chat_completion):
             request_interaction_data_models=[request_interaction],
         )
 
-        # The service should run without errors with multiple configs
+        # The service should run without errors with the configured evaluator.
         agent_success_service.run(evaluation_request)
 
         # Verify the service ran successfully
@@ -411,7 +406,7 @@ def test_with_tool_configs(mock_chat_completion):
             metadata_definition_prompt="Include tool usage statistics",
         )
         agent_success_service.configurator.set_config_by_name(
-            "agent_success_configs", [success_config]
+            "agent_success_config", success_config
         )
         agent_success_service.configurator.set_config_by_name(
             "tool_can_use",
@@ -466,7 +461,7 @@ def test_none_request():
             success_definition_prompt="Evaluate if the agent successfully completed the task",
         )
         agent_success_service.configurator.set_config_by_name(
-            "agent_success_configs", [success_config]
+            "agent_success_config", success_config
         )
 
         # Run with None request
@@ -517,7 +512,7 @@ def test_agent_success_message_construction_with_interactions():
             success_definition_prompt="Evaluate if the agent successfully completed the task",
         )
         agent_success_service.configurator.set_config_by_name(
-            "agent_success_configs", [success_config]
+            "agent_success_config", success_config
         )
         agent_success_service.configurator.set_config_by_name(
             "tool_can_use",

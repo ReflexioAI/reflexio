@@ -150,31 +150,14 @@ def sample_request_interaction_models(sample_interactions):
 class TestBuildShouldRunPrompt:
     """Tests for _build_should_run_prompt with profile-specific config."""
 
-    def test_returns_none_when_no_configs(
-        self, service, sample_request_interaction_models
-    ):
-        """Return None when scoped_configs list is empty."""
-        configs: list[ProfileExtractorConfig] = []
-
-        with patch.object(
-            service.configurator, "get_agent_context", return_value="Agent context"
-        ):
-            result = service._build_should_run_prompt(
-                configs, sample_request_interaction_models
-            )
-
-        assert result is None
-
     def test_returns_prompt_with_definition_only(
         self, service, request_context, sample_request_interaction_models
     ):
         """Prompt is rendered when config has extraction_definition_prompt."""
-        configs = [
-            ProfileExtractorConfig(
-                extractor_name="prefs",
-                extraction_definition_prompt="Extract user preferences",
-            ),
-        ]
+        config = ProfileExtractorConfig(
+            extractor_name="prefs",
+            extraction_definition_prompt="Extract user preferences",
+        )
 
         with (
             patch.object(
@@ -187,7 +170,7 @@ class TestBuildShouldRunPrompt:
             ) as mock_render,
         ):
             result = service._build_should_run_prompt(
-                configs, sample_request_interaction_models
+                config, sample_request_interaction_models
             )
 
             assert result == "rendered prompt"
@@ -201,13 +184,11 @@ class TestBuildShouldRunPrompt:
         self, service, request_context, sample_request_interaction_models
     ):
         """Prompt includes override condition when config has should_extract_profile_prompt_override."""
-        configs = [
-            ProfileExtractorConfig(
-                extractor_name="custom",
-                extraction_definition_prompt="Basic profile",
-                should_extract_profile_prompt_override="Check if user shared info",
-            ),
-        ]
+        config = ProfileExtractorConfig(
+            extractor_name="custom",
+            extraction_definition_prompt="Basic profile",
+            should_extract_profile_prompt_override="Check if user shared info",
+        )
 
         with (
             patch.object(
@@ -220,7 +201,7 @@ class TestBuildShouldRunPrompt:
             ) as mock_render,
         ):
             result = service._build_should_run_prompt(
-                configs, sample_request_interaction_models
+                config, sample_request_interaction_models
             )
 
             assert result == "rendered override"
@@ -230,21 +211,15 @@ class TestBuildShouldRunPrompt:
                 in variables["should_extract_profile_prompt"]
             )
 
-    def test_combines_multiple_configs(
+    def test_renders_single_config_criteria(
         self, service, request_context, sample_request_interaction_models
     ):
-        """Multiple configs are combined into numbered criteria list."""
-        configs = [
-            ProfileExtractorConfig(
-                extractor_name="prefs",
-                extraction_definition_prompt="Extract preferences",
-                should_extract_profile_prompt_override="User shared preference",
-            ),
-            ProfileExtractorConfig(
-                extractor_name="bio",
-                extraction_definition_prompt="Extract biography",
-            ),
-        ]
+        """Single config renders definition and override criteria."""
+        config = ProfileExtractorConfig(
+            extractor_name="prefs",
+            extraction_definition_prompt="Extract preferences",
+            should_extract_profile_prompt_override="User shared preference",
+        )
 
         with (
             patch.object(
@@ -257,31 +232,23 @@ class TestBuildShouldRunPrompt:
             ) as mock_render,
         ):
             result = service._build_should_run_prompt(
-                configs, sample_request_interaction_models
+                config, sample_request_interaction_models
             )
 
             assert result == "combined prompt"
             variables = mock_render.call_args[0][1]
             criteria = variables["should_extract_profile_prompt"]
-            assert "1." in criteria
-            assert "2." in criteria
             assert "Extract preferences" in criteria
-            assert "Extract biography" in criteria
+            assert "User shared preference" in criteria
 
-    def test_renders_with_multiple_definitions(
+    def test_renders_single_definition(
         self, service, request_context, sample_request_interaction_models
     ):
-        """Multiple configs with definitions are all included in criteria."""
-        configs = [
-            ProfileExtractorConfig(
-                extractor_name="hobbies",
-                extraction_definition_prompt="Extract hobbies",
-            ),
-            ProfileExtractorConfig(
-                extractor_name="food",
-                extraction_definition_prompt="Extract food preferences",
-            ),
-        ]
+        """Single config definition is included in criteria."""
+        config = ProfileExtractorConfig(
+            extractor_name="hobbies",
+            extraction_definition_prompt="Extract hobbies",
+        )
 
         with (
             patch.object(
@@ -294,14 +261,13 @@ class TestBuildShouldRunPrompt:
             ) as mock_render,
         ):
             result = service._build_should_run_prompt(
-                configs, sample_request_interaction_models
+                config, sample_request_interaction_models
             )
 
             assert result == "partial prompt"
             variables = mock_render.call_args[0][1]
             criteria = variables["should_extract_profile_prompt"]
             assert "Extract hobbies" in criteria
-            assert "Extract food preferences" in criteria
 
 
 # ===============================

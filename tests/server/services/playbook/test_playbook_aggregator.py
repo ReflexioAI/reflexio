@@ -546,7 +546,7 @@ class TestGetPlaybookAggregatorConfig:
             extraction_definition_prompt="prompt",
             aggregation_config=fac,
         )
-        agg.configurator.get_config.return_value.user_playbook_extractor_configs = [afc]
+        agg.configurator.get_config.return_value.user_playbook_extractor_config = afc
 
         result = agg._get_playbook_aggregator_config("my_fb")
 
@@ -558,13 +558,13 @@ class TestGetPlaybookAggregatorConfig:
             extractor_name="other",
             extraction_definition_prompt="prompt",
         )
-        agg.configurator.get_config.return_value.user_playbook_extractor_configs = [afc]
+        agg.configurator.get_config.return_value.user_playbook_extractor_config = afc
 
         assert agg._get_playbook_aggregator_config("missing") is None
 
     def test_returns_none_when_no_playbook_configs(self):
         agg = _make_aggregator()
-        agg.configurator.get_config.return_value.user_playbook_extractor_configs = None
+        agg.configurator.get_config.return_value.user_playbook_extractor_config = None
 
         assert agg._get_playbook_aggregator_config("any") is None
 
@@ -589,7 +589,7 @@ class TestRun:
             extraction_definition_prompt="prompt",
             aggregation_config=fac,
         )
-        agg.configurator.get_config.return_value.user_playbook_extractor_configs = [afc]
+        agg.configurator.get_config.return_value.user_playbook_extractor_config = afc
         # storage returns
         agg.storage.count_user_playbooks.return_value = 5
         agg.storage.get_agent_playbooks.return_value = []
@@ -599,7 +599,7 @@ class TestRun:
 
     def test_no_config_returns_early(self):
         agg = _make_aggregator()
-        agg.configurator.get_config.return_value.user_playbook_extractor_configs = None
+        agg.configurator.get_config.return_value.user_playbook_extractor_config = None
 
         req = PlaybookAggregatorRequest(agent_version="v1", playbook_name="fb")
         agg.run(req)
@@ -616,7 +616,7 @@ class TestRun:
             extraction_definition_prompt="prompt",
             aggregation_config=fac,
         )
-        agg.configurator.get_config.return_value.user_playbook_extractor_configs = [afc]
+        agg.configurator.get_config.return_value.user_playbook_extractor_config = afc
 
         req = PlaybookAggregatorRequest(agent_version="v1", playbook_name="fb")
         agg.run(req)
@@ -633,7 +633,7 @@ class TestRun:
             extraction_definition_prompt="prompt",
             aggregation_config=fac,
         )
-        agg.configurator.get_config.return_value.user_playbook_extractor_configs = [afc]
+        agg.configurator.get_config.return_value.user_playbook_extractor_config = afc
         agg.storage.count_user_playbooks.return_value = 1
 
         req = PlaybookAggregatorRequest(agent_version="v1", playbook_name="fb")

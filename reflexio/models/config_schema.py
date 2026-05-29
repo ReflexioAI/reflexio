@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from enum import IntEnum, StrEnum
 from typing import Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .api_schema.validators import (
     NonEmptyStr,
@@ -58,8 +58,6 @@ _CONFIG_FIELD_MIGRATION: dict[str, str] = {
     "batch_interval": "stride_size",
     "extraction_window_size": "window_size",
     "extraction_window_stride": "stride_size",
-    "playbook_configs": "user_playbook_extractor_configs",
-    "agent_feedback_configs": "user_playbook_extractor_configs",
 }
 
 _AGGREGATOR_FIELD_MIGRATION: dict[str, str] = {
@@ -618,27 +616,11 @@ def _default_profile_extractor_config() -> ProfileExtractorConfig:
     )
 
 
-def _default_profile_extractor_configs() -> list[ProfileExtractorConfig]:
-    """Deprecated list-shaped default kept for compatibility."""
-    return [_default_profile_extractor_config()]
-
-
 def _default_user_playbook_extractor_config() -> UserPlaybookExtractorConfig:
     return UserPlaybookExtractorConfig(
         extractor_name="default_playbook_extractor",
         extraction_definition_prompt="Extract playbook rules about agent performance, including areas where the agent was helpful, areas for improvement, and any issues encountered during the interaction.",
     )
-
-
-def _default_user_playbook_extractor_configs() -> list[UserPlaybookExtractorConfig]:
-    """Deprecated list-shaped default kept for compatibility."""
-    return [_default_user_playbook_extractor_config()]
-
-
-def _first_or_none(value: Any) -> Any:
-    if isinstance(value, list):
-        return value[0] if value else None
-    return value
 
 
 class Config(BaseModel):
@@ -725,24 +707,6 @@ class Config(BaseModel):
         """
         data = _migrate_dict(data, _CONFIG_FIELD_MIGRATION)
         if isinstance(data, dict):
-            if (
-                "profile_extractor_config" not in data
-                and "profile_extractor_configs" in data
-            ):
-                data["profile_extractor_config"] = _first_or_none(
-                    data["profile_extractor_configs"]
-                )
-            if (
-                "user_playbook_extractor_config" not in data
-                and "user_playbook_extractor_configs" in data
-            ):
-                data["user_playbook_extractor_config"] = _first_or_none(
-                    data["user_playbook_extractor_configs"]
-                )
-            if "agent_success_config" not in data and "agent_success_configs" in data:
-                data["agent_success_config"] = _first_or_none(
-                    data["agent_success_configs"]
-                )
             for key in (
                 "window_size",
                 "stride_size",
@@ -788,8 +752,9 @@ class Config(BaseModel):
     @model_validator(mode="after")
     def check_pending_tool_calls_storage_backend(self) -> Self:
         """Pending tool calls require a database-backed storage backend."""
-        if self.pending_tool_call_config.enabled and isinstance(
-            self.storage_config, StorageConfigDisk
+        if self.pending_tool_call_config.enabled and not isinstance(
+            self.storage_config,
+            (StorageConfigSQLite, StorageConfigSupabase, StorageConfigPostgres),
         ):
             raise ValueError(
                 "pending_tool_call_config.enabled requires sqlite, supabase, or postgres storage"
@@ -813,39 +778,3 @@ class Config(BaseModel):
     @batch_interval.setter
     def batch_interval(self, value: int) -> None:
         self.stride_size = value
-
-    @computed_field  # type: ignore[prop-decorator]
-    @property
-    def profile_extractor_configs(self) -> list[ProfileExtractorConfig]:
-        """Deprecated list view for callers that still expect extractor lists."""
-        return [self.profile_extractor_config] if self.profile_extractor_config else []
-
-    @profile_extractor_configs.setter
-    def profile_extractor_configs(
-        self, value: list[ProfileExtractorConfig] | None
-    ) -> None:
-        self.profile_extractor_config = _first_or_none(value)
-
-    @computed_field  # type: ignore[prop-decorator]
-    @property
-    def user_playbook_extractor_configs(self) -> list[UserPlaybookExtractorConfig]:
-        """Deprecated list view for callers that still expect extractor lists."""
-        if self.user_playbook_extractor_config is None:
-            return []
-        return [self.user_playbook_extractor_config]
-
-    @user_playbook_extractor_configs.setter
-    def user_playbook_extractor_configs(
-        self, value: list[UserPlaybookExtractorConfig] | None
-    ) -> None:
-        self.user_playbook_extractor_config = _first_or_none(value)
-
-    @computed_field  # type: ignore[prop-decorator]
-    @property
-    def agent_success_configs(self) -> list[AgentSuccessConfig]:
-        """Deprecated list view for callers that still expect evaluator lists."""
-        return [self.agent_success_config] if self.agent_success_config else []
-
-    @agent_success_configs.setter
-    def agent_success_configs(self, value: list[AgentSuccessConfig] | None) -> None:
-        self.agent_success_config = _first_or_none(value)
