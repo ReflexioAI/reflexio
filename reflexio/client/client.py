@@ -1751,7 +1751,11 @@ class ReflexioClient:
         return GetEvaluationResultsViewResponse(**response)
 
     def _poll_operation_status(
-        self, service_name: str, poll_interval: float = 3.0, max_wait: float = 600.0
+        self,
+        service_name: str,
+        poll_interval: float = 3.0,
+        max_wait: float = 600.0,
+        min_started_at: int | None = None,
     ) -> GetOperationStatusResponse:
         """
         Poll the operation status endpoint until the operation completes, fails, or is cancelled.
@@ -1760,6 +1764,8 @@ class ReflexioClient:
             service_name: The service name to poll (e.g. "profile_generation", "playbook_generation")
             poll_interval: Seconds between polls
             max_wait: Maximum seconds to wait before raising TimeoutError
+            min_started_at: Optional Unix timestamp. Ignore stale operation
+                states that started before this timestamp.
 
         Returns:
             GetOperationStatusResponse: Final operation status
@@ -1783,6 +1789,8 @@ class ReflexioClient:
                 continue
             status_response = GetOperationStatusResponse(**response)
             op = status_response.operation_status
+            if op and min_started_at is not None and op.started_at < min_started_at:
+                op = None
             if op and op.status in (
                 OperationStatus.COMPLETED,
                 OperationStatus.FAILED,
@@ -1803,6 +1811,7 @@ class ReflexioClient:
 
         Submits the request, then polls operation status until completion.
         """
+        submitted_at = int(time.time())
         response = self._make_request(
             "POST",
             "/api/rerun_profile_generation",
@@ -1814,7 +1823,9 @@ class ReflexioClient:
 
         # Poll until the background task completes
         try:
-            status_response = self._poll_operation_status("profile_generation")
+            status_response = self._poll_operation_status(
+                "profile_generation", min_started_at=submitted_at
+            )
             op = status_response.operation_status
             if op and op.status == OperationStatus.COMPLETED:
                 return RerunProfileGenerationResponse(
@@ -1993,6 +2004,7 @@ class ReflexioClient:
 
         Submits the request, then polls operation status until completion.
         """
+        submitted_at = int(time.time())
         response = self._make_request(
             "POST",
             "/api/rerun_playbook_generation",
@@ -2004,7 +2016,9 @@ class ReflexioClient:
 
         # Poll until the background task completes
         try:
-            status_response = self._poll_operation_status("feedback_generation")
+            status_response = self._poll_operation_status(
+                "playbook_generation", min_started_at=submitted_at
+            )
             op = status_response.operation_status
             if op and op.status == OperationStatus.COMPLETED:
                 return RerunPlaybookGenerationResponse(
