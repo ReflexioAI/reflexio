@@ -133,13 +133,7 @@ class PlaybookGenerationService(
             extractor_names=[request.playbook_name] if request.playbook_name else None,
         )
 
-    def _load_extractor_configs(self) -> list[PlaybookConfig]:
-        """
-        Load the configured user playbook extractor from configurator.
-
-        Returns:
-            list[PlaybookConfig]: One user playbook extractor configuration object.
-        """
+    def _configured_playbook_config(self) -> PlaybookConfig | None:
         root_config = self.configurator.get_config()
         config = getattr(root_config, "user_playbook_extractor_config", None)
         if config is None or not isinstance(
@@ -149,7 +143,16 @@ class PlaybookGenerationService(
                 root_config, "user_playbook_extractor_configs", None
             )
             config = legacy_configs[0] if legacy_configs else None
-        return [config] if config else []
+        return config
+
+    def _load_extractor_config(self) -> PlaybookConfig | None:
+        """
+        Load the configured user playbook extractor from configurator.
+
+        Returns:
+            PlaybookConfig | None: The configured user playbook extractor, if enabled.
+        """
+        return self._configured_playbook_config()
 
     def _create_extractor(
         self,
@@ -176,7 +179,7 @@ class PlaybookGenerationService(
 
     def _build_should_run_prompt(
         self,
-        scoped_configs: list[PlaybookConfig],
+        scoped_config: PlaybookConfig,
         session_data_models: list[RequestInteractionDataModel],
     ) -> str | None:
         """
@@ -185,7 +188,7 @@ class PlaybookGenerationService(
         Renders the configured playbook definition for one LLM call.
 
         Args:
-            scoped_configs: Playbook extractor configs that had scoped interactions
+            scoped_config: Playbook extractor config that had scoped interactions
             session_data_models: Deduplicated request interaction data models
 
         Returns:
@@ -208,14 +211,11 @@ class PlaybookGenerationService(
 
         new_interactions = format_sessions_to_history_string(session_data_models)
 
-        # Keep the numbered-list shape for prompt compatibility.
-        definitions = []
-        for i, config in enumerate(scoped_configs, 1):
-            if config.extraction_definition_prompt:
-                definitions.append(
-                    f"{i}. {config.extraction_definition_prompt.strip()}"
-                )
-        combined_definition = "\n".join(definitions) if definitions else ""
+        combined_definition = (
+            scoped_config.extraction_definition_prompt.strip()
+            if scoped_config.extraction_definition_prompt
+            else ""
+        )
 
         if not combined_definition:
             return None
@@ -276,17 +276,7 @@ class PlaybookGenerationService(
                 PlaybookDeduplicator,
             )
 
-            root_config = self.configurator.get_config()
-            playbook_config = getattr(
-                root_config, "user_playbook_extractor_config", None
-            )
-            if playbook_config is None or not isinstance(
-                getattr(playbook_config, "extractor_name", None), str
-            ):
-                legacy_configs = getattr(
-                    root_config, "user_playbook_extractor_configs", None
-                )
-                playbook_config = legacy_configs[0] if legacy_configs else None
+            playbook_config = self._configured_playbook_config()
             dedup_config = (
                 playbook_config.deduplication_config if playbook_config else None
             )
@@ -453,15 +443,7 @@ class PlaybookGenerationService(
         Trigger playbook aggregation for playbook types that have aggregator config.
         This is called after raw user playbook entries are saved to check if aggregation should run.
         """
-        root_config = self.configurator.get_config()
-        playbook_config = getattr(root_config, "user_playbook_extractor_config", None)
-        if playbook_config is None or not isinstance(
-            getattr(playbook_config, "extractor_name", None), str
-        ):
-            legacy_configs = getattr(
-                root_config, "user_playbook_extractor_configs", None
-            )
-            playbook_config = legacy_configs[0] if legacy_configs else None
+        playbook_config = self._configured_playbook_config()
         if not playbook_config or not playbook_config.aggregation_config:
             return
 

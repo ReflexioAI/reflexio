@@ -172,6 +172,7 @@ _LEGACY_EXTRACTOR_PARTIAL_FIELDS: tuple[tuple[str, str], ...] = (
     ("user_playbook_extractor_configs", "user_playbook_extractor_config"),
     ("playbook_configs", "user_playbook_extractor_config"),
     ("agent_feedback_configs", "user_playbook_extractor_config"),
+    ("agent_success_configs", "agent_success_config"),
 )
 
 
@@ -1729,11 +1730,13 @@ def start_regenerate(
     """
     reflexio = get_reflexio(org_id=org_id)
     config = reflexio.request_context.configurator.get_config()
-    known = (
-        {c.evaluation_name for c in (config.agent_success_configs or [])}
-        if config is not None
-        else set()
-    )
+    success_config = getattr(config, "agent_success_config", None)
+    if success_config is None or not isinstance(
+        getattr(success_config, "evaluation_name", None), str
+    ):
+        legacy_configs = getattr(config, "agent_success_configs", None)
+        success_config = legacy_configs[0] if legacy_configs else None
+    known = {success_config.evaluation_name} if success_config else set()
     if payload.evaluation_name not in known:
         raise HTTPException(
             status_code=400,

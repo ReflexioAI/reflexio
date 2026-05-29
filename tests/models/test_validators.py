@@ -858,6 +858,59 @@ class TestCrossFieldValidators:
             "playbook_first"
         ]
 
+    def test_config_accepts_singular_agent_success_config(self):
+        """Config: singular agent success config validates and serializes."""
+        success_config = AgentSuccessConfig(
+            evaluation_name="success_one",
+            success_definition_prompt="task completed",
+        )
+
+        config = Config(
+            storage_config=StorageConfigSQLite(),
+            agent_success_config=success_config,
+        )
+
+        dumped = config.model_dump()
+        assert config.agent_success_config == success_config
+        assert dumped["agent_success_config"]["evaluation_name"] == "success_one"
+        assert dumped["agent_success_configs"][0]["evaluation_name"] == "success_one"
+
+    def test_config_legacy_agent_success_list_keeps_first_entry(self):
+        """Config: legacy multi-entry success config lists are first-entry wins."""
+        config = Config.model_validate(
+            {
+                "storage_config": StorageConfigSQLite(),
+                "agent_success_configs": [
+                    AgentSuccessConfig(
+                        evaluation_name="success_first",
+                        success_definition_prompt="first",
+                    ),
+                    AgentSuccessConfig(
+                        evaluation_name="success_second",
+                        success_definition_prompt="second",
+                    ),
+                ],
+            }
+        )
+
+        assert config.agent_success_config is not None
+        assert config.agent_success_config.evaluation_name == "success_first"
+        assert [c.evaluation_name for c in config.agent_success_configs] == [
+            "success_first"
+        ]
+
+    def test_config_empty_legacy_agent_success_list_disables_evaluation(self):
+        """Config: empty legacy success config list normalizes to disabled."""
+        config = Config.model_validate(
+            {
+                "storage_config": StorageConfigSQLite(),
+                "agent_success_configs": [],
+            }
+        )
+
+        assert config.agent_success_config is None
+        assert config.agent_success_configs == []
+
     def test_config_accepts_legacy_playbook_aliases_first_entry_wins(self):
         """Config: legacy playbook alias fields normalize to the singular extractor."""
         config = Config.model_validate(

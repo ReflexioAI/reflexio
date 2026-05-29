@@ -665,31 +665,23 @@ export function AgentSuccessSection({
   value,
   setConfig,
 }: {
-  value: AgentSuccessConfig[] | null;
+  value: AgentSuccessConfig | null;
   setConfig: SetConfig;
 }) {
-  const items = value ?? [];
-  const updateAt = (idx: number, patch: Partial<AgentSuccessConfig>) => {
+  const enabled = value !== null;
+  const current = value ?? defaultAgentSuccess();
+  const update = (patch: Partial<AgentSuccessConfig>) => {
     setConfig((prev) => {
-      const next = [...(prev.agent_success_configs ?? [])];
-      next[idx] = { ...next[idx], ...patch };
-      return { ...prev, agent_success_configs: next };
+      const existing = prev.agent_success_config ?? defaultAgentSuccess();
+      return { ...prev, agent_success_config: { ...existing, ...patch } };
     });
   };
-  const removeAt = (idx: number) => {
-    setConfig((prev) => {
-      const next = [...(prev.agent_success_configs ?? [])];
-      next.splice(idx, 1);
-      return { ...prev, agent_success_configs: next.length ? next : null };
-    });
-  };
-  const add = () => {
+  const setEnabled = (checked: boolean) => {
     setConfig((prev) => ({
       ...prev,
-      agent_success_configs: [
-        ...(prev.agent_success_configs ?? []),
-        defaultAgentSuccess(),
-      ],
+      agent_success_config: checked
+        ? (prev.agent_success_config ?? defaultAgentSuccess())
+        : null,
     }));
   };
 
@@ -699,34 +691,31 @@ export function AgentSuccessSection({
       description="Define what 'success' means for the agent so Reflexio can score interactions."
       defaultOpen={false}
     >
-      {items.length === 0 && (
-        <p className="text-xs text-muted-foreground italic">
-          No evaluations configured.
-        </p>
-      )}
-      {items.map((item, idx) => (
-        <ListItemCard
-          key={idx}
-          title={item.evaluation_name || "(unnamed)"}
-          onRemove={() => removeAt(idx)}
-        >
+      <SwitchField
+        checked={enabled}
+        onCheckedChange={setEnabled}
+        label="Enable success evaluation"
+        hint="Runs the configured evaluator for sampled interactions."
+      />
+      {enabled && (
+        <div className="space-y-4">
           <FieldRow label="Evaluation name">
             <TextField
-              value={item.evaluation_name}
-              onChange={(v) => updateAt(idx, { evaluation_name: v ?? "" })}
+              value={current.evaluation_name}
+              onChange={(v) => update({ evaluation_name: v ?? "" })}
             />
           </FieldRow>
           <FieldRow label="Success definition prompt">
             <TextAreaField
-              value={item.success_definition_prompt}
+              value={current.success_definition_prompt}
               onChange={(v) =>
-                updateAt(idx, { success_definition_prompt: v ?? "" })
+                update({ success_definition_prompt: v ?? "" })
               }
               rows={4}
             />
           </FieldRow>
           <FieldRow
-            label={`Sampling rate (${(item.sampling_rate * 100).toFixed(0)}%)`}
+            label={`Sampling rate (${(current.sampling_rate * 100).toFixed(0)}%)`}
             hint="Fraction of interactions sampled for evaluation."
           >
             <input
@@ -734,16 +723,15 @@ export function AgentSuccessSection({
               min={0}
               max={1}
               step={0.05}
-              value={item.sampling_rate}
+              value={current.sampling_rate}
               onChange={(e) =>
-                updateAt(idx, { sampling_rate: Number(e.target.value) })
+                update({ sampling_rate: Number(e.target.value) })
               }
               className="w-full"
             />
           </FieldRow>
-        </ListItemCard>
-      ))}
-      <AddButton label="Add evaluation" onClick={add} />
+        </div>
+      )}
     </Section>
   );
 }

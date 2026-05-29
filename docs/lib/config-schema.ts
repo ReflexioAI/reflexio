@@ -105,7 +105,8 @@ export interface ReflexioConfig {
   tool_can_use: ToolUseConfig[] | null;
   profile_extractor_configs: ProfileExtractorConfig[] | null;
   user_playbook_extractor_configs: UserPlaybookExtractorConfig[] | null;
-  agent_success_configs: AgentSuccessConfig[] | null;
+  agent_success_config: AgentSuccessConfig | null;
+  agent_success_configs?: AgentSuccessConfig[] | null;
   extraction_preset: ExtractionPreset | null;
   window_size: number;
   stride_size: number;
@@ -137,7 +138,7 @@ export function defaultConfig(): ReflexioConfig {
     tool_can_use: null,
     profile_extractor_configs: [],
     user_playbook_extractor_configs: [],
-    agent_success_configs: null,
+    agent_success_config: null,
     extraction_preset: null,
     window_size: 10,
     stride_size: 5,
@@ -260,9 +261,7 @@ export function serializeConfig(config: ReflexioConfig): unknown {
       ?.length
       ? config.user_playbook_extractor_configs
       : null,
-    agent_success_configs: config.agent_success_configs?.length
-      ? config.agent_success_configs
-      : null,
+    agent_success_config: config.agent_success_config,
     extraction_preset: config.extraction_preset,
     window_size: config.window_size,
     stride_size: config.stride_size,

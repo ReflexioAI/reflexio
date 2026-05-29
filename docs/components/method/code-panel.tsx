@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useMemo } from "react";
 import { useTheme } from "next-themes";
 import { Play, RotateCcw, ChevronDown, ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -36,17 +36,13 @@ export function CodePanel({
 }: CodePanelProps) {
   const { resolvedTheme } = useTheme();
   const [showParams, setShowParams] = useState(true);
-  const [code, setCode] = useState(() =>
-    generatePythonCode(method, params)
+  const generatedCode = useMemo(
+    () => generatePythonCode(method, params),
+    [method, params]
   );
+  const [code, setCode] = useState(generatedCode);
   const [codeEdited, setCodeEdited] = useState(false);
-
-  // Regenerate code when params change (but not if user hand-edited)
-  useEffect(() => {
-    if (!codeEdited) {
-      setCode(generatePythonCode(method, params));
-    }
-  }, [method, params, codeEdited]);
+  const displayedCode = codeEdited ? code : generatedCode;
 
   const handleParamChange = useCallback(
     (name: string, value: unknown) => {
@@ -68,14 +64,14 @@ export function CodePanel({
 
   const handleRun = useCallback(() => {
     if (codeEdited) {
-      const parsed = parsePythonCode(code, method);
+      const parsed = parsePythonCode(displayedCode, method);
       if (parsed) {
         onRun(parsed.params);
         return;
       }
     }
     onRun(params);
-  }, [codeEdited, code, method, params, onRun]);
+  }, [codeEdited, displayedCode, method, params, onRun]);
 
   const handleReset = useCallback(() => {
     const emptyParams: Record<string, unknown> = {};
@@ -134,7 +130,7 @@ export function CodePanel({
         <MonacoEditor
           language="python"
           theme={resolvedTheme === "dark" ? "vs-dark" : "light"}
-          value={code}
+          value={displayedCode}
           onChange={handleCodeChange}
           options={{
             minimap: { enabled: false },

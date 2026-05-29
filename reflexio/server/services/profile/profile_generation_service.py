@@ -53,7 +53,7 @@ class ProfileGenerationServiceConfig:
         existing_data: Existing profiles for the user
         allow_manual_trigger: Whether to allow extractors with manual_trigger=True
         output_pending_status: Whether to output profiles with PENDING status
-        extractor_names: Optional list of extractor names to filter which extractors run
+        extractor_names: Optional list of extractor names to filter which extractor runs
         rerun_start_time: Optional start time filter for rerun flows (Unix timestamp)
         rerun_end_time: Optional end time filter for rerun flows (Unix timestamp)
         auto_run: True for regular flow (checks stride_size), False for rerun/manual (skips stride_size)
@@ -241,12 +241,12 @@ class ProfileGenerationService(
         """check if the profiles are expired and update them if they are"""
         raise NotImplementedError
 
-    def _load_extractor_configs(self) -> list[ProfileExtractorConfig]:
+    def _load_extractor_config(self) -> ProfileExtractorConfig | None:
         """
         Load the configured profile extractor from configurator.
 
         Returns:
-            list[ProfileExtractorConfig]: One profile extractor configuration object.
+            ProfileExtractorConfig | None: The configured profile extractor, if enabled.
         """
         root_config = self.configurator.get_config()
         config = getattr(root_config, "profile_extractor_config", None)
@@ -255,7 +255,7 @@ class ProfileGenerationService(
         ):
             legacy_configs = getattr(root_config, "profile_extractor_configs", None)
             config = legacy_configs[0] if legacy_configs else None
-        return [config] if config else []
+        return config
 
     def _create_extractor(
         self,
@@ -282,17 +282,17 @@ class ProfileGenerationService(
 
     def _build_should_run_prompt(
         self,
-        scoped_configs: list[ProfileExtractorConfig],
+        scoped_config: ProfileExtractorConfig,
         session_data_models: list[RequestInteractionDataModel],
     ) -> str | None:
         """
         Build prompt for consolidated should_extract_profile check.
 
-        Combines all enabled extractors' profile definitions and override conditions
-        into a single criteria block for one LLM call.
+        Renders the configured extractor's profile definition and override
+        condition for one LLM call.
 
         Args:
-            scoped_configs: Profile extractor configs that had scoped interactions
+            scoped_config: Profile extractor config that had scoped interactions
             session_data_models: Deduplicated request interaction data models
 
         Returns:
@@ -302,29 +302,18 @@ class ProfileGenerationService(
         agent_context = self.configurator.get_agent_context()
         prompt_manager = self.request_context.prompt_manager
 
-        # Keep the criteria list shape for prompt compatibility.
-        # The single configured extractor can contribute:
-        # 1) extraction_definition_prompt (what to extract)
-        # 2) should_extract_profile_prompt_override (custom extraction condition)
-        combined_criteria_items = []
-        for i, config in enumerate(scoped_configs, 1):
-            criteria_parts = []
-            if config.extraction_definition_prompt:
-                criteria_parts.append(
-                    f"definition: {config.extraction_definition_prompt.strip()}"
-                )
-            if config.should_extract_profile_prompt_override:
-                criteria_parts.append(
-                    "condition: "
-                    f"{config.should_extract_profile_prompt_override.strip()}"
-                )
+        criteria_parts = []
+        if scoped_config.extraction_definition_prompt:
+            criteria_parts.append(
+                f"definition: {scoped_config.extraction_definition_prompt.strip()}"
+            )
+        if scoped_config.should_extract_profile_prompt_override:
+            criteria_parts.append(
+                "condition: "
+                f"{scoped_config.should_extract_profile_prompt_override.strip()}"
+            )
 
-            if criteria_parts:
-                combined_criteria_items.append(f"{i}. {'; '.join(criteria_parts)}")
-
-        combined_criteria = (
-            "\n".join(combined_criteria_items) if combined_criteria_items else ""
-        )
+        combined_criteria = "; ".join(criteria_parts)
         if not combined_criteria:
             return None
 

@@ -5,6 +5,7 @@ import { Settings, AlertCircle, CheckCircle2, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useSettings } from "@/hooks/use-settings";
 import {
+  AgentSuccessConfig,
   ReflexioConfig,
   defaultConfig,
   serializeConfig,
@@ -34,7 +35,17 @@ type Status =
 function hydrate(raw: unknown): ReflexioConfig {
   const base = defaultConfig();
   if (!raw || typeof raw !== "object") return base;
-  return { ...base, ...(raw as Partial<ReflexioConfig>) };
+  const incoming = raw as Partial<ReflexioConfig> & {
+    agent_success_configs?: AgentSuccessConfig[] | null;
+  };
+  return {
+    ...base,
+    ...incoming,
+    agent_success_config:
+      "agent_success_config" in incoming
+        ? (incoming.agent_success_config ?? null)
+        : (incoming.agent_success_configs?.[0] ?? null),
+  };
 }
 
 function errorMessage(err: unknown): string {
@@ -134,7 +145,7 @@ export function ConfigEditor() {
             setConfig={setConfig}
           />
           <AgentSuccessSection
-            value={config.agent_success_configs}
+            value={config.agent_success_config}
             setConfig={setConfig}
           />
           <ToolsSection value={config.tool_can_use} setConfig={setConfig} />

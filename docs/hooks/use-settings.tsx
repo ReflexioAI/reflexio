@@ -35,21 +35,13 @@ function loadSettings(): Settings {
 }
 
 export function SettingsProvider({ children }: { children: ReactNode }) {
-  const [settings, setSettings] = useState<Settings>({
-    apiEndpoint: "http://localhost:8081",
-  });
-  const [mounted, setMounted] = useState(false);
+  const [settings, setSettings] = useState<Settings>(() => loadSettings());
 
   useEffect(() => {
-    setSettings(loadSettings());
-    setMounted(true);
-  }, []);
-
-  useEffect(() => {
-    if (mounted) {
+    if (typeof window !== "undefined") {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
     }
-  }, [settings, mounted]);
+  }, [settings]);
 
   const setApiEndpoint = useCallback((endpoint: string) => {
     setSettings((prev) => ({ ...prev, apiEndpoint: endpoint }));

@@ -29,6 +29,7 @@ from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.services.agent_success_evaluation.agent_success_evaluation_service import (
     AgentSuccessEvaluationService,
+    AgentSuccessGenerationServiceConfig,
 )
 from reflexio.server.services.agent_success_evaluation.agent_success_evaluation_utils import (
     AgentSuccessEvaluationRequest,
@@ -70,6 +71,66 @@ def mock_chat_completion():
         return_value=mock_response,
     ):
         yield
+
+
+def _make_agent_success_service(temp_dir: str) -> AgentSuccessEvaluationService:
+    llm_config = LiteLLMConfig(model="gpt-4o-mini")
+    llm_client = LiteLLMClient(llm_config)
+    return AgentSuccessEvaluationService(
+        llm_client=llm_client,
+        request_context=RequestContext(org_id="0", storage_base_dir=temp_dir),
+    )
+
+
+def test_loads_singular_agent_success_config():
+    """The service loads the canonical single success evaluator config."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        service = _make_agent_success_service(temp_dir)
+        success_config = AgentSuccessConfig(
+            evaluation_name="overall_success",
+            success_definition_prompt="Evaluate task success",
+        )
+        service.configurator.set_config_by_name("agent_success_config", success_config)
+        service.service_config = AgentSuccessGenerationServiceConfig(
+            session_id="test_group",
+            agent_version="1.0",
+            request_interaction_data_models=[],
+        )
+
+        assert service._load_extractor_config() == success_config
+
+
+def test_loads_no_agent_success_config_when_disabled():
+    """A null single success evaluator config disables evaluation."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        service = _make_agent_success_service(temp_dir)
+        service.configurator.set_config_by_name("agent_success_config", None)
+        service.service_config = AgentSuccessGenerationServiceConfig(
+            session_id="test_group",
+            agent_version="1.0",
+            request_interaction_data_models=[],
+        )
+
+        assert service._load_extractor_config() is None
+
+
+def test_loads_no_agent_success_config_when_name_filter_mismatches():
+    """Regenerate filters out the configured evaluator when names do not match."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        service = _make_agent_success_service(temp_dir)
+        success_config = AgentSuccessConfig(
+            evaluation_name="overall_success",
+            success_definition_prompt="Evaluate task success",
+        )
+        service.configurator.set_config_by_name("agent_success_config", success_config)
+        service.service_config = AgentSuccessGenerationServiceConfig(
+            session_id="test_group",
+            agent_version="1.0",
+            request_interaction_data_models=[],
+            evaluation_name_filter="other_success",
+        )
+
+        assert service._load_extractor_config() is None
 
 
 def test_evaluate_agent_success(mock_chat_completion):

@@ -658,7 +658,7 @@ class Config(BaseModel):
         default_factory=_default_user_playbook_extractor_config
     )
     # agent level success
-    agent_success_configs: list[AgentSuccessConfig] | None = None
+    agent_success_config: AgentSuccessConfig | None = None
     # extraction preset — selects bundled window_size/stride_size values
     extraction_preset: ExtractionPreset | None = None
     # extraction parameters
@@ -738,6 +738,10 @@ class Config(BaseModel):
             ):
                 data["user_playbook_extractor_config"] = _first_or_none(
                     data["user_playbook_extractor_configs"]
+                )
+            if "agent_success_config" not in data and "agent_success_configs" in data:
+                data["agent_success_config"] = _first_or_none(
+                    data["agent_success_configs"]
                 )
             for key in (
                 "window_size",
@@ -835,3 +839,13 @@ class Config(BaseModel):
         self, value: list[UserPlaybookExtractorConfig] | None
     ) -> None:
         self.user_playbook_extractor_config = _first_or_none(value)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def agent_success_configs(self) -> list[AgentSuccessConfig]:
+        """Deprecated list view for callers that still expect evaluator lists."""
+        return [self.agent_success_config] if self.agent_success_config else []
+
+    @agent_success_configs.setter
+    def agent_success_configs(self, value: list[AgentSuccessConfig] | None) -> None:
+        self.agent_success_config = _first_or_none(value)

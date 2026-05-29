@@ -23,6 +23,7 @@ _CONFIG_NAME_ALIASES = {
     "user_playbook_extractor_configs": "user_playbook_extractor_config",
     "playbook_configs": "user_playbook_extractor_config",
     "agent_feedback_configs": "user_playbook_extractor_config",
+    "agent_success_configs": "agent_success_config",
 }
 
 
@@ -98,7 +99,7 @@ class BaseConfigurator(ABC):
     def set_config_by_name(
         self,
         config_name: str,
-        config_value: str | int | float | bool | list | dict | BaseModel,
+        config_value: str | int | float | bool | list | dict | BaseModel | None,
     ) -> None:
         original_config_name = config_name
         config_name = _CONFIG_NAME_ALIASES.get(config_name, config_name)
@@ -108,7 +109,11 @@ class BaseConfigurator(ABC):
         if (
             original_config_name in _CONFIG_NAME_ALIASES
             and config_name
-            in {"profile_extractor_config", "user_playbook_extractor_config"}
+            in {
+                "profile_extractor_config",
+                "user_playbook_extractor_config",
+                "agent_success_config",
+            }
             and isinstance(config_value, list)
         ):
             config_value = config_value[0] if config_value else None
