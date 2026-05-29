@@ -103,7 +103,7 @@ class EvaluationOverviewService:
             r for r in all_results if prev_from <= r.created_at < prev_to
         ]
 
-        hero = self._build_hero(results)
+        hero = self._build_hero(results, request.bucket)
         tiles = self._build_tiles(results_current_7d, results_prev_7d)
         attribution = self._build_attribution(results)
         distribution = self._build_distribution(results_current_7d, results_prev_7d)
@@ -137,6 +137,7 @@ class EvaluationOverviewService:
     def _build_hero(
         self,
         results: list[AgentSuccessEvaluationResult],
+        bucket: str,
     ) -> HeroBlock:
         if not results:
             days_since = None
@@ -159,7 +160,7 @@ class EvaluationOverviewService:
             regular_success_rate_pp=success_rate,
             shadow_success_rate_pp=None,
             delta_pp=None,
-            buckets=_weekly_buckets(results),
+            buckets=_compute_hero_buckets(results, bucket),
         )
 
     def _build_tiles(
@@ -468,29 +469,43 @@ def _aggregate_imported_scores(
     return {name: (sum(vs) / len(vs), len(vs)) for name, vs in bucket.items() if vs}
 
 
-def _weekly_buckets(
+def _compute_hero_buckets(
     results: list[AgentSuccessEvaluationResult],
+    bucket: str,
 ) -> list[HeroBucket]:
-    """Build week-sized buckets across the given results."""
+    """Build time-bucketed HeroBucket rows from eval results.
+
+    Bucket granularity follows the request: ``"day"`` for the frontend's
+    daily trend mode (tooltip activates on every X position, smoother
+    curves on narrow ranges), ``"week"`` otherwise. Each bucket carries
+    success rate, average corrections, and escalation rate so the metric
+    mini-trends stay aligned with the headline numbers.
+    """
     if not results:
         return []
+    bucket_seconds = _DAY_SECONDS if bucket == "day" else _WEEK_SECONDS
     buckets: dict[int, list[AgentSuccessEvaluationResult]] = defaultdict(list)
     for r in results:
-        # Anchor each result to the START of its week (epoch-aligned).
-        week_start = (r.created_at // _WEEK_SECONDS) * _WEEK_SECONDS
-        buckets[week_start].append(r)
+        bucket_start = (r.created_at // bucket_seconds) * bucket_seconds
+        buckets[bucket_start].append(r)
     out: list[HeroBucket] = []
     for ts in sorted(buckets):
-        week_results = buckets[ts]
-        avg_corr = _mean(r.number_of_correction_per_session for r in week_results)
+        bucket_results = buckets[ts]
+        avg_corr = _mean(r.number_of_correction_per_session for r in bucket_results)
+        # is_escalated may be None on legacy rows; coerce to False so the
+        # bucket mean reflects "fraction of sessions we know escalated".
+        escalation_rate = _mean(
+            (1.0 if (r.is_escalated is True) else 0.0) for r in bucket_results
+        )
         out.append(
             HeroBucket(
                 ts=ts,
-                regular_rate=_success_rate(week_results),
+                regular_rate=_success_rate(bucket_results),
                 shadow_rate=None,
-                regular_n=len(week_results),
+                regular_n=len(bucket_results),
                 shadow_n=0,
                 avg_corrections=avg_corr,
+                escalation_rate=escalation_rate,
             )
         )
     return out

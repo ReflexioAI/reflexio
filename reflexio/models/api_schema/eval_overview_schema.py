@@ -24,6 +24,11 @@ class HeroBucket(BaseModel):
     across this bucket's evaluation results. Surfaced so the frontend can
     plot a "corrections over time" line beside the success-rate trend.
     Lower is better.
+
+    ``escalation_rate`` is the fraction of sessions in this bucket whose
+    eval result had ``is_escalated=True``. Range 0.0 – 1.0. Surfaced so
+    the frontend can plot an "escalations over time" mini-trend beside
+    the absolute escalation-rate metric tile.
     """
 
     ts: int
@@ -32,6 +37,7 @@ class HeroBucket(BaseModel):
     regular_n: int
     shadow_n: int
     avg_corrections: float = 0.0
+    escalation_rate: float = 0.0
 
 
 class HeroBlock(BaseModel):
