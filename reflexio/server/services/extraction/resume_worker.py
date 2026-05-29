@@ -155,23 +155,19 @@ def _select_current_extractor_config(
     root_config = request_context.configurator.get_config()
     if run.binding.extractor_kind == "profile":
         config = getattr(root_config, "profile_extractor_config", None)
-        legacy = getattr(root_config, "profile_extractor_configs", None)
     elif run.binding.extractor_kind == "playbook":
         config = getattr(root_config, "user_playbook_extractor_config", None)
-        legacy = getattr(root_config, "user_playbook_extractor_configs", None)
     else:
         raise ResumeWorkerError(
             f"Unsupported extractor kind {run.binding.extractor_kind!r}"
         )
 
-    candidates = [config, *(legacy or [])]
-    for candidate in candidates:
-        if (
-            candidate is not None
-            and getattr(candidate, "extractor_name", None) == run.binding.extractor_name
-            and isinstance(candidate, ProfileExtractorConfig | PlaybookConfig)
-        ):
-            return candidate
+    if (
+        config is not None
+        and getattr(config, "extractor_name", None) == run.binding.extractor_name
+        and isinstance(config, ProfileExtractorConfig | PlaybookConfig)
+    ):
+        return config
     raise ResumeWorkerError(
         f"Current extractor config not found for {run.binding.extractor_kind}:{run.binding.extractor_name}"
     )

@@ -100,6 +100,44 @@ def _migrate_dict(data: Any, mapping: dict[str, str]) -> Any:
     return data
 
 
+# Retired list-valued config fields and the singular field that replaced them.
+# The first configured entry wins when an old list contains multiple items.
+_LEGACY_SINGLE_CONFIG_FIELDS: tuple[tuple[str, str], ...] = (
+    ("profile_extractor_configs", "profile_extractor_config"),
+    ("user_playbook_extractor_configs", "user_playbook_extractor_config"),
+    ("playbook_configs", "user_playbook_extractor_config"),
+    ("agent_feedback_configs", "user_playbook_extractor_config"),
+    ("agent_success_configs", "agent_success_config"),
+)
+
+
+def _first_config_entry(value: Any) -> Any:
+    if isinstance(value, list):
+        return value[0] if value else None
+    return value
+
+
+def normalize_legacy_config_shape(data: dict[str, Any]) -> dict[str, Any]:
+    """Map retired list-valued config fields onto current singular fields.
+
+    This is a stored-data upgrade path applied at storage load boundaries: any
+    config persisted before the single-extractor refactor still carries list
+    keys (e.g. ``agent_success_configs``) that ``Config`` would otherwise drop
+    as unknown fields, silently losing the user's customization. Legacy keys are
+    removed from the returned payload and the first configured entry wins.
+
+    Returns a shallow copy; the caller's dict is not mutated.
+    """
+    normalized = dict(data)
+    for legacy_field, current_field in _LEGACY_SINGLE_CONFIG_FIELDS:
+        if legacy_field not in normalized:
+            continue
+        if current_field not in normalized:
+            normalized[current_field] = _first_config_entry(normalized[legacy_field])
+        del normalized[legacy_field]
+    return normalized
+
+
 class _ExtractorWindowOverrideCompatMixin:
     @property
     def batch_size_override(self) -> int | None:

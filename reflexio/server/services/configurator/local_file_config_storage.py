@@ -12,6 +12,7 @@ from reflexio.models.config_schema import (
     PlaybookConfig,
     ProfileExtractorConfig,
     StorageConfigSQLite,
+    normalize_legacy_config_shape,
 )
 from reflexio.server.services.configurator.config_storage import ConfigStorage
 
@@ -81,6 +82,12 @@ class LocalFileConfigStorage(ConfigStorage):
             with Path(self.config_file).open(encoding="utf-8") as f:
                 config_content = f.read()
                 data = json.loads(str(config_content))
+                # Upgrade retired list-valued extractor fields (e.g.
+                # agent_success_configs) to their singular replacements before
+                # validation. Without this, Config would drop the unknown legacy
+                # keys and silently lose the user's customization.
+                if isinstance(data, dict):
+                    data = normalize_legacy_config_shape(data)
                 # Detect legacy on-disk configs that used the removed "disk"
                 # storage backend and rewrite only the storage_config field
                 # to default SQLite. Other persisted fields (extractors,
