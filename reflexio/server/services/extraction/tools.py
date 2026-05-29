@@ -485,11 +485,16 @@ def _project_profile_for_llm(p: Any) -> dict[str, Any]:
 
 
 def _project_user_playbook_for_llm(pb: Any) -> dict[str, Any]:
+    # ``polarity`` is exposed so the agent can spot contradictions and
+    # like-with-like duplicates when scanning search results before deciding
+    # whether to create a new rule. ``getattr`` fallback keeps legacy rows
+    # without a polarity column readable as ``"positive"``.
     return {
         "id": str(pb.user_playbook_id),
         "trigger": pb.trigger,
         "content": pb.content,
         "rationale": pb.rationale,
+        "polarity": getattr(pb, "polarity", "positive"),
         "last_modified": getattr(pb, "created_at", 0),
     }
 
