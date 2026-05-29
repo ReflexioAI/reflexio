@@ -71,15 +71,13 @@ def _configure_evaluator(org_id: str, *, evaluation_name: str) -> None:
     'known evaluation_name' gate."""
     reflexio = get_reflexio(org_id=org_id)
     reflexio.request_context.configurator.set_config_by_name(
-        "agent_success_configs",
-        [
-            AgentSuccessConfig(
-                evaluation_name=evaluation_name,
-                success_definition_prompt=(
-                    "Evaluate whether the agent successfully completed the task."
-                ),
-            )
-        ],
+        "agent_success_config",
+        AgentSuccessConfig(
+            evaluation_name=evaluation_name,
+            success_definition_prompt=(
+                "Evaluate whether the agent successfully completed the task."
+            ),
+        ),
     )
 
 
