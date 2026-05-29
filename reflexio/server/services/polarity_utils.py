@@ -9,6 +9,7 @@ can still keep action rules separate from avoidance rules.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from typing import Literal
 
@@ -30,6 +31,18 @@ NEGATIVE_EVIDENCE_TERMS: tuple[str, ...] = (
     "self-corrected",
     "disliked",
 )
+
+
+def _content_fingerprint(content: str) -> str:
+    """Stable short hash for log correlation without leaking raw text.
+
+    Args:
+        content (str): The playbook content.
+
+    Returns:
+        str: First 16 hex chars of the SHA-256 of the UTF-8-encoded content.
+    """
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
 
 
 def looks_negative(content: str) -> bool:
@@ -88,9 +101,16 @@ def warn_if_polarity_content_mismatch(playbook: UserPlaybook) -> None:
     content_looks_negative = looks_negative(playbook.content)
     declared_negative = playbook.polarity == "negative"
     if content_looks_negative != declared_negative:
+        # Log only non-sensitive metadata: a stable fingerprint for
+        # correlation, content length, and a boolean for which side
+        # mismatched. Raw playbook content can carry PII / sensitive
+        # instructions and must never reach centralized logging.
         logger.warning(
-            "event=polarity_content_mismatch playbook_id=%s polarity=%s content_starts=%r",
+            "event=polarity_content_mismatch playbook_id=%s polarity=%s "
+            "content_sha256_16=%s content_len=%d content_looks_negative=%s",
             playbook.user_playbook_id,
             playbook.polarity,
-            playbook.content[:32],
+            _content_fingerprint(playbook.content),
+            len(playbook.content),
+            content_looks_negative,
         )

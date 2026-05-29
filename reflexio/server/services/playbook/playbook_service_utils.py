@@ -148,13 +148,17 @@ def format_structured_fields_for_display(
     This is NOT for producing content values. Use ensure_playbook_content()
     when you need to obtain the freeform content string.
 
+    The ``polarity`` field is always serialized (defaulting to ``"positive"``)
+    so the anti-pattern signal is preserved when this fallback string is
+    persisted by ``ensure_playbook_content`` for contentless entries.
+
     Args:
         structured (StructuredPlaybookContent): The structured playbook content
 
     Returns:
         str: Formatted structured fields string for display
     """
-    lines = []
+    lines = [f"Polarity: {structured.polarity}"]
 
     if structured.trigger:
         lines.append(f'Trigger: "{structured.trigger}"')
@@ -167,7 +171,11 @@ def format_structured_fields_for_display(
             f"Blocked by: [{structured.blocking_issue.kind.value}] {structured.blocking_issue.details}"
         )
 
-    if not lines and structured.content:
+    if len(lines) == 1 and structured.content:
+        # Only polarity was emitted (no trigger/rationale/blocking_issue).
+        # If there is real content, prefer returning content alone unchanged
+        # so existing display paths see no extra prefix; ensure_playbook_content
+        # already gates this fallback to the contentless case.
         return structured.content
 
     return "\n".join(lines)

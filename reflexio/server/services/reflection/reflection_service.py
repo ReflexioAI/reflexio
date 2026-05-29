@@ -548,25 +548,41 @@ class ReflectionService:
         return True
 
 
-_REVISION_FIELDS = (
+_PROFILE_REVISION_FIELDS: tuple[str, ...] = (
+    "new_content",
+    "new_profile_time_to_live",
+)
+_PLAYBOOK_REVISION_FIELDS: tuple[str, ...] = (
     "new_content",
     "new_trigger",
     "new_rationale",
-    "new_profile_time_to_live",
     "new_polarity",
 )
+_REVISION_FIELDS_BY_KIND: dict[str, tuple[str, ...]] = {
+    "profile": _PROFILE_REVISION_FIELDS,
+    "playbook": _PLAYBOOK_REVISION_FIELDS,
+}
 
 
 def _is_revision(decision: ReflectionDecision) -> bool:
-    """Return True iff any revision field is set on the decision.
+    """Return True iff a revision field relevant to the target kind is set.
+
+    Splits the revision-field set by ``target_kind`` so a profile decision
+    is not classified as a revision purely because a playbook-only field
+    (e.g. ``new_trigger``) happens to be populated. This prevents
+    unnecessary replace/archive churn that would otherwise produce no
+    effective change.
 
     Args:
         decision (ReflectionDecision): The decision to inspect.
 
     Returns:
-        bool: True if at least one revision field is non-None.
+        bool: True if at least one kind-relevant revision field is non-None.
     """
-    return any(getattr(decision, f) is not None for f in _REVISION_FIELDS)
+    fields = _REVISION_FIELDS_BY_KIND.get(
+        decision.target_kind, _PLAYBOOK_REVISION_FIELDS
+    )
+    return any(getattr(decision, f) is not None for f in fields)
 
 
 def _flatten(

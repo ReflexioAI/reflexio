@@ -177,6 +177,17 @@ def _profiles_to_json(profiles: list[UserProfile]) -> str:
 
 
 def _playbooks_to_json(playbooks: list[UserPlaybook]) -> str:
+    """Serialize cited playbooks for the reflection prompt.
+
+    Includes ``polarity`` so the reflection model has the current
+    framing context when reasoning about whether a flip is warranted.
+
+    Args:
+        playbooks (list[UserPlaybook]): The cited playbooks to serialize.
+
+    Returns:
+        str: JSON array string with one object per cited playbook.
+    """
     payload = [
         {
             "user_playbook_id": p.user_playbook_id,
@@ -184,6 +195,7 @@ def _playbooks_to_json(playbooks: list[UserPlaybook]) -> str:
             "content": p.content,
             "trigger": p.trigger,
             "rationale": p.rationale,
+            "polarity": p.polarity,
             "source": p.source,
         }
         for p in playbooks

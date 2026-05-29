@@ -252,7 +252,9 @@ class PlaybookConsolidator(BaseDeduplicator):
             source = playbook.source or "unknown"
             created_date = format_dedup_timestamp(playbook.created_at)
             lines.append(
-                f'[{prefix}-{idx}] Content: "{playbook.content}" | Name: {playbook_name} | Source: {source} | Last Modified: {created_date}'
+                f'[{prefix}-{idx}] Content: "{playbook.content}" | '
+                f"Polarity: {playbook.polarity} | Name: {playbook_name} | "
+                f"Source: {source} | Last Modified: {created_date}"
             )
         return "\n".join(lines)
 
@@ -642,7 +644,10 @@ class PlaybookConsolidator(BaseDeduplicator):
                 seen_archive=seen_archive,
             )
         if isinstance(decision, PreferExistingDecision):
-            return self._apply_prefer_existing(decision)
+            return self._apply_prefer_existing(
+                decision,
+                existing_by_id=existing_by_id,
+            )
         if isinstance(decision, DifferentiateDecision):
             return self._apply_differentiate(
                 decision,
@@ -787,16 +792,32 @@ class PlaybookConsolidator(BaseDeduplicator):
     def _apply_prefer_existing(
         self,
         decision: PreferExistingDecision,
+        *,
+        existing_by_id: dict[int, UserPlaybook],
     ) -> tuple[list[UserPlaybook], list[str]]:
         """No-op apply: the existing row wins and the new candidate is dropped.
 
+        If ``decision.existing_id`` does not resolve to a known existing row,
+        the decision is treated as malformed: we log a warning and return
+        ``([], [])`` so the safety fallback re-inserts the candidate rather
+        than silently dropping extracted data.
+
         Args:
             decision: The ``PreferExistingDecision`` to apply.
+            existing_by_id: Mapping ``user_playbook_id`` -> existing playbook,
+                used to validate ``decision.existing_id``.
 
         Returns:
-            Tuple of ([], [consumed NEW-N id]) — the new id is marked handled
-            so the safety fallback does not re-insert the dropped candidate.
+            Tuple of ([], [consumed NEW-N id]) when the existing id resolves,
+            or ``([], [])`` when the existing id is unknown.
         """
+        if decision.existing_id not in existing_by_id:
+            logger.warning(
+                "event=consolidation_prefer_existing_invalid new_id=%s existing_id=%d",
+                decision.new_id,
+                decision.existing_id,
+            )
+            return [], []
         logger.info(
             "event=consolidation_prefer_existing new_id=%s existing_id=%d",
             decision.new_id,

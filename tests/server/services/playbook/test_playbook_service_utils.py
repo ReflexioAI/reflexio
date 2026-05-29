@@ -211,11 +211,17 @@ class TestFormatStructuredFieldsForDisplay:
         assert "missing_tool" in result
         assert "No real-time data API available" in result
 
-    def test_all_fields_none_returns_empty(self):
-        """Test that all-None fields returns empty string."""
+    def test_all_fields_none_returns_polarity_only(self):
+        """All-None structured fields still emit polarity so the anti-pattern signal is preserved."""
         structured = StructuredPlaybookContent()
         result = format_structured_fields_for_display(structured)
-        assert result == ""
+        assert result == "Polarity: positive"
+
+    def test_negative_polarity_present_in_fallback(self):
+        """Negative polarity is serialized when content is missing so the signal survives."""
+        structured = StructuredPlaybookContent(polarity="negative")
+        result = format_structured_fields_for_display(structured)
+        assert "Polarity: negative" in result
 
 
 # ===============================
@@ -453,10 +459,10 @@ class TestEnsurePlaybookContent:
 class TestEnsurePlaybookContentEdgeCases:
     """Additional edge cases for ensure_playbook_content."""
 
-    def test_returns_empty_string_when_both_empty(self):
-        """When both playbook content and structured fields are empty, returns empty string."""
+    def test_returns_polarity_marker_when_both_empty(self):
+        """When playbook content is missing and no structured fields are set, the fallback still preserves the polarity signal."""
         result = ensure_playbook_content(None, StructuredPlaybookContent())
-        assert result == ""
+        assert result == "Polarity: positive"
 
 
 # ===============================
