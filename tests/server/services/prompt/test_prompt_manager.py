@@ -286,3 +286,51 @@ class TestPromptManager:
 
         if errors:
             pytest.fail("Active version errors:\n" + "\n".join(errors))
+
+    def test_agentic_user_playbook_prompt_extracts_compact_task_recipes(self):
+        """Agentic UserPlaybook prompt preserves compact recipe guidance."""
+        rendered = PromptManager().render_prompt(
+            "extraction_user_playbook",
+            {
+                "sessions": "User requested a substantive task. Assistant completed it.",
+                "extraction_criteria": "Extract agent-performance playbooks.",
+                "max_steps": "12",
+            },
+        )
+
+        assert "Success Path Recipes" in rendered
+        assert "Failure/Avoidance Recipes" in rendered
+        assert "compact replay recipe" in rendered
+        assert "decisive source/artifact/signal" in rendered
+        assert "narrow verification" in rendered
+        assert "detour" in rendered
+
+    def test_classic_playbook_context_extracts_compact_task_recipes(self):
+        """Classic playbook prompt uses the same compact recipe shape."""
+        rendered = PromptManager().render_prompt(
+            "playbook_extraction_context",
+            {
+                "agent_context_prompt": "Agent context.",
+                "extraction_definition_prompt": "Extract playbooks.",
+                "tool_can_use": "Tools.",
+            },
+        )
+
+        assert "Success Path Recipes" in rendered
+        assert "reusable task structure" in rendered
+        assert "compact replay recipe" in rendered
+        assert "decisive source/artifact/signal" in rendered
+        assert "necessary constraints" in rendered
+        assert "Avoid:" in rendered
+        assert "Validate:" in rendered
+        assert "working-directory or import-path relationship" in rendered
+        assert "wrong working directories" in rendered
+        assert "failed command -> same goal succeeds" in rendered
+        assert "ignore benchmark sentinel/handoff mechanics" in rendered
+        assert "emit that setup recipe as its own playbook" in rendered
+        assert "Skip broad summaries" in rendered
+        assert "narrow verification" in rendered
+        assert "Do not add markdown headings" in rendered
+        assert "extra top-level keys" in rendered
+        assert "separate entries for those independent lessons" in rendered
+        assert '"polarity": "positive | negative"' in rendered
