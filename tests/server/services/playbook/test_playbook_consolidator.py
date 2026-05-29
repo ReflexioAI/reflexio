@@ -113,6 +113,52 @@ class TestFormatPlaybooksWithPrefix:
         result = mock_consolidator._format_playbooks_with_prefix([], "NEW")
         assert result == "(None)"
 
+    def test_row_exposes_trigger_and_rationale(self, mock_consolidator):
+        """Rendered rows MUST expose `Trigger` and `Rationale` alongside `Content`.
+
+        Several decision kinds compare existing-vs-new triggers (``differentiate``,
+        same-trigger contradictions, trigger refinements). Without the trigger
+        field in the prompt payload the model is guessing about the field it is
+        supposed to refine. This regression test pins the row shape.
+        """
+        fb = UserPlaybook(
+            user_playbook_id=0,
+            agent_version="v1",
+            request_id="req1",
+            playbook_name="fb",
+            content="do X when Y",
+            trigger="user asks about billing",
+            rationale="prevents unbilled work",
+            polarity="negative",
+            source="extractor",
+        )
+        result = mock_consolidator._format_playbooks_with_prefix([fb], "EXISTING")
+        assert 'Trigger: "user asks about billing"' in result, result
+        assert 'Rationale: "prevents unbilled work"' in result, result
+        # Content / polarity / name / source must still render alongside.
+        assert 'Content: "do X when Y"' in result
+        assert "Polarity: negative" in result
+        assert "Name: fb" in result
+        assert "Source: extractor" in result
+
+    def test_row_handles_missing_trigger_and_rationale(self, mock_consolidator):
+        """``trigger`` and ``rationale`` are nullable on UserPlaybook; the
+        formatter must render an empty string in their slot rather than
+        ``None`` so the prompt stays well-formed."""
+        fb = UserPlaybook(
+            user_playbook_id=0,
+            agent_version="v1",
+            request_id="req1",
+            playbook_name="fb",
+            content="content",
+            trigger=None,
+            rationale=None,
+        )
+        result = mock_consolidator._format_playbooks_with_prefix([fb], "NEW")
+        assert 'Trigger: ""' in result, result
+        assert 'Rationale: ""' in result, result
+        assert "None" not in result, "literal None must not leak into the prompt"
+
 
 # ===============================
 # Tests for _format_new_and_existing_for_prompt

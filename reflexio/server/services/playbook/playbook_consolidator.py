@@ -251,10 +251,17 @@ class PlaybookConsolidator(BaseDeduplicator):
             playbook_name = playbook.playbook_name or "unknown"
             source = playbook.source or "unknown"
             created_date = format_dedup_timestamp(playbook.created_at)
+            # ``Trigger`` and ``Rationale`` are included alongside ``Content``
+            # so the model can actually compare the fields it is asked to
+            # refine (``differentiate``, same-trigger contradictions, trigger
+            # refinements). Without ``trigger`` exposed the decisions become
+            # guesswork.
             lines.append(
-                f'[{prefix}-{idx}] Content: "{playbook.content}" | '
-                f"Polarity: {playbook.polarity} | Name: {playbook_name} | "
-                f"Source: {source} | Last Modified: {created_date}"
+                f'[{prefix}-{idx}] Content: "{playbook.content}"'
+                f' | Trigger: "{playbook.trigger or ""}"'
+                f' | Rationale: "{playbook.rationale or ""}"'
+                f" | Polarity: {playbook.polarity} | Name: {playbook_name}"
+                f" | Source: {source} | Last Modified: {created_date}"
             )
         return "\n".join(lines)
 
