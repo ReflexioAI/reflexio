@@ -27,14 +27,13 @@ import logging
 import time
 from typing import Any
 
-from reflexio.client.client import ReflexioClient
-
 from benchmark.gdpval.config import (
     DEFAULT_REFLEXIO_URL,
     DEFAULT_SEARCH_THRESHOLD,
     DEFAULT_TOP_K,
 )
 from benchmark.gdpval.memory.injection import render_memory_block
+from reflexio.client.client import ReflexioClient
 
 logger = logging.getLogger(__name__)
 
@@ -107,7 +106,9 @@ class ReflexioMemory:
                 each item `{"role": "User"|"Assistant", "content": str}`.
         """
         if not messages:
-            logger.debug("Skipping publish: empty trajectory for %s", task.get("task_id"))
+            logger.debug(
+                "Skipping publish: empty trajectory for %s", task.get("task_id")
+            )
             return
         tid = task.get("task_id", "unknown")
         session_id = f"gdpval-{tid}"
@@ -186,7 +187,10 @@ class ReflexioMemory:
         user_n = len(getattr(response, "user_playbooks", []) or [])
         logger.info(
             "fetch_for_task %s: search hits profiles=%d agent_pbs=%d user_pbs=%d",
-            tid[:8], prof_n, agent_n, user_n,
+            tid[:8],
+            prof_n,
+            agent_n,
+            user_n,
         )
         for pb in (getattr(response, "user_playbooks", []) or [])[:3]:
             content = (getattr(pb, "content", "") or "").strip()
@@ -253,7 +257,7 @@ class ReflexioMemory:
         # Stage 2: poll-wait
         start = time.monotonic()
         deadline = start + wait_budget_sec
-        pending = {tid: 0 for tid in task_ids}
+        pending = dict.fromkeys(task_ids, 0)
         while pending and time.monotonic() < deadline:
             for tid in list(pending.keys()):
                 user_id = self._user_id_for_task(tid)
@@ -267,7 +271,9 @@ class ReflexioMemory:
                         elapsed = time.monotonic() - start
                         logger.info(
                             "Extraction READY for %s: %d playbook(s) after %.0fs",
-                            tid[:8], len(pbs), elapsed,
+                            tid[:8],
+                            len(pbs),
+                            elapsed,
                         )
                         pending[tid] = len(pbs)
                         del pending[tid]
@@ -512,7 +518,9 @@ def update_playbook_extractor_prompt(
 
     current_prompt = getattr(target, "extraction_definition_prompt", "")
     if current_prompt == prompt:
-        logger.info("Playbook extractor prompt already matches target; no update needed")
+        logger.info(
+            "Playbook extractor prompt already matches target; no update needed"
+        )
         return True
 
     target.extraction_definition_prompt = prompt

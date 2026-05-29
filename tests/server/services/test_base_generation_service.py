@@ -3,10 +3,12 @@ Unit tests for BaseGenerationService class.
 
 Tests the abstract base class by creating a concrete implementation for testing.
 """
+# pyright: reportAttributeAccessIssue=false, reportOptionalMemberAccess=false, reportArgumentType=false
 
 import tempfile
 import time
 from dataclasses import dataclass
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -26,6 +28,8 @@ from reflexio.server.services.base_generation_service import (
     _cheap_should_run_reject,
     _is_pure_slash_command,
 )
+from reflexio.server.services.extraction.outcome import ExtractionOutcome
+from reflexio.server.services.storage.storage_base import AgentRunStatus
 
 # ===============================
 # Test Data Classes
@@ -2077,6 +2081,134 @@ class TestSequentialExecution:
         service.run(request)
 
         assert observed_previously == [[], [], []]
+
+    def test_sequential_completed_outcome_is_unwrapped(
+        self, llm_client, request_context
+    ):
+        """ExtractionOutcome.completed contributes its item list as one result."""
+
+        class OutcomeService(ConcreteGenerationService):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self._process_calls = []
+
+            def _create_extractor(self, extractor_config, service_config):
+                return MockExtractor(
+                    result=ExtractionOutcome.completed(
+                        [{"name": extractor_config.extractor_name}]
+                    )
+                )
+
+            def _process_results(self, results):
+                self._process_calls.append(list(results))
+
+        service = OutcomeService(
+            llm_client,
+            request_context,
+            extractor_configs=[MockExtractorConfig(extractor_name="ext1")],
+        )
+
+        request = MockServiceConfig(user_id="test_user", request_id="test_request")
+        service.run(request)
+
+        assert service._process_calls == [[[{"name": "ext1"}]]]
+
+    def test_sequential_empty_outcome_is_success_without_processing(
+        self, llm_client, request_context
+    ):
+        """ExtractionOutcome.empty is a successful run with no persisted output."""
+
+        class EmptyOutcomeService(ConcreteGenerationService):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self._process_calls = []
+
+            def _create_extractor(self, extractor_config, service_config):
+                return MockExtractor(result=ExtractionOutcome.empty())
+
+            def _process_results(self, results):
+                self._process_calls.append(list(results))
+
+        service = EmptyOutcomeService(
+            llm_client,
+            request_context,
+            extractor_configs=[MockExtractorConfig(extractor_name="ext1")],
+        )
+
+        request = MockServiceConfig(user_id="test_user", request_id="test_request")
+        service.run(request)
+
+        assert service._process_calls == []
+        assert service._last_extractor_run_stats == {
+            "total": 1,
+            "failed": 0,
+            "timed_out": 0,
+        }
+
+    def test_extraction_outcome_run_finalizes_after_processing(
+        self, llm_client, request_context
+    ):
+        """A resumable run is marked finalized only after result processing."""
+
+        class OutcomeService(ConcreteGenerationService):
+            def _create_extractor(self, extractor_config, service_config):
+                return MockExtractor(
+                    result=ExtractionOutcome.completed([{"name": "x"}], run_id="run_1")
+                )
+
+        service = OutcomeService(
+            llm_client,
+            request_context,
+            extractor_configs=[MockExtractorConfig(extractor_name="ext1")],
+        )
+        service.storage = MagicMock()
+        service.storage.get_agent_run.return_value = SimpleNamespace(
+            pending_tool_call_ids=[],
+            committed_output={"items": []},
+            finalization_attempts=0,
+        )
+
+        service.run(MockServiceConfig(user_id="test_user", request_id="test_request"))
+
+        service.storage.update_agent_run_status.assert_called_with(
+            "run_1",
+            AgentRunStatus.FINALIZED,
+            pending_tool_call_ids=[],
+        )
+
+    def test_extraction_outcome_finalization_failure_marks_run_retryable(
+        self, llm_client, request_context
+    ):
+        """Finalization failure is tracked on the agent run for later retry."""
+
+        class FailingFinalizeService(ConcreteGenerationService):
+            def _create_extractor(self, extractor_config, service_config):
+                return MockExtractor(
+                    result=ExtractionOutcome.completed([{"name": "x"}], run_id="run_1")
+                )
+
+            def _process_results(self, results):
+                raise RuntimeError("persist failed")
+
+        service = FailingFinalizeService(
+            llm_client,
+            request_context,
+            extractor_configs=[MockExtractorConfig(extractor_name="ext1")],
+        )
+        service.storage = MagicMock()
+        service.storage.get_agent_run.return_value = SimpleNamespace(
+            pending_tool_call_ids=[],
+            committed_output={"items": []},
+            finalization_attempts=0,
+        )
+
+        service.run(MockServiceConfig(user_id="test_user", request_id="test_request"))
+
+        _, status = service.storage.update_agent_run_status.call_args.args[:2]
+        kwargs = service.storage.update_agent_run_status.call_args.kwargs
+        assert status == AgentRunStatus.FINALIZATION_FAILED
+        assert kwargs["last_error"] == "persist failed"
+        assert kwargs["increment_finalization_attempts"] is True
 
     def test_sequential_timeout_does_not_block_following_extractors(
         self, llm_client, request_context, monkeypatch

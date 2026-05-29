@@ -11,6 +11,7 @@ import uuid
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Any, Generic, TypeVar
 
@@ -18,6 +19,7 @@ from reflexio.models.api_schema.internal_schema import RequestInteractionDataMod
 from reflexio.models.api_schema.service_schemas import Status
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient
+from reflexio.server.services.extraction.outcome import ExtractionOutcome
 from reflexio.server.services.extractor_config_utils import (
     filter_extractor_configs,
     get_extractor_name,
@@ -29,6 +31,7 @@ from reflexio.server.services.extractor_interaction_utils import (
 )
 from reflexio.server.services.operation_state_utils import OperationStateManager
 from reflexio.server.services.service_utils import log_llm_messages, log_model_response
+from reflexio.server.services.storage.storage_base import AgentRunStatus
 from reflexio.server.usage_metrics import record_usage_event
 
 
@@ -197,6 +200,7 @@ class BaseGenerationService(
             "failed": 0,
             "timed_out": 0,
         }
+        self._last_extraction_run_ids: list[str] = []
 
     def _usage_pipeline(self) -> str | None:
         service_name = self._get_service_name()
@@ -324,6 +328,11 @@ class BaseGenerationService(
         Args:
             results: List of all results from extractors (one per successful extractor)
         """
+
+    def _finalize_extracted_items(self, items: list) -> None:
+        """Persist already-flattened extracted items through the service path."""
+        if items:
+            self._process_results([items])
 
     @abstractmethod
     def _should_track_in_progress(self) -> bool:
@@ -681,8 +690,13 @@ class BaseGenerationService(
             all_results = self._execute_extractors(extractor_configs, identifier)
             generated_count = self._count_generated_results(all_results)
 
-            if all_results:
-                self._process_results(all_results)
+            try:
+                if all_results:
+                    self._process_results(all_results)
+                self._finalize_extraction_runs()
+            except Exception as exc:
+                self._mark_extraction_runs_finalization_failed(exc)
+                raise
 
             self._record_generation_event(
                 event_name="generation_succeeded",
@@ -814,6 +828,7 @@ class BaseGenerationService(
             raise RuntimeError("service_config must be set before executing extractors")
 
         all_results: list = []
+        self._last_extraction_run_ids = []
         run_stats = {"total": len(extractor_configs), "failed": 0, "timed_out": 0}
 
         for config in extractor_configs:
@@ -825,7 +840,12 @@ class BaseGenerationService(
                 ctx = contextvars.copy_context()
                 future = executor.submit(ctx.run, extractor.run)  # type: ignore[reportAttributeAccessIssue]
                 result = future.result(timeout=EXTRACTOR_TIMEOUT_SECONDS)
-                if result:
+                if isinstance(result, ExtractionOutcome):
+                    if result.run_id:
+                        self._last_extraction_run_ids.append(result.run_id)
+                    if result.status == "completed" and result.items:
+                        all_results.append(result.items)
+                elif result:
                     all_results.append(result)
             except FuturesTimeoutError:
                 run_stats["failed"] += 1
@@ -871,6 +891,53 @@ class BaseGenerationService(
             )
 
         return all_results
+
+    def _finalize_extraction_runs(self) -> None:
+        if self.storage is None:
+            return
+        for run_id in self._last_extraction_run_ids:
+            run = self.storage.get_agent_run(run_id)
+            if run is None:
+                continue
+            status = (
+                AgentRunStatus.FINALIZED_PENDING_TOOL
+                if run.pending_tool_call_ids
+                else AgentRunStatus.FINALIZED
+            )
+            self.storage.update_agent_run_status(
+                run_id,
+                status,
+                pending_tool_call_ids=run.pending_tool_call_ids,
+            )
+
+    def _mark_extraction_runs_finalization_failed(self, exc: Exception) -> None:
+        if self.storage is None:
+            return
+        root_config = self.request_context.configurator.get_config()
+        pending_config = getattr(root_config, "pending_tool_call_config", None)
+        for run_id in self._last_extraction_run_ids:
+            run = self.storage.get_agent_run(run_id)
+            if run is None or run.committed_output is None:
+                continue
+            next_attempt_count = run.finalization_attempts + 1
+            max_attempts = (
+                pending_config.max_finalization_attempts
+                if pending_config is not None
+                else 3
+            )
+            status = (
+                AgentRunStatus.FAILED
+                if next_attempt_count >= max_attempts
+                else AgentRunStatus.FINALIZATION_FAILED
+            )
+            delay_seconds = min(300, max(1, 2 ** max(0, next_attempt_count - 1)))
+            self.storage.update_agent_run_status(
+                run_id,
+                status,
+                next_resume_at=datetime.now(UTC) + timedelta(seconds=delay_seconds),
+                last_error=str(exc),
+                increment_finalization_attempts=True,
+            )
 
     def _should_run_before_extraction(
         self, extractor_configs: list[TExtractorConfig]

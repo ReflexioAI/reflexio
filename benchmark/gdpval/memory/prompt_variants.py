@@ -12,7 +12,6 @@ code, this is a living reference sheet.
 
 from __future__ import annotations
 
-
 # ============================================================================
 # v1: Success Recipe — current production (committed in 383af22)
 # ============================================================================

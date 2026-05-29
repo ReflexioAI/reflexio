@@ -5183,6 +5183,7 @@ requires-dist = [
     { name = "cachetools", specifier = ">=6.2.4" },
     { name = "chromadb", specifier = ">=1.5.8" },
     { name = "colorlog", specifier = ">=6.10.1" },
+    { name = "cryptography", specifier = ">=45.0.0" },
     { name = "datasets", marker = "extra == 'benchmark'", specifier = ">=4.8.4" },
     { name = "duckduckgo-search", specifier = ">=7.0.1" },
     { name = "einops", specifier = ">=0.8.0" },

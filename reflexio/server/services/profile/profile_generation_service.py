@@ -145,12 +145,16 @@ class ProfileGenerationService(
         Args:
             results: List of profile lists from extractors (one list per successful extractor)
         """
+        self._finalize_extracted_items(
+            [p for result in results if result for p in result]
+        )
+
+    def _finalize_extracted_items(self, all_new_profiles: list[UserProfile]) -> None:
+        """Deduplicate, persist, and changelog extracted profile items."""
         user_id = self.service_config.user_id  # type: ignore[reportOptionalMemberAccess]
         source = self.service_config.source  # type: ignore[reportOptionalMemberAccess]
         request_id = self.service_config.request_id  # type: ignore[reportOptionalMemberAccess]
 
-        # Flatten all new profiles
-        all_new_profiles = [p for result in results if result for p in result]
         existing_ids_to_delete: list[str] = []
         superseded_profiles: list[UserProfile] = []
 
@@ -506,7 +510,7 @@ class ProfileGenerationService(
         Returns:
             Number of profiles generated
         """
-        user_ids = processed_user_ids or [request.user_id]
+        user_ids = processed_user_ids or ([request.user_id] if request.user_id else [])
         total = 0
         for user_id in user_ids:
             profiles = self.storage.get_user_profile(  # type: ignore[reportOptionalMemberAccess]

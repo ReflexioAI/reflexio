@@ -523,6 +523,67 @@ class PlaybookOptimizerConfig(BaseModel):
         return self
 
 
+@dataclass(frozen=True)
+class EffectivePendingToolCallConfig:
+    """Resolved pending-tool-call settings after applying tool overrides."""
+
+    max_pending_followups_per_scope: int
+    pending_ttl_seconds: int
+    dedup_cache_seconds: int
+    prior_answer_valid_seconds: int
+    similarity_threshold: float
+
+
+class PendingToolCallToolOverrideConfig(BaseModel):
+    """Optional per-tool pending-call limits."""
+
+    max_pending_followups_per_scope: int | None = Field(default=None, gt=0)
+    pending_ttl_seconds: int | None = Field(default=None, gt=0)
+    dedup_cache_seconds: int | None = Field(default=None, gt=0)
+    prior_answer_valid_seconds: int | None = Field(default=None, gt=0)
+    similarity_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
+
+
+class PendingToolCallConfig(BaseModel):
+    """Configuration for non-blocking pending tool calls."""
+
+    enabled: bool = False
+    human_input_enabled: bool = False
+    prior_knowledge_injection_enabled: bool = False
+    max_pending_followups_per_scope: int = Field(default=10, gt=0)
+    pending_ttl_seconds: int = Field(default=86_400, gt=0)
+    dedup_cache_seconds: int = Field(default=300, gt=0)
+    prior_answer_valid_seconds: int = Field(default=2_592_000, gt=0)
+    similarity_threshold: float = Field(default=0.0, ge=0.0, le=1.0)
+    resume_poll_interval_seconds: float = Field(default=5.0, gt=0)
+    resume_claim_ttl_seconds: int = Field(default=600, gt=0)
+    max_resume_attempts: int = Field(default=3, ge=0)
+    max_finalization_attempts: int = Field(default=3, ge=0)
+    hmac_secrets: list[str] = Field(default_factory=list)
+    tool_overrides: dict[str, PendingToolCallToolOverrideConfig] = Field(
+        default_factory=dict
+    )
+
+    def for_tool(self, tool_name: str) -> EffectivePendingToolCallConfig:
+        """Return base settings with an optional exact tool-name override."""
+        override = self.tool_overrides.get(tool_name)
+
+        def _value(name: str) -> Any:
+            if override is not None:
+                override_value = getattr(override, name)
+                if override_value is not None:
+                    return override_value
+            return getattr(self, name)
+
+        return EffectivePendingToolCallConfig(
+            max_pending_followups_per_scope=_value("max_pending_followups_per_scope"),
+            pending_ttl_seconds=_value("pending_ttl_seconds"),
+            dedup_cache_seconds=_value("dedup_cache_seconds"),
+            prior_answer_valid_seconds=_value("prior_answer_valid_seconds"),
+            similarity_threshold=_value("similarity_threshold"),
+        )
+
+
 class LLMConfig(BaseModel):
     """
     LLM model configuration overrides.
@@ -613,6 +674,10 @@ class Config(BaseModel):
     playbook_optimizer_config: PlaybookOptimizerConfig = Field(
         default_factory=PlaybookOptimizerConfig
     )
+    # Optional non-blocking async information tools for classic extraction.
+    pending_tool_call_config: PendingToolCallConfig = Field(
+        default_factory=PendingToolCallConfig
+    )
     # Skip the LLM pre-extraction eligibility check (always run extraction)
     skip_should_run_check: bool = False
     # Enable storage-time document expansion for improved FTS recall
@@ -681,6 +746,7 @@ class Config(BaseModel):
                 "search_backend",
                 "reflection_config",
                 "playbook_optimizer_config",
+                "pending_tool_call_config",
             ):
                 if key in data and data[key] is None:
                     del data[key]
@@ -713,6 +779,17 @@ class Config(BaseModel):
         """Validate that stride_size <= window_size."""
         if self.stride_size > self.window_size:
             raise ValueError("stride_size must be <= window_size")
+        return self
+
+    @model_validator(mode="after")
+    def check_pending_tool_calls_storage_backend(self) -> Self:
+        """Pending tool calls require a database-backed storage backend."""
+        if self.pending_tool_call_config.enabled and isinstance(
+            self.storage_config, StorageConfigDisk
+        ):
+            raise ValueError(
+                "pending_tool_call_config.enabled requires sqlite, supabase, or postgres storage"
+            )
         return self
 
     @property

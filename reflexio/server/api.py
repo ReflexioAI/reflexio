@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import logging
 import threading
 from collections.abc import Callable
@@ -150,6 +151,7 @@ from reflexio.server._auth import DEFAULT_ORG_ID, default_get_org_id
 from reflexio.server.api_endpoints import (
     account_api,
     health_api,
+    pending_tool_call_api,
     publisher_api,
     stall_state_api,
 )
@@ -2209,12 +2211,44 @@ def create_app(
     from collections.abc import AsyncIterator
     from contextlib import asynccontextmanager
 
+    from reflexio.server._auth import default_get_org_id
+    from reflexio.server.api_endpoints.request_context import RequestContext
     from reflexio.server.llm.model_defaults import validate_llm_availability
+    from reflexio.server.services.extraction.resume_scheduler import (
+        maybe_start_resume_scheduler,
+    )
+
+    def _lifespan_org_id() -> str:
+        if get_org_id is None:
+            return default_get_org_id()
+        try:
+            signature = inspect.signature(get_org_id)
+        except (TypeError, ValueError):
+            return default_get_org_id()
+        if signature.parameters:
+            return default_get_org_id()
+        try:
+            return str(get_org_id())
+        except Exception:
+            logger.exception("Failed to resolve lifespan org_id; using default org")
+            return default_get_org_id()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
         validate_llm_availability()
-        yield
+        # The scheduler discovers every org with resumable work each tick and
+        # drives a per-org worker with org-scoped claims, so it is not limited
+        # to the bootstrap org. The bootstrap org is only used to read config
+        # and to seed cross-org discovery.
+        scheduler = maybe_start_resume_scheduler(
+            lambda org_id: RequestContext(org_id=org_id),
+            bootstrap_org_id=_lifespan_org_id(),
+        )
+        try:
+            yield
+        finally:
+            if scheduler is not None:
+                scheduler.stop()
 
     app = FastAPI(docs_url="/docs", lifespan=lifespan)
 
@@ -2275,6 +2309,9 @@ def create_app(
 
     # Include stall_state routes
     app.include_router(stall_state_api.router)
+
+    # Include pending tool call routes
+    app.include_router(pending_tool_call_api.router)
 
     # Include additional routers
     for router in additional_routers or []:

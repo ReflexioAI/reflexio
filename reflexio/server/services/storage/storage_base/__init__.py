@@ -1,5 +1,23 @@
 from reflexio.models.api_schema.domain.enums import Status
 
+from ._agent_run import (
+    AgentBinding,
+    AgentRunMixin,
+    AgentRunRecord,
+    AgentRunStatus,
+    PendingToolCallRecord,
+    PendingToolCallStatus,
+    PendingToolCallUpsertResult,
+    PriorAnswerMatch,
+    RunToolDependencyKind,
+    RunToolDependencyRecord,
+    build_pending_tool_call_dedup_key,
+    build_scope_hash,
+    canonical_json,
+    embedding_similarity,
+    human_feedback_scope,
+    normalize_dedup_text,
+)
 from ._base import BaseStorageCore, matches_status_filter
 from ._extras import ExtrasMixin
 from ._operations import OperationMixin
@@ -11,6 +29,7 @@ from ._stall_state import StallStateMixin
 
 
 class BaseStorage(
+    AgentRunMixin,
     ProfileMixin,
     RequestMixin,
     PlaybookMixin,
@@ -101,9 +120,25 @@ class BaseStorage(
 
 
 __all__ = [
+    "AgentBinding",
+    "AgentRunMixin",
+    "AgentRunRecord",
+    "AgentRunStatus",
     "BaseStorage",
+    "PendingToolCallRecord",
+    "PendingToolCallStatus",
+    "PendingToolCallUpsertResult",
     "PlaybookMixin",
+    "PriorAnswerMatch",
+    "RunToolDependencyKind",
+    "RunToolDependencyRecord",
     "ShareLinkMixin",
     "StallStateMixin",
+    "build_pending_tool_call_dedup_key",
+    "build_scope_hash",
+    "canonical_json",
+    "embedding_similarity",
+    "human_feedback_scope",
     "matches_status_filter",
+    "normalize_dedup_text",
 ]

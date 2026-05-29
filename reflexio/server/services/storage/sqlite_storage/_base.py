@@ -660,6 +660,8 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             self._create_vec_tables()
             self._migrate_vec_tables()
         # Run after DDL so tables exist on fresh databases
+        self._migrate_agent_runs_schema()
+        self._migrate_pending_tool_calls_schema()
         self._migrate_expanded_terms()
         self._migrate_agentic_signals()
         self._migrate_agent_playbook_source_windows()
@@ -1103,6 +1105,38 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             if "expanded_terms" not in cols:
                 self.conn.execute(f"ALTER TABLE {table} ADD COLUMN expanded_terms TEXT")
                 logger.info("Added expanded_terms column to %s", table)
+        self.conn.commit()
+
+    def _migrate_agent_runs_schema(self) -> None:
+        """Add resumable-agent run columns if missing from existing SQLite DBs."""
+        cols = {
+            row["name"]
+            for row in self.conn.execute("PRAGMA table_info(_agent_runs)").fetchall()
+        }
+        if not cols:
+            return
+        if "max_steps_remaining" not in cols:
+            self.conn.execute(
+                "ALTER TABLE _agent_runs ADD COLUMN max_steps_remaining INTEGER"
+            )
+            logger.info("Added max_steps_remaining column to _agent_runs")
+        self.conn.commit()
+
+    def _migrate_pending_tool_calls_schema(self) -> None:
+        """Add pending-tool-call columns if missing from existing SQLite DBs."""
+        cols = {
+            row["name"]
+            for row in self.conn.execute(
+                "PRAGMA table_info(_pending_tool_calls)"
+            ).fetchall()
+        }
+        if not cols:
+            return
+        if "superseded_by" not in cols:
+            self.conn.execute(
+                "ALTER TABLE _pending_tool_calls ADD COLUMN superseded_by TEXT"
+            )
+            logger.info("Added superseded_by column to _pending_tool_calls")
         self.conn.commit()
 
     def _migrate_agentic_signals(self) -> None:
@@ -1689,6 +1723,80 @@ CREATE TABLE IF NOT EXISTS _operation_state (
     operation_state TEXT NOT NULL DEFAULT '{}',
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
+
+CREATE TABLE IF NOT EXISTS _agent_runs (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL,
+    extractor_kind TEXT NOT NULL,
+    extractor_name TEXT NOT NULL,
+    user_id TEXT,
+    request_id TEXT NOT NULL,
+    agent_version TEXT,
+    source TEXT,
+    source_interaction_ids TEXT NOT NULL DEFAULT '[]',
+    window_start_interaction_id INTEGER,
+    window_end_interaction_id INTEGER,
+    extractor_config_hash TEXT,
+    status TEXT NOT NULL,
+    generation_request_snapshot TEXT NOT NULL DEFAULT '{}',
+    service_config_snapshot TEXT,
+    agent_context_snapshot TEXT,
+    committed_output TEXT,
+    pending_tool_call_ids TEXT NOT NULL DEFAULT '[]',
+    max_steps_remaining INTEGER,
+    resume_attempts INTEGER NOT NULL DEFAULT 0,
+    finalization_attempts INTEGER NOT NULL DEFAULT 0,
+    next_resume_at TEXT,
+    claimed_by TEXT,
+    claimed_at TEXT,
+    agent_completed_at TEXT,
+    finalized_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    expires_at TEXT,
+    last_error TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_agent_runs_ready ON _agent_runs(status, next_resume_at, updated_at);
+CREATE INDEX IF NOT EXISTS idx_agent_runs_binding ON _agent_runs(org_id, extractor_kind, extractor_name, user_id);
+
+CREATE TABLE IF NOT EXISTS _pending_tool_calls (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL,
+    user_id TEXT,
+    scope TEXT NOT NULL DEFAULT '{}',
+    scope_hash TEXT NOT NULL,
+    tool_name TEXT NOT NULL,
+    dedup_key TEXT NOT NULL,
+    status TEXT NOT NULL,
+    question_text TEXT NOT NULL,
+    answer_format TEXT,
+    args TEXT NOT NULL DEFAULT '{}',
+    tags TEXT NOT NULL DEFAULT '[]',
+    result TEXT,
+    embedding TEXT,
+    superseded_by TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    resolved_at TEXT,
+    expires_at TEXT NOT NULL,
+    cache_until TEXT NOT NULL,
+    valid_until TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_pending_tool_calls_active ON _pending_tool_calls(org_id, scope_hash, tool_name, dedup_key, status, cache_until);
+CREATE INDEX IF NOT EXISTS idx_pending_tool_calls_prior ON _pending_tool_calls(org_id, scope_hash, tool_name, status, valid_until);
+
+CREATE TABLE IF NOT EXISTS _run_tool_dependencies (
+    run_id TEXT NOT NULL,
+    pending_tool_call_id TEXT NOT NULL,
+    dependency_kind TEXT NOT NULL DEFAULT 'followup',
+    resolved_at TEXT,
+    consumed_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    PRIMARY KEY (run_id, pending_tool_call_id),
+    FOREIGN KEY (run_id) REFERENCES _agent_runs(id) ON DELETE CASCADE,
+    FOREIGN KEY (pending_tool_call_id) REFERENCES _pending_tool_calls(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_run_tool_dependencies_pending ON _run_tool_dependencies(pending_tool_call_id, resolved_at, consumed_at);
+CREATE INDEX IF NOT EXISTS idx_run_tool_dependencies_ready ON _run_tool_dependencies(run_id, resolved_at, consumed_at);
 
 -- FTS5 virtual tables
 CREATE VIRTUAL TABLE IF NOT EXISTS interactions_fts USING fts5(

@@ -259,12 +259,14 @@ class PlaybookGenerationService(
         Args:
             results: List of UserPlaybook results from extractors (one list per extractor)
         """
-        # Flatten results (each extractor returns list[UserPlaybook])
         all_playbooks = []
         for result in results:
             if isinstance(result, list):
                 all_playbooks.extend(result)
+        self._finalize_extracted_items(all_playbooks)
 
+    def _finalize_extracted_items(self, all_playbooks: list[UserPlaybook]) -> None:
+        """Deduplicate, persist, and aggregate extracted user playbook items."""
         # Deduplicate against existing entries in DB when deduplicator is enabled
         existing_ids_to_delete: list[int] = []
         from reflexio.server.site_var.feature_flags import is_deduplicator_enabled
@@ -295,7 +297,7 @@ class PlaybookGenerationService(
                 dedup_config=dedup_config,
             )
             deduplicated_playbooks, existing_ids_to_delete = deduplicator.deduplicate(
-                results,
+                [all_playbooks],
                 self.service_config.request_id,  # type: ignore[reportOptionalMemberAccess]
                 self.service_config.agent_version,  # type: ignore[reportOptionalMemberAccess]
                 user_id=self.service_config.user_id,  # type: ignore[reportOptionalMemberAccess]

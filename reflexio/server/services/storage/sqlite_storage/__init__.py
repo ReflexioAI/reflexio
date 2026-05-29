@@ -1,3 +1,4 @@
+from ._agent_run import SQLiteAgentRunMixin
 from ._base import (
     SQLiteStorageBase,
     _cosine_similarity,
@@ -25,6 +26,7 @@ from ._stall_state import (
 
 
 class SQLiteStorage(
+    SQLiteAgentRunMixin,
     ProfileMixin,
     RequestMixin,
     PlaybookMixin,

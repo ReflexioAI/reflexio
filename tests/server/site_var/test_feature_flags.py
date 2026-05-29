@@ -5,6 +5,7 @@ from reflexio.server.site_var.feature_flags import (
     get_all_feature_flags,
     is_deduplicator_enabled,
     is_feature_enabled,
+    is_resumable_extraction_agent_enabled,
 )
 
 MOCK_CONFIG = {
@@ -23,6 +24,10 @@ MOCK_CONFIG = {
     "deduplicator": {
         "enabled": False,
         "enabled_org_ids": ["org-dedup"],
+    },
+    "resumable_extraction_agent": {
+        "enabled": False,
+        "enabled_org_ids": ["org-resumable"],
     },
 }
 
@@ -84,6 +89,7 @@ class TestFeatureFlags(unittest.TestCase):
                 "beta_feature": False,
                 "pre_retrieval": True,
                 "deduplicator": False,
+                "resumable_extraction_agent": False,
             },
         )
 
@@ -101,6 +107,7 @@ class TestFeatureFlags(unittest.TestCase):
                 "beta_feature": False,
                 "pre_retrieval": True,
                 "deduplicator": False,
+                "resumable_extraction_agent": False,
             },
         )
 
@@ -145,6 +152,22 @@ class TestFeatureFlags(unittest.TestCase):
     def test_is_deduplicator_enabled_unknown_defaults_enabled(self, _mock):
         """is_deduplicator_enabled with empty config should default to enabled."""
         self.assertTrue(is_deduplicator_enabled("org-123"))
+
+    @patch(
+        "reflexio.server.site_var.feature_flags._get_feature_flags_config",
+        return_value=MOCK_CONFIG,
+    )
+    def test_is_resumable_extraction_agent_enabled_for_enabled_org(self, _mock):
+        """resumable extraction agent can be enabled for selected orgs."""
+        self.assertTrue(is_resumable_extraction_agent_enabled("org-resumable"))
+
+    @patch(
+        "reflexio.server.site_var.feature_flags._get_feature_flags_config",
+        return_value=MOCK_CONFIG,
+    )
+    def test_is_resumable_extraction_agent_disabled_for_other_orgs(self, _mock):
+        """resumable extraction agent defaults to classic extraction for other orgs."""
+        self.assertFalse(is_resumable_extraction_agent_enabled("org-123"))
 
 
 if __name__ == "__main__":

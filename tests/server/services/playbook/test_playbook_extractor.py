@@ -23,9 +23,17 @@ from reflexio.models.api_schema.service_schemas import (
     Request,
     UserPlaybook,
 )
-from reflexio.models.config_schema import PlaybookConfig
+from reflexio.models.config_schema import (
+    Config,
+    PendingToolCallConfig,
+    PlaybookConfig,
+    StorageConfigSQLite,
+)
 from reflexio.server.api_endpoints.request_context import RequestContext
-from reflexio.server.llm.litellm_client import LiteLLMClient
+from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
+from reflexio.server.services.extraction.resumable_agent import (
+    FINISH_EXTRACTION_TOOL_NAME,
+)
 from reflexio.server.services.playbook.playbook_extractor import PlaybookExtractor
 from reflexio.server.services.playbook.playbook_generation_service import (
     PlaybookGenerationServiceConfig,
@@ -34,6 +42,8 @@ from reflexio.server.services.playbook.playbook_service_utils import (
     StructuredPlaybookContent,
     StructuredPlaybookList,
 )
+from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
+from reflexio.server.services.storage.storage_base import AgentRunStatus
 
 # ===============================
 # Fixtures
@@ -61,6 +71,14 @@ def request_context(temp_storage_dir):
     context = RequestContext(org_id="test_org", storage_base_dir=temp_storage_dir)
     context.storage = MagicMock()
     return context
+
+
+@pytest.fixture
+def sqlite_storage(temp_storage_dir):
+    with patch.object(SQLiteStorage, "_get_embedding", return_value=[0.0] * 512):
+        yield SQLiteStorage(
+            org_id="test_org", db_path=f"{temp_storage_dir}/reflexio.db"
+        )
 
 
 @pytest.fixture
@@ -469,7 +487,7 @@ class TestRun:
         with patch.dict(os.environ, {"MOCK_LLM_RESPONSE": "true"}):
             result = extractor.run()
 
-        assert result is not None
+        assert isinstance(result, list)
         assert len(result) > 0
         assert all(isinstance(f, UserPlaybook) for f in result)
 
@@ -502,6 +520,7 @@ class TestRun:
         with patch.dict(os.environ, {"MOCK_LLM_RESPONSE": "true"}):
             result = extractor.run()
 
+        assert isinstance(result, list)
         assert len(result) == 1
         assert result[0].source_interaction_ids == [1, 2, 3]
 
@@ -566,6 +585,80 @@ class TestRun:
         # Verify operation state was updated
         if result:
             request_context.storage.upsert_operation_state.assert_called()
+
+
+class TestResumableAgentPath:
+    """Tests for the config-gated resumable playbook extraction path."""
+
+    def test_generates_playbook_and_finalizes_agent_run(
+        self,
+        monkeypatch,
+        request_context,
+        sqlite_storage,
+        extractor_config,
+        service_config,
+        sample_request_interaction_models,
+        tool_call_completion,
+    ):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+        monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_CLI", raising=False)
+        request_context.storage = sqlite_storage
+        request_context.configurator.get_config = MagicMock(
+            return_value=Config(
+                storage_config=StorageConfigSQLite(),
+                pending_tool_call_config=PendingToolCallConfig(enabled=True),
+            )
+        )
+        request_context.prompt_manager = MagicMock()
+        request_context.prompt_manager.render_prompt.side_effect = (
+            lambda prompt_id, variables: f"{prompt_id}: {variables}"
+        )
+
+        make_tc, _make_stop = tool_call_completion
+        response = make_tc(
+            FINISH_EXTRACTION_TOOL_NAME,
+            {
+                "playbooks": [
+                    {
+                        "trigger": "User asks about deployments",
+                        "content": "Prefer ECS deployment guidance.",
+                        "rationale": "The workspace uses AWS ECS.",
+                    }
+                ]
+            },
+        )
+        extractor = PlaybookExtractor(
+            request_context=request_context,
+            llm_client=LiteLLMClient(LiteLLMConfig(model="claude-sonnet-4-6")),
+            extractor_config=extractor_config,
+            service_config=service_config,
+            agent_context="Test agent",
+        )
+
+        with (
+            patch("litellm.completion", side_effect=[response]),
+            patch(
+                "reflexio.server.services.extraction.resumable_agent.is_resumable_extraction_agent_feature_enabled",
+                return_value=True,
+            ),
+            patch.dict(os.environ, {"MOCK_LLM_RESPONSE": "false"}),
+        ):
+            playbooks = extractor.extract_playbook_entries(
+                sample_request_interaction_models
+            )
+
+        assert len(playbooks) == 1
+        assert playbooks[0].content == "Prefer ECS deployment guidance."
+        assert playbooks[0].source_interaction_ids == [1, 2, 3]
+        row = sqlite_storage.conn.execute("SELECT id FROM _agent_runs").fetchone()
+        assert row is not None
+        run = sqlite_storage.get_agent_run(row["id"])
+        assert run is not None
+        assert run.status == AgentRunStatus.AGENT_COMPLETED
+        assert run.binding.org_id == "test_org"
+        assert run.binding.user_id is None
+        assert run.binding.extractor_kind == "playbook"
+        assert run.binding.source_interaction_ids == [1, 2, 3]
 
 
 # ===============================

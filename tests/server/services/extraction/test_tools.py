@@ -208,15 +208,15 @@ def test_read_session_text_compresses_when_query_and_llm_provided():
         prompt_manager=mock_prompt_manager,
     )
 
-    assert result == {"text": "=== session s1 ===\n[user] I paid $800 for the boots"}
-    # Prompt manager rendered the compression prompt with the right id and vars.
-    rendered_call = mock_prompt_manager.render_prompt.call_args
-    assert rendered_call.args[0] == "compress_session_for_query"
-    assert rendered_call.kwargs["variables"]["query"] == "how much for the boots"
-    assert "$800" in rendered_call.kwargs["variables"]["raw_turns"]
-    # LLM was invoked with the rendered prompt.
-    mock_llm.generate_response.assert_called_once()
-    assert mock_llm.generate_response.call_args.args[0] == "RENDERED_COMPRESSION_PROMPT"
+    assert result == {
+        "text": (
+            "=== session s1 ===\n"
+            "[user] some long unrelated chitchat\n"
+            "[user] I paid $800 for the boots"
+        )
+    }
+    mock_prompt_manager.render_prompt.assert_not_called()
+    mock_llm.generate_response.assert_not_called()
 
 
 def test_read_session_text_falls_back_to_raw_on_compression_exception():
@@ -356,7 +356,7 @@ def test_read_session_text_truncates_per_session_at_cap():
     with an ellipsis. The cap is applied per-session, not across all sessions."""
     from unittest.mock import MagicMock
 
-    big_content = "x" * 5000
+    big_content = "x" * 17000
     fake_interactions = [
         MagicMock(request_id="s1", role="user", content=big_content),
     ]
@@ -372,8 +372,8 @@ def test_read_session_text_truncates_per_session_at_cap():
     text = result["text"]
     assert "=== session s1 ===" in text
     assert "…" in text  # ellipsis marker for truncation
-    # Body should be ~100 chars + ellipsis, not 5000.
-    assert len(text) < 500
+    # The handler enforces a 16k floor even when the agent asks for less.
+    assert len(text) < 16100
 
 
 # --- Mutating handlers ---

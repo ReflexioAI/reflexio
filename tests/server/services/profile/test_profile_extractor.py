@@ -20,9 +20,18 @@ from reflexio.models.api_schema.service_schemas import (
     Interaction,
     Request,
 )
-from reflexio.models.config_schema import ProfileExtractorConfig
+from reflexio.models.config_schema import (
+    Config,
+    PendingToolCallConfig,
+    ProfileExtractorConfig,
+    StorageConfigSQLite,
+)
 from reflexio.server.api_endpoints.request_context import RequestContext
-from reflexio.server.llm.litellm_client import LiteLLMClient
+from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
+from reflexio.server.services.extraction.outcome import ExtractionOutcome
+from reflexio.server.services.extraction.resumable_agent import (
+    FINISH_EXTRACTION_TOOL_NAME,
+)
 from reflexio.server.services.profile.profile_extractor import ProfileExtractor
 from reflexio.server.services.profile.profile_generation_service import (
     ProfileGenerationServiceConfig,
@@ -30,6 +39,8 @@ from reflexio.server.services.profile.profile_generation_service import (
 from reflexio.server.services.profile.profile_generation_service_utils import (
     StructuredProfilesOutput,
 )
+from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
+from reflexio.server.services.storage.storage_base import AgentRunStatus
 
 # ===============================
 # Fixtures
@@ -59,6 +70,14 @@ def request_context(temp_storage_dir):
     # Mock the storage
     context.storage = MagicMock()
     return context
+
+
+@pytest.fixture
+def sqlite_storage(temp_storage_dir):
+    with patch.object(SQLiteStorage, "_get_embedding", return_value=[0.0] * 512):
+        yield SQLiteStorage(
+            org_id="test_org", db_path=f"{temp_storage_dir}/reflexio.db"
+        )
 
 
 @pytest.fixture
@@ -512,6 +531,262 @@ class TestRun:
         # Verify operation state was updated
         if result is not None:
             request_context.storage.upsert_operation_state.assert_called()
+
+
+class TestResumableAgentPath:
+    """Tests for the config-gated resumable profile extraction path."""
+
+    def test_generates_profiles_and_finalizes_agent_run(
+        self,
+        monkeypatch,
+        request_context,
+        sqlite_storage,
+        extractor_config,
+        service_config,
+        sample_request_interaction_models,
+        tool_call_completion,
+    ):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+        monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_CLI", raising=False)
+        request_context.storage = sqlite_storage
+        request_context.configurator.get_config = MagicMock(
+            return_value=Config(
+                storage_config=StorageConfigSQLite(),
+                pending_tool_call_config=PendingToolCallConfig(enabled=True),
+            )
+        )
+        request_context.prompt_manager = MagicMock()
+        request_context.prompt_manager.render_prompt.side_effect = (
+            lambda prompt_id, variables: f"{prompt_id}: {variables}"
+        )
+
+        make_tc, _make_stop = tool_call_completion
+        response = make_tc(
+            FINISH_EXTRACTION_TOOL_NAME,
+            {
+                "profiles": [
+                    {
+                        "content": "User prefers dark mode.",
+                        "time_to_live": "infinity",
+                    }
+                ]
+            },
+        )
+        extractor = ProfileExtractor(
+            request_context=request_context,
+            llm_client=LiteLLMClient(LiteLLMConfig(model="claude-sonnet-4-6")),
+            extractor_config=extractor_config,
+            service_config=service_config,
+            agent_context="Test agent",
+        )
+
+        with (
+            patch("litellm.completion", side_effect=[response]),
+            patch(
+                "reflexio.server.services.extraction.resumable_agent.is_resumable_extraction_agent_feature_enabled",
+                return_value=True,
+            ),
+            patch.dict(os.environ, {"MOCK_LLM_RESPONSE": "false"}),
+        ):
+            raw_profiles = extractor._generate_raw_updates_from_sessions(
+                request_interaction_data_models=sample_request_interaction_models,
+                existing_profiles=[],
+            )
+
+        assert raw_profiles[0]["content"] == "User prefers dark mode."
+        row = sqlite_storage.conn.execute("SELECT id FROM _agent_runs").fetchone()
+        assert row is not None
+        run = sqlite_storage.get_agent_run(row["id"])
+        assert run is not None
+        assert run.status == AgentRunStatus.AGENT_COMPLETED
+        assert run.binding.org_id == "test_org"
+        assert run.binding.user_id == "test_user"
+        assert run.binding.extractor_kind == "profile"
+        assert run.binding.source_interaction_ids == [1, 2]
+
+    def test_feature_flag_disabled_uses_classic_llm_call(
+        self,
+        request_context,
+        sqlite_storage,
+        extractor_config,
+        service_config,
+        sample_request_interaction_models,
+    ):
+        request_context.storage = sqlite_storage
+        request_context.configurator.get_config = MagicMock(
+            return_value=Config(
+                storage_config=StorageConfigSQLite(),
+                pending_tool_call_config=PendingToolCallConfig(enabled=True),
+            )
+        )
+        request_context.prompt_manager = MagicMock()
+        request_context.prompt_manager.render_prompt.side_effect = (
+            lambda prompt_id, variables: f"{prompt_id}: {variables}"
+        )
+        llm_client = MagicMock(spec=LiteLLMClient)
+        llm_client.generate_chat_response.return_value = (
+            StructuredProfilesOutput.model_validate(
+                {
+                    "profiles": [
+                        {
+                            "content": "Classic extraction path.",
+                            "time_to_live": "infinity",
+                        }
+                    ]
+                }
+            )
+        )
+        extractor = ProfileExtractor(
+            request_context=request_context,
+            llm_client=llm_client,
+            extractor_config=extractor_config,
+            service_config=service_config,
+            agent_context="Test agent",
+        )
+
+        with (
+            patch(
+                "reflexio.server.services.extraction.resumable_agent.is_resumable_extraction_agent_feature_enabled",
+                return_value=False,
+            ),
+            patch.dict(os.environ, {"MOCK_LLM_RESPONSE": "false"}),
+        ):
+            raw_profiles = extractor._generate_raw_updates_from_sessions(
+                request_interaction_data_models=sample_request_interaction_models,
+                existing_profiles=[],
+            )
+
+        assert raw_profiles[0]["content"] == "Classic extraction path."
+        llm_client.generate_chat_response.assert_called_once()
+        assert (
+            sqlite_storage.conn.execute("SELECT COUNT(*) FROM _agent_runs").fetchone()[
+                0
+            ]
+            == 0
+        )
+
+    def test_ask_human_is_org_scoped_and_run_still_finalizes(
+        self,
+        monkeypatch,
+        request_context,
+        sqlite_storage,
+        extractor_config,
+        service_config,
+        sample_request_interaction_models,
+        tool_call_completion,
+    ):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+        monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_CLI", raising=False)
+        request_context.storage = sqlite_storage
+        request_context.configurator.get_config = MagicMock(
+            return_value=Config(
+                storage_config=StorageConfigSQLite(),
+                pending_tool_call_config=PendingToolCallConfig(
+                    enabled=True,
+                    human_input_enabled=True,
+                ),
+            )
+        )
+        request_context.prompt_manager = MagicMock()
+        request_context.prompt_manager.render_prompt.side_effect = (
+            lambda prompt_id, variables: f"{prompt_id}: {variables}"
+        )
+
+        make_tc, _make_stop = tool_call_completion
+        ask_response = make_tc(
+            "ask_human",
+            {
+                "question": "Which deployment standard should be treated as canonical?",
+                "answer_format": "short text",
+                "tags": ["deployment"],
+            },
+        )
+        finish_response = make_tc(
+            FINISH_EXTRACTION_TOOL_NAME,
+            {
+                "profiles": [
+                    {
+                        "content": "User prefers dark mode.",
+                        "time_to_live": "infinity",
+                    }
+                ]
+            },
+        )
+        extractor = ProfileExtractor(
+            request_context=request_context,
+            llm_client=LiteLLMClient(LiteLLMConfig(model="claude-sonnet-4-6")),
+            extractor_config=extractor_config,
+            service_config=service_config,
+            agent_context="Test agent",
+        )
+
+        with (
+            patch("litellm.completion", side_effect=[ask_response, finish_response]),
+            patch(
+                "reflexio.server.services.extraction.resumable_agent.is_resumable_extraction_agent_feature_enabled",
+                return_value=True,
+            ),
+            patch.dict(os.environ, {"MOCK_LLM_RESPONSE": "false"}),
+        ):
+            raw_profiles = extractor._generate_raw_updates_from_sessions(
+                request_interaction_data_models=sample_request_interaction_models,
+                existing_profiles=[],
+            )
+
+        assert raw_profiles[0]["content"] == "User prefers dark mode."
+        pending_calls = sqlite_storage.list_pending_tool_calls()
+        assert len(pending_calls) == 1
+        pending_call = pending_calls[0]
+        assert pending_call.scope == {"org_id": "test_org", "scope_kind": "org"}
+        assert pending_call.user_id == "test_user"
+        row = sqlite_storage.conn.execute("SELECT id FROM _agent_runs").fetchone()
+        assert row is not None
+        run = sqlite_storage.get_agent_run(row["id"])
+        assert run is not None
+        assert run.status == AgentRunStatus.AGENT_COMPLETED
+        assert run.pending_tool_call_ids == [pending_call.id]
+
+    def test_run_resumable_empty_output_still_surfaces_run_id(
+        self,
+        request_context,
+        mock_llm_client,
+        service_config,
+        sample_request_interaction_models,
+    ):
+        """A resumable run that finishes with EMPTY output (agent asked a human
+        and produced no profiles yet) must still surface its run_id so the
+        generation service can finalize the run to FINALIZED_PENDING_TOOL.
+
+        Regression: previously run() returned None for empty output, dropping
+        the run_id and orphaning the run in AGENT_COMPLETED so the resolve ->
+        resume chain could never fire.
+        """
+        config = ProfileExtractorConfig(
+            extractor_name="test_extractor",
+            extraction_definition_prompt="Extract user preferences",
+        )
+        request_context.storage.get_last_k_interactions_grouped.return_value = (
+            sample_request_interaction_models,
+            [],
+        )
+        request_context.storage.get_user_profile.return_value = []
+        extractor = ProfileExtractor(
+            request_context=request_context,
+            llm_client=mock_llm_client,
+            extractor_config=config,
+            service_config=service_config,
+            agent_context="Test agent",
+        )
+        # Simulate the resumable agent finishing with empty output while a
+        # durable run row was created (and a follow-up ask persisted).
+        extractor._generate_raw_updates_from_sessions = MagicMock(return_value=[])
+        extractor._last_resumable_run_id = "run_empty_followup"
+
+        result = extractor.run()
+
+        assert isinstance(result, ExtractionOutcome)
+        assert result.run_id == "run_empty_followup"
+        assert result.items == []
 
 
 # ===============================

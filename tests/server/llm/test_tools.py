@@ -11,6 +11,8 @@ from reflexio.server.llm.litellm_client import (
 )
 from reflexio.server.llm.model_defaults import ModelRole
 from reflexio.server.llm.tools import (
+    AsyncAccepted,
+    AsyncInfoTool,
     Tool,
     ToolLoopResult,  # noqa: F401
     ToolLoopTrace,  # noqa: F401
@@ -83,6 +85,35 @@ def test_openai_specs_lists_all_registered_tools():
     reg.register(Tool(name="b", args_model=EmitProfileArgs, handler=lambda *_: {}))
     specs = reg.openai_specs()
     assert {s["function"]["name"] for s in specs} == {"a", "b"}
+
+
+def test_registry_handle_unwraps_async_accepted_result():
+    """AsyncAccepted remains a normal tool result for existing callers."""
+
+    class AskArgs(BaseModel):
+        """Ask for missing information."""
+
+        question: str
+
+    reg = ToolRegistry()
+    reg.register(
+        AsyncInfoTool(
+            name="ask_human",
+            args_model=AskArgs,
+            handler=lambda _a, _c: AsyncAccepted(
+                pending_tool_call_id="ptc_1",
+                result={
+                    "status": "request_pending",
+                    "pending_tool_call_id": "ptc_1",
+                },
+            ),
+        )
+    )
+
+    assert reg.handle("ask_human", json.dumps({"question": "Target?"}), None) == {
+        "status": "request_pending",
+        "pending_tool_call_id": "ptc_1",
+    }
 
 
 def test_mock_tool_call_response_shape(tool_call_completion):
@@ -167,6 +198,71 @@ def test_run_tool_loop_drives_multiple_turns_until_finish(
     assert len(result.trace.turns) == 3
     assert ctx.emitted == ["alpha", "beta"]
     assert ctx.finished is True
+
+
+def test_run_tool_loop_records_async_accepted_and_continues(
+    monkeypatch,
+    tool_call_completion,
+):
+    """Async info tools return a tool message and do not stop the loop."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_CLI", raising=False)
+
+    class AskArgs(BaseModel):
+        """Ask for missing information."""
+
+        question: str
+
+    class FinishArgs(BaseModel):
+        """Signal that extraction is complete."""
+
+    make_tc, _make_stop = tool_call_completion
+    responses = [
+        make_tc("ask_human", {"question": "What deployment target?"}),
+        make_tc("finish", {}),
+    ]
+
+    config = LiteLLMConfig(model="claude-sonnet-4-6")
+    client = LiteLLMClient(config)
+    ctx = LoopCtx()
+    registry = ToolRegistry()
+    registry.register(
+        AsyncInfoTool(
+            name="ask_human",
+            args_model=AskArgs,
+            handler=lambda _a, _c: AsyncAccepted(
+                pending_tool_call_id="ptc_1",
+                result={
+                    "status": "request_pending",
+                    "pending_tool_call_id": "ptc_1",
+                    "instruction": "Continue with available evidence.",
+                },
+            ),
+        )
+    )
+    registry.register(
+        Tool(
+            name="finish",
+            args_model=FinishArgs,
+            handler=lambda _a, c: setattr(c, "finished", True) or {"done": True},
+        )
+    )
+
+    with patch("litellm.completion", side_effect=responses):
+        result = run_tool_loop(
+            client=client,
+            messages=[{"role": "user", "content": "go"}],
+            registry=registry,
+            model_role=ModelRole.EXTRACTION_AGENT,
+            ctx=ctx,
+        )
+
+    assert result.finished_reason == "finish_tool"
+    assert result.pending_tool_call_ids == ["ptc_1"]
+    assert ctx.finished is True
+    assert [turn.tool_name for turn in result.trace.turns] == ["ask_human", "finish"]
+    tool_messages = [m for m in result.messages if m.get("role") == "tool"]
+    assert "ptc_1" in tool_messages[0]["content"]
 
 
 def test_run_tool_loop_honours_max_steps(monkeypatch, tool_call_completion):
