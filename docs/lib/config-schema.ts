@@ -247,14 +247,35 @@ export function serializeConfig(config: ReflexioConfig): unknown {
     return Object.values(out).some((v) => v !== null) ? out : null;
   };
 
+  const cleanExtractor = <
+    T extends {
+      extraction_definition_prompt: string;
+      context_prompt: string | null;
+      metadata_definition_prompt: string | null;
+    },
+  >(
+    extractor: T | null,
+  ): T | null => {
+    if (!extractor || extractor.extraction_definition_prompt.trim() === "") {
+      return null;
+    }
+    return {
+      ...extractor,
+      context_prompt: clean(extractor.context_prompt),
+      metadata_definition_prompt: clean(extractor.metadata_definition_prompt),
+    };
+  };
+
   return {
     storage_config: config.storage_config
       ? { db_path: clean(config.storage_config.db_path) }
       : null,
     agent_context_prompt: clean(config.agent_context_prompt),
     tool_can_use: config.tool_can_use?.length ? config.tool_can_use : null,
-    profile_extractor_config: config.profile_extractor_config,
-    user_playbook_extractor_config: config.user_playbook_extractor_config,
+    profile_extractor_config: cleanExtractor(config.profile_extractor_config),
+    user_playbook_extractor_config: cleanExtractor(
+      config.user_playbook_extractor_config,
+    ),
     agent_success_config: config.agent_success_config,
     extraction_preset: config.extraction_preset,
     window_size: config.window_size,
