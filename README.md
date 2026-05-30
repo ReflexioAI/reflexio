@@ -296,8 +296,14 @@ client.set_config(reflexio.SetConfigRequest(
 
 Reflexio integrates with popular AI agent frameworks out of the box:
 
-- **[LangChain](reflexio/integrations/langchain/README.md)** -- Drop-in callbacks for LangChain chains and agents.
 - **[OpenClaw](reflexio/integrations/openclaw/README.md)** -- Native integration with the OpenClaw agent framework.
+
+> **Migration from the LangChain integration (removed in this release).** The
+> `reflexio.integrations.langchain` package and the `reflexio-client[langchain]`
+> extra have been removed. To inject Reflexio context into a LangChain chain or
+> agent, call the Reflexio client's search API directly and add the formatted
+> results to your prompt (e.g. as a system message) — no framework-specific glue
+> is required.
 
 ## Architecture
 

@@ -6,7 +6,6 @@
         "reflexio/reflexio_commons/tests",
         "reflexio/reflexio_client/tests",
         "reflexio/scripts", "notebooks", "demo",
-        "reflexio/integrations/langchain",
         "tests/test_scripts",
         "**/.venv",
         "benchmark"

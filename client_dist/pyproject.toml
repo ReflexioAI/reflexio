@@ -14,9 +14,6 @@ dependencies = [
     "python-dotenv>=0.19.0",
 ]
 
-[project.optional-dependencies]
-langchain = ["langchain-core>=0.3.0"]
-
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

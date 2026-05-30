@@ -54,11 +54,6 @@ dependencies = [
 [project.optional-dependencies]
 vec = ["sqlite-vec>=0.1.6"]
 notebooks = ["pandas>=3.0.2"]
-langchain = [
-    "langchain-core>=1.2.28",
-    "langchain-openai>=1.2.0",
-    "langgraph>=1.1.9",
-]
 benchmark = [
     "datasets>=4.8.4",
     "fire>=0.7.1",
@@ -234,7 +229,6 @@ indent-style = "space"
 [tool.pyright]
 include = ["reflexio", "tests"]
 exclude = [
-    "reflexio/integrations/langchain",
     "tests/test_scripts",
     "**/__pycache__",
     "**/.venv",

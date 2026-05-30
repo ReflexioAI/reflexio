@@ -33,12 +33,6 @@ The official Python SDK for [Reflexio](https://www.reflexio.ai/) — the adaptiv
 pip install reflexio-client
 ```
 
-With LangChain integration:
-
-```bash
-pip install reflexio-client[langchain]
-```
-
 ## Quick Start
 
 ```python

@@ -13,7 +13,6 @@ Interactive tutorials for learning Reflexio, from your first workflow to advance
 | 04 | [Configuration](04_configuration.ipynb) | Intermediate | 15 min | Customize extraction prompts, models, and pipeline behavior |
 | 05 | [Concurrent Sessions](05_concurrent_sessions.ipynb) | Advanced | 15 min | Simulate multi-user load and verify data isolation |
 | 06 | [Simulation](06_real_world_simulation.ipynb) | Advanced | 20 min | Run a multi-turn simulation and watch profiles evolve over time |
-| 07 | [LangChain](07_langchain_integration.ipynb) | Intermediate | 15 min | Integrate Reflexio context retrieval into a LangChain agent |
 
 ## Prerequisites
 
