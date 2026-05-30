@@ -40,7 +40,7 @@ PROMPT_VERSION_MAP: dict[str, tuple[str, str | None]] = {
     "playbook_consolidation": ("v2.0.0", "playbook_consolidation"),
     "playbook_optimizer_judge": ("v1.1.0", None),
     "profile_update_main": ("v1.0.0", "profile_extraction"),
-    "profile_update_instruction_start": ("v1.0.0", None),
+    "profile_update_instruction_start": ("v1.1.0", None),
     "profile_should_generate": ("v1.0.0", "boolean_evaluation"),
     "profile_should_generate_override": ("v1.0.0", "boolean_evaluation"),
     "profile_deduplication": ("v1.0.0", "profile_deduplication"),
@@ -53,24 +53,6 @@ PROMPT_VERSION_MAP: dict[str, tuple[str, str | None]] = {
     "memory_reflection": ("v1.1.0", None),
     "query_reformulation": ("v1.0.0", None),
     "document_expansion": ("v1.0.0", None),
-    # Agentic extraction pipeline — three parallel axes + unify + self-critique
-    "extraction_user_profile": ("v1.4.11", None),
-    "extraction_user_profile_agent_rec": ("v1.1.3", None),
-    "extraction_user_playbook": ("v1.2.0", None),
-    "extraction_unify": ("v1.2.0", None),
-    "extraction_self_critique": ("v1.1.0", None),
-    # Agentic search pipeline — single-loop agent with cross-encoder + LLM rerank
-    "search_agent": ("v1.25.0", None),
-    # Per-pattern recipes loaded by render_search_prompt. Each can be iterated
-    # independently without bleeding into the others.
-    "search_agent/patterns/a": ("v1.0.0", None),
-    "search_agent/patterns/b": ("v1.0.0", None),
-    "search_agent/patterns/c": ("v1.0.0", None),
-    "search_agent/patterns/d": ("v1.0.0", None),
-    "search_agent/patterns/e": ("v1.0.0", None),
-    "search_agent/patterns/f": ("v1.0.0", None),
-    "search_agent/patterns/g": ("v1.0.0", None),
-    "search_agent/patterns/h": ("v1.0.0", None),
     "compress_session_for_query": ("v1.3.0", None),
     "rerank_relevance": ("v1.1.0", None),
     # Answer-LLM system prompt for memory-grounded user questions

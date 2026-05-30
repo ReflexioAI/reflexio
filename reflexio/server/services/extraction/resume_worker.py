@@ -28,7 +28,6 @@ from reflexio.server.services.extraction.prior_answer_search import (
 from reflexio.server.services.extraction.resumable_agent import (
     AgentRunResult,
     ResumableExtractionAgent,
-    prompt_manager_with_resumable_versions,
 )
 from reflexio.server.services.playbook.playbook_extractor import PlaybookExtractor
 from reflexio.server.services.playbook.playbook_generation_service import (
@@ -452,9 +451,7 @@ class ExtractionResumeWorker:
             agent_context=agent_context,
         )
         messages = construct_profile_extraction_messages_from_sessions(
-            prompt_manager=prompt_manager_with_resumable_versions(
-                self.request_context.prompt_manager
-            ),
+            prompt_manager=self.request_context.prompt_manager,
             request_interaction_data_models=request_interaction_data_models,
             agent_context_prompt=agent_context,
             context_prompt=(
@@ -539,9 +536,7 @@ class ExtractionResumeWorker:
         all_interactions = extract_interactions_from_request_interaction_data_models(
             request_interaction_data_models
         )
-        prompt_manager = prompt_manager_with_resumable_versions(
-            self.request_context.prompt_manager
-        )
+        prompt_manager = self.request_context.prompt_manager
         if has_expert_content(all_interactions):
             messages = construct_expert_playbook_extraction_messages(
                 prompt_manager=prompt_manager,

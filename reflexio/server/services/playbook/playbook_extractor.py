@@ -12,8 +12,6 @@ from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
 from reflexio.server.services.extraction.outcome import ExtractionOutcome
 from reflexio.server.services.extraction.resumable_agent import (
-    is_resumable_extraction_enabled,
-    prompt_manager_with_resumable_versions,
     run_resumable_extraction_agent,
 )
 from reflexio.server.services.extractor_interaction_utils import (
@@ -33,7 +31,6 @@ from reflexio.server.services.polarity_utils import infer_playbook_polarity
 from reflexio.server.services.service_utils import (
     extract_interactions_from_request_interaction_data_models,
     log_llm_messages,
-    log_model_response,
 )
 from reflexio.server.site_var.site_var_manager import SiteVarManager
 
@@ -284,12 +281,7 @@ class PlaybookExtractor:
             if self.config.extraction_definition_prompt
             else ""
         )
-        resumable_enabled = is_resumable_extraction_enabled(self.request_context)
-        prompt_manager = (
-            prompt_manager_with_resumable_versions(self.request_context.prompt_manager)
-            if resumable_enabled
-            else self.request_context.prompt_manager
-        )
+        prompt_manager = self.request_context.prompt_manager
 
         if has_expert_content(all_interactions):
             logger.info("Expert content detected, using expert extraction path")
@@ -309,60 +301,34 @@ class PlaybookExtractor:
             )
         log_llm_messages(logger, "Playbook extraction", messages)
 
-        if resumable_enabled:
-            result = run_resumable_extraction_agent(
-                request_context=self.request_context,
-                client=self.client,
-                extractor_kind="playbook",
-                extractor_name=self.config.extractor_name,
-                user_id=self.service_config.user_id,
-                request_id=self.service_config.request_id,
-                agent_version=self.service_config.agent_version,
-                source=self.service_config.source,
-                request_interaction_data_models=request_interaction_data_models,
-                extractor_config=self.config,
-                service_config=self.service_config,
-                agent_context=self.agent_context,
-                messages=messages,
-                output_schema=StructuredPlaybookList,
-                log_label="Playbook extraction",
-            )
-            if not isinstance(result.output, StructuredPlaybookList):
-                logger.warning(
-                    "Resumable playbook extraction did not finish: %s",
-                    result.finished_reason,
-                )
-                return []
-            self._last_resumable_run_id = result.run_id
-            return self._process_structured_response_list(
-                result.output,
-                source_interaction_ids=source_interaction_ids,
-            )
-
-        try:
-            response = self.client.generate_chat_response(
-                messages=messages,
-                model=self.default_generation_model_name,
-                response_format=StructuredPlaybookList,
-                parse_structured_output=True,
-            )
-            log_model_response(logger, "Playbook structured response", response)
-
-            return self._process_structured_response_list(
-                response,  # type: ignore[reportArgumentType]
-                source_interaction_ids=source_interaction_ids,
-            )
-        except Exception as exc:
-            # Log full traceback so non-OpenAI providers that drift from the
-            # StructuredPlaybookList schema (e.g. silent regression to a
-            # legacy single-entry shape) are debuggable from CI logs instead
-            # of being swallowed as an empty extraction result.
-            logger.exception(
-                "Playbook extraction failed (%s): %s",
-                type(exc).__name__,
-                exc,
+        result = run_resumable_extraction_agent(
+            request_context=self.request_context,
+            client=self.client,
+            extractor_kind="playbook",
+            extractor_name=self.config.extractor_name,
+            user_id=self.service_config.user_id,
+            request_id=self.service_config.request_id,
+            agent_version=self.service_config.agent_version,
+            source=self.service_config.source,
+            request_interaction_data_models=request_interaction_data_models,
+            extractor_config=self.config,
+            service_config=self.service_config,
+            agent_context=self.agent_context,
+            messages=messages,
+            output_schema=StructuredPlaybookList,
+            log_label="Playbook extraction",
+        )
+        self._last_resumable_run_id = result.run_id
+        if not isinstance(result.output, StructuredPlaybookList):
+            logger.warning(
+                "Playbook extraction did not finish: %s",
+                result.finished_reason,
             )
             return []
+        return self._process_structured_response_list(
+            result.output,
+            source_interaction_ids=source_interaction_ids,
+        )
 
     def _generate_mock_playbook_list(
         self, request_interaction_data_models: list[RequestInteractionDataModel]

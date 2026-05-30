@@ -718,37 +718,11 @@ class Config(BaseModel):
     skip_should_run_check: bool = False
     # Enable storage-time document expansion for improved FTS recall
     enable_document_expansion: bool = False
-    # Pipeline selection — "classic" (single-shot LLM + RAG) or "agentic"
-    # (multi-reader + critic). Defaults keep existing behavior; flip to
-    # "agentic" to opt in once Phase 3/4 land.
-    extraction_backend: Literal["classic", "agentic"] = "classic"
     # Whether this org has opted into shadow-mode runs. Drives /healthz/eval
     # liveness derivation and the /api/get_evaluation_overview hero state
     # machine. When True, each publish optionally schedules a parallel
     # "without Reflexio" generation for side-by-side comparison.
     shadow_mode_enabled: bool = False
-    search_backend: Literal["classic", "agentic"] = "classic"
-    # Extraction axes to skip in the agentic backend. Default: empty set =
-    # all three axes (UserProfile, UserProfileAgentRec, UserPlaybook) run.
-    # Use cases: benchmarks where a particular axis's semantics don't match
-    # the source data shape (e.g. LoCoMo's two-human-speaker conversations
-    # don't fit UserProfileAgentRec's agent-named-answer axis). Each skipped
-    # axis saves ~33% of agentic extraction LLM cost and reduces storage
-    # noise. Only applies when extraction_backend='agentic'.
-    skip_extraction_axes: list[
-        Literal["UserProfile", "UserProfileAgentRec", "UserPlaybook"]
-    ] = Field(
-        default_factory=list,
-        description=(
-            "Extraction axes to skip in the agentic backend. Each axis in "
-            "this list will not run during agentic extraction, reducing "
-            "extraction LLM cost (~33% saved per skipped axis) and storage "
-            "noise. Only applies when extraction_backend='agentic'. "
-            "Default: empty (all three axes run). Stored as list (not set) "
-            "for JSON serializability over the HTTP wire — the consumer "
-            "deduplicates internally."
-        ),
-    )
     eval_sample_n_per_stratum: int = Field(
         default=200,
         gt=0,
@@ -791,8 +765,6 @@ class Config(BaseModel):
             for key in (
                 "window_size",
                 "stride_size",
-                "extraction_backend",
-                "search_backend",
                 "reflection_config",
                 "playbook_optimizer_config",
                 "pending_tool_call_config",

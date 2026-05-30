@@ -11,7 +11,6 @@ from reflexio.server.prompt.prompt_manager import PromptManager
 from reflexio.server.services.extraction.resumable_agent import (
     FINISH_EXTRACTION_TOOL_NAME,
     ResumableExtractionAgent,
-    prompt_manager_with_resumable_versions,
 )
 from reflexio.server.services.playbook.playbook_service_utils import (
     StructuredPlaybookList,
@@ -63,18 +62,16 @@ def _agent_run(run_id: str, extractor_kind: str = "profile") -> AgentRunRecord:
     )
 
 
-def test_resumable_prompt_manager_uses_resumable_prompt_versions():
+def test_profile_instruction_prompt_is_resumable_by_default():
+    """The extraction loop is always-on, so the resumable instruction prompt
+    (v1.1.0) is the active version of ``profile_update_instruction_start`` —
+    there is no longer a separate resumable prompt-version override."""
     prompt_manager = PromptManager()
-    resumable_prompt_manager = prompt_manager_with_resumable_versions(prompt_manager)
 
     assert prompt_manager.get_active_version("profile_update_instruction_start") == (
-        "1.0.0"
+        "1.1.0"
     )
-    assert (
-        resumable_prompt_manager.get_active_version("profile_update_instruction_start")
-        == "1.1.0"
-    )
-    rendered = resumable_prompt_manager.render_prompt(
+    rendered = prompt_manager.render_prompt(
         "profile_update_instruction_start",
         {
             "agent_context_prompt": "agent context",

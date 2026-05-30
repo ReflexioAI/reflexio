@@ -17,7 +17,7 @@ from datetime import UTC, datetime
 
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.services.extraction.resumable_agent import (
-    is_resumable_extraction_enabled,
+    pending_tool_calls_enabled,
 )
 from reflexio.server.services.extraction.resume_worker import ExtractionResumeWorker
 
@@ -92,7 +92,7 @@ class ExtractionResumeScheduler:
     def _drain_org(self, org_id: str) -> None:
         try:
             ctx = self.request_context_factory(org_id)
-            if not is_resumable_extraction_enabled(ctx):
+            if not pending_tool_calls_enabled(ctx):
                 return
             resumed = ExtractionResumeWorker(request_context=ctx).drain(
                 max_runs=self.max_runs_per_tick
@@ -149,7 +149,7 @@ def maybe_start_resume_scheduler(
     """
     try:
         ctx = request_context_factory(bootstrap_org_id)
-        if not is_resumable_extraction_enabled(ctx):
+        if not pending_tool_calls_enabled(ctx):
             return None
     except Exception as exc:
         logger.warning(

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 import os
-import time
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
@@ -15,8 +14,6 @@ from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.services.extraction.outcome import ExtractionOutcome
 from reflexio.server.services.extraction.resumable_agent import (
-    is_resumable_extraction_enabled,
-    prompt_manager_with_resumable_versions,
     run_resumable_extraction_agent,
 )
 from reflexio.server.services.extraction.tools import new_profile_id
@@ -41,7 +38,6 @@ from reflexio.server.services.service_utils import (
     extract_interactions_from_request_interaction_data_models,
     format_sessions_to_history_string,
     log_llm_messages,
-    log_model_response,
 )
 from reflexio.server.site_var.site_var_manager import SiteVarManager
 
@@ -337,15 +333,8 @@ class ProfileExtractor:
                 request_interaction_data_models=request_interaction_data_models,
             )
 
-        resumable_enabled = is_resumable_extraction_enabled(self.request_context)
-        prompt_manager = (
-            prompt_manager_with_resumable_versions(self.request_context.prompt_manager)
-            if resumable_enabled
-            else self.request_context.prompt_manager
-        )
-
         messages = construct_profile_extraction_messages_from_sessions(
-            prompt_manager=prompt_manager,
+            prompt_manager=self.request_context.prompt_manager,
             request_interaction_data_models=request_interaction_data_models,
             agent_context_prompt=self.agent_context,
             context_prompt=(
@@ -385,97 +374,30 @@ class ProfileExtractor:
 
         log_llm_messages(logger, "Profile extraction", messages_dict)
 
-        if resumable_enabled:
-            result = run_resumable_extraction_agent(
-                request_context=self.request_context,
-                client=self.client,
-                extractor_kind="profile",
-                extractor_name=self.config.extractor_name,
-                user_id=self.service_config.user_id,
-                request_id=self.service_config.request_id,
-                agent_version=None,
-                source=self.service_config.source,
-                request_interaction_data_models=request_interaction_data_models,
-                extractor_config=self.config,
-                service_config=self.service_config,
-                agent_context=self.agent_context,
-                messages=messages_dict,
-                output_schema=StructuredProfilesOutput,
-                log_label="Profile extraction",
-            )
-            if not isinstance(result.output, StructuredProfilesOutput):
-                raise RuntimeError(
-                    f"Resumable profile extraction did not finish: {result.finished_reason}"
-                )
-            profiles = result.output.profiles or []
-            raw_profiles = [p.model_dump() for p in profiles] if profiles else []
-            self._last_resumable_run_id = result.run_id
-            return raw_profiles
-
-        # Use StructuredProfilesOutput schema for structured output
-        extract_start = time.perf_counter()
-        try:
-            update_response = self.client.generate_chat_response(
-                messages=messages_dict,
-                model=self.default_generation_model_name,
-                response_format=StructuredProfilesOutput,
-                timeout=PROFILE_EXTRACTION_TIMEOUT_SECONDS,
-                max_retries=PROFILE_EXTRACTION_MAX_RETRIES,
-            )
-        except Exception as exc:
-            elapsed_seconds = time.perf_counter() - extract_start
-            logger.error(
-                "event=profile_extract_llm_end user_id=%s extractor_name=%s model=%s timeout=%d max_retries=%d elapsed_seconds=%.3f success=%s error_type=%s error=%s",
-                self.service_config.user_id,
-                self.config.extractor_name,
-                self.default_generation_model_name,
-                PROFILE_EXTRACTION_TIMEOUT_SECONDS,
-                PROFILE_EXTRACTION_MAX_RETRIES,
-                elapsed_seconds,
-                False,
-                type(exc).__name__,
-                str(exc),
-            )
-            raise
-
-        log_model_response(logger, "Profile extraction model response", update_response)
-        if not update_response or not isinstance(
-            update_response, StructuredProfilesOutput
-        ):
-            elapsed_seconds = time.perf_counter() - extract_start
-            logger.info(
-                "event=profile_extract_llm_end user_id=%s extractor_name=%s model=%s timeout=%d max_retries=%d elapsed_seconds=%.3f success=%s response_type=%s profile_count=%d",
-                self.service_config.user_id,
-                self.config.extractor_name,
-                self.default_generation_model_name,
-                PROFILE_EXTRACTION_TIMEOUT_SECONDS,
-                PROFILE_EXTRACTION_MAX_RETRIES,
-                elapsed_seconds,
-                False,
-                type(update_response).__name__,
-                0,
+        result = run_resumable_extraction_agent(
+            request_context=self.request_context,
+            client=self.client,
+            extractor_kind="profile",
+            extractor_name=self.config.extractor_name,
+            user_id=self.service_config.user_id,
+            request_id=self.service_config.request_id,
+            agent_version=None,
+            source=self.service_config.source,
+            request_interaction_data_models=request_interaction_data_models,
+            extractor_config=self.config,
+            service_config=self.service_config,
+            agent_context=self.agent_context,
+            messages=messages_dict,
+            output_schema=StructuredProfilesOutput,
+            log_label="Profile extraction",
+        )
+        self._last_resumable_run_id = result.run_id
+        if not isinstance(result.output, StructuredProfilesOutput):
+            logger.warning(
+                "Profile extraction did not finish: %s", result.finished_reason
             )
             return []
-
-        elapsed_seconds = time.perf_counter() - extract_start
-        profiles = update_response.profiles or []
-        logger.info(
-            "event=profile_extract_llm_end user_id=%s extractor_name=%s model=%s timeout=%d max_retries=%d elapsed_seconds=%.3f success=%s response_type=%s profile_count=%d",
-            self.service_config.user_id,
-            self.config.extractor_name,
-            self.default_generation_model_name,
-            PROFILE_EXTRACTION_TIMEOUT_SECONDS,
-            PROFILE_EXTRACTION_MAX_RETRIES,
-            elapsed_seconds,
-            True,
-            type(update_response).__name__,
-            len(profiles),
-        )
-
-        if profiles:
-            # Convert Pydantic models to dicts
-            return [p.model_dump() for p in profiles]
-        return []
+        return [p.model_dump() for p in (result.output.profiles or [])]
 
     def _generate_mock_profiles(
         self,

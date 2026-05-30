@@ -329,8 +329,8 @@ def update_config(
             error_type="validation",
             message="Must provide one of --data, --file, or one or more --field",
             hint=(
-                'Examples: --data \'{"extraction_backend":"classic"}\'  |  '
-                "--file partial.json  |  --field extraction_backend=classic"
+                "Examples: --data '{\"shadow_mode_enabled\":true}'  |  "
+                "--file partial.json  |  --field skip_should_run_check=true"
             ),
             exit_code=EXIT_VALIDATION,
         )

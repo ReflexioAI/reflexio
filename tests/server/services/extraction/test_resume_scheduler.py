@@ -30,7 +30,7 @@ def _request_context(
 def test_maybe_start_resume_scheduler_skips_when_feature_disabled(monkeypatch):
     monkeypatch.setattr(
         resume_scheduler,
-        "is_resumable_extraction_enabled",
+        "pending_tool_calls_enabled",
         lambda _ctx: False,
     )
 
@@ -65,7 +65,7 @@ def test_resume_scheduler_drains_all_orgs_and_stops_cleanly(monkeypatch):
 
     monkeypatch.setattr(
         resume_scheduler,
-        "is_resumable_extraction_enabled",
+        "pending_tool_calls_enabled",
         lambda _ctx: True,
     )
     monkeypatch.setattr(resume_scheduler, "ExtractionResumeWorker", FakeWorker)

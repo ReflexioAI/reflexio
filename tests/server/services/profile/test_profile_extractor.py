@@ -604,14 +604,22 @@ class TestResumableAgentPath:
         assert run.binding.extractor_kind == "profile"
         assert run.binding.source_interaction_ids == [1, 2]
 
-    def test_feature_flag_disabled_uses_classic_llm_call(
+    def test_loop_still_runs_when_pending_tools_disabled(
         self,
+        monkeypatch,
         request_context,
         sqlite_storage,
         extractor_config,
         service_config,
         sample_request_interaction_models,
+        tool_call_completion,
     ):
+        """The extraction loop is always-on. When the pending-tool feature flag
+        is disabled, the loop still runs (only ask_human/attach_pending_info
+        tools are withheld) and produces profiles via finish_extraction.
+        """
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+        monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_CLI", raising=False)
         request_context.storage = sqlite_storage
         request_context.configurator.get_config = MagicMock(
             return_value=Config(
@@ -623,28 +631,29 @@ class TestResumableAgentPath:
         request_context.prompt_manager.render_prompt.side_effect = (
             lambda prompt_id, variables: f"{prompt_id}: {variables}"
         )
-        llm_client = MagicMock(spec=LiteLLMClient)
-        llm_client.generate_chat_response.return_value = (
-            StructuredProfilesOutput.model_validate(
-                {
-                    "profiles": [
-                        {
-                            "content": "Classic extraction path.",
-                            "time_to_live": "infinity",
-                        }
-                    ]
-                }
-            )
+
+        make_tc, _make_stop = tool_call_completion
+        response = make_tc(
+            FINISH_EXTRACTION_TOOL_NAME,
+            {
+                "profiles": [
+                    {
+                        "content": "Loop extraction path.",
+                        "time_to_live": "infinity",
+                    }
+                ]
+            },
         )
         extractor = ProfileExtractor(
             request_context=request_context,
-            llm_client=llm_client,
+            llm_client=LiteLLMClient(LiteLLMConfig(model="claude-sonnet-4-6")),
             extractor_config=extractor_config,
             service_config=service_config,
             agent_context="Test agent",
         )
 
         with (
+            patch("litellm.completion", side_effect=[response]),
             patch(
                 "reflexio.server.services.extraction.resumable_agent.is_resumable_extraction_agent_feature_enabled",
                 return_value=False,
@@ -656,14 +665,7 @@ class TestResumableAgentPath:
                 existing_profiles=[],
             )
 
-        assert raw_profiles[0]["content"] == "Classic extraction path."
-        llm_client.generate_chat_response.assert_called_once()
-        assert (
-            sqlite_storage.conn.execute("SELECT COUNT(*) FROM _agent_runs").fetchone()[
-                0
-            ]
-            == 0
-        )
+        assert raw_profiles[0]["content"] == "Loop extraction path."
 
     def test_ask_human_is_org_scoped_and_run_still_finalizes(
         self,

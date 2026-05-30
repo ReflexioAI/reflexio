@@ -49,9 +49,6 @@ from reflexio.server.services.storage.retention import (
 from reflexio.server.usage_metrics import record_usage_event
 
 if TYPE_CHECKING:
-    from reflexio.server.services.search.agentic_search_service import (
-        AgenticSearchService,
-    )
     from reflexio.server.services.unified_search_service import UnifiedSearchService
 
 logger = logging.getLogger(__name__)
@@ -237,57 +234,6 @@ class GenerationService:
             self._maybe_run_reflection(
                 user_id=user_id, agent_version=agent_version, source=source
             )
-
-            # Dispatch to the agentic pipeline when the config flag is set.
-            # Classic path (default) falls through to the ProfileGenerationService
-            # + PlaybookGenerationService fan-out below.
-            root_config = self.configurator.get_config()
-            if (
-                root_config is not None
-                and getattr(root_config, "extraction_backend", "classic") == "agentic"
-            ):
-                from reflexio.server.services.extraction.agentic_adapter import (
-                    AgenticExtractionRunner,
-                )
-
-                runner = AgenticExtractionRunner(
-                    llm_client=self.client,
-                    request_context=self.request_context,
-                )
-                result.warnings.extend(
-                    runner.run(
-                        publish_request=publish_user_interaction_request,
-                        request_id=request_id,
-                        new_interactions=new_interactions,
-                        new_request=new_request,
-                        config=root_config,
-                    )
-                )
-                # Schedule delayed group evaluation — must run for the agentic
-                # backend too, otherwise no AgentSuccessEvaluationResult records
-                # ever get produced and /evaluations stays empty.
-                self._schedule_group_evaluation_if_needed(
-                    new_request=new_request,
-                    user_id=user_id,
-                    agent_version=agent_version,
-                    source=source,
-                )
-                record_usage_event(
-                    org_id=self.org_id,
-                    user_id=user_id,
-                    request_id=request_id,
-                    session_id=new_request.session_id,
-                    source=source,
-                    agent_version=agent_version,
-                    backend="agentic",
-                    event_name="publish_request_succeeded",
-                    event_category="publish",
-                    outcome="success",
-                    count_value=len(new_interactions),
-                    duration_ms=int((time.perf_counter() - publish_start) * 1000),
-                    metadata={"warning_count": len(result.warnings)},
-                )
-                return result
 
             # Create generation services and requests
             # Each service writes to separate storage tables and has no dependencies on others
@@ -641,12 +587,7 @@ def build_extraction_service(
     llm_client: LiteLLMClient,
     request_context: RequestContext,
 ) -> ProfileGenerationService:
-    """Return the classic profile extraction service.
-
-    The agentic extraction path is handled directly by
-    ``AgenticExtractionRunner`` inside ``GenerationService.run`` and does not
-    go through this factory.  This function exists for the classic dispatcher
-    path only.
+    """Return the profile extraction service.
 
     Args:
         config (Config): Top-level ``Config`` (unused; kept for API consistency).
@@ -663,33 +604,21 @@ def build_extraction_service(
 
 
 def build_search_service(
-    config: Config,
+    config: Config,  # noqa: ARG001
     *,
     llm_client: LiteLLMClient,
     request_context: RequestContext,
-) -> UnifiedSearchService | AgenticSearchService:
-    """Dispatch to the classic or agentic search service.
-
-    Selected by ``config.search_backend``. Classic returns a
-    ``UnifiedSearchService``; agentic returns the Phase-4 pipeline.
+) -> UnifiedSearchService:
+    """Build the unified search service.
 
     Args:
-        config (Config): Top-level ``Config``. Reads ``search_backend``.
+        config (Config): Top-level ``Config`` (unused; kept for API consistency).
         llm_client (LiteLLMClient): Configured ``LiteLLMClient``.
         request_context (RequestContext): Current request context.
 
     Returns:
-        Object holding ``llm_client`` and ``request_context`` — either a
-        classic ``UnifiedSearchService`` or the agentic service.
+        A ``UnifiedSearchService`` holding ``llm_client`` and ``request_context``.
     """
-    if config.search_backend == "agentic":
-        from reflexio.server.services.search.agentic_search_service import (  # type: ignore[import-not-found]
-            AgenticSearchService,
-        )
-
-        return AgenticSearchService(
-            llm_client=llm_client, request_context=request_context
-        )
     from reflexio.server.services.unified_search_service import UnifiedSearchService
 
     return UnifiedSearchService(llm_client=llm_client, request_context=request_context)

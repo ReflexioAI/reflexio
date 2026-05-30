@@ -190,7 +190,7 @@ _TOOL_CALLING_OVERRIDES: tuple[str, ...] = (
     # entry for them, so it returns False. The provider handles tool
     # calling explicitly by rendering tool specs into the system prompt
     # and parsing the model's JSON output back into ChatCompletionMessageToolCall
-    # blocks. Verified end-to-end against the agentic ExtractionAgent loop.
+    # blocks. Verified end-to-end against the resumable extraction tool loop.
     "claude-code/",
 )
 
@@ -419,6 +419,7 @@ def run_tool_loop(
     fallback_schema: type[BaseModel] | None = None,
     fallback_tool_name: str | None = None,
     multi_stage_schema: type[BaseModel] | None = None,
+    tool_choice: str | dict[str, Any] = "auto",
     log_label: str | None = None,
 ) -> ToolLoopResult:
     """Drive an LLM through a tool-calling loop until ``finish_tool_name`` or ``max_steps``.
@@ -458,6 +459,11 @@ def run_tool_loop(
             ``tool`` discriminator literal — that literal names the tool
             to dispatch, all other fields become its args. Takes priority
             over ``fallback_schema``.
+        tool_choice (str | dict): Forwarded to each native tool-calling turn.
+            Defaults to ``"auto"``. Pass an OpenAI tool-choice dict (e.g.
+            ``{"type": "function", "function": {"name": "finish"}}``) to force a
+            specific tool — used to make a single-tool loop behave like a forced
+            structured-output call.
         log_label (str | None): When set, each LLM call in the loop is
             mirrored into ``~/.reflexio/logs/llm_io.log`` using this label
             (suffixed with ``(turn N)``, ``(fallback)``, or
@@ -568,7 +574,7 @@ def run_tool_loop(
             resp = client.generate_chat_response(
                 messages=local_msgs,
                 tools=registry.openai_specs(),
-                tool_choice="auto",
+                tool_choice=tool_choice,
                 model_role=model_role,
             )
             if log_label:

@@ -29,7 +29,7 @@ from reflexio.server.api_endpoints.request_context import (
     get_request_context,
 )
 from reflexio.server.services.extraction.resumable_agent import (
-    is_resumable_extraction_enabled,
+    pending_tool_calls_enabled,
 )
 from reflexio.server.services.extraction.resume_worker import ExtractionResumeWorker
 from reflexio.server.services.storage.error import StorageError
@@ -67,7 +67,7 @@ def _require_org_record(
 
 
 def _drain_resumable_followups(ctx: RequestContext) -> None:
-    if not is_resumable_extraction_enabled(ctx):
+    if not pending_tool_calls_enabled(ctx):
         return
     worker = ExtractionResumeWorker(request_context=ctx)
     worker.drain()

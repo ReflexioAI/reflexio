@@ -152,8 +152,7 @@ class ProviderDefaults:
         should_run: Model for lightweight "should run extraction" checks, or None.
         pre_retrieval: Model for pre-retrieval query reformulation, or None.
         embedding: Model for embedding generation, or None.
-        extraction_agent: Sonnet-tier model for the agentic-v2 extraction loop, or None.
-        search_agent: Sonnet-tier model for the agentic-v2 search loop, or None.
+        extraction_agent: Sonnet-tier model for the resumable extraction loop, or None.
     """
 
     generation: str | None
@@ -162,7 +161,6 @@ class ProviderDefaults:
     pre_retrieval: str | None
     embedding: str | None
     extraction_agent: str | None = None
-    search_agent: str | None = None
 
 
 _PROVIDER_DEFAULTS: dict[str, ProviderDefaults] = {
@@ -177,7 +175,6 @@ _PROVIDER_DEFAULTS: dict[str, ProviderDefaults] = {
         pre_retrieval="claude-code/default",
         embedding=None,
         extraction_agent="claude-code/default",
-        search_agent="claude-code/default",
     ),
     # local is an embedding-only provider that routes through an
     # in-process ONNX model (chromadb's all-MiniLM-L6-v2). Generation
@@ -196,16 +193,6 @@ _PROVIDER_DEFAULTS: dict[str, ProviderDefaults] = {
         pre_retrieval="gpt-5-nano",
         embedding="text-embedding-3-small",
         extraction_agent="gpt-5-mini",
-        # search_agent uses gpt-5-mini: paired with the v1.4.0 prompt's
-        # explicit pattern dispatch + per-pattern Rerank: guidance + mandatory
-        # E/G recipes, mini reliably follows the multi-step orchestration that
-        # earlier prompt revisions couldn't drive. On LongMemEval-oracle this
-        # cuts search wall latency from ~9.4s mean (gpt-5.5) to ~4.5s (-52%)
-        # while matching or slightly exceeding gpt-5.5's accuracy on tune
-        # (74% vs 72%) and holding ~84% on held-out. Compliance with the
-        # mandatory recipes is observable via the agent_trace tool-call
-        # summary surfaced on UnifiedSearchViewResponse.
-        search_agent="gpt-5-mini",
     ),
     "anthropic": ProviderDefaults(
         generation="claude-sonnet-4-6",
@@ -214,7 +201,6 @@ _PROVIDER_DEFAULTS: dict[str, ProviderDefaults] = {
         pre_retrieval="claude-haiku-4-5-20251001",
         embedding=None,
         extraction_agent="claude-sonnet-4-6",
-        search_agent="claude-sonnet-4-6",
     ),
     "gemini": ProviderDefaults(
         generation="gemini/gemini-3-flash-preview",
@@ -243,13 +229,12 @@ _PROVIDER_DEFAULTS: dict[str, ProviderDefaults] = {
         should_run="minimax/MiniMax-M2.7",
         pre_retrieval="minimax/MiniMax-M2.7",
         embedding=None,
-        # Same M2.7 model handles agentic extraction + search. Surfaced by an
+        # Same M2.7 model handles resumable extraction. Surfaced by an
         # e2e run on a MiniMax-only VPS where publish printed
         # "No provider in ['minimax'] supports role=extraction_agent"
-        # warnings and silently skipped profile creation. Without these,
+        # warnings and silently skipped profile creation. Without this,
         # MiniMax-only users can publish but get zero profiles.
         extraction_agent="minimax/MiniMax-M2.7",
-        search_agent="minimax/MiniMax-M2.7",
     ),
     "dashscope": ProviderDefaults(
         generation="dashscope/qwen-plus",
@@ -312,10 +297,8 @@ class ModelRole(StrEnum):
     SHOULD_RUN = "should_run"
     PRE_RETRIEVAL = "pre_retrieval"
     EMBEDDING = "embedding"
-    # Agentic-v2 single-loop roles — Sonnet-tier agents that drive the
-    # extraction and search tool loops.
+    # Sonnet-tier agent that drives the resumable extraction tool loop.
     EXTRACTION_AGENT = "extraction_agent"
-    SEARCH_AGENT = "search_agent"
 
 
 def _auto_detect_model(

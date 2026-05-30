@@ -1,5 +1,4 @@
 import datetime
-import inspect
 import os
 import tempfile
 from datetime import UTC
@@ -7,7 +6,6 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-from pydantic import BaseModel
 
 from reflexio.server.api_endpoints.request_context import RequestContext
 
@@ -44,12 +42,32 @@ from tests.server.test_utils import encode_image_to_base64
 
 @pytest.fixture
 def mock_chat_completion():
+    """Mock ``generate_chat_response`` for the unified extraction pipeline.
+
+    Profile extraction now runs the always-on ``finish_extraction`` tool loop,
+    which calls ``generate_chat_response`` with ``tools=`` and reads
+    ``resp.tool_calls`` — so the extraction turn must return a
+    ``ToolCallingChatResponse`` carrying a single ``finish_extraction`` tool
+    call. The should-extract boolean gate still returns a plain string.
+    """
+    from reflexio.server.llm.litellm_client import ToolCallingChatResponse
+    from reflexio.server.services.extraction.resumable_agent import (
+        FINISH_EXTRACTION_TOOL_NAME,
+    )
+
+    def _finish_tool_call() -> MagicMock:
+        output = StructuredProfilesOutput(
+            profiles=[ProfileAddItem(content="like sushi", time_to_live="one_month")]
+        )
+        tc = MagicMock()
+        tc.id = f"tc_{FINISH_EXTRACTION_TOOL_NAME}"
+        tc.type = "function"
+        tc.function.name = FINISH_EXTRACTION_TOOL_NAME
+        tc.function.arguments = output.model_dump_json()
+        return tc
+
     def mock_generate_chat_response_side_effect(messages, **kwargs):
-        """
-        Check prompt content to determine which mock response to return.
-        If prompt contains "Output just a boolean value", return boolean response.
-        Otherwise, return JSON updates response.
-        """
+        """Route on prompt content / tool-loop mode to the right mock response."""
         # Get the prompt content from the messages
         prompt_content = ""
         for message in messages:
@@ -59,21 +77,14 @@ def mock_chat_completion():
         # Check if this is a should_extract_profile call
         if "Output just a boolean value" in prompt_content:
             return "true"
-        # Otherwise, this is a profile generation call
-        # Check if response_format is a Pydantic model class
-        response_format = kwargs.get("response_format")
-        if (
-            response_format
-            and inspect.isclass(response_format)
-            and issubclass(response_format, BaseModel)
-        ):
-            # Return a ProfileUpdateOutput instance
-            return StructuredProfilesOutput(
-                profiles=[
-                    ProfileAddItem(content="like sushi", time_to_live="one_month")
-                ]
+        # Extraction tool-loop turn: return a finish_extraction tool call.
+        if kwargs.get("tools"):
+            return ToolCallingChatResponse(
+                content=None,
+                tool_calls=[_finish_tool_call()],
+                finish_reason="tool_calls",
             )
-        # Return JSON string for non-structured responses
+        # Fallback: non-structured JSON string (legacy non-loop callers).
         return '```json\n{\n    "add": [{\n        "content": "like sushi",\n        "time_to_live": "one_month"\n    }]\n}\n```'
 
     # Mock the LLM client's generate_chat_response method

@@ -1,4 +1,9 @@
-"""Task 2.6: config dispatcher for extraction/search backends."""
+"""Config dispatcher for the (now-unified) extraction/search services.
+
+The agentic extraction/search backends were removed in the extraction/search
+unification: there is a single extraction fan-out and a single unified search
+service, with no config-driven backend selection.
+"""
 
 from __future__ import annotations
 
@@ -27,23 +32,7 @@ def _make_config(**overrides) -> Config:
     return Config(**base)
 
 
-def test_config_defaults_extraction_backend_to_classic() -> None:
-    config = _make_config()
-    assert config.extraction_backend == "classic"
-
-
-def test_config_defaults_search_backend_to_classic() -> None:
-    config = _make_config()
-    assert config.search_backend == "classic"
-
-
-def test_config_accepts_agentic_backends() -> None:
-    config = _make_config(extraction_backend="agentic", search_backend="agentic")
-    assert config.extraction_backend == "agentic"
-    assert config.search_backend == "agentic"
-
-
-def test_build_extraction_service_picks_classic_by_default() -> None:
+def test_build_extraction_service_returns_profile_generation_service() -> None:
     config = _make_config()
     svc = build_extraction_service(
         config, llm_client=MagicMock(), request_context=MagicMock()
@@ -51,23 +40,9 @@ def test_build_extraction_service_picks_classic_by_default() -> None:
     assert svc.__class__.__name__ == "ProfileGenerationService"
 
 
-def test_build_search_service_picks_classic_by_default() -> None:
+def test_build_search_service_returns_unified_search_service() -> None:
     config = _make_config()
     svc = build_search_service(
         config, llm_client=MagicMock(), request_context=MagicMock()
     )
     assert svc.__class__.__name__ == "UnifiedSearchService"
-
-
-def test_build_search_service_picks_agentic_when_configured() -> None:
-    # AgenticSearchService now lives alongside the dispatcher; if the import
-    # fails the dispatcher itself is broken — fail fast instead of skipping.
-    from reflexio.server.services.search.agentic_search_service import (
-        AgenticSearchService,
-    )
-
-    config = _make_config(search_backend="agentic")
-    svc = build_search_service(
-        config, llm_client=MagicMock(), request_context=MagicMock()
-    )
-    assert isinstance(svc, AgenticSearchService)

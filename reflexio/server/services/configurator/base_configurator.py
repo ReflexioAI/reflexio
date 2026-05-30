@@ -96,6 +96,7 @@ class BaseConfigurator(ABC):
         config_name: str,
         config_value: str | int | float | bool | list | dict | BaseModel | None,
     ) -> None:
+        original_config_name = config_name
         config_name = _CONFIG_NAME_ALIASES.get(config_name, config_name)
         if config_name not in type(self.config).model_fields:
             raise ValueError(f"Invalid config name: {config_name}")

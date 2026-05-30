@@ -15,7 +15,6 @@ from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
 from reflexio.server.site_var.site_var_manager import SiteVarManager
 
 _LOGGER = logging.getLogger(__name__)
-_AGENTIC_BYPASS_LOGGED = False
 
 
 class SearchMixin(ReflexioBase):
@@ -138,40 +137,6 @@ class SearchMixin(ReflexioBase):
             request = UnifiedSearchRequest(**request)
 
         config = self.request_context.configurator.get_config()
-
-        # Dispatch on Config.search_backend. Without this branch, the agentic
-        # SearchAgent (server/services/search/agentic_search_service.py) is
-        # implemented but unreachable from the public /api/search path —
-        # setting search_backend="agentic" was a no-op pre-fix.
-        #
-        # The agentic backend does not honor ``entity_types`` — its
-        # tool-calling loop has no concept of entity-kind narrowing. It does
-        # thread ``agent_playbook_status_filter`` through SearchAgent and
-        # _fetch_entities, so only ``entity_types`` triggers the bypass.
-        # Operators opting into ``search_backend="agentic"`` need to know
-        # the entity-types filter is being ignored, so we warn once per
-        # process the first time it fires.
-        if config and config.search_backend == "agentic":
-            if request.entity_types is not None:
-                global _AGENTIC_BYPASS_LOGGED
-                if not _AGENTIC_BYPASS_LOGGED:
-                    _LOGGER.warning(
-                        "agentic search backend bypassed: entity_types is "
-                        "not yet honored by AgenticSearchService; falling "
-                        "back to the classic unified search. (logged once "
-                        "per process)"
-                    )
-                    _AGENTIC_BYPASS_LOGGED = True
-            else:
-                from reflexio.server.services.search.agentic_search_service import (
-                    AgenticSearchService,
-                )
-
-                agentic_svc = AgenticSearchService(
-                    llm_client=self.llm_client,
-                    request_context=self.request_context,
-                )
-                return agentic_svc.search(request)
 
         from reflexio.server.services.unified_search_service import run_unified_search
 

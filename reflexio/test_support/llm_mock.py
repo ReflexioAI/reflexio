@@ -82,6 +82,20 @@ def _create_mock_completion(
     return mock_response
 
 
+def _extraction_finish_args(prompt_content: str) -> dict[str, Any]:
+    """Pick the ``finish_extraction`` payload for an extraction tool-loop turn.
+
+    Profile and playbook extraction both run the always-on ``finish_extraction``
+    tool loop, so the mock must return the structured output as the *arguments*
+    of a ``finish_extraction`` tool call (not as message content). Routes on the
+    same schema marker the content-mode path uses.
+    """
+    registry = get_model_registry()
+    if '"playbooks"' in prompt_content:
+        return registry["playbook_extraction"].minimal_valid
+    return registry["profile_extraction"].minimal_valid
+
+
 def _mock_completion(*args: Any, **kwargs: Any) -> MagicMock:
     """Mock implementation for litellm.completion."""
     messages = kwargs.get("messages", args[0] if args else [])
@@ -89,6 +103,21 @@ def _mock_completion(*args: Any, **kwargs: Any) -> MagicMock:
     for message in messages:
         if isinstance(message, dict) and "content" in message:
             prompt_content += str(message["content"])
+
+    # Extraction now runs through the ``finish_extraction`` tool loop, which
+    # invokes ``litellm.completion`` with ``tools=``. In that mode the loop
+    # reads ``resp.tool_calls`` (not message content), so emit a single
+    # ``finish_extraction`` tool call carrying the structured output as args.
+    if kwargs.get("tools"):
+        # Imported lazily to avoid importing the extraction service stack at
+        # module load time (this module is imported by the root conftest).
+        from reflexio.server.services.extraction.resumable_agent import (
+            FINISH_EXTRACTION_TOOL_NAME,
+        )
+
+        return make_tool_call_response(
+            FINISH_EXTRACTION_TOOL_NAME, _extraction_finish_args(prompt_content)
+        )
 
     parse_structured = kwargs.get("response_format") is not None
     return _create_mock_completion(prompt_content, parse_structured)

@@ -241,12 +241,10 @@ class BaseGenerationService(
         error_kind: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> None:
-        root_config = self.request_context.configurator.get_config()
         record_usage_event(
             **self._usage_context(),
             event_name=event_name,
             event_category="generation",
-            backend=getattr(root_config, "extraction_backend", None),
             outcome=outcome,
             count_value=count_value,
             duration_ms=duration_ms,

@@ -394,39 +394,31 @@ class TestProviderDefaults:
 
 
 # ---------------------------------------------------------------------------
-# EXTRACTION_AGENT and SEARCH_AGENT roles
+# EXTRACTION_AGENT role (drives the always-on resumable extraction loop)
 # ---------------------------------------------------------------------------
 
 
-class TestAgenticV2Roles:
+class TestExtractionAgentRole:
     def test_extraction_agent_role_exists(self) -> None:
         assert ModelRole.EXTRACTION_AGENT.value == "extraction_agent"
-
-    def test_search_agent_role_exists(self) -> None:
-        assert ModelRole.SEARCH_AGENT.value == "search_agent"
 
     def test_anthropic_defaults_map_to_sonnet(self) -> None:
         anthropic = _PROVIDER_DEFAULTS["anthropic"]
         assert anthropic.extraction_agent is not None
         assert "sonnet" in anthropic.extraction_agent.lower()
-        assert anthropic.search_agent is not None
-        assert "sonnet" in anthropic.search_agent.lower()
 
     def test_openai_defaults_map_to_gpt5_mini(self) -> None:
         openai = _PROVIDER_DEFAULTS["openai"]
         assert openai.extraction_agent == "gpt-5-mini"
-        assert openai.search_agent == "gpt-5-mini"
 
-    def test_claude_code_defaults_cover_new_roles(self) -> None:
+    def test_claude_code_defaults_cover_extraction_agent(self) -> None:
         cc = _PROVIDER_DEFAULTS["claude-code"]
         assert cc.extraction_agent == "claude-code/default"
-        assert cc.search_agent == "claude-code/default"
 
     def test_unpopulated_providers_default_to_none(self) -> None:
-        """Providers that haven't opted into agentic-v2 fall through to next priority provider."""
+        """Providers without an extraction_agent fall through to next priority provider."""
         local = _PROVIDER_DEFAULTS["local"]
         assert local.extraction_agent is None
-        assert local.search_agent is None
 
     def test_resolve_extraction_agent_with_anthropic(
         self, monkeypatch: pytest.MonkeyPatch
@@ -435,17 +427,10 @@ class TestAgenticV2Roles:
         name = resolve_model_name(role=ModelRole.EXTRACTION_AGENT)
         assert "sonnet" in name.lower()
 
-    def test_resolve_search_agent_with_openai(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
-        name = resolve_model_name(role=ModelRole.SEARCH_AGENT)
-        assert name == "gpt-5-mini"
 
-
-class TestMinimaxAgenticRoles:
-    """MiniMax must expose extraction_agent + search_agent so agentic-v2
-    pipelines work for MiniMax-only configurations.
+class TestMinimaxExtractionAgentRole:
+    """MiniMax must expose extraction_agent so the resumable extraction loop
+    works for MiniMax-only configurations.
 
     Surfaced by an e2e run where publish on a MiniMax-only VPS emitted
     'No provider in [\'minimax\'] supports role=extraction_agent' and
@@ -458,12 +443,6 @@ class TestMinimaxAgenticRoles:
         assert _PROVIDER_DEFAULTS["minimax"].extraction_agent is not None
         assert _PROVIDER_DEFAULTS["minimax"].extraction_agent.startswith("minimax/")
 
-    def test_minimax_has_search_agent(self):
-        from reflexio.server.llm.model_defaults import _PROVIDER_DEFAULTS
-
-        assert _PROVIDER_DEFAULTS["minimax"].search_agent is not None
-        assert _PROVIDER_DEFAULTS["minimax"].search_agent.startswith("minimax/")
-
     def test_minimax_only_resolves_extraction_agent(self):
         """Auto-detect must return a MiniMax model when only MINIMAX_API_KEY
         is configured and the role is extraction_agent."""
@@ -473,16 +452,6 @@ class TestMinimaxAgenticRoles:
         )
 
         result = _auto_detect_model(ModelRole.EXTRACTION_AGENT, providers=["minimax"])
-        assert result == "minimax/MiniMax-M2.7"
-
-    def test_minimax_only_resolves_search_agent(self):
-        """Same for search_agent role."""
-        from reflexio.server.llm.model_defaults import (
-            ModelRole,
-            _auto_detect_model,
-        )
-
-        result = _auto_detect_model(ModelRole.SEARCH_AGENT, providers=["minimax"])
         assert result == "minimax/MiniMax-M2.7"
 
 
@@ -532,9 +501,8 @@ class TestMinimaxOnlyEnvRegression:
     ) -> None:
         """Every non-embedding role must resolve to a MiniMax model.
 
-        Catches regressions where one of the agentic-v2 roles
-        (``extraction_agent`` / ``search_agent``) gets re-introduced
-        without MiniMax coverage — the exact bug PR #51 fixed.
+        Catches regressions where the ``extraction_agent`` role gets
+        re-introduced without MiniMax coverage — the exact bug PR #51 fixed.
         """
         monkeypatch.setenv("MINIMAX_API_KEY", "mm-test")
         for role in (
@@ -543,7 +511,6 @@ class TestMinimaxOnlyEnvRegression:
             ModelRole.SHOULD_RUN,
             ModelRole.PRE_RETRIEVAL,
             ModelRole.EXTRACTION_AGENT,
-            ModelRole.SEARCH_AGENT,
         ):
             result = resolve_model_name(role)
             assert result.startswith("minimax/"), (

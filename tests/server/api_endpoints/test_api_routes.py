@@ -201,7 +201,7 @@ class TestUpdateConfigRoute:
         with patch("reflexio.server.api.invalidate_reflexio_cache") as mock_invalidate:
             response = client.post(
                 "/api/update_config",
-                json={"extraction_backend": "agentic"},
+                json={"window_size": 25},
             )
 
         assert response.status_code == 200, response.text
@@ -213,7 +213,7 @@ class TestUpdateConfigRoute:
         assert mock_reflexio.set_config.call_count == 1
         merged = mock_reflexio.set_config.call_args.args[0]
         assert isinstance(merged, Config)
-        assert merged.extraction_backend == "agentic"
+        assert merged.window_size == 25
         assert merged.storage_config == existing.storage_config
 
         # Cache invalidated on success.
@@ -282,7 +282,7 @@ class TestUpdateConfigRoute:
         with patch("reflexio.server.api.invalidate_reflexio_cache") as mock_invalidate:
             response = client.post(
                 "/api/update_config",
-                json={"extraction_backend": "agentic"},
+                json={"window_size": 25},
             )
 
         assert response.status_code == 200
@@ -394,14 +394,14 @@ class TestUpdateConfigRoute:
         with patch("reflexio.server.api.invalidate_reflexio_cache"):
             response = client.post(
                 "/api/update_config",
-                json={"extraction_backend": "agentic"},
+                json={"window_size": 25},
             )
 
         assert response.status_code == 200, response.text
         merged = mock_reflexio.set_config.call_args.args[0]
         assert isinstance(merged, Config)
         # The partial-touched field changed
-        assert merged.extraction_backend == "agentic"
+        assert merged.window_size == 25
         assert merged.user_playbook_extractor_config is not None
         agg = merged.user_playbook_extractor_config.aggregation_config
         assert agg is not None

@@ -68,8 +68,18 @@ def request_context(temp_storage_dir, worker_id):
 
 @pytest.fixture
 def mock_llm_client():
-    """Create a mock LiteLLM client."""
-    return MagicMock(spec=LiteLLMClient)
+    """Create a mock LiteLLM client.
+
+    The extraction tool loop reads ``client.config.api_key_config`` when
+    resolving the extraction-agent model, so the mock needs a real
+    ``LiteLLMConfig`` (``spec=LiteLLMClient`` alone does not expose the
+    instance-level ``config`` attribute).
+    """
+    from reflexio.server.llm.litellm_client import LiteLLMConfig
+
+    client = MagicMock(spec=LiteLLMClient)
+    client.config = LiteLLMConfig(model="claude-sonnet-4-6")
+    return client
 
 
 @pytest.fixture
@@ -184,6 +194,43 @@ def failure_request_interaction_models():
 # ===============================
 
 
+def _loop_response(playbooks: StructuredPlaybookList) -> object:
+    """Build a ``ToolCallingChatResponse`` carrying a ``finish_extraction``
+    tool call for the given playbooks.
+
+    Playbook extraction routes through the always-on ``finish_extraction`` tool
+    loop, which calls ``generate_chat_response`` with ``tools=`` and reads
+    ``resp.tool_calls`` — so the extraction turn must return tool calls, not a
+    bare ``StructuredPlaybookList``.
+    """
+    from reflexio.server.llm.litellm_client import ToolCallingChatResponse
+    from reflexio.server.services.extraction.resumable_agent import (
+        FINISH_EXTRACTION_TOOL_NAME,
+    )
+
+    tc = MagicMock()
+    tc.id = f"tc_{FINISH_EXTRACTION_TOOL_NAME}"
+    tc.type = "function"
+    tc.function.name = FINISH_EXTRACTION_TOOL_NAME
+    tc.function.arguments = playbooks.model_dump_json()
+    return ToolCallingChatResponse(
+        content=None, tool_calls=[tc], finish_reason="tool_calls"
+    )
+
+
+def _make_generate_side_effect(playbooks: StructuredPlaybookList):
+    """Return a ``generate_chat_response`` side effect that answers the
+    should-generate boolean gate with ``"true"`` and the extraction tool-loop
+    turn with a ``finish_extraction`` tool call."""
+
+    def _side_effect(messages, **kwargs):
+        if kwargs.get("tools"):
+            return _loop_response(playbooks)
+        return "true"
+
+    return _side_effect
+
+
 def _build_extractor(
     request_context: RequestContext,
     mock_llm_client: MagicMock,
@@ -235,17 +282,19 @@ def test_classic_extractor_emits_positive_when_no_failure_evidence(
     )
 
     # LLM emits entries without explicit polarity — polarity is derived.
-    mock_llm_client.generate_chat_response.return_value = StructuredPlaybookList(
-        playbooks=[
-            StructuredPlaybookContent(
-                trigger="user requests a summary of recent activity",
-                content="Provide a concise summary using the latest record",
-            ),
-            StructuredPlaybookContent(
-                trigger="user thanks the agent after a successful response",
-                content="Acknowledge briefly and offer to help with anything else",
-            ),
-        ]
+    mock_llm_client.generate_chat_response.side_effect = _make_generate_side_effect(
+        StructuredPlaybookList(
+            playbooks=[
+                StructuredPlaybookContent(
+                    trigger="user requests a summary of recent activity",
+                    content="Provide a concise summary using the latest record",
+                ),
+                StructuredPlaybookContent(
+                    trigger="user thanks the agent after a successful response",
+                    content="Acknowledge briefly and offer to help with anything else",
+                ),
+            ]
+        )
     )
 
     extractor = _build_extractor(
@@ -255,7 +304,7 @@ def test_classic_extractor_emits_positive_when_no_failure_evidence(
     # MOCK_LLM_RESPONSE=false ensures the mock_llm_client return value is used
     # instead of the extractor's deterministic mock branch.
     with patch.dict(os.environ, {"MOCK_LLM_RESPONSE": "false"}):
-        result = extractor.run()
+        result = extractor.run().items
 
     assert len(result) == 2, "Expected two playbooks from the neutral window"
     assert all(playbook.polarity == "positive" for playbook in result), (
@@ -282,20 +331,22 @@ def test_classic_extractor_emits_negative_on_clear_failure(
         [],
     )
 
-    mock_llm_client.generate_chat_response.return_value = StructuredPlaybookList(
-        playbooks=[
-            StructuredPlaybookContent(
-                trigger="user confirms a cancellation request",
-                content="Avoid asking the user to confirm a cancellation more than once",
-                rationale="User pushed back on repeated confirmation prompts.",
-            ),
-            # Companion positive entry — verifies a mixed-polarity window
-            # produces the right mix downstream.
-            StructuredPlaybookContent(
-                trigger="user issues a cancellation command",
-                content="Acknowledge the cancellation and proceed without redundant prompts",
-            ),
-        ]
+    mock_llm_client.generate_chat_response.side_effect = _make_generate_side_effect(
+        StructuredPlaybookList(
+            playbooks=[
+                StructuredPlaybookContent(
+                    trigger="user confirms a cancellation request",
+                    content="Avoid asking the user to confirm a cancellation more than once",
+                    rationale="User pushed back on repeated confirmation prompts.",
+                ),
+                # Companion positive entry — verifies a mixed-polarity window
+                # produces the right mix downstream.
+                StructuredPlaybookContent(
+                    trigger="user issues a cancellation command",
+                    content="Acknowledge the cancellation and proceed without redundant prompts",
+                ),
+            ]
+        )
     )
 
     extractor = _build_extractor(
@@ -303,7 +354,7 @@ def test_classic_extractor_emits_negative_on_clear_failure(
     )
 
     with patch.dict(os.environ, {"MOCK_LLM_RESPONSE": "false"}):
-        result = extractor.run()
+        result = extractor.run().items
 
     assert len(result) == 2, "Expected both playbook entries to be emitted"
 

@@ -108,8 +108,8 @@ class HandlerBundle:
     handlers in tools.py need access to BaseStorage and an ExtractionCtx. A few
     handlers (e.g., the rehydration tool) additionally call back into the LLM
     layer for in-tool denoising — those receive ``llm_client`` and
-    ``prompt_manager`` here. Both ExtractionAgent and SearchAgent build one of
-    these before driving the loop.
+    ``prompt_manager`` here. The tool-loop caller builds one of these before
+    driving the loop.
 
     Args:
         storage: BaseStorage handle.

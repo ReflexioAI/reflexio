@@ -13,7 +13,6 @@ from reflexio.models.api_schema.internal_schema import RequestInteractionDataMod
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.llm.model_defaults import ModelRole
 from reflexio.server.llm.tools import Tool, ToolLoopTrace, ToolRegistry, run_tool_loop
-from reflexio.server.prompt.prompt_manager import PromptManager
 from reflexio.server.services.extraction.agent_run_records import (
     build_extractor_agent_run_record,
 )
@@ -42,28 +41,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 FINISH_EXTRACTION_TOOL_NAME = "finish_extraction"
-
-RESUMABLE_EXTRACTION_PROMPT_VERSION_OVERRIDES: dict[str, str] = {
-    "profile_update_instruction_start": "1.1.0",
-    "playbook_extraction_context": "4.1.0",
-    "playbook_extraction_context_expert": "3.1.0",
-}
-
-
-def prompt_manager_with_resumable_versions(
-    prompt_manager: Any,
-) -> Any:
-    """Return a PromptManager that renders resumable extraction prompt versions."""
-    if not isinstance(prompt_manager, PromptManager):
-        return prompt_manager
-    overrides = {
-        **(prompt_manager.version_override or {}),
-        **RESUMABLE_EXTRACTION_PROMPT_VERSION_OVERRIDES,
-    }
-    return PromptManager(
-        prompt_bank_path=str(prompt_manager.prompt_bank_path),
-        version_override=overrides,
-    )
 
 
 def _record_agent_usage_event(
@@ -170,7 +147,13 @@ def _pending_tool_call_config(request_context: RequestContext) -> Any | None:
     )
 
 
-def is_resumable_extraction_enabled(request_context: RequestContext) -> bool:
+def pending_tool_calls_enabled(request_context: RequestContext) -> bool:
+    """Gate whether ``ask_human``/``attach_pending_info`` tools are offered.
+
+    This does NOT gate whether the extraction loop runs — the loop is always
+    the extraction path. It only governs whether the resumable human-in-the-loop
+    and prior-knowledge tools are registered alongside ``finish_extraction``.
+    """
     pending_config = _pending_tool_call_config(request_context)
     return bool(
         pending_config
@@ -201,8 +184,20 @@ def run_resumable_extraction_agent(
     """Run and finalize a config-gated classic extraction agent pass."""
     pending_config = _pending_tool_call_config(request_context)
     storage = request_context.storage
-    if pending_config is None or storage is None:
+    if storage is None:
         raise RuntimeError(f"Resumable {extractor_kind} extraction requires storage")
+
+    pending_tools_active = pending_tool_calls_enabled(request_context)
+    human_input_enabled = bool(
+        pending_tools_active
+        and pending_config is not None
+        and pending_config.human_input_enabled
+    )
+    prior_knowledge_enabled = bool(
+        pending_tools_active
+        and pending_config is not None
+        and pending_config.prior_knowledge_injection_enabled
+    )
 
     run = build_extractor_agent_run_record(
         org_id=request_context.org_id,
@@ -219,7 +214,7 @@ def run_resumable_extraction_agent(
     )
     extra_tools: list[Tool] = []
     extra_tool_context = None
-    if pending_config.prior_knowledge_injection_enabled:
+    if prior_knowledge_enabled and pending_config is not None:
         messages = append_prior_knowledge_context(
             messages=messages,
             storage=storage,
@@ -234,10 +229,7 @@ def run_resumable_extraction_agent(
             ).similarity_threshold,
         )
 
-    if (
-        pending_config.human_input_enabled
-        or pending_config.prior_knowledge_injection_enabled
-    ):
+    if (human_input_enabled or prior_knowledge_enabled) and pending_config is not None:
         extra_tool_context = PendingToolCallToolContext(
             storage=storage,
             run_id=run.id,
@@ -247,9 +239,9 @@ def run_resumable_extraction_agent(
             user_id=user_id,
             config=pending_config,
         )
-    if pending_config.human_input_enabled:
+    if human_input_enabled:
         extra_tools.append(create_ask_human_tool())
-    if pending_config.prior_knowledge_injection_enabled:
+    if prior_knowledge_enabled:
         extra_tools.append(create_attach_pending_info_request_tool())
 
     return ResumableExtractionAgent(client=client, storage=storage).start(
@@ -386,6 +378,19 @@ class ResumableExtractionAgent:
         if run.max_steps_remaining is not None:
             max_steps = min(max_steps, max(0, run.max_steps_remaining))
 
+        # When only finish_extraction is registered (no human/prior-knowledge
+        # tools), force that tool so the degenerate one-call loop is strictly
+        # equivalent to the old single-shot response_format extraction —
+        # the model cannot return a no-tool turn and yield empty output.
+        tool_choice: str | dict[str, Any] = (
+            {
+                "type": "function",
+                "function": {"name": FINISH_EXTRACTION_TOOL_NAME},
+            }
+            if not extra_tools
+            else "auto"
+        )
+
         result = run_tool_loop(
             client=self.client,
             messages=messages,
@@ -394,6 +399,7 @@ class ResumableExtractionAgent:
             max_steps=max_steps,
             ctx=ctx,
             finish_tool_name=FINISH_EXTRACTION_TOOL_NAME,
+            tool_choice=tool_choice,
             log_label=log_label,
         )
 

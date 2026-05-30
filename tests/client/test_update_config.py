@@ -37,7 +37,7 @@ def test_update_config_skips_client_side_validation(mock_session_class) -> None:
     mock_session.request.return_value = mock_response
 
     client = ReflexioClient(api_key="test_key", url_endpoint="http://localhost:8000")
-    partial = {"extraction_backend": "classic"}
+    partial = {"window_size": 8}
 
     result = client.update_config(partial)
 
@@ -53,7 +53,7 @@ def test_update_config_skips_client_side_validation(mock_session_class) -> None:
     assert args[1].endswith("/api/update_config")
     assert kwargs["json"] == partial
     # Ensure the dict object itself is not mutated.
-    assert partial == {"extraction_backend": "classic"}
+    assert partial == {"window_size": 8}
 
 
 @patch("reflexio.client.client.requests.Session")
