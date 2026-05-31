@@ -127,6 +127,17 @@ class TestSaveAndLoadStorage:
     ) -> None:
         monkeypatch.setenv("DATA_SUPABASE_URL", "https://example.supabase.co")
         monkeypatch.setenv("DATA_SUPABASE_KEY", "test-key-123")
+        monkeypatch.setenv("DATA_DB_URL", "postgresql://localhost/test")
+        save_storage_to_config("supabase", org_id="test-org", base_dir=str(tmp_path))
+        result = load_storage_from_config(org_id="test-org", base_dir=str(tmp_path))
+        assert result == "supabase"
+
+    def test_round_trip_supabase_with_legacy_db_url_alias(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DATA_SUPABASE_URL", "https://example.supabase.co")
+        monkeypatch.setenv("DATA_SUPABASE_KEY", "test-key-123")
+        monkeypatch.delenv("DATA_DB_URL", raising=False)
         monkeypatch.setenv("DATA_SUPABASE_DB_URL", "postgresql://localhost/test")
         save_storage_to_config("supabase", org_id="test-org", base_dir=str(tmp_path))
         result = load_storage_from_config(org_id="test-org", base_dir=str(tmp_path))
@@ -143,12 +154,15 @@ class TestSaveAndLoadStorage:
 
         monkeypatch.delenv("DATA_SUPABASE_URL", raising=False)
         monkeypatch.delenv("DATA_SUPABASE_KEY", raising=False)
+        monkeypatch.delenv("DATA_DB_URL", raising=False)
         monkeypatch.delenv("DATA_SUPABASE_DB_URL", raising=False)
         save_storage_to_config("supabase", org_id="test-org", base_dir=str(tmp_path))
         result = load_storage_from_config(org_id="test-org", base_dir=str(tmp_path))
         assert result == "sqlite"
 
-    def test_preserves_existing_config_fields(self, tmp_path: Path) -> None:
+    def test_preserves_existing_config_fields(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Updating storage_config must not clobber extractors or other fields."""
         from reflexio.models.config_schema import (
             Config,
@@ -171,16 +185,9 @@ class TestSaveAndLoadStorage:
         )
         storage_obj.save_config(config)
 
-        # Now update storage to postgres (via env var)
-        import os
-
-        os.environ["REFLEXIO_POSTGRES_DB_URL"] = "postgresql://localhost/test"
-        try:
-            save_storage_to_config(
-                "postgres", org_id="test-org", base_dir=str(tmp_path)
-            )
-        finally:
-            os.environ.pop("REFLEXIO_POSTGRES_DB_URL", None)
+        # Now update storage to postgres (via canonical data DB URL)
+        monkeypatch.setenv("DATA_DB_URL", "postgresql://localhost/test")
+        save_storage_to_config("postgres", org_id="test-org", base_dir=str(tmp_path))
 
         # Verify extractor and context are preserved
         reloaded = storage_obj.load_config()
@@ -191,6 +198,23 @@ class TestSaveAndLoadStorage:
             load_storage_from_config(org_id="test-org", base_dir=str(tmp_path))
             == "postgres"
         )
+
+    def test_postgres_without_data_db_url_preserves_existing(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        save_storage_to_config("sqlite", org_id="test-org", base_dir=str(tmp_path))
+        monkeypatch.delenv("DATA_DB_URL", raising=False)
+
+        save_storage_to_config("postgres", org_id="test-org", base_dir=str(tmp_path))
+
+        assert (
+            load_storage_from_config(org_id="test-org", base_dir=str(tmp_path))
+            == "sqlite"
+        )
+        assert "DATA_DB_URL" in caplog.text
 
     def test_load_returns_none_when_no_file(self, tmp_path: Path) -> None:
         result = load_storage_from_config(org_id="nonexistent", base_dir=str(tmp_path))

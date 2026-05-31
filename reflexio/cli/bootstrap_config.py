@@ -26,6 +26,13 @@ _DEFAULT_STORAGE = "sqlite"
 _TYPE_TO_BACKEND: dict[type, str] = {}  # populated on first use
 
 
+def _data_db_url_from_env() -> str:
+    """Resolve the canonical data DB URL, accepting the legacy alias."""
+    return os.environ.get("DATA_DB_URL", "") or os.environ.get(
+        "DATA_SUPABASE_DB_URL", ""
+    )
+
+
 def _ensure_type_map() -> dict[type, str]:
     """Lazy-build the StorageConfig type → backend string map."""
     if not _TYPE_TO_BACKEND:
@@ -140,7 +147,7 @@ def save_storage_to_config(
         case "supabase":
             url = os.environ.get("DATA_SUPABASE_URL", "")
             key = os.environ.get("DATA_SUPABASE_KEY", "")
-            db_url = os.environ.get("DATA_SUPABASE_DB_URL", "")
+            db_url = _data_db_url_from_env()
             if url and key and db_url:
                 config.storage_config = StorageConfigSupabase(
                     url=url, key=key, db_url=db_url
@@ -148,11 +155,11 @@ def save_storage_to_config(
             else:
                 logger.warning(
                     "Supabase storage requested but credentials are missing "
-                    "(DATA_SUPABASE_URL, DATA_SUPABASE_KEY, DATA_SUPABASE_DB_URL). "
+                    "(DATA_SUPABASE_URL, DATA_SUPABASE_KEY, DATA_DB_URL). "
                     "Keeping existing storage config."
                 )
         case "postgres":
-            db_url = os.environ.get("REFLEXIO_POSTGRES_DB_URL", "")
+            db_url = os.environ.get("DATA_DB_URL", "").strip()
             schema = os.environ.get("REFLEXIO_POSTGRES_SCHEMA", "").strip()
             pool_size_raw = os.environ.get("REFLEXIO_POSTGRES_POOL_SIZE", "").strip()
             pool_size = int(pool_size_raw) if pool_size_raw.isdigit() else 10
@@ -191,7 +198,7 @@ def save_storage_to_config(
                 config.storage_config = StorageConfigPostgres(**postgres_kwargs)
             else:
                 logger.warning(
-                    "Postgres storage requested but REFLEXIO_POSTGRES_DB_URL "
+                    "Postgres storage requested but DATA_DB_URL "
                     "is missing. Keeping existing storage config."
                 )
         case _:
