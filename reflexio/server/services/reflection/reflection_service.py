@@ -505,7 +505,6 @@ class ReflectionService:
                 if decision.new_polarity is not None
                 else cited.polarity
             ),
-            blocking_issue=cited.blocking_issue,
             status=None,
             source=cited.source,
             source_interaction_ids=list(cited.source_interaction_ids),

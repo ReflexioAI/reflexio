@@ -41,6 +41,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 FINISH_EXTRACTION_TOOL_NAME = "finish_extraction"
+PROFILE_EXTRACTOR_KIND = "profile"
 
 
 def _record_agent_usage_event(
@@ -148,11 +149,11 @@ def _pending_tool_call_config(request_context: RequestContext) -> Any | None:
 
 
 def pending_tool_calls_enabled(request_context: RequestContext) -> bool:
-    """Gate whether ``ask_human``/``attach_pending_info`` tools are offered.
+    """Gate whether pending-info tools are offered.
 
     This does NOT gate whether the extraction loop runs — the loop is always
     the extraction path. It only governs whether the resumable human-in-the-loop
-    and prior-knowledge tools are registered alongside ``finish_extraction``.
+    and prior-knowledge tools may be registered alongside ``finish_extraction``.
     """
     pending_config = _pending_tool_call_config(request_context)
     return bool(
@@ -161,6 +162,14 @@ def pending_tool_calls_enabled(request_context: RequestContext) -> bool:
         and is_resumable_extraction_agent_feature_enabled(request_context.org_id)
         and request_context.storage is not None
     )
+
+
+def create_pending_info_tools_for_extractor_kind(extractor_kind: str) -> list[Tool]:
+    """Return pending-info tools available to a given extractor kind."""
+    attach_tool = create_attach_pending_info_request_tool()
+    if extractor_kind == PROFILE_EXTRACTOR_KIND:
+        return [attach_tool]
+    return [create_ask_human_tool(), attach_tool]
 
 
 def run_resumable_extraction_agent(
@@ -188,16 +197,6 @@ def run_resumable_extraction_agent(
         raise RuntimeError(f"Resumable {extractor_kind} extraction requires storage")
 
     pending_tools_active = pending_tool_calls_enabled(request_context)
-    human_input_enabled = bool(
-        pending_tools_active
-        and pending_config is not None
-        and pending_config.human_input_enabled
-    )
-    prior_knowledge_enabled = bool(
-        pending_tools_active
-        and pending_config is not None
-        and pending_config.prior_knowledge_injection_enabled
-    )
 
     run = build_extractor_agent_run_record(
         org_id=request_context.org_id,
@@ -214,7 +213,7 @@ def run_resumable_extraction_agent(
     )
     extra_tools: list[Tool] = []
     extra_tool_context = None
-    if prior_knowledge_enabled and pending_config is not None:
+    if pending_tools_active and pending_config is not None:
         messages = append_prior_knowledge_context(
             messages=messages,
             storage=storage,
@@ -225,11 +224,11 @@ def run_resumable_extraction_agent(
             source=source,
             agent_version=agent_version,
             similarity_threshold=pending_config.for_tool(
-                "ask_human"
+                "attach_pending_info_request"
+                if extractor_kind == PROFILE_EXTRACTOR_KIND
+                else "ask_human"
             ).similarity_threshold,
         )
-
-    if (human_input_enabled or prior_knowledge_enabled) and pending_config is not None:
         extra_tool_context = PendingToolCallToolContext(
             storage=storage,
             run_id=run.id,
@@ -239,10 +238,7 @@ def run_resumable_extraction_agent(
             user_id=user_id,
             config=pending_config,
         )
-    if human_input_enabled:
-        extra_tools.append(create_ask_human_tool())
-    if prior_knowledge_enabled:
-        extra_tools.append(create_attach_pending_info_request_tool())
+        extra_tools.extend(create_pending_info_tools_for_extractor_kind(extractor_kind))
 
     return ResumableExtractionAgent(client=client, storage=storage).start(
         run=run,
@@ -382,13 +378,20 @@ class ResumableExtractionAgent:
         # tools), force that tool so the degenerate one-call loop is strictly
         # equivalent to the old single-shot response_format extraction —
         # the model cannot return a no-tool turn and yield empty output.
+        #
+        # When the async-info tools are also registered we cannot force a single
+        # tool (the model must be free to pick ask_human vs finish_extraction),
+        # but we still require *some* tool call via "required". This prevents a
+        # weak tool-caller (e.g. MiniMax) from emitting the answer as plain text
+        # with zero tool_calls, which the loop would otherwise treat as a no-op
+        # finish and drop the output.
         tool_choice: str | dict[str, Any] = (
             {
                 "type": "function",
                 "function": {"name": FINISH_EXTRACTION_TOOL_NAME},
             }
             if not extra_tools
-            else "auto"
+            else "required"
         )
 
         result = run_tool_loop(

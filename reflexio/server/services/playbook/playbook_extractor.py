@@ -433,7 +433,6 @@ class PlaybookExtractor:
             content=playbook_content,
             trigger=entry.trigger,
             rationale=entry.rationale,
-            blocking_issue=entry.blocking_issue,
             polarity=infer_playbook_polarity(playbook_content, entry.rationale),
             source_interaction_ids=source_interaction_ids,
         )

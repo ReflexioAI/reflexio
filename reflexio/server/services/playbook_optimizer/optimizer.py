@@ -484,7 +484,6 @@ def _agent_like_playbook(playbook: UserPlaybook) -> AgentPlaybook:
         content=playbook.content,
         trigger=playbook.trigger,
         rationale=playbook.rationale,
-        blocking_issue=playbook.blocking_issue,
         playbook_status=PlaybookStatus.PENDING,
         status=playbook.status,
     )

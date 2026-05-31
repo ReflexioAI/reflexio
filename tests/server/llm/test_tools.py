@@ -575,7 +575,9 @@ def test_run_tool_loop_captures_usage_on_tool_loop_turn(monkeypatch):
         ctx=ctx,
     )
 
-    assert result.finished_reason == "finish_tool"
+    # The terminal turn carried no tool calls, so the loop reports the distinct
+    # "no_tool_call" reason (the finish handler never ran).
+    assert result.finished_reason == "no_tool_call"
     assert len(result.trace.turns) == 1
     turn = result.trace.turns[0]
     assert turn.prompt_tokens == 100

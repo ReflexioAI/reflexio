@@ -683,7 +683,6 @@ class PublicStructuredData(BaseModel):
     """Deprecated: kept for backward compatibility with deprecated Public* models."""
 
     trigger: str | None = None
-    blocking_issue: BlockingIssue | None = None
 
 
 class PublicUserPlaybook(BaseModel):
@@ -698,7 +697,6 @@ class PublicUserPlaybook(BaseModel):
     content: str = ""
     trigger: str | None = None
     rationale: str | None = None
-    blocking_issue: BlockingIssue | None = None
     status: Status | None = None
     source: str | None = None
     source_interaction_ids: list[int] = Field(default_factory=list)
@@ -714,7 +712,6 @@ class PublicAgentPlaybook(BaseModel):
     content: str
     trigger: str | None = None
     rationale: str | None = None
-    blocking_issue: BlockingIssue | None = None
     playbook_status: PlaybookStatus = PlaybookStatus.PENDING
     playbook_metadata: str = ""
     status: Status | None = None
@@ -732,7 +729,6 @@ def user_playbook_to_public(rf: UserPlaybook) -> PublicUserPlaybook:
         content=rf.content,
         trigger=rf.trigger,
         rationale=rf.rationale,
-        blocking_issue=rf.blocking_issue,
         status=rf.status,
         source=rf.source,
         source_interaction_ids=rf.source_interaction_ids,
@@ -749,7 +745,6 @@ def agent_playbook_to_public(fb: AgentPlaybook) -> PublicAgentPlaybook:
         content=fb.content,
         trigger=fb.trigger,
         rationale=fb.rationale,
-        blocking_issue=fb.blocking_issue,
         playbook_status=fb.playbook_status,
         playbook_metadata=fb.playbook_metadata,
         status=fb.status,

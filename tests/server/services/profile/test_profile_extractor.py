@@ -685,7 +685,6 @@ class TestResumableAgentPath:
                 storage_config=StorageConfigSQLite(),
                 pending_tool_call_config=PendingToolCallConfig(
                     enabled=True,
-                    human_input_enabled=True,
                 ),
             )
         )
@@ -694,7 +693,7 @@ class TestResumableAgentPath:
             lambda prompt_id, variables: f"{prompt_id}: {variables}"
         )
 
-        make_tc, _make_stop = tool_call_completion
+        make_tc, _ = tool_call_completion
         ask_response = make_tc(
             "ask_human",
             {

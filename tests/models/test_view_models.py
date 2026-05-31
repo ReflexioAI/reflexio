@@ -7,7 +7,6 @@ image_encoding) while preserving all user-facing fields.
 from reflexio.models.api_schema.domain.entities import (
     AgentPlaybook,
     AgentSuccessEvaluationResult,
-    BlockingIssue,
     Interaction,
     ProfileChangeLog,
     ToolUsed,
@@ -15,7 +14,6 @@ from reflexio.models.api_schema.domain.entities import (
     UserProfile,
 )
 from reflexio.models.api_schema.domain.enums import (
-    BlockingIssueKind,
     PlaybookStatus,
     ProfileTimeToLive,
     RegularVsShadow,
@@ -151,7 +149,7 @@ class TestToProfileView:
 
 
 class TestToUserPlaybookView:
-    """to_user_playbook_view: strips embedding, preserves top-level trigger/rationale/blocking_issue."""
+    """to_user_playbook_view: strips embedding, preserves top-level trigger/rationale."""
 
     def test_strips_embedding(self) -> None:
         rf = UserPlaybook(
@@ -164,10 +162,6 @@ class TestToUserPlaybookView:
             content="content",
             trigger="test trigger",
             rationale="test rationale",
-            blocking_issue=BlockingIssue(
-                kind=BlockingIssueKind.MISSING_TOOL,
-                details="missing foobar tool",
-            ),
             status=Status.CURRENT,
             source="test",
             source_interaction_ids=[1, 2],
@@ -185,18 +179,11 @@ class TestToUserPlaybookView:
             request_id="req1",
             trigger="test trigger",
             rationale="test rationale",
-            blocking_issue=BlockingIssue(
-                kind=BlockingIssueKind.MISSING_TOOL,
-                details="missing foobar tool",
-            ),
             embedding=_FAKE_EMBEDDING,
         )
         view = to_user_playbook_view(rf)
         assert view.rationale == "test rationale"
         assert view.trigger == "test trigger"
-        assert view.blocking_issue is not None
-        assert view.blocking_issue.kind == BlockingIssueKind.MISSING_TOOL
-        assert view.blocking_issue.details == "missing foobar tool"
 
     def test_preserves_all_other_fields(self) -> None:
         rf = UserPlaybook(
@@ -228,7 +215,7 @@ class TestToUserPlaybookView:
 
 
 class TestToAgentPlaybookView:
-    """to_agent_playbook_view: strips embedding, preserves top-level trigger/rationale/blocking_issue."""
+    """to_agent_playbook_view: strips embedding, preserves top-level trigger/rationale."""
 
     def test_strips_embedding(self) -> None:
         fb = AgentPlaybook(
@@ -239,10 +226,6 @@ class TestToAgentPlaybookView:
             content="content",
             trigger="test trigger",
             rationale="test rationale",
-            blocking_issue=BlockingIssue(
-                kind=BlockingIssueKind.MISSING_TOOL,
-                details="missing foobar tool",
-            ),
             playbook_status=PlaybookStatus.APPROVED,
             playbook_metadata="meta",
             embedding=_FAKE_EMBEDDING,

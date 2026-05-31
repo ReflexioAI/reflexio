@@ -164,7 +164,7 @@ class ToolLoopResult(BaseModel):
 
     ctx: Any
     trace: ToolLoopTrace
-    finished_reason: Literal["finish_tool", "max_steps", "error"]
+    finished_reason: Literal["finish_tool", "no_tool_call", "max_steps", "error"]
     messages: list[dict[str, Any]] = Field(default_factory=list)
     pending_tool_call_ids: list[str] = Field(default_factory=list)
     max_steps_remaining: int = 0
@@ -596,11 +596,18 @@ def run_tool_loop(
 
             tool_calls = getattr(resp, "tool_calls", None)
             if not tool_calls:
+                # The model returned a plain-text turn with no tool calls. For a
+                # text-output agent this means "done", but the finish handler did
+                # NOT run, so no structured output was committed. Report a
+                # distinct reason so callers (and logs) don't conflate this with
+                # an actual finish_extraction call. Callers that require output
+                # (extraction) already gate success on committed output, so this
+                # surfaces accurately as a non-finish termination.
                 trace.finished = True
                 return ToolLoopResult(
                     ctx=ctx,
                     trace=trace,
-                    finished_reason="finish_tool",
+                    finished_reason="no_tool_call",
                     messages=local_msgs,
                     pending_tool_call_ids=pending_tool_call_ids,
                     max_steps_remaining=max_steps - _step,

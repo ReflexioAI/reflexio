@@ -312,9 +312,7 @@ def test_update_resolved_pending_tool_call_answer_conflict_rechecks_result(
     )
 
 
-def test_mark_pending_tool_call_not_applicable_finalizes_only_na_run(
-    client, storage
-):
+def test_mark_pending_tool_call_not_applicable_finalizes_only_na_run(client, storage):
     now = datetime(2026, 5, 28, tzinfo=UTC)
     storage.create_agent_run(_agent_run("run_1", AgentRunStatus.FINALIZED_PENDING_TOOL))
     storage.create_pending_tool_call(_pending_call("ptc_1", now=now))
@@ -433,12 +431,11 @@ def test_mark_pending_tool_call_not_applicable_drains_resume_worker(client, stor
     with (
         patch(
             "reflexio.server.api_endpoints.pending_tool_call_api."
-            "is_resumable_extraction_enabled",
+            "pending_tool_calls_enabled",
             return_value=True,
         ),
         patch(
-            "reflexio.server.api_endpoints.pending_tool_call_api."
-            "ExtractionResumeWorker"
+            "reflexio.server.api_endpoints.pending_tool_call_api.ExtractionResumeWorker"
         ) as worker_cls,
     ):
         response = client.post("/api/pending_tool_calls/ptc_1/not_applicable", json={})

@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 
 from pydantic import BaseModel, Field, field_validator
 
-from ..common import NEVER_EXPIRES_TIMESTAMP, BlockingIssue, ToolUsed
+from ..common import NEVER_EXPIRES_TIMESTAMP, ToolUsed
 from ..validators import _validate_image_url
 from .enums import (
     PlaybookStatus,
@@ -79,7 +79,6 @@ class UserPlaybookView(BaseModel):
     content: str = ""
     trigger: str | None = None
     rationale: str | None = None
-    blocking_issue: BlockingIssue | None = None
     status: Status | None = None
     source: str | None = None
     source_interaction_ids: list[int] = Field(default_factory=list)
@@ -96,7 +95,6 @@ class AgentPlaybookView(BaseModel):
     content: str
     trigger: str | None = None
     rationale: str | None = None
-    blocking_issue: BlockingIssue | None = None
     playbook_status: PlaybookStatus = PlaybookStatus.PENDING
     playbook_metadata: str = ""
     status: Status | None = None

@@ -220,7 +220,6 @@ class UserPlaybookMixin(ReflexioBase):
             content=request.content,
             trigger=request.trigger,
             rationale=request.rationale,
-            blocking_issue=request.blocking_issue,
         )
         return UpdateUserPlaybookResponse(
             success=True, msg="User playbook updated successfully"

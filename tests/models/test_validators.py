@@ -723,7 +723,6 @@ class TestCrossFieldValidators:
         )
 
         assert config.pending_tool_call_config.enabled is False
-        assert config.pending_tool_call_config.human_input_enabled is False
         assert config.pending_tool_call_config.max_pending_followups_per_scope == 10
 
     def test_pending_tool_calls_allow_managed_supabase_storage(self):
@@ -734,6 +733,21 @@ class TestCrossFieldValidators:
         )
 
         assert config.pending_tool_call_config.enabled is True
+
+    def test_pending_tool_calls_allow_managed_none_storage(self):
+        """None storage_config is deployment-managed (enterprise) and is allowed.
+
+        The removed ``disk`` backend is no longer representable, so a ``None``
+        storage_config always denotes a database-backed, deployment-managed
+        backend — enabling pending tool calls must not raise.
+        """
+        config = Config(
+            storage_config=None,
+            pending_tool_call_config=PendingToolCallConfig(enabled=True),
+        )
+
+        assert config.pending_tool_call_config.enabled is True
+        assert config.storage_config is None
 
     def test_pending_tool_call_config_validates_positive_limits(self):
         """PendingToolCallConfig rejects non-positive timeout and cap values."""

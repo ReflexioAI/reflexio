@@ -62,8 +62,6 @@ def _request_context(storage: SQLiteStorage) -> RequestContext:
         ),
         pending_tool_call_config=PendingToolCallConfig(
             enabled=True,
-            human_input_enabled=True,
-            prior_knowledge_injection_enabled=True,
         ),
     )
     ctx.configurator.get_agent_context.return_value = "Test agent context"
@@ -300,8 +298,6 @@ def _live_resumable_config(marker: str) -> tuple[dict[str, Any], str, str]:
             "user_playbook_extractor_config": None,
             "pending_tool_call_config": {
                 "enabled": True,
-                "human_input_enabled": True,
-                "prior_knowledge_injection_enabled": True,
                 "pending_ttl_seconds": 3600,
                 "dedup_cache_seconds": 60,
                 "prior_answer_valid_seconds": 3600,
@@ -381,7 +377,7 @@ def test_resumable_extraction_resumes_after_human_answer(
             request_context=_request_context(storage),
             llm_client=LiteLLMClient(LiteLLMConfig(model="claude-sonnet-4-6")),
         )
-        make_tc, _make_stop = tool_call_completion
+        make_tc, _ = tool_call_completion
         response = make_tc(
             FINISH_EXTRACTION_TOOL_NAME,
             {

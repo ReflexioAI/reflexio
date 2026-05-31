@@ -600,8 +600,6 @@ class PendingToolCallConfig(BaseModel):
     """Configuration for non-blocking pending tool calls."""
 
     enabled: bool = False
-    human_input_enabled: bool = False
-    prior_knowledge_injection_enabled: bool = False
     max_pending_followups_per_scope: int = Field(default=10, gt=0)
     pending_ttl_seconds: int = Field(default=86_400, gt=0)
     dedup_cache_seconds: int = Field(default=300, gt=0)
@@ -804,15 +802,27 @@ class Config(BaseModel):
 
     @model_validator(mode="after")
     def check_pending_tool_calls_storage_backend(self) -> Self:
-        """Pending tool calls require a database-backed storage backend."""
-        if self.pending_tool_call_config.enabled and not isinstance(
-            self.storage_config,
-            (
-                StorageConfigSQLite,
-                StorageConfigSupabase,
-                StorageConfigPostgres,
-                StorageConfigManagedSupabase,
-            ),
+        """Pending tool calls require a database-backed storage backend.
+
+        ``storage_config is None`` is allowed: in enterprise deployments storage
+        is configured centrally (via ``REFLEXIO_STORAGE``) and the per-org config
+        blob carries ``None`` rather than a concrete backend. The only removed
+        non-database backend (``disk``) is no longer representable as a
+        ``StorageConfig``, so a ``None`` here always denotes a deployment-managed
+        database backend (sqlite/supabase/postgres).
+        """
+        if (
+            self.pending_tool_call_config.enabled
+            and self.storage_config is not None
+            and not isinstance(
+                self.storage_config,
+                (
+                    StorageConfigSQLite,
+                    StorageConfigSupabase,
+                    StorageConfigPostgres,
+                    StorageConfigManagedSupabase,
+                ),
+            )
         ):
             raise ValueError(
                 "pending_tool_call_config.enabled requires sqlite, supabase, or postgres storage"

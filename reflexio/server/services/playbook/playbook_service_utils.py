@@ -7,9 +7,6 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from reflexio.models.api_schema.domain.entities import Interaction
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
-from reflexio.models.api_schema.service_schemas import (
-    BlockingIssue,
-)
 from reflexio.server.prompt.prompt_manager import PromptManager
 from reflexio.server.services.playbook.playbook_service_constants import (
     PlaybookServiceConstants,
@@ -49,10 +46,6 @@ class StructuredPlaybookContent(BaseModel):
     trigger: str | None = Field(
         default=None,
         description="The condition or context when this rule applies",
-    )
-    blocking_issue: BlockingIssue | None = Field(
-        default=None,
-        description="Present only when the agent could not complete the user's request due to a capability limitation",
     )
     content: str | None = Field(
         default=None,
@@ -161,11 +154,6 @@ def format_structured_fields_for_display(
 
     if structured.rationale:
         lines.append(f'Rationale: "{structured.rationale}"')
-
-    if structured.blocking_issue:
-        lines.append(
-            f"Blocked by: [{structured.blocking_issue.kind.value}] {structured.blocking_issue.details}"
-        )
 
     if not lines and structured.content:
         return structured.content

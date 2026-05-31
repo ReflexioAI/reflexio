@@ -6,11 +6,18 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from reflexio.models.config_schema import PendingToolCallConfig
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.prompt.prompt_manager import PromptManager
+from reflexio.server.services.extraction.pending_tool_call_dispatch import (
+    PendingToolCallToolContext,
+    create_ask_human_tool,
+    create_attach_pending_info_request_tool,
+)
 from reflexio.server.services.extraction.resumable_agent import (
     FINISH_EXTRACTION_TOOL_NAME,
     ResumableExtractionAgent,
+    create_pending_info_tools_for_extractor_kind,
 )
 from reflexio.server.services.playbook.playbook_service_utils import (
     StructuredPlaybookList,
@@ -82,8 +89,24 @@ def test_profile_instruction_prompt_is_resumable_by_default():
     )
 
     assert "Resumable Extraction Mode" in rendered
-    assert "ask_human" in rendered
+    assert "ask_human" not in rendered
+    assert "attach_pending_info_request" in rendered
     assert "finish_extraction" in rendered
+
+
+def test_profile_pending_info_tools_do_not_include_ask_human():
+    tools = create_pending_info_tools_for_extractor_kind("profile")
+
+    assert [tool.name for tool in tools] == ["attach_pending_info_request"]
+
+
+def test_playbook_pending_info_tools_still_include_ask_human():
+    tools = create_pending_info_tools_for_extractor_kind("playbook")
+
+    assert [tool.name for tool in tools] == [
+        "ask_human",
+        "attach_pending_info_request",
+    ]
 
 
 def test_resumable_agent_finishes_profile_output(
@@ -200,6 +223,90 @@ def test_resumable_agent_marks_run_failed_on_loop_error(monkeypatch, storage):
     assert stored.status == AgentRunStatus.FAILED
     assert stored.committed_output is None
     assert stored.last_error == "Extraction agent did not finish: error"
+
+
+def test_resumable_agent_no_tool_call_marks_failed(
+    monkeypatch,
+    storage,
+    tool_call_completion,
+):
+    """A no-tool-call turn is reported as 'no_tool_call' (not 'finish_tool').
+
+    The model answered with plain text and zero tool calls, so the finish
+    handler never ran and no output was committed. The run must be marked
+    failed with the accurate, non-contradictory reason.
+    """
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_CLI", raising=False)
+    _, make_stop = tool_call_completion
+    response = make_stop('{"profiles": null}')
+    client = LiteLLMClient(LiteLLMConfig(model="claude-sonnet-4-6"))
+    agent = ResumableExtractionAgent(client=client, storage=storage)
+
+    with patch("litellm.completion", side_effect=[response]):
+        result = agent.start(
+            run=_agent_run("run_no_tool"),
+            messages=[{"role": "user", "content": "extract profiles"}],
+            output_schema=StructuredProfilesOutput,
+        )
+
+    assert result.finished_reason == "no_tool_call"
+    assert result.output is None
+    stored = storage.get_agent_run("run_no_tool")
+    assert stored is not None
+    assert stored.status == AgentRunStatus.FAILED
+    assert stored.committed_output is None
+    assert stored.last_error == "Extraction agent did not finish: no_tool_call"
+
+
+def test_resumable_agent_requires_tool_call_when_extra_tools_present(
+    monkeypatch,
+    storage,
+    tool_call_completion,
+):
+    """With async-info tools registered, the loop forces tool_choice='required'.
+
+    The model is free to pick ask_human vs finish_extraction, but cannot return
+    a no-tool text turn that would silently drop extraction output.
+    """
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_CLI", raising=False)
+    make_tc, _ = tool_call_completion
+    response = make_tc(FINISH_EXTRACTION_TOOL_NAME, {"profiles": None})
+    client = LiteLLMClient(LiteLLMConfig(model="claude-sonnet-4-6"))
+    agent = ResumableExtractionAgent(client=client, storage=storage)
+
+    captured: dict[str, object] = {}
+    original = client.generate_chat_response
+
+    def _spy(*args, **kwargs):
+        captured["tool_choice"] = kwargs.get("tool_choice")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(client, "generate_chat_response", _spy)
+
+    extra_ctx = PendingToolCallToolContext(
+        storage=storage,
+        run_id="run_required",
+        org_id="org_1",
+        extractor_kind="profile",
+        extractor_name="default_profile_extractor",
+        config=PendingToolCallConfig(enabled=True),
+    )
+    with patch("litellm.completion", side_effect=[response]):
+        result = agent.start(
+            run=_agent_run("run_required"),
+            messages=[{"role": "user", "content": "extract profiles"}],
+            output_schema=StructuredProfilesOutput,
+            extra_tools=[
+                create_ask_human_tool(),
+                create_attach_pending_info_request_tool(),
+            ],
+            extra_tool_context=extra_ctx,
+        )
+
+    assert captured["tool_choice"] == "required"
+    assert result.finished_reason == "finish_tool"
 
 
 def test_resumable_agent_resume_injects_resolved_tool_result(

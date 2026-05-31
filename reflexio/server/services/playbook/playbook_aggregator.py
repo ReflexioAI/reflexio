@@ -190,10 +190,6 @@ class PlaybookAggregator:
                 lines.append(f'Trigger: "{fb.trigger}"')
             if fb.rationale:
                 lines.append(f'Rationale: "{fb.rationale}"')
-            if fb.blocking_issue:
-                lines.append(
-                    f"Blocked by: [{fb.blocking_issue.kind.value}] {fb.blocking_issue.details}"
-                )
             blocks.append("\n".join(lines))
         return "\n\n".join(blocks) if blocks else "(No playbook items)"
 
@@ -313,7 +309,7 @@ class PlaybookAggregator:
 
         if len(groups) <= 1:
             return self._format_flat(cluster_playbooks)
-        return self._format_grouped(groups, cluster_playbooks)
+        return self._format_grouped(groups)
 
     def _format_flat(self, cluster_playbooks: list[UserPlaybook]) -> str:
         """
@@ -346,7 +342,6 @@ class PlaybookAggregator:
             lines.append("RATIONALE summaries:")
             lines.extend(f"- {r}" for r in rationales)
 
-        self._append_blocking_issues(lines, cluster_playbooks)
         self._append_freeform_observations(lines, cluster_playbooks)
 
         return "\n".join(lines)
@@ -354,14 +349,12 @@ class PlaybookAggregator:
     def _format_grouped(
         self,
         groups: list[list[UserPlaybook]],
-        cluster_playbooks: list[UserPlaybook],
     ) -> str:
         """
         Format playbooks in grouped layout (used when conflicting directions are detected).
 
         Args:
             groups: AgentPlaybook groups sorted by size descending
-            cluster_playbooks: All playbooks in the cluster (for blocking issues / freeform)
 
         Returns:
             str: Formatted input with group headers and per-playbook fields
@@ -388,23 +381,7 @@ class PlaybookAggregator:
                     lines.extend(f"    {p}" for p in parts[1:])
             lines.append("")
 
-        self._append_blocking_issues(lines, cluster_playbooks)
-
         return "\n".join(lines)
-
-    @staticmethod
-    def _append_blocking_issues(
-        lines: list[str], cluster_playbooks: list[UserPlaybook]
-    ) -> None:
-        """Append blocking issues from cluster playbooks to output lines."""
-        blocking_issues = [
-            f"[{fb.blocking_issue.kind.value}] {fb.blocking_issue.details}"
-            for fb in cluster_playbooks
-            if fb.blocking_issue
-        ]
-        if blocking_issues:
-            lines.append("BLOCKED BY issues:")
-            lines.extend(f"- {issue}" for issue in blocking_issues)
 
     @staticmethod
     def _append_freeform_observations(
@@ -1387,7 +1364,6 @@ class PlaybookAggregator:
             content=playbook_content,
             trigger=structured.trigger,
             rationale=structured.rationale,
-            blocking_issue=structured.blocking_issue,
             playbook_status=PlaybookStatus.PENDING,
             playbook_metadata="",
         )

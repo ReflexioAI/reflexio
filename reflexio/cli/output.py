@@ -162,8 +162,6 @@ def _structured_lines(playbook: Any) -> list[str]:
         lines.append(f"  Trigger: {playbook.trigger}")
     if getattr(playbook, "rationale", None):
         lines.append(f"  Rationale: {playbook.rationale}")
-    if getattr(playbook, "blocking_issue", None):
-        lines.append(f"  Blocking Issue: {playbook.blocking_issue}")
     return lines
 
 
@@ -345,7 +343,6 @@ def print_user_playbooks(user_playbooks: list[Any]) -> None:
         for label, attr in (
             ("Trigger", "trigger"),
             ("Rationale", "rationale"),
-            ("Blocking Issue", "blocking_issue"),
         ):
             value = getattr(pb, attr, None)
             if value:
@@ -446,7 +443,6 @@ def print_agent_playbooks(agent_playbooks: list[Any]) -> None:
         for label, attr in (
             ("Trigger", "trigger"),
             ("Rationale", "rationale"),
-            ("Blocking Issue", "blocking_issue"),
         ):
             value = getattr(pb, attr, None)
             if value:

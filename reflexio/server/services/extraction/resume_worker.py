@@ -19,8 +19,6 @@ from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
 from reflexio.server.services.extraction.agent_run_records import build_scope_hash
 from reflexio.server.services.extraction.pending_tool_call_dispatch import (
     PendingToolCallToolContext,
-    create_ask_human_tool,
-    create_attach_pending_info_request_tool,
 )
 from reflexio.server.services.extraction.prior_answer_search import (
     append_prior_knowledge_context,
@@ -28,6 +26,7 @@ from reflexio.server.services.extraction.prior_answer_search import (
 from reflexio.server.services.extraction.resumable_agent import (
     AgentRunResult,
     ResumableExtractionAgent,
+    create_pending_info_tools_for_extractor_kind,
 )
 from reflexio.server.services.playbook.playbook_extractor import PlaybookExtractor
 from reflexio.server.services.playbook.playbook_generation_service import (
@@ -364,16 +363,7 @@ class ExtractionResumeWorker:
         pending_config = (
             self.request_context.configurator.get_config().pending_tool_call_config
         )
-        if not (
-            pending_config.human_input_enabled
-            or pending_config.prior_knowledge_injection_enabled
-        ):
-            return [], None
-        tools: list[Any] = []
-        if pending_config.human_input_enabled:
-            tools.append(create_ask_human_tool())
-        if pending_config.prior_knowledge_injection_enabled:
-            tools.append(create_attach_pending_info_request_tool())
+        tools = create_pending_info_tools_for_extractor_kind(run.binding.extractor_kind)
         return tools, PendingToolCallToolContext(
             storage=self.storage,
             run_id=run.id,
@@ -596,8 +586,7 @@ class ExtractionResumeWorker:
         pending_config = (
             self.request_context.configurator.get_config().pending_tool_call_config
         )
-        if not pending_config.prior_knowledge_injection_enabled:
-            return messages
+        # Prior-knowledge context is always injected within the resumable path.
         return append_prior_knowledge_context(
             messages=messages,
             storage=self.storage,
