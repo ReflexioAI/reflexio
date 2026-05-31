@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -294,6 +295,19 @@ def should_start_local_embedding_service() -> bool:
     return os.environ.get("CLAUDE_SMART_USE_LOCAL_EMBEDDING") == "1"
 
 
+def _ensure_nextjs_dependencies(project_dir: Path) -> bool:
+    """Install Next.js project dependencies when node_modules is missing."""
+    if (project_dir / "node_modules").exists():
+        return True
+
+    print(f"Installing {project_dir.name} dependencies...")
+    result = subprocess.run(["npm", "install"], cwd=str(project_dir), check=False)
+    if result.returncode != 0:
+        print(f"Error: npm install failed in {project_dir}.")
+        return False
+    return True
+
+
 def execute(args: argparse.Namespace) -> None:
     """Execute the run-services command."""
     load_reflexio_env()
@@ -354,6 +368,8 @@ def execute(args: argparse.Namespace) -> None:
 
     if "docs" in only:
         if DOCS_DIR.is_dir():
+            if not _ensure_nextjs_dependencies(DOCS_DIR):
+                sys.exit(1)
             services.append(build_nextjs_service("docs", ports, cwd=str(DOCS_DIR)))
         elif docs_explicit:
             print(

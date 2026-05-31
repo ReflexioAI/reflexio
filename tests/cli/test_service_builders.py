@@ -12,6 +12,7 @@ import typer
 
 from reflexio.cli.commands.services import validate_storage_backend
 from reflexio.cli.run_services import (
+    _ensure_nextjs_dependencies,
     build_backend_service,
     build_embedding_service,
     build_nextjs_service,
@@ -239,6 +240,51 @@ class TestBuildNextjsService:
     def test_port_from_dict(self) -> None:
         svc = build_nextjs_service("docs", {"docs": 4567}, cwd="docs")
         assert svc.command[-1] == "4567"
+
+    def test_ensure_nextjs_dependencies_skips_existing_node_modules(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        project_dir = tmp_path / "docs"
+        (project_dir / "node_modules").mkdir(parents=True)
+        run_calls = []
+        monkeypatch.setattr(
+            "reflexio.cli.run_services.subprocess.run",
+            lambda *args, **kwargs: run_calls.append((args, kwargs)),
+        )
+
+        assert _ensure_nextjs_dependencies(project_dir) is True
+        assert run_calls == []
+
+    def test_ensure_nextjs_dependencies_runs_npm_install(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        project_dir = tmp_path / "docs"
+        project_dir.mkdir()
+        run_calls = []
+
+        def fake_run(*args, **kwargs):
+            run_calls.append((args, kwargs))
+            return argparse.Namespace(returncode=0)
+
+        monkeypatch.setattr("reflexio.cli.run_services.subprocess.run", fake_run)
+
+        assert _ensure_nextjs_dependencies(project_dir) is True
+        assert run_calls == [
+            ((["npm", "install"],), {"cwd": str(project_dir), "check": False})
+        ]
+
+    def test_ensure_nextjs_dependencies_reports_install_failure(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        project_dir = tmp_path / "docs"
+        project_dir.mkdir()
+
+        def fake_run(*_args, **_kwargs):
+            return argparse.Namespace(returncode=1)
+
+        monkeypatch.setattr("reflexio.cli.run_services.subprocess.run", fake_run)
+
+        assert _ensure_nextjs_dependencies(project_dir) is False
 
 
 # ---------------------------------------------------------------------------
