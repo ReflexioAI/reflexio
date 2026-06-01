@@ -181,4 +181,4 @@ Referenced by `SimpleConfigurator` for loading configs and by database operation
 - [Playbook Service README](server/services/playbook/README.md) -- playbook extraction, aggregation, and deduplication pipeline
 - [Site Variables README](server/site_var/README.md) -- global configuration and feature flags
 - [Retrieval Latency Benchmarks](benchmarks/retrieval_latency/README.md) -- search performance benchmarking
-- [OpenClaw Integration Eval](integrations/openclaw/eval/README.md) -- end-to-end integration evaluation suite
+- [OpenClaw Integration](integrations/openclaw/README.md) -- federated OpenClaw plugin setup and behavior
