@@ -814,6 +814,9 @@ class LiteLLMClient:
                 default_seed,
             )
             params["seed"] = default_seed
+        # Keep seed best-effort without mutating LiteLLM's process-wide
+        # drop_params setting. Providers that do not support seed can ignore it.
+        params["drop_params"] = True
         if seed_explicit and not self._is_temperature_restricted_model(actual_model):
             params["temperature"] = 0.0
 

@@ -130,7 +130,7 @@ def _prompt_llm_provider(env_path: Path) -> tuple[str, str, str]:
 _EMBEDDING_MODEL_NAMES: dict[str, str] = {
     "local": "local/minilm-l6-v2",
     "openai": "text-embedding-3-small",
-    "gemini": "text-embedding-004",
+    "gemini": "gemini/gemini-embedding-001",
 }
 
 
@@ -170,7 +170,7 @@ def _build_embedding_choices() -> list[tuple[str, str | None, str]]:
     choices.extend(
         [
             ("openai", "OPENAI_API_KEY", "OpenAI (text-embedding-3-small)"),
-            ("gemini", "GEMINI_API_KEY", "Gemini (text-embedding-004)"),
+            ("gemini", "GEMINI_API_KEY", "Gemini (gemini-embedding-001)"),
         ]
     )
     return choices

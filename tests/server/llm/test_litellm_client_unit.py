@@ -14,6 +14,7 @@ import zlib
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import litellm
 import pytest
 from pydantic import BaseModel, Field
 
@@ -1435,7 +1436,20 @@ class TestTemperatureRestriction:
 
         call_kwargs = mock_completion.call_args.kwargs
         assert call_kwargs["seed"] == 42
+        assert call_kwargs["drop_params"] is True
         assert call_kwargs["temperature"] == 0.3
+
+    def test_drop_params_is_scoped_to_completion_params(self, monkeypatch):
+        """Best-effort seed should not change LiteLLM's process-global setting."""
+        monkeypatch.setattr(litellm, "drop_params", False)
+        client = LiteLLMClient(LiteLLMConfig(model="gpt-4o"))
+
+        params, _, _, _ = client._build_completion_params(
+            [{"role": "user", "content": "hi"}]
+        )
+
+        assert params["drop_params"] is True
+        assert litellm.drop_params is False
 
     @patch("reflexio.server.llm.litellm_client.litellm.completion")
     def test_explicit_seed_env_forces_temperature_zero(

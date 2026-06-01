@@ -207,7 +207,7 @@ _PROVIDER_DEFAULTS: dict[str, ProviderDefaults] = {
         evaluation="gemini/gemini-3-flash-preview",
         should_run="gemini/gemini-3-flash-preview",
         pre_retrieval="gemini/gemini-3-flash-preview",
-        embedding="gemini/text-embedding-004",
+        embedding="gemini/gemini-embedding-001",
     ),
     "deepseek": ProviderDefaults(
         generation="deepseek/deepseek-chat",
