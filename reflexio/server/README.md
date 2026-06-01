@@ -57,55 +57,29 @@ Description: FastAPI backend server that processes user interactions to generate
 | File | Purpose |
 |------|---------|
 | `request_context.py` | RequestContext (bundles org_id, storage, configurator, prompt_manager) |
-| `publisher_api.py` | Publishing user interactions |
-| `retriever_api.py` | Retrieving profiles, interactions, requests |
-| `login.py` | Authentication with TTL-cached token/org lookups (5 min TTL), `rflx-` API key generation |
+| `publisher_api.py` | Publishing interactions plus direct create/update/delete helpers for profiles, playbooks, requests, sessions, and clear-data operations |
+| `account_api.py` | Account/config identity helpers used by `/api/whoami` and related account surfaces |
+| `health_api.py` | `/healthz` and `/healthz/eval` health checks |
+| `pending_tool_call_api.py` | Pending tool-call and human-clarification routes for resumable extraction |
+| `stall_state_api.py` | Stall-state read/update routes |
 | `precondition_checks.py` | Request validation |
-| `self_managed_migration.py` | Background migration for self-managed orgs (triggered on login, TTL-throttled 10 min) |
 
 **Key Endpoints**:
-- `POST /api/publish_interaction` - Publish interactions (triggers profile/playbook/evaluation)
-- `POST /api/get_requests` - Get sessions with associated interactions (supports `offset`/`has_more` pagination)
-- `GET /api/get_all_interactions` - Get all interactions across all users
-- `GET /api/get_profile_statistics` - Profile statistics by status
-- `GET /api/get_all_profiles?status_filter=<status>` - Filter by status (current/pending/archived)
-- `POST /api/rerun_profile_generation` - Regenerate profiles from ALL interactions (creates PENDING, runs in background)
-- `POST /api/manual_profile_generation` - Regenerate profiles from window-sized interactions (creates CURRENT)
-- `POST /api/upgrade_all_profiles` - PENDING → CURRENT, delete old ARCHIVED
-- `POST /api/downgrade_all_profiles` - ARCHIVED → CURRENT, demote PENDING
-- `POST /api/add_user_playbook` - Add user playbook directly to storage
-- `POST /api/rerun_playbook_generation` - Regenerate playbooks for agent version (creates PENDING, runs in background)
-- `POST /api/manual_playbook_generation` - Regenerate playbooks from window-sized interactions (creates CURRENT)
-- `POST /api/run_playbook_aggregation` - Aggregate user playbooks into agent playbooks
-- `GET /api/playbook_aggregation_change_logs?playbook_name=&agent_version=` - Get change logs from aggregation runs (added/removed/updated playbooks)
-- `POST /api/search` - Unified search across profiles, agent playbooks, user playbooks (parallel, with optional query reformulation via `enable_reformulation` request param)
-- `POST /api/upgrade_all_user_playbooks` - PENDING → CURRENT for user playbooks
-- `POST /api/downgrade_all_user_playbooks` - ARCHIVED → CURRENT for user playbooks
-- `DELETE /api/delete_agent_playbook` - Delete agent playbook by ID
-- `DELETE /api/delete_user_playbook` - Delete user playbook by ID
-- `GET /api/get_operation_status` - Get background operation status
-- `POST /api/cancel_operation` - Cancel an in-progress operation (rerun or manual generation)
+- **Health/version**: `GET /`, `GET /health`, `GET /healthz`, `GET /healthz/eval`, `GET /meta/version`
+- **Identity/config**: `GET /api/whoami`, `GET /api/my_config`, `GET /api/get_config`, `POST /api/set_config`, `POST /api/update_config`
+- **Publish/direct writes**: `POST /api/publish_interaction`, `POST /api/add_user_profile`, `POST /api/add_user_playbook`, `POST /api/add_agent_playbook`
+- **Retrieval**: `POST /api/get_requests`, `POST /api/get_interactions`, `GET /api/get_all_interactions`, `POST /api/get_profiles`, `GET /api/get_all_profiles`, `POST /api/get_user_playbooks`, `POST /api/get_agent_playbooks`, `POST /api/get_agent_success_evaluation_results`
+- **Search/stats**: `POST /api/search`, `POST /api/search_profiles`, `POST /api/rerank_user_profiles`, `POST /api/search_interactions`, `POST /api/search_user_playbooks`, `POST /api/search_agent_playbooks`, `GET /api/storage_stats`, `GET /api/get_profile_statistics`, `POST /api/get_dashboard_stats`, `POST /api/get_playbook_application_stats`
+- **Profile lifecycle**: `POST /api/rerun_profile_generation`, `POST /api/manual_profile_generation`, `POST /api/upgrade_all_profiles`, `POST /api/downgrade_all_profiles`, `GET /api/profile_change_log`, `PUT /api/update_user_profile`, `DELETE /api/delete_profile`, `DELETE /api/delete_profiles_by_ids`, `DELETE /api/delete_all_profiles`
+- **Playbook lifecycle**: `POST /api/rerun_playbook_generation`, `POST /api/manual_playbook_generation`, `POST /api/run_playbook_aggregation`, `GET /api/playbook_aggregation_change_logs`, `POST /api/upgrade_all_user_playbooks`, `POST /api/downgrade_all_user_playbooks`, `PUT /api/update_agent_playbook_status`, `PUT /api/update_agent_playbook`, `PUT /api/update_user_playbook`, `DELETE /api/delete_agent_playbook`, `DELETE /api/delete_user_playbook`, `DELETE /api/delete_agent_playbooks_by_ids`, `DELETE /api/delete_user_playbooks_by_ids`, `DELETE /api/delete_all_playbooks`, `DELETE /api/delete_all_user_playbooks`, `DELETE /api/delete_all_agent_playbooks`
+- **Evaluation**: `POST /api/get_evaluation_overview`, `POST /api/evaluations/regenerate`, `GET /api/evaluations/regenerate/{job_id}`, `DELETE /api/evaluations/regenerate/{job_id}`, `POST /api/evaluations/grade_on_demand`, `GET /api/evaluations/shadow_comparisons/recent`
+- **Braintrust**: `POST /api/braintrust/connect`, `POST /api/braintrust/select_projects`, `GET /api/braintrust/status`, `DELETE /api/braintrust/connection`, `POST /api/braintrust/sync`
+- **Operations/admin**: `GET /api/get_operation_status`, `POST /api/cancel_operation`, `POST /api/admin/cache/invalidate`, `DELETE /api/delete_interaction`, `DELETE /api/delete_request`, `DELETE /api/delete_session`, `DELETE /api/delete_requests_by_ids`, `DELETE /api/delete_all_interactions`, `POST /api/clear_user_data`
+- **Human clarification/stall state**: `GET /api/pending_tool_calls`, `GET /api/pending_tool_calls/{pending_tool_call_id}`, `POST /api/pending_tool_calls/{pending_tool_call_id}/resolve`, `PATCH /api/pending_tool_calls/{pending_tool_call_id}/answer`, `POST /api/pending_tool_calls/{pending_tool_call_id}/not_applicable`, `POST /api/pending_tool_calls/{pending_tool_call_id}/cancel`, `GET /api/stall_state`, `POST /api/stall_state/notified`
 
-**Login Response**: `POST /token` returns `api_key` (40-char `rflx-` prefixed token), `token_type`, and `feature_flags: dict[str, bool]`. Frontend stores these in localStorage. For self-managed orgs (`is_self_managed=True`), login also triggers a background migration check via `self_managed_migration.py`.
+**Authentication Pattern**: The open-source app uses `default_get_org_id` and `DEFAULT_ORG_ID` for local/no-auth starts. Enterprise wraps `create_app()` in `reflexio_ext/server/api.py` with authenticated org resolution, login/OAuth/account/share/waitlist routers, admin checks, Sentry tracing, and usage metrics.
 
-**Authentication**: API keys use `rflx-` prefix format (40 chars). Auth flow: Bearer token → DB lookup in `api_tokens` table → get `org_id` → load org. Legacy JWT tokens are still supported as fallback. Multiple tokens per org are supported.
-
-**Authentication Endpoints**:
-- `POST /api/register` - Register new org (accepts optional `invitation_code` form field; when `invitation_only` flag enabled, code is required and org is auto-verified)
-- `POST /api/verify-email` - Verify email with token
-- `POST /api/resend-verification` - Resend verification email
-- `POST /api/forgot-password` - Request password reset email
-- `POST /api/reset-password` - Reset password with token
-
-**API Token Management Endpoints**:
-- `GET /api/tokens` - List all tokens for current org (masked values)
-- `POST /api/tokens` - Create new token (returns full value once), body: `{"name": "..."}`
-- `DELETE /api/tokens/{token_id}` - Delete a token (cannot delete last token)
-
-**Account Management Endpoints**:
-- `DELETE /api/account` - Permanently delete account and all data (requires password re-verification, rate-limited 3/hour)
-
-**Pattern**: All endpoints call `Reflexio` from `reflexio_lib.py`
+**Pattern**: Core route handlers call `Reflexio` through `get_reflexio(org_id)`; endpoint helper files should not instantiate `Reflexio` directly.
 
 ## LLM Client
 
@@ -197,6 +171,18 @@ python -m reflexio.server.scripts.manage_invitation_codes list --show-used
 ## Services
 
 **Directory**: `services/`
+
+**Service Boundary**: The service layer owns LLM orchestration, extraction, evaluation, optimization, search preparation, storage access, and long-running operation state. API endpoints should validate/authenticate requests, build `RequestContext`, and delegate into `Reflexio` or focused service helpers rather than embedding business logic.
+
+**Encapsulated Components**:
+- **Publish pipeline**: `generation_service.py` coordinates interaction persistence, profile generation, playbook generation, reflection, and deferred evaluation scheduling.
+- **Profile memory**: `profile/` extracts, deduplicates, and applies user profile updates.
+- **Playbook memory**: `playbook/` extracts user playbooks, consolidates them against existing rows, aggregates them into agent playbooks, and tracks aggregation change logs.
+- **Evaluation**: `agent_success_evaluation/`, `shadow_comparison/`, and `evaluation_overview/` handle session grading, per-turn shadow verdicts, regeneration jobs, and dashboard-facing rollups.
+- **Async clarification**: `extraction/` and `reflection/` manage resumable agent runs, pending tool calls, prior-answer search, and long-horizon reflection updates.
+- **Search preparation**: `pre_retrieval/` and `unified_search_service.py` handle query reformulation, document expansion, embeddings, and cross-entity search orchestration.
+- **Optimization/integrations**: `playbook_optimizer/` and `braintrust/` run candidate playbook optimization, rollout support, and Braintrust export/sync.
+- **Persistence/config**: `storage/`, `configurator/`, and `operation_state_utils.py` provide storage abstractions, config loading, locks, bookmarks, progress, and cancellation.
 
 ### Orchestrator
 

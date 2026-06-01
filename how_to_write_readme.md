@@ -23,6 +23,12 @@ Description: One-sentence summary
 
 ### Architecture Pattern
 Brief description of design patterns, data flow, or key decisions.
+
+### Key Endpoints / Commands / Contracts
+- Keep this section when routes, CLI commands, public methods, storage tables, or cross-component contracts are central to navigating the component.
+
+### Requirements / Problems to Avoid
+- Keep durable implementation requirements and failure modes that future edits must preserve.
 ```
 
 ## When to Update
@@ -43,6 +49,7 @@ Update when:
 - Include file paths and directory names
 - Match headings to directory structure
 - Reference detailed documentation when it exists
+- Keep complete route/command/contract maps when they are the fastest way to find behavior
 
 **Show Relationships:**
 ```
@@ -56,21 +63,29 @@ ComponentA
 - **NEVER import storage implementations directly** - Always use BaseStorage
 - **ALWAYS use LiteLLMClient** - Not OpenAIClient or ClaudeClient
 
+**Preserve Durable Detail:**
+- Do not remove complete key endpoint lists just to make a README shorter; group them by workflow if a flat list is too long.
+- Do not remove requirements, constraints, or known pitfalls that prevent broken future edits.
+- Prefer concise grouped lists over vague summaries when APIs, service boundaries, table ownership, or UI rendering constraints matter.
+
 ## Detailed Component Maps
 
 For complex components, create `README.md` in that directory with:
 - Main entry points and when to modify them
 - Sub-components with key files
 - Architecture patterns and data flow
+- Key endpoints, commands, or public contracts when those are core to the component
+- Requirements and problems to avoid when the component has non-obvious rendering, storage, migration, auth, or concurrency constraints
 
 ## Update Process
 
 1. **Check git changes** - Run `git diff` or `git status` to see what changed since last commit
 2. **Identify changes** - New files? Interface changes? Pattern changes?
 3. **Read existing map** - Understand current structure
-4. **Update sections** - Start with component map, then main map
-5. **Verify** - Check file paths and relationships
-6. **Test navigation** - Can an LLM find the right file to modify?
+4. **Preserve useful sections** - Keep endpoint maps, requirements, and pitfalls unless they are stale; update them instead of deleting them
+5. **Update sections** - Start with component map, then main map
+6. **Verify** - Check file paths, endpoints, commands, and relationships
+7. **Test navigation** - Can an LLM find the right file to modify and avoid known mistakes?
 
 ## Repository Patterns
 
@@ -95,6 +110,7 @@ For complex components, create `README.md` in that directory with:
 - README is code map for navigation, not API docs
 - Use **bold** for important rules/patterns
 - Test: Can an LLM find the right file for common tasks?
+- Complete does not mean verbose: keep all important endpoints/contracts, but group them and trim explanation around them
 
 ## Checklist
 
@@ -102,6 +118,8 @@ For complex components, create `README.md` in that directory with:
 - [ ] File paths for main entry points
 - [ ] Purpose explains component relationships
 - [ ] Architecture Pattern explains key decisions
+- [ ] Key endpoints/commands/contracts are complete when relevant
+- [ ] Requirements and problems to avoid are preserved when relevant
 - [ ] Follow consistent syntax and highlight in the file
 - [ ] No unnecessary details or duplication
 
@@ -112,6 +130,7 @@ For complex components, create `README.md` in that directory with:
 3. **Can an LLM avoid mistakes?** - Anti-patterns highlighted (NEVER/ALWAYS)?
 4. **Is it concise?** - No unnecessary elaboration?
 5. **Is it complete?** - All major components and relationships covered?
+6. **Did we preserve durable detail?** - Endpoint maps, requirements, and pitfalls updated rather than deleted?
 
 ## Example: Adding New File
 
