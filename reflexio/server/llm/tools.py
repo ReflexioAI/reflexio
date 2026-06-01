@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from reflexio.server.llm.llm_utils import make_strict_json_schema
 from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
 
 if TYPE_CHECKING:
@@ -67,14 +68,19 @@ class Tool(BaseModel):
     name: str
     args_model: type[BaseModel]
     handler: Callable[[BaseModel, Any], ToolHandlerResult]
+    strict: bool = True
 
     def openai_spec(self) -> dict:
+        parameters = self.args_model.model_json_schema()
+        if self.strict:
+            parameters = make_strict_json_schema(parameters)
         return {
             "type": "function",
             "function": {
                 "name": self.name,
                 "description": (self.args_model.__doc__ or "").strip(),
-                "parameters": self.args_model.model_json_schema(),
+                "parameters": parameters,
+                "strict": self.strict,
             },
         }
 

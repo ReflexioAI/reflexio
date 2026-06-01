@@ -44,6 +44,12 @@ def test_tool_openai_spec_uses_docstring_and_schema():
     assert spec["type"] == "function"
     assert spec["function"]["name"] == "emit_profile"
     assert "Emit a candidate user profile item." in spec["function"]["description"]
+    assert spec["function"]["strict"] is True
+    assert spec["function"]["parameters"]["additionalProperties"] is False
+    assert set(spec["function"]["parameters"]["required"]) == {
+        "content",
+        "time_to_live",
+    }
     assert spec["function"]["parameters"]["properties"]["content"]["type"] == "string"
 
 

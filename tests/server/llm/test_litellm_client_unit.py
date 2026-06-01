@@ -15,7 +15,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from reflexio.models.config_schema import (
     AnthropicConfig,
@@ -44,6 +44,7 @@ from reflexio.server.llm.litellm_client import (
     _truncate_for_embedding,
     create_litellm_client,
 )
+from reflexio.server.llm.llm_utils import make_strict_json_schema
 
 # ---------------------------------------------------------------------------
 # Pydantic models used for structured-output tests
@@ -1063,6 +1064,96 @@ class TestMaybeParseStructuredOutput:
             )
 
 
+class TestStrictStructuredOutputRequest:
+    """Provider-facing structured output request format."""
+
+    def test_strict_json_schema_strips_provider_unsupported_constraints(self):
+        class NestedLabel(BaseModel):
+            label: str = Field(min_length=1, max_length=20)
+
+        class BoundedScore(BaseModel):
+            score: float = Field(ge=0.0, le=1.0)
+            tags: list[str] = Field(min_length=1, max_length=3)
+            code: str = Field(min_length=2, max_length=8, pattern="^[a-z]+$")
+            nested: NestedLabel
+
+        schema = make_strict_json_schema(BoundedScore.model_json_schema())
+
+        score_schema = schema["properties"]["score"]
+        tags_schema = schema["properties"]["tags"]
+        code_schema = schema["properties"]["code"]
+        assert "minimum" not in score_schema
+        assert "maximum" not in score_schema
+        assert "minItems" not in tags_schema
+        assert "maxItems" not in tags_schema
+        assert "minLength" not in code_schema
+        assert "maxLength" not in code_schema
+        assert "pattern" not in code_schema
+        nested_label_schema = schema["$defs"]["NestedLabel"]["properties"]["label"]
+        assert "minLength" not in nested_label_schema
+        assert "maxLength" not in nested_label_schema
+        assert schema["additionalProperties"] is False
+        assert set(schema["required"]) == {"score", "tags", "code", "nested"}
+
+    def test_supported_model_uses_strict_json_schema_response_format(self):
+        client = _build_client(LiteLLMConfig(model="gpt-4o-mini"))
+
+        with patch.object(
+            LiteLLMClient,
+            "_supports_response_schema",
+            return_value=True,
+        ):
+            params, parser_schema, parse_structured, _ = (
+                client._build_completion_params(
+                    [{"role": "user", "content": "test"}],
+                    response_format=SampleResponse,
+                )
+            )
+
+        provider_format = params["response_format"]
+        assert provider_format["type"] == "json_schema"
+        assert provider_format["json_schema"]["strict"] is True
+        assert provider_format["json_schema"]["schema"]["additionalProperties"] is False
+        assert set(provider_format["json_schema"]["schema"]["required"]) == {
+            "answer",
+            "score",
+        }
+        assert parser_schema is SampleResponse
+        assert parse_structured is True
+
+    def test_unsupported_model_keeps_pydantic_response_format(self):
+        client = _build_client(LiteLLMConfig(model="minimax/MiniMax-M2.7"))
+
+        with patch.object(
+            LiteLLMClient,
+            "_supports_response_schema",
+            return_value=False,
+        ):
+            params, parser_schema, _, _ = client._build_completion_params(
+                [{"role": "user", "content": "test"}],
+                response_format=SampleResponse,
+            )
+
+        assert params["response_format"] is SampleResponse
+        assert parser_schema is SampleResponse
+
+    def test_strict_response_format_can_be_disabled_per_call(self):
+        client = _build_client(LiteLLMConfig(model="gpt-4o-mini"))
+
+        with patch.object(
+            LiteLLMClient,
+            "_supports_response_schema",
+            return_value=True,
+        ):
+            params, _, _, _ = client._build_completion_params(
+                [{"role": "user", "content": "test"}],
+                response_format=SampleResponse,
+                strict_response_format=False,
+            )
+
+        assert params["response_format"] is SampleResponse
+
+
 # ===================================================================
 # Retry-on-parse-failure tests
 # ===================================================================
@@ -1112,7 +1203,11 @@ class TestStructuredOutputRetry:
         assert result.score == 42
 
     def test_structured_output_parse_failure_all_retries_exhausted_raises(self):
-        """Every attempt returns malformed content — raises LiteLLMClientError wrapping StructuredOutputParseError after exhaustion."""
+        """Every attempt returns malformed content — raises LiteLLMClientError wrapping StructuredOutputParseError after exhaustion.
+
+        Parse failures get one extra attempt beyond the configured budget, so
+        max_retries=2 yields 3 total attempts.
+        """
         call_count = 0
 
         def fake_completion(**kwargs):
@@ -1133,7 +1228,56 @@ class TestStructuredOutputRetry:
                 response_format=SampleResponse,
             )
 
+        assert call_count == 3
+
+    def test_structured_output_parse_failure_extra_retry_at_default_budget(self):
+        """With max_retries=1, a parse failure still gets one extra attempt and can recover."""
+        call_count = 0
+        valid_json = '{"answer": "ok", "score": 42}'
+
+        def fake_completion(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            content = "not valid json {{{{" if call_count == 1 else valid_json
+            return self._make_mock_response(content)
+
+        client = _build_client(
+            LiteLLMConfig(model="gpt-4o-mini", max_retries=1, retry_delay=0)
+        )
+
+        with patch("litellm.completion", side_effect=fake_completion):
+            result = client.generate_chat_response(
+                messages=[{"role": "user", "content": "test"}],
+                response_format=SampleResponse,
+            )
+
         assert call_count == 2
+        assert isinstance(result, SampleResponse)
+        assert result.answer == "ok"
+
+    def test_non_parse_error_gets_no_extra_retry_at_default_budget(self):
+        """A non-parse error with max_retries=1 still runs exactly once — the extra retry is parse-only."""
+        call_count = 0
+
+        def fake_completion(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            raise RuntimeError("boom")
+
+        client = _build_client(
+            LiteLLMConfig(model="gpt-4o-mini", max_retries=1, retry_delay=0)
+        )
+
+        with (
+            patch("litellm.completion", side_effect=fake_completion),
+            pytest.raises(LiteLLMClientError),
+        ):
+            client.generate_chat_response(
+                messages=[{"role": "user", "content": "test"}],
+                response_format=SampleResponse,
+            )
+
+        assert call_count == 1
 
 
 # ===================================================================

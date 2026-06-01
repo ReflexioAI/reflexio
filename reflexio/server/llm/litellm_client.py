@@ -27,7 +27,10 @@ from reflexio.server.llm.image_utils import (
 from reflexio.server.llm.image_utils import (
     encode_image_to_base64 as _encode_image_to_base64,
 )
-from reflexio.server.llm.llm_utils import is_pydantic_model
+from reflexio.server.llm.llm_utils import (
+    is_pydantic_model,
+    strict_response_format_for_model,
+)
 from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
 from reflexio.server.llm.providers.claude_code_provider import (
     register_if_enabled as _register_claude_code,
@@ -745,6 +748,7 @@ class LiteLLMClient:
             Tuple of (params dict, response_format, parse_structured_output, max_retries)
         """
         response_format = kwargs.pop("response_format", None)
+        strict_response_format = kwargs.pop("strict_response_format", True)
         parse_structured_output = kwargs.pop("parse_structured_output", True)
         max_retries_arg = kwargs.pop("max_retries", self.config.max_retries)
         try:
@@ -819,7 +823,11 @@ class LiteLLMClient:
         if self.config.top_p != 1.0:
             params["top_p"] = self.config.top_p
         if response_format:
-            params["response_format"] = response_format
+            params["response_format"] = self._provider_response_format(
+                response_format=response_format,
+                model=actual_model,
+                strict_response_format=strict_response_format,
+            )
         if tools is not None:
             params["tools"] = tools
         if tool_choice is not None:
@@ -853,6 +861,37 @@ class LiteLLMClient:
         )
 
         return params, response_format, parse_structured_output, max_retries
+
+    @staticmethod
+    @lru_cache(maxsize=256)
+    def _supports_response_schema(model: str) -> bool:
+        try:
+            return bool(litellm.supports_response_schema(model=model))
+        except Exception:
+            return False
+
+    def _provider_response_format(
+        self,
+        *,
+        response_format: Any,
+        model: str,
+        strict_response_format: bool,
+    ) -> Any:
+        """Return the provider-facing response_format while preserving parser schema.
+
+        Callers pass a Pydantic model so local parsing stays type-safe. When
+        LiteLLM says the target model supports JSON Schema response formats, we
+        send an explicit strict schema to constrain generation. Unsupported
+        providers keep the existing Pydantic response_format behavior.
+        """
+
+        if (
+            strict_response_format
+            and is_pydantic_model(response_format)
+            and self._supports_response_schema(model)
+        ):
+            return strict_response_format_for_model(response_format)
+        return response_format
 
     def _compute_cost_usd(self, response: Any, model: str | None) -> float | None:
         """Compute call cost in USD via the litellm price table.
@@ -993,7 +1032,13 @@ class LiteLLMClient:
         )
 
         last_error: Exception | None = None
-        for attempt in range(max_retries):
+        # A StructuredOutputParseError is typically a transient malformed or
+        # truncated response that succeeds on a fresh generation, so grant it
+        # one extra attempt beyond the configured budget (once per request).
+        effective_max_retries = max_retries
+        structured_parse_retry_granted = False
+        attempt = 0
+        while attempt < effective_max_retries:
             request_start = time.perf_counter()
             self.logger.info(
                 "event=llm_request_start model=%s timeout=%s has_response_format=%s attempt=%d/%d",
@@ -1001,7 +1046,7 @@ class LiteLLMClient:
                 params.get("timeout"),
                 response_format is not None,
                 attempt + 1,
-                max_retries,
+                effective_max_retries,
             )
             try:
                 response = litellm.completion(**params)
@@ -1017,7 +1062,7 @@ class LiteLLMClient:
                     params.get("timeout"),
                     response_format is not None,
                     attempt + 1,
-                    max_retries,
+                    effective_max_retries,
                     elapsed_seconds,
                     True,
                 )
@@ -1044,12 +1089,24 @@ class LiteLLMClient:
             except Exception as e:
                 last_error = e
                 elapsed_seconds = time.perf_counter() - request_start
+                if (
+                    isinstance(e, StructuredOutputParseError)
+                    and not structured_parse_retry_granted
+                ):
+                    structured_parse_retry_granted = True
+                    effective_max_retries += 1
                 self._handle_retry_or_raise(
-                    e, params, attempt, max_retries, response_format, elapsed_seconds
+                    e,
+                    params,
+                    attempt,
+                    effective_max_retries,
+                    response_format,
+                    elapsed_seconds,
                 )
+            attempt += 1
 
         raise LiteLLMClientError(
-            f"API call failed after {max_retries} retries: {str(last_error)}"
+            f"API call failed after {effective_max_retries} retries: {str(last_error)}"
         )
 
     def _apply_prompt_caching(
