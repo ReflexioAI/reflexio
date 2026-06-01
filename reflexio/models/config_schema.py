@@ -178,6 +178,7 @@ class SearchOptions:
 
     query_embedding: list[float] | None = field(default=None)
     search_mode: SearchMode = field(default=SearchMode.HYBRID)
+    fresh: bool = field(default=False)
     rrf_k: int = field(default=60)
     vector_weight: float = field(default=1.0)
     fts_weight: float = field(default=1.0)
@@ -203,6 +204,8 @@ class StorageConfigSupabase(BaseModel):
     key: NonEmptyStr
     db_url: NonEmptyStr
     schema_name: str | None = Field(default=None, alias="schema")
+    read_url: NonEmptyStr | None = None
+    read_key: NonEmptyStr | None = None
 
 
 class StorageConfigPostgres(BaseModel):
@@ -215,6 +218,9 @@ class StorageConfigPostgres(BaseModel):
     # Seconds a query waits for a free pooled connection before failing. Bounds the
     # back-pressure applied when concurrent queries exceed pool_size.
     pool_acquire_timeout: float = Field(default=30.0, gt=0)
+    read_db_url: NonEmptyStr | None = None
+    read_pool_size: int | None = Field(default=None, ge=1)
+    read_pool_acquire_timeout: float | None = Field(default=None, gt=0)
 
 
 class StorageConfigManagedSupabase(BaseModel):

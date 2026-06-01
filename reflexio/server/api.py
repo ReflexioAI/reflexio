@@ -164,6 +164,11 @@ from reflexio.server.cache.reflexio_cache import (
     invalidate_reflexio_cache,
 )
 from reflexio.server.correlation import correlation_id_var, generate_correlation_id
+from reflexio.server.operation_limiter import (
+    OperationName,
+    limiter_http_exception,
+    run_with_operation_limit,
+)
 from reflexio.server.services.agent_success_evaluation.group_evaluation_runner import (
     run_group_evaluation,
 )
@@ -202,6 +207,22 @@ def get_rate_limit_key(request: Request) -> str:
 
 # Initialize rate limiter
 limiter = Limiter(key_func=get_rate_limit_key)
+
+
+def _run_limited_api[T](
+    org_id: str,
+    operation: OperationName,
+    fn: Callable[[], T],
+) -> T:
+    try:
+        return run_with_operation_limit(
+            org_id=org_id,
+            operation=operation,
+            fn=fn,
+        )
+    except TimeoutError as exc:
+        http_exc = limiter_http_exception(operation)
+        raise http_exc from exc
 
 
 def configure_rate_limiter(key_func: Callable[..., str]) -> None:
@@ -390,11 +411,29 @@ def publish_user_interaction(
 ) -> PublishUserInteractionResponse:
     if wait_for_response:
         # Process synchronously so the caller gets the real result
-        return publisher_api.add_user_interaction(org_id=org_id, request=payload)
+        return _run_limited_api(
+            org_id,
+            "publish",
+            lambda: publisher_api.add_user_interaction(org_id=org_id, request=payload),
+        )
+
+    def _limited_publish_task() -> None:
+        try:
+            run_with_operation_limit(
+                org_id=org_id,
+                operation="publish",
+                fn=lambda: publisher_api.add_user_interaction(
+                    org_id=org_id, request=payload
+                ),
+            )
+        except TimeoutError:
+            logger.warning(
+                "Dropped queued publish for org %s because publish limiter is saturated",
+                org_id,
+            )
+
     # Run in background — caller gets immediate acknowledgement
-    background_tasks.add_task(
-        publisher_api.add_user_interaction, org_id=org_id, request=payload
-    )
+    background_tasks.add_task(_limited_publish_task)
     return PublishUserInteractionResponse(
         success=True, message="Interaction queued for processing"
     )
@@ -483,7 +522,11 @@ def search_user_profiles(
     payload: SearchUserProfileRequest,
     org_id: str = Depends(default_get_org_id),
 ) -> SearchProfilesViewResponse:
-    response = get_reflexio(org_id=org_id).search_user_profiles(payload)
+    response = _run_limited_api(
+        org_id,
+        "search",
+        lambda: get_reflexio(org_id=org_id).search_user_profiles(payload),
+    )
     return SearchProfilesViewResponse(
         success=response.success,
         user_profiles=[to_profile_view(p) for p in response.user_profiles],
@@ -512,7 +555,11 @@ def rerank_user_profiles(
     Returns:
         SearchProfilesViewResponse: Reranked profiles, top_k entries.
     """
-    response = get_reflexio(org_id=org_id).rerank_user_profiles(payload)
+    response = _run_limited_api(
+        org_id,
+        "search",
+        lambda: get_reflexio(org_id=org_id).rerank_user_profiles(payload),
+    )
     return SearchProfilesViewResponse(
         success=response.success,
         user_profiles=[to_profile_view(p) for p in response.user_profiles],
@@ -542,8 +589,12 @@ def storage_stats(
     Returns:
         StorageStatsResponse: Counts and timestamp range for the user.
     """
-    return get_reflexio(org_id=org_id).storage_stats(
-        StorageStatsRequest(user_id=user_id)
+    return _run_limited_api(
+        org_id,
+        "search",
+        lambda: get_reflexio(org_id=org_id).storage_stats(
+            StorageStatsRequest(user_id=user_id)
+        ),
     )
 
 
@@ -558,7 +609,11 @@ def search_interactions(
     payload: SearchInteractionRequest,
     org_id: str = Depends(default_get_org_id),
 ) -> SearchInteractionsViewResponse:
-    response = get_reflexio(org_id=org_id).search_interactions(payload)
+    response = _run_limited_api(
+        org_id,
+        "search",
+        lambda: get_reflexio(org_id=org_id).search_interactions(payload),
+    )
     return SearchInteractionsViewResponse(
         success=response.success,
         interactions=[to_interaction_view(i) for i in response.interactions],
@@ -590,7 +645,11 @@ def search_user_playbooks_endpoint(
     Returns:
         SearchUserPlaybooksViewResponse: Response containing matching user playbooks
     """
-    response = get_reflexio(org_id=org_id).search_user_playbooks(payload)
+    response = _run_limited_api(
+        org_id,
+        "search",
+        lambda: get_reflexio(org_id=org_id).search_user_playbooks(payload),
+    )
     return SearchUserPlaybooksViewResponse(
         success=response.success,
         user_playbooks=[to_user_playbook_view(rf) for rf in response.user_playbooks],
@@ -622,7 +681,11 @@ def search_agent_playbooks_endpoint(
     Returns:
         SearchAgentPlaybooksViewResponse: Response containing matching agent playbooks
     """
-    response = get_reflexio(org_id=org_id).search_agent_playbooks(payload)
+    response = _run_limited_api(
+        org_id,
+        "search",
+        lambda: get_reflexio(org_id=org_id).search_agent_playbooks(payload),
+    )
     return SearchAgentPlaybooksViewResponse(
         success=response.success,
         agent_playbooks=[to_agent_playbook_view(fb) for fb in response.agent_playbooks],
@@ -655,7 +718,11 @@ def unified_search_endpoint(
     Returns:
         UnifiedSearchViewResponse: Combined search results
     """
-    response = get_reflexio(org_id=org_id).unified_search(payload, org_id=org_id)
+    response = _run_limited_api(
+        org_id,
+        "search",
+        lambda: get_reflexio(org_id=org_id).unified_search(payload, org_id=org_id),
+    )
     return UnifiedSearchViewResponse(
         success=response.success,
         profiles=[to_profile_view(p) for p in response.profiles],
@@ -1152,7 +1219,11 @@ def run_playbook_aggregation(
     payload: RunPlaybookAggregationRequest,
     org_id: str = Depends(default_get_org_id),
 ) -> RunPlaybookAggregationResponse:
-    return publisher_api.run_playbook_aggregation(org_id=org_id, request=payload)
+    return _run_limited_api(
+        org_id,
+        "aggregation",
+        lambda: publisher_api.run_playbook_aggregation(org_id=org_id, request=payload),
+    )
 
 
 @core_router.post("/api/set_config")

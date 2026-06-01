@@ -21,6 +21,7 @@ from reflexio.models.api_schema.service_schemas import (
     UserPlaybook,
 )
 from reflexio.models.config_schema import PlaybookConfig
+from reflexio.server.operation_limiter import run_with_operation_limit
 from reflexio.server.services.base_generation_service import (
     BaseGenerationService,
     StatusChangeOperation,
@@ -458,7 +459,18 @@ class PlaybookGenerationService(
             request_context=self.request_context,
             agent_version=self.service_config.agent_version,  # type: ignore[reportOptionalMemberAccess]
         )
-        aggregator.run(aggregator_request)
+        try:
+            run_with_operation_limit(
+                org_id=self.request_context.org_id,
+                operation="aggregation",
+                fn=lambda: aggregator.run(aggregator_request),
+            )
+        except TimeoutError:
+            logger.info(
+                "Skipping inline aggregation for playbook_name=%s agent_version=%s: aggregation limiter is saturated",
+                playbook_name,
+                self.service_config.agent_version,  # type: ignore[reportOptionalMemberAccess]
+            )
 
     # ===============================
     # Rerun hook implementations (override base class methods)

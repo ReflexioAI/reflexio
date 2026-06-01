@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import contextvars
 import logging
+import os
+import threading
 import time
 import uuid
 from collections.abc import Callable
@@ -57,6 +59,23 @@ CLEANUP_STALE_LOCK_SECONDS = 600
 # Timeout for the outer generation service parallel execution
 GENERATION_SERVICE_TIMEOUT_SECONDS = 600
 _STALL_WARNING_PREFIX = "Reflexio learning is paused"
+
+
+def _retention_cleanup_interval_seconds() -> float:
+    raw = os.getenv("REFLEXIO_RETENTION_CLEANUP_INTERVAL_SECONDS", "300") or "300"
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        logger.warning(
+            "Invalid REFLEXIO_RETENTION_CLEANUP_INTERVAL_SECONDS=%r; using 300",
+            raw,
+        )
+        return 300.0
+
+
+_RETENTION_CLEANUP_INTERVAL_SECONDS = _retention_cleanup_interval_seconds()
+_retention_cleanup_last_run: dict[tuple[str, str], float] = {}
+_retention_cleanup_lock = threading.Lock()
 
 
 @dataclass
@@ -449,10 +468,11 @@ class GenerationService:
 
     def _cleanup_storage_tables_if_needed(self) -> None:
         """Best-effort publish-boundary cleanup for capped storage tables."""
+        now = time.monotonic()
         limits = {
             target_name: limit
             for target_name, limit in get_row_retention_limits().items()
-            if limit > 0
+            if limit > 0 and self._should_check_retention_target(target_name, now)
         }
         if not limits:
             return
@@ -484,6 +504,20 @@ class GenerationService:
         except Exception as e:
             logger.error("Failed to cleanup storage tables: %s", e)
             # Don't raise - cleanup failure shouldn't block normal operation
+
+    def _should_check_retention_target(self, target_name: str, now: float) -> bool:
+        if _RETENTION_CLEANUP_INTERVAL_SECONDS <= 0:
+            return True
+        key = (self.org_id, target_name)
+        with _retention_cleanup_lock:
+            last_run = _retention_cleanup_last_run.get(key)
+            if (
+                last_run is not None
+                and now - last_run < _RETENTION_CLEANUP_INTERVAL_SECONDS
+            ):
+                return False
+            _retention_cleanup_last_run[key] = now
+            return True
 
     def _active_learning_stall_warning(self) -> str | None:
         """Return a warning when extraction should not auto-retry.
