@@ -27,6 +27,7 @@ from reflexio.models.config_schema import SearchOptions
 from reflexio.server.services.playbook.playbook_generation_service import (
     PlaybookGenerationService,
 )
+from reflexio.server.tracing import profile_step
 
 
 class UserPlaybookMixin(ReflexioBase):
@@ -131,9 +132,16 @@ class UserPlaybookMixin(ReflexioBase):
                 if query_embedding
                 else None
             )
-            user_playbooks = self._get_storage().search_user_playbooks(
-                search_request, options
-            )
+            with profile_step(
+                "search.storage",
+                entity_type="user_playbooks",
+                search_mode=search_request.search_mode,
+                top_k=search_request.top_k,
+            ) as span:
+                user_playbooks = self._get_storage().search_user_playbooks(
+                    search_request, options
+                )
+                span.set_data("result_count", len(user_playbooks))
             return SearchUserPlaybookResponse(
                 success=True,
                 user_playbooks=user_playbooks,

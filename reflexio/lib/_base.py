@@ -21,6 +21,7 @@ from reflexio.server.llm.model_defaults import (
 from reflexio.server.services.configurator.base_configurator import BaseConfigurator
 from reflexio.server.services.storage.storage_base import BaseStorage
 from reflexio.server.site_var.site_var_manager import SiteVarManager
+from reflexio.server.tracing import profile_step
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +58,15 @@ def _require_storage[T: BaseModel](
         return wrapper
 
     return decorator
+
+
+def _storage_backend_name(storage: BaseStorage) -> str:
+    class_name = storage.__class__.__name__.lower()
+    if "postgres" in class_name:
+        return "postgres"
+    if "supabase" in class_name:
+        return "supabase"
+    return class_name
 
 
 class ReflexioBase:
@@ -166,13 +176,23 @@ class ReflexioBase:
         storage = self._get_storage()
         if not storage.supports_embedding:
             return None
-        try:
-            return storage._get_embedding(query, purpose="query")  # type: ignore[reportAttributeAccessIssue]
-        except Exception as e:
-            logger.warning(
-                "Failed to generate query embedding due to %s — falling back to FTS", e
-            )
-            return None
+        with profile_step(
+            "search.embedding",
+            backend=_storage_backend_name(storage),
+            search_mode=search_mode,
+            purpose="query",
+        ) as span:
+            try:
+                embedding = storage._get_embedding(query, purpose="query")  # type: ignore[reportAttributeAccessIssue]
+                span.set_data("embedding_generated", embedding is not None)
+                return embedding
+            except Exception as e:
+                span.set_data("embedding_generated", False)
+                logger.warning(
+                    "Failed to generate query embedding due to %s — falling back to FTS",
+                    e,
+                )
+                return None
 
     def _reformulate_query(
         self, query: str | None, enabled: bool = False
@@ -192,11 +212,12 @@ class ReflexioBase:
         if not query or not enabled:
             return None
 
-        reformulator = self._get_query_reformulator()
-        result = reformulator.rewrite(query)
-        # Only return if different from original
-        if result.standalone_query != query:
-            return result.standalone_query
+        with profile_step("search.reformulate", enabled=enabled):
+            reformulator = self._get_query_reformulator()
+            result = reformulator.rewrite(query)
+            # Only return if different from original
+            if result.standalone_query != query:
+                return result.standalone_query
         return None
 
 

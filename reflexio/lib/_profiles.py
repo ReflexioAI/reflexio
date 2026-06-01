@@ -39,6 +39,7 @@ from reflexio.models.api_schema.service_schemas import (
 from reflexio.server.services.profile.profile_generation_service import (
     ProfileGenerationService,
 )
+from reflexio.server.tracing import profile_step
 
 
 class ProfilesMixin(ReflexioBase):
@@ -78,9 +79,16 @@ class ProfilesMixin(ReflexioBase):
             request.search_mode,
             query_embedding is not None,
         )
-        profiles = self._get_storage().search_user_profile(
-            request, status_filter=status_filter, query_embedding=query_embedding
-        )
+        with profile_step(
+            "search.storage",
+            entity_type="profiles",
+            search_mode=request.search_mode,
+            top_k=request.top_k,
+        ) as span:
+            profiles = self._get_storage().search_user_profile(
+                request, status_filter=status_filter, query_embedding=query_embedding
+            )
+            span.set_data("result_count", len(profiles))
         return SearchUserProfileResponse(
             success=True,
             user_profiles=profiles,

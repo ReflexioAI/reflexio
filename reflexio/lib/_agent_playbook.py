@@ -24,6 +24,7 @@ from reflexio.models.api_schema.service_schemas import (
     PlaybookAggregationChangeLogResponse,
 )
 from reflexio.models.config_schema import SearchOptions
+from reflexio.server.tracing import profile_step
 
 
 class AgentPlaybookMixin(ReflexioBase):
@@ -238,9 +239,16 @@ class AgentPlaybookMixin(ReflexioBase):
                 if query_embedding
                 else None
             )
-            agent_playbooks = self._get_storage().search_agent_playbooks(
-                search_request, options
-            )
+            with profile_step(
+                "search.storage",
+                entity_type="agent_playbooks",
+                search_mode=search_request.search_mode,
+                top_k=search_request.top_k,
+            ) as span:
+                agent_playbooks = self._get_storage().search_agent_playbooks(
+                    search_request, options
+                )
+                span.set_data("result_count", len(agent_playbooks))
             return SearchAgentPlaybookResponse(
                 success=True,
                 agent_playbooks=agent_playbooks,
