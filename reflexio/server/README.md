@@ -16,6 +16,9 @@ Description: FastAPI backend server that processes user interactions to generate
   - [Profile Generation](#profile-generation)
   - [Playbook Extraction](#playbook-extraction)
   - [Agent Success Evaluation](#agent-success-evaluation)
+  - [Reflection and Async Extraction](#reflection-and-async-extraction)
+  - [Shadow Comparison and Evaluation Overview](#shadow-comparison-and-evaluation-overview)
+  - [Playbook Optimizer and Braintrust](#playbook-optimizer-and-braintrust)
   - [Query Reformulator](#query-reformulator)
   - [Unified Search Service](#unified-search-service)
   - [Storage](#storage)
@@ -310,15 +313,15 @@ Users can regenerate and manage profile versions using a four-state system:
 
 ### Playbook Extraction
 
-**Directory**: `services/feedback/`
+**Directory**: `services/playbook/`
 
 **Detailed Documentation**: See [`services/playbook/README.md`](services/playbook/README.md) for detailed component documentation.
 
 Key files:
-- `feedback_generation_service.py`: Service orchestrator
-- `feedback_extractor.py`: Extractor that extracts user playbooks
-- `feedback_aggregator.py`: Aggregates similar user playbooks (with cluster-level change detection to skip unchanged clusters)
-- `feedback_deduplicator.py`: Deduplicates newly extracted playbooks against existing DB playbooks using LLM
+- `playbook_generation_service.py`: Service orchestrator
+- `playbook_extractor.py`: Extractor that extracts user playbooks
+- `playbook_aggregator.py`: Aggregates similar user playbooks (with cluster-level change detection to skip unchanged clusters)
+- `playbook_consolidator.py`: Reconciles newly extracted playbooks against existing DB playbooks using LLM
 
 **Flow**:
 - Interactions → PlaybookExtractor (extraction-only) → PlaybookConsolidator (consolidates new vs existing DB playbooks) → UserPlaybook (with optional `blocking_issue`) → Storage
@@ -328,7 +331,7 @@ Key files:
 
 **Rerun Behavior**: Groups interactions by `user_id` for per-user playbook extraction (fetches all users, then processes each user's interactions together)
 
-**Playbook Aggregation with Cluster Change Detection** (`feedback_aggregator.py`):
+**Playbook Aggregation with Cluster Change Detection** (`playbook_aggregator.py`):
 
 Aggregation clusters user playbooks by embedding similarity, then calls LLM per cluster to produce aggregated agent playbooks. Cluster-level change detection avoids redundant LLM calls on subsequent runs:
 
@@ -403,6 +406,45 @@ Key files:
 
 **Shadow Comparison**: Session-level shadow comparison was retracted in F1 because multi-turn shadow content suffers from trajectory contamination (turn 2+ user messages react to the regular response, not the shadow). The `regular_vs_shadow` field on `AgentSuccessEvaluationResult` is preserved as a nullable historical column but is always `None` on newly produced rows. Per-turn shadow comparison lives in a dedicated `services/shadow_comparison/` judge that writes its verdicts to a separate table — see the F1 spec.
 
+### Reflection and Async Extraction
+
+**Directories**: `services/reflection/`, `services/extraction/`
+
+Key files:
+- `reflection/reflection_service.py`: Post-horizon reflection orchestration for synthesizing longer-range memory artifacts
+- `reflection/reflection_extractor.py`: LLM extractor used by the reflection service
+- `extraction/resumable_agent.py`: Resumable extraction agent runtime
+- `extraction/resume_scheduler.py` and `extraction/resume_worker.py`: Background scheduling/worker loop for paused extraction runs
+- `extraction/tools.py` and `extraction/prior_answer_search.py`: Tool surface for async extraction agents
+- `extraction/agent_run_records.py`: Persistence helpers for extraction-agent run state
+
+**Pattern**: Synchronous profile/playbook/evaluation services still follow `BaseGenerationService`; async extraction uses resumable agent-run records and worker scheduling so long-running or tool-mediated extraction can continue outside the request path.
+
+### Shadow Comparison and Evaluation Overview
+
+**Directories**: `services/shadow_comparison/`, `services/evaluation_overview/`
+
+Key files:
+- `shadow_comparison/judge.py`: Per-turn regular-vs-shadow judge that writes shadow verdicts through storage
+- `shadow_comparison/outcome.py`: Verdict outcome model helpers
+- `evaluation_overview/service.py`: Aggregates evaluation-page metrics
+- `evaluation_overview/hero_state.py`, `distribution.py`, `group_aggregation.py`, `rule_attribution.py`, `shadow_aggregation.py`: Focused aggregation helpers
+
+**Pattern**: Session-level agent success evaluation remains in `agent_success_evaluation/`; dashboard-facing rollups and per-turn shadow verdict analysis live in these companion directories.
+
+### Playbook Optimizer and Braintrust
+
+**Directories**: `services/playbook_optimizer/`, `services/braintrust/`
+
+Key files:
+- `playbook_optimizer/optimizer.py`: Scenario-based playbook optimization loop
+- `playbook_optimizer/scheduler.py` and `rollout.py`: Scheduling and rollout helpers
+- `playbook_optimizer/judge.py`, `models.py`, `scenario_resolver.py`: Evaluation and scenario resolution models
+- `playbook_optimizer/assistant_webhook.py`: Assistant-facing webhook entry point for optimizer runs
+- `braintrust/service.py`, `braintrust/client.py`, `_cron.py`: Braintrust export/sync support
+
+**Pattern**: These are evaluation/optimization integrations around the core playbook pipeline. Keep production extraction changes in `services/playbook/`; use optimizer/Braintrust modules for experiments, rollouts, and external eval sync.
+
 ### Query Reformulator
 
 **File**: `services/pre_retrieval/_query_reformulator.py` - `QueryReformulator`
@@ -432,9 +474,10 @@ Pre-computed embeddings passed to storage methods via `query_embedding` paramete
 
 | File | Purpose |
 |------|---------|
-| `storage_base.py` | BaseStorage abstract class |
-| `local_json_storage.py` | Local file-based for testing |
-| `sqlite_storage.py` | SQLite-based storage for local/self-hosted deployments |
+| `storage_base/` | BaseStorage interface split by domain (`_profiles.py`, `_playbook.py`, `_requests.py`, `_operations.py`, `_agent_run.py`, `_shadow_verdicts.py`, `_stall_state.py`, `_share_links.py`) |
+| `sqlite_storage/` | SQLite-backed implementation split across the same domains |
+| `retention.py`, `retention_mixin.py` | Data retention and cleanup helpers |
+| `constants.py`, `error.py` | Storage constants and shared errors |
 
 **Pattern**: **NEVER import storage implementations directly** - Always use `request_context.storage`
 

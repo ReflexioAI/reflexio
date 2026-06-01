@@ -4,8 +4,8 @@ Describe the code structure and component dependencies for source code of reflex
 ## Table of Contents
 
 - [Overview](#overview)
-- [reflexio_commons and reflexio_client](#reflexio_commons-and-reflexio_client)
-- [website](#website)
+- [models and client](#models-and-client)
+- [cli](#cli)
 - [reflexio_lib](#reflexio_lib)
 - [server](#server)
 - [data](#data)
@@ -14,77 +14,71 @@ Describe the code structure and component dependencies for source code of reflex
 ## Overview
 Reflexio is a user profiling and agent playbook system with three main access patterns:
 
-1. **Remote API Access** (`reflexio_client`) - Applications use Python SDK to call REST API
+1. **Remote API Access** (`client`) - Applications use Python SDK to call REST API
 2. **Local Library Access** (`reflexio_lib`) - Direct synchronous access without HTTP layer
-3. **Web UI** (`website`) - Next.js dashboard for viewing profiles, interactions, playbooks, evaluations, and settings
+3. **CLI Access** (`cli`) - Local command-line workflows for services, publishing, search, auth, config, and diagnostics
 
 **Core Flow**: User Interactions → Server Processing → Profile/Playbook/Evaluation → Storage
 
 **Shared Components**:
-- `reflexio_commons` - Data schemas and config models (client/server contract)
+- `models` - API and internal schemas shared by client, CLI, and server
 - `server` - FastAPI backend with LLM-based processing services
-- `data` - Local storage for configs and databases
+- `data` - Bundled configs and local fixtures
+- `docs` - Next.js API documentation site
 
-## reflexio_commons and reflexio_client
-These are local packages in the main repository:
-- `reflexio_commons` source: `reflexio/reflexio_commons/reflexio_commons/`
-- `reflexio_client` source: `reflexio/reflexio_client/reflexio/`
+## models and client
+Description: Shared data contracts and the Python SDK used by external applications, the CLI, and server endpoint helpers
 
-### reflexio_commons
-**Path**: `reflexio/reflexio_commons/`
-**Installed via**: Poetry path dependency with `develop = true` (editable mode)
-
-Description: Shared schemas and configuration models used across client and server
+### models
+**Path**: `models/`
 
 #### Main Entry Points
-- **API Schemas**: `reflexio_commons/api_schema/` - Pydantic models for requests/responses
-- **Config Schema**: `reflexio_commons/config_schema.py` - Configuration data models
+- **API Schemas**: `models/api_schema/` - Pydantic request/response models for public API surfaces
+- **Internal Schemas**: `models/api_schema/internal_schema.py` - Storage-facing profile, playbook, request, evaluation, and agent-run models
+- **Validators**: `models/api_schema/validators.py` - Cross-schema validation helpers
 
 #### Purpose
 Provides type-safe data contracts between client and server:
-1. **Service Schemas** - User interactions (with `ToolUsed`), profiles, playbooks (with `BlockingIssue`), evaluation results
+1. **Service Schemas** - Interactions, requests, profiles, user playbooks, agent playbooks, evaluations, and stall-state records
 2. **Retriever Schemas** - Search/get/set requests and responses
-3. **Login Schemas** - Authentication tokens and credentials
-4. **Config Schema** - YAML configuration structure (`tool_can_use` at root `Config` level, shared across services)
+3. **Login/Auth Schemas** - Credentials, API tokens, feature flags, and organization/account responses
+4. **Config Schema** - YAML/API configuration structure (`tool_can_use` at root `Config` level, shared across services)
 
-### reflexio_client
-**Path**: `reflexio/reflexio_client/`
+### client
+**Path**: `client/`
 
 Description: Python SDK for interacting with Reflexio API remotely
 
 #### Main Entry Point
-- **Client**: `reflexio/client.py` - `ReflexioClient` class
+- **Client**: `client.py` - `ReflexioClient` class
 
 #### Purpose
 Remote API client for applications to:
 1. **Publish interactions** - Send user interactions to server for processing
-2. **Search/retrieve data** - Query profiles, interactions, playbooks
-3. **Manage profiles** - Delete profiles, view change logs
+2. **Search/retrieve data** - Query profiles, interactions, playbooks, evaluations, and context
+3. **Manage profiles/playbooks** - Delete, regenerate, and update status where supported by API endpoints
 4. **Configure** - Set/get organization configuration
 
 #### Architecture Pattern
-All methods are **async** and return typed Pydantic responses. Automatically handles authentication via Bearer tokens.
+Async HTTP client wrapping typed models from `models/api_schema/`. Automatically handles authentication via Bearer tokens.
 
-## website
-Description: Next.js frontend for viewing profiles, interactions, playbooks, and evaluations
+## cli
+Description: Command-line entry point for operating Reflexio locally and against a running server
 
 ### Main Entry Points
-- **Profiles**: `app/profiles/page.tsx` - View and search user profiles
-- **Interactions**: `app/interactions/page.tsx` - View conversation history
-- **Playbooks**: `app/feedbacks/page.tsx` - View and manage agent playbooks
-- **Evaluations**: `app/evaluations/page.tsx` - View agent success evaluation results
-- **Settings**: `app/settings/page.tsx` - Configuration and settings management
+- **CLI app**: `cli/` - Typer command groups for services, publish/search/context, auth, config, status, and diagnostics
+- **Reference**: `cli/README.md` - Command map and common workflows
 
 ### Purpose
-Web-based interface to:
-1. **View profiles** - Browse user profiles with search functionality
-2. **View interactions** - Inspect user conversation history
-3. **Manage playbooks** - View and manage extracted playbooks
-4. **Monitor evaluations** - Track agent success metrics and failure analysis
-5. **Configure settings** - Manage application configuration
+Local operator interface to:
+1. **Run services** - Start/stop backend, docs, and optional embedding service
+2. **Publish interactions** - Send JSON, JSONL, stdin, or quick single-turn payloads
+3. **Search context** - Query profiles, user playbooks, and agent playbooks
+4. **Inspect/manage data** - List/delete/regenerate profiles and playbooks
+5. **Configure/authenticate** - Manage API keys, server URL, and configuration
 
 ### Architecture Pattern
-Built with Next.js App Router and ShadCN UI components. Communicates with FastAPI backend at `http://0.0.0.0:8081`.
+Thin Typer layer over the Python client and local service manager. Use `uv run reflexio --help` to inspect command groups.
 
 ## reflexio_lib
 Description: Local Python library interface for direct (non-API) access to Reflexio functionality
@@ -119,13 +113,13 @@ Receives user interactions from clients and processes them to:
 
 ### Component Relationships
 ```
-reflexio_client (Python SDK)
+client (Python SDK)
   -> api.py (FastAPI routes)
     -> api_endpoints/ (request handlers)
       -> reflexio_lib.Reflexio (main entry)
         -> services/generation_service.py (orchestrator)
           ├─> services/profile/ -> storage (BaseStorage)
-          ├─> services/feedback/ (playbook extraction) -> storage (BaseStorage)
+          ├─> services/playbook/ (playbook extraction) -> storage (BaseStorage)
           └─> services/agent_success_evaluation/ -> storage (BaseStorage)
 ```
 
@@ -138,10 +132,16 @@ reflexio_client (Python SDK)
   - `generation_service.py` - Orchestrator (runs profile/playbook/success services)
   - `base_generation_service.py` - Abstract base for parallel actor execution
   - `profile/` - Profile extraction & updates
-  - `feedback/` - Playbook extraction & aggregation
+  - `playbook/` - Playbook extraction, consolidation, and aggregation
   - `agent_success_evaluation/` - Success evaluation
+  - `reflection/` - Post-horizon reflection extraction
+  - `extraction/` - Resumable async extraction agent infrastructure
+  - `shadow_comparison/` - Per-turn regular vs shadow verdict judge
+  - `evaluation_overview/` - Evaluation-page aggregates and hero metrics
+  - `playbook_optimizer/` - Scenario-based playbook optimization experiments
+  - `braintrust/` - Braintrust eval export/sync support
   - `storage/` - Abstract layer (SQLite prod, LocalJSON test)
-  - `retriever/` - Semantic search
+  - `pre_retrieval/` - Query rewriting and document expansion helpers
   - `configurator/` - YAML config loader
 - **`site_var/`**: Global settings singleton
 
