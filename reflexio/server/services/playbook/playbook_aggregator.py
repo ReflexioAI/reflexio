@@ -774,21 +774,13 @@ class PlaybookAggregator:
                 agent_version=self.agent_version,
                 outcome="started",
             )
-            # Generate new playbooks only for changed clusters
-            generated_playbooks = self._generate_playbooks_from_clusters(
+            # Generate new playbooks only for changed clusters while preserving
+            # the exact source cluster for each non-duplicate playbook.
+            generated_pairs = self._generate_playbooks_with_source_clusters(
                 changed_clusters,
                 existing_playbooks,
                 direction_overlap_threshold=playbook_aggregator_config.direction_overlap_threshold,
             )
-            generated_pairs = [
-                (playbook, cluster_playbooks)
-                for playbook, cluster_playbooks in zip(
-                    generated_playbooks,
-                    changed_clusters.values(),
-                    strict=False,
-                )
-                if playbook is not None
-            ]
             new_playbooks = [playbook for playbook, _ in generated_pairs]
 
             # Lazy archive: only full-archive when the LLM produced replacements.
@@ -839,21 +831,15 @@ class PlaybookAggregator:
                     }
                 )
 
-            # Map saved playbooks back to changed clusters by order
-            # _generate_playbooks_from_clusters iterates clusters in order and
-            # filters out None results, so saved playbooks are assigned to the
-            # changed clusters in that same order.
+            # Initialize changed cluster fingerprints before assigning saved IDs
+            # below. ``generated_pairs`` preserves the exact source cluster for
+            # every non-duplicate playbook the LLM produced.
             for cluster_playbooks in changed_clusters.values():
                 fp = self._compute_cluster_fingerprint(cluster_playbooks)
                 raw_ids = sorted(fb.user_playbook_id for fb in cluster_playbooks)
 
-                # Try to match saved playbook - the LLM may return None for some
-                # clusters (duplicates), so not every cluster has a saved playbook
-                playbook_id = None
-                # We can't perfectly map without changing _generate_playbooks_from_clusters,
-                # so store the fingerprint with whatever playbook_id we have
                 new_fingerprints[fp] = {
-                    "agent_playbook_id": playbook_id,
+                    "agent_playbook_id": None,
                     "user_playbook_ids": raw_ids,
                 }
 

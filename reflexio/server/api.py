@@ -151,6 +151,7 @@ from reflexio.models.api_schema.ui.converters import (
     to_user_playbook_view,
 )
 from reflexio.models.config_schema import (
+    SINGLETON_AGENT_SUCCESS_EVALUATION_NAME,
     Config,
 )
 from reflexio.server._auth import DEFAULT_ORG_ID, default_get_org_id
@@ -1891,24 +1892,26 @@ _GRADE_ON_DEMAND_CACHE_KEY_PREFIX = "grade_on_demand"
 
 
 def _grade_on_demand_cache_key(
-    org_id: str, session_id: str, agent_version: str
+    org_id: str, session_id: str, agent_version: str, evaluation_name: str
 ) -> str:
     """Build the operation_state key for the on-demand grading cache.
 
     The key embeds every active singleton dimension that could change the
-    verdict: org_id (multi-tenant scope), session_id (the unit of work), and
-    agent_version (eval results are versioned).
+    verdict: org_id (multi-tenant scope), session_id (the unit of work),
+    agent_version (eval results are versioned), and evaluation_name (kept as a
+    compatibility/readback discriminator for historical multi-evaluator rows).
 
     Args:
         org_id (str): Tenant identifier from the auth context.
         session_id (str): Target session.
         agent_version (str): Agent version filter.
+        evaluation_name (str): Evaluator/result namespace to isolate cache rows.
     Returns:
         str: A namespaced key suitable for ``storage.upsert_operation_state``.
     """
     return (
         f"{_GRADE_ON_DEMAND_CACHE_KEY_PREFIX}::{org_id}::{session_id}"
-        f"::{agent_version}"
+        f"::{agent_version}::{evaluation_name}"
     )
 
 
@@ -1973,6 +1976,8 @@ def _find_fresh_result_id(
     *,
     session_id: str,
     agent_version: str,
+    evaluation_name: str,
+    previous_result_ids: set[int],
 ) -> int | None:
     """Locate the result_id written by the most-recent grade for this session.
 
@@ -1984,6 +1989,8 @@ def _find_fresh_result_id(
         storage: The request's storage backend.
         session_id (str): The graded session.
         agent_version (str): The version dimension.
+        evaluation_name (str): Evaluator/result namespace to isolate readback.
+        previous_result_ids (set[int]): Matching rows observed before grading.
 
     Returns:
         int | None: result_id of the latest matching row, or None if the
@@ -1996,6 +2003,8 @@ def _find_fresh_result_id(
         r
         for r in rows
         if r.session_id == session_id
+        and r.evaluation_name == evaluation_name
+        and r.result_id not in previous_result_ids
     ]
     if not matched:
         return None
@@ -2044,10 +2053,12 @@ def grade_on_demand(
     if storage is None:
         raise HTTPException(status_code=503, detail="Storage not configured")
 
+    evaluation_name = payload.evaluation_name or SINGLETON_AGENT_SUCCESS_EVALUATION_NAME
     cache_key = _grade_on_demand_cache_key(
         org_id,
         payload.session_id,
         payload.agent_version,
+        evaluation_name,
     )
     now = int(datetime.now(UTC).timestamp())
 
@@ -2069,8 +2080,16 @@ def grade_on_demand(
             skipped_reason="NO_REQUESTS",
         )
 
+    previous_result_ids = {
+        r.result_id
+        for r in storage.get_agent_success_evaluation_results(
+            limit=1000, agent_version=payload.agent_version
+        )
+        if r.session_id == payload.session_id and r.evaluation_name == evaluation_name
+    }
+
     # Two operation_state rows are intentionally written for this session:
-    #   1) `grade_on_demand::{org_id}::{session_id}::{agent_version}`
+    #   1) `grade_on_demand::{org_id}::{session_id}::{agent_version}::{evaluation_name}`
     #      — our 24h cache, set below after the result_id is resolved.
     #   2) `agent_success_group_eval::{org_id}::{user_id}::{session_id}`
     #      — the runner's own "evaluated" marker, written by
@@ -2094,6 +2113,8 @@ def grade_on_demand(
         storage,
         session_id=payload.session_id,
         agent_version=payload.agent_version,
+        evaluation_name=evaluation_name,
+        previous_result_ids=previous_result_ids,
     )
 
     storage.upsert_operation_state(
