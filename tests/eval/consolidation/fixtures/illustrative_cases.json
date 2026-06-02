@@ -1,0 +1,102 @@
+[
+  {
+    "id": "unify_same_trigger_duplicate",
+    "agent_context": "Assistant that maintains a shared team playbook.",
+    "existing": [
+      {
+        "id": 201,
+        "content": "Always include a short summary at the top of a generated report.",
+        "trigger": "generating a report for the user",
+        "rationale": "Readers skim the summary before deciding to read on."
+      }
+    ],
+    "candidate": {
+      "new_id": "cand-1",
+      "content": "Always add a brief summary at the start of any report you produce.",
+      "trigger": "generating a report for the user",
+      "rationale": "A leading summary helps the reader orient quickly."
+    },
+    "gold_kind": "unify",
+    "notes": "Classic dedup: the candidate restates the existing same-trigger rule almost verbatim. Unify (absorb the existing) with no self-contradiction."
+  },
+  {
+    "id": "unify_compose_related_subaspects",
+    "agent_context": "Assistant that drafts outbound customer emails.",
+    "existing": [
+      {
+        "id": 202,
+        "content": "Always greet the recipient by name in the email opening.",
+        "trigger": "drafting a customer email",
+        "rationale": "A personal greeting improves the open and reply rate."
+      }
+    ],
+    "candidate": {
+      "new_id": "cand-2",
+      "content": "Do not attach internal-only files to a customer email.",
+      "trigger": "drafting a customer email",
+      "rationale": "Internal files can leak confidential data to the customer."
+    },
+    "gold_kind": "unify",
+    "notes": "Compose case: existing is a do-rule about the greeting; candidate is an avoid-rule about a DIFFERENT sub-aspect (attachments) of the SAME task (drafting a customer email). Unify into one multi-rule skill holding both the do-rule and the avoid-rule. No self-contradiction: they govern distinct sub-aspects, not the same situation."
+  },
+  {
+    "id": "differentiate_same_situation_contradiction",
+    "agent_context": "Assistant that decides how to respond to incoming requests.",
+    "existing": [
+      {
+        "id": 203,
+        "content": "Always answer the question immediately without asking for confirmation.",
+        "trigger": "the user asks a factual question",
+        "rationale": "Fast answers keep the conversation moving."
+      }
+    ],
+    "candidate": {
+      "new_id": "cand-3",
+      "content": "Do not answer immediately; ask a clarifying question first.",
+      "trigger": "the user asks a factual question",
+      "rationale": "Some questions are ambiguous and answering blindly misleads the user."
+    },
+    "gold_kind": "differentiate",
+    "notes": "Linchpin: existing is positive and candidate is negative on the SAME trigger/situation (opposite advice). These must NOT be unified into one row (that would be a self-contradiction). Differentiate: refine both triggers so the contexts no longer overlap."
+  },
+  {
+    "id": "reject_new_redundant",
+    "agent_context": "Assistant that reviews code changes.",
+    "existing": [
+      {
+        "id": 204,
+        "content": "Always run the full test suite and the linter before approving a change.",
+        "trigger": "reviewing a proposed code change",
+        "rationale": "Catches regressions and style violations before merge."
+      }
+    ],
+    "candidate": {
+      "new_id": "cand-4",
+      "content": "Always run the tests before approving a change.",
+      "trigger": "reviewing a proposed code change",
+      "rationale": "Tests catch regressions."
+    },
+    "gold_kind": "reject_new",
+    "notes": "The candidate is strictly weaker than the existing rule (tests only, no linter) on the same trigger. The existing rule supersedes it. Reject the candidate as redundant (a storage no-op)."
+  },
+  {
+    "id": "independent_unrelated",
+    "agent_context": "Assistant that manages calendar scheduling.",
+    "existing": [
+      {
+        "id": 205,
+        "content": "Always propose three meeting time options when scheduling.",
+        "trigger": "scheduling a meeting between two people",
+        "rationale": "Offering choices reduces back-and-forth."
+      }
+    ],
+    "candidate": {
+      "new_id": "cand-5",
+      "content": "Use metric units when reporting measurements.",
+      "trigger": "reporting a physical measurement to the user",
+      "rationale": "The user's region uses the metric system."
+    },
+    "gold_kind": "independent",
+    "notes": "The candidate (measurement units) is unrelated to any existing row (meeting scheduling). Insert it as-is, independent of the existing rule."
+  }
+]
