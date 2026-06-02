@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Score labeled (query, relevant, junk) pairs to calibrate the relevance floor.
 
-Run: uv run python open_source/reflexio/scripts/calibrate_relevance_floor.py
+Run (from the reflexio repo root): uv run python scripts/calibrate_relevance_floor.py
 
 Replace SAMPLES with real (query, relevant-doc, junk-doc) triples from the target
 corpus, then read off a floor below the relevant cluster and above the junk cluster.

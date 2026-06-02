@@ -815,6 +815,7 @@ class Config(BaseModel):
                 "reflection_config",
                 "playbook_optimizer_config",
                 "pending_tool_call_config",
+                "retrieval_floor",
             ):
                 if key in data and data[key] is None:
                     del data[key]
