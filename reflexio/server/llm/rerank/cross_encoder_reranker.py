@@ -151,11 +151,12 @@ def prewarm() -> bool:
 
     Call once during app startup so the ~3s model load never lands on a user
     query (and never serializes a concurrent burst behind the model lock).
+    Never raises — startup must not crash if the cross-encoder is unavailable
+    or fails to score the smoke input.
 
     Returns:
-        True if the model loaded and scored a smoke input; False if the
-        cross-encoder is unavailable (callers should treat the floor as
-        degraded, not crash).
+        True if the model loaded and scored a smoke input; False otherwise
+        (callers should treat the floor as degraded, not crash).
     """
     try:
         score_pairs("warmup", ["warmup"])
@@ -163,6 +164,13 @@ def prewarm() -> bool:
         _LOGGER.warning(
             "Cross-encoder unavailable at startup; relevance floor will degrade "
             "to unfiltered results until the model is available."
+        )
+        return False
+    except Exception:  # noqa: BLE001 — pre-warm must never crash startup
+        _LOGGER.warning(
+            "Cross-encoder pre-warm failed unexpectedly; relevance floor will "
+            "degrade to unfiltered results until the model is available.",
+            exc_info=True,
         )
         return False
     _LOGGER.info("Cross-encoder pre-warmed.")
