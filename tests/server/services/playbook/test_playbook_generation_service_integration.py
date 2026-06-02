@@ -23,6 +23,7 @@ from reflexio.models.api_schema.service_schemas import (
     UserPlaybook,
 )
 from reflexio.models.config_schema import (
+    PendingToolCallConfig,
     PlaybookAggregatorConfig,
     PlaybookConfig,
 )
@@ -85,6 +86,13 @@ def mock_request_context():
     )
     # Mock window_size for extractor
     context.configurator.get_config.return_value.window_size = 100
+    # Pin the pending-tool-call config to the real default (disabled). Without
+    # this, the auto-generated MagicMock makes the resumable-agent path think
+    # pending tools are enabled and feeds a MagicMock similarity_threshold into
+    # a numeric comparison (prior_answer_search), raising TypeError.
+    context.configurator.get_config.return_value.pending_tool_call_config = (
+        PendingToolCallConfig()
+    )
     context.prompt_manager = PromptManager()
     return context
 

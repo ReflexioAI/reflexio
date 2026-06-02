@@ -5,7 +5,6 @@ from __future__ import annotations
 import pytest
 
 from reflexio.server.prompt._dispatchers import is_pattern_d_question
-from reflexio.server.prompt.prompt_manager import PromptManager
 
 
 @pytest.mark.parametrize(
@@ -43,49 +42,9 @@ def test_dispatcher_rejects_single_fact_questions(query: str) -> None:
     assert not is_pattern_d_question(query)
 
 
-@pytest.mark.parametrize("letter", list("abcdefgh"))
-def test_render_includes_all_pattern_recipes(letter: str) -> None:
-    """Full-load: render_search_prompt inlines every pattern recipe (A-H).
-
-    The split is purely a file-organization choice; runtime output is
-    byte-equivalent to embedding all 8 recipes inline. Each pattern's
-    placeholder must be substituted with its recipe content.
-    """
-    pm = PromptManager()
-    rendered = pm.render_search_prompt(
-        query="Which sports does John like besides basketball?",
-        max_steps="12",
-        enable_agent_answer="true",
-    )
-    assert f"<<<PATTERN_{letter.upper()}_RECIPE>>>" not in rendered
-    # Each pattern's recipe content includes a heading "### Pattern <X>".
-    assert f"### Pattern {letter.upper()}" in rendered
-
-
-def test_render_includes_all_recipes_for_single_fact_question() -> None:
-    """Full-load is unconditional: even non-list questions see every recipe."""
-    pm = PromptManager()
-    rendered = pm.render_search_prompt(
-        query="When did John sign with the Wolves?",
-        max_steps="12",
-        enable_agent_answer="true",
-    )
-    for letter in "ABCDEFGH":
-        assert f"<<<PATTERN_{letter}_RECIPE>>>" not in rendered
-        assert f"### Pattern {letter}" in rendered
-
-
-def test_render_search_prompt_includes_pattern_d_active_version() -> None:
-    """The Pattern D recipe loaded should be the active version of
-    search_agent/patterns/d (currently v1.0.0 — mandatory rehydration).
-    """
-    pm = PromptManager()
-    rendered = pm.render_search_prompt(
-        query="What books has user read?",
-        max_steps="12",
-        enable_agent_answer="true",
-    )
-    # v1.0.0 = mandatory-rehydration shipping recipe; v1.1.0 (rehydrate-first
-    # experiment) is on disk but inactive. Verify the active version's
-    # signature phrase appears.
-    assert "MANDATORY rehydration" in rendered
+# NOTE: The agentic search-agent pipeline (``render_search_prompt``, the
+# ``search_agent`` prompt bank, per-pattern A-H recipes, and Pattern D
+# conditional rehydration) was removed in the "post-horizon reflection +
+# polarity-aware playbook lifecycle" work. The ``is_pattern_d_question``
+# classifier survives, so its tests above are retained; the render-path tests
+# that exercised the deleted ``render_search_prompt`` API were removed.

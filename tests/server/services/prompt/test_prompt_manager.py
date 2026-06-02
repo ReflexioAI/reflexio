@@ -287,23 +287,13 @@ class TestPromptManager:
         if errors:
             pytest.fail("Active version errors:\n" + "\n".join(errors))
 
-    def test_agentic_user_playbook_prompt_extracts_compact_task_recipes(self):
-        """Agentic UserPlaybook prompt preserves compact recipe guidance."""
-        rendered = PromptManager().render_prompt(
-            "extraction_user_playbook",
-            {
-                "sessions": "User requested a substantive task. Assistant completed it.",
-                "extraction_criteria": "Extract agent-performance playbooks.",
-                "max_steps": "12",
-            },
-        )
-
-        assert "Success Path Recipes" in rendered
-        assert "Failure/Avoidance Recipes" in rendered
-        assert "compact replay recipe" in rendered
-        assert "decisive source/artifact/signal" in rendered
-        assert "narrow verification" in rendered
-        assert "detour" in rendered
+    # NOTE: ``test_agentic_user_playbook_prompt_extracts_compact_task_recipes``
+    # was removed. The agentic ``extraction_user_playbook`` prompt (the only
+    # prompt carrying the "Failure/Avoidance Recipes"/"detour" recipe wording)
+    # was deleted in the post-horizon reflection + polarity-aware playbook
+    # lifecycle work. The surviving compact-recipe behavior is covered by
+    # ``test_classic_playbook_context_extracts_compact_task_recipes`` below,
+    # which exercises the live ``playbook_extraction_context`` prompt.
 
     def test_classic_playbook_context_extracts_compact_task_recipes(self):
         """Classic playbook prompt uses the same compact recipe shape."""
