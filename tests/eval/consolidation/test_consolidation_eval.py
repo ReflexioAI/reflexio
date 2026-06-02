@@ -16,6 +16,7 @@ from reflexio.server.services.playbook.playbook_consolidator import (
     ConsolidationDecision,
     DifferentiateDecision,
     IndependentDecision,
+    PlaybookConsolidationOutput,
     RejectNewDecision,
     UnifyDecision,
 )
@@ -29,6 +30,7 @@ from tests.eval.consolidation.judge import (
     ConsolidationVerdict,
     judge_consolidation_decision,
 )
+from tests.eval.consolidation.providers import make_consolidation_decision_provider
 from tests.eval.consolidation.runner import EvalResults, run_eval, score_case
 
 # ---------------------------------------------------------------------------
@@ -449,6 +451,84 @@ def test_summary_is_renderable():
     summary = res.summary()
     assert "Consolidation decision-eval summary" in summary
     assert "self-contradiction" in summary
+
+
+# ---------------------------------------------------------------------------
+# Live consolidation decision provider: mocked-seam unit tests (CI-covered)
+# exercise entity construction + the consolidator decision seam without a real
+# LLM; the ``@skip_low_priority`` smoke below runs it end-to-end for real.
+# ---------------------------------------------------------------------------
+
+
+def test_live_provider_returns_canned_decision(tmp_path):
+    """Provider builds the EXISTING + candidate entities, renders the real
+    ``playbook_consolidation`` prompt, reaches the decision seam, and returns
+    the LLM's decision — proving the construction + call path under a mocked
+    LLM seam (CI-covered, no real API)."""
+    from reflexio.server.api_endpoints.request_context import RequestContext
+
+    canned = UnifyDecision(new_id="NEW-0", content="x", trigger="t", rationale="r")
+    mock = MagicMock()
+    mock.generate_chat_response.return_value = PlaybookConsolidationOutput(
+        decisions=[canned]
+    )
+
+    ctx = RequestContext(org_id="eval-cons-prov", storage_base_dir=str(tmp_path))
+    provider = make_consolidation_decision_provider(
+        llm_client=mock, request_context=ctx
+    )
+
+    case = _case(gold_kind="unify")  # has >= 1 existing row
+    decision = provider(case)
+
+    assert decision == canned
+    assert kind_for_decision(decision) == "unify"
+    # The provider reached the LLM call (entity build + prompt render succeeded).
+    mock.generate_chat_response.assert_called_once()
+
+
+def test_live_provider_empty_output_maps_to_independent(tmp_path):
+    """An empty ``PlaybookConsolidationOutput`` makes the provider fall back to
+    an ``IndependentDecision`` carrying the case's ``candidate.new_id``."""
+    from reflexio.server.api_endpoints.request_context import RequestContext
+
+    mock = MagicMock()
+    mock.generate_chat_response.return_value = PlaybookConsolidationOutput(decisions=[])
+
+    ctx = RequestContext(org_id="eval-cons-noop", storage_base_dir=str(tmp_path))
+    provider = make_consolidation_decision_provider(
+        llm_client=mock, request_context=ctx
+    )
+
+    case = _case(gold_kind="independent")
+    decision = provider(case)
+
+    assert isinstance(decision, IndependentDecision)
+    assert kind_for_decision(decision) == "independent"
+    assert decision.new_id == case.candidate.new_id
+
+
+@skip_low_priority
+def test_live_consolidation_provider_real(tmp_path):  # pragma: no cover - manual
+    """Real end-to-end smoke: live consolidator decision step + real LLM over
+    the fixture. Asserts only pipeline mechanics (every case produced one of
+    the four kinds), never exact kinds. Run manually with API keys +
+    RUN_LOW_PRIORITY=1."""
+    from reflexio.server.api_endpoints.request_context import RequestContext
+    from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
+
+    client = LiteLLMClient(LiteLLMConfig(model="claude-haiku-4-5"))
+    ctx = RequestContext(org_id="eval", storage_base_dir=str(tmp_path))
+    provider = make_consolidation_decision_provider(
+        llm_client=client, request_context=ctx
+    )
+
+    cases = load_illustrative_cases()
+    res = run_eval(cases=cases, decision_provider=provider, llm_client=None)
+
+    assert res.n == len(cases)
+    valid_kinds = {"unify", "reject_new", "differentiate", "independent"}
+    assert all(o.produced_kind in valid_kinds for o in res.outcomes)
 
 
 # ---------------------------------------------------------------------------
