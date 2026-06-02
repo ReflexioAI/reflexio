@@ -254,6 +254,14 @@ class TestGetExtractorName:
         assert get_extractor_name(MockExtractorConfig(extractor_name="legacy")) == "legacy"
         assert get_extractor_name(MockEvaluationConfig(evaluation_name="eval1")) == "eval1"
 
+    def test_unknown_config_with_none_names_returns_unknown(self):
+        config = type(
+            "NamelessConfig",
+            (),
+            {"extractor_name": None, "playbook_name": None, "evaluation_name": None},
+        )()
+        assert get_extractor_name(config) == "unknown"
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
