@@ -34,7 +34,6 @@ from reflexio.server.services.playbook.playbook_service_utils import (
     PlaybookAggregatorRequest,
     ensure_playbook_content,
 )
-from reflexio.server.services.polarity_utils import infer_playbook_polarity
 from reflexio.server.services.service_utils import log_model_response
 from reflexio.server.usage_metrics import record_usage_event
 
@@ -197,20 +196,20 @@ class PlaybookAggregator:
     @staticmethod
     def _get_direction_key(fb: UserPlaybook) -> str:
         """
-        Extract a direction key from a user playbook for similarity grouping.
+        Extract a similarity key from a user playbook for grouping.
 
-        Returns the raw content used for token-overlap comparison. Polarity is
-        intentionally NOT encoded into this key — embedding it as a prefix
-        token (e.g. ``positive::ask clarifying questions``) does not actually
-        prevent cross-polarity grouping because ``_token_overlap`` splits on
-        whitespace and the prefix is only one token out of many. Polarity is
-        gated explicitly in ``_group_playbooks_by_direction``.
+        Returns the raw content used for token-overlap comparison. Grouping is
+        purely content-similarity based: under Option B a skill may legitimately
+        hold mixed-orientation rules (do-rules and avoid-rules for different
+        sub-aspects of one task), so whole-content polarity is NOT derived or
+        gated here. Preserving distinct do/avoid rules when similar items are
+        merged is the aggregation prompt's responsibility.
 
         Args:
             fb: A user playbook item
 
         Returns:
-            str: Content used as the direction key for grouping
+            str: Content used as the similarity key for grouping
         """
         return fb.content or ""
 
@@ -244,14 +243,19 @@ class PlaybookAggregator:
         threshold: float = 0.6,
     ) -> list[list[UserPlaybook]]:
         """
-        Group playbooks by similarity of their content, gated by polarity.
+        Group playbooks by similarity of their content.
 
-        Uses greedy single-linkage: each playbook is assigned to the first existing
-        group that has any member with sufficient token overlap AND the same polarity.
-        Polarity is gated explicitly (not encoded into the comparison string) because
-        ``_token_overlap`` is token-set based and a single prefix token cannot mask
-        same-content cross-polarity matches at typical thresholds. Groups are returned
-        sorted by size descending (largest first).
+        Uses greedy single-linkage: each playbook is assigned to the first
+        existing group that has any member with sufficient token overlap.
+        Groups are returned sorted by size descending (largest first).
+
+        Grouping is purely content-similarity based and does NOT gate on a
+        derived whole-content polarity. Under Option B a skill may hold
+        mixed-orientation rules (do-rules and avoid-rules for different
+        sub-aspects), and whole-content polarity is undefined for such a skill.
+        Keeping a do-rule and an avoid-rule as distinct rules when similar items
+        are merged into one skill is the aggregation prompt's responsibility,
+        not a mechanical split here.
 
         Args:
             cluster_playbooks: List of raw playbooks to group
@@ -266,11 +270,8 @@ class PlaybookAggregator:
             key = PlaybookAggregator._get_direction_key(fb)
             matched = False
             for group in groups:
-                fb_polarity = infer_playbook_polarity(fb.content, fb.rationale)
                 if any(
-                    fb_polarity
-                    == infer_playbook_polarity(group_fb.content, group_fb.rationale)
-                    and PlaybookAggregator._token_overlap(
+                    PlaybookAggregator._token_overlap(
                         key,
                         PlaybookAggregator._get_direction_key(group_fb),
                         threshold,
@@ -295,9 +296,11 @@ class PlaybookAggregator:
         """
         Format a cluster of playbooks for structured aggregation prompt.
 
-        When all playbooks agree (single direction group), uses the flat-list format.
-        When conflicting directions are detected (multiple groups), uses a grouped format
-        so the LLM can see agreement/disagreement and apply majority-wins resolution.
+        When the cluster forms a single similarity group, uses the flat-list
+        format. When distinct similarity groups are detected (multiple groups),
+        uses a grouped format so the LLM can see which items are similar and
+        preserve distinct rules (e.g. a do-rule and an avoid-rule) as separate
+        rules in the merged skill rather than collapsing them.
 
         Args:
             cluster_playbooks: List of raw playbooks in this cluster

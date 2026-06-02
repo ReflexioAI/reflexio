@@ -452,10 +452,10 @@ class PlaybookOptimizer:
         if not archived:
             return None
         # The optimizer can legitimately flip framing (positive guidance ->
-        # negative anti-pattern or vice versa). Polarity is derived from the
-        # stored ``content`` at read time (``infer_playbook_polarity``), so
-        # writing ``best_content`` is sufficient — there is no separate
-        # polarity field to keep in sync.
+        # negative anti-pattern or vice versa). Orientation lives entirely in
+        # the rule wording, so writing ``best_content`` is sufficient — there
+        # is no derived polarity label or separate polarity field to keep in
+        # sync.
         successor_user = current_user.model_copy(
             update={
                 "user_playbook_id": 0,

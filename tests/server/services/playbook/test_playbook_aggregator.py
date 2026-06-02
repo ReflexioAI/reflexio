@@ -29,7 +29,6 @@ from reflexio.server.services.playbook.playbook_aggregator import PlaybookAggreg
 from reflexio.server.services.playbook.playbook_service_utils import (
     PlaybookAggregatorRequest,
 )
-from reflexio.server.services.polarity_utils import infer_playbook_polarity
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -1211,25 +1210,22 @@ class TestProcessAggregationResponse:
 
 
 # ---------------------------------------------------------------------------
-# _group_playbooks_by_direction — polarity isolation
+# _group_playbooks_by_direction — content-similarity grouping (no polarity gate)
 # ---------------------------------------------------------------------------
 
 
 def _make_pb(
     content: str,
-    polarity: str = "positive",
     rid: int = 1,
     rationale: str | None = None,
 ) -> UserPlaybook:
-    """Build a UserPlaybook whose wording derives to the requested polarity.
+    """Build a minimal UserPlaybook for grouping/aggregation tests.
 
-    Grouping now gates on ``infer_playbook_polarity`` (wording + failure
-    evidence), not the stored ``polarity`` field. For a coherent negative row
-    we therefore default the rationale to one carrying a failure signal so the
-    derived polarity matches the requested ``polarity``.
+    Grouping is now purely content-similarity based (Option B): whole-content
+    polarity is no longer derived or gated. A skill may legitimately hold
+    mixed-orientation rules for different sub-aspects; preserving distinct
+    do/avoid rules when merging is the aggregation prompt's responsibility.
     """
-    if rationale is None and polarity == "negative":
-        rationale = "user pushback observed"
     return UserPlaybook(
         user_playbook_id=rid,
         agent_version="v1",
@@ -1240,54 +1236,26 @@ def _make_pb(
     )
 
 
-def test_aggregator_separates_positive_and_negative_polarity():
-    """When a cluster contains both positive and negative playbooks on similar
-    content, the aggregator must group them by polarity."""
-    cluster = [
-        _make_pb(content="Recommend X", polarity="positive", rid=1),
-        _make_pb(content="Recommend X (variant)", polarity="positive", rid=2),
-        _make_pb(content="Avoid X", polarity="negative", rid=3),
-    ]
-    groups = PlaybookAggregator._group_playbooks_by_direction(cluster, threshold=0.6)
-    # Expect 2 groups: one for positive, one for negative
-    polarities_per_group = [
-        {infer_playbook_polarity(p.content, p.rationale) for p in g} for g in groups
-    ]
-    assert {"positive"} in polarities_per_group
-    assert {"negative"} in polarities_per_group
-    # And no group mixes polarities
-    assert all(len(pset) == 1 for pset in polarities_per_group)
+def test_aggregator_groups_by_content_similarity_not_polarity():
+    """Grouping no longer gates on whole-content polarity.
 
-
-def test_aggregator_splits_high_overlap_content_across_polarities():
-    """Regression: an explicit polarity gate (not a string prefix) is required.
-
-    Previously, polarity was smuggled into ``_get_direction_key`` as a prefix
-    token (``f"{polarity}::{content}"``), but ``_token_overlap`` is set-based
-    over whitespace-split tokens — so two playbooks with near-identical content
-    but opposite polarity would still overlap above the default 0.6 threshold
-    and land in the same group. The grouping routine must gate on polarity
-    explicitly.
-
-    Polarity is now derived from wording + failure evidence
-    (``infer_playbook_polarity``), so opposite-polarity rows necessarily differ
-    in their leading avoidance token. We therefore pin the regression on two
-    rows whose tokens overlap above threshold yet derive to opposite polarity:
-    the gate, not token overlap, must keep them apart.
+    Two rows whose tokens overlap above the threshold but carry opposite
+    orientations (a "do" rule and an "avoid" rule) MUST now land in the same
+    similarity group — the retired ``infer_playbook_polarity`` gate used to
+    force them apart. Keeping the opposite-orientation rules distinct inside a
+    merged skill is delegated to the aggregation prompt, not to a mechanical
+    pre-LLM split.
     """
     positive = _make_pb(
         content="Always ask clarifying questions before proceeding",
-        polarity="positive",
         rid=1,
     )
     negative = _make_pb(
         content="Avoid asking clarifying questions before proceeding",
-        polarity="negative",
         rationale="user pushback observed",
         rid=2,
     )
-    # Sanity: the two rows overlap above the grouping threshold, so without the
-    # polarity gate they would collapse into one group.
+    # Sanity: the two rows overlap above the grouping threshold.
     assert PlaybookAggregator._token_overlap(
         PlaybookAggregator._get_direction_key(positive),
         PlaybookAggregator._get_direction_key(negative),
@@ -1296,18 +1264,75 @@ def test_aggregator_splits_high_overlap_content_across_polarities():
     groups = PlaybookAggregator._group_playbooks_by_direction(
         [positive, negative], threshold=0.6
     )
-    assert len(groups) == 2, (
-        f"high-overlap content across polarities must split into 2 groups, got {groups}"
+    # No polarity gate: high token overlap => a single similarity group.
+    assert len(groups) == 1, (
+        f"high-overlap content must group together (no polarity gate), got {groups}"
     )
-    polarities_per_group = [
-        {infer_playbook_polarity(p.content, p.rationale) for p in g} for g in groups
+    assert len(groups[0]) == 2
+
+
+def test_aggregation_preserves_distinct_do_and_avoid_rules():
+    """Prompt-preserved outcome: a do-rule and an avoid-rule survive
+    aggregation as separate rules rather than being collapsed into one.
+
+    The mechanical polarity-bucketing gate is gone; preserving distinct
+    orientations is now the aggregation prompt's job. Here we drive the
+    behavior through the mocked LLM aggregation output (the prompt's job, made
+    deterministic) and assert that the resulting AgentPlaybook content keeps
+    BOTH the do-rule and the avoid-rule as distinct bullets — the opposite of
+    collapsing them into a single rule.
+    """
+    from reflexio.server.services.playbook.playbook_service_utils import (
+        PlaybookAggregationOutput,
+        StructuredPlaybookContent,
+    )
+
+    agg = _make_aggregator()
+
+    # The cluster contains a do-rule and an avoid-rule on the same broad topic
+    # (different sub-aspects). Under Option B these belong in one skill but as
+    # two distinct rules.
+    cluster = [
+        _make_pb(content="Announce the deploy in the channel first", rid=1),
+        _make_pb(
+            content="Avoid deploying on Friday afternoons",
+            rationale="late-Friday deploys caused weekend incidents",
+            rid=2,
+        ),
     ]
-    assert {"positive"} in polarities_per_group
-    assert {"negative"} in polarities_per_group
+
+    # Mocked LLM aggregation output: the prompt is responsible for keeping the
+    # two orientations as separate rules — assert that distinct-rule shape is
+    # carried through into the generated playbook content (not collapsed).
+    merged_content = (
+        "- Announce the deploy in the channel first.\n"
+        "- Avoid deploying on Friday afternoons."
+    )
+    response = PlaybookAggregationOutput(
+        playbook=StructuredPlaybookContent(
+            trigger="When deploying a service.",
+            content=merged_content,
+            rationale="Coordinated, well-timed deploys reduce incidents.",
+        )
+    )
+    agg.client.generate_chat_response.return_value = response
+
+    with patch.dict("os.environ", {"MOCK_LLM_RESPONSE": ""}):
+        result = agg._generate_playbook_from_cluster(cluster, "None")
+
+    assert result is not None
+    # Both orientations survive as DISTINCT rules — not merged into one.
+    assert "Announce the deploy in the channel first" in result.content
+    assert "Avoid deploying on Friday afternoons" in result.content
+    # Two separate bullets => the do-rule and the avoid-rule were not collapsed.
+    bullet_lines = [
+        line for line in result.content.splitlines() if line.strip().startswith("-")
+    ]
+    assert len(bullet_lines) == 2
 
 
 def test_playbook_aggregation_prompt_specifies_structured_format():
-    """Sanity (v2.1.0): aggregator prompt must carry the Agent-Skills
+    """Sanity (v2.2.0): aggregator prompt must carry the Agent-Skills
     formatting discipline — imperative conditional triggers, markdown bullet
     content, one-sentence rationale. Mirrors the extraction prompt v1.4.0
     so the downstream agent sees the same shape across per-user playbooks
@@ -1332,3 +1357,31 @@ def test_playbook_aggregation_prompt_specifies_structured_format():
     assert "- Ask for CLI preference" in out
     # Rationale guidance — one sentence WHY.
     assert "one sentence" in out.lower()
+
+
+def test_playbook_aggregation_prompt_preserves_distinct_orientations():
+    """v2.2.0: the aggregation prompt must carry the preserve-distinct-rules
+    instruction that replaced the retired mechanical polarity-bucketing gate.
+
+    When merging similar playbooks, the model must keep a do-rule and an
+    avoid-rule (opposite orientations) as SEPARATE rules — never collapse them
+    into one. This is the text-first replacement for the removed
+    ``infer_playbook_polarity`` direction split in the aggregator."""
+    from reflexio.server.prompt.prompt_manager import PromptManager
+
+    pm = PromptManager()
+    out = pm.render_prompt(
+        "playbook_aggregation",
+        variables={
+            "user_playbooks": '[1]\nContent: "x"\nTrigger: "y"',
+            "existing_approved_playbooks": "(none)",
+        },
+    )
+    # The preserve-distinct-orientations instruction must be present.
+    assert "Preserve distinct orientations" in out
+    # It must explicitly forbid collapsing a do-rule and an avoid-rule into one.
+    # (Normalize whitespace so a line-wrapped phrase still matches.)
+    normalized = " ".join(out.split())
+    assert 'never collapse a "do" rule and an "avoid" rule into one' in normalized
+    # Mixed-orientation rules for different sub-aspects are allowed in one skill.
+    assert "separate bullets" in normalized
