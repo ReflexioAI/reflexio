@@ -337,12 +337,14 @@ def test_panel_self_contradiction_tie_resolves_true():
     assert v.self_contradiction is True  # tie -> True (conservative)
 
 
-def test_panel_three_way_split_both_tie_directions():
-    """A 1-2 / 1-1-1 mixed panel exercises both tie-break directions at once.
+def test_panel_three_way_split_minority_loses_both_dimensions():
+    """A 1-2 split (no ties) confirms a minority vote loses on both dimensions.
 
     correct votes: True, False, False  -> minority True => majority False.
     contradiction votes: True, False, False -> 1 vs 2 => below threshold =>
-    False (not a tie; confirms the >= threshold only flips on an actual tie).
+    False. The contradiction `>=` tie-break only flips on an *actual* tie
+    (covered by ``test_panel_self_contradiction_tie_resolves_true``), not on a
+    losing minority — which this asserts.
     """
     client = MagicMock()
     client.generate_chat_response.side_effect = [
