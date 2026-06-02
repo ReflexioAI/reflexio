@@ -39,7 +39,6 @@ from reflexio.models.api_schema.domain.entities import (
 )
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.services.operation_state_utils import OperationStateManager
-from reflexio.server.services.polarity_utils import infer_playbook_polarity
 from reflexio.server.services.reflection.reflection_extractor import (
     ReflectionExtractor,
 )
@@ -229,7 +228,7 @@ class ReflectionService:
                 continue
             try:
                 self._validate_decision(decision, profiles_by_id, playbooks_by_id)
-                applied, was_flip = self._apply_revision(
+                applied = self._apply_revision(
                     request=request,
                     decision=decision,
                     profiles_by_id=profiles_by_id,
@@ -248,8 +247,6 @@ class ReflectionService:
                 continue
             if applied:
                 result.revised_count += 1
-                if was_flip:
-                    result.flipped_count += 1
                 # Field-derivable granular counters (no mode label exists).
                 if decision.new_trigger is not None:
                     result.trigger_revised_count += 1
@@ -268,7 +265,7 @@ class ReflectionService:
 
         logger.info(
             "event=reflection_done user_id=%s gate_open=%s ran=%s "
-            "cited=%d considered=%d no_change=%d revised=%d flipped=%d "
+            "cited=%d considered=%d no_change=%d revised=%d "
             "trigger_revised=%d content_revised=%d ttl_changed=%d capped=%d "
             "skipped=%d failed=%d",
             request.user_id,
@@ -278,7 +275,6 @@ class ReflectionService:
             result.considered_count,
             result.no_change_count,
             result.revised_count,
-            result.flipped_count,
             result.trigger_revised_count,
             result.content_revised_count,
             result.ttl_changed_count,
@@ -351,13 +347,15 @@ class ReflectionService:
         profiles_by_id: dict[str, UserProfile],  # noqa: ARG002 - kept for signature parity with _apply_revision
         playbooks_by_id: dict[int, UserPlaybook],
     ) -> None:
-        """Raise if the decision violates the flip invariant.
+        """Raise if a playbook content rewrite omits ``new_rationale``.
 
-        Flip is wording-based: a playbook revision is a flip when the
-        *derived* polarity of the row that would be applied differs from
-        the cited row's derived polarity. Such a flip must carry a
-        ``new_rationale`` naming the motivating failure/observation so
-        there is an audit trail.
+        Flip is LLM-reported, not derived: the ``memory_reflection`` prompt
+        instructs the model to set ``new_rationale`` whenever it changes a
+        rule's orientation (a flip), and to set it on substance rewrites of
+        playbook content as well. So any playbook revision that sets
+        ``new_content`` must carry a ``new_rationale`` — this preserves the
+        flip-requires-rationale audit-trail spirit without re-deriving
+        polarity from wording. Trigger-only / TTL-only revisions are exempt.
 
         Per-decision try/except in the caller catches these and counts
         them as failed_count.
@@ -370,7 +368,8 @@ class ReflectionService:
                 rows keyed by user_playbook_id.
 
         Raises:
-            ValueError: When a flip revision omits ``new_rationale``.
+            ValueError: When a playbook ``new_content`` revision omits
+                ``new_rationale``.
         """
         if decision.target_kind == "profile":
             return
@@ -384,10 +383,8 @@ class ReflectionService:
         cited = playbooks_by_id.get(target_id)
         if cited is None:
             return  # apply step will mark as skipped
-        cited_polarity = infer_playbook_polarity(cited.content, cited.rationale)
-        applied_polarity = _applied_playbook_polarity(decision, cited)
-        if applied_polarity != cited_polarity and not decision.new_rationale:
-            raise ValueError("polarity flip must include new_rationale")
+        if decision.new_content is not None and not decision.new_rationale:
+            raise ValueError("playbook content revision must include new_rationale")
 
     def _apply_revision(
         self,
@@ -396,7 +393,7 @@ class ReflectionService:
         decision: ReflectionDecision,
         profiles_by_id: dict[str, UserProfile],
         playbooks_by_id: dict[int, UserPlaybook],
-    ) -> tuple[bool, bool]:
+    ) -> bool:
         """Apply a revision decision.
 
         Args:
@@ -409,29 +406,27 @@ class ReflectionService:
                 rows keyed by user_playbook_id.
 
         Returns:
-            tuple[bool, bool]: ``(applied, was_flip)``. ``applied=False``
-            means the target row could not be resolved (target archived
-            between resolve and apply, etc.). ``was_flip=True`` indicates
-            the applied playbook's *derived* polarity differs from the
-            cited one (profiles always return False here).
+            bool: ``applied``. ``False`` means the target row could not be
+            resolved (target archived between resolve and apply, etc.).
+
+        Flip is no longer derived here: orientation changes are LLM-reported
+        via the rewritten ``new_content`` + ``new_rationale`` the prompt
+        emits, not inferred from wording at apply time.
         """
         if decision.target_kind == "profile":
             cited_p = profiles_by_id.get(decision.target_id)
             if cited_p is None:
-                return False, False
-            return self._replace_profile(request, decision, cited_p), False
+                return False
+            return self._replace_profile(request, decision, cited_p)
         # Playbook
         try:
             target_id = int(decision.target_id)
         except (TypeError, ValueError):
-            return False, False
+            return False
         cited_pb = playbooks_by_id.get(target_id)
         if cited_pb is None:
-            return False, False
-        cited_polarity = infer_playbook_polarity(cited_pb.content, cited_pb.rationale)
-        was_flip = _applied_playbook_polarity(decision, cited_pb) != cited_polarity
-        applied = self._replace_playbook(request, decision, cited_pb)
-        return applied, was_flip
+            return False
+        return self._replace_playbook(request, decision, cited_pb)
 
     def _replace_profile(
         self,
@@ -541,20 +536,15 @@ class ReflectionService:
             old_content=cited.content,
             new_content=new_playbook.content,
         )
-        # Flip detection is purely wording-based: compare the cited row's
-        # *derived* polarity against the applied (replacement) row's derived
-        # polarity. Polarity is never stored — it is inferred from wording and
-        # failure evidence at read time via ``infer_playbook_polarity``.
-        cited_polarity = infer_playbook_polarity(cited.content, cited.rationale)
-        new_polarity = infer_playbook_polarity(
-            new_playbook.content, new_playbook.rationale
-        )
-        if new_polarity != cited_polarity:
+        # Flip is LLM-reported, not derived: when the model changes a rule's
+        # orientation it rewrites ``new_content`` and names the motivating
+        # failure/observation in ``new_rationale`` (per the memory_reflection
+        # prompt). A rewrite-with-rationale is the LLM-reported flip/revision
+        # signal — log it for observability without re-deriving polarity.
+        if decision.new_content is not None and decision.new_rationale:
             logger.info(
-                "reflection.flip prior_polarity=%s new_polarity=%s playbook_id=%s "
-                'content_excerpt="%s" prior_excerpt="%s" citation_excerpt="%s"',
-                cited_polarity,
-                new_polarity,
+                "reflection.content_revision playbook_id=%s "
+                'content_excerpt="%s" prior_excerpt="%s" rationale_excerpt="%s"',
                 cited.user_playbook_id,
                 (new_playbook.content or "")[:120].replace('"', "'"),
                 (cited.content or "")[:120].replace('"', "'"),
@@ -595,36 +585,6 @@ _PLAYBOOK_REVISION_FIELDS: tuple[str, ...] = (
     "new_trigger",
     "new_rationale",
 )
-
-
-def _applied_playbook_polarity(
-    decision: ReflectionDecision,
-    cited: UserPlaybook,
-) -> str:
-    """Derive the polarity of the playbook row a decision would apply.
-
-    Mirrors the content/rationale fallbacks used by ``_replace_playbook``:
-    the replacement row uses ``new_content`` / ``new_rationale`` when set,
-    otherwise the cited row's values. Polarity is then inferred from that
-    effective wording via ``infer_playbook_polarity``.
-
-    Args:
-        decision (ReflectionDecision): The decision under consideration.
-        cited (UserPlaybook): The cited row the decision targets.
-
-    Returns:
-        str: ``"positive"`` or ``"negative"`` — the derived polarity of
-        the row that would be applied.
-    """
-    applied_content = (
-        decision.new_content if decision.new_content is not None else cited.content
-    )
-    applied_rationale = (
-        decision.new_rationale
-        if decision.new_rationale is not None
-        else cited.rationale
-    )
-    return infer_playbook_polarity(applied_content, applied_rationale)
 
 
 _REVISION_FIELDS_BY_KIND: dict[str, tuple[str, ...]] = {

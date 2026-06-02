@@ -278,15 +278,14 @@ def test_failure_path_produces_negative_rule_reflection_keeps_it(
         f"The cited playbook should have been considered; result={result}"
     )
 
-    # No revision applied — and crucially, no flip.
+    # No revision applied — and crucially, no flip. Flips are now LLM-reported
+    # and counted as ordinary revisions, so revised_count == 0 is the
+    # load-bearing invariant that no flip (or any other revision) occurred.
     assert result.no_change_count == 1, (
         f"Reflection should have recorded one no_change; result={result}"
     )
     assert result.revised_count == 0, (
-        f"Reflection must not revise on no_change; result={result}"
-    )
-    assert result.flipped_count == 0, (
-        "Reflection must not flip polarity on no_change — this is the "
+        "Reflection must not revise (or flip) on no_change — this is the "
         f"load-bearing invariant; result={result}"
     )
     assert result.failed_count == 0, (

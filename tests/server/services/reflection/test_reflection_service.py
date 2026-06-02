@@ -22,7 +22,6 @@ from reflexio.models.api_schema.domain.entities import (
 from reflexio.models.api_schema.domain.enums import ProfileTimeToLive, Status
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.services.operation_state_utils import OperationStateManager
-from reflexio.server.services.polarity_utils import infer_playbook_polarity
 from reflexio.server.services.reflection.reflection_service import ReflectionService
 from reflexio.server.services.reflection.reflection_service_utils import (
     REFLECTION_OPERATION_NAME,
@@ -355,7 +354,10 @@ class TestReplacePlaybook:
                     target_kind="playbook",
                     target_id="1",
                     new_content="new rule",
-                    # new_trigger / new_rationale omitted → fall back to archived
+                    # A content rewrite must carry new_rationale (the prompt
+                    # sets it on every playbook content revision); new_trigger
+                    # omitted → falls back to archived.
+                    new_rationale="rewritten because Y was wrong",
                     reason="rule was wrong",
                 )
             ]
@@ -373,9 +375,9 @@ class TestReplacePlaybook:
         assert len(archived) == 1
         assert current[0].user_playbook_id != 1
         assert current[0].content == "new rule"
-        # Trigger / rationale fall back to archived row's values.
+        # Trigger falls back to archived row's value; rationale is the supplied one.
         assert current[0].trigger == "when X"
-        assert current[0].rationale == "because Y"
+        assert current[0].rationale == "rewritten because Y was wrong"
         assert current[0].user_id == "u1"
         assert current[0].agent_version == "v1"
         assert current[0].playbook_name == "fb"
@@ -404,6 +406,7 @@ class TestReplacePlaybook:
                     target_kind="playbook",
                     target_id="1",
                     new_content="new rule",
+                    new_rationale="rewritten because Y was wrong",
                     reason="rule was wrong",
                 )
             ]
@@ -673,6 +676,7 @@ class TestArchiveAfterInsertFailure:
                     target_kind="playbook",
                     target_id="1",
                     new_content="new rule",
+                    new_rationale="rewritten after the rule misfired",
                     reason="needed update",
                 )
             ]
@@ -703,17 +707,22 @@ class TestArchiveAfterInsertFailure:
         assert "cited_id=1" in caplog.text
 
 
-class TestPolarityFlip:
-    def test_flip_archives_cited_positive_and_inserts_negative(
+class TestLLMReportedFlip:
+    def test_llm_reported_flip_applies_and_counts_as_revision(
         self, request_context, service, llm_client
     ):
-        """Polarity flip: cited positive → new negative row.
+        """LLM-reported flip: cited rule rewritten in the opposite orientation.
+
+        A flip is no longer derived from wording — it is LLM-reported via a
+        ``new_content`` rewrite carrying a ``new_rationale`` that names the
+        motivating failure (per the memory_reflection prompt). It applies and
+        counts as an ordinary revision; there is no separate flip counter.
 
         Verifies:
-        - The cited positive playbook is archived.
-        - The new playbook has polarity="negative".
-        - result.revised_count == 1 and result.flipped_count == 1.
+        - The cited playbook is archived and the rewritten row is current.
+        - result.revised_count == 1 and result.content_revised_count == 1.
         - result.no_change_count == 0.
+        - ReflectionResult has no flipped_count attribute (counter retired).
         """
         _set_config(request_context)
         storage = request_context.storage
@@ -746,8 +755,10 @@ class TestPolarityFlip:
 
         assert result.ran is True
         assert result.revised_count == 1
-        assert result.flipped_count == 1
+        assert result.content_revised_count == 1
         assert result.no_change_count == 0
+        # flipped_count was retired — no flip-specific counter remains.
+        assert not hasattr(result, "flipped_count")
 
         current = storage.get_user_playbooks(user_id="u1", status_filter=[None])
         archived = storage.get_user_playbooks(
@@ -755,24 +766,20 @@ class TestPolarityFlip:
         )
         assert len(current) == 1
         assert len(archived) == 1
-        assert (
-            infer_playbook_polarity(current[0].content, current[0].rationale)
-            == "negative"
-        )
         assert current[0].content == "Avoid X when Y."
         assert current[0].rationale == "user pushed back when X was recommended"
         assert archived[0].user_playbook_id == 1
 
-    def test_flip_without_rationale_counts_as_failed(
+    def test_content_revision_without_rationale_counts_as_failed(
         self, request_context, service, llm_client
     ):
-        """A wording-derived flip missing new_rationale is rejected.
+        """A playbook content rewrite missing new_rationale is rejected.
 
-        ``_validate_decision`` requires a new_rationale whenever applying a
-        new_content revision changes the *derived* polarity vs the cited
-        row. Here new_content carries avoidance wording plus a failure
-        term, so it derives negative even without a rationale — and the
-        missing rationale must trip the flip invariant.
+        Flip-requires-rationale, expressed without polarity derivation: the
+        prompt sets ``new_rationale`` on every playbook content rewrite
+        (flips and substance rewrites alike), so ``_validate_decision``
+        rejects any ``new_content`` revision that omits it. The rejected
+        decision is counted as failed and the cited row stays current.
         """
         _set_config(request_context)
         storage = request_context.storage
@@ -794,8 +801,7 @@ class TestPolarityFlip:
                 ReflectionDecision(
                     target_kind="playbook",
                     target_id="1",
-                    # "Avoid" prefix + "failed" evidence => derives negative.
-                    new_content="Avoid X when Y; it failed here.",
+                    new_content="Avoid X when Y.",
                     # new_rationale intentionally omitted — should fail validation
                     reason="evidence of failure",
                 )
@@ -807,16 +813,20 @@ class TestPolarityFlip:
         assert result.ran is True
         assert result.failed_count == 1
         assert result.revised_count == 0
-        assert result.flipped_count == 0
         # Cited playbook must remain current — no archive happened.
         current = storage.get_user_playbooks(user_id="u1", status_filter=[None])
         assert len(current) == 1
         assert current[0].user_playbook_id == 1
 
-    def test_same_polarity_revision_does_not_count_as_flip(
+    def test_trigger_only_revision_does_not_require_rationale(
         self, request_context, service, llm_client
     ):
-        """Revising content while keeping polarity is revised_count++, flipped_count stays 0."""
+        """A trigger-only revision (no new_content) is exempt from the rule.
+
+        The new_rationale invariant gates only ``new_content`` rewrites;
+        narrowing/widening a trigger without touching content applies
+        normally and counts as a revision.
+        """
         _set_config(request_context)
         storage = request_context.storage
         _seed_playbook(storage, 1, "u1", content="Do X when Y.")
@@ -837,8 +847,7 @@ class TestPolarityFlip:
                 ReflectionDecision(
                     target_kind="playbook",
                     target_id="1",
-                    # Affirmative rewrite — derived polarity stays positive.
-                    new_content="Do X when Y, unless Z.",
+                    new_trigger="when Y and not Z",
                     reason="sharpened trigger",
                 )
             ]
@@ -848,13 +857,12 @@ class TestPolarityFlip:
 
         assert result.ran is True
         assert result.revised_count == 1
-        assert result.flipped_count == 0
+        assert result.trigger_revised_count == 1
+        assert result.failed_count == 0
         current = storage.get_user_playbooks(user_id="u1", status_filter=[None])
         assert len(current) == 1
-        assert (
-            infer_playbook_polarity(current[0].content, current[0].rationale)
-            == "positive"
-        )
+        assert current[0].content == "Do X when Y."
+        assert current[0].trigger == "when Y and not Z"
 
 
 class TestPerPassCap:
@@ -903,6 +911,7 @@ class TestPerPassCap:
                     target_kind="playbook",
                     target_id=str(i),
                     new_content=f"revised {i}",
+                    new_rationale=f"rewritten rule {i}",
                     reason="needed update",
                 )
                 for i in (1, 2, 3)
@@ -968,6 +977,7 @@ class TestPerPassCap:
                     target_kind="playbook",
                     target_id="2",
                     new_content="revised two",  # revision, within cap
+                    new_rationale="rewritten rule two",
                     reason="needed update",
                 ),
             ]
@@ -1041,6 +1051,7 @@ class TestFieldDerivableCounters:
                     target_kind="playbook",
                     target_id="1",
                     new_content="sharper rule",
+                    new_rationale="rewritten after content proved wrong",
                     reason="content was wrong",
                 )
             ]
@@ -1114,6 +1125,7 @@ class TestFieldDerivableCounters:
                     target_id="1",
                     new_content="sharper rule",
                     new_trigger="when Z instead",
+                    new_rationale="rewritten after both content and trigger misfired",
                     reason="both wrong",
                 )
             ]
@@ -1150,6 +1162,7 @@ class TestFieldDerivableCounters:
                     target_kind="playbook",
                     target_id="1",
                     new_content="a much longer replacement rule",
+                    new_rationale="rewritten with a longer rule",
                     reason="needed update",
                 )
             ]

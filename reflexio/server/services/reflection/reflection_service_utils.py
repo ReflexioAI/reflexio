@@ -61,15 +61,16 @@ class ReflectionDecision(BaseModel):
             the opposite orientation (negative wording such as
             ``Avoid`` / ``Do not`` / ``Don't`` / ``Never`` for a
             success→failure flip; affirmative wording for the reverse).
-            The applied polarity is derived from the wording at apply
-            time via ``infer_playbook_polarity``.
+            A flip is LLM-reported via that rewritten ``new_content``
+            plus a ``new_rationale`` naming the motivating failure — it
+            is not derived from wording.
         new_trigger (str | None): Replacement playbook trigger.
             Optional even on revision; None falls back to the cited
             value. Ignored for profiles.
         new_rationale (str | None): Replacement playbook rationale.
-            Same fallback semantics. Required when applying a
-            ``new_content`` revision whose derived polarity differs
-            from the cited row's derived polarity (a flip needs an
+            Same fallback semantics. Required whenever applying a
+            ``new_content`` revision (the prompt sets it on substance
+            rewrites and flips alike, so a content rewrite needs an
             audit trail naming the motivating failure/observation).
             Ignored for profiles.
         new_profile_time_to_live (ProfileTimeToLive | None): Replacement
@@ -109,12 +110,12 @@ class ReflectionResult(BaseModel):
             ``deferred`` by the post-horizon filter.
         no_change_count (int): Decisions with no revision fields set.
         revised_count (int): Decisions with at least one revision
-            field set (excludes flipped — flipped is a strict subset
-            counted separately).
-        flipped_count (int): Subset of revised: playbook decisions
-            whose applied ``new_content`` has a *derived* polarity
-            (via ``infer_playbook_polarity``) that differs from the
-            cited row's derived polarity.
+            field set. Flips (orientation changes) are LLM-reported via
+            the rewritten ``new_content`` + ``new_rationale`` the prompt
+            emits and are counted as ordinary revisions — there is no
+            separate flip counter, because the prompt sets ``new_rationale``
+            on both flips and non-flip content rewrites, so the two cannot
+            be distinguished without re-deriving polarity (which is retired).
         trigger_revised_count (int): Subset of applied revisions where
             ``new_trigger`` was set (playbook trigger changed).
         content_revised_count (int): Subset of applied revisions where
@@ -134,7 +135,6 @@ class ReflectionResult(BaseModel):
     skipped_count: int = 0
     no_change_count: int = 0
     revised_count: int = 0
-    flipped_count: int = 0
     trigger_revised_count: int = 0
     content_revised_count: int = 0
     ttl_changed_count: int = 0

@@ -36,10 +36,17 @@ def test_reflection_decision_no_action_field():
     assert "action" not in fields
 
 
-def test_reflection_result_has_revised_and_flipped_counts():
+def test_reflection_result_has_revised_count():
     r = ReflectionResult()
     assert r.revised_count == 0
-    assert r.flipped_count == 0
+
+
+def test_reflection_result_has_no_flipped_count_field():
+    # flipped_count was retired: flips are LLM-reported and indistinguishable
+    # from non-flip content rewrites (both carry new_rationale), so there is
+    # no separate flip counter.
+    fields = ReflectionResult.model_fields
+    assert "flipped_count" not in fields
 
 
 def test_reflection_result_no_replaced_count_field():
