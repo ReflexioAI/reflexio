@@ -60,6 +60,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Fallback per-pass revision cap when no ReflectionConfig is available in
+# the apply path. Mirrors ReflectionConfig.max_revisions_per_pass default.
+_DEFAULT_MAX_REVISIONS_PER_PASS = 8
+
 
 class ReflectionService:
     """Sliding-window reflection step.
@@ -210,9 +214,20 @@ class ReflectionService:
         profiles_by_id = {p.profile_id: p for p in cited_profiles}
         playbooks_by_id = {p.user_playbook_id: p for p in cited_playbooks}
 
+        max_revisions_per_pass = (
+            reflection_config.max_revisions_per_pass
+            if reflection_config is not None
+            else _DEFAULT_MAX_REVISIONS_PER_PASS
+        )
+
         for decision in output.decisions:
             if not _is_revision(decision):
                 result.no_change_count += 1
+                continue
+            # Per-pass cap: once we've applied max_revisions_per_pass
+            # revisions, skip any further revision-intent decisions.
+            if result.revised_count >= max_revisions_per_pass:
+                result.capped_count += 1
                 continue
             try:
                 self._validate_decision(decision, profiles_by_id, playbooks_by_id)
@@ -237,6 +252,13 @@ class ReflectionService:
                 result.revised_count += 1
                 if was_flip:
                     result.flipped_count += 1
+                # Field-derivable granular counters (no mode label exists).
+                if decision.new_trigger is not None:
+                    result.trigger_revised_count += 1
+                if decision.new_content is not None:
+                    result.content_revised_count += 1
+                if decision.new_profile_time_to_live is not None:
+                    result.ttl_changed_count += 1
             else:
                 result.skipped_count += 1
 
@@ -249,6 +271,7 @@ class ReflectionService:
         logger.info(
             "event=reflection_done user_id=%s gate_open=%s ran=%s "
             "cited=%d considered=%d no_change=%d revised=%d flipped=%d "
+            "trigger_revised=%d content_revised=%d ttl_changed=%d capped=%d "
             "skipped=%d failed=%d",
             request.user_id,
             result.gate_open,
@@ -258,6 +281,10 @@ class ReflectionService:
             result.no_change_count,
             result.revised_count,
             result.flipped_count,
+            result.trigger_revised_count,
+            result.content_revised_count,
+            result.ttl_changed_count,
+            result.capped_count,
             result.skipped_count,
             result.failed_count,
         )
@@ -442,6 +469,12 @@ class ReflectionService:
             status=None,
             extractor_names=cited.extractor_names,
         )
+        _log_edit_magnitude(
+            kind="profile",
+            target_id=cited.profile_id,
+            old_content=cited.content,
+            new_content=new_profile.content,
+        )
         storage.add_user_profile(cited.user_id, [new_profile])
         try:
             archived = storage.archive_profile_by_id(
@@ -509,6 +542,12 @@ class ReflectionService:
             source=cited.source,
             source_interaction_ids=list(cited.source_interaction_ids),
         )
+        _log_edit_magnitude(
+            kind="playbook",
+            target_id=str(cited.user_playbook_id),
+            old_content=cited.content,
+            new_content=new_playbook.content,
+        )
         warn_if_polarity_content_mismatch(new_playbook)
         if new_playbook.polarity != cited.polarity:
             logger.info(
@@ -561,6 +600,38 @@ _REVISION_FIELDS_BY_KIND: dict[str, tuple[str, ...]] = {
     "profile": _PROFILE_REVISION_FIELDS,
     "playbook": _PLAYBOOK_REVISION_FIELDS,
 }
+
+
+def _log_edit_magnitude(
+    *,
+    kind: str,
+    target_id: str,
+    old_content: str | None,
+    new_content: str | None,
+) -> None:
+    """Log a cheap edit-magnitude signal for one applied revision.
+
+    The magnitude is the content-size delta (new length minus old length)
+    in characters — a coarse proxy for how large the revision is, useful
+    for offline regularization analysis without storing diffs.
+
+    Args:
+        kind (str): ``"profile"`` or ``"playbook"``.
+        target_id (str): Id of the cited row being replaced.
+        old_content (str | None): Cited row content before the revision.
+        new_content (str | None): Replacement row content after the revision.
+    """
+    old_len = len(old_content or "")
+    new_len = len(new_content or "")
+    logger.info(
+        "event=reflection_edit_magnitude target_kind=%s target_id=%s "
+        "old_len=%d new_len=%d delta=%d",
+        kind,
+        target_id,
+        old_len,
+        new_len,
+        new_len - old_len,
+    )
 
 
 def _is_revision(decision: ReflectionDecision) -> bool:

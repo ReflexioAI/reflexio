@@ -110,6 +110,15 @@ class ReflectionResult(BaseModel):
         flipped_count (int): Subset of revised: playbook decisions
             whose ``new_polarity`` differs from the cited row's
             polarity.
+        trigger_revised_count (int): Subset of applied revisions where
+            ``new_trigger`` was set (playbook trigger changed).
+        content_revised_count (int): Subset of applied revisions where
+            ``new_content`` was set (profile or playbook content changed).
+        ttl_changed_count (int): Subset of applied revisions where
+            ``new_profile_time_to_live`` was set (profile TTL changed).
+        capped_count (int): Revision-intent decisions skipped because the
+            per-pass cap (``ReflectionConfig.max_revisions_per_pass``) was
+            already reached. no_change decisions never count here.
         failed_count (int): Per-decision apply failures, logged.
     """
 
@@ -121,4 +130,8 @@ class ReflectionResult(BaseModel):
     no_change_count: int = 0
     revised_count: int = 0
     flipped_count: int = 0
+    trigger_revised_count: int = 0
+    content_revised_count: int = 0
+    ttl_changed_count: int = 0
+    capped_count: int = 0
     failed_count: int = 0

@@ -500,6 +500,10 @@ class ReflectionConfig(BaseModel):
             edge of the window with fewer than this many follow-up turns get a
             'last_chance' judgment with the prompt biased toward no_change.
             Set to 0 to disable the filter (legacy behavior).
+        max_revisions_per_pass (int): Cap on the number of revision decisions
+            applied in a single reflection pass (regularization). Once the cap
+            is hit, remaining revision-intent decisions are skipped and counted
+            in ``ReflectionResult.capped_count``.
     """
 
     enabled: bool = True
@@ -514,6 +518,14 @@ class ReflectionConfig(BaseModel):
             "Set to 0 to disable the filter (legacy behavior)."
         ),
         ge=0,
+    )
+    max_revisions_per_pass: int = Field(
+        default=8,
+        gt=0,
+        description=(
+            "Cap on revision decisions applied per reflection pass "
+            "(regularization; excess are skipped)."
+        ),
     )
 
 
