@@ -328,6 +328,91 @@ class PlaybookConsolidator(BaseDeduplicator):
         )
         return new_text, existing_text
 
+    def _consolidation_decisions(
+        self,
+        new_playbooks: list[UserPlaybook],
+        existing_playbooks: list[UserPlaybook],
+    ) -> PlaybookConsolidationOutput:
+        """Render the consolidation prompt for NEW + EXISTING playbooks and run the
+        LLM decision step (prompt render + LLM call + parse only — no hybrid search,
+        no apply). Returns the parsed decisions, or an empty ``PlaybookConsolidationOutput``
+        if the LLM returned the wrong shape.
+
+        EXISTING-id <-> prompt-label mapping (for downstream eval providers that
+        must map a returned decision back to a source playbook):
+          * Both ``new_playbooks`` and ``existing_playbooks`` are rendered by
+            ``_format_playbooks_with_prefix``, which labels rows by **list
+            position**, not by ``user_playbook_id``: NEW rows become
+            ``[NEW-0]``, ``[NEW-1]``, ... and EXISTING rows become
+            ``[EXISTING-0]``, ``[EXISTING-1]``, ... in the order passed in.
+          * Consequently the integer ids returned in decisions are interpreted
+            against EITHER positions OR ``user_playbook_id`` depending on the
+            decision kind, in the apply path (``_build_deduplicated_results``):
+              - ``UnifyDecision.archive_existing_ids`` -> **list positions**
+                (resolved as ``EXISTING-{idx}``).
+              - ``DifferentiateDecision.existing_id`` and
+                ``RejectNewDecision.superseded_by_existing_id`` ->
+                ``user_playbook_id`` (resolved against ``existing_by_id``).
+              - All decisions' ``new_id`` is the ``NEW-{idx}`` position label of
+                the candidate.
+          * A provider that controls the inputs should therefore choose its
+            ``existing_playbooks`` ordering and ``user_playbook_id`` values so it
+            can map a returned ``existing_id`` (position for unify;
+            ``user_playbook_id`` for differentiate/reject_new) back to its case.
+
+        Args:
+            new_playbooks: Flattened list of new (candidate) entries.
+            existing_playbooks: Existing entries to consolidate against.
+
+        Returns:
+            Parsed ``PlaybookConsolidationOutput``; an empty output (no
+            decisions) if the LLM returned an unexpected response shape.
+        """
+        # Format for prompt
+        new_text, existing_text = self._format_new_and_existing_for_prompt(
+            new_playbooks, existing_playbooks
+        )
+
+        # Build and call LLM
+        prompt = self.request_context.prompt_manager.render_prompt(
+            self._get_prompt_id(),
+            {
+                "new_playbook_count": len(new_playbooks),
+                "new_playbooks": new_text,
+                "existing_playbooks": existing_text,
+            },
+        )
+
+        output_schema_class = self._get_output_schema_class()
+
+        from reflexio.server.services.service_utils import (
+            log_llm_messages,
+            log_model_response,
+        )
+
+        log_llm_messages(
+            logger,
+            "Playbook consolidation",
+            [{"role": "user", "content": prompt}],
+        )
+
+        response = self.client.generate_chat_response(
+            messages=[{"role": "user", "content": prompt}],
+            model=self.model_name,
+            response_format=output_schema_class,
+        )
+
+        log_model_response(logger, "Consolidation response", response)
+
+        if not isinstance(response, PlaybookConsolidationOutput):
+            logger.warning(
+                "Unexpected response type from consolidation LLM: %s",
+                type(response),
+            )
+            return PlaybookConsolidationOutput()
+
+        return response
+
     def deduplicate(
         self,
         results: list[list[UserPlaybook]],
@@ -370,51 +455,11 @@ class PlaybookConsolidator(BaseDeduplicator):
             new_playbooks, user_id=user_id, agent_version=agent_version
         )
 
-        # Format for prompt
-        new_text, existing_text = self._format_new_and_existing_for_prompt(
-            new_playbooks, existing_playbooks
-        )
-
-        # Build and call LLM
-        prompt = self.request_context.prompt_manager.render_prompt(
-            self._get_prompt_id(),
-            {
-                "new_playbook_count": len(new_playbooks),
-                "new_playbooks": new_text,
-                "existing_playbooks": existing_text,
-            },
-        )
-
-        output_schema_class = self._get_output_schema_class()
-
+        # Run the LLM decision step (prompt render + LLM call + parse only).
         try:
-            from reflexio.server.services.service_utils import (
-                log_llm_messages,
-                log_model_response,
+            dedup_output = self._consolidation_decisions(
+                new_playbooks, existing_playbooks
             )
-
-            log_llm_messages(
-                logger,
-                "Playbook consolidation",
-                [{"role": "user", "content": prompt}],
-            )
-
-            response = self.client.generate_chat_response(
-                messages=[{"role": "user", "content": prompt}],
-                model=self.model_name,
-                response_format=output_schema_class,
-            )
-
-            log_model_response(logger, "Consolidation response", response)
-
-            if not isinstance(response, PlaybookConsolidationOutput):
-                logger.warning(
-                    "Unexpected response type from consolidation LLM: %s",
-                    type(response),
-                )
-                return new_playbooks, []
-
-            dedup_output = response
         except Exception as e:
             logger.error("Failed to identify duplicates: %s", str(e))
             return new_playbooks, []
