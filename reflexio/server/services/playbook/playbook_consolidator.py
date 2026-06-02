@@ -725,6 +725,20 @@ class PlaybookConsolidator(BaseDeduplicator):
                 seen_archive.add(pid)
                 archive_ids.append(pid)
 
+        budget = self._dedup_config.max_unified_content_chars
+        content_len = len(decision.content)
+        if content_len > budget:
+            # Soft backstop only: the prompt instructs the model to prefer
+            # `differentiate` over an over-long unify. We log a signal rather
+            # than hard-fail or downgrade so we don't destabilize the 4-kind
+            # apply logic; the merge still proceeds.
+            logger.warning(
+                "event=consolidation_over_budget new_id=%s len=%d budget=%d",
+                decision.new_id,
+                content_len,
+                budget,
+            )
+
         combined_source_ids = self._merge_source_ids([candidate, *existing_members])
         unified_row = UserPlaybook(
             user_playbook_id=0,

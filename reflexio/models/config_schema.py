@@ -369,6 +369,7 @@ class DeduplicationConfig(BaseModel):
     Args:
         search_threshold: Minimum similarity score for search results (0.0-1.0).
         search_top_k: Maximum number of existing playbooks to retrieve per new playbook.
+        max_unified_content_chars: Soft cap on a unified playbook's content length.
     """
 
     search_threshold: float = Field(
@@ -381,6 +382,15 @@ class DeduplicationConfig(BaseModel):
         default=5,
         ge=1,
         description="Maximum number of existing playbooks to retrieve per new playbook.",
+    )
+    max_unified_content_chars: int = Field(
+        default=1200,
+        gt=0,
+        description=(
+            "Soft cap on a unified playbook's content length; unify that would "
+            "exceed it should prefer differentiate/keep-separate. Enforced as a "
+            "warning-only backstop in the consolidator apply path."
+        ),
     )
 
 

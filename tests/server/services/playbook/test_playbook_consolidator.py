@@ -452,6 +452,65 @@ class TestBuildDeduplicatedResults:
         assert result[0].content == "solo final"
         assert delete_ids == []
 
+    def test_unify_over_budget_logs_warning(self, mock_consolidator, caplog):
+        """An over-budget unify logs a backstop warning but still applies.
+
+        The complexity budget is a soft signal: the merge proceeds (the row is
+        inserted), and ``event=consolidation_over_budget`` is emitted with the
+        offending length and the configured budget.
+        """
+        mock_consolidator._dedup_config.max_unified_content_chars = 10
+        over_budget_content = "x" * 50
+
+        new_playbooks = [_make_user_playbook(0, content="new content")]
+
+        dedup_output = PlaybookConsolidationOutput(
+            decisions=[
+                _unify("NEW-0", archive_existing_ids=[], content=over_budget_content)
+            ],
+        )
+
+        with caplog.at_level("WARNING"):
+            result, _ = mock_consolidator._build_deduplicated_results(
+                new_playbooks=new_playbooks,
+                existing_playbooks=[],
+                dedup_output=dedup_output,
+                request_id="req1",
+                agent_version="v1",
+            )
+
+        # Merge still applies (soft backstop, not a blocker).
+        assert len(result) == 1
+        assert result[0].content == over_budget_content
+        assert any(
+            "event=consolidation_over_budget" in rec.message
+            and "len=50" in rec.message
+            and "budget=10" in rec.message
+            for rec in caplog.records
+        )
+
+    def test_unify_within_budget_no_warning(self, mock_consolidator, caplog):
+        """A within-budget unify emits no over-budget warning."""
+        mock_consolidator._dedup_config.max_unified_content_chars = 1000
+
+        new_playbooks = [_make_user_playbook(0, content="new content")]
+        dedup_output = PlaybookConsolidationOutput(
+            decisions=[_unify("NEW-0", archive_existing_ids=[], content="short")],
+        )
+
+        with caplog.at_level("WARNING"):
+            mock_consolidator._build_deduplicated_results(
+                new_playbooks=new_playbooks,
+                existing_playbooks=[],
+                dedup_output=dedup_output,
+                request_id="req1",
+                agent_version="v1",
+            )
+
+        assert not any(
+            "event=consolidation_over_budget" in rec.message for rec in caplog.records
+        )
+
     def test_unify_counter_bumps_once_per_decision(self, mock_consolidator):
         """``unify_count`` increments by exactly one per applied ``UnifyDecision``,
         regardless of archive cardinality (0, 1, or N).
