@@ -62,12 +62,23 @@ judge. The `@skip_low_priority` `test_real_judge_smoke` (gated by
 ## Supplying extractions
 
 `run_eval` takes either a parallel `extractions` list (precomputed
-`(profiles, playbooks)` per case — the tests use the case's own gold items as a
-perfect-extraction baseline) or an `extraction_provider` callable. To evaluate
-the **live extractor** end-to-end, supply a provider that runs
-`PlaybookExtractor.run()` / `ProfileExtractor.run()` over a case's `sessions`
-with a real `request_context` and returns the produced `(profiles, playbooks)`.
-Wiring that live provider is a follow-up; the harness ships with
-precomputed-extraction tests plus the real-judge smoke. Produced items may be
-`UserProfile` / `UserPlaybook` entities or plain dicts (a `_to_dict` shim
-normalizes both for the judge).
+`(profiles, playbooks)` per case — the default tests use the case's own gold
+items as a perfect-extraction baseline) or an `extraction_provider` callable. To
+evaluate the **live extractor** end-to-end, use the provider in `providers.py`:
+
+```python
+from tests.eval.extraction.providers import make_extraction_provider
+
+provider = make_extraction_provider(llm_client=real_client, request_context=ctx)
+results = run_eval(cases=cases, extraction_provider=provider, judge=judge)
+```
+
+It wraps a case's `sessions` into a `RequestInteractionDataModel`, runs the real
+`PlaybookExtractor` + `ProfileExtractor` (real prompts + LLM; storage is the
+auto-wired temp SQLite in `request_context`, no seeding), and returns the
+produced `(profiles, playbooks)`. This makes real LLM calls, so it lives behind
+the `@skip_low_priority` smoke `test_live_extraction_provider_real` (run with
+`RUN_LOW_PRIORITY=1` + an API key); a non-skipped mocked-seam test (patching
+`litellm.completion`) covers the provider's construction in default CI. Produced
+items may be `UserProfile` / `UserPlaybook` entities or plain dicts (a `_to_dict`
+shim normalizes both for the judge).

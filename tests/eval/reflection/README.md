@@ -62,3 +62,24 @@ uv run pytest tests/eval/reflection -o 'addopts=' -q
 ```
 
 Anything that would hit a real API is decorated `@skip_low_priority`.
+
+## Running against the live reflection step
+
+`run_eval` takes either a parallel `decisions` list (precomputed, as the default
+tests use) or a `decision_provider` callable. To evaluate the **live** reflection
+step end-to-end, use the provider in `providers.py`:
+
+```python
+from tests.eval.reflection.providers import make_reflection_decision_provider
+
+provider = make_reflection_decision_provider(llm_client=real_client, request_context=ctx)
+results = run_eval(cases=load_illustrative_cases(), decision_provider=provider, llm_client=judge)
+```
+
+It builds the cited `UserPlaybook` / `UserProfile` from each case's `cited_item`,
+runs the real `ReflectionExtractor` (real `memory_reflection` prompt + LLM; no
+storage), and returns the produced `ReflectionDecision`. This makes real LLM
+calls, so it lives behind the `@skip_low_priority` smoke
+`test_live_reflection_provider_real` (run with `RUN_LOW_PRIORITY=1` + an API
+key); a non-skipped mocked-seam test covers the provider's construction in
+default CI.

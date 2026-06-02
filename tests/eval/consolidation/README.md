@@ -93,9 +93,21 @@ real-*judge* smoke test, `test_real_judge_smoke`).
 ## Running against the live consolidator
 
 `run_eval` accepts either a parallel `decisions` list (precomputed, as the
-tests use) or a `decision_provider` callable that maps a case to a produced
-decision. To evaluate the *live* consolidator end-to-end, supply a
-`decision_provider` that renders the `playbook_consolidation` prompt for the
-case's `(existing, candidate)` and runs the LLM decision step, returning the
-resulting `ConsolidationDecision`. Wiring that live provider is a follow-up;
-the harness ships with precomputed-decision tests plus the real-judge smoke.
+default tests use) or a `decision_provider` callable that maps a case to a
+produced decision. To evaluate the **live** consolidator end-to-end, use the
+provider in `providers.py`:
+
+```python
+from tests.eval.consolidation.providers import make_consolidation_decision_provider
+
+provider = make_consolidation_decision_provider(llm_client=real_client, request_context=ctx)
+results = run_eval(cases=load_illustrative_cases(), decision_provider=provider, llm_client=judge)
+```
+
+It builds `UserPlaybook` entities from each case's `existing`/`candidate`, calls
+the consolidator's `_consolidation_decisions(...)` seam (real
+`playbook_consolidation` prompt + LLM, no search/apply), and returns the
+produced `ConsolidationDecision`. This path makes real LLM calls, so it lives
+behind the `@skip_low_priority` smoke `test_live_consolidation_provider_real`
+(run with `RUN_LOW_PRIORITY=1` + an API key). A non-skipped mocked-seam test
+covers the provider's construction in default CI.
