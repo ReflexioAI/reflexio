@@ -16,6 +16,7 @@ from pydantic import BaseModel
 
 from reflexio.test_support.skip_decorators import skip_low_priority
 from tests.eval.conftest import _load, _load_rubric
+from tests.eval.extraction.providers import make_extraction_provider
 from tests.eval.extraction.runner import (
     CaseOutcome,
     EvalResults,
@@ -191,3 +192,125 @@ def test_real_judge_smoke():  # pragma: no cover - manual, costs money
     assert isinstance(outcome, CaseOutcome)
     assert 0.0 <= outcome.signal_f1 <= 1.0
     assert 0.0 <= outcome.grounded_rate <= 1.0
+
+
+# ---------------------------------------------------------------------------
+# Live extraction provider (mocked LLM seam — CI-covered).
+# ---------------------------------------------------------------------------
+#
+# These exercise the real ``PlaybookExtractor`` + ``ProfileExtractor``
+# construction, the RIDM + config building, and both extractor call paths with
+# the LLM seam mocked at ``litellm.completion`` (the same seam the extractor
+# unit tests use). Default CI thus catches provider bugs WITHOUT a paid API
+# call. The real-LLM end-to-end run lives in the ``@skip_low_priority`` smoke
+# below.
+#
+# Mock level: we use a *real* ``LiteLLMClient`` and patch ``litellm.completion``
+# to return canned ``finish_extraction`` tool-call turns — mirroring
+# ``tests/server/services/{playbook,profile}/test_*_extractor.py``. We mock at
+# this seam (rather than ``client.generate_chat_response``) because the
+# extractors route through ``run_resumable_extraction_agent`` ->
+# ``run_tool_loop``, which calls ``generate_chat_response(tools=...)`` and reads
+# ``resp.tool_calls``; ``litellm.completion`` is the lowest no-network seam that
+# leaves the full agent loop + RIDM + config + ctor wiring under test.
+#
+# Pending-tool-calls: the auto-wired ``Config`` has
+# ``pending_tool_call_config.enabled == False`` by default, so only
+# ``finish_extraction`` is registered and the loop runs a single forced-tool
+# pass — exactly two ``litellm.completion`` calls total (one per extractor).
+
+
+def test_live_extraction_provider_returns_canned_items(tmp_path):
+    """Provider builds the RIDM + configs, constructs both extractors, and
+    returns the canned ``(profiles, playbooks)`` under a mocked LLM seam —
+    proving the construction + call path WITHOUT a real API call (CI-covered).
+    """
+    import os
+    from unittest.mock import patch
+
+    from reflexio.server.api_endpoints.request_context import RequestContext
+    from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
+    from reflexio.server.services.extraction.resumable_agent import (
+        FINISH_EXTRACTION_TOOL_NAME,
+    )
+    from reflexio.test_support.llm_mock import make_tool_call_response
+
+    # The playbook extractor runs first (one completion), then the profile
+    # extractor (one completion). Default config => single forced-tool pass
+    # per extractor, so exactly two completion turns are consumed.
+    playbook_turn = make_tool_call_response(
+        FINISH_EXTRACTION_TOOL_NAME,
+        {
+            "playbooks": [
+                {
+                    "trigger": "user states a UI preference",
+                    "content": "Default the workspace to dark mode for this user.",
+                    "rationale": "User explicitly asked for dark mode.",
+                }
+            ]
+        },
+    )
+    profile_turn = make_tool_call_response(
+        FINISH_EXTRACTION_TOOL_NAME,
+        {
+            "profiles": [
+                {"content": "User prefers dark mode.", "time_to_live": "infinity"}
+            ]
+        },
+    )
+
+    ctx = RequestContext(org_id="eval-extract-prov", storage_base_dir=str(tmp_path))
+    client = LiteLLMClient(LiteLLMConfig(model="claude-sonnet-4-6"))
+    provider = make_extraction_provider(llm_client=client, request_context=ctx)
+
+    case = {"id": "t", "sessions": [{"role": "user", "content": "I prefer dark mode."}]}
+
+    with (
+        patch("litellm.completion", side_effect=[playbook_turn, profile_turn]),
+        patch.dict(
+            os.environ,
+            {"ANTHROPIC_API_KEY": "test-key", "MOCK_LLM_RESPONSE": "false"},
+        ),
+    ):
+        os.environ.pop("CLAUDE_SMART_USE_LOCAL_CLI", None)
+        profiles, playbooks = provider(case)
+
+    # Both halves of the extraction returned the canned items as lists.
+    assert isinstance(profiles, list)
+    assert isinstance(playbooks, list)
+    assert len(playbooks) == 1
+    assert playbooks[0].content == "Default the workspace to dark mode for this user."
+    assert playbooks[0].trigger == "user states a UI preference"
+    # source_interaction_ids must come from the single passed interaction.
+    assert playbooks[0].source_interaction_ids == [1]
+    assert len(profiles) == 1
+    assert profiles[0].content == "User prefers dark mode."
+
+
+@skip_low_priority
+def test_live_extraction_provider_real(tmp_path):  # pragma: no cover - manual
+    """Real end-to-end smoke: live extractors + real LLM over the golden cases.
+
+    Runs the real ``PlaybookExtractor`` + ``ProfileExtractor`` end-to-end via
+    the provider and scores with a stub judge (the point is that the live
+    EXTRACTOR runs, not the judge). Asserts only pipeline mechanics (n + means
+    in range), never exact scores. Run manually with API keys +
+    RUN_LOW_PRIORITY=1.
+    """
+    from reflexio.server.api_endpoints.request_context import RequestContext
+    from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
+
+    client = LiteLLMClient(LiteLLMConfig(model="claude-haiku-4-5"))
+    ctx = RequestContext(org_id="eval", storage_base_dir=str(tmp_path))
+    provider = make_extraction_provider(llm_client=client, request_context=ctx)
+
+    cases = _cases()
+    res = run_eval(
+        cases=cases,
+        extraction_provider=provider,
+        judge=_stub_judge(),
+    )
+
+    assert res.n == len(cases)
+    assert 0.0 <= res.signal_f1_mean <= 1.0
+    assert 0.0 <= res.grounded_rate_mean <= 1.0
