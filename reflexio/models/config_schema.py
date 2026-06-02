@@ -517,6 +517,21 @@ class ReflectionConfig(BaseModel):
     )
 
 
+class RetrievalFloorConfig(BaseModel):
+    """Read-path relevance floor: drop search results below a per-arm cross-encoder score.
+
+    Floors are RAW cross-encoder logits (ms-marco-MiniLM), not probabilities. On this
+    corpus relevant items score roughly -2..-4 and clear junk -6..-11, so a conservative
+    default of -5 isolates junk. Calibrate per arm on real data.
+    """
+
+    enabled: bool = True
+    pool_size: int = 30  # candidates fetched per arm before flooring + cap to top_k
+    profile_floor: float = -5.0
+    user_playbook_floor: float = -5.0
+    agent_playbook_floor: float = -5.0
+
+
 class PlaybookOptimizerConfig(BaseModel):
     """Configuration for GEPA-backed playbook content optimization.
 
@@ -710,6 +725,8 @@ class Config(BaseModel):
     llm_config: LLMConfig | None = None
     # Post-publish reflection service configuration
     reflection_config: ReflectionConfig = Field(default_factory=ReflectionConfig)
+    # Read-path relevance floor (per-arm cross-encoder score cutoff)
+    retrieval_floor: RetrievalFloorConfig = Field(default_factory=RetrievalFloorConfig)
     # Optional GEPA-backed playbook content optimizer
     playbook_optimizer_config: PlaybookOptimizerConfig = Field(
         default_factory=PlaybookOptimizerConfig

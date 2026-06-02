@@ -1,0 +1,20 @@
+from reflexio.models.config_schema import (
+    Config,
+    RetrievalFloorConfig,
+    StorageConfigSQLite,
+)
+
+
+def test_retrieval_floor_defaults():
+    cfg = RetrievalFloorConfig()
+    assert cfg.enabled is True
+    assert cfg.pool_size == 30
+    assert cfg.profile_floor == -5.0
+    assert cfg.user_playbook_floor == -5.0
+    assert cfg.agent_playbook_floor == -5.0
+
+
+def test_config_has_retrieval_floor_default():
+    cfg = Config(storage_config=StorageConfigSQLite())
+    assert isinstance(cfg.retrieval_floor, RetrievalFloorConfig)
+    assert cfg.retrieval_floor.enabled is True
