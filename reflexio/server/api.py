@@ -2622,6 +2622,9 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
         validate_llm_availability()
+        from reflexio.server.llm.rerank import prewarm as _prewarm_cross_encoder
+
+        _prewarm_cross_encoder()
         # The scheduler discovers every org with resumable work each tick and
         # drives a per-org worker with org-scoped claims, so it is not limited
         # to the bootstrap org. The bootstrap org is only used to read config
