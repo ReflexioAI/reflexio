@@ -11,6 +11,7 @@ Tests the extractor's new responsibilities for:
 
 import os
 import tempfile
+from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -40,7 +41,14 @@ from reflexio.server.services.profile.profile_generation_service_utils import (
     StructuredProfilesOutput,
 )
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
-from reflexio.server.services.storage.storage_base import AgentRunStatus
+from reflexio.server.services.storage.storage_base import (
+    AgentRunStatus,
+    PendingToolCallRecord,
+    PendingToolCallStatus,
+    build_pending_tool_call_dedup_key,
+    build_scope_hash,
+    human_feedback_scope,
+)
 
 # ===============================
 # Fixtures
@@ -667,7 +675,7 @@ class TestResumableAgentPath:
 
         assert raw_profiles[0]["content"] == "Loop extraction path."
 
-    def test_ask_human_is_org_scoped_and_run_still_finalizes(
+    def test_attach_pending_info_request_is_org_scoped_and_run_still_finalizes(
         self,
         monkeypatch,
         request_context,
@@ -677,6 +685,12 @@ class TestResumableAgentPath:
         sample_request_interaction_models,
         tool_call_completion,
     ):
+        """Post-#107 a profile extractor exposes attach_pending_info_request, not
+        ask_human. The attach tool does not CREATE a pending tool call; it attaches
+        the current run to an existing org-scoped Prior Knowledge (ask_human)
+        request. We seed that org-scoped pending call, have the agent attach to it,
+        and assert the org-scoping holds and the run still finalizes wired to it.
+        """
         monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
         monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_CLI", raising=False)
         request_context.storage = sqlite_storage
@@ -693,13 +707,38 @@ class TestResumableAgentPath:
             lambda prompt_id, variables: f"{prompt_id}: {variables}"
         )
 
+        # Seed an existing org-scoped ask_human pending tool call. The attach tool
+        # only succeeds against a record whose org/scope/tool_name match
+        # human_feedback_scope(org_id) + tool_name="ask_human".
+        org_scope = human_feedback_scope("test_org")
+        seeded_question = "Which deployment standard should be treated as canonical?"
+        seeded_call = PendingToolCallRecord(
+            id="ptc_seeded_prior_knowledge",
+            org_id="test_org",
+            user_id="test_user",
+            scope=org_scope,
+            scope_hash=build_scope_hash(org_scope),
+            tool_name="ask_human",
+            dedup_key=build_pending_tool_call_dedup_key(
+                tool_name="ask_human",
+                question_text=seeded_question,
+                answer_format="short text",
+            ),
+            status=PendingToolCallStatus.PENDING,
+            question_text=seeded_question,
+            answer_format="short text",
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            cache_until=datetime.now(UTC) + timedelta(hours=1),
+            valid_until=datetime.now(UTC) + timedelta(hours=1),
+        )
+        sqlite_storage.create_pending_tool_call(seeded_call)
+
         make_tc, _ = tool_call_completion
-        ask_response = make_tc(
-            "ask_human",
+        attach_response = make_tc(
+            "attach_pending_info_request",
             {
-                "question": "Which deployment standard should be treated as canonical?",
-                "answer_format": "short text",
-                "tags": ["deployment"],
+                "pending_tool_call_id": seeded_call.id,
+                "why_relevant": "Canonical deployment standard affects this profile.",
             },
         )
         finish_response = make_tc(
@@ -722,7 +761,7 @@ class TestResumableAgentPath:
         )
 
         with (
-            patch("litellm.completion", side_effect=[ask_response, finish_response]),
+            patch("litellm.completion", side_effect=[attach_response, finish_response]),
             patch(
                 "reflexio.server.services.extraction.resumable_agent.is_resumable_extraction_agent_feature_enabled",
                 return_value=True,
@@ -735,17 +774,28 @@ class TestResumableAgentPath:
             )
 
         assert raw_profiles[0]["content"] == "User prefers dark mode."
+
+        # The attach tool does not create new pending calls; the only one is the
+        # seeded org-scoped Prior Knowledge request.
         pending_calls = sqlite_storage.list_pending_tool_calls()
         assert len(pending_calls) == 1
         pending_call = pending_calls[0]
         assert pending_call.scope == {"org_id": "test_org", "scope_kind": "org"}
         assert pending_call.user_id == "test_user"
+
         row = sqlite_storage.conn.execute("SELECT id FROM _agent_runs").fetchone()
         assert row is not None
         run = sqlite_storage.get_agent_run(row["id"])
         assert run is not None
         assert run.status == AgentRunStatus.AGENT_COMPLETED
-        assert run.pending_tool_call_ids == [pending_call.id]
+
+        # attach_pending_info_request wires the run to the existing pending call via
+        # a run-tool dependency (it returns a synchronous Completed result, so it is
+        # NOT recorded in run.pending_tool_call_ids the way ask_human's AsyncAccepted
+        # would be). Assert the durable dependency edge instead.
+        assert run.pending_tool_call_ids == []
+        dependencies = sqlite_storage.list_run_tool_dependencies(run.id)
+        assert [dep.pending_tool_call_id for dep in dependencies] == [pending_call.id]
 
     def test_run_resumable_empty_output_still_surfaces_run_id(
         self,

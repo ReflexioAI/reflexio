@@ -1052,7 +1052,13 @@ def test_get_rerun_user_ids_returns_empty_when_no_matches():
 
 
 def test_collect_scoped_interactions_for_precheck_uses_extractor_scope():
-    """Pre-check should use extractor-specific window and source filters."""
+    """Pre-check should use the single extractor's window and source filters.
+
+    Post-#101 the pre-check is per-extractor: it takes ONE ProfileExtractorConfig
+    and returns (session_data_models, that_config). The source-scoping intent is
+    preserved by also asserting the should-skip path for a config whose enabled
+    sources do not include the triggering request source.
+    """
     org_id = "0"
     user_id = "test_user"
 
@@ -1096,36 +1102,54 @@ def test_collect_scoped_interactions_for_precheck_uses_extractor_scope():
             return_value=([session_data], [])
         )
 
-        extractor_configs = [
-            ProfileExtractorConfig(
-                extractor_name="api_profiles",
-                extraction_definition_prompt="communication preferences",
-                request_sources_enabled=["api"],
-                window_size_override=150,
-            ),
-            ProfileExtractorConfig(
-                extractor_name="web_profiles",
-                extraction_definition_prompt="shopping preferences",
-                request_sources_enabled=["web"],
-                window_size_override=90,
-            ),
-        ]
+        # Extractor whose enabled sources include the triggering "api" source:
+        # the pre-check should query storage with the extractor's window override
+        # (150) and the triggering source filter (["api"]), and return that config.
+        api_config = ProfileExtractorConfig(
+            extractor_name="api_profiles",
+            extraction_definition_prompt="communication preferences",
+            request_sources_enabled=["api"],
+            window_size_override=150,
+        )
 
-        (
-            scoped_groups,
-            scoped_configs,
-        ) = service._collect_scoped_interactions_for_precheck(extractor_configs)
+        scoped_groups, scoped_config = (
+            service._collect_scoped_interactions_for_precheck(api_config)
+        )
 
-        assert len(scoped_groups) == 1
-        assert [c.extractor_name for c in scoped_configs] == ["api_profiles"]
+        assert scoped_groups == [session_data]
+        assert scoped_config is api_config
         service.storage.get_last_k_interactions_grouped.assert_called_once()
         _, kwargs = service.storage.get_last_k_interactions_grouped.call_args
         assert kwargs["k"] == 150
         assert kwargs["sources"] == ["api"]
 
+        # Source-scoping intent: an extractor that does NOT enable the triggering
+        # "api" source must short-circuit (get_effective_source_filter should_skip)
+        # and return empty groups WITHOUT touching storage.
+        service.storage.get_last_k_interactions_grouped.reset_mock()
+        web_config = ProfileExtractorConfig(
+            extractor_name="web_profiles",
+            extraction_definition_prompt="shopping preferences",
+            request_sources_enabled=["web"],
+            window_size_override=90,
+        )
 
-def test_should_run_before_extraction_combines_all_extractor_criteria():
-    """Consolidated pre-check should include all enabled extractor definitions and override conditions."""
+        empty_groups, web_scoped_config = (
+            service._collect_scoped_interactions_for_precheck(web_config)
+        )
+
+        assert empty_groups == []
+        assert web_scoped_config is web_config
+        service.storage.get_last_k_interactions_grouped.assert_not_called()
+
+
+def test_should_run_before_extraction_includes_extractor_definition_and_override():
+    """Per-extractor pre-check prompt must include the extractor's definition AND override.
+
+    Post-#101 the pre-check runs per extractor with a single config; the prompt
+    built by ProfileGenerationService._build_should_run_prompt combines that one
+    extractor's extraction_definition_prompt and should_extract_profile_prompt_override.
+    """
     org_id = "0"
     user_id = "test_user"
 
@@ -1164,25 +1188,19 @@ def test_should_run_before_extraction_combines_all_extractor_criteria():
             interactions=[interaction],
         )
 
-        extractor_configs = [
-            ProfileExtractorConfig(
-                extractor_name="comm_profiles",
-                extraction_definition_prompt="communication preferences",
+        work_config = ProfileExtractorConfig(
+            extractor_name="work_profiles",
+            extraction_definition_prompt="career goals and projects",
+            should_extract_profile_prompt_override=(
+                "when user mentions work projects, deadlines, or role changes"
             ),
-            ProfileExtractorConfig(
-                extractor_name="work_profiles",
-                extraction_definition_prompt="career goals and projects",
-                should_extract_profile_prompt_override=(
-                    "when user mentions work projects, deadlines, or role changes"
-                ),
-            ),
-        ]
+        )
 
         with (
             patch.object(
                 service,
                 "_collect_scoped_interactions_for_precheck",
-                return_value=([session_data], extractor_configs),
+                return_value=([session_data], work_config),
             ),
             patch(
                 "reflexio.server.services.base_generation_service._cheap_should_run_reject",
@@ -1194,12 +1212,11 @@ def test_should_run_before_extraction_combines_all_extractor_criteria():
                 return_value="true",
             ) as mock_generate,
         ):
-            should_run = service._should_run_before_extraction(extractor_configs)
+            should_run = service._should_run_before_extraction(work_config)
 
         assert should_run is True
         mock_generate.assert_called_once()
         prompt = mock_generate.call_args.kwargs["messages"][0]["content"]
-        assert "communication preferences" in prompt
         assert "career goals and projects" in prompt
         assert "work projects, deadlines, or role changes" in prompt
 
