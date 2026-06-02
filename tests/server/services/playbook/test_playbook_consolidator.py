@@ -123,13 +123,12 @@ class TestFormatPlaybooksWithPrefix:
         """Rendered rows MUST expose `Trigger` and `Rationale` alongside `Content`.
 
         Several decision kinds compare existing-vs-new triggers (``differentiate``,
-        same-trigger contradictions, trigger refinements). Without the trigger
+        same-situation contradictions, trigger refinements). Without the trigger
         field in the prompt payload the model is guessing about the field it is
         supposed to refine. This regression test pins the row shape.
         """
-        # Polarity is rendered from derived wording (``infer_playbook_polarity``),
-        # not the stored field, so use coherent negative wording + a failure
-        # signal in the rationale to exercise the negative branch.
+        # Under Option B there is no derived ``Polarity`` field in the row: the
+        # LLM reads orientation directly from the content/rationale wording.
         fb = UserPlaybook(
             user_playbook_id=0,
             agent_version="v1",
@@ -145,9 +144,10 @@ class TestFormatPlaybooksWithPrefix:
         assert 'Rationale: "prevents unbilled work after user pushback"' in result, (
             result
         )
-        # Content / polarity / name / source must still render alongside.
+        # Content / name / source must still render alongside. The derived
+        # ``Polarity`` field was removed under Option B.
         assert 'Content: "Do not start unbilled work when Y"' in result
-        assert "Polarity: negative" in result
+        assert "Polarity:" not in result
         assert "Name: fb" in result
         assert "Source: extractor" in result
 

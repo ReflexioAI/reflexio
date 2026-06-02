@@ -23,7 +23,6 @@ from reflexio.server.services.deduplication_utils import (
     BaseDeduplicator,
     format_dedup_timestamp,
 )
-from reflexio.server.services.polarity_utils import infer_playbook_polarity
 
 logger = logging.getLogger(__name__)
 
@@ -36,16 +35,17 @@ logger = logging.getLogger(__name__)
 class UnifyDecision(BaseModel):
     """Collapse NEW (+ 0..N EXISTING) into one row with LLM-supplied content.
 
-    Subsumes the legacy ``duplicate`` and ``prefer_new`` kinds: the LLM picks
-    the final ``content`` / ``trigger`` / ``rationale`` and lists which EXISTING
-    ids (if any) are absorbed. An empty ``archive_existing_ids`` is allowed and
-    behaves as an insert-without-archive distinguished from ``independent`` by
-    the prompt's intent contract.
+    Subsumes the legacy ``duplicate`` and ``prefer_new`` kinds AND the
+    ``compose`` case: the LLM picks the final ``content`` / ``trigger`` /
+    ``rationale`` and lists which EXISTING ids (if any) are absorbed. An empty
+    ``archive_existing_ids`` is allowed and behaves as an insert-without-archive
+    distinguished from ``independent`` by the prompt's intent contract.
 
-    Polarity is not a declared field: the unified row's orientation is derived
-    from its wording via :func:`infer_playbook_polarity` at apply time, and the
-    same-trigger opposite-polarity merge guard is enforced against that derived
-    value.
+    A unified skill MAY hold mixed-polarity rules (do-rules and avoid-rules for
+    different sub-aspects of the one task). There is no mechanical polarity
+    field or apply-time polarity check: the no-self-contradiction judgment
+    (do not merge rules that contradict on the same situation) is made by the
+    LLM in the consolidation prompt, not by the apply path.
     """
 
     kind: Literal["unify"] = "unify"
@@ -142,35 +142,6 @@ _COUNTER_BY_KIND: dict[str, str] = {
 }
 
 
-class ConsolidationContractError(ValueError):
-    """A decision violates an invariant the apply layer must guard.
-
-    Raised by individual ``_apply_*`` methods when an LLM-supplied decision
-    breaks a structural contract that the prompt cannot fully enforce — most
-    notably: a ``UnifyDecision`` cannot archive existing rows whose derived
-    polarity disagrees with the unified row's derived polarity, because doing so
-    would silently flip a recommendation into a prohibition (or vice versa).
-
-    The exception carries ``handled_new_ids`` so the caller can suppress the
-    safety fallback for those candidate ids; otherwise rejecting a bad
-    unify would leave the orphan candidate to be re-inserted as an
-    opposing-polarity twin of the existing row, which is exactly the state the
-    contract forbids.
-    """
-
-    def __init__(self, message: str, *, handled_new_ids: list[str]) -> None:
-        """Initialize the contract-violation exception.
-
-        Args:
-            message: Human-readable description of the violated contract.
-            handled_new_ids: ``"NEW-N"`` candidate ids consumed by the bad
-                decision; the orchestrator marks these handled so the safety
-                fallback does not re-insert them.
-        """
-        super().__init__(message)
-        self.handled_new_ids = handled_new_ids
-
-
 class PlaybookConsolidator(BaseDeduplicator):
     """
     Consolidates new user playbook entries against each other and against existing entries
@@ -253,7 +224,6 @@ class PlaybookConsolidator(BaseDeduplicator):
                 f'[{prefix}-{idx}] Content: "{playbook.content}"'
                 f' | Trigger: "{playbook.trigger or ""}"'
                 f' | Rationale: "{playbook.rationale or ""}"'
-                f" | Polarity: {infer_playbook_polarity(playbook.content, playbook.rationale)}"
                 f" | Name: {playbook_name}"
                 f" | Source: {source} | Last Modified: {created_date}"
             )
@@ -530,28 +500,6 @@ class PlaybookConsolidator(BaseDeduplicator):
                     seen_archive=seen_archive,
                     request_id=request_id,
                 )
-            except ConsolidationContractError as exc:
-                # Contract violation: a decision broke a polarity / structural
-                # invariant. Suppress the safety fallback for its NEW members
-                # so they are NOT silently re-inserted as opposing-polarity
-                # twins of the existing rows we refused to overwrite.
-                result_counters.failed_count += 1
-                handled_new_ids.update(exc.handled_new_ids)
-                logger.warning(
-                    "event=consolidation_contract_violation kind=%s error=%s",
-                    decision.kind,
-                    exc,
-                )
-                new_id_str = getattr(decision, "new_id", "unknown")
-                existing_id_str = getattr(decision, "existing_id", "unknown")
-                logger.warning(
-                    "playbook_consolidation.failure kind=%s new_id=%s existing_id=%s error=%s",
-                    decision.kind,
-                    new_id_str,
-                    existing_id_str,
-                    type(exc).__name__,
-                )
-                continue
             except Exception as exc:  # noqa: BLE001 — per-decision isolation
                 result_counters.failed_count += 1
                 logger.warning(
@@ -615,8 +563,8 @@ class PlaybookConsolidator(BaseDeduplicator):
             candidates_by_id: Mapping ``"NEW-N"`` -> candidate ``UserPlaybook``.
             existing_by_id: Mapping ``user_playbook_id`` -> existing playbook.
             existing_by_position: Mapping ``"EXISTING-M"`` -> existing playbook
-                (used by ``unify`` to resolve EXISTING-M ids for polarity
-                validation against ``archive_existing_ids``).
+                (used by ``unify`` to resolve the EXISTING-M ids it archives in
+                ``archive_existing_ids``).
             archive_ids: Accumulator list mutated with ids to archive/delete.
             seen_archive: Accumulator set guarding ``archive_ids`` against
                 duplicate ids.
@@ -664,15 +612,17 @@ class PlaybookConsolidator(BaseDeduplicator):
         seen_archive: set[int],
         request_id: str,
     ) -> tuple[list[UserPlaybook], list[str]]:
-        """Collapse NEW (+ 0..N EXISTING) into one row with LLM-supplied content.
+        """Collapse / compose NEW (+ 0..N EXISTING) into one row.
 
         Looks up each ``archive_existing_ids`` entry by position
-        (``EXISTING-{idx}``) and validates that every archived row's derived
-        polarity matches the unified row's derived polarity (both inferred from
-        wording via :func:`infer_playbook_polarity`). Mismatch raises
-        ``ConsolidationContractError``. The new row is built by copying
-        identity/metadata from the NEW candidate and overlaying ``content``,
-        ``trigger``, and ``rationale`` from the decision.
+        (``EXISTING-{idx}``) and archives it. The unified skill may carry
+        mixed-polarity rules (do-rules and avoid-rules for different
+        sub-aspects); there is **no** mechanical same-polarity check here. The
+        no-self-contradiction judgment (do not merge rules that contradict on
+        the same situation) is made by the LLM in the consolidation prompt, not
+        the apply path. The new row is built by copying identity/metadata from
+        the NEW candidate and overlaying ``content``, ``trigger``, and
+        ``rationale`` from the decision.
 
         Args:
             decision: The ``UnifyDecision`` to apply.
@@ -687,18 +637,13 @@ class PlaybookConsolidator(BaseDeduplicator):
 
         Raises:
             KeyError: If ``decision.new_id`` does not resolve to a known
-                candidate, or if an ``archive_existing_ids`` entry has no
-                matching ``EXISTING-{idx}`` row in the position map.
-            ConsolidationContractError: If any archived row's derived polarity
-                differs from the unified row's derived polarity (same-trigger
-                opposite-polarity merge is the contradiction guard the linchpin
-                contract forbids).
+                candidate.
+            ValueError: If an ``archive_existing_ids`` entry has no matching
+                ``EXISTING-{idx}`` row in the position map.
         """
         candidate = candidates_by_id.get(decision.new_id)
         if candidate is None:
             raise KeyError(f"unify references unknown NEW id: {decision.new_id}")
-
-        unified_polarity = infer_playbook_polarity(decision.content, decision.rationale)
 
         existing_members: list[UserPlaybook] = []
         for existing_position in decision.archive_existing_ids:
@@ -706,16 +651,6 @@ class PlaybookConsolidator(BaseDeduplicator):
             if existing is None:
                 raise ValueError(
                     f"unify references unknown existing_id={existing_position}"
-                )
-            existing_polarity = infer_playbook_polarity(
-                existing.content, existing.rationale
-            )
-            if existing_polarity != unified_polarity:
-                raise ConsolidationContractError(
-                    f"unify polarity mismatch: archived EXISTING-{existing_position} "
-                    f"has polarity={existing_polarity} but unified row has "
-                    f"polarity={unified_polarity}",
-                    handled_new_ids=[decision.new_id],
                 )
             existing_members.append(existing)
 
@@ -915,10 +850,10 @@ class PlaybookConsolidator(BaseDeduplicator):
         """Emit a structured per-decision log line for probe ingest.
 
         Emits ``playbook_consolidation.decision`` with the 4-kind name,
-        new/existing ids, polarity of each side, and trigger_match.
-        Polarity is looked up from the candidate/existing maps; falls back
-        to ``unknown`` if the playbook is not found (should not happen in
-        normal operation).
+        new/existing ids, and trigger_match. Polarity is intentionally NOT
+        derived or logged: under Option B a skill may hold mixed-polarity
+        rules, so a single whole-content polarity label is no longer
+        meaningful. The no-self-contradiction judgment lives in the LLM.
 
         Args:
             decision: The applied consolidation decision.
@@ -928,32 +863,20 @@ class PlaybookConsolidator(BaseDeduplicator):
         kind = decision.kind
         new_id: str = getattr(decision, "new_id", "")
         new_pb = candidates_by_id.get(new_id)
-        new_polarity = (
-            infer_playbook_polarity(new_pb.content, new_pb.rationale)
-            if new_pb
-            else "unknown"
-        )
 
         # UnifyDecision archives by position (EXISTING-{idx}) rather than a
-        # single existing_id; log a synthetic "multi" with the chosen polarity
-        # so the probe parser sees one line per decision regardless of arity.
+        # single existing_id; log a synthetic "multi" so the probe parser sees
+        # one line per decision regardless of arity.
         if isinstance(decision, UnifyDecision):
             existing_id_label: str = (
                 "multi" if decision.archive_existing_ids else "none"
             )
-            # Polarity of the unified row is derived from its wording, matching
-            # the apply-path guard (no per-decision polarity field exists).
-            unified_polarity = infer_playbook_polarity(
-                decision.content, decision.rationale
-            )
             logger.info(
                 "playbook_consolidation.decision kind=%s new_id=%s existing_id=%s "
-                "new_polarity=%s existing_polarity=%s trigger_match=%s",
+                "trigger_match=%s",
                 kind,
                 new_id,
                 existing_id_label,
-                new_polarity,
-                unified_polarity,
                 "unknown",
             )
             return
@@ -966,11 +889,6 @@ class PlaybookConsolidator(BaseDeduplicator):
             getattr(decision, "superseded_by_existing_id", 0),
         )
         existing_pb = existing_by_id.get(existing_id_raw)
-        existing_polarity = (
-            infer_playbook_polarity(existing_pb.content, existing_pb.rationale)
-            if existing_pb
-            else "unknown"
-        )
         trigger_match = (
             new_pb is not None
             and existing_pb is not None
@@ -978,11 +896,9 @@ class PlaybookConsolidator(BaseDeduplicator):
         )
         logger.info(
             "playbook_consolidation.decision kind=%s new_id=%s existing_id=%s "
-            "new_polarity=%s existing_polarity=%s trigger_match=%s",
+            "trigger_match=%s",
             kind,
             new_id,
             existing_id_raw,
-            new_polarity,
-            existing_polarity,
             str(trigger_match).lower(),
         )
