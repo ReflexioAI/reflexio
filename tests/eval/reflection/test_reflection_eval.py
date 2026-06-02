@@ -417,6 +417,149 @@ def _decision_for_gold(case: ReflectionEvalCase) -> ReflectionDecision:
 
 
 # ---------------------------------------------------------------------------
+# Rule localization: multi-rule content where the window implicates ONE rule.
+# ---------------------------------------------------------------------------
+#
+# Harness-expressiveness note
+# ---------------------------
+# The harness scores a decision against the *whole* cited ``content``: the
+# label mapper only checks ``new_content != cited_item.content`` (plus
+# polarity / trigger / ttl signals). It has no field-level notion of
+# "which rule inside the content was edited", so a surgically-localized
+# edit and a wholesale rewrite of every rule both map to the same coarse
+# label (``rewrite`` / ``flip`` / a trigger-scope label).
+#
+# We therefore localize at the two signals the harness *does* expose,
+# without adding any harness infrastructure:
+#   1. the deterministic label + (for tighten/widen) the runner's
+#      over-specialization / edit-magnitude flag, and
+#   2. the AI-judge verdict, which sees the full produced ``new_content``
+#      and the case ``notes`` and can reject an answer that rewrote the
+#      wrong rule or clobbered the untouched rules.
+
+
+def _multi_rule_tighten_case() -> ReflectionEvalCase:
+    """Load the multi-rule localized-tighten fixture case."""
+    cases = {c.id: c for c in load_illustrative_cases()}
+    return cases["localized_tighten_multi_rule"]
+
+
+def _multi_rule_flip_case() -> ReflectionEvalCase:
+    """Load the multi-rule localized-flip fixture case."""
+    cases = {c.id: c for c in load_illustrative_cases()}
+    return cases["localized_flip_multi_rule"]
+
+
+def test_localized_tighten_edits_only_implicated_rule_scores_correct():
+    """A localized tighten of the one implicated rule maps to gold + judge-correct.
+
+    The cited content holds three rules; only Rule 2's trigger over-fired.
+    The decision narrows the *trigger* (leaving the multi-rule content
+    untouched), which is the cleanest localized expression of "edit only
+    the implicated rule" the harness can represent.
+    """
+    case = _multi_rule_tighten_case()
+    # Narrow the shared trigger so it only fires for the implicated rule;
+    # do NOT touch new_content, so the other two rules are left intact.
+    localized = ReflectionDecision(
+        target_kind="playbook",
+        target_id=case.cited_item.target_id,
+        new_trigger=case.gold_new_trigger,
+    )
+
+    client = MagicMock()
+    client.generate_chat_response.return_value = ReflectionVerdict(
+        correct=True, reason="narrowed only the implicated rule's trigger"
+    )
+    res = run_eval(cases=[case], decisions=[localized], llm_client=client)
+
+    assert res.outcomes[0].produced_label == "tighten"
+    assert res.outcomes[0].label_match is True
+    assert res.outcomes[0].over_specialized is False
+    assert res.judge_accuracy == pytest.approx(1.0)
+
+
+def test_localized_tighten_overspecialized_rewrite_is_flagged():
+    """Pinning the trigger to a single instance trips over-specialization.
+
+    A decision that "edits the wrong way" — collapsing the trigger to one
+    concrete instance instead of the implicated rule's class — is caught
+    by the runner's over-specialization flag (edit-magnitude signal),
+    even though it still maps to a tighten label.
+    """
+    case = _multi_rule_tighten_case()
+    over = ReflectionDecision(
+        target_kind="playbook",
+        target_id=case.cited_item.target_id,
+        # Quoted single literal => single-instance trigger.
+        new_trigger='handling item "B-00017"',
+    )
+    res = run_eval(cases=[case], decisions=[over])
+
+    assert res.outcomes[0].over_specialized is True
+    assert res.over_specialization_rate == pytest.approx(1.0)
+
+
+def test_localized_flip_of_implicated_rule_scores_correct():
+    """Flipping only the implicated 'do' rule maps to gold flip + judge-correct.
+
+    Rule 2 (auto-retry) caused a double-commit and explicit pushback; the
+    localized decision rewrites it as an avoid rule with a rationale citing
+    the failure, which derives negative polarity => flip.
+    """
+    case = _multi_rule_flip_case()
+    localized = ReflectionDecision(
+        target_kind="playbook",
+        target_id=case.cited_item.target_id,
+        new_content="Avoid auto-retrying step C; surface the failure and wait.",
+        new_rationale="auto-retry double-committed and the user pushed back",
+    )
+
+    client = MagicMock()
+    client.generate_chat_response.return_value = ReflectionVerdict(
+        correct=True, reason="flipped only the implicated retry rule"
+    )
+    res = run_eval(cases=[case], decisions=[localized], llm_client=client)
+
+    assert res.outcomes[0].produced_label == "flip"
+    assert res.outcomes[0].label_match is True
+    assert res.judge_accuracy == pytest.approx(1.0)
+
+
+def test_localized_flip_wrong_rule_rewrite_rejected_by_judge():
+    """Editing the wrong rule is caught by the judge, not the coarse label.
+
+    A decision that rewrites a *different* rule (Rule 1, ordering) still
+    maps to ``rewrite`` mechanically, so the label alone cannot tell it
+    apart from a correct localized edit. The AI judge — which sees the
+    full produced content and the case notes naming Rule 2 — rejects it.
+    This is the harness's only available "wrong rule edited" signal; there
+    is no field-level rule-identity check without a harness change.
+    """
+    case = _multi_rule_flip_case()
+    wrong_rule = ReflectionDecision(
+        target_kind="playbook",
+        target_id=case.cited_item.target_id,
+        # Touches Rule 1 (ordering), NOT the implicated Rule 2 (retry).
+        new_content="Process items in reverse order received.",
+        new_rationale="reordering felt cleaner",
+    )
+
+    client = MagicMock()
+    client.generate_chat_response.return_value = ReflectionVerdict(
+        correct=False, reason="edited the ordering rule, not the implicated retry rule"
+    )
+    res = run_eval(cases=[case], decisions=[wrong_rule], llm_client=client)
+
+    # Mechanically a plain rewrite (polarity unchanged) — label can't flag it.
+    assert res.outcomes[0].produced_label == "rewrite"
+    assert res.outcomes[0].label_match is False  # gold is flip
+    # The judge is the signal that catches the wrong-rule edit.
+    assert res.outcomes[0].judge_correct is False
+    assert res.judge_accuracy == pytest.approx(0.0)
+
+
+# ---------------------------------------------------------------------------
 # Real-API judge (manual only).
 # ---------------------------------------------------------------------------
 
