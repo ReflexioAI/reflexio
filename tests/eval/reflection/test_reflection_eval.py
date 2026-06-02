@@ -64,22 +64,26 @@ def test_label_no_change_when_no_fields_set():
     assert label_for_decision(d, _playbook_item()) == "no_change"
 
 
-def test_label_flip_when_polarity_differs():
+def test_label_flip_when_derived_polarity_differs():
+    # Rewriting positive guidance as avoidance wording + failure rationale
+    # derives negative polarity => flip.
     d = ReflectionDecision(
         target_kind="playbook",
         target_id="1",
-        new_polarity="negative",
-        new_rationale="user reversed it",
+        new_content="Avoid doing X.",
+        new_rationale="user pushed back when X was recommended",
     )
     assert label_for_decision(d, _playbook_item(polarity="positive")) == "flip"
 
 
-def test_label_not_flip_when_polarity_unchanged():
+def test_label_not_flip_when_derived_polarity_unchanged():
+    # Affirmative rewrite keeps positive polarity => not a flip => rewrite.
     d = ReflectionDecision(
-        target_kind="playbook", target_id="1", new_polarity="positive"
+        target_kind="playbook",
+        target_id="1",
+        new_content="Do X, but only on weekdays.",
     )
-    # Same polarity => not a flip; nothing else set => no_change.
-    assert label_for_decision(d, _playbook_item(polarity="positive")) == "no_change"
+    assert label_for_decision(d, _playbook_item(polarity="positive")) == "rewrite"
 
 
 def test_label_ttl_when_profile_ttl_set():
@@ -129,12 +133,12 @@ def test_label_rewrite_when_only_content_changes():
 
 
 def test_label_precedence_flip_over_content():
+    # A content rewrite whose derived polarity flips wins over plain rewrite.
     d = ReflectionDecision(
         target_kind="playbook",
         target_id="1",
-        new_polarity="negative",
-        new_rationale="why",
-        new_content="totally new",
+        new_content="Never do X.",
+        new_rationale="user rejected X; it failed in the window",
     )
     assert label_for_decision(d, _playbook_item(polarity="positive")) == "flip"
 
@@ -391,12 +395,17 @@ def _decision_for_gold(case: ReflectionEvalCase) -> ReflectionDecision:
     if case.gold_label == "no_change":
         return ReflectionDecision(target_kind=item.kind, target_id=tid)
     if case.gold_label == "flip":
-        flipped = "negative" if item.polarity == "positive" else "positive"
+        # Flip is wording-based: rewrite new_content in the opposite
+        # orientation and name the motivating failure in new_rationale.
+        if item.polarity == "positive":
+            new_content = "Avoid adding explanatory inline comments to code."
+        else:
+            new_content = "Add explanatory inline comments to code."
         return ReflectionDecision(
             target_kind=item.kind,
             target_id=tid,
-            new_polarity=flipped,
-            new_rationale="reversed by user",
+            new_content=new_content,
+            new_rationale="user pushed back; the prior rule failed in the window",
         )
     if case.gold_label in ("tighten", "widen"):
         return ReflectionDecision(

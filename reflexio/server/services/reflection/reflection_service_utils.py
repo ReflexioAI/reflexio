@@ -53,23 +53,28 @@ class ReflectionDecision(BaseModel):
             profiles, stringified ``user_playbook_id`` for playbooks.
         new_content (str | None): Replacement content text. Setting any
             of ``new_content`` / ``new_trigger`` / ``new_rationale`` /
-            ``new_profile_time_to_live`` / ``new_polarity`` flags this
-            decision as a revision. Leave all None for no_change.
+            ``new_profile_time_to_live`` flags this decision as a
+            revision. Leave all None for no_change.
+
+            Polarity is never declared on the decision: a playbook
+            *flip* is expressed purely by rewriting ``new_content`` in
+            the opposite orientation (negative wording such as
+            ``Avoid`` / ``Do not`` / ``Don't`` / ``Never`` for a
+            success→failure flip; affirmative wording for the reverse).
+            The applied polarity is derived from the wording at apply
+            time via ``infer_playbook_polarity``.
         new_trigger (str | None): Replacement playbook trigger.
             Optional even on revision; None falls back to the cited
             value. Ignored for profiles.
         new_rationale (str | None): Replacement playbook rationale.
-            Same fallback semantics. Required when ``new_polarity``
-            differs from the cited row's polarity (audit trail).
+            Same fallback semantics. Required when applying a
+            ``new_content`` revision whose derived polarity differs
+            from the cited row's derived polarity (a flip needs an
+            audit trail naming the motivating failure/observation).
             Ignored for profiles.
         new_profile_time_to_live (ProfileTimeToLive | None): Replacement
             profile TTL. None falls back to the cited value. Ignored
             for playbooks.
-        new_polarity (Literal["positive", "negative"] | None):
-            Replacement polarity for the cited playbook. None keeps the
-            current polarity. Setting a value different from the cited
-            polarity is a flip and requires ``new_rationale`` to be
-            set. Must be None for profile decisions.
         reason (str): Short justification, logged.
     """
 
@@ -79,7 +84,6 @@ class ReflectionDecision(BaseModel):
     new_trigger: str | None = None
     new_rationale: str | None = None
     new_profile_time_to_live: ProfileTimeToLive | None = None
-    new_polarity: Literal["positive", "negative"] | None = None
     reason: str = ""
 
 
@@ -108,8 +112,9 @@ class ReflectionResult(BaseModel):
             field set (excludes flipped — flipped is a strict subset
             counted separately).
         flipped_count (int): Subset of revised: playbook decisions
-            whose ``new_polarity`` differs from the cited row's
-            polarity.
+            whose applied ``new_content`` has a *derived* polarity
+            (via ``infer_playbook_polarity``) that differs from the
+            cited row's derived polarity.
         trigger_revised_count (int): Subset of applied revisions where
             ``new_trigger`` was set (playbook trigger changed).
         content_revised_count (int): Subset of applied revisions where

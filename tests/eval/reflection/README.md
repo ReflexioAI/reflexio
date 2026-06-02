@@ -32,7 +32,8 @@ The live `ReflectionDecision` carries **no mode label**; the outcome is
 encoded by which replacement fields are set. For scoring we collapse
 that into a coarse label with this precedence:
 
-1. `new_polarity` differs from cited → `flip`
+1. `new_content` derived polarity (wording + `new_rationale`) differs from
+   cited → `flip`
 2. `new_profile_time_to_live` set → `ttl`
 3. `new_trigger` changed → `tighten` / `widen` (longer trigger = narrower
    = tighten; shorter = broader = widen; ambiguous → `scope`)

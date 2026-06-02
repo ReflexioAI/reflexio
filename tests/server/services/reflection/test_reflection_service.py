@@ -736,7 +736,6 @@ class TestPolarityFlip:
                     target_kind="playbook",
                     target_id="1",
                     new_content="Avoid X when Y.",
-                    new_polarity="negative",
                     new_rationale="user pushed back when X was recommended",
                     reason="evidence of failure",
                 )
@@ -767,7 +766,14 @@ class TestPolarityFlip:
     def test_flip_without_rationale_counts_as_failed(
         self, request_context, service, llm_client
     ):
-        """A polarity flip missing new_rationale is rejected by _validate_decision."""
+        """A wording-derived flip missing new_rationale is rejected.
+
+        ``_validate_decision`` requires a new_rationale whenever applying a
+        new_content revision changes the *derived* polarity vs the cited
+        row. Here new_content carries avoidance wording plus a failure
+        term, so it derives negative even without a rationale — and the
+        missing rationale must trip the flip invariant.
+        """
         _set_config(request_context)
         storage = request_context.storage
         _seed_playbook(storage, 1, "u1", content="Do X when Y.")
@@ -788,8 +794,8 @@ class TestPolarityFlip:
                 ReflectionDecision(
                     target_kind="playbook",
                     target_id="1",
-                    new_content="Avoid X when Y.",
-                    new_polarity="negative",
+                    # "Avoid" prefix + "failed" evidence => derives negative.
+                    new_content="Avoid X when Y; it failed here.",
                     # new_rationale intentionally omitted — should fail validation
                     reason="evidence of failure",
                 )
@@ -831,8 +837,8 @@ class TestPolarityFlip:
                 ReflectionDecision(
                     target_kind="playbook",
                     target_id="1",
+                    # Affirmative rewrite — derived polarity stays positive.
                     new_content="Do X when Y, unless Z.",
-                    new_polarity="positive",  # same as cited
                     reason="sharpened trigger",
                 )
             ]

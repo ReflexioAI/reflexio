@@ -13,22 +13,29 @@ are set (see ``reflection_service._is_revision``). For *scoring* we
 collapse that field-presence into a coarse label via
 :func:`label_for_decision`:
 
-================================  ===========================================
-Field presence on the decision    Mapped label
-================================  ===========================================
-nothing set                       ``no_change``
-``new_polarity`` differs          ``flip``
-``new_profile_time_to_live`` set  ``ttl``
-``new_content`` set (substantive) ``rewrite``
-``new_trigger`` only              ``tighten`` / ``widen`` (by narrow/broaden)
-================================  ===========================================
+==========================================  ===================================
+Field presence on the decision              Mapped label
+==========================================  ===================================
+nothing set                                 ``no_change``
+``new_content`` derived polarity differs    ``flip``
+``new_profile_time_to_live`` set            ``ttl``
+``new_content`` set (substantive)           ``rewrite``
+``new_trigger`` only                        ``tighten`` / ``widen``
+==========================================  ===================================
+
+Flip is **wording-based**: a decision is a flip when its ``new_content``
+rewrites the rule in the opposite orientation — the polarity *derived*
+from ``new_content`` / ``new_rationale`` (via
+:func:`infer_playbook_polarity`) differs from the cited item's polarity.
+There is no ``new_polarity`` field; orientation lives entirely in the
+wording.
 
 Precedence matters because a single decision may set several fields. A
-polarity flip is the most semantically significant change, so it wins;
-then TTL; then a trigger-scope change; then a content rewrite. When a
-trigger change is set but we cannot tell whether it narrows or broadens
-(no cited trigger to compare against, or no length signal) we treat it
-as the ambiguous ``scope`` bucket rather than guessing tighten/widen.
+flip is the most semantically significant change, so it wins; then TTL;
+then a trigger-scope change; then a content rewrite. When a trigger
+change is set but we cannot tell whether it narrows or broadens (no
+cited trigger to compare against, or no length signal) we treat it as
+the ambiguous ``scope`` bucket rather than guessing tighten/widen.
 
 The narrow-vs-broaden heuristic is intentionally cheap and offline-only:
 a *shorter / more-qualified* new trigger is treated as ``tighten``; a
@@ -43,6 +50,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from reflexio.models.api_schema.domain.entities import Interaction
+from reflexio.server.services.polarity_utils import infer_playbook_polarity
 from reflexio.server.services.reflection.reflection_service_utils import (
     ReflectionDecision,
 )
@@ -154,6 +162,11 @@ def label_for_decision(
     no_change. A trigger change that cannot be classified as
     narrowing/broadening yields the ambiguous ``"scope"`` label.
 
+    Flip is wording-based: a ``new_content`` rewrite counts as a flip when
+    its *derived* polarity (via :func:`infer_playbook_polarity`, combining
+    ``new_content`` with ``new_rationale``) differs from the cited item's
+    polarity. Only playbooks can flip.
+
     Args:
         decision: The reflection decision produced by the service/LLM.
         cited_item: The cited row the decision targets — supplies the
@@ -163,10 +176,13 @@ def label_for_decision(
         One of the ``GoldLabel`` values, or ``"scope"`` for an ambiguous
         trigger change.
     """
-    # 1. Polarity flip is the most significant change.
+    # 1. Wording-based polarity flip is the most significant change.
     if (
-        decision.new_polarity is not None
-        and decision.new_polarity != cited_item.polarity
+        cited_item.kind == "playbook"
+        and cited_item.polarity is not None
+        and decision.new_content is not None
+        and infer_playbook_polarity(decision.new_content, decision.new_rationale)
+        != cited_item.polarity
     ):
         return "flip"
 
