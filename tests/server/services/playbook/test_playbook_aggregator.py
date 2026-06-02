@@ -1218,14 +1218,24 @@ def _make_pb(
     content: str,
     polarity: str = "positive",
     rid: int = 1,
+    rationale: str | None = None,
 ) -> UserPlaybook:
-    """Build a UserPlaybook with explicit content and polarity for grouping tests."""
+    """Build a UserPlaybook whose wording derives to the requested polarity.
+
+    Grouping now gates on ``infer_playbook_polarity`` (wording + failure
+    evidence), not the stored ``polarity`` field. For a coherent negative row
+    we therefore default the rationale to one carrying a failure signal so the
+    derived polarity matches the requested ``polarity``.
+    """
+    if rationale is None and polarity == "negative":
+        rationale = "user pushback observed"
     return UserPlaybook(
         user_playbook_id=rid,
         agent_version="v1",
         request_id=f"req-{rid}",
         playbook_name="test_fb",
         content=content,
+        rationale=rationale,
         polarity=polarity,  # type: ignore[arg-type]
     )
 
@@ -1247,24 +1257,45 @@ def test_aggregator_separates_positive_and_negative_polarity():
     assert all(len(pset) == 1 for pset in polarities_per_group)
 
 
-def test_aggregator_splits_identical_content_across_polarities():
+def test_aggregator_splits_high_overlap_content_across_polarities():
     """Regression: an explicit polarity gate (not a string prefix) is required.
 
     Previously, polarity was smuggled into ``_get_direction_key`` as a prefix
     token (``f"{polarity}::{content}"``), but ``_token_overlap`` is set-based
-    over whitespace-split tokens — so two playbooks with identical multi-token
-    content but opposite polarity would still overlap at 3/4 tokens and land
-    in the same group at the default 0.6 threshold. This test ensures the
-    grouping routine gates on ``fb.polarity`` explicitly.
+    over whitespace-split tokens — so two playbooks with near-identical content
+    but opposite polarity would still overlap above the default 0.6 threshold
+    and land in the same group. The grouping routine must gate on polarity
+    explicitly.
+
+    Polarity is now derived from wording + failure evidence
+    (``infer_playbook_polarity``), so opposite-polarity rows necessarily differ
+    in their leading avoidance token. We therefore pin the regression on two
+    rows whose tokens overlap above threshold yet derive to opposite polarity:
+    the gate, not token overlap, must keep them apart.
     """
-    content = "ask clarifying questions before proceeding"
-    cluster = [
-        _make_pb(content=content, polarity="positive", rid=1),
-        _make_pb(content=content, polarity="negative", rid=2),
-    ]
-    groups = PlaybookAggregator._group_playbooks_by_direction(cluster, threshold=0.6)
+    positive = _make_pb(
+        content="Always ask clarifying questions before proceeding",
+        polarity="positive",
+        rid=1,
+    )
+    negative = _make_pb(
+        content="Avoid asking clarifying questions before proceeding",
+        polarity="negative",
+        rationale="user pushback observed",
+        rid=2,
+    )
+    # Sanity: the two rows overlap above the grouping threshold, so without the
+    # polarity gate they would collapse into one group.
+    assert PlaybookAggregator._token_overlap(
+        PlaybookAggregator._get_direction_key(positive),
+        PlaybookAggregator._get_direction_key(negative),
+        0.6,
+    )
+    groups = PlaybookAggregator._group_playbooks_by_direction(
+        [positive, negative], threshold=0.6
+    )
     assert len(groups) == 2, (
-        f"identical content across polarities must split into 2 groups, got {groups}"
+        f"high-overlap content across polarities must split into 2 groups, got {groups}"
     )
     polarities_per_group = [{p.polarity for p in g} for g in groups]
     assert {"positive"} in polarities_per_group

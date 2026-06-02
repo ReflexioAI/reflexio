@@ -23,6 +23,7 @@ from reflexio.server.services.deduplication_utils import (
     BaseDeduplicator,
     format_dedup_timestamp,
 )
+from reflexio.server.services.polarity_utils import infer_playbook_polarity
 
 logger = logging.getLogger(__name__)
 
@@ -248,7 +249,8 @@ class PlaybookConsolidator(BaseDeduplicator):
                 f'[{prefix}-{idx}] Content: "{playbook.content}"'
                 f' | Trigger: "{playbook.trigger or ""}"'
                 f' | Rationale: "{playbook.rationale or ""}"'
-                f" | Polarity: {playbook.polarity} | Name: {playbook_name}"
+                f" | Polarity: {infer_playbook_polarity(playbook.content, playbook.rationale)}"
+                f" | Name: {playbook_name}"
                 f" | Source: {source} | Last Modified: {created_date}"
             )
         return "\n".join(lines)
@@ -698,10 +700,13 @@ class PlaybookConsolidator(BaseDeduplicator):
                 raise ValueError(
                     f"unify references unknown existing_id={existing_position}"
                 )
-            if existing.polarity != decision.polarity:
+            existing_polarity = infer_playbook_polarity(
+                existing.content, existing.rationale
+            )
+            if existing_polarity != decision.polarity:
                 raise ConsolidationContractError(
                     f"unify polarity mismatch: archived EXISTING-{existing_position} "
-                    f"has polarity={existing.polarity} but "
+                    f"has polarity={existing_polarity} but "
                     f"decision.polarity={decision.polarity}",
                     handled_new_ids=[decision.new_id],
                 )
@@ -903,7 +908,11 @@ class PlaybookConsolidator(BaseDeduplicator):
         kind = decision.kind
         new_id: str = getattr(decision, "new_id", "")
         new_pb = candidates_by_id.get(new_id)
-        new_polarity = new_pb.polarity if new_pb else "unknown"
+        new_polarity = (
+            infer_playbook_polarity(new_pb.content, new_pb.rationale)
+            if new_pb
+            else "unknown"
+        )
 
         # UnifyDecision archives by position (EXISTING-{idx}) rather than a
         # single existing_id; log a synthetic "multi" with the chosen polarity
@@ -932,7 +941,11 @@ class PlaybookConsolidator(BaseDeduplicator):
             getattr(decision, "superseded_by_existing_id", 0),
         )
         existing_pb = existing_by_id.get(existing_id_raw)
-        existing_polarity = existing_pb.polarity if existing_pb else "unknown"
+        existing_polarity = (
+            infer_playbook_polarity(existing_pb.content, existing_pb.rationale)
+            if existing_pb
+            else "unknown"
+        )
         trigger_match = (
             new_pb is not None
             and existing_pb is not None

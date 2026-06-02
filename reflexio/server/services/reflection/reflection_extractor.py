@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
+from reflexio.server.services.polarity_utils import infer_playbook_polarity
 from reflexio.server.services.reflection.reflection_service_utils import (
     ReflectionOutput,
 )
@@ -195,7 +196,7 @@ def _playbooks_to_json(playbooks: list[UserPlaybook]) -> str:
             "content": p.content,
             "trigger": p.trigger,
             "rationale": p.rationale,
-            "polarity": p.polarity,
+            "polarity": infer_playbook_polarity(p.content, p.rationale),
             "source": p.source,
         }
         for p in playbooks

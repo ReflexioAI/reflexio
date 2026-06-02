@@ -125,6 +125,11 @@ def _make_existing_playbook(
     """
     if content is None:
         content = "Avoid X." if polarity == "negative" else "Recommend X."
+    # Polarity is derived from wording + failure evidence (see
+    # ``infer_playbook_polarity``). A negative row must carry both avoidance
+    # framing and a failure signal in its rationale to be coherent, mirroring
+    # what the extractor actually writes.
+    rationale = "user pushback observed" if polarity == "negative" else "r"
     pb = UserPlaybook(
         user_playbook_id=0,
         user_id=user_id,
@@ -133,7 +138,7 @@ def _make_existing_playbook(
         playbook_name=playbook_name,
         content=content,
         trigger=trigger,
-        rationale="r",
+        rationale=rationale,
         blocking_issue=None,
         status=None,
         source="chat",
@@ -326,7 +331,9 @@ class TestUnify:
         sqlite_storage.save_user_playbooks([pb_b])
         all_existing = sqlite_storage.get_user_playbooks(user_id="u_nway")
         assert len(all_existing) == 2
-        existing_b = next(p for p in all_existing if p.user_playbook_id != existing_a.user_playbook_id)
+        existing_b = next(
+            p for p in all_existing if p.user_playbook_id != existing_a.user_playbook_id
+        )
 
         candidate = _make_candidate(
             user_id="u_nway",
@@ -365,7 +372,9 @@ class TestUnify:
         assert len(surviving) == 1
         assert surviving[0].content == "Recommend X (canonical)."
 
-    def test_insert_without_archive(self, sqlite_storage, request_context, consolidator):
+    def test_insert_without_archive(
+        self, sqlite_storage, request_context, consolidator
+    ):
         """``unify`` with empty ``archive_existing_ids`` inserts NEW without archiving.
 
         This shape is conceptually ``independent`` at the storage layer; the
@@ -699,12 +708,9 @@ class TestContradictionResolutionContract:
         assert "when Y" not in surviving_triggers
         # Each refined trigger appears with exactly one polarity.
         polarity_by_trigger = {r.trigger: r.polarity for r in surviving}
+        assert polarity_by_trigger["when Y AND has declined X recently"] == "negative"
         assert (
-            polarity_by_trigger["when Y AND has declined X recently"] == "negative"
-        )
-        assert (
-            polarity_by_trigger["when Y AND has not declined X recently"]
-            == "positive"
+            polarity_by_trigger["when Y AND has not declined X recently"] == "positive"
         )
 
     def test_independent_over_contradiction_pair_is_forbidden_post_hoc(

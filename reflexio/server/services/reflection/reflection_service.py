@@ -40,6 +40,7 @@ from reflexio.models.api_schema.domain.entities import (
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.services.operation_state_utils import OperationStateManager
 from reflexio.server.services.polarity_utils import (
+    infer_playbook_polarity,
     warn_if_polarity_content_mismatch,
 )
 from reflexio.server.services.reflection.reflection_extractor import (
@@ -382,9 +383,10 @@ class ReflectionService:
         cited = playbooks_by_id.get(target_id)
         if cited is None:
             return  # apply step will mark as skipped
+        cited_polarity = infer_playbook_polarity(cited.content, cited.rationale)
         if (
             decision.new_polarity is not None
-            and decision.new_polarity != cited.polarity
+            and decision.new_polarity != cited_polarity
             and not decision.new_rationale
         ):
             raise ValueError("polarity flip must include new_rationale")
@@ -430,7 +432,8 @@ class ReflectionService:
             return False, False
         was_flip = (
             decision.new_polarity is not None
-            and decision.new_polarity != cited_pb.polarity
+            and decision.new_polarity
+            != infer_playbook_polarity(cited_pb.content, cited_pb.rationale)
         )
         applied = self._replace_playbook(request, decision, cited_pb)
         return applied, was_flip
@@ -549,11 +552,12 @@ class ReflectionService:
             new_content=new_playbook.content,
         )
         warn_if_polarity_content_mismatch(new_playbook)
-        if new_playbook.polarity != cited.polarity:
+        cited_polarity = infer_playbook_polarity(cited.content, cited.rationale)
+        if new_playbook.polarity != cited_polarity:
             logger.info(
                 "reflection.flip prior_polarity=%s new_polarity=%s playbook_id=%s "
                 'content_excerpt="%s" prior_excerpt="%s" citation_excerpt="%s"',
-                cited.polarity,
+                cited_polarity,
                 new_playbook.polarity,
                 cited.user_playbook_id,
                 (new_playbook.content or "")[:120].replace('"', "'"),

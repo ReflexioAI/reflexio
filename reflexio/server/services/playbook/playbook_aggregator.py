@@ -34,6 +34,7 @@ from reflexio.server.services.playbook.playbook_service_utils import (
     PlaybookAggregatorRequest,
     ensure_playbook_content,
 )
+from reflexio.server.services.polarity_utils import infer_playbook_polarity
 from reflexio.server.services.service_utils import log_model_response
 from reflexio.server.usage_metrics import record_usage_event
 
@@ -265,8 +266,10 @@ class PlaybookAggregator:
             key = PlaybookAggregator._get_direction_key(fb)
             matched = False
             for group in groups:
+                fb_polarity = infer_playbook_polarity(fb.content, fb.rationale)
                 if any(
-                    fb.polarity == group_fb.polarity
+                    fb_polarity
+                    == infer_playbook_polarity(group_fb.content, group_fb.rationale)
                     and PlaybookAggregator._token_overlap(
                         key,
                         PlaybookAggregator._get_direction_key(group_fb),

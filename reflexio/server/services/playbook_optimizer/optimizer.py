@@ -18,7 +18,7 @@ from reflexio.models.config_schema import PlaybookOptimizerConfig
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.services.polarity_utils import (
-    looks_negative,
+    infer_playbook_polarity,
     warn_if_polarity_content_mismatch,
 )
 
@@ -459,10 +459,13 @@ class PlaybookOptimizer:
         # legitimately flip framing (positive guidance -> negative
         # anti-pattern or vice versa), in which case keeping
         # ``current_user.polarity`` would corrupt the polarity-based
-        # clustering and consolidation rules. Use the same heuristic the
-        # consistency checker uses so the stored polarity matches the
-        # content shape.
-        resolved_polarity = "negative" if looks_negative(best_content) else "positive"
+        # clustering and consolidation rules. Use the shared inference
+        # function so the stored polarity is derived consistently with every
+        # other read site (negative requires both avoidance wording and a
+        # failure signal in the content/rationale).
+        resolved_polarity = infer_playbook_polarity(
+            best_content, current_user.rationale
+        )
         successor_user = current_user.model_copy(
             update={
                 "user_playbook_id": 0,

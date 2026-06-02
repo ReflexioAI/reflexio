@@ -126,22 +126,27 @@ class TestFormatPlaybooksWithPrefix:
         field in the prompt payload the model is guessing about the field it is
         supposed to refine. This regression test pins the row shape.
         """
+        # Polarity is rendered from derived wording (``infer_playbook_polarity``),
+        # not the stored field, so use coherent negative wording + a failure
+        # signal in the rationale to exercise the negative branch.
         fb = UserPlaybook(
             user_playbook_id=0,
             agent_version="v1",
             request_id="req1",
             playbook_name="fb",
-            content="do X when Y",
+            content="Do not start unbilled work when Y",
             trigger="user asks about billing",
-            rationale="prevents unbilled work",
+            rationale="prevents unbilled work after user pushback",
             polarity="negative",
             source="extractor",
         )
         result = mock_consolidator._format_playbooks_with_prefix([fb], "EXISTING")
         assert 'Trigger: "user asks about billing"' in result, result
-        assert 'Rationale: "prevents unbilled work"' in result, result
+        assert 'Rationale: "prevents unbilled work after user pushback"' in result, (
+            result
+        )
         # Content / polarity / name / source must still render alongside.
-        assert 'Content: "do X when Y"' in result
+        assert 'Content: "Do not start unbilled work when Y"' in result
         assert "Polarity: negative" in result
         assert "Name: fb" in result
         assert "Source: extractor" in result
@@ -733,9 +738,7 @@ class TestBuildDeduplicatedResultsEdgeCases:
             _make_user_playbook(0, source_interaction_ids=[1, 2]),
         ]
         existing_playbooks = [
-            _make_user_playbook(
-                1, user_playbook_id=200, source_interaction_ids=[2, 3]
-            ),
+            _make_user_playbook(1, user_playbook_id=200, source_interaction_ids=[2, 3]),
         ]
 
         dedup_output = PlaybookConsolidationOutput(
