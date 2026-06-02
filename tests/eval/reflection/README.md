@@ -1,0 +1,59 @@
+# Reflection decision-eval harness (AI-judged)
+
+Scaffolding to measure whether the **reflection** step makes the right
+decision for a cited memory item, and to catch regressions when the
+`memory_reflection` prompt changes.
+
+It is **AI-judged**: no human gold labels are required at scoring time —
+an LLM-judge labels each case and the headline metric is *agreement with
+the judge*. A cheap deterministic *label accuracy* is tracked alongside.
+
+> **This is bounded scaffolding plus a tiny illustrative fixture, not a
+> curated eval dataset.** Real cases are curated later. The fixture in
+> `fixtures/illustrative_cases.json` exists only to exercise the harness
+> end-to-end.
+
+## Layout
+
+| File | Purpose |
+| --- | --- |
+| `case.py` | `ReflectionEvalCase` schema + `label_for_decision` field-presence → label mapping |
+| `judge.py` | `judge_reflection_decision` AI-judge (panel of N, default 1, majority vote) |
+| `runner.py` | `run_eval` runner + `EvalResults` metrics (accuracy, confusion, false-tighten, over-specialization, flip correctness) |
+| `fixtures/` | `illustrative_cases.json` + loader (`load_illustrative_cases`) |
+
+Mirrors the conventions of the existing golden-set harness in
+`tests/eval/` (Pydantic verdict, `LiteLLMClient`-style client, model
+never hardcoded — it comes from the rubric's `judge_model`).
+
+## Label mapping (field-presence → coarse label)
+
+The live `ReflectionDecision` carries **no mode label**; the outcome is
+encoded by which replacement fields are set. For scoring we collapse
+that into a coarse label with this precedence:
+
+1. `new_polarity` differs from cited → `flip`
+2. `new_profile_time_to_live` set → `ttl`
+3. `new_trigger` changed → `tighten` / `widen` (longer trigger = narrower
+   = tighten; shorter = broader = widen; ambiguous → `scope`)
+4. `new_content` substantively changed → `rewrite`
+5. nothing set → `no_change`
+
+## Fixture coverage
+
+| Case id | Label |
+| --- | --- |
+| `no_change_stable_preference` | `no_change` |
+| `tighten_overbroad_trigger` | `tighten` |
+| `widen_too_narrow_trigger` | `widen` |
+| `flip_polarity_reversal` | `flip` |
+
+## Running
+
+Tests mock the LLM judge and the produced decision — no real API calls:
+
+```bash
+uv run pytest tests/eval/reflection -o 'addopts=' -q
+```
+
+Anything that would hit a real API is decorated `@skip_low_priority`.

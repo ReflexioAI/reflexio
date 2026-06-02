@@ -1,0 +1,132 @@
+[
+  {
+    "id": "no_change_stable_preference",
+    "agent_context": "Coding assistant for a backend engineer.",
+    "window": [
+      {
+        "user_id": "u1",
+        "request_id": "r1",
+        "role": "User",
+        "content": "Set up the test runner for this repo.",
+        "created_at": 1
+      },
+      {
+        "user_id": "u1",
+        "request_id": "r1",
+        "role": "Assistant",
+        "content": "Using pytest as you prefer.",
+        "created_at": 2,
+        "citations": [
+          {"kind": "playbook", "real_id": "101", "title": "prefers pytest"}
+        ]
+      }
+    ],
+    "cited_item": {
+      "kind": "playbook",
+      "target_id": "101",
+      "content": "Use pytest for Python tests.",
+      "trigger": "running or scaffolding Python tests",
+      "polarity": "positive"
+    },
+    "gold_label": "no_change",
+    "notes": "The cited rule was applied correctly; no revision warranted."
+  },
+  {
+    "id": "tighten_overbroad_trigger",
+    "agent_context": "Coding assistant for a backend engineer.",
+    "window": [
+      {
+        "user_id": "u1",
+        "request_id": "r2",
+        "role": "User",
+        "content": "Format this YAML file.",
+        "created_at": 3
+      },
+      {
+        "user_id": "u1",
+        "request_id": "r2",
+        "role": "Assistant",
+        "content": "I ran the Python formatter, but this is YAML so it did not apply.",
+        "created_at": 4,
+        "citations": [
+          {"kind": "playbook", "real_id": "102", "title": "run formatter"}
+        ]
+      }
+    ],
+    "cited_item": {
+      "kind": "playbook",
+      "target_id": "102",
+      "content": "Run the formatter before showing code.",
+      "trigger": "editing files",
+      "polarity": "positive"
+    },
+    "gold_label": "tighten",
+    "gold_new_trigger": "editing Python source files before showing code to the user",
+    "notes": "Trigger fired on a non-Python file; it should be narrowed to Python edits."
+  },
+  {
+    "id": "widen_too_narrow_trigger",
+    "agent_context": "Coding assistant for a backend engineer.",
+    "window": [
+      {
+        "user_id": "u1",
+        "request_id": "r3",
+        "role": "User",
+        "content": "Add a docstring to this function and this class.",
+        "created_at": 5
+      },
+      {
+        "user_id": "u1",
+        "request_id": "r3",
+        "role": "Assistant",
+        "content": "I added a docstring to the function; the rule only mentioned functions so I skipped the class.",
+        "created_at": 6,
+        "citations": [
+          {"kind": "playbook", "real_id": "103", "title": "docstrings"}
+        ]
+      }
+    ],
+    "cited_item": {
+      "kind": "playbook",
+      "target_id": "103",
+      "content": "Write a docstring.",
+      "trigger": "defining a new public function in a module",
+      "polarity": "positive"
+    },
+    "gold_label": "widen",
+    "gold_new_trigger": "defining a new public symbol",
+    "notes": "Rule should apply to classes and methods too; trigger is too narrow."
+  },
+  {
+    "id": "flip_polarity_reversal",
+    "agent_context": "Coding assistant for a backend engineer.",
+    "window": [
+      {
+        "user_id": "u1",
+        "request_id": "r4",
+        "role": "User",
+        "content": "Stop adding inline comments everywhere, I find them noisy.",
+        "created_at": 7
+      },
+      {
+        "user_id": "u1",
+        "request_id": "r4",
+        "role": "Assistant",
+        "content": "I had been adding inline comments per the rule, but you now want fewer.",
+        "created_at": 8,
+        "citations": [
+          {"kind": "playbook", "real_id": "104", "title": "inline comments"}
+        ]
+      }
+    ],
+    "cited_item": {
+      "kind": "playbook",
+      "target_id": "104",
+      "content": "Add explanatory inline comments to code.",
+      "trigger": "writing non-trivial code",
+      "polarity": "positive"
+    },
+    "gold_label": "flip",
+    "notes": "User reversed the preference; the rule's polarity should flip to negative."
+  }
+]
