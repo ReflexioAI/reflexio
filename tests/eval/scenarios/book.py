@@ -105,6 +105,12 @@ def apply_consolidation(
         return new_book
 
     if isinstance(decision, DifferentiateDecision):
+        # NOTE: the shim refines the existing rule's trigger IN PLACE, preserving
+        # its id. The real consolidator archives the existing row and emits a new
+        # row (fresh id) with the refined trigger. Book content/structure match;
+        # the id differs. This is harmless unless a later round re-cites a
+        # post-differentiate rule by id — add that handling here if such a
+        # multi-round differentiate→reflect scenario is introduced.
         new_book = [
             rule.model_copy(update={"trigger": decision.refined_existing_trigger})
             if rule.id == decision.existing_id
