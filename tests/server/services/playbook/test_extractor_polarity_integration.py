@@ -1,14 +1,15 @@
 """
 Integration tests for polarity emission by the classic playbook extractor.
 
-These tests verify the end-to-end polarity flow from LLM response through
+These tests verify the end-to-end wording flow from LLM response through
 ``PlaybookExtractor.run()`` to the produced ``UserPlaybook`` objects:
 
-* Neutral / no-failure windows produce playbooks with ``polarity="positive"``
-  via internal derivation.
-* Failure-evidence windows with avoidance wording and rationale
-  produce playbooks with negative polarity AND content prefixed by one of
-  ``NEGATIVE_PREFIXES`` — confirming the negative path is preserved end-to-end.
+* Neutral / no-failure windows produce action-style playbooks whose content
+  does NOT read as avoidance.
+* Failure-evidence windows with avoidance wording and rationale produce at
+  least one playbook whose content starts with a negative/avoidance prefix
+  (``"Avoid"``/``"Do not"``/``"Don't"``/``"Never"``) — confirming the
+  avoidance path is preserved end-to-end.
 """
 
 from __future__ import annotations
@@ -35,12 +36,12 @@ from reflexio.server.services.playbook.playbook_service_utils import (
     StructuredPlaybookContent,
     StructuredPlaybookList,
 )
-from tests._polarity_oracle import (
-    NEGATIVE_PREFIXES,
-    infer_playbook_polarity,
-)
 
 pytestmark = pytest.mark.integration
+
+# Local wording convention for avoidance-oriented playbook content. Not a
+# polarity classifier — just the literal prefixes the fixtures use.
+_NEGATIVE_PREFIXES = ("Avoid", "Do not", "Don't", "Never")
 
 
 # ===============================
@@ -311,9 +312,9 @@ def test_classic_extractor_emits_positive_when_no_failure_evidence(
 
     assert len(result) == 2, "Expected two playbooks from the neutral window"
     assert all(
-        infer_playbook_polarity(playbook.content, playbook.rationale) == "positive"
+        not playbook.content.lstrip().startswith(_NEGATIVE_PREFIXES)
         for playbook in result
-    ), "All action-style playbooks must derive polarity=positive"
+    ), "No action-style playbook from a neutral window should read as avoidance"
 
 
 def test_classic_extractor_emits_negative_on_clear_failure(
@@ -323,11 +324,11 @@ def test_classic_extractor_emits_negative_on_clear_failure(
     service_config,
     failure_request_interaction_models,
 ):
-    """Window with user pushback → at least one playbook has polarity=negative.
+    """Window with user pushback → at least one playbook uses avoidance wording.
 
-    Validates that negative polarity is derived end-to-end when the LLM writes
-    an avoidance rule: the emitted ``UserPlaybook`` must have
-    ``polarity == "negative"`` AND content starting with one of ``NEGATIVE_PREFIXES``
+    Validates that avoidance wording is preserved end-to-end when the LLM writes
+    an avoidance rule: at least one emitted ``UserPlaybook`` must have content
+    starting with one of ``_NEGATIVE_PREFIXES``
     (``"Avoid"``/``"Do not"``/``"Don't"``/``"Never"``).
     """
     request_context.storage.get_last_k_interactions_grouped.return_value = (
@@ -363,19 +364,9 @@ def test_classic_extractor_emits_negative_on_clear_failure(
     assert len(result) == 2, "Expected both playbook entries to be emitted"
 
     negative_playbooks = [
-        pb
-        for pb in result
-        if infer_playbook_polarity(pb.content, pb.rationale) == "negative"
+        pb for pb in result if pb.content.lstrip().startswith(_NEGATIVE_PREFIXES)
     ]
     assert len(negative_playbooks) >= 1, (
-        "Expected at least one playbook with polarity=negative from a failure window"
-    )
-
-    negative_playbook = negative_playbooks[0]
-    assert any(
-        negative_playbook.content.lstrip().startswith(prefix)
-        for prefix in NEGATIVE_PREFIXES
-    ), (
-        f"Negative-polarity content must start with one of {NEGATIVE_PREFIXES}; "
-        f"got: {negative_playbook.content!r}"
+        "Expected at least one playbook with avoidance wording from a failure "
+        f"window (one of {_NEGATIVE_PREFIXES}); got: {[pb.content for pb in result]!r}"
     )

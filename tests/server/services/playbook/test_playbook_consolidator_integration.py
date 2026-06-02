@@ -39,7 +39,6 @@ from reflexio.server.services.playbook.playbook_consolidator import (
     UnifyDecision,
 )
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
-from tests._polarity_oracle import infer_playbook_polarity
 
 pytestmark = pytest.mark.integration
 
@@ -128,10 +127,9 @@ def _make_existing_playbook(
     """
     if content is None:
         content = "Avoid X." if polarity == "negative" else "Recommend X."
-    # Polarity is derived from wording + failure evidence (see
-    # ``infer_playbook_polarity``). A negative row must carry both avoidance
-    # framing and a failure signal in its rationale to be coherent, mirroring
-    # what the extractor actually writes.
+    # Orientation is a wording convention: a negative row uses avoidance
+    # framing ("Avoid …") and carries a failure signal in its rationale to be
+    # coherent, mirroring what the extractor actually writes.
     rationale = "user pushback observed" if polarity == "negative" else "r"
     pb = UserPlaybook(
         user_playbook_id=0,
@@ -173,10 +171,9 @@ def _make_candidate(
     Returns:
         A fresh ``UserPlaybook`` ready to flow through ``deduplicate``.
     """
-    # Polarity is derived from wording + failure evidence at read time
-    # (``infer_playbook_polarity``). A negative candidate must carry a failure
-    # signal in its rationale so the derived polarity matches the requested
-    # ``polarity``, mirroring what the extractor actually writes.
+    # Orientation is a wording convention: a negative candidate uses avoidance
+    # framing ("Avoid …") and carries a failure signal in its rationale,
+    # mirroring what the extractor actually writes.
     rationale = "user pushback observed" if polarity == "negative" else "r"
     return UserPlaybook(
         user_playbook_id=0,
@@ -294,16 +291,13 @@ class TestUnify:
         assert archive_ids == [existing.user_playbook_id]
         assert len(rows) == 1
         assert rows[0].content == "Avoid X (always)."
-        assert infer_playbook_polarity(rows[0].content, rows[0].rationale) == "negative"
+        assert rows[0].content.lstrip().startswith("Avoid")
 
         _apply_to_storage(sqlite_storage, rows, archive_ids)
         surviving = sqlite_storage.get_user_playbooks(user_id="u1")
         # SQLite delete is a hard remove; only the unified row remains.
         assert len(surviving) == 1
-        assert (
-            infer_playbook_polarity(surviving[0].content, surviving[0].rationale)
-            == "negative"
-        )
+        assert surviving[0].content.lstrip().startswith("Avoid")
         assert surviving[0].content == "Avoid X (always)."
 
     def test_n_way_merge_archives_all_existing_members_and_inserts_one(
@@ -752,10 +746,7 @@ class TestContradictionResolutionContract:
         surviving = sqlite_storage.get_user_playbooks(user_id="u1")
         assert len(surviving) == 1
         assert surviving[0].user_playbook_id == existing.user_playbook_id
-        assert (
-            infer_playbook_polarity(surviving[0].content, surviving[0].rationale)
-            == "positive"
-        )
+        assert surviving[0].content.lstrip().startswith("Recommend")
         assert surviving[0].content == "Recommend X."
 
     def test_opposing_polarity_resolves_via_differentiate(
@@ -804,14 +795,19 @@ class TestContradictionResolutionContract:
         assert len(surviving) == 2
         surviving_triggers = {r.trigger for r in surviving}
         assert "when Y" not in surviving_triggers
-        # Each refined trigger appears with exactly one polarity.
-        polarity_by_trigger = {
-            r.trigger: infer_playbook_polarity(r.content, r.rationale)
-            for r in surviving
-        }
-        assert polarity_by_trigger["when Y AND has declined X recently"] == "negative"
+        # Each refined trigger carries exactly the expected wording: the
+        # declined-recently branch keeps the negative (avoidance) candidate;
+        # the not-declined branch keeps the original positive rule.
+        content_by_trigger = {r.trigger: r.content for r in surviving}
         assert (
-            polarity_by_trigger["when Y AND has not declined X recently"] == "positive"
+            content_by_trigger["when Y AND has declined X recently"]
+            .lstrip()
+            .startswith("Avoid")
+        )
+        assert (
+            content_by_trigger["when Y AND has not declined X recently"]
+            .lstrip()
+            .startswith("Recommend")
         )
 
     def test_independent_over_contradiction_pair_is_forbidden_post_hoc(
@@ -855,23 +851,24 @@ class TestContradictionResolutionContract:
         _apply_to_storage(sqlite_storage, rows, archive_ids)
         surviving = sqlite_storage.get_user_playbooks(user_id="u1")
 
-        polarities_per_trigger: dict[str, set[str]] = {}
+        # Orientation is a wording convention: avoidance ("Avoid …") vs. not.
+        orientation_per_trigger: dict[str, set[bool]] = {}
         for pb in surviving:
             if pb.trigger is None:
                 continue
-            polarities_per_trigger.setdefault(pb.trigger, set()).add(
-                infer_playbook_polarity(pb.content, pb.rationale)
+            orientation_per_trigger.setdefault(pb.trigger, set()).add(
+                pb.content.lstrip().startswith("Avoid")
             )
 
         violations = [
-            (trigger, polarities)
-            for trigger, polarities in polarities_per_trigger.items()
-            if "positive" in polarities and "negative" in polarities
+            (trigger, orientations)
+            for trigger, orientations in orientation_per_trigger.items()
+            if len(orientations) > 1
         ]
         assert violations, (
             "expected the forbidden 'independent over contradiction pair' to leave "
-            "the post-state with opposing-polarity rows on the same trigger; got "
-            f"{polarities_per_trigger!r}"
+            "the post-state with mixed-orientation rows on the same trigger; got "
+            f"{ {t: [pb.content for pb in surviving if pb.trigger == t] for t in orientation_per_trigger}!r}"
         )
         # The assertion above pins the contract: if the apply layer ever grows
         # a runtime guard, this test will fail and should be updated to assert

@@ -53,7 +53,6 @@ from reflexio.server.services.reflection.reflection_service_utils import (
     ReflectionOutput,
     ReflectionServiceRequest,
 )
-from tests._polarity_oracle import infer_playbook_polarity
 
 pytestmark = pytest.mark.e2e
 
@@ -242,9 +241,9 @@ def test_failure_path_produces_negative_rule_reflection_keeps_it(
     # negative playbook. We persist it directly; the extractor-side
     # polarity threading is covered by D6/C3 integration tests.
     seeded = _seed_failure_window_negative_playbook(storage, user_id)
-    assert infer_playbook_polarity(seeded.content, seeded.rationale) == "negative", (
-        "Setup failure — seeded playbook must derive to negative; got "
-        f"{infer_playbook_polarity(seeded.content, seeded.rationale)!r}"
+    assert seeded.content.lstrip().startswith("Avoid"), (
+        "Setup failure — seeded playbook must use avoidance wording; got "
+        f"{seeded.content!r}"
     )
 
     # Phase 2 — seed a citation window so reflection has something to consider.
@@ -302,11 +301,9 @@ def test_failure_path_produces_negative_rule_reflection_keeps_it(
     assert current[0].user_playbook_id == seeded.user_playbook_id, (
         "The same row must remain — reflection must not have replaced it"
     )
-    assert (
-        infer_playbook_polarity(current[0].content, current[0].rationale) == "negative"
-    ), (
-        "Polarity must stay negative across extraction + reflection; "
-        f"got {infer_playbook_polarity(current[0].content, current[0].rationale)!r}"
+    assert current[0].content.lstrip().startswith("Avoid"), (
+        "Avoidance wording must survive extraction + reflection; "
+        f"got {current[0].content!r}"
     )
     assert current[0].content == seeded.content, (
         f"Content must be unchanged on a no_change decision; got {current[0].content!r}"
