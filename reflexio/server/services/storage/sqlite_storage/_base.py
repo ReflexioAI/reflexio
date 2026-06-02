@@ -1160,10 +1160,12 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         self.conn.commit()
 
     def _migrate_user_playbook_polarity(self) -> None:
-        """Add the ``polarity`` column to ``user_playbooks`` if missing.
+        """Drop the legacy ``polarity`` column from ``user_playbooks`` if present.
 
-        Backfill-safe: existing rows default to ``'positive'``. Required for
-        databases created before per-rule polarity was introduced.
+        Polarity is retired under Option B (orientation lives in rule wording and
+        is LLM-judged, never a stored field). This mirrors the Supabase drop
+        migration and brings databases created while the column existed back in
+        line with the current schema, which no longer defines it.
         """
         cols = {
             row["name"]
@@ -1171,12 +1173,9 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         }
         if not cols:
             return
-        if "polarity" not in cols:
-            self.conn.execute(
-                "ALTER TABLE user_playbooks "
-                "ADD COLUMN polarity TEXT NOT NULL DEFAULT 'positive'"
-            )
-            logger.info("Added polarity column to user_playbooks")
+        if "polarity" in cols:
+            self.conn.execute("ALTER TABLE user_playbooks DROP COLUMN polarity")
+            logger.info("Dropped legacy polarity column from user_playbooks")
         self.conn.commit()
 
     def _migrate_agent_playbook_source_windows(self) -> None:
@@ -1643,8 +1642,7 @@ CREATE TABLE IF NOT EXISTS user_playbooks (
     expanded_terms TEXT,
     source_span TEXT,
     notes TEXT,
-    reader_angle TEXT,
-    polarity TEXT NOT NULL DEFAULT 'positive'
+    reader_angle TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_user_playbooks_playbook_name ON user_playbooks(playbook_name);
 CREATE INDEX IF NOT EXISTS idx_user_playbooks_agent_version ON user_playbooks(agent_version);

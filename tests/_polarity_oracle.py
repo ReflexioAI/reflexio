@@ -39,8 +39,9 @@ NEGATIVE_EVIDENCE_TERMS: tuple[str, ...] = (
 def looks_negative(content: str) -> bool:
     """Heuristic check: does the content's leading word look negative-framed?
 
-    This is a framing signal. ``infer_playbook_polarity`` combines it with
-    failure evidence before deriving polarity.
+    This is a framing signal the test oracle ``infer_playbook_polarity``
+    combines with failure evidence to classify a fixture's orientation. It is
+    not a production polarity derivation (see the module docstring).
 
     Args:
         content (str): The playbook's content text.
@@ -57,11 +58,12 @@ def infer_playbook_polarity(
     content: str,
     rationale: str | None = None,
 ) -> Literal["positive", "negative"]:
-    """Derive playbook polarity from rule wording and failure evidence.
+    """Classify a fixture's orientation from rule wording and failure evidence.
 
-    Positive/actionable guidance is the default. Negative polarity is reserved
-    for rules that are written as explicit avoidance guidance and whose
-    rationale/content contains a failure signal.
+    TEST ORACLE ONLY (see module docstring) — production never derives polarity
+    this way. Positive/actionable guidance is the default. Negative is reserved
+    for rules written as explicit avoidance guidance whose rationale/content
+    contains a failure signal.
 
     Args:
         content (str): The playbook content.
