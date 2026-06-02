@@ -1241,8 +1241,9 @@ def test_aggregator_groups_by_content_similarity_not_polarity():
 
     Two rows whose tokens overlap above the threshold but carry opposite
     orientations (a "do" rule and an "avoid" rule) MUST now land in the same
-    similarity group — the retired ``infer_playbook_polarity`` gate used to
-    force them apart. Keeping the opposite-orientation rules distinct inside a
+    similarity group — the retired mechanical whole-content polarity
+    direction-split used to force them apart. Keeping the opposite-orientation
+    rules distinct inside a
     merged skill is delegated to the aggregation prompt, not to a mechanical
     pre-LLM split.
     """
@@ -1365,8 +1366,8 @@ def test_playbook_aggregation_prompt_preserves_distinct_orientations():
 
     When merging similar playbooks, the model must keep a do-rule and an
     avoid-rule (opposite orientations) as SEPARATE rules — never collapse them
-    into one. This is the text-first replacement for the removed
-    ``infer_playbook_polarity`` direction split in the aggregator."""
+    into one. This is the text-first replacement for the retired mechanical
+    whole-content polarity direction-split in the aggregator."""
     from reflexio.server.prompt.prompt_manager import PromptManager
 
     pm = PromptManager()
