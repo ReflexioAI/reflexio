@@ -15,6 +15,7 @@ import pytest
 from reflexio.models.api_schema.domain.enums import ProfileTimeToLive
 from reflexio.server.services.reflection.reflection_service_utils import (
     ReflectionDecision,
+    ReflectionOutput,
 )
 from reflexio.test_support.skip_decorators import skip_low_priority
 from tests.eval.reflection.case import (
@@ -28,6 +29,7 @@ from tests.eval.reflection.judge import (
     ReflectionVerdict,
     judge_reflection_decision,
 )
+from tests.eval.reflection.providers import make_reflection_decision_provider
 from tests.eval.reflection.runner import EvalResults, run_eval
 
 
@@ -571,3 +573,122 @@ def test_real_judge_smoke():  # pragma: no cover - manual, costs money
         rubric={"judge_model": "claude-haiku-4-5"},
     )
     assert isinstance(v, ReflectionVerdict)
+
+
+# ---------------------------------------------------------------------------
+# Live reflection decision provider (mocked LLM seam — CI-covered).
+# ---------------------------------------------------------------------------
+#
+# These exercise the real ``ReflectionExtractor`` construction + entity build
+# + ``run`` call path with the LLM seam mocked, so default CI catches provider
+# bugs (entity construction, ctor signature, prompt rendering reachability)
+# WITHOUT a paid API call. The real-LLM end-to-end run lives in the
+# ``@skip_low_priority`` smoke below.
+
+
+def _profile_cited_case() -> ReflectionEvalCase:
+    return ReflectionEvalCase(
+        id="prof1",
+        agent_context="ctx",
+        cited_item=_profile_item(),
+        gold_label="ttl",
+    )
+
+
+def _playbook_cited_case() -> ReflectionEvalCase:
+    return ReflectionEvalCase(
+        id="pb1",
+        agent_context="ctx",
+        cited_item=_playbook_item(),
+        gold_label="tighten",
+    )
+
+
+def test_live_provider_returns_canned_decision_for_playbook(tmp_path):
+    """Provider builds the playbook entity, renders the real prompt, and
+    returns the LLM's decision — proving the construction + call path under
+    a mocked LLM seam (CI-covered)."""
+    from reflexio.server.api_endpoints.request_context import RequestContext
+
+    canned = ReflectionDecision(
+        target_kind="playbook",
+        target_id="1",
+        new_trigger="editing python source files only",
+    )
+    mock = MagicMock()
+    mock.generate_chat_response.return_value = ReflectionOutput(decisions=[canned])
+
+    ctx = RequestContext(org_id="eval-prov-pb", storage_base_dir=str(tmp_path))
+    provider = make_reflection_decision_provider(llm_client=mock, request_context=ctx)
+
+    decision = provider(_playbook_cited_case())
+
+    assert decision == canned
+    # The provider reached the LLM call (entity build + prompt render succeeded).
+    mock.generate_chat_response.assert_called_once()
+
+
+def test_live_provider_returns_canned_decision_for_profile(tmp_path):
+    """Same path for a profile-cited case: TTL-bearing entity is built and
+    the canned decision flows back."""
+    from reflexio.server.api_endpoints.request_context import RequestContext
+
+    canned = ReflectionDecision(
+        target_kind="profile",
+        target_id="p1",
+        new_profile_time_to_live=ProfileTimeToLive.ONE_DAY,
+    )
+    mock = MagicMock()
+    mock.generate_chat_response.return_value = ReflectionOutput(decisions=[canned])
+
+    ctx = RequestContext(org_id="eval-prov-prof", storage_base_dir=str(tmp_path))
+    provider = make_reflection_decision_provider(llm_client=mock, request_context=ctx)
+
+    decision = provider(_profile_cited_case())
+
+    assert decision == canned
+    mock.generate_chat_response.assert_called_once()
+
+
+def test_live_provider_empty_output_maps_to_no_change(tmp_path):
+    """An empty ``ReflectionOutput`` makes the provider return a no-op
+    decision that ``label_for_decision`` maps to ``no_change``."""
+    from reflexio.server.api_endpoints.request_context import RequestContext
+
+    mock = MagicMock()
+    mock.generate_chat_response.return_value = ReflectionOutput(decisions=[])
+
+    ctx = RequestContext(org_id="eval-prov-noop", storage_base_dir=str(tmp_path))
+    provider = make_reflection_decision_provider(llm_client=mock, request_context=ctx)
+
+    case = _playbook_cited_case()
+    decision = provider(case)
+
+    # No revision fields set => no-op decision.
+    assert decision.new_content is None
+    assert decision.new_trigger is None
+    assert decision.new_profile_time_to_live is None
+    assert label_for_decision(decision, case.cited_item) == "no_change"
+
+
+@skip_low_priority
+def test_live_reflection_provider_real(tmp_path):  # pragma: no cover - manual
+    """Real end-to-end smoke: live extractor + real LLM over the fixture.
+
+    Asserts only pipeline mechanics (every case produced a non-empty label),
+    never exact decisions. Run manually with API keys + RUN_LOW_PRIORITY=1.
+    """
+    from reflexio.server.api_endpoints.request_context import RequestContext
+    from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
+
+    client = LiteLLMClient(LiteLLMConfig(model="claude-haiku-4-5"))
+    ctx = RequestContext(org_id="eval", storage_base_dir=str(tmp_path))
+    provider = make_reflection_decision_provider(
+        llm_client=client, request_context=ctx
+    )
+
+    cases = load_illustrative_cases()
+    res = run_eval(cases=cases, decision_provider=provider, llm_client=None)
+
+    assert res.n == len(cases)
+    assert all(o.produced_label for o in res.outcomes)
