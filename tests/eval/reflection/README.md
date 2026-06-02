@@ -19,7 +19,7 @@ the judge*. A cheap deterministic *label accuracy* is tracked alongside.
 | --- | --- |
 | `case.py` | `ReflectionEvalCase` schema + `label_for_decision` field-presence → label mapping |
 | `judge.py` | `judge_reflection_decision` AI-judge (panel of N, default 1, majority vote) |
-| `runner.py` | `run_eval` runner + `EvalResults` metrics (accuracy, confusion, false-tighten, over-specialization, flip correctness) |
+| `runner.py` | `run_eval` runner + `EvalResults` metrics (accuracy, confusion, false-tighten, over-specialization) |
 | `fixtures/` | `illustrative_cases.json` + loader (`load_illustrative_cases`) |
 
 Mirrors the conventions of the existing golden-set harness in
@@ -32,13 +32,17 @@ The live `ReflectionDecision` carries **no mode label**; the outcome is
 encoded by which replacement fields are set. For scoring we collapse
 that into a coarse label with this precedence:
 
-1. `new_content` derived polarity (wording + `new_rationale`) differs from
-   cited → `flip`
-2. `new_profile_time_to_live` set → `ttl`
-3. `new_trigger` changed → `tighten` / `widen` (longer trigger = narrower
+1. `new_profile_time_to_live` set → `ttl`
+2. `new_trigger` changed → `tighten` / `widen` (longer trigger = narrower
    = tighten; shorter = broader = widen; ambiguous → `scope`)
-4. `new_content` substantively changed → `rewrite`
-5. nothing set → `no_change`
+3. `new_content` substantively changed → `rewrite`
+4. nothing set → `no_change`
+
+There is no mechanical `flip` label: an orientation-reversing rewrite is
+not distinguishable from any other rewrite without a polarity heuristic
+(retired — orientation is wording, judged by the LLM). Such a case is
+labeled `rewrite`; whether the rule was *correctly* reversed is the
+AI judge's call.
 
 ## Fixture coverage
 
@@ -47,7 +51,7 @@ that into a coarse label with this precedence:
 | `no_change_stable_preference` | `no_change` |
 | `tighten_overbroad_trigger` | `tighten` |
 | `widen_too_narrow_trigger` | `widen` |
-| `flip_polarity_reversal` | `flip` |
+| `flip_polarity_reversal` | `rewrite` (orientation reversal; judge verifies the reversal) |
 
 ## Running
 
