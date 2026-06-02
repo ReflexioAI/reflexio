@@ -1,0 +1,118 @@
+[
+  {
+    "id": "compose_grows_skill",
+    "agent_context": "Assistant that helps an engineer operate a service.",
+    "seed_book": [
+      {
+        "id": 1,
+        "content": "Always announce the deploy in the channel.",
+        "trigger": "deploying a service",
+        "rationale": ""
+      }
+    ],
+    "rounds": [
+      {
+        "kind": "learn",
+        "interactions": [
+          {
+            "role": "user",
+            "content": "We shipped on a Friday afternoon and the team was gone when it broke."
+          },
+          {
+            "role": "assistant",
+            "content": "Noted. Avoid Friday-afternoon deploys so someone is around if it breaks."
+          }
+        ],
+        "cited": null,
+        "gold": {
+          "consolidation_kind": "unify",
+          "extraction_signal": "avoidance rule about deploy timing"
+        }
+      }
+    ],
+    "gold_end_state": "one deploy skill holding both the announce do-rule and the Friday-avoid rule"
+  },
+  {
+    "id": "no_self_contradiction",
+    "agent_context": "Assistant answering an end user's questions.",
+    "seed_book": [
+      {
+        "id": 1,
+        "content": "Answer factual questions immediately.",
+        "trigger": "user asks a factual question",
+        "rationale": ""
+      }
+    ],
+    "rounds": [
+      {
+        "kind": "learn",
+        "interactions": [
+          {
+            "role": "user",
+            "content": "Stop answering immediately. Do not answer immediately; ask a clarifying question first."
+          },
+          {
+            "role": "assistant",
+            "content": "Understood. I will ask a clarifying question before answering."
+          }
+        ],
+        "cited": null,
+        "gold": {
+          "consolidation_kind": "differentiate",
+          "extraction_signal": "opposing advice on the same trigger"
+        }
+      }
+    ],
+    "gold_end_state": "two rules under refined distinct triggers, not merged"
+  },
+  {
+    "id": "reflect_corrects",
+    "agent_context": "Assistant that drives a multi-step task runner.",
+    "seed_book": [
+      {
+        "id": 1,
+        "content": "Always auto-retry a failed step.",
+        "trigger": "a step fails",
+        "rationale": ""
+      }
+    ],
+    "rounds": [
+      {
+        "kind": "learn",
+        "interactions": [
+          {
+            "role": "user",
+            "content": "Use a dark theme for the dashboard from now on."
+          },
+          {
+            "role": "assistant",
+            "content": "Recommend defaulting the dashboard to dark theme."
+          }
+        ],
+        "cited": null,
+        "gold": {
+          "consolidation_kind": "independent",
+          "extraction_signal": "unrelated preference"
+        }
+      },
+      {
+        "kind": "reflect",
+        "interactions": [
+          {
+            "role": "user",
+            "content": "The payment step failed and the auto-retry ran it again, so we double-committed the charge."
+          },
+          {
+            "role": "user",
+            "content": "Do not auto-retry like that. That caused a duplicate charge and I had to refund it."
+          }
+        ],
+        "cited": 1,
+        "gold": {
+          "reflection": "tighten"
+        }
+      }
+    ],
+    "gold_end_state": "the auto-retry rule narrowed or rewritten to avoid the double-commit"
+  }
+]
