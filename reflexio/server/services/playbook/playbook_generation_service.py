@@ -58,7 +58,6 @@ class PlaybookGenerationServiceConfig:
         rerun_start_time: Optional start time filter for rerun flows (Unix timestamp)
         rerun_end_time: Optional end time filter for rerun flows (Unix timestamp)
         auto_run: True for regular flow (checks stride_size), False for rerun/manual (skips stride_size)
-        extractor_names: Optional list of extractor names to run (derived from playbook_name)
     """
 
     request_id: str
@@ -70,7 +69,6 @@ class PlaybookGenerationServiceConfig:
     rerun_end_time: int | None = None
     auto_run: bool = True
     force_extraction: bool = False
-    extractor_names: list[str] | None = None
 
 
 class PlaybookGenerationService(
@@ -131,7 +129,6 @@ class PlaybookGenerationService(
             rerun_end_time=request.rerun_end_time,
             auto_run=request.auto_run,
             force_extraction=request.force_extraction,
-            extractor_names=[request.playbook_name] if request.playbook_name else None,
         )
 
     def _configured_playbook_config(self) -> PlaybookConfig | None:
@@ -440,13 +437,12 @@ class PlaybookGenerationService(
         if not playbook_config or not playbook_config.aggregation_config:
             return
 
-        playbook_name = playbook_config.extractor_name
-        logger.info("Triggering aggregation for playbook_name: %s", playbook_name)
+        logger.info("Triggering aggregation")
 
-        # Create aggregator request
+        # Create aggregator request. Aggregation is singleton — it operates on the
+        # user's whole playbook set, so no name selector is threaded.
         aggregator_request = PlaybookAggregatorRequest(
             agent_version=self.service_config.agent_version,  # type: ignore[reportOptionalMemberAccess]
-            playbook_name=playbook_name,
         )
 
         # Initialize and run aggregator (synchronous)
@@ -463,8 +459,7 @@ class PlaybookGenerationService(
             )
         except TimeoutError:
             logger.info(
-                "Skipping inline aggregation for playbook_name=%s agent_version=%s: aggregation limiter is saturated",
-                playbook_name,
+                "Skipping inline aggregation for agent_version=%s: aggregation limiter is saturated",
                 self.service_config.agent_version,  # type: ignore[reportOptionalMemberAccess]
             )
 
@@ -479,18 +474,16 @@ class PlaybookGenerationService(
         from previous reruns.
 
         Args:
-            request: RerunPlaybookGenerationRequest with optional agent_version and playbook_name filters
+            request: RerunPlaybookGenerationRequest with optional agent_version filter
         """
         deleted_count = self.storage.delete_all_user_playbooks_by_status(  # type: ignore[reportOptionalMemberAccess]
             status=Status.PENDING,
             agent_version=request.agent_version,
-            playbook_name=request.playbook_name,
         )
         logger.info(
-            "Deleted %d existing pending raw entries before rerun (agent_version=%s, playbook_name=%s)",
+            "Deleted %d existing pending raw entries before rerun (agent_version=%s)",
             deleted_count,
             request.agent_version,
-            request.playbook_name,
         )
 
     def _get_rerun_user_ids(self, request: RerunPlaybookGenerationRequest) -> list[str]:
@@ -531,7 +524,6 @@ class PlaybookGenerationService(
                 request.start_time.isoformat() if request.start_time else None
             ),
             "end_time": request.end_time.isoformat() if request.end_time else None,
-            "playbook_name": request.playbook_name,
         }
 
     def _create_run_request_for_item(
@@ -563,7 +555,6 @@ class PlaybookGenerationService(
                 rerun_end_time=(
                     int(request.end_time.timestamp()) if request.end_time else None
                 ),
-                playbook_name=request.playbook_name,
                 auto_run=False,
             )
         # Handle manual requests (ManualPlaybookGenerationRequest)
@@ -601,7 +592,7 @@ class PlaybookGenerationService(
     ) -> int:
         """Get the count of entries generated during rerun.
 
-        Counts entries with pending status, filtered by agent_version and optionally playbook_name.
+        Counts entries with pending status, filtered by agent_version.
 
         Args:
             request: The rerun request object
@@ -610,7 +601,6 @@ class PlaybookGenerationService(
             Number of entries generated
         """
         playbooks = self.storage.get_user_playbooks(  # type: ignore[reportOptionalMemberAccess]
-            playbook_name=request.playbook_name,
             agent_version=request.agent_version,
             status_filter=[Status.PENDING],
             limit=10000,
@@ -632,7 +622,7 @@ class PlaybookGenerationService(
         Uses progress tracking via OperationStateManager.
 
         Args:
-            request: ManualPlaybookGenerationRequest with agent_version, optional source and playbook_name
+            request: ManualPlaybookGenerationRequest with agent_version and optional source
 
         Returns:
             ManualPlaybookGenerationResponse with success status and count
@@ -675,7 +665,6 @@ class PlaybookGenerationService(
             request_params = {
                 "agent_version": request.agent_version,
                 "source": request.source,
-                "playbook_name": request.playbook_name,
                 "mode": "manual_regular",
             }
             self._run_batch_with_progress(
@@ -706,8 +695,7 @@ class PlaybookGenerationService(
         """
         Count entries generated during manual regular generation.
 
-        Counts entries with CURRENT status (None), filtered by agent_version
-        and optionally playbook_name.
+        Counts entries with CURRENT status (None), filtered by agent_version.
 
         Args:
             request: The manual generation request object
@@ -716,7 +704,6 @@ class PlaybookGenerationService(
             Number of entries with CURRENT status
         """
         playbooks = self.storage.get_user_playbooks(  # type: ignore[reportOptionalMemberAccess]
-            playbook_name=request.playbook_name,
             agent_version=request.agent_version,
             status_filter=[None],  # CURRENT entries
             limit=10000,
@@ -742,7 +729,6 @@ class PlaybookGenerationService(
         return self.storage.has_user_playbooks_with_status(  # type: ignore[reportOptionalMemberAccess]
             status=status,
             agent_version=getattr(request, "agent_version", None),
-            playbook_name=getattr(request, "playbook_name", None),
         )
 
     def _delete_items_by_status(
@@ -760,7 +746,6 @@ class PlaybookGenerationService(
         return self.storage.delete_all_user_playbooks_by_status(  # type: ignore[reportOptionalMemberAccess]
             status=status,
             agent_version=getattr(request, "agent_version", None),
-            playbook_name=getattr(request, "playbook_name", None),
         )
 
     def _update_items_status(
@@ -781,12 +766,11 @@ class PlaybookGenerationService(
         Returns:
             int: Number of raw entries updated
         """
-        # Note: user_ids is ignored for playbook service as it uses agent_version/playbook_name filters
+        # Note: user_ids is ignored for playbook service as it uses agent_version filters
         return self.storage.update_all_user_playbooks_status(  # type: ignore[reportOptionalMemberAccess]
             old_status=old_status,
             new_status=new_status,
             agent_version=getattr(request, "agent_version", None),
-            playbook_name=getattr(request, "playbook_name", None),
         )
 
     def _create_status_change_response(

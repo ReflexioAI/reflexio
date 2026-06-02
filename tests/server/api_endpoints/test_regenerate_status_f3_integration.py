@@ -40,7 +40,6 @@ def test_status_endpoint_surfaces_f3_counters(client_with_org):
     job = RegenJob(
         job_id="f3-status-roundtrip",
         org_id=org_id,
-        evaluation_name="overall_success",
         from_ts=0,
         to_ts=9_999_999_999,
         status="completed",
@@ -80,7 +79,6 @@ def test_status_endpoint_defaults_when_f3_counters_unset(client_with_org):
     job = RegenJob(
         job_id="f3-status-defaults",
         org_id=org_id,
-        evaluation_name="overall_success",
         from_ts=0,
         to_ts=9_999_999_999,
         status="running",

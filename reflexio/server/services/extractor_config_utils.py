@@ -4,10 +4,19 @@ Utility functions for filtering extractor configurations.
 
 import logging
 
+from reflexio.models.config_schema import (
+    SINGLETON_AGENT_SUCCESS_EVALUATION_NAME,
+    SINGLETON_PROFILE_EXTRACTOR_NAME,
+    SINGLETON_USER_PLAYBOOK_NAME,
+    AgentSuccessConfig,
+    ProfileExtractorConfig,
+    UserPlaybookExtractorConfig,
+)
+
 logger = logging.getLogger(__name__)
 
 
-def get_extractor_name[TExtractorConfig](config: TExtractorConfig) -> str:
+def get_extractor_name(config: object) -> str:
     """
     Get the display name for an extractor config.
 
@@ -19,21 +28,24 @@ def get_extractor_name[TExtractorConfig](config: TExtractorConfig) -> str:
     Returns:
         str: The extractor name, or "unknown" if none found
     """
-    return getattr(
-        config,
-        "extractor_name",
-        getattr(config, "playbook_name", getattr(config, "evaluation_name", "unknown")),
-    )
+    if isinstance(config, ProfileExtractorConfig):
+        return SINGLETON_PROFILE_EXTRACTOR_NAME
+    if isinstance(config, UserPlaybookExtractorConfig):
+        return SINGLETON_USER_PLAYBOOK_NAME
+    if isinstance(config, AgentSuccessConfig):
+        return SINGLETON_AGENT_SUCCESS_EVALUATION_NAME
+    return getattr(config, "extractor_name", None) or getattr(
+        config, "playbook_name", None
+    ) or getattr(config, "evaluation_name", "unknown") or "unknown"
 
 
 def filter_extractor_configs[TExtractorConfig](
     extractor_configs: list[TExtractorConfig],
     source: str | None = None,
     allow_manual_trigger: bool = False,
-    extractor_names: list[str] | None = None,
 ) -> list[TExtractorConfig]:
     """
-    Filter extractor configs based on source, manual_trigger, and extractor names.
+    Filter extractor configs based on source and manual_trigger.
 
     This is a standalone utility function that can be used by both BaseGenerationService
     and GenerationService to filter extractor configurations consistently.
@@ -45,8 +57,6 @@ def filter_extractor_configs[TExtractorConfig](
             filtering is skipped.
         allow_manual_trigger: Whether to allow extractors with manual_trigger=True.
             If False, extractors with manual_trigger=True will be skipped.
-        extractor_names: Optional list of extractor names to filter by. If provided,
-            only extractors with names in this list will be included.
 
     Returns:
         Filtered list of extractor configs that should run for the given parameters
@@ -75,17 +85,6 @@ def filter_extractor_configs[TExtractorConfig](
                 get_extractor_name(config),
             )
             continue
-
-        # Filter by extractor_names if specified
-        if extractor_names:
-            name = get_extractor_name(config)
-            if name and name not in extractor_names:
-                logger.debug(
-                    "Skipping extractor '%s' - not in specified extractor_names %s",
-                    name,
-                    extractor_names,
-                )
-                continue
 
         filtered_configs.append(config)
 

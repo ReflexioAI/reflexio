@@ -833,7 +833,8 @@ class TestConvertRawToUserProfiles:
         assert len(result) == 2
         assert result[0].content == "User prefers dark mode"
         assert result[0].user_id == "test_user"
-        assert result[0].extractor_names == ["test_extractor"]
+        # Singleton extraction no longer records per-extractor provenance.
+        assert result[0].extractor_names is None
         assert result[1].content == "User's name is John"
 
     def test_skips_invalid_profiles(

@@ -150,7 +150,10 @@ from reflexio.models.api_schema.ui.converters import (
     to_profile_view,
     to_user_playbook_view,
 )
-from reflexio.models.config_schema import Config
+from reflexio.models.config_schema import (
+    SINGLETON_AGENT_SUCCESS_EVALUATION_NAME,
+    Config,
+)
 from reflexio.server._auth import DEFAULT_ORG_ID, default_get_org_id
 from reflexio.server.api_endpoints import (
     account_api,
@@ -1756,10 +1759,10 @@ def start_regenerate(
     payload: RegenerateRequest,
     org_id: str = Depends(default_get_org_id),
 ) -> RegenerateStartResponse:
-    """Start a regenerate job for one evaluator over a time window.
+    """Start a singleton regenerate job over a time window.
 
     Args:
-        payload (RegenerateRequest): Evaluator name + window bounds.
+        payload (RegenerateRequest): Window bounds plus optional legacy evaluator name.
         org_id (str): Organization ID resolved by the auth dependency.
 
     Returns:
@@ -1767,20 +1770,10 @@ def start_regenerate(
             tuples queued.
 
     Raises:
-        HTTPException: 400 when ``evaluation_name`` is not configured for
-            the org. 409 when a regenerate for the same (org, evaluator)
-            is already running. 503 when storage is not configured.
+        HTTPException: 409 when a regenerate for the same org is already
+            running. 503 when storage is not configured.
     """
     reflexio = get_reflexio(org_id=org_id)
-    config = reflexio.request_context.configurator.get_config()
-    success_config = getattr(config, "agent_success_config", None)
-    known = {success_config.evaluation_name} if success_config else set()
-    if payload.evaluation_name not in known:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unknown evaluation_name '{payload.evaluation_name}'",
-        )
-
     storage = reflexio.request_context.storage
     if storage is None:
         raise HTTPException(status_code=503, detail="Storage not configured")
@@ -1790,7 +1783,6 @@ def start_regenerate(
     try:
         job = REGEN_JOBS.create(
             org_id=org_id,
-            evaluation_name=payload.evaluation_name,
             from_ts=payload.from_ts,
             to_ts=payload.to_ts,
             total=len(descriptors),
@@ -1904,19 +1896,16 @@ def _grade_on_demand_cache_key(
 ) -> str:
     """Build the operation_state key for the on-demand grading cache.
 
-    The key embeds every dimension that could change the verdict: org_id
-    (multi-tenant scope), session_id (the unit of work), agent_version
-    (eval results are versioned) and evaluation_name (one session can be
-    graded by multiple evaluators). Changing any dimension cuts a fresh
-    cache lane so customers never see a stale verdict from a different
-    evaluator.
+    The key embeds every active singleton dimension that could change the
+    verdict: org_id (multi-tenant scope), session_id (the unit of work),
+    agent_version (eval results are versioned), and evaluation_name (kept as a
+    compatibility/readback discriminator for historical multi-evaluator rows).
 
     Args:
         org_id (str): Tenant identifier from the auth context.
         session_id (str): Target session.
         agent_version (str): Agent version filter.
-        evaluation_name (str): Evaluator config name.
-
+        evaluation_name (str): Evaluator/result namespace to isolate cache rows.
     Returns:
         str: A namespaced key suitable for ``storage.upsert_operation_state``.
     """
@@ -1986,10 +1975,11 @@ def _find_fresh_result_id(
     storage: Any,
     *,
     session_id: str,
-    evaluation_name: str,
     agent_version: str,
+    evaluation_name: str,
+    previous_result_ids: set[int],
 ) -> int | None:
-    """Locate the result_id written by the most-recent grade for this triple.
+    """Locate the result_id written by the most-recent grade for this session.
 
     The runner writes rows but doesn't return the id. Reading back through
     ``get_agent_success_evaluation_results`` matches the pattern used by
@@ -1998,8 +1988,9 @@ def _find_fresh_result_id(
     Args:
         storage: The request's storage backend.
         session_id (str): The graded session.
-        evaluation_name (str): The evaluator that produced the row.
         agent_version (str): The version dimension.
+        evaluation_name (str): Evaluator/result namespace to isolate readback.
+        previous_result_ids (set[int]): Matching rows observed before grading.
 
     Returns:
         int | None: result_id of the latest matching row, or None if the
@@ -2011,7 +2002,9 @@ def _find_fresh_result_id(
     matched = [
         r
         for r in rows
-        if r.session_id == session_id and r.evaluation_name == evaluation_name
+        if r.session_id == session_id
+        and r.evaluation_name == evaluation_name
+        and r.result_id not in previous_result_ids
     ]
     if not matched:
         return None
@@ -2031,22 +2024,20 @@ def grade_on_demand(
     """Grade a single session synchronously; serve cached results within 24h.
 
     Flow:
-      1. Validate ``evaluation_name`` against the configured evaluators
-         (400 on miss — symmetric with /regenerate).
-      2. Read the operation_state cache; if a fresh entry exists, return it
+      1. Read the operation_state cache; if a fresh entry exists, return it
          with ``cached=True``.
-      3. Resolve the session's user_id from storage (skip with ``NO_REQUESTS``
+      2. Resolve the session's user_id from storage (skip with ``NO_REQUESTS``
          when the session is unknown — surfaced as 200 + ``skipped_reason``
          so the frontend's bounded-list click-through can handle stale ids
          locally without polluting 5xx telemetry).
-      4. Invoke ``run_group_evaluation(force_regenerate=True)`` so the
+      3. Invoke ``run_group_evaluation(force_regenerate=True)`` so the
          "already evaluated" short-circuit doesn't suppress a customer's
          explicit click.
-      5. Find the freshly-written result_id and persist it in the cache
+      4. Find the freshly-written result_id and persist it in the cache
          with ``last_graded_at`` so future calls within 24h short-circuit.
 
     Args:
-        payload (GradeOnDemandRequest): Session + version + evaluator triple.
+        payload (GradeOnDemandRequest): Session + version plus optional legacy evaluator name.
         org_id (str): Tenant identifier resolved by the auth dependency.
 
     Returns:
@@ -2055,28 +2046,19 @@ def grade_on_demand(
             (``cached=True``), or a ``skipped_reason`` (NO_REQUESTS).
 
     Raises:
-        HTTPException: 400 when ``evaluation_name`` is not configured
-            for the org. 503 when storage is not configured.
+        HTTPException: 503 when storage is not configured.
     """
     reflexio = get_reflexio(org_id=org_id)
-    config = reflexio.request_context.configurator.get_config()
-    success_config = getattr(config, "agent_success_config", None)
-    known = {success_config.evaluation_name} if success_config else set()
-    if payload.evaluation_name not in known:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unknown evaluation_name '{payload.evaluation_name}'",
-        )
-
     storage = reflexio.request_context.storage
     if storage is None:
         raise HTTPException(status_code=503, detail="Storage not configured")
 
+    evaluation_name = payload.evaluation_name or SINGLETON_AGENT_SUCCESS_EVALUATION_NAME
     cache_key = _grade_on_demand_cache_key(
         org_id,
         payload.session_id,
         payload.agent_version,
-        payload.evaluation_name,
+        evaluation_name,
     )
     now = int(datetime.now(UTC).timestamp())
 
@@ -2098,6 +2080,14 @@ def grade_on_demand(
             skipped_reason="NO_REQUESTS",
         )
 
+    previous_result_ids = {
+        r.result_id
+        for r in storage.get_agent_success_evaluation_results(
+            limit=1000, agent_version=payload.agent_version
+        )
+        if r.session_id == payload.session_id and r.evaluation_name == evaluation_name
+    }
+
     # Two operation_state rows are intentionally written for this session:
     #   1) `grade_on_demand::{org_id}::{session_id}::{agent_version}::{evaluation_name}`
     #      — our 24h cache, set below after the result_id is resolved.
@@ -2117,14 +2107,14 @@ def grade_on_demand(
         request_context=reflexio.request_context,
         llm_client=reflexio.llm_client,
         force_regenerate=True,
-        evaluation_name=payload.evaluation_name,
     )
 
     result_id = _find_fresh_result_id(
         storage,
         session_id=payload.session_id,
-        evaluation_name=payload.evaluation_name,
         agent_version=payload.agent_version,
+        evaluation_name=evaluation_name,
+        previous_result_ids=previous_result_ids,
     )
 
     storage.upsert_operation_state(

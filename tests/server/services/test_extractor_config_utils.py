@@ -6,7 +6,18 @@ from dataclasses import dataclass
 
 import pytest
 
-from reflexio.server.services.extractor_config_utils import filter_extractor_configs
+from reflexio.models.config_schema import (
+    SINGLETON_AGENT_SUCCESS_EVALUATION_NAME,
+    SINGLETON_PROFILE_EXTRACTOR_NAME,
+    SINGLETON_USER_PLAYBOOK_NAME,
+    AgentSuccessConfig,
+    ProfileExtractorConfig,
+    UserPlaybookExtractorConfig,
+)
+from reflexio.server.services.extractor_config_utils import (
+    filter_extractor_configs,
+    get_extractor_name,
+)
 
 # ===============================
 # Test Data Classes
@@ -110,24 +121,6 @@ class TestFilterExtractorConfigs:
         assert "extractor1" in extractor_names
         assert "extractor2" in extractor_names
 
-    def test_filter_by_extractor_names(self):
-        """Test filtering extractors by extractor_names list."""
-        configs = [
-            MockExtractorConfig(extractor_name="extractor1"),
-            MockExtractorConfig(extractor_name="extractor2"),
-            MockExtractorConfig(extractor_name="extractor3"),
-        ]
-
-        result = filter_extractor_configs(
-            configs, extractor_names=["extractor1", "extractor3"]
-        )
-
-        assert len(result) == 2
-        extractor_names = [c.extractor_name for c in result]
-        assert "extractor1" in extractor_names
-        assert "extractor3" in extractor_names
-        assert "extractor2" not in extractor_names
-
     def test_combined_filtering(self):
         """Test that all filter conditions are applied together."""
         configs = [
@@ -148,15 +141,14 @@ class TestFilterExtractorConfigs:
             ),
         ]
 
-        # Source=api, allow_manual_trigger=False, filter by name
+        # Source=api and allow_manual_trigger=False both apply.
         result = filter_extractor_configs(
             configs,
             source="api",
             allow_manual_trigger=False,
-            extractor_names=["extractor1", "extractor3"],
         )
 
-        # Only extractor1 passes all filters:
+        # Only extractor1 passes active filters:
         # - extractor2: wrong source
         # - extractor3: manual_trigger=True but allow_manual_trigger=False
         assert len(result) == 1
@@ -227,17 +219,48 @@ class TestFilterExtractorConfigs:
         assert len(result) == 1
         assert result[0].evaluation_name == "eval1"
 
-    def test_filter_by_extractor_names_with_playbook_config(self):
-        """Test filtering by names works for playbook configs."""
-        configs = [
-            MockPlaybookConfig(extractor_name="playbook1"),
-            MockPlaybookConfig(extractor_name="playbook2"),
-        ]
 
-        result = filter_extractor_configs(configs, extractor_names=["playbook1"])
+class TestGetExtractorName:
+    """The singleton dispatch must ignore any user-set name on real configs."""
 
-        assert len(result) == 1
-        assert result[0].extractor_name == "playbook1"
+    def test_profile_config_returns_singleton_name(self):
+        config = ProfileExtractorConfig(
+            extractor_name="custom_profile",
+            extraction_definition_prompt="Extract profile facts.",
+        )
+        assert get_extractor_name(config) == SINGLETON_PROFILE_EXTRACTOR_NAME
+
+    def test_profile_config_without_name_returns_singleton_name(self):
+        config = ProfileExtractorConfig(
+            extraction_definition_prompt="Extract profile facts.",
+        )
+        assert get_extractor_name(config) == SINGLETON_PROFILE_EXTRACTOR_NAME
+
+    def test_playbook_config_returns_singleton_name(self):
+        config = UserPlaybookExtractorConfig(
+            extractor_name="custom_playbook",
+            extraction_definition_prompt="Extract playbook rules.",
+        )
+        assert get_extractor_name(config) == SINGLETON_USER_PLAYBOOK_NAME
+
+    def test_agent_success_config_returns_singleton_name(self):
+        config = AgentSuccessConfig(
+            evaluation_name="custom_eval",
+            success_definition_prompt="Evaluate agent success.",
+        )
+        assert get_extractor_name(config) == SINGLETON_AGENT_SUCCESS_EVALUATION_NAME
+
+    def test_unknown_config_falls_back_to_name_attribute(self):
+        assert get_extractor_name(MockExtractorConfig(extractor_name="legacy")) == "legacy"
+        assert get_extractor_name(MockEvaluationConfig(evaluation_name="eval1")) == "eval1"
+
+    def test_unknown_config_with_none_names_returns_unknown(self):
+        config = type(
+            "NamelessConfig",
+            (),
+            {"extractor_name": None, "playbook_name": None, "evaluation_name": None},
+        )()
+        assert get_extractor_name(config) == "unknown"
 
 
 if __name__ == "__main__":

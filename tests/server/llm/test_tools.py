@@ -640,6 +640,8 @@ class TestSupportsToolCallingOverrides:
         # Family override applies to all M2.x variants
         assert tools_mod.supports_tool_calling("minimax/MiniMax-M2") is True
         assert tools_mod.supports_tool_calling("minimax/MiniMax-M2-special") is True
+        # M3 has its own override entry (same registry gap as the M2 family)
+        assert tools_mod.supports_tool_calling("minimax/MiniMax-M3") is True
 
     def test_override_does_not_apply_to_other_minimax_models(self, monkeypatch):
         """The override is prefix-scoped: 'minimax/MiniMax-M2' applies to M2 family

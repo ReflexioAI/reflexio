@@ -42,7 +42,6 @@ def _row_to_agent_run(row: sqlite3.Row) -> AgentRunRecord:
     binding = AgentBinding(
         org_id=data["org_id"],
         extractor_kind=data["extractor_kind"],
-        extractor_name=data["extractor_name"],
         user_id=data.get("user_id"),
         request_id=data["request_id"],
         agent_version=data.get("agent_version"),
@@ -270,7 +269,7 @@ class SQLiteAgentRunMixin:
             self.conn.execute(
                 """
                 INSERT INTO _agent_runs (
-                    id, org_id, extractor_kind, extractor_name, user_id,
+                    id, org_id, extractor_kind, user_id,
                     request_id, agent_version, source, source_interaction_ids,
                     window_start_interaction_id, window_end_interaction_id,
                     extractor_config_hash, status, generation_request_snapshot,
@@ -279,13 +278,12 @@ class SQLiteAgentRunMixin:
                     resume_attempts, finalization_attempts, next_resume_at,
                     claimed_by, claimed_at, agent_completed_at, finalized_at,
                     expires_at, last_error
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     record.id,
                     binding.org_id,
                     binding.extractor_kind,
-                    binding.extractor_name,
                     binding.user_id,
                     binding.request_id,
                     binding.agent_version,
@@ -787,7 +785,6 @@ class SQLiteAgentRunMixin:
         *,
         org_id: str,
         extractor_kind: str,
-        extractor_name: str,
         tool_name: str,
     ) -> int:
         row = self._fetchone(
@@ -798,7 +795,6 @@ class SQLiteAgentRunMixin:
             JOIN _pending_tool_calls p ON p.id = d.pending_tool_call_id
             WHERE r.org_id = ?
               AND r.extractor_kind = ?
-              AND r.extractor_name = ?
               AND p.tool_name = ?
               AND p.status = ?
               AND d.resolved_at IS NULL
@@ -807,7 +803,6 @@ class SQLiteAgentRunMixin:
             (
                 org_id,
                 extractor_kind,
-                extractor_name,
                 tool_name,
                 PendingToolCallStatus.PENDING.value,
             ),
@@ -1077,7 +1072,6 @@ class SQLiteAgentRunMixin:
                 ORDER BY
                     r.org_id ASC,
                     r.extractor_kind ASC,
-                    r.extractor_name ASC,
                     COALESCE(r.user_id, '') ASC,
                     COALESCE(r.window_start_interaction_id, 0) ASC,
                     r.updated_at ASC
@@ -1149,7 +1143,6 @@ class SQLiteAgentRunMixin:
                 ORDER BY
                     org_id ASC,
                     extractor_kind ASC,
-                    extractor_name ASC,
                     COALESCE(user_id, '') ASC,
                     COALESCE(window_start_interaction_id, 0) ASC,
                     updated_at ASC

@@ -56,7 +56,6 @@ class MockServiceConfig:
     request_interaction_data_models: list | None = None
     source: str | None = None
     allow_manual_trigger: bool = False
-    extractor_names: list[str] | None = None
     auto_run: bool = True
     force_extraction: bool = False
 
@@ -285,28 +284,6 @@ class TestFilterExtractorConfigByServiceConfig:
 
         assert result is config
 
-    def test_filter_by_matching_extractor_name(self, base_service):
-        """Test explicit extractor name filters."""
-        config = MockExtractorConfig(extractor_name="extractor1")
-
-        service_config = MockServiceConfig(extractor_names=["extractor1"])
-        result = base_service._filter_extractor_config_by_service_config(
-            config, service_config
-        )
-
-        assert result is config
-
-    def test_filter_by_non_matching_extractor_name(self, base_service):
-        """Test explicit extractor name mismatch filters out the config."""
-        config = MockExtractorConfig(extractor_name="extractor1")
-
-        service_config = MockServiceConfig(extractor_names=["extractor2"])
-        result = base_service._filter_extractor_config_by_service_config(
-            config, service_config
-        )
-
-        assert result is None
-
     def test_combined_filtering(self, base_service):
         """Test that all filter conditions are applied together."""
         config = MockExtractorConfig(
@@ -318,7 +295,6 @@ class TestFilterExtractorConfigByServiceConfig:
         service_config = MockServiceConfig(
             source="api",
             allow_manual_trigger=False,
-            extractor_names=["extractor1"],
         )
         result = base_service._filter_extractor_config_by_service_config(
             config, service_config
@@ -1551,54 +1527,6 @@ class TestPayloadAwareDrain:
 
         # Legacy entry has no payload → fallback to original holder's request.
         assert seen_user_ids == ["holder_user", "holder_user"]
-
-
-# ===============================
-# Test: Extractor Names Filtering in Rerun
-# ===============================
-
-
-class TestRerunWithExtractorNamesFilter:
-    """Tests for extractor_names filtering during rerun operations."""
-
-    def test_rerun_respects_extractor_names_filter(self, llm_client, request_context):
-        """Test that rerun only runs extractors specified in extractor_names."""
-        service = ConcreteGenerationService(
-            llm_client,
-            request_context,
-            extractor_configs=[
-                MockExtractorConfig(extractor_name="extractor1"),
-                MockExtractorConfig(extractor_name="extractor2"),
-                MockExtractorConfig(extractor_name="extractor3"),
-            ],
-        )
-
-        # Set up mock storage
-        get_state, upsert_state, update_state = create_mock_operation_state_storage()
-        service.storage.get_operation_state = get_state
-        service.storage.upsert_operation_state = upsert_state
-        service.storage.update_operation_state = update_state
-
-        # Create request with extractor_names filter
-        request = MagicMock()
-        request.interactions = [
-            Interaction(user_id="user1", request_id="req1", content="test1")
-        ]
-        request.extractor_names = ["extractor1", "extractor3"]
-
-        # Override _create_run_request_for_item to pass extractor_names
-        original_create = service._create_run_request_for_item
-
-        def create_with_names(user_id, req):
-            result = original_create(user_id, req)
-            result.extractor_names = getattr(req, "extractor_names", None)
-            return result
-
-        service._create_run_request_for_item = create_with_names
-
-        response = service.run_rerun(request)
-
-        assert response["success"] is True
 
 
 # ===============================

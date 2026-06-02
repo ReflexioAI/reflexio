@@ -117,7 +117,6 @@ def test_run_regen_samples_when_stratum_exceeds_cap(
     job = RegenJob(
         job_id="j1",
         org_id="0",
-        evaluation_name="overall",
         from_ts=ts - 1,
         to_ts=ts + 1,
         status="running",
@@ -164,7 +163,6 @@ def test_run_regen_no_sampling_when_below_cap(
     job = RegenJob(
         job_id="j2",
         org_id="0",
-        evaluation_name="overall",
         from_ts=ts - 1,
         to_ts=ts + 1,
         status="running",
@@ -224,7 +222,6 @@ def test_run_regen_continues_when_one_session_storage_lookup_fails(
     job = RegenJob(
         job_id="j-flaky",
         org_id="0",
-        evaluation_name="overall",
         from_ts=ts - 1,
         to_ts=ts + 1,
         status="running",

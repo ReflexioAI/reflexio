@@ -224,17 +224,17 @@ _PROVIDER_DEFAULTS: dict[str, ProviderDefaults] = {
         embedding=None,
     ),
     "minimax": ProviderDefaults(
-        generation="minimax/MiniMax-M2.7",
-        evaluation="minimax/MiniMax-M2.7",
-        should_run="minimax/MiniMax-M2.7",
-        pre_retrieval="minimax/MiniMax-M2.7",
+        generation="minimax/MiniMax-M3",
+        evaluation="minimax/MiniMax-M3",
+        should_run="minimax/MiniMax-M3",
+        pre_retrieval="minimax/MiniMax-M3",
         embedding=None,
         # Same M2.7 model handles resumable extraction. Surfaced by an
         # e2e run on a MiniMax-only VPS where publish printed
         # "No provider in ['minimax'] supports role=extraction_agent"
         # warnings and silently skipped profile creation. Without this,
         # MiniMax-only users can publish but get zero profiles.
-        extraction_agent="minimax/MiniMax-M2.7",
+        extraction_agent="minimax/MiniMax-M3",
     ),
     "dashscope": ProviderDefaults(
         generation="dashscope/qwen-plus",
@@ -258,10 +258,10 @@ _PROVIDER_DEFAULTS: dict[str, ProviderDefaults] = {
         embedding=None,
     ),
     "zai": ProviderDefaults(
-        generation="zai/glm-4-flash",
-        evaluation="zai/glm-4-flash",
-        should_run="zai/glm-4-flash",
-        pre_retrieval="zai/glm-4-flash",
+        generation="zai/glm-5.1",
+        evaluation="zai/glm-5.1",
+        should_run="zai/glm-5.1",
+        pre_retrieval="zai/glm-5.1",
         embedding=None,
     ),
 }

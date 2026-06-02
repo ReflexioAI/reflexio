@@ -191,6 +191,12 @@ _TOOL_CALLING_OVERRIDES: tuple[str, ...] = (
     # tools=[...])` round-trip that returned a proper tool_call message.
     # litellm 1.80.x has 'minimax/MiniMax-M2' in model_cost but not 'MiniMax-M2.7'.
     "minimax/MiniMax-M2",
+    # MiniMax-M3 supports OpenAI-compatible tools the same way the M2 family
+    # does, but litellm 1.80.x has no 'minimax/MiniMax-M3' model_cost entry so
+    # supports_function_calling returns False. Verified by a live
+    # `litellm.completion(model='minimax/MiniMax-M3', tools=[...])` round-trip
+    # that returned a proper tool_call message (finish_reason='tool_calls').
+    "minimax/MiniMax-M3",
     # claude-code/* models route through our local CLI provider
     # (see providers/claude_code_provider.py). litellm has no registry
     # entry for them, so it returns False. The provider handles tool

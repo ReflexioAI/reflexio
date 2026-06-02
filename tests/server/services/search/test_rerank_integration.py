@@ -77,7 +77,7 @@ def seeded_storage(tmp_path):
 
 @pytest.fixture
 def ctx():
-    return ExtractionCtx(user_id="u_rerank", agent_version="v1", extractor_name="x")
+    return ExtractionCtx(user_id="u_rerank", agent_version="v1")
 
 
 def test_rerank_handler_surfaces_relevant_profile_above_irrelevant(seeded_storage, ctx):

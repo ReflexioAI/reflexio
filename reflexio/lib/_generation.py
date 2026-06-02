@@ -18,12 +18,17 @@ from reflexio.models.api_schema.service_schemas import (
 
 
 class GenerationMixin(ReflexioBase):
-    def run_playbook_aggregation(self, agent_version: str, playbook_name: str) -> dict:
+    def run_playbook_aggregation(
+        self,
+        agent_version: str,
+        playbook_name: str | None = None,  # noqa: ARG002 — deprecated, accepted but ignored
+    ) -> dict:
         """Run playbook aggregation for a given agent version.
 
         Args:
             agent_version (str): The agent version
-            playbook_name (str): The playbook name
+            playbook_name (str | None): Deprecated compatibility input. Aggregation is
+                singleton (one playbook kind per org), so name-based selection is ignored.
 
         Returns:
             dict: Aggregation stats (clusters_found, user_playbooks_processed, playbooks_generated)
@@ -47,7 +52,6 @@ class GenerationMixin(ReflexioBase):
         )
         aggregator_request = PlaybookAggregatorRequest(
             agent_version=agent_version,
-            playbook_name=playbook_name,
             rerun=True,
         )
         return playbook_aggregator.run(aggregator_request)

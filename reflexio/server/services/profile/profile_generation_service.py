@@ -53,7 +53,6 @@ class ProfileGenerationServiceConfig:
         existing_data: Existing profiles for the user
         allow_manual_trigger: Whether to allow extractors with manual_trigger=True
         output_pending_status: Whether to output profiles with PENDING status
-        extractor_names: Optional list of extractor names to filter which extractor runs
         rerun_start_time: Optional start time filter for rerun flows (Unix timestamp)
         rerun_end_time: Optional end time filter for rerun flows (Unix timestamp)
         auto_run: True for regular flow (checks stride_size), False for rerun/manual (skips stride_size)
@@ -65,7 +64,6 @@ class ProfileGenerationServiceConfig:
     existing_data: Any = None
     allow_manual_trigger: bool = False
     output_pending_status: bool = False
-    extractor_names: list[str] | None = None
     rerun_start_time: int | None = None
     rerun_end_time: int | None = None
     auto_run: bool = True
@@ -131,7 +129,6 @@ class ProfileGenerationService(
             existing_data=existing_profiles,
             allow_manual_trigger=self.allow_manual_trigger,
             output_pending_status=self.output_pending_status,
-            extractor_names=getattr(request, "extractor_names", None),
             rerun_start_time=request.rerun_start_time,
             rerun_end_time=request.rerun_end_time,
             auto_run=request.auto_run,
@@ -415,7 +412,6 @@ class ProfileGenerationService(
             ),
             "end_time": request.end_time.isoformat() if request.end_time else None,
             "source": request.source,
-            "extractor_names": request.extractor_names,
         }
 
     def _create_run_request_for_item(
@@ -440,7 +436,6 @@ class ProfileGenerationService(
                 user_id=user_id,
                 request_id=f"rerun_{uuid.uuid4().hex[:8]}",
                 source=request.source,
-                extractor_names=request.extractor_names,
                 rerun_start_time=(
                     int(request.start_time.timestamp()) if request.start_time else None
                 ),
@@ -454,7 +449,6 @@ class ProfileGenerationService(
             user_id=user_id,
             request_id=f"manual_{uuid.uuid4().hex[:8]}",
             source=request.source,
-            extractor_names=request.extractor_names,
             auto_run=False,
         )
 
@@ -676,7 +670,6 @@ class ProfileGenerationService(
             request_params = {
                 "user_id": request.user_id,
                 "source": request.source,
-                "extractor_names": request.extractor_names,
                 "mode": "manual_regular",
             }
             users_processed, _ = self._run_batch_with_progress(

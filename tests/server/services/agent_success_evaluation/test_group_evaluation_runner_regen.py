@@ -1,16 +1,12 @@
-"""Tests for force_regenerate + evaluation_name on run_group_evaluation.
+"""Tests for force_regenerate on run_group_evaluation.
 
 These cover the regenerate flow's behavior at the runner layer:
 - force_regenerate=True bypasses both the operation-state "already evaluated"
   short-circuit and the completeness-delay gate so an operator can re-evaluate
   any session.
-- evaluation_name propagates into AgentSuccessEvaluationRequest.evaluation_name_filter
-  so the downstream service narrows to a single evaluator instead of running
-  every configured rubric.
-- When both kwargs are set, the runner captures prior result_ids for that
-  (session_id, evaluation_name) BEFORE running the eval, then deletes those
-  rows by id AFTER the new save lands. This guarantees that an LLM/save
-  failure never wipes the session's eval rows.
+- When regenerating, the runner captures the session's prior result_ids BEFORE
+  running the eval, then deletes those rows by id AFTER the new save lands. This
+  guarantees that an LLM/save failure never wipes the session's eval rows.
 """
 
 from datetime import UTC, datetime
@@ -170,8 +166,8 @@ def test_force_regenerate_bypasses_already_evaluated_short_circuit() -> None:
     service.run.assert_called_once()
 
 
-def test_evaluation_name_propagates_into_evaluation_request() -> None:
-    """evaluation_name kwarg must flow into AgentSuccessEvaluationRequest.evaluation_name_filter."""
+def test_force_regenerate_builds_evaluation_request() -> None:
+    """force_regenerate runs the eval service with a request for the session."""
     storage = _make_storage(with_evaluated_marker=False)
     request_context = MagicMock()
     request_context.storage = storage
@@ -195,20 +191,19 @@ def test_evaluation_name_propagates_into_evaluation_request() -> None:
             request_context=request_context,
             llm_client=llm_client,
             force_regenerate=True,
-            evaluation_name="overall_success",
         )
 
     service.run.assert_called_once()
     eval_request = service.run.call_args.args[0]
-    assert eval_request.evaluation_name_filter == "overall_success"
     assert eval_request.session_id == "session_a"
     assert eval_request.agent_version == "1.0.0"
 
 
-def test_force_regenerate_with_evaluation_name_deletes_prior_results() -> None:
-    """Both kwargs set => prior result rows are captured then deleted by id AFTER save.
+def test_force_regenerate_deletes_prior_results() -> None:
+    """force_regenerate captures the session's prior result rows then deletes them
+    by id AFTER save.
 
-    The delete is now scoped to the captured prior result_ids (not the
+    The delete is scoped to the captured prior result_ids (not the
     (session, name, version) triple) and happens AFTER the new rows have
     been saved successfully. This avoids the zero-row window that would
     otherwise be exposed if the LLM/save step failed.
@@ -241,7 +236,6 @@ def test_force_regenerate_with_evaluation_name_deletes_prior_results() -> None:
             request_context=request_context,
             llm_client=llm_client,
             force_regenerate=True,
-            evaluation_name="overall_success",
         )
 
     # By-id delete called once with the captured prior result_ids.
@@ -250,13 +244,12 @@ def test_force_regenerate_with_evaluation_name_deletes_prior_results() -> None:
     storage.delete_agent_success_evaluation_results_for_session.assert_not_called()
 
 
-def test_force_regenerate_without_evaluation_name_does_not_delete() -> None:
-    """force_regenerate alone (no evaluator name) must NOT call any scoped delete.
+def test_force_regenerate_with_no_prior_rows_does_not_delete() -> None:
+    """force_regenerate with no prior result rows must NOT call any delete.
 
-    Deletion is scoped to a single evaluation_name. A regenerate run that
-    re-runs every configured evaluator should leave the storage layer to
-    overwrite (or accumulate) results as it normally does, rather than
-    silently wipe rows belonging to evaluators the caller didn't target.
+    When the session has no prior eval rows, there is nothing to clean up, so
+    the runner skips the by-id delete entirely (and never falls back to the
+    old session-scoped delete).
     """
     storage = _make_storage(with_evaluated_marker=True)
     request_context = MagicMock()
@@ -286,8 +279,6 @@ def test_force_regenerate_without_evaluation_name_does_not_delete() -> None:
     storage.delete_agent_success_evaluation_results_for_session.assert_not_called()
     storage.delete_agent_success_evaluation_results_by_ids.assert_not_called()
     service.run.assert_called_once()
-    eval_request = service.run.call_args.args[0]
-    assert eval_request.evaluation_name_filter is None
 
 
 def test_regenerate_preserves_old_rows_when_llm_run_fails() -> None:
@@ -330,7 +321,6 @@ def test_regenerate_preserves_old_rows_when_llm_run_fails() -> None:
             request_context=request_context,
             llm_client=llm_client,
             force_regenerate=True,
-            evaluation_name="overall_success",
         )
 
     # No delete on either path — old rows remain in storage.
@@ -375,7 +365,6 @@ def test_regenerate_preserves_old_rows_when_zero_results_saved() -> None:
             request_context=request_context,
             llm_client=llm_client,
             force_regenerate=True,
-            evaluation_name="overall_success",
         )
 
     storage.delete_agent_success_evaluation_results_by_ids.assert_not_called()
@@ -482,7 +471,6 @@ def test_regenerate_happy_path_with_real_sqlite_storage(tmp_path) -> None:
                 request_context=request_context,
                 llm_client=llm_client,
                 force_regenerate=True,
-                evaluation_name="overall_success",
             )
 
         # Old row gone, new row in place. Exactly one row for the tuple.
@@ -578,7 +566,6 @@ def test_regenerate_failure_preserves_old_rows_with_real_sqlite_storage(
                 request_context=request_context,
                 llm_client=llm_client,
                 force_regenerate=True,
-                evaluation_name="overall_success",
             )
 
         # The old row is STILL THERE — durability guaranteed.

@@ -49,7 +49,6 @@ class AgentBinding:
 
     org_id: str
     extractor_kind: str
-    extractor_name: str
     user_id: str | None
     request_id: str
     agent_version: str | None
@@ -298,7 +297,6 @@ class AgentRunMixin:
         *,
         org_id: str,
         extractor_kind: str,
-        extractor_name: str,
         tool_name: str,
     ) -> int:
         raise NotImplementedError(f"{type(self).__name__} does not support agent runs")

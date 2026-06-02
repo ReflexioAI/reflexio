@@ -60,6 +60,10 @@ from reflexio.models.api_schema.domain.entities import (
     UpgradeUserPlaybooksRequest,
     UpgradeUserPlaybooksResponse,
 )
+from reflexio.models.api_schema.pending_tool_call_schema import (
+    PendingToolCallListResponse,
+    PendingToolCallResponse,
+)
 from reflexio.models.api_schema.service_schemas import (
     AddAgentPlaybookRequest,
     AddAgentPlaybookResponse,
@@ -546,7 +550,7 @@ class ReflexioClient:
             top_k (Optional[int]): Maximum number of results to return (default: 10)
             source (Optional[str]): Filter by source
             custom_feature (Optional[str]): Filter by custom feature
-            extractor_name (Optional[str]): Filter by extractor name
+            extractor_name (Optional[str]): Deprecated compatibility field. Accepted but ignored.
             threshold (Optional[float]): Similarity threshold (default: 0.7)
             enable_reformulation (Optional[bool]): Enable LLM query reformulation (default: False)
 
@@ -1881,7 +1885,7 @@ class ReflexioClient:
             start_time (Optional[datetime]): Filter interactions by start time.
             end_time (Optional[datetime]): Filter interactions by end time.
             source (Optional[str]): Filter interactions by source.
-            extractor_names (Optional[list[str]]): List of specific extractor names to run. If None, runs all extractors.
+            extractor_names (Optional[list[str]]): Deprecated compatibility field. Accepted but ignored.
 
         Returns:
             Optional[RerunProfileGenerationResponse]: Response containing success status, message, profiles_generated count, and operation_id if wait_for_response=True, None otherwise.
@@ -1983,7 +1987,7 @@ class ReflexioClient:
             request (Optional[ManualProfileGenerationRequest]): The request object (alternative to kwargs)
             user_id (Optional[str]): Specific user ID to generate for. If None, generates for all users.
             source (Optional[str]): Filter interactions by source.
-            extractor_names (Optional[list[str]]): List of specific extractor names to run. If None, runs all extractors with allow_manual_trigger=True.
+            extractor_names (Optional[list[str]]): Deprecated compatibility field. Accepted but ignored.
 
         Returns:
             None: This method always returns None (fire-and-forget).
@@ -2072,7 +2076,7 @@ class ReflexioClient:
             agent_version (str): Required. The agent version to evaluate.
             start_time (Optional[datetime]): Filter by start time.
             end_time (Optional[datetime]): Filter by end time.
-            playbook_name (Optional[str]): Specific playbook type to generate.
+            playbook_name (Optional[str]): Deprecated compatibility field. Accepted but ignored.
 
         Returns:
             Optional[RerunPlaybookGenerationResponse]: Response containing success status, message, playbooks_generated count, and operation_id if wait_for_response=True, None otherwise.
@@ -2121,7 +2125,7 @@ class ReflexioClient:
             request (Optional[ManualPlaybookGenerationRequest]): The request object (alternative to kwargs)
             agent_version (str): Required. The agent version to evaluate.
             source (Optional[str]): Filter interactions by source.
-            playbook_name (Optional[str]): Specific playbook type to generate.
+            playbook_name (Optional[str]): Deprecated compatibility field. Accepted but ignored.
 
         Returns:
             None: This method always returns None (fire-and-forget).
@@ -2175,7 +2179,7 @@ class ReflexioClient:
             request (Optional[RunPlaybookAggregationRequest]): The aggregation request object (alternative to kwargs)
             wait_for_response (bool, optional): If True, wait for response. If False, send request without waiting. Defaults to False.
             agent_version (str): Required. The agent version.
-            playbook_name (str): Required. The playbook type to aggregate.
+            playbook_name (Optional[str]): Deprecated compatibility field. Accepted but ignored.
 
         Returns:
             Optional[RunPlaybookAggregationResponse]: Response containing success status and message if wait_for_response=True, None otherwise.
@@ -2418,6 +2422,171 @@ class ReflexioClient:
         """
         response = self._make_request("POST", "/stall_state/notified")
         return MarkNotifiedResponse.model_validate(response)
+
+    # ===============================
+    # Pending tool calls (human questions)
+    # ===============================
+    # The resumable extraction agent can pause and emit an ``ask_human``
+    # pending tool call when it needs a human to answer a question before it
+    # can finish. These methods let a user list those questions, answer them
+    # to unblock the agent, edit a prior answer, mark a question N/A, or
+    # cancel it. See notebooks/08_resumable_agent_human_questions.ipynb.
+
+    def list_pending_tool_calls(
+        self, status: str | None = None, limit: int = 100
+    ) -> PendingToolCallListResponse:
+        """List pending tool calls (e.g. ``ask_human`` questions) for the org.
+
+        Args:
+            status (str | None): Optional status filter. One of ``"pending"``,
+                ``"resolved"``, ``"expired"``, ``"superseded"``, or
+                ``"cancelled"``. When None, all statuses are returned.
+            limit (int): Maximum number of results to return (1-500, default 100).
+
+        Returns:
+            PendingToolCallListResponse: The matching pending tool calls.
+        """
+        params: dict[str, Any] = {"limit": limit}
+        if status is not None:
+            params["status"] = status
+        response = self._make_request("GET", "/api/pending_tool_calls", params=params)
+        return PendingToolCallListResponse.model_validate(response)
+
+    def get_pending_tool_call(
+        self, pending_tool_call_id: str
+    ) -> PendingToolCallResponse:
+        """Fetch a single pending tool call by id.
+
+        Args:
+            pending_tool_call_id (str): The id of the pending tool call.
+
+        Returns:
+            PendingToolCallResponse: The pending tool call.
+        """
+        response = self._make_request(
+            "GET", f"/api/pending_tool_calls/{pending_tool_call_id}"
+        )
+        return PendingToolCallResponse.model_validate(response)
+
+    def resolve_pending_tool_call(
+        self,
+        pending_tool_call_id: str,
+        *,
+        result: dict[str, Any] | None = None,
+        answer: str | None = None,
+        valid_for_seconds: int | None = None,
+    ) -> PendingToolCallResponse:
+        """Resolve a pending tool call, unblocking dependent agent runs.
+
+        Provide exactly one of ``result`` or ``answer``. ``answer`` is a
+        convenience for the common ``ask_human`` case and is wrapped as
+        ``{"answer": answer}``; use ``result`` to send an arbitrary tool
+        result payload.
+
+        Args:
+            pending_tool_call_id (str): The id of the pending tool call.
+            result (dict[str, Any] | None): Raw tool result payload.
+            answer (str | None): Human answer text (wrapped as ``{"answer": ...}``).
+            valid_for_seconds (int | None): How long the resolved answer
+                stays valid for answer reuse. Server default when None.
+
+        Returns:
+            PendingToolCallResponse: The resolved pending tool call.
+
+        Raises:
+            ValueError: If both or neither of ``result`` and ``answer`` are set.
+        """
+        if (result is None) == (answer is None):
+            raise ValueError("Provide exactly one of 'result' or 'answer' to resolve.")
+        payload: dict[str, Any] = {
+            "result": result if result is not None else {"answer": answer}
+        }
+        if valid_for_seconds is not None:
+            payload["valid_for_seconds"] = valid_for_seconds
+        response = self._make_request(
+            "POST",
+            f"/api/pending_tool_calls/{pending_tool_call_id}/resolve",
+            json=payload,
+        )
+        return PendingToolCallResponse.model_validate(response)
+
+    def update_pending_tool_call_answer(
+        self,
+        pending_tool_call_id: str,
+        answer: str,
+        *,
+        valid_for_seconds: int | None = None,
+    ) -> PendingToolCallResponse:
+        """Edit the answer of an already-resolved ``ask_human`` question.
+
+        Editing schedules another resume of dependent agent runs with the new
+        answer.
+
+        Args:
+            pending_tool_call_id (str): The id of the pending tool call.
+            answer (str): The new (non-empty) answer text.
+            valid_for_seconds (int | None): How long the edited answer stays
+                valid for answer reuse. Server default when None.
+
+        Returns:
+            PendingToolCallResponse: The updated pending tool call.
+        """
+        payload: dict[str, Any] = {"answer": answer}
+        if valid_for_seconds is not None:
+            payload["valid_for_seconds"] = valid_for_seconds
+        response = self._make_request(
+            "PATCH",
+            f"/api/pending_tool_calls/{pending_tool_call_id}/answer",
+            json=payload,
+        )
+        return PendingToolCallResponse.model_validate(response)
+
+    def mark_pending_tool_call_not_applicable(
+        self,
+        pending_tool_call_id: str,
+        *,
+        valid_for_seconds: int | None = None,
+    ) -> PendingToolCallResponse:
+        """Mark an ``ask_human`` question as not applicable.
+
+        Resolves the question with the standard "user does not have
+        information" result so dependent agent runs can proceed.
+
+        Args:
+            pending_tool_call_id (str): The id of the pending tool call.
+            valid_for_seconds (int | None): How long the result stays valid
+                for answer reuse. Server default when None.
+
+        Returns:
+            PendingToolCallResponse: The resolved (N/A) pending tool call.
+        """
+        payload: dict[str, Any] = {}
+        if valid_for_seconds is not None:
+            payload["valid_for_seconds"] = valid_for_seconds
+        response = self._make_request(
+            "POST",
+            f"/api/pending_tool_calls/{pending_tool_call_id}/not_applicable",
+            json=payload,
+        )
+        return PendingToolCallResponse.model_validate(response)
+
+    def cancel_pending_tool_call(
+        self, pending_tool_call_id: str
+    ) -> PendingToolCallResponse:
+        """Cancel a pending tool call without answering it.
+
+        Only pending (unanswered) tool calls can be cancelled.
+
+        Args:
+            pending_tool_call_id (str): The id of the pending tool call.
+
+        Returns:
+            PendingToolCallResponse: The cancelled pending tool call.
+        """
+        response = self._make_request(
+            "POST", f"/api/pending_tool_calls/{pending_tool_call_id}/cancel"
+        )
+        return PendingToolCallResponse.model_validate(response)
 
     def clear_user_data(self, user_id: str) -> ClearUserDataResponse:
         """Delete all rows scoped to a single ``user_id``.

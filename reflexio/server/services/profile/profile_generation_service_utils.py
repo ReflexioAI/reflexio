@@ -41,7 +41,6 @@ class ProfileGenerationRequest(BaseModel):
     user_id: str
     request_id: str
     source: str | None = None
-    extractor_names: list[str] | None = None
     rerun_start_time: int | None = None  # Unix timestamp for rerun flows
     rerun_end_time: int | None = None  # Unix timestamp for rerun flows
     auto_run: bool = (

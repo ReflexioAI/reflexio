@@ -369,14 +369,12 @@ class BaseGenerationService(
         service_config: TGenerationServiceConfig,
     ) -> TExtractorConfig | None:
         """
-        Filter the extractor config based on request_sources_enabled, manual_trigger,
-        and explicit extractor name filters.
+        Filter the extractor config based on request_sources_enabled and manual_trigger.
         """
         filtered = filter_extractor_configs(
             extractor_configs=[extractor_config],
             source=getattr(service_config, "source", None),
             allow_manual_trigger=getattr(service_config, "allow_manual_trigger", False),
-            extractor_names=getattr(service_config, "extractor_names", None),
         )
         return filtered[0] if filtered else None
 

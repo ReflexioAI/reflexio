@@ -68,7 +68,6 @@ class ExtractionCtx:
     Attributes:
         user_id: Authenticated user the run is scoped to.
         agent_version: Agent version from the active config.
-        extractor_name: Optional per-extractor scope filter.
         request_id: Source publish_interaction request UUID — embedded into
             every profile/playbook this run creates so retrieval can trace
             back to the originating session. Empty string when called from
@@ -82,7 +81,6 @@ class ExtractionCtx:
 
     user_id: str
     agent_version: str
-    extractor_name: str | None = None
     request_id: str = ""
     plan: list = field(
         default_factory=list

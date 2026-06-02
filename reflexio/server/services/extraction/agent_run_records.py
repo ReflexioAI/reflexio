@@ -46,7 +46,6 @@ def build_extractor_agent_run_record(
     *,
     org_id: str,
     extractor_kind: str,
-    extractor_name: str,
     user_id: str | None,
     request_id: str,
     agent_version: str | None,
@@ -66,7 +65,6 @@ def build_extractor_agent_run_record(
         binding=AgentBinding(
             org_id=org_id,
             extractor_kind=extractor_kind,
-            extractor_name=extractor_name,
             user_id=user_id,
             request_id=request_id,
             agent_version=agent_version,

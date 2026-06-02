@@ -266,15 +266,14 @@ class RegenerateRequest(BaseModel):
     """Input for POST /api/evaluations/regenerate.
 
     Args:
-        evaluation_name (NonEmptyStr): Name of the evaluator to replay.
-            Must match one of the ``agent_success_configs[*].evaluation_name``
-            entries in the caller's config.
+        evaluation_name (NonEmptyStr | None): Deprecated compatibility field.
+            Singleton evaluation ignores name-based selection.
         from_ts (int): Inclusive lower bound of the window (Unix seconds).
         to_ts (int): Inclusive upper bound of the window (Unix seconds).
             Must be strictly greater than ``from_ts``.
     """
 
-    evaluation_name: NonEmptyStr
+    evaluation_name: NonEmptyStr | None = None
     from_ts: int = Field(ge=0)
     to_ts: int = Field(ge=0)
 
@@ -374,12 +373,13 @@ class GradeOnDemandRequest(BaseModel):
         session_id (NonEmptyStr): Target session to grade.
         agent_version (NonEmptyStr): Agent version filter (must be set — eval
             results are versioned).
-        evaluation_name (NonEmptyStr): Evaluator config name to run.
+        evaluation_name (NonEmptyStr | None): Deprecated compatibility field.
+            Singleton evaluation ignores name-based selection.
     """
 
     session_id: NonEmptyStr
     agent_version: NonEmptyStr
-    evaluation_name: NonEmptyStr
+    evaluation_name: NonEmptyStr | None = None
 
 
 class GradeOnDemandResponse(BaseModel):

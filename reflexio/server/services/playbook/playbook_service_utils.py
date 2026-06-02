@@ -187,7 +187,6 @@ class PlaybookGenerationRequest(BaseModel):
     source: str | None = None
     rerun_start_time: int | None = None  # Unix timestamp for rerun flows
     rerun_end_time: int | None = None  # Unix timestamp for rerun flows
-    playbook_name: str | None = None  # Filter to run only specific extractor
     auto_run: bool = (
         True  # True for regular flow (checks stride_size), False for rerun/manual
     )
@@ -196,7 +195,6 @@ class PlaybookGenerationRequest(BaseModel):
 
 class PlaybookAggregatorRequest(BaseModel):
     agent_version: str
-    playbook_name: str
     rerun: bool = False
 
 

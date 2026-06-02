@@ -212,6 +212,80 @@ def test_grade_on_demand_second_call_returns_cached(client_with_org):
     assert runner.call_count == 1
 
 
+def test_grade_on_demand_scopes_cache_and_readback_by_evaluation_name(client_with_org):
+    """Rows for another evaluator in the same session/version must not be reused."""
+    client, org_id = client_with_org
+    _configure_evaluator(org_id, evaluation_name="overall_success")
+    reflexio = get_reflexio(org_id=org_id)
+    storage = reflexio.request_context.storage
+    assert storage is not None
+    _seed_session(
+        storage,
+        session_id="grade-on-demand-scoped",
+        user_id="user-scoped",
+        agent_version="v1",
+    )
+
+    storage.save_agent_success_evaluation_results(
+        [
+            AgentSuccessEvaluationResult(
+                result_id=0,
+                session_id="grade-on-demand-scoped",
+                agent_version="v1",
+                evaluation_name="other_evaluator",
+                is_success=False,
+                failure_type="old",
+                failure_reason="Historical row for another evaluator",
+                regular_vs_shadow=None,
+                number_of_correction_per_session=0,
+                user_turns_to_resolution=None,
+                is_escalated=False,
+                embedding=[],
+                created_at=1_700_000_900,
+            )
+        ]
+    )
+    historical_other_id = next(
+        row.result_id
+        for row in storage.get_agent_success_evaluation_results(
+            limit=10, agent_version="v1"
+        )
+        if row.session_id == "grade-on-demand-scoped"
+        and row.evaluation_name == "other_evaluator"
+    )
+
+    with patch(
+        "reflexio.server.api.run_group_evaluation",
+        side_effect=_fake_runner_factory(
+            storage, agent_version="v1", evaluation_name="overall_success"
+        ),
+    ):
+        first = client.post(
+            "/api/evaluations/grade_on_demand",
+            json={
+                "session_id": "grade-on-demand-scoped",
+                "agent_version": "v1",
+                "evaluation_name": "overall_success",
+            },
+        )
+        second = client.post(
+            "/api/evaluations/grade_on_demand",
+            json={
+                "session_id": "grade-on-demand-scoped",
+                "agent_version": "v1",
+                "evaluation_name": "other_evaluator",
+            },
+        )
+
+    assert first.status_code == 200, first.text
+    assert second.status_code == 200, second.text
+    first_body = first.json()
+    second_body = second.json()
+    assert first_body["result_id"] is not None
+    assert first_body["result_id"] != historical_other_id
+    assert second_body["result_id"] is None
+
+
 def test_grade_on_demand_unknown_session_returns_skipped(client_with_org):
     """Unknown ``session_id`` returns ``skipped_reason`` with a 200.
 

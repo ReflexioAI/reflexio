@@ -49,7 +49,6 @@ def _agent_run(
         binding=AgentBinding(
             org_id="org_1",
             extractor_kind="profile",
-            extractor_name="default_profile_extractor",
             user_id=user_id,
             request_id=f"request_{run_id}",
             agent_version="v1",
@@ -76,7 +75,6 @@ def _tool_context(
         run_id=run_id,
         org_id="org_1",
         extractor_kind="profile",
-        extractor_name="default_profile_extractor",
         user_id=user_id,
         config=config or PendingToolCallConfig(),
         dispatcher=NoopPendingToolCallDispatcher(),
