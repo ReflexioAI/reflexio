@@ -8,8 +8,7 @@ this module:
 - compares it to the case's ``gold_label``,
 - optionally asks the AI judge whether the decision matches intent, and
 - computes aggregate metrics: decision accuracy (overall + per-label
-  confusion), false-tighten rate, an over-specialization flag, and flip
-  correctness.
+  confusion), false-tighten rate, and an over-specialization flag.
 
 Two notions of "correct" are tracked separately:
 
@@ -126,17 +125,6 @@ class EvalResults:
             return 0.0
         return sum(o.over_specialized for o in self.outcomes) / self.n
 
-    @property
-    def flip_correctness(self) -> float | None:
-        """Label accuracy restricted to gold ``flip`` cases.
-
-        Returns None when there are no flip cases.
-        """
-        flips = [o for o in self.outcomes if o.gold_label == "flip"]
-        if not flips:
-            return None
-        return sum(o.label_match for o in flips) / len(flips)
-
     def summary(self) -> str:
         """Render a short human-readable summary block."""
         lines = [
@@ -152,12 +140,6 @@ class EvalResults:
         )
         lines.append(f"  false-tighten rate: {self.false_tighten_rate:.3f}")
         lines.append(f"  over-specialization:{self.over_specialization_rate:.3f}")
-        fc = self.flip_correctness
-        lines.append(
-            f"  flip correctness:   {fc:.3f}"
-            if fc is not None
-            else "  flip correctness:   (no flip cases)"
-        )
         lines.append("  confusion (gold -> produced):")
         for (gold, produced), count in sorted(self.confusion.items()):
             lines.append(f"    {gold:>10} -> {produced:<10} {count}")

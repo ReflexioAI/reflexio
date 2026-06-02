@@ -37,7 +37,6 @@ def _playbook_item(**kw: object) -> CitedItem:
         "target_id": "1",
         "content": "Run the formatter.",
         "trigger": "editing files",
-        "polarity": "positive",
     }
     base.update(kw)
     return CitedItem.model_validate(base)
@@ -64,26 +63,28 @@ def test_label_no_change_when_no_fields_set():
     assert label_for_decision(d, _playbook_item()) == "no_change"
 
 
-def test_label_flip_when_derived_polarity_differs():
-    # Rewriting positive guidance as avoidance wording + failure rationale
-    # derives negative polarity => flip.
+def test_label_rewrite_when_content_reverses_orientation():
+    # An orientation-reversing rewrite (avoidance wording + failure
+    # rationale) is no longer mechanically distinguishable from a plain
+    # rewrite — flip is retired, so it maps to "rewrite". Whether it truly
+    # reversed the rule is the AI judge's call, not the deterministic mapper.
     d = ReflectionDecision(
         target_kind="playbook",
         target_id="1",
         new_content="Avoid doing X.",
         new_rationale="user pushed back when X was recommended",
     )
-    assert label_for_decision(d, _playbook_item(polarity="positive")) == "flip"
+    assert label_for_decision(d, _playbook_item()) == "rewrite"
 
 
-def test_label_not_flip_when_derived_polarity_unchanged():
-    # Affirmative rewrite keeps positive polarity => not a flip => rewrite.
+def test_label_rewrite_when_content_keeps_orientation():
+    # An affirmative rewrite is likewise a "rewrite".
     d = ReflectionDecision(
         target_kind="playbook",
         target_id="1",
         new_content="Do X, but only on weekdays.",
     )
-    assert label_for_decision(d, _playbook_item(polarity="positive")) == "rewrite"
+    assert label_for_decision(d, _playbook_item()) == "rewrite"
 
 
 def test_label_ttl_when_profile_ttl_set():
@@ -130,17 +131,6 @@ def test_label_rewrite_when_only_content_changes():
         new_content="Run the formatter and the linter.",
     )
     assert label_for_decision(d, _playbook_item()) == "rewrite"
-
-
-def test_label_precedence_flip_over_content():
-    # A content rewrite whose derived polarity flips wins over plain rewrite.
-    d = ReflectionDecision(
-        target_kind="playbook",
-        target_id="1",
-        new_content="Never do X.",
-        new_rationale="user rejected X; it failed in the window",
-    )
-    assert label_for_decision(d, _playbook_item(polarity="positive")) == "flip"
 
 
 # ---------------------------------------------------------------------------
@@ -242,7 +232,7 @@ def test_metrics_accuracy_and_confusion():
     cases = [
         _mk_case("a", "no_change", _playbook_item(target_id="1")),
         _mk_case("b", "tighten", _playbook_item(target_id="2", trigger="editing")),
-        _mk_case("c", "flip", _playbook_item(target_id="3", polarity="positive")),
+        _mk_case("c", "rewrite", _playbook_item(target_id="3")),
     ]
     decisions = [
         # a: correct no_change
@@ -251,7 +241,7 @@ def test_metrics_accuracy_and_confusion():
         ReflectionDecision(
             target_kind="playbook", target_id="2", new_trigger="editing python files"
         ),
-        # c: WRONG — produced no_change instead of flip
+        # c: WRONG — produced no_change instead of rewrite
         ReflectionDecision(target_kind="playbook", target_id="3"),
     ]
     res = run_eval(cases=cases, decisions=decisions)
@@ -261,8 +251,7 @@ def test_metrics_accuracy_and_confusion():
     assert res.judge_accuracy is None  # no judge client passed
     assert res.confusion[("no_change", "no_change")] == 1
     assert res.confusion[("tighten", "tighten")] == 1
-    assert res.confusion[("flip", "no_change")] == 1
-    assert res.flip_correctness == pytest.approx(0.0)
+    assert res.confusion[("rewrite", "no_change")] == 1
 
 
 def test_metrics_false_tighten_rate():
@@ -367,7 +356,7 @@ def test_summary_is_renderable():
 def test_illustrative_fixture_loads_and_covers_expected_labels():
     cases = load_illustrative_cases()
     labels = {c.gold_label for c in cases}
-    assert {"no_change", "tighten", "widen", "flip"} <= labels
+    assert {"no_change", "tighten", "widen", "rewrite"} <= labels
     # Cases parse into real entities (window uses Interaction).
     for c in cases:
         assert c.id
@@ -394,17 +383,13 @@ def _decision_for_gold(case: ReflectionEvalCase) -> ReflectionDecision:
     tid = item.target_id
     if case.gold_label == "no_change":
         return ReflectionDecision(target_kind=item.kind, target_id=tid)
-    if case.gold_label == "flip":
-        # Flip is wording-based: rewrite new_content in the opposite
-        # orientation and name the motivating failure in new_rationale.
-        if item.polarity == "positive":
-            new_content = "Avoid adding explanatory inline comments to code."
-        else:
-            new_content = "Add explanatory inline comments to code."
+    if case.gold_label == "rewrite":
+        # A rewrite changes new_content to something other than the cited
+        # content (orientation-reversing rewrites are scored here too).
         return ReflectionDecision(
             target_kind=item.kind,
             target_id=tid,
-            new_content=new_content,
+            new_content=item.content + " (revised)",
             new_rationale="user pushed back; the prior rule failed in the window",
         )
     if case.gold_label in ("tighten", "widen"):
@@ -424,10 +409,11 @@ def _decision_for_gold(case: ReflectionEvalCase) -> ReflectionDecision:
 # ---------------------------
 # The harness scores a decision against the *whole* cited ``content``: the
 # label mapper only checks ``new_content != cited_item.content`` (plus
-# polarity / trigger / ttl signals). It has no field-level notion of
-# "which rule inside the content was edited", so a surgically-localized
-# edit and a wholesale rewrite of every rule both map to the same coarse
-# label (``rewrite`` / ``flip`` / a trigger-scope label).
+# trigger / ttl signals). It has no field-level notion of "which rule
+# inside the content was edited", so a surgically-localized edit and a
+# wholesale rewrite of every rule both map to the same coarse label
+# (``rewrite`` or a trigger-scope label). An orientation-reversing rewrite
+# is no exception — it is a ``rewrite`` too.
 #
 # We therefore localize at the two signals the harness *does* expose,
 # without adding any harness infrastructure:
@@ -444,8 +430,8 @@ def _multi_rule_tighten_case() -> ReflectionEvalCase:
     return cases["localized_tighten_multi_rule"]
 
 
-def _multi_rule_flip_case() -> ReflectionEvalCase:
-    """Load the multi-rule localized-flip fixture case."""
+def _multi_rule_reversal_case() -> ReflectionEvalCase:
+    """Load the multi-rule localized orientation-reversal fixture case."""
     cases = {c.id: c for c in load_illustrative_cases()}
     return cases["localized_flip_multi_rule"]
 
@@ -500,14 +486,16 @@ def test_localized_tighten_overspecialized_rewrite_is_flagged():
     assert res.over_specialization_rate == pytest.approx(1.0)
 
 
-def test_localized_flip_of_implicated_rule_scores_correct():
-    """Flipping only the implicated 'do' rule maps to gold flip + judge-correct.
+def test_localized_reversal_of_implicated_rule_scores_correct():
+    """Reversing only the implicated 'do' rule maps to gold rewrite + judge-correct.
 
     Rule 2 (auto-retry) caused a double-commit and explicit pushback; the
-    localized decision rewrites it as an avoid rule with a rationale citing
-    the failure, which derives negative polarity => flip.
+    localized decision rewrites it in the opposite orientation as an avoid
+    rule with a rationale citing the failure. This is mechanically a
+    ``rewrite`` (flip is retired); the judge confirms it reversed the right
+    rule.
     """
-    case = _multi_rule_flip_case()
+    case = _multi_rule_reversal_case()
     localized = ReflectionDecision(
         target_kind="playbook",
         target_id=case.cited_item.target_id,
@@ -517,26 +505,27 @@ def test_localized_flip_of_implicated_rule_scores_correct():
 
     client = MagicMock()
     client.generate_chat_response.return_value = ReflectionVerdict(
-        correct=True, reason="flipped only the implicated retry rule"
+        correct=True, reason="reversed only the implicated retry rule"
     )
     res = run_eval(cases=[case], decisions=[localized], llm_client=client)
 
-    assert res.outcomes[0].produced_label == "flip"
+    assert res.outcomes[0].produced_label == "rewrite"
     assert res.outcomes[0].label_match is True
     assert res.judge_accuracy == pytest.approx(1.0)
 
 
-def test_localized_flip_wrong_rule_rewrite_rejected_by_judge():
+def test_localized_reversal_wrong_rule_rewrite_rejected_by_judge():
     """Editing the wrong rule is caught by the judge, not the coarse label.
 
-    A decision that rewrites a *different* rule (Rule 1, ordering) still
-    maps to ``rewrite`` mechanically, so the label alone cannot tell it
-    apart from a correct localized edit. The AI judge — which sees the
-    full produced content and the case notes naming Rule 2 — rejects it.
-    This is the harness's only available "wrong rule edited" signal; there
-    is no field-level rule-identity check without a harness change.
+    Both a correct localized reversal and an edit of the *wrong* rule
+    (Rule 1, ordering) map to the same coarse ``rewrite`` label — the
+    deterministic label cannot tell them apart, and with flip retired it
+    never could. The AI judge — which sees the full produced content and
+    the case notes naming Rule 2 — is the only signal that rejects the
+    wrong-rule edit; there is no field-level rule-identity check without a
+    harness change.
     """
-    case = _multi_rule_flip_case()
+    case = _multi_rule_reversal_case()
     wrong_rule = ReflectionDecision(
         target_kind="playbook",
         target_id=case.cited_item.target_id,
@@ -551,9 +540,10 @@ def test_localized_flip_wrong_rule_rewrite_rejected_by_judge():
     )
     res = run_eval(cases=[case], decisions=[wrong_rule], llm_client=client)
 
-    # Mechanically a plain rewrite (polarity unchanged) — label can't flag it.
+    # Mechanically a plain rewrite — the coarse label matches gold and so
+    # cannot flag the wrong-rule edit; that is exactly the judge's job.
     assert res.outcomes[0].produced_label == "rewrite"
-    assert res.outcomes[0].label_match is False  # gold is flip
+    assert res.outcomes[0].label_match is True  # gold is rewrite; label can't catch it
     # The judge is the signal that catches the wrong-rule edit.
     assert res.outcomes[0].judge_correct is False
     assert res.judge_accuracy == pytest.approx(0.0)

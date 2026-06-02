@@ -17,22 +17,21 @@ collapse that field-presence into a coarse label via
 Field presence on the decision              Mapped label
 ==========================================  ===================================
 nothing set                                 ``no_change``
-``new_content`` derived polarity differs    ``flip``
 ``new_profile_time_to_live`` set            ``ttl``
 ``new_content`` set (substantive)           ``rewrite``
 ``new_trigger`` only                        ``tighten`` / ``widen``
 ==========================================  ===================================
 
-Flip is **wording-based**: a decision is a flip when its ``new_content``
-rewrites the rule in the opposite orientation — the polarity *derived*
-from ``new_content`` / ``new_rationale`` (via
-:func:`infer_playbook_polarity`) differs from the cited item's polarity.
-There is no ``new_polarity`` field; orientation lives entirely in the
-wording.
+An orientation-reversing rewrite (one whose ``new_content`` restates the
+rule in the opposite direction) is labeled ``rewrite`` like any other
+content change. A flip is **not** mechanically distinguishable from a
+plain rewrite without a polarity heuristic, and that heuristic is retired
+(orientation lives only in the wording; there is no ``new_polarity``
+field). Whether a rewrite *actually* reversed the rule's meaning is the
+AI judge's domain, not the deterministic labeler's.
 
-Precedence matters because a single decision may set several fields. A
-flip is the most semantically significant change, so it wins; then TTL;
-then a trigger-scope change; then a content rewrite. When a trigger
+Precedence matters because a single decision may set several fields: TTL
+wins, then a trigger-scope change, then a content rewrite. When a trigger
 change is set but we cannot tell whether it narrows or broadens (no
 cited trigger to compare against, or no length signal) we treat it as
 the ambiguous ``scope`` bucket rather than guessing tighten/widen.
@@ -53,7 +52,6 @@ from reflexio.models.api_schema.domain.entities import Interaction
 from reflexio.server.services.reflection.reflection_service_utils import (
     ReflectionDecision,
 )
-from tests._polarity_oracle import infer_playbook_polarity
 
 # The eval's coarse classification of a reflection decision's *intent*.
 GoldLabel = Literal[
@@ -61,7 +59,6 @@ GoldLabel = Literal[
     "tighten",
     "widen",
     "rewrite",
-    "flip",
     "ttl",
 ]
 
@@ -86,7 +83,6 @@ class CitedItem(BaseModel):
             profiles).
         content: Current content text of the cited row.
         trigger: Current playbook trigger (None for profiles).
-        polarity: Current playbook polarity (None for profiles).
         profile_time_to_live: Current profile TTL (None for playbooks).
     """
 
@@ -94,7 +90,6 @@ class CitedItem(BaseModel):
     target_id: str
     content: str = ""
     trigger: str | None = None
-    polarity: Literal["positive", "negative"] | None = None
     profile_time_to_live: str | None = None
 
 
@@ -158,45 +153,36 @@ def label_for_decision(
     """Map a produced reflection decision to a coarse label.
 
     Field-presence is collapsed into a single label using the precedence
-    documented at the module top: flip > ttl > trigger-scope > rewrite >
+    documented at the module top: ttl > trigger-scope > rewrite >
     no_change. A trigger change that cannot be classified as
     narrowing/broadening yields the ambiguous ``"scope"`` label.
 
-    Flip is wording-based: a ``new_content`` rewrite counts as a flip when
-    its *derived* polarity (via :func:`infer_playbook_polarity`, combining
-    ``new_content`` with ``new_rationale``) differs from the cited item's
-    polarity. Only playbooks can flip.
+    An orientation-reversing rewrite is labeled ``"rewrite"`` like any
+    other ``new_content`` change: a flip is not mechanically separable
+    from a plain rewrite without a polarity heuristic, which is retired.
+    Whether a rewrite actually reversed the rule's meaning is judged by
+    the AI judge, not this deterministic mapper.
 
     Args:
         decision: The reflection decision produced by the service/LLM.
         cited_item: The cited row the decision targets — supplies the
-            baseline polarity / trigger for comparison.
+            baseline trigger for comparison.
 
     Returns:
         One of the ``GoldLabel`` values, or ``"scope"`` for an ambiguous
         trigger change.
     """
-    # 1. Wording-based polarity flip is the most significant change.
-    if (
-        cited_item.kind == "playbook"
-        and cited_item.polarity is not None
-        and decision.new_content is not None
-        and infer_playbook_polarity(decision.new_content, decision.new_rationale)
-        != cited_item.polarity
-    ):
-        return "flip"
-
-    # 2. TTL change (profiles).
+    # 1. TTL change (profiles).
     if decision.new_profile_time_to_live is not None:
         return "ttl"
 
-    # 3. Trigger-scope change (playbooks).
+    # 2. Trigger-scope change (playbooks).
     if decision.new_trigger is not None and decision.new_trigger != cited_item.trigger:
         return _trigger_scope(cited_item.trigger, decision.new_trigger)
 
-    # 4. Substantive content rewrite.
+    # 3. Substantive content rewrite (includes orientation-reversing ones).
     if decision.new_content is not None and decision.new_content != cited_item.content:
         return "rewrite"
 
-    # 5. Nothing changed.
+    # 4. Nothing changed.
     return "no_change"

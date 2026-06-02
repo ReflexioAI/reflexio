@@ -25,8 +25,7 @@
       "kind": "playbook",
       "target_id": "101",
       "content": "Use pytest for Python tests.",
-      "trigger": "running or scaffolding Python tests",
-      "polarity": "positive"
+      "trigger": "running or scaffolding Python tests"
     },
     "gold_label": "no_change",
     "notes": "The cited rule was applied correctly; no revision warranted."
@@ -57,8 +56,7 @@
       "kind": "playbook",
       "target_id": "102",
       "content": "Run the formatter before showing code.",
-      "trigger": "editing files",
-      "polarity": "positive"
+      "trigger": "editing files"
     },
     "gold_label": "tighten",
     "gold_new_trigger": "editing Python source files before showing code to the user",
@@ -90,8 +88,7 @@
       "kind": "playbook",
       "target_id": "103",
       "content": "Write a docstring.",
-      "trigger": "defining a new public function in a module",
-      "polarity": "positive"
+      "trigger": "defining a new public function in a module"
     },
     "gold_label": "widen",
     "gold_new_trigger": "defining a new public symbol",
@@ -123,11 +120,10 @@
       "kind": "playbook",
       "target_id": "104",
       "content": "Add explanatory inline comments to code.",
-      "trigger": "writing non-trivial code",
-      "polarity": "positive"
+      "trigger": "writing non-trivial code"
     },
-    "gold_label": "flip",
-    "notes": "User reversed the preference; the rule's polarity should flip to negative."
+    "gold_label": "rewrite",
+    "notes": "User reversed the preference; the rule should be rewritten in the opposite orientation (avoid inline comments). Scored as a rewrite — the AI judge checks that the rewrite actually reversed the rule's meaning."
   },
   {
     "id": "localized_tighten_multi_rule",
@@ -169,8 +165,7 @@
       "kind": "playbook",
       "target_id": "105",
       "content": "Rule 1: Acknowledge the request before acting. Rule 2: Validate the input before processing it. Rule 3: Report the outcome to the user.",
-      "trigger": "handling any incoming item",
-      "polarity": "positive"
+      "trigger": "handling any incoming item"
     },
     "gold_label": "tighten",
     "gold_new_trigger": "handling an incoming item whose type requires a validation step",
@@ -216,10 +211,9 @@
       "kind": "playbook",
       "target_id": "106",
       "content": "Rule 1: Process items in the order received. Rule 2: Automatically retry step C on the first failure. Rule 3: Summarize the batch result at the end.",
-      "trigger": "processing a batch of items",
-      "polarity": "positive"
+      "trigger": "processing a batch of items"
     },
-    "gold_label": "flip",
-    "notes": "Three rules in the content; the window only implicates Rule 2 (auto-retry step C), whose 'do' guidance caused a double-commit and explicit user pushback. Only Rule 2 should flip to an avoid rule (surface and wait) with a rationale citing the double-commit. Rules 1 and 3 are fine and must be left intact."
+    "gold_label": "rewrite",
+    "notes": "Three rules in the content; the window only implicates Rule 2 (auto-retry step C), whose 'do' guidance caused a double-commit and explicit user pushback. Only Rule 2 should be rewritten in the opposite orientation as an avoid rule (surface and wait) with a rationale citing the double-commit. Rules 1 and 3 are fine and must be left intact. Scored as a rewrite; the AI judge checks that the correct rule was reversed and the others left intact."
   }
 ]
