@@ -526,7 +526,11 @@ class RetrievalFloorConfig(BaseModel):
     """
 
     enabled: bool = True
-    pool_size: int = 30  # candidates fetched per arm before flooring + cap to top_k
+    pool_size: int = Field(
+        default=30,
+        gt=0,
+        description="Candidates fetched per arm before flooring + cap to top_k.",
+    )
     profile_floor: float = -5.0
     user_playbook_floor: float = -5.0
     agent_playbook_floor: float = -5.0

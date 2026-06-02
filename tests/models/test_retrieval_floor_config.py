@@ -1,3 +1,6 @@
+import pytest
+from pydantic import ValidationError
+
 from reflexio.models.config_schema import (
     Config,
     RetrievalFloorConfig,
@@ -18,3 +21,8 @@ def test_config_has_retrieval_floor_default():
     cfg = Config(storage_config=StorageConfigSQLite())
     assert isinstance(cfg.retrieval_floor, RetrievalFloorConfig)
     assert cfg.retrieval_floor.enabled is True
+
+
+def test_pool_size_must_be_positive():
+    with pytest.raises(ValidationError):
+        RetrievalFloorConfig(pool_size=0)
