@@ -74,16 +74,19 @@ def _unify(
     content: str = "unified content",
     trigger: str = "unified trigger",
     rationale: str = "unified rationale",
-    polarity: str = "positive",
 ) -> UnifyDecision:
-    """Build a ``UnifyDecision`` with sane defaults for the apply tests."""
+    """Build a ``UnifyDecision`` with sane defaults for the apply tests.
+
+    Polarity is not a decision field; the unified row's orientation is derived
+    from ``content`` / ``rationale`` wording at apply time. The defaults derive
+    positive (no avoidance framing).
+    """
     return UnifyDecision(
         new_id=new_id,
         archive_existing_ids=archive_existing_ids or [],
         content=content,
         trigger=trigger,
         rationale=rationale,
-        polarity=polarity,  # type: ignore[arg-type]
     )
 
 
@@ -352,7 +355,6 @@ class TestBuildDeduplicatedResults:
                     "NEW-0",
                     archive_existing_ids=[0],
                     content="final content",
-                    polarity="positive",
                 )
             ],
         )
@@ -397,7 +399,6 @@ class TestBuildDeduplicatedResults:
                     "NEW-0",
                     archive_existing_ids=[0, 1],
                     content="merged content",
-                    polarity="positive",
                 )
             ],
         )
@@ -435,7 +436,6 @@ class TestBuildDeduplicatedResults:
                     "NEW-0",
                     archive_existing_ids=[],
                     content="solo final",
-                    polarity="positive",
                 )
             ],
         )

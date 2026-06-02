@@ -6,8 +6,9 @@ feature at the consolidator boundary:
 When an EXISTING positive ``UserPlaybook`` collides with a NEW
 failure-path-derived NEGATIVE candidate on the same trigger, the
 consolidator MUST route the pair through a contradiction-aware decision
-(``UnifyDecision`` carrying the polarity the NEW evidence justifies,
-``RejectNewDecision``, or ``DifferentiateDecision``). After the
+(``UnifyDecision`` whose unified wording carries the orientation the NEW
+evidence justifies, ``RejectNewDecision``, or ``DifferentiateDecision``).
+After the
 generation-service apply path runs (``delete_user_playbooks_by_ids``
 followed by ``save_user_playbooks``), storage MUST NOT contain two
 current rows on the same trigger with opposing polarity — the two rules
@@ -32,7 +33,8 @@ short-circuited:
   resolutions of the contradiction pair under the 4-kind redesign:
   ``RejectNewDecision`` (the existing positive wins),
   ``DifferentiateDecision`` (the two rules refine onto disjoint
-  triggers), and a forbidden ``UnifyDecision`` with mismatched polarity
+  triggers), and a forbidden ``UnifyDecision`` whose unified wording
+  derives the opposite orientation of the archived EXISTING row
   (rejected by the apply-layer polarity validator). The forbidden case
   is the structural linchpin guard the 4-kind redesign buys.
 * Phase 3 (apply): the generation-service apply flow
@@ -409,8 +411,9 @@ def test_existing_positive_plus_failure_path_rejects_mismatched_polarity_unify(
     """A ``unify`` archiving an opposite-polarity EXISTING is rejected by the validator.
 
     If the LLM mis-emits a ``UnifyDecision`` that archives an EXISTING
-    positive row while declaring ``polarity="negative"``, the apply-layer
-    polarity validator raises ``ConsolidationContractError`` and the
+    positive row but whose unified wording derives ``negative`` (avoidance
+    framing + failure signal), the apply-layer polarity validator (which
+    infers orientation from wording) raises ``ConsolidationContractError`` and the
     per-decision isolation in ``_build_deduplicated_results`` bumps the
     failed counter while suppressing the safety fallback for the orphan
     candidate. Storage is unchanged: the existing positive row remains,
@@ -435,8 +438,7 @@ def test_existing_positive_plus_failure_path_rejects_mismatched_polarity_unify(
                 archive_existing_ids=[0],
                 content=candidate.content,
                 trigger=trigger,
-                rationale="LLM mis-merged opposite-polarity pair",
-                polarity="negative",
+                rationale="LLM mis-merged opposite-polarity pair after user pushback",
             )
         ],
     )

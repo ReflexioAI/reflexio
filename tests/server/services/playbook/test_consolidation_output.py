@@ -28,7 +28,6 @@ def test_decision_kinds_are_discriminated_union():
         content="Recommend X.",
         trigger="when Y",
         rationale="r",
-        polarity="positive",
     )
     out = PlaybookConsolidationOutput(decisions=[unify])
     assert out.decisions[0].kind == "unify"
@@ -45,17 +44,19 @@ def test_differentiate_requires_both_refined_triggers():
         )
 
 
-def test_unify_requires_polarity():
-    """``UnifyDecision`` requires an explicit polarity literal."""
-    with pytest.raises(ValidationError):
-        UnifyDecision(
-            new_id="NEW-0",
-            archive_existing_ids=[1],
-            content="X",
-            trigger="t",
-            rationale="r",
-            # missing polarity
-        )  # type: ignore[call-arg]
+def test_unify_has_no_polarity_field():
+    """``UnifyDecision`` no longer declares a polarity field (wording-derived)."""
+    # Parses fine without any polarity; orientation is inferred from wording at
+    # apply time, not declared on the decision.
+    unify = UnifyDecision(
+        new_id="NEW-0",
+        archive_existing_ids=[1],
+        content="X",
+        trigger="t",
+        rationale="r",
+    )
+    assert "polarity" not in UnifyDecision.model_fields
+    assert "polarity" not in unify.model_dump()
 
 
 def test_unify_accepts_empty_archive_existing_ids():
@@ -66,7 +67,6 @@ def test_unify_accepts_empty_archive_existing_ids():
         content="X",
         trigger="t",
         rationale="r",
-        polarity="positive",
     )
     assert unify.archive_existing_ids == []
 
@@ -86,7 +86,6 @@ def test_all_four_kinds_round_trip_through_output():
             content="X",
             trigger="t",
             rationale="r",
-            polarity="positive",
         ),
         RejectNewDecision(new_id="NEW-1", superseded_by_existing_id=2),
         DifferentiateDecision(

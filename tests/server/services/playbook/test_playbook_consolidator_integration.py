@@ -5,7 +5,8 @@ These tests drive ``PlaybookConsolidator.deduplicate`` end-to-end with a real
 ``ConsolidationDecision`` kinds produces the correct storage transitions:
 
 * ``UnifyDecision`` — 0..N EXISTING archived; one row inserted carrying the
-  LLM-supplied final ``content`` / ``trigger`` / ``rationale`` / ``polarity``.
+  LLM-supplied final ``content`` / ``trigger`` / ``rationale`` (the unified
+  row's polarity is derived from its wording, not a decision field).
 * ``RejectNewDecision`` — storage state unchanged (NEW dropped, EXISTING wins).
 * ``DifferentiateDecision`` — existing archived, two refined rows emitted.
 * ``IndependentDecision`` — new candidate inserted, no archive.
@@ -285,7 +286,6 @@ class TestUnify:
                     content="Avoid X (always).",
                     trigger="when Y",
                     rationale="merged after user pushback observed",
-                    polarity="negative",
                 )
             ],
         )
@@ -361,7 +361,6 @@ class TestUnify:
                     content="Recommend X (canonical).",
                     trigger="when Y",
                     rationale="merged",
-                    polarity="positive",
                 )
             ],
         )
@@ -400,7 +399,6 @@ class TestUnify:
                     content="Recommend Z.",
                     trigger="when Y",
                     rationale="r",
-                    polarity="positive",
                 )
             ],
         )
@@ -535,27 +533,32 @@ class TestIndependent:
 
 class TestContradictionResolutionContract:
     """Linchpin contract: opposing-polarity same-trigger pairs MUST route through
-    a contradiction kind (``unify`` with matching polarity, ``reject_new``, or
-    ``differentiate``) and MUST NEVER be silently merged via a mixed-polarity
-    ``unify`` or accepted as ``independent``.
+    a contradiction kind (``unify`` whose unified wording carries a single
+    consistent orientation, ``reject_new``, or ``differentiate``) and MUST NEVER
+    be silently merged via a mixed-polarity ``unify`` or accepted as
+    ``independent``.
 
     Under the 4-kind redesign the apply layer enforces this via the ``unify``
-    polarity validator: a ``UnifyDecision`` that archives an EXISTING row with
-    a different polarity raises ``ConsolidationContractError`` and the
-    per-decision isolation in ``_build_deduplicated_results`` bumps the
-    ``failed_count`` and suppresses the safety fallback for the NEW members,
-    so the orphan candidate is not silently re-inserted as an opposing twin.
+    polarity validator, which is now wording-derived: the unified row's
+    orientation is inferred from its ``content`` / ``rationale`` via
+    ``infer_playbook_polarity``, and a ``UnifyDecision`` whose unified wording
+    derives a different polarity than an archived EXISTING row raises
+    ``ConsolidationContractError``. The per-decision isolation in
+    ``_build_deduplicated_results`` bumps the ``failed_count`` and suppresses the
+    safety fallback for the NEW members, so the orphan candidate is not silently
+    re-inserted as an opposing twin.
     """
 
     def test_opposing_polarity_unify_is_rejected_by_validator(
         self, sqlite_storage, request_context, consolidator, caplog
     ):
-        """A ``unify`` archiving an opposite-polarity EXISTING is rejected.
+        """A ``unify`` whose wording opposes the archived EXISTING is rejected.
 
         If the LLM returns a ``UnifyDecision`` that archives a positive
-        EXISTING row but declares ``polarity="negative"`` (matching the NEW
-        candidate), the apply layer raises ``ConsolidationContractError`` and
-        the per-decision isolation in ``_build_deduplicated_results`` bumps
+        EXISTING row but whose unified ``content`` / ``rationale`` wording
+        derives ``negative`` (avoidance framing + a failure signal, matching the
+        NEW candidate), the apply layer raises ``ConsolidationContractError``
+        and the per-decision isolation in ``_build_deduplicated_results`` bumps
         the failed counter. Crucially, the safety fallback must NOT silently
         re-insert the orphan candidate — that would still leave both opposing
         rules in current storage, breaking the contract.
@@ -583,8 +586,10 @@ class TestContradictionResolutionContract:
                         archive_existing_ids=[0],
                         content="Avoid X.",
                         trigger="when Y",
-                        rationale="conflict — LLM mis-merged opposite polarities",
-                        polarity="negative",
+                        rationale=(
+                            "conflict — LLM mis-merged opposite rules after "
+                            "user pushback"
+                        ),
                     )
                 ],
             )
