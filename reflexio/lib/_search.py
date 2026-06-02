@@ -163,4 +163,5 @@ class SearchMixin(ReflexioBase):
             llm_client=self.llm_client,
             prompt_manager=self.request_context.prompt_manager,
             pre_retrieval_model_name=pre_retrieval_model_name,
+            retrieval_floor=config.retrieval_floor if config else None,
         )

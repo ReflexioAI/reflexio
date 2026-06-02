@@ -33,10 +33,15 @@ from reflexio.models.api_schema.service_schemas import (
     UserPlaybook,
     UserProfile,
 )
-from reflexio.models.config_schema import SearchMode, SearchOptions
+from reflexio.models.config_schema import (
+    RetrievalFloorConfig,
+    SearchMode,
+    SearchOptions,
+)
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.prompt.prompt_manager import PromptManager
 from reflexio.server.services.pre_retrieval import QueryReformulator
+from reflexio.server.services.retrieval.relevance_floor import apply_relevance_floor
 from reflexio.server.services.storage.storage_base import BaseStorage
 from reflexio.server.tracing import profile_step, set_span_data
 
@@ -80,6 +85,7 @@ def run_unified_search(
     llm_client: LiteLLMClient,
     prompt_manager: PromptManager,
     pre_retrieval_model_name: str | None = None,
+    retrieval_floor: RetrievalFloorConfig | None = None,
 ) -> UnifiedSearchResponse:
     """
     Search across all entity types (profiles, agent playbooks, user playbooks) in parallel.
@@ -105,6 +111,10 @@ def run_unified_search(
     top_k = request.top_k if request.top_k is not None else 5
     threshold = request.threshold if request.threshold is not None else 0.3
 
+    floor_cfg = retrieval_floor or RetrievalFloorConfig()
+    floor_on = floor_cfg.enabled
+    fetch_k = max(top_k, floor_cfg.pool_size) if floor_on else top_k
+
     # --- Phase A: query reformulation + embedding generation ---
     reformulated_query, embedding = _run_phase_a(
         query=request.query,
@@ -125,12 +135,22 @@ def run_unified_search(
         storage=storage,
         embedding=embedding,
         query=reformulated_query,
-        top_k=top_k,
+        top_k=fetch_k,
         threshold=threshold,
     )
 
     if profiles is None:
         return UnifiedSearchResponse(success=False, msg="Search failed")
+
+    if floor_on:
+        profiles, agent_playbooks, user_playbooks = _apply_floors(
+            query=reformulated_query,
+            profiles=profiles,
+            agent_playbooks=agent_playbooks,  # type: ignore[arg-type]
+            user_playbooks=user_playbooks,  # type: ignore[arg-type]
+            top_k=top_k,
+            cfg=floor_cfg,
+        )
 
     return UnifiedSearchResponse(
         success=True,
@@ -325,6 +345,43 @@ def _run_phase_b(
         return None, None, None
 
     return profiles, agent_playbooks, user_playbooks
+
+
+def _apply_floors(
+    query: str,
+    profiles: list[UserProfile],
+    agent_playbooks: list[AgentPlaybook],
+    user_playbooks: list[UserPlaybook],
+    top_k: int,
+    cfg: RetrievalFloorConfig,
+) -> tuple[list[UserProfile], list[AgentPlaybook], list[UserPlaybook]]:
+    """Apply the per-arm relevance floor to each entity arm in parallel."""
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        f_profiles = ex.submit(
+            apply_relevance_floor,
+            query,
+            profiles,
+            cfg.profile_floor,
+            top_k,
+            arm="profiles",
+        )
+        f_agent = ex.submit(
+            apply_relevance_floor,
+            query,
+            agent_playbooks,
+            cfg.agent_playbook_floor,
+            top_k,
+            arm="agent_playbooks",
+        )
+        f_user = ex.submit(
+            apply_relevance_floor,
+            query,
+            user_playbooks,
+            cfg.user_playbook_floor,
+            top_k,
+            arm="user_playbooks",
+        )
+        return f_profiles.result(), f_agent.result(), f_user.result()
 
 
 def _get_cached_query_embedding(
