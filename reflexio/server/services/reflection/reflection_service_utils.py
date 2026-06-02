@@ -125,7 +125,11 @@ class ReflectionResult(BaseModel):
         capped_count (int): Revision-intent decisions skipped because the
             per-pass cap (``ReflectionConfig.max_revisions_per_pass``) was
             already reached. no_change decisions never count here.
-        failed_count (int): Per-decision apply failures, logged.
+        failed_count (int): Per-decision failures, logged. Includes both
+            apply-step errors and decisions rejected by ``_validate_decision``
+            (e.g. a playbook ``new_content`` revision that omits
+            ``new_rationale``, which the prompt requires on every playbook
+            content edit).
     """
 
     ran: bool = False

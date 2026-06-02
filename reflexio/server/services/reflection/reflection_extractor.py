@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING, Any
 
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
-from reflexio.server.services.polarity_utils import infer_playbook_polarity
 from reflexio.server.services.reflection.reflection_service_utils import (
     ReflectionOutput,
 )
@@ -180,8 +179,9 @@ def _profiles_to_json(profiles: list[UserProfile]) -> str:
 def _playbooks_to_json(playbooks: list[UserPlaybook]) -> str:
     """Serialize cited playbooks for the reflection prompt.
 
-    Includes ``polarity`` so the reflection model has the current
-    framing context when reasoning about whether a flip is warranted.
+    The prompt reads each rule's orientation directly from its ``content``
+    wording — no derived ``polarity`` hint is injected (that would re-derive
+    polarity, which is retired under LLM-judged orientation).
 
     Args:
         playbooks (list[UserPlaybook]): The cited playbooks to serialize.
@@ -196,7 +196,6 @@ def _playbooks_to_json(playbooks: list[UserPlaybook]) -> str:
             "content": p.content,
             "trigger": p.trigger,
             "rationale": p.rationale,
-            "polarity": infer_playbook_polarity(p.content, p.rationale),
             "source": p.source,
         }
         for p in playbooks

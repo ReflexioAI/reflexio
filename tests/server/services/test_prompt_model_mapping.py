@@ -52,7 +52,7 @@ PROMPT_VERSION_MAP: dict[str, tuple[str, str | None]] = {
     # registry key was removed, so they are mapped without a registry key.
     "agent_success_evaluation_with_comparison": ("v1.0.0", None),
     "shadow_content_evaluation": ("v1.0.0", None),
-    "memory_reflection": ("v1.4.0", None),
+    "memory_reflection": ("v1.5.0", None),
     "query_reformulation": ("v1.0.0", None),
     "document_expansion": ("v1.0.0", None),
     "compress_session_for_query": ("v1.3.0", None),
