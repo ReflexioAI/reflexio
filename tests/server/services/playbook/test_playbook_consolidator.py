@@ -32,7 +32,6 @@ def _make_user_playbook(
     trigger: str | None = None,
     source_interaction_ids: list[int] | None = None,
     user_playbook_id: int = 0,
-    polarity: str = "positive",
 ) -> UserPlaybook:
     """Helper to create a UserPlaybook object for tests."""
     return UserPlaybook(
@@ -44,7 +43,6 @@ def _make_user_playbook(
         trigger=trigger or f"condition_{idx}",
         source="test",
         source_interaction_ids=source_interaction_ids or [],
-        polarity=polarity,  # type: ignore[arg-type]
     )
 
 
@@ -137,7 +135,6 @@ class TestFormatPlaybooksWithPrefix:
             content="Do not start unbilled work when Y",
             trigger="user asks about billing",
             rationale="prevents unbilled work after user pushback",
-            polarity="negative",
             source="extractor",
         )
         result = mock_consolidator._format_playbooks_with_prefix([fb], "EXISTING")
@@ -343,12 +340,10 @@ class TestBuildDeduplicatedResults:
         added to the archive list.
         """
         new_playbooks = [
-            _make_user_playbook(0, content="new content", polarity="positive"),
+            _make_user_playbook(0, content="new content"),
         ]
         existing_playbooks = [
-            _make_user_playbook(
-                1, user_playbook_id=500, content="old content", polarity="positive"
-            ),
+            _make_user_playbook(1, user_playbook_id=500, content="old content"),
         ]
 
         dedup_output = PlaybookConsolidationOutput(
@@ -381,20 +376,18 @@ class TestBuildDeduplicatedResults:
         rows into a single inserted row, archiving every referenced EXISTING id.
         """
         new_playbooks = [
-            _make_user_playbook(0, source_interaction_ids=[10], polarity="positive"),
+            _make_user_playbook(0, source_interaction_ids=[10]),
         ]
         existing_playbooks = [
             _make_user_playbook(
                 1,
                 user_playbook_id=501,
                 source_interaction_ids=[1],
-                polarity="positive",
             ),
             _make_user_playbook(
                 2,
                 user_playbook_id=502,
                 source_interaction_ids=[2],
-                polarity="positive",
             ),
         ]
 
@@ -433,7 +426,7 @@ class TestBuildDeduplicatedResults:
         apply path must support it without raising.
         """
         new_playbooks = [
-            _make_user_playbook(0, content="solo new", polarity="positive"),
+            _make_user_playbook(0, content="solo new"),
         ]
 
         dedup_output = PlaybookConsolidationOutput(

@@ -39,10 +39,7 @@ from reflexio.models.api_schema.domain.entities import (
 )
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.services.operation_state_utils import OperationStateManager
-from reflexio.server.services.polarity_utils import (
-    infer_playbook_polarity,
-    warn_if_polarity_content_mismatch,
-)
+from reflexio.server.services.polarity_utils import infer_playbook_polarity
 from reflexio.server.services.reflection.reflection_extractor import (
     ReflectionExtractor,
 )
@@ -536,11 +533,6 @@ class ReflectionService:
                 if decision.new_rationale is not None
                 else cited.rationale
             ),
-            polarity=(
-                decision.new_polarity
-                if decision.new_polarity is not None
-                else cited.polarity
-            ),
             status=None,
             source=cited.source,
             source_interaction_ids=list(cited.source_interaction_ids),
@@ -551,14 +543,23 @@ class ReflectionService:
             old_content=cited.content,
             new_content=new_playbook.content,
         )
-        warn_if_polarity_content_mismatch(new_playbook)
+        # Flip detection compares the LLM decision's polarity against the
+        # cited row's *derived* polarity (wording + failure evidence). The
+        # stored polarity field was removed; the new row's polarity is derived
+        # from its content at read time. ``decision.new_polarity`` is retained
+        # only for this flip signal (Phase B2 reworks the decision schema).
         cited_polarity = infer_playbook_polarity(cited.content, cited.rationale)
-        if new_playbook.polarity != cited_polarity:
+        new_polarity = (
+            decision.new_polarity
+            if decision.new_polarity is not None
+            else infer_playbook_polarity(new_playbook.content, new_playbook.rationale)
+        )
+        if new_polarity != cited_polarity:
             logger.info(
                 "reflection.flip prior_polarity=%s new_polarity=%s playbook_id=%s "
                 'content_excerpt="%s" prior_excerpt="%s" citation_excerpt="%s"',
                 cited_polarity,
-                new_playbook.polarity,
+                new_polarity,
                 cited.user_playbook_id,
                 (new_playbook.content or "")[:120].replace('"', "'"),
                 (cited.content or "")[:120].replace('"', "'"),

@@ -35,7 +35,10 @@ from reflexio.server.services.playbook.playbook_service_utils import (
     StructuredPlaybookContent,
     StructuredPlaybookList,
 )
-from reflexio.server.services.polarity_utils import NEGATIVE_PREFIXES
+from reflexio.server.services.polarity_utils import (
+    NEGATIVE_PREFIXES,
+    infer_playbook_polarity,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -307,9 +310,10 @@ def test_classic_extractor_emits_positive_when_no_failure_evidence(
         result = extractor.run().items
 
     assert len(result) == 2, "Expected two playbooks from the neutral window"
-    assert all(playbook.polarity == "positive" for playbook in result), (
-        "All action-style playbooks must derive polarity=positive"
-    )
+    assert all(
+        infer_playbook_polarity(playbook.content, playbook.rationale) == "positive"
+        for playbook in result
+    ), "All action-style playbooks must derive polarity=positive"
 
 
 def test_classic_extractor_emits_negative_on_clear_failure(
@@ -358,7 +362,11 @@ def test_classic_extractor_emits_negative_on_clear_failure(
 
     assert len(result) == 2, "Expected both playbook entries to be emitted"
 
-    negative_playbooks = [pb for pb in result if pb.polarity == "negative"]
+    negative_playbooks = [
+        pb
+        for pb in result
+        if infer_playbook_polarity(pb.content, pb.rationale) == "negative"
+    ]
     assert len(negative_playbooks) >= 1, (
         "Expected at least one playbook with polarity=negative from a failure window"
     )

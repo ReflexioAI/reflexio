@@ -29,6 +29,7 @@ from reflexio.server.services.playbook.playbook_aggregator import PlaybookAggreg
 from reflexio.server.services.playbook.playbook_service_utils import (
     PlaybookAggregatorRequest,
 )
+from reflexio.server.services.polarity_utils import infer_playbook_polarity
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -1236,7 +1237,6 @@ def _make_pb(
         playbook_name="test_fb",
         content=content,
         rationale=rationale,
-        polarity=polarity,  # type: ignore[arg-type]
     )
 
 
@@ -1250,7 +1250,9 @@ def test_aggregator_separates_positive_and_negative_polarity():
     ]
     groups = PlaybookAggregator._group_playbooks_by_direction(cluster, threshold=0.6)
     # Expect 2 groups: one for positive, one for negative
-    polarities_per_group = [{p.polarity for p in g} for g in groups]
+    polarities_per_group = [
+        {infer_playbook_polarity(p.content, p.rationale) for p in g} for g in groups
+    ]
     assert {"positive"} in polarities_per_group
     assert {"negative"} in polarities_per_group
     # And no group mixes polarities
@@ -1297,7 +1299,9 @@ def test_aggregator_splits_high_overlap_content_across_polarities():
     assert len(groups) == 2, (
         f"high-overlap content across polarities must split into 2 groups, got {groups}"
     )
-    polarities_per_group = [{p.polarity for p in g} for g in groups]
+    polarities_per_group = [
+        {infer_playbook_polarity(p.content, p.rationale) for p in g} for g in groups
+    ]
     assert {"positive"} in polarities_per_group
     assert {"negative"} in polarities_per_group
 

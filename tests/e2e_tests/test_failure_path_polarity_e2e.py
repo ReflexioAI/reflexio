@@ -47,6 +47,7 @@ from reflexio.models.api_schema.domain.entities import (
 from reflexio.models.api_schema.domain.enums import Status
 from reflexio.models.config_schema import Config, ReflectionConfig
 from reflexio.server.api_endpoints.request_context import RequestContext
+from reflexio.server.services.polarity_utils import infer_playbook_polarity
 from reflexio.server.services.reflection.reflection_service import ReflectionService
 from reflexio.server.services.reflection.reflection_service_utils import (
     ReflectionDecision,
@@ -153,7 +154,6 @@ def _seed_failure_window_negative_playbook(storage, user_id: str) -> UserPlayboo
         content="Avoid suggesting product X — the user said no twice.",
         trigger="user has previously declined product X",
         rationale="User pushed back: 'Stop suggesting X, I told you no twice.'",
-        polarity="negative",
         source="api",
     )
     storage.save_user_playbooks([pb])
@@ -242,8 +242,9 @@ def test_failure_path_produces_negative_rule_reflection_keeps_it(
     # negative playbook. We persist it directly; the extractor-side
     # polarity threading is covered by D6/C3 integration tests.
     seeded = _seed_failure_window_negative_playbook(storage, user_id)
-    assert seeded.polarity == "negative", (
-        f"Setup failure — seeded playbook must be negative; got {seeded.polarity!r}"
+    assert infer_playbook_polarity(seeded.content, seeded.rationale) == "negative", (
+        "Setup failure — seeded playbook must derive to negative; got "
+        f"{infer_playbook_polarity(seeded.content, seeded.rationale)!r}"
     )
 
     # Phase 2 — seed a citation window so reflection has something to consider.
@@ -302,9 +303,11 @@ def test_failure_path_produces_negative_rule_reflection_keeps_it(
     assert current[0].user_playbook_id == seeded.user_playbook_id, (
         "The same row must remain — reflection must not have replaced it"
     )
-    assert current[0].polarity == "negative", (
+    assert (
+        infer_playbook_polarity(current[0].content, current[0].rationale) == "negative"
+    ), (
         "Polarity must stay negative across extraction + reflection; "
-        f"got {current[0].polarity!r}"
+        f"got {infer_playbook_polarity(current[0].content, current[0].rationale)!r}"
     )
     assert current[0].content == seeded.content, (
         f"Content must be unchanged on a no_change decision; got {current[0].content!r}"

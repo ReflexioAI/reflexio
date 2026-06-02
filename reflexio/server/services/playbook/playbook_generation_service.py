@@ -37,9 +37,6 @@ from reflexio.server.services.playbook.playbook_service_utils import (
     format_expert_comparison_pairs,
     has_expert_content,
 )
-from reflexio.server.services.polarity_utils import (
-    warn_if_polarity_content_mismatch,
-)
 from reflexio.server.services.service_utils import (
     extract_interactions_from_request_interaction_data_models,
     format_sessions_to_history_string,
@@ -299,7 +296,6 @@ class PlaybookGenerationService(
         for playbook in all_playbooks:
             playbook.status = Status.PENDING if self.output_pending_status else None
             playbook.source = self.service_config.source  # type: ignore[reportOptionalMemberAccess]
-            warn_if_polarity_content_mismatch(playbook)
 
         logger.info("All user playbook entries: %s", all_playbooks)
 

@@ -729,7 +729,6 @@ class PlaybookConsolidator(BaseDeduplicator):
             content=decision.content,
             trigger=decision.trigger,
             rationale=decision.rationale,
-            polarity=decision.polarity,
             status=candidate.status,
             source=candidate.source,
             source_interaction_ids=combined_source_ids,

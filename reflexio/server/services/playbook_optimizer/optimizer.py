@@ -17,10 +17,6 @@ from reflexio.models.api_schema.domain import (
 from reflexio.models.config_schema import PlaybookOptimizerConfig
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient
-from reflexio.server.services.polarity_utils import (
-    infer_playbook_polarity,
-    warn_if_polarity_content_mismatch,
-)
 
 from .assistant_webhook import AssistantCallable, LocalScriptAssistant, WebhookAssistant
 from .gepa_adapter import PLAYBOOK_CONTENT_COMPONENT, ReflexioPlaybookGEPAAdapter
@@ -455,26 +451,18 @@ class PlaybookOptimizer:
         )
         if not archived:
             return None
-        # Recompute polarity from the optimized content. The optimizer can
-        # legitimately flip framing (positive guidance -> negative
-        # anti-pattern or vice versa), in which case keeping
-        # ``current_user.polarity`` would corrupt the polarity-based
-        # clustering and consolidation rules. Use the shared inference
-        # function so the stored polarity is derived consistently with every
-        # other read site (negative requires both avoidance wording and a
-        # failure signal in the content/rationale).
-        resolved_polarity = infer_playbook_polarity(
-            best_content, current_user.rationale
-        )
+        # The optimizer can legitimately flip framing (positive guidance ->
+        # negative anti-pattern or vice versa). Polarity is derived from the
+        # stored ``content`` at read time (``infer_playbook_polarity``), so
+        # writing ``best_content`` is sufficient — there is no separate
+        # polarity field to keep in sync.
         successor_user = current_user.model_copy(
             update={
                 "user_playbook_id": 0,
                 "content": best_content,
-                "polarity": resolved_polarity,
                 "status": None,
             }
         )
-        warn_if_polarity_content_mismatch(successor_user)
         self.storage.save_user_playbooks([successor_user])
         return successor_user.user_playbook_id or None
 

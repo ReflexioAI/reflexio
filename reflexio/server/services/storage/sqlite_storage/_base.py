@@ -460,7 +460,6 @@ def _row_to_user_playbook(
         source_span=d.get("source_span"),
         notes=d.get("notes"),
         reader_angle=d.get("reader_angle"),
-        polarity=d.get("polarity") or "positive",
     )
 
 

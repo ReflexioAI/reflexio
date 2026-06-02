@@ -22,6 +22,7 @@ from reflexio.models.api_schema.domain.entities import (
 from reflexio.models.api_schema.domain.enums import ProfileTimeToLive, Status
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.services.operation_state_utils import OperationStateManager
+from reflexio.server.services.polarity_utils import infer_playbook_polarity
 from reflexio.server.services.reflection.reflection_service import ReflectionService
 from reflexio.server.services.reflection.reflection_service_utils import (
     REFLECTION_OPERATION_NAME,
@@ -755,7 +756,10 @@ class TestPolarityFlip:
         )
         assert len(current) == 1
         assert len(archived) == 1
-        assert current[0].polarity == "negative"
+        assert (
+            infer_playbook_polarity(current[0].content, current[0].rationale)
+            == "negative"
+        )
         assert current[0].content == "Avoid X when Y."
         assert current[0].rationale == "user pushed back when X was recommended"
         assert archived[0].user_playbook_id == 1
@@ -841,7 +845,10 @@ class TestPolarityFlip:
         assert result.flipped_count == 0
         current = storage.get_user_playbooks(user_id="u1", status_filter=[None])
         assert len(current) == 1
-        assert current[0].polarity == "positive"
+        assert (
+            infer_playbook_polarity(current[0].content, current[0].rationale)
+            == "positive"
+        )
 
 
 class TestPerPassCap:

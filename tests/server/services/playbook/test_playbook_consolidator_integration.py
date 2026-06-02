@@ -36,6 +36,7 @@ from reflexio.server.services.playbook.playbook_consolidator import (
     RejectNewDecision,
     UnifyDecision,
 )
+from reflexio.server.services.polarity_utils import infer_playbook_polarity
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 
 pytestmark = pytest.mark.integration
@@ -143,7 +144,6 @@ def _make_existing_playbook(
         status=None,
         source="chat",
         source_interaction_ids=[],
-        polarity=polarity,  # type: ignore[arg-type]
     )
     storage.save_user_playbooks([pb])
     saved = storage.get_user_playbooks(user_id=user_id)
@@ -171,6 +171,11 @@ def _make_candidate(
     Returns:
         A fresh ``UserPlaybook`` ready to flow through ``deduplicate``.
     """
+    # Polarity is derived from wording + failure evidence at read time
+    # (``infer_playbook_polarity``). A negative candidate must carry a failure
+    # signal in its rationale so the derived polarity matches the requested
+    # ``polarity``, mirroring what the extractor actually writes.
+    rationale = "user pushback observed" if polarity == "negative" else "r"
     return UserPlaybook(
         user_playbook_id=0,
         user_id=user_id,
@@ -179,12 +184,11 @@ def _make_candidate(
         playbook_name="default",
         content=content,
         trigger=trigger,
-        rationale="r",
+        rationale=rationale,
         blocking_issue=None,
         status=None,
         source="chat",
         source_interaction_ids=[],
-        polarity=polarity,  # type: ignore[arg-type]
     )
 
 
@@ -280,7 +284,7 @@ class TestUnify:
                     archive_existing_ids=[0],
                     content="Avoid X (always).",
                     trigger="when Y",
-                    rationale="merged",
+                    rationale="merged after user pushback observed",
                     polarity="negative",
                 )
             ],
@@ -289,13 +293,16 @@ class TestUnify:
         assert archive_ids == [existing.user_playbook_id]
         assert len(rows) == 1
         assert rows[0].content == "Avoid X (always)."
-        assert rows[0].polarity == "negative"
+        assert infer_playbook_polarity(rows[0].content, rows[0].rationale) == "negative"
 
         _apply_to_storage(sqlite_storage, rows, archive_ids)
         surviving = sqlite_storage.get_user_playbooks(user_id="u1")
         # SQLite delete is a hard remove; only the unified row remains.
         assert len(surviving) == 1
-        assert surviving[0].polarity == "negative"
+        assert (
+            infer_playbook_polarity(surviving[0].content, surviving[0].rationale)
+            == "negative"
+        )
         assert surviving[0].content == "Avoid X (always)."
 
     def test_n_way_merge_archives_all_existing_members_and_inserts_one(
@@ -324,7 +331,6 @@ class TestUnify:
             content="Recommend X (variant b).",
             trigger="when Y",
             rationale="r",
-            polarity="positive",
             source="chat",
             source_interaction_ids=[],
         )
@@ -586,7 +592,7 @@ class TestContradictionResolutionContract:
         # Apply layer rejected the bad decision: no row produced, no archive.
         assert rows == [], (
             "contract violation must NOT produce a unified row — got "
-            f"{[(r.content, r.polarity) for r in rows]}"
+            f"{[(r.content, infer_playbook_polarity(r.content, r.rationale)) for r in rows]}"
         )
         assert archive_ids == [], (
             f"contract violation must NOT archive the existing row — got {archive_ids}"
@@ -609,10 +615,13 @@ class TestContradictionResolutionContract:
         surviving = sqlite_storage.get_user_playbooks(user_id="u1")
         assert len(surviving) == 1, (
             "exactly one row must survive — got "
-            f"{[(r.content, r.polarity) for r in surviving]}"
+            f"{[(r.content, infer_playbook_polarity(r.content, r.rationale)) for r in surviving]}"
         )
         assert surviving[0].user_playbook_id == existing.user_playbook_id
-        assert surviving[0].polarity == "positive"
+        assert (
+            infer_playbook_polarity(surviving[0].content, surviving[0].rationale)
+            == "positive"
+        )
         assert surviving[0].content == "Recommend X."
 
     def test_opposing_polarity_resolves_via_reject_new(
@@ -657,7 +666,10 @@ class TestContradictionResolutionContract:
         surviving = sqlite_storage.get_user_playbooks(user_id="u1")
         assert len(surviving) == 1
         assert surviving[0].user_playbook_id == existing.user_playbook_id
-        assert surviving[0].polarity == "positive"
+        assert (
+            infer_playbook_polarity(surviving[0].content, surviving[0].rationale)
+            == "positive"
+        )
         assert surviving[0].content == "Recommend X."
 
     def test_opposing_polarity_resolves_via_differentiate(
@@ -707,7 +719,10 @@ class TestContradictionResolutionContract:
         surviving_triggers = {r.trigger for r in surviving}
         assert "when Y" not in surviving_triggers
         # Each refined trigger appears with exactly one polarity.
-        polarity_by_trigger = {r.trigger: r.polarity for r in surviving}
+        polarity_by_trigger = {
+            r.trigger: infer_playbook_polarity(r.content, r.rationale)
+            for r in surviving
+        }
         assert polarity_by_trigger["when Y AND has declined X recently"] == "negative"
         assert (
             polarity_by_trigger["when Y AND has not declined X recently"] == "positive"
@@ -758,7 +773,9 @@ class TestContradictionResolutionContract:
         for pb in surviving:
             if pb.trigger is None:
                 continue
-            polarities_per_trigger.setdefault(pb.trigger, set()).add(pb.polarity)
+            polarities_per_trigger.setdefault(pb.trigger, set()).add(
+                infer_playbook_polarity(pb.content, pb.rationale)
+            )
 
         violations = [
             (trigger, polarities)

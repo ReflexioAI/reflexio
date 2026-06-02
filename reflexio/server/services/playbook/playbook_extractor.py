@@ -27,7 +27,6 @@ from reflexio.server.services.playbook.playbook_service_utils import (
     ensure_playbook_content,
     has_expert_content,
 )
-from reflexio.server.services.polarity_utils import infer_playbook_polarity
 from reflexio.server.services.service_utils import (
     extract_interactions_from_request_interaction_data_models,
     log_llm_messages,
@@ -433,6 +432,5 @@ class PlaybookExtractor:
             content=playbook_content,
             trigger=entry.trigger,
             rationale=entry.rationale,
-            polarity=infer_playbook_polarity(playbook_content, entry.rationale),
             source_interaction_ids=source_interaction_ids,
         )

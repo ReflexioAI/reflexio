@@ -2,20 +2,16 @@
 
 Extractor prompts teach the LLM to write either direct action rules or
 avoidance rules, but they do not require a separate polarity output field.
-This module derives the internal ``UserPlaybook.polarity`` value from the
-written rule so downstream search, reflection, consolidation, and aggregation
-can still keep action rules separate from avoidance rules.
+This module derives a playbook's orientation (positive action guidance vs.
+negative avoidance guidance) from the written rule so downstream search,
+reflection, consolidation, and aggregation can still keep action rules
+separate from avoidance rules. Polarity is never stored on ``UserPlaybook``;
+it is always derived from wording at read time.
 """
 
 from __future__ import annotations
 
-import hashlib
-import logging
 from typing import Literal
-
-from reflexio.models.api_schema.domain.entities import UserPlaybook
-
-logger = logging.getLogger(__name__)
 
 NEGATIVE_PREFIXES: tuple[str, ...] = ("Avoid", "Do not", "Don't", "Never")
 NEGATIVE_EVIDENCE_TERMS: tuple[str, ...] = (
@@ -30,23 +26,11 @@ NEGATIVE_EVIDENCE_TERMS: tuple[str, ...] = (
 )
 
 
-def _content_fingerprint(content: str) -> str:
-    """Stable short hash for log correlation without leaking raw text.
-
-    Args:
-        content (str): The playbook content.
-
-    Returns:
-        str: First 16 hex chars of the SHA-256 of the UTF-8-encoded content.
-    """
-    return hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
-
-
 def looks_negative(content: str) -> bool:
     """Heuristic check: does the content's leading word look negative-framed?
 
     This is a framing signal. ``infer_playbook_polarity`` combines it with
-    failure evidence before deriving internal polarity.
+    failure evidence before deriving polarity.
 
     Args:
         content (str): The playbook's content text.
@@ -74,7 +58,7 @@ def infer_playbook_polarity(
         rationale (str | None): Optional rationale supporting the playbook.
 
     Returns:
-        Literal["positive", "negative"]: The derived internal polarity.
+        Literal["positive", "negative"]: The derived polarity.
     """
     if not looks_negative(content):
         return "positive"
@@ -83,30 +67,3 @@ def infer_playbook_polarity(
     if any(term in evidence_text for term in NEGATIVE_EVIDENCE_TERMS):
         return "negative"
     return "positive"
-
-
-def warn_if_polarity_content_mismatch(playbook: UserPlaybook) -> None:
-    """Log a warning when content framing disagrees with declared polarity.
-
-    Does not raise; does not block writes. Used to surface prompt drift
-    in observability without taking corrective action.
-
-    Args:
-        playbook (UserPlaybook): The playbook about to be written.
-    """
-    content_looks_negative = looks_negative(playbook.content)
-    declared_negative = playbook.polarity == "negative"
-    if content_looks_negative != declared_negative:
-        # Log only non-sensitive metadata: a stable fingerprint for
-        # correlation, content length, and a boolean for which side
-        # mismatched. Raw playbook content can carry PII / sensitive
-        # instructions and must never reach centralized logging.
-        logger.warning(
-            "event=polarity_content_mismatch playbook_id=%s polarity=%s "
-            "content_sha256_16=%s content_len=%d content_looks_negative=%s",
-            playbook.user_playbook_id,
-            playbook.polarity,
-            _content_fingerprint(playbook.content),
-            len(playbook.content),
-            content_looks_negative,
-        )

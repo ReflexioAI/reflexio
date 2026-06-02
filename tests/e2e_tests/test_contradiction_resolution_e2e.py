@@ -60,6 +60,7 @@ from reflexio.server.services.playbook.playbook_consolidator import (
     RejectNewDecision,
     UnifyDecision,
 )
+from reflexio.server.services.polarity_utils import infer_playbook_polarity
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 from reflexio.server.services.storage.storage_base import BaseStorage
 
@@ -163,7 +164,6 @@ def _seed_positive_playbook(
         content="Recommend product X — past sessions showed strong interest.",
         trigger=trigger,
         rationale="Earlier session ended in a successful conversion on X.",
-        polarity="positive",
         source="api",
         source_interaction_ids=[],
     )
@@ -203,7 +203,6 @@ def _build_failure_path_negative_candidate(
         content="Avoid suggesting product X — the user said no twice today.",
         trigger=trigger,
         rationale="User pushed back: 'Stop suggesting X, I told you no twice.'",
-        polarity="negative",
         source="api",
         source_interaction_ids=[],
     )
@@ -294,7 +293,7 @@ def _assert_no_opposing_polarity_on_same_trigger(
         if pb.trigger is None:
             continue
         polarities = triggers_seen.setdefault(pb.trigger, set())
-        polarities.add(pb.polarity)
+        polarities.add(infer_playbook_polarity(pb.content, pb.rationale))
     for trigger, polarities in triggers_seen.items():
         assert polarities <= {"positive"} or polarities <= {"negative"}, (
             f"contradiction-resolution invariant violated: trigger {trigger!r} "
@@ -334,16 +333,21 @@ def test_existing_positive_plus_failure_path_resolves_via_reject_new(
 
     # Phase 1 — extraction stand-in: seed the existing positive playbook.
     existing = _seed_positive_playbook(storage, user_id=user_id, trigger=trigger)
-    assert existing.polarity == "positive", (
-        f"Setup failure — seeded playbook must be positive; got {existing.polarity!r}"
+    assert (
+        infer_playbook_polarity(existing.content, existing.rationale) == "positive"
+    ), (
+        "Setup failure — seeded playbook must derive to positive; got "
+        f"{infer_playbook_polarity(existing.content, existing.rationale)!r}"
     )
 
     # Phase 1 (cont.) — construct the failure-path negative candidate on
     # the same trigger.
     candidate = _build_failure_path_negative_candidate(user_id=user_id, trigger=trigger)
-    assert candidate.polarity == "negative", (
-        "Setup failure — failure-path candidate must be negative; "
-        f"got {candidate.polarity!r}"
+    assert (
+        infer_playbook_polarity(candidate.content, candidate.rationale) == "negative"
+    ), (
+        "Setup failure — failure-path candidate must derive to negative; "
+        f"got {infer_playbook_polarity(candidate.content, candidate.rationale)!r}"
     )
 
     # Phase 2 — drive the real consolidator with a ``RejectNewDecision``.
@@ -370,7 +374,7 @@ def test_existing_positive_plus_failure_path_resolves_via_reject_new(
     )
     assert rows == [], (
         f"reject_new must NOT emit any new row; got "
-        f"{[(r.content, r.polarity) for r in rows]}"
+        f"{[(r.content, infer_playbook_polarity(r.content, r.rationale)) for r in rows]}"
     )
 
     # Phase 3 — apply to storage and inspect the post-state directly.
@@ -380,13 +384,13 @@ def test_existing_positive_plus_failure_path_resolves_via_reject_new(
     # Storage post-state: the seeded positive row is still the only row.
     assert len(surviving) == 1, (
         "exactly one row must survive reject_new resolution; got "
-        f"{[(r.user_playbook_id, r.content, r.polarity) for r in surviving]}"
+        f"{[(r.user_playbook_id, r.content, infer_playbook_polarity(r.content, r.rationale)) for r in surviving]}"
     )
     survivor = surviving[0]
     assert survivor.user_playbook_id == existing.user_playbook_id, (
         "surviving row must be the original existing playbook"
     )
-    assert survivor.polarity == "positive"
+    assert infer_playbook_polarity(survivor.content, survivor.rationale) == "positive"
     assert survivor.trigger == trigger
     assert survivor.content == existing.content
 
@@ -440,7 +444,7 @@ def test_existing_positive_plus_failure_path_rejects_mismatched_polarity_unify(
     # The polarity validator refused: no row emitted, no archive.
     assert rows == [], (
         f"polarity mismatch must NOT produce a unified row; got "
-        f"{[(r.content, r.polarity) for r in rows]}"
+        f"{[(r.content, infer_playbook_polarity(r.content, r.rationale)) for r in rows]}"
     )
     assert archive_ids == [], (
         f"polarity mismatch must NOT archive the existing row; got {archive_ids!r}"
@@ -454,10 +458,13 @@ def test_existing_positive_plus_failure_path_rejects_mismatched_polarity_unify(
     # path marks the orphan handled).
     assert len(surviving) == 1, (
         "exactly one row must survive polarity-mismatch rejection; got "
-        f"{[(r.user_playbook_id, r.content, r.polarity) for r in surviving]}"
+        f"{[(r.user_playbook_id, r.content, infer_playbook_polarity(r.content, r.rationale)) for r in surviving]}"
     )
     assert surviving[0].user_playbook_id == existing.user_playbook_id
-    assert surviving[0].polarity == "positive"
+    assert (
+        infer_playbook_polarity(surviving[0].content, surviving[0].rationale)
+        == "positive"
+    )
 
     _assert_no_opposing_polarity_on_same_trigger(surviving)
 
@@ -504,14 +511,14 @@ def test_existing_positive_plus_failure_path_resolves_via_differentiate(
     assert archive_ids == [existing.user_playbook_id]
     assert len(rows) == 2, (
         f"differentiate must emit two refined rows; got {len(rows)}: "
-        f"{[(r.trigger, r.polarity) for r in rows]}"
+        f"{[(r.trigger, infer_playbook_polarity(r.content, r.rationale)) for r in rows]}"
     )
 
     _apply_to_storage(storage, rows, archive_ids)
     surviving = storage.get_user_playbooks(user_id=user_id)
     assert len(surviving) == 2, (
         f"two refined rows must survive; got {len(surviving)}: "
-        f"{[(r.trigger, r.polarity) for r in surviving]}"
+        f"{[(r.trigger, infer_playbook_polarity(r.content, r.rationale)) for r in surviving]}"
     )
 
     surviving_triggers = {r.trigger for r in surviving}
