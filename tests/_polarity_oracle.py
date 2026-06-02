@@ -1,12 +1,22 @@
-"""Polarity helpers for playbook orientation.
+"""TEST-ONLY assertion oracle for classifying playbook rule orientation.
 
-Extractor prompts teach the LLM to write either direct action rules or
-avoidance rules, but they do not require a separate polarity output field.
-This module derives a playbook's orientation (positive action guidance vs.
-negative avoidance guidance) from the written rule so downstream search,
-reflection, consolidation, and aggregation can still keep action rules
-separate from avoidance rules. Polarity is never stored on ``UserPlaybook``;
-it is always derived from wording at read time.
+This module is **not production code**. Under Option B (consolidator-compose),
+production no longer derives polarity mechanically — a playbook's orientation
+(positive action guidance vs. negative avoidance guidance) lives in the rule
+wording itself and is judged by the LLM, never computed from a heuristic and
+never stored on ``UserPlaybook``.
+
+The mechanical heuristic below is preserved purely as an **assertion oracle**
+for e2e/eval tests: it lets those tests classify the orientation of rules in
+controlled fixtures (e.g. "the surviving rows don't carry opposing polarity on
+the same trigger", "a failure-derived playbook reads as avoid/negative"). Only
+an LLM could classify orientation better, and reworking those e2e/eval
+assertions is out of scope — but the heuristic must not live in production, so
+it lives here under ``tests/``.
+
+Importable from every test subtree (e2e, server/services, eval) as
+``tests._polarity_oracle`` because ``tests`` is a package on ``sys.path``
+(see ``tests/conftest.py``).
 """
 
 from __future__ import annotations

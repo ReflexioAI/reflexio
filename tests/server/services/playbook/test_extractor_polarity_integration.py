@@ -35,7 +35,7 @@ from reflexio.server.services.playbook.playbook_service_utils import (
     StructuredPlaybookContent,
     StructuredPlaybookList,
 )
-from reflexio.server.services.polarity_utils import (
+from tests._polarity_oracle import (
     NEGATIVE_PREFIXES,
     infer_playbook_polarity,
 )

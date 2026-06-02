@@ -50,10 +50,10 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from reflexio.models.api_schema.domain.entities import Interaction
-from reflexio.server.services.polarity_utils import infer_playbook_polarity
 from reflexio.server.services.reflection.reflection_service_utils import (
     ReflectionDecision,
 )
+from tests._polarity_oracle import infer_playbook_polarity
 
 # The eval's coarse classification of a reflection decision's *intent*.
 GoldLabel = Literal[

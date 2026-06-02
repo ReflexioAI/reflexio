@@ -63,9 +63,9 @@ from reflexio.server.services.playbook.playbook_consolidator import (
     PlaybookConsolidator,
     RejectNewDecision,
 )
-from reflexio.server.services.polarity_utils import infer_playbook_polarity
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 from reflexio.server.services.storage.storage_base import BaseStorage
+from tests._polarity_oracle import infer_playbook_polarity
 
 pytestmark = pytest.mark.e2e
 

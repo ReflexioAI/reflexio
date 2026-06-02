@@ -47,13 +47,13 @@ from reflexio.models.api_schema.domain.entities import (
 from reflexio.models.api_schema.domain.enums import Status
 from reflexio.models.config_schema import Config, ReflectionConfig
 from reflexio.server.api_endpoints.request_context import RequestContext
-from reflexio.server.services.polarity_utils import infer_playbook_polarity
 from reflexio.server.services.reflection.reflection_service import ReflectionService
 from reflexio.server.services.reflection.reflection_service_utils import (
     ReflectionDecision,
     ReflectionOutput,
     ReflectionServiceRequest,
 )
+from tests._polarity_oracle import infer_playbook_polarity
 
 pytestmark = pytest.mark.e2e
 

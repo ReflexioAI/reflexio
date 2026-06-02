@@ -38,8 +38,8 @@ from reflexio.server.services.playbook.playbook_consolidator import (
     RejectNewDecision,
     UnifyDecision,
 )
-from reflexio.server.services.polarity_utils import infer_playbook_polarity
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
+from tests._polarity_oracle import infer_playbook_polarity
 
 pytestmark = pytest.mark.integration
 
