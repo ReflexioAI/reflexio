@@ -37,9 +37,10 @@ cited trigger to compare against, or no length signal) we treat it as
 the ambiguous ``scope`` bucket rather than guessing tighten/widen.
 
 The narrow-vs-broaden heuristic is intentionally cheap and offline-only:
-a *shorter / more-qualified* new trigger is treated as ``tighten``; a
-*longer / less-qualified* one as ``widen``. This is a coarse proxy, good
-enough to flag over-specialization regressions, not a semantic judge.
+a *longer / more-qualified* new trigger is treated as ``tighten``; a
+*shorter / less-qualified* one as ``widen`` (matching ``_trigger_scope``).
+This is a coarse proxy, good enough to flag over-specialization
+regressions, not a semantic judge.
 """
 
 from __future__ import annotations
