@@ -22,6 +22,7 @@ from reflexio.cli.output import (
     render,
 )
 from reflexio.cli.state import get_client
+from reflexio.models.config_schema import SINGLETON_USER_PLAYBOOK_NAME
 
 app = typer.Typer(help="Manage agent playbooks.")
 
@@ -450,17 +451,8 @@ def aggregate(
     """
     client = get_client(ctx)
 
-    # Default to first configured playbook name if not specified
     if not playbook_name:
-        config = client.get_config()
-        if config and config.user_playbook_extractor_config:
-            playbook_name = config.user_playbook_extractor_config.extractor_name
-        else:
-            raise CliError(
-                error_type="validation",
-                message="No playbook_name provided and no playbooks configured on the server",
-                exit_code=EXIT_VALIDATION,
-            )
+        playbook_name = SINGLETON_USER_PLAYBOOK_NAME
 
     json_mode: bool = ctx.obj.json_mode
 

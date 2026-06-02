@@ -41,7 +41,6 @@ def _content_to_text(content: Any) -> str:
 def build_knowledge_need_query(
     *,
     extractor_kind: str,
-    extractor_name: str,
     extractor_config: Any,
     source: str | None,
     agent_version: str | None,
@@ -55,7 +54,6 @@ def build_knowledge_need_query(
     query = "\n".join(
         [
             f"Extractor kind: {extractor_kind}",
-            f"Extractor name: {extractor_name}",
             f"Source: {source or 'unknown'}",
             f"Agent version: {agent_version or 'unknown'}",
             f"Extraction definition: {definition}",
@@ -185,7 +183,6 @@ def append_prior_knowledge_context(
     storage: BaseStorage,
     org_id: str,
     extractor_kind: str,
-    extractor_name: str,
     extractor_config: Any,
     source: str | None,
     agent_version: str | None,
@@ -195,7 +192,6 @@ def append_prior_knowledge_context(
 ) -> list[dict[str, Any]]:
     query = build_knowledge_need_query(
         extractor_kind=extractor_kind,
-        extractor_name=extractor_name,
         extractor_config=extractor_config,
         source=source,
         agent_version=agent_version,
@@ -213,10 +209,9 @@ def append_prior_knowledge_context(
     if context is None:
         return messages
     logger.info(
-        "event=prior_answer_injected org_id=%s extractor_kind=%s extractor_name=%s count=%d",
+        "event=prior_answer_injected org_id=%s extractor_kind=%s count=%d",
         org_id,
         extractor_kind,
-        extractor_name,
         len(matches),
     )
     return [*messages, {"role": "user", "content": context}]

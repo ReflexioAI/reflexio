@@ -741,11 +741,6 @@ class ProfileMixin:
                 req.custom_feature.lower() not in str(profile.custom_features).lower()
             ):
                 continue
-            if req.extractor_name and (
-                not profile.extractor_names
-                or req.extractor_name not in profile.extractor_names
-            ):
-                continue
             filtered.append(profile)
             if len(filtered) >= match_count:
                 break

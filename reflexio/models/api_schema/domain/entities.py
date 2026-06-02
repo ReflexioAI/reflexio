@@ -233,7 +233,7 @@ class UserProfile(BaseModel):
     custom_features: dict | None = None
     source: str | None = None
     status: Status | None = None  # indicates the status of the profile
-    extractor_names: list[str] | None = None
+    extractor_names: list[str] | None = None  # Retained provenance data column (merged on dedup); new profiles write None.
     expanded_terms: str | None = None
     embedding: EmbeddingVector = []
     source_span: str | None = None
@@ -874,7 +874,7 @@ def agent_playbook_to_snapshot(playbook: AgentPlaybook) -> AgentPlaybookSnapshot
 
 class RunPlaybookAggregationRequest(BaseModel):
     agent_version: str = DEFAULT_AGENT_VERSION
-    playbook_name: NonEmptyStr
+    playbook_name: NonEmptyStr = "playbook"
 
     @field_validator("agent_version")
     @classmethod
@@ -892,7 +892,7 @@ class RerunProfileGenerationRequest(BaseModel):
     start_time: datetime | None = None
     end_time: datetime | None = None
     source: str | None = None
-    extractor_names: list[str] | None = None
+    extractor_names: list[str] | None = None  # Deprecated compatibility field; ignored for selection.
 
     @model_validator(mode="after")
     def check_time_range(self) -> Self:
@@ -937,7 +937,7 @@ class ManualPlaybookGenerationRequest(BaseModel):
 
     agent_version: str = DEFAULT_AGENT_VERSION
     source: str | None = None
-    playbook_name: str | None = None  # Optional filter by playbook name
+    playbook_name: str | None = None  # Deprecated compatibility field; ignored for selection.
 
     @field_validator("agent_version")
     @classmethod
@@ -957,7 +957,7 @@ class RerunPlaybookGenerationRequest(BaseModel):
     agent_version: str = DEFAULT_AGENT_VERSION
     start_time: datetime | None = None
     end_time: datetime | None = None
-    playbook_name: str | None = None
+    playbook_name: str | None = None  # Deprecated compatibility field; ignored for selection.
     source: str | None = None
 
     @field_validator("agent_version")

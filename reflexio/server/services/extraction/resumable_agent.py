@@ -60,7 +60,6 @@ def _record_agent_usage_event(
         user_id=run.binding.user_id,
         request_id=run.binding.request_id,
         pipeline=run.binding.extractor_kind,
-        extractor_name=run.binding.extractor_name,
         source=run.binding.source,
         agent_version=run.binding.agent_version,
         outcome=outcome,
@@ -177,7 +176,6 @@ def run_resumable_extraction_agent(
     request_context: RequestContext,
     client: LiteLLMClient,
     extractor_kind: str,
-    extractor_name: str,
     user_id: str | None,
     request_id: str,
     agent_version: str | None,
@@ -201,7 +199,6 @@ def run_resumable_extraction_agent(
     run = build_extractor_agent_run_record(
         org_id=request_context.org_id,
         extractor_kind=extractor_kind,
-        extractor_name=extractor_name,
         user_id=user_id,
         request_id=request_id,
         agent_version=agent_version,
@@ -219,7 +216,6 @@ def run_resumable_extraction_agent(
             storage=storage,
             org_id=request_context.org_id,
             extractor_kind=extractor_kind,
-            extractor_name=extractor_name,
             extractor_config=extractor_config,
             source=source,
             agent_version=agent_version,
@@ -234,7 +230,6 @@ def run_resumable_extraction_agent(
             run_id=run.id,
             org_id=request_context.org_id,
             extractor_kind=extractor_kind,
-            extractor_name=extractor_name,
             user_id=user_id,
             config=pending_config,
         )
@@ -288,11 +283,10 @@ class ResumableExtractionAgent:
         self.storage.create_agent_run(run)
         logger.info(
             "event=extraction_agent_started org_id=%s user_id=%s extractor_kind=%s "
-            "extractor_name=%s run_id=%s request_id=%s",
+            "run_id=%s request_id=%s",
             run.binding.org_id,
             run.binding.user_id,
             run.binding.extractor_kind,
-            run.binding.extractor_name,
             run.id,
             run.binding.request_id,
         )
@@ -320,11 +314,10 @@ class ResumableExtractionAgent:
         """Resume a claimed run with resolved async tool results in context."""
         logger.info(
             "event=extraction_agent_resumed org_id=%s user_id=%s extractor_kind=%s "
-            "extractor_name=%s run_id=%s request_id=%s resolved_tool_calls=%d",
+            "run_id=%s request_id=%s resolved_tool_calls=%d",
             run.binding.org_id,
             run.binding.user_id,
             run.binding.extractor_kind,
-            run.binding.extractor_name,
             run.id,
             run.binding.request_id,
             len(resolved_tool_calls),
@@ -419,12 +412,11 @@ class ResumableExtractionAgent:
             )
             logger.info(
                 "event=extraction_agent_finished org_id=%s user_id=%s "
-                "extractor_kind=%s extractor_name=%s run_id=%s request_id=%s "
+                "extractor_kind=%s run_id=%s request_id=%s "
                 "pending_tool_calls=%d",
                 run.binding.org_id,
                 run.binding.user_id,
                 run.binding.extractor_kind,
-                run.binding.extractor_name,
                 run.id,
                 run.binding.request_id,
                 len(result.pending_tool_call_ids),
@@ -448,12 +440,11 @@ class ResumableExtractionAgent:
             )
             logger.warning(
                 "event=extraction_agent_failed org_id=%s user_id=%s "
-                "extractor_kind=%s extractor_name=%s run_id=%s request_id=%s "
+                "extractor_kind=%s run_id=%s request_id=%s "
                 "finished_reason=%s has_output=%s",
                 run.binding.org_id,
                 run.binding.user_id,
                 run.binding.extractor_kind,
-                run.binding.extractor_name,
                 run.id,
                 run.binding.request_id,
                 result.finished_reason,

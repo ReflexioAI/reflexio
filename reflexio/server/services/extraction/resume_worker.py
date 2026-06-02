@@ -160,14 +160,10 @@ def _select_current_extractor_config(
             f"Unsupported extractor kind {run.binding.extractor_kind!r}"
         )
 
-    if (
-        config is not None
-        and getattr(config, "extractor_name", None) == run.binding.extractor_name
-        and isinstance(config, ProfileExtractorConfig | PlaybookConfig)
-    ):
+    if config is not None and isinstance(config, ProfileExtractorConfig | PlaybookConfig):
         return config
     raise ResumeWorkerError(
-        f"Current extractor config not found for {run.binding.extractor_kind}:{run.binding.extractor_name}"
+        f"Current extractor config not found for {run.binding.extractor_kind}"
     )
 
 
@@ -181,10 +177,9 @@ def _log_config_hash_drift(
     ):
         logger.info(
             "event=resumable_extraction_config_hash_drift run_id=%s extractor_kind=%s "
-            "extractor_name=%s stored_hash=%s current_hash=%s",
+            "stored_hash=%s current_hash=%s",
             run.id,
             run.binding.extractor_kind,
-            run.binding.extractor_name,
             run.binding.extractor_config_hash,
             current_hash,
         )
@@ -369,7 +364,6 @@ class ExtractionResumeWorker:
             run_id=run.id,
             org_id=self.request_context.org_id,
             extractor_kind=run.binding.extractor_kind,
-            extractor_name=run.binding.extractor_name,
             user_id=run.binding.user_id,
             config=pending_config,
         )
@@ -429,7 +423,6 @@ class ExtractionResumeWorker:
             request_id=run.binding.request_id,
             source=run.binding.source,
             existing_data=existing_profiles,
-            extractor_names=[run.binding.extractor_name],
             auto_run=False,
             force_extraction=True,
         )
@@ -501,7 +494,6 @@ class ExtractionResumeWorker:
             agent_version=run.binding.agent_version or "",
             user_id=run.binding.user_id,
             source=run.binding.source,
-            extractor_names=[run.binding.extractor_name],
             auto_run=False,
             force_extraction=True,
         )
@@ -592,7 +584,6 @@ class ExtractionResumeWorker:
             storage=self.storage,
             org_id=self.request_context.org_id,
             extractor_kind=run.binding.extractor_kind,
-            extractor_name=run.binding.extractor_name,
             extractor_config=extractor_config,
             source=run.binding.source,
             agent_version=run.binding.agent_version,
@@ -676,7 +667,6 @@ class ExtractionResumeWorker:
             request_id=run.binding.request_id,
             source=run.binding.source,
             existing_data=self.storage.get_user_profile(run.binding.user_id),
-            extractor_names=[run.binding.extractor_name],
             auto_run=False,
             force_extraction=True,
         )
@@ -713,7 +703,6 @@ class ExtractionResumeWorker:
             agent_version=run.binding.agent_version or "",
             user_id=run.binding.user_id,
             source=run.binding.source,
-            extractor_names=[run.binding.extractor_name],
             auto_run=False,
             force_extraction=True,
         )
@@ -748,7 +737,6 @@ class ExtractionResumeWorker:
                 user_id=run.binding.user_id or "",
                 request_id=run.binding.request_id,
                 source=run.binding.source,
-                extractor_names=[run.binding.extractor_name],
                 auto_run=False,
                 force_extraction=True,
             )
@@ -764,7 +752,6 @@ class ExtractionResumeWorker:
                 agent_version=run.binding.agent_version or "",
                 user_id=run.binding.user_id,
                 source=run.binding.source,
-                extractor_names=[run.binding.extractor_name],
                 auto_run=False,
                 force_extraction=True,
             )

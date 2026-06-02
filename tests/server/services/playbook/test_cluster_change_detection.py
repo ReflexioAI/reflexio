@@ -471,7 +471,6 @@ class TestAggregatorRunWithChangeDetection:
 
         request = PlaybookAggregatorRequest(
             agent_version="1.0",
-            playbook_name="test_playbook",
         )
 
         aggregator.run(request)
@@ -532,7 +531,6 @@ class TestAggregatorRunWithChangeDetection:
 
         request = PlaybookAggregatorRequest(
             agent_version="1.0",
-            playbook_name="test_playbook",
         )
 
         aggregator.run(request)
@@ -589,7 +587,6 @@ class TestAggregatorRunWithChangeDetection:
 
         request = PlaybookAggregatorRequest(
             agent_version="1.0",
-            playbook_name="test_playbook",
         )
 
         aggregator.run(request)
@@ -642,7 +639,6 @@ class TestAggregatorRunWithChangeDetection:
 
         request = PlaybookAggregatorRequest(
             agent_version="1.0",
-            playbook_name="test_playbook",
             rerun=True,
         )
 
@@ -696,7 +692,6 @@ class TestAggregatorRunWithChangeDetection:
 
         request = PlaybookAggregatorRequest(
             agent_version="1.0",
-            playbook_name="test_playbook",
         )
 
         with pytest.raises(Exception, match="Storage save error"):
@@ -732,7 +727,6 @@ class TestAggregatorRunWithChangeDetection:
 
         request = PlaybookAggregatorRequest(
             agent_version="1.0",
-            playbook_name="test_playbook",
             rerun=False,
         )
 
@@ -755,7 +749,6 @@ class TestAggregatorRunWithChangeDetection:
 
         request = PlaybookAggregatorRequest(
             agent_version="1.0",
-            playbook_name="test_playbook",
             rerun=False,
         )
 

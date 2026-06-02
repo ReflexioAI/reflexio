@@ -745,20 +745,6 @@ class TestLoadGenerationServiceConfig:
         assert config.rerun_end_time == 2000
         assert config.auto_run is False
 
-    def test_passes_extractor_names(self, service, request_context):
-        """Extractor names filter is passed through to service config."""
-        request_context.storage.get_user_profile.return_value = []
-
-        request = ProfileGenerationRequest(
-            user_id="user_1",
-            request_id="req_1",
-            extractor_names=["prefs", "bio"],
-        )
-
-        config = service._load_generation_service_config(request)
-
-        assert config.extractor_names == ["prefs", "bio"]
-
 
 # ===============================
 # Test: Rerun hook implementations
@@ -815,7 +801,6 @@ class TestRerunHooks:
 
         assert result.user_id == "user_42"
         assert result.source == "api"
-        assert result.extractor_names == ["prefs"]
         assert result.auto_run is False
         assert result.request_id.startswith("rerun_")
         assert result.rerun_start_time == int(
@@ -837,7 +822,6 @@ class TestRerunHooks:
 
         assert result.user_id == "user_1"
         assert result.source == "manual"
-        assert result.extractor_names == ["bio"]
         assert result.auto_run is False
         assert result.request_id.startswith("manual_")
         assert result.rerun_start_time is None
@@ -861,7 +845,6 @@ class TestRerunHooks:
 
         assert params["user_id"] == "user_1"
         assert params["source"] == "api"
-        assert params["extractor_names"] == ["prefs"]
         assert params["start_time"] is not None
         assert params["end_time"] is not None
 

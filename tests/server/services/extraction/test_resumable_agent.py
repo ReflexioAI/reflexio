@@ -54,7 +54,6 @@ def _agent_run(run_id: str, extractor_kind: str = "profile") -> AgentRunRecord:
         binding=AgentBinding(
             org_id="org_1",
             extractor_kind=extractor_kind,
-            extractor_name=f"default_{extractor_kind}_extractor",
             user_id="user_1",
             request_id=f"request_{run_id}",
             agent_version="v1",
@@ -290,7 +289,6 @@ def test_resumable_agent_requires_tool_call_when_extra_tools_present(
         run_id="run_required",
         org_id="org_1",
         extractor_kind="profile",
-        extractor_name="default_profile_extractor",
         config=PendingToolCallConfig(enabled=True),
     )
     with patch("litellm.completion", side_effect=[response]):

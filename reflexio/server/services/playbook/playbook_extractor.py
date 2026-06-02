@@ -14,6 +14,7 @@ from reflexio.server.services.extraction.outcome import ExtractionOutcome
 from reflexio.server.services.extraction.resumable_agent import (
     run_resumable_extraction_agent,
 )
+from reflexio.server.services.extractor_config_utils import get_extractor_name
 from reflexio.server.services.extractor_interaction_utils import (
     get_effective_source_filter,
     get_extractor_window_params,
@@ -184,7 +185,7 @@ class PlaybookExtractor:
         )
         mgr = self._create_state_manager()
         mgr.update_extractor_bookmark(
-            extractor_name=self.config.extractor_name,
+            extractor_name=get_extractor_name(self.config),
             processed_interactions=all_interactions,
             user_id=self.service_config.user_id,
         )
@@ -305,7 +306,6 @@ class PlaybookExtractor:
             request_context=self.request_context,
             client=self.client,
             extractor_kind="playbook",
-            extractor_name=self.config.extractor_name,
             user_id=self.service_config.user_id,
             request_id=self.service_config.request_id,
             agent_version=self.service_config.agent_version,
@@ -426,7 +426,7 @@ class PlaybookExtractor:
         playbook_content = ensure_playbook_content(entry.content, entry)
 
         return UserPlaybook(
-            playbook_name=self.config.extractor_name,
+            playbook_name=get_extractor_name(self.config),
             user_id=self.service_config.user_id,
             agent_version=self.service_config.agent_version,
             request_id=self.service_config.request_id,

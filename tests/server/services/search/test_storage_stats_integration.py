@@ -70,7 +70,7 @@ def storage_with_data(tmp_path):
 
 
 def test_handler_counts_match(storage_with_data):
-    ctx = ExtractionCtx(user_id="u_with", agent_version="v1", extractor_name="p")
+    ctx = ExtractionCtx(user_id="u_with", agent_version="v1")
     result = _handle_storage_stats(StorageStatsArgs(), storage_with_data, ctx)
     assert result["profile_count"] == 2
     assert result["playbook_count"] == 1
@@ -78,7 +78,7 @@ def test_handler_counts_match(storage_with_data):
 
 
 def test_handler_returns_iso_timestamp_range(storage_with_data):
-    ctx = ExtractionCtx(user_id="u_with", agent_version="v1", extractor_name="p")
+    ctx = ExtractionCtx(user_id="u_with", agent_version="v1")
     result = _handle_storage_stats(StorageStatsArgs(), storage_with_data, ctx)
     expected_oldest = datetime.fromtimestamp(1_700_000_000, tz=UTC).isoformat()
     expected_newest = datetime.fromtimestamp(1_700_001_000, tz=UTC).isoformat()
@@ -87,7 +87,7 @@ def test_handler_returns_iso_timestamp_range(storage_with_data):
 
 
 def test_handler_returns_null_timestamps_for_empty_user(storage_with_data):
-    ctx = ExtractionCtx(user_id="u_no_data", agent_version="v1", extractor_name="p")
+    ctx = ExtractionCtx(user_id="u_no_data", agent_version="v1")
     result = _handle_storage_stats(StorageStatsArgs(), storage_with_data, ctx)
     assert result["profile_count"] == 0
     assert result["playbook_count"] == 0

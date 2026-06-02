@@ -23,11 +23,6 @@ class AgentSuccessEvaluationRequest(BaseModel):
     agent_version: str
     request_interaction_data_models: list[RequestInteractionDataModel]
     source: str | None = None
-    # When set, AgentSuccessEvaluationService.run skips every evaluator whose
-    # AgentSuccessConfig.evaluation_name doesn't match this string. Used by the
-    # regenerate flow so a prompt edit re-evaluates only its own evaluator
-    # instead of every config configured for the org.
-    evaluation_name_filter: str | None = None
 
 
 def construct_agent_success_evaluation_messages_from_sessions(

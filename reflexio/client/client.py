@@ -546,7 +546,7 @@ class ReflexioClient:
             top_k (Optional[int]): Maximum number of results to return (default: 10)
             source (Optional[str]): Filter by source
             custom_feature (Optional[str]): Filter by custom feature
-            extractor_name (Optional[str]): Filter by extractor name
+            extractor_name (Optional[str]): Deprecated compatibility field. Accepted but ignored.
             threshold (Optional[float]): Similarity threshold (default: 0.7)
             enable_reformulation (Optional[bool]): Enable LLM query reformulation (default: False)
 
@@ -1881,7 +1881,7 @@ class ReflexioClient:
             start_time (Optional[datetime]): Filter interactions by start time.
             end_time (Optional[datetime]): Filter interactions by end time.
             source (Optional[str]): Filter interactions by source.
-            extractor_names (Optional[list[str]]): List of specific extractor names to run. If None, runs all extractors.
+            extractor_names (Optional[list[str]]): Deprecated compatibility field. Accepted but ignored.
 
         Returns:
             Optional[RerunProfileGenerationResponse]: Response containing success status, message, profiles_generated count, and operation_id if wait_for_response=True, None otherwise.
@@ -1983,7 +1983,7 @@ class ReflexioClient:
             request (Optional[ManualProfileGenerationRequest]): The request object (alternative to kwargs)
             user_id (Optional[str]): Specific user ID to generate for. If None, generates for all users.
             source (Optional[str]): Filter interactions by source.
-            extractor_names (Optional[list[str]]): List of specific extractor names to run. If None, runs all extractors with allow_manual_trigger=True.
+            extractor_names (Optional[list[str]]): Deprecated compatibility field. Accepted but ignored.
 
         Returns:
             None: This method always returns None (fire-and-forget).
@@ -2072,7 +2072,7 @@ class ReflexioClient:
             agent_version (str): Required. The agent version to evaluate.
             start_time (Optional[datetime]): Filter by start time.
             end_time (Optional[datetime]): Filter by end time.
-            playbook_name (Optional[str]): Specific playbook type to generate.
+            playbook_name (Optional[str]): Deprecated compatibility field. Accepted but ignored.
 
         Returns:
             Optional[RerunPlaybookGenerationResponse]: Response containing success status, message, playbooks_generated count, and operation_id if wait_for_response=True, None otherwise.
@@ -2121,7 +2121,7 @@ class ReflexioClient:
             request (Optional[ManualPlaybookGenerationRequest]): The request object (alternative to kwargs)
             agent_version (str): Required. The agent version to evaluate.
             source (Optional[str]): Filter interactions by source.
-            playbook_name (Optional[str]): Specific playbook type to generate.
+            playbook_name (Optional[str]): Deprecated compatibility field. Accepted but ignored.
 
         Returns:
             None: This method always returns None (fire-and-forget).
@@ -2175,7 +2175,7 @@ class ReflexioClient:
             request (Optional[RunPlaybookAggregationRequest]): The aggregation request object (alternative to kwargs)
             wait_for_response (bool, optional): If True, wait for response. If False, send request without waiting. Defaults to False.
             agent_version (str): Required. The agent version.
-            playbook_name (str): Required. The playbook type to aggregate.
+            playbook_name (Optional[str]): Deprecated compatibility field. Accepted but ignored.
 
         Returns:
             Optional[RunPlaybookAggregationResponse]: Response containing success status and message if wait_for_response=True, None otherwise.

@@ -15,8 +15,12 @@ import pytest
 pytestmark = pytest.mark.integration
 
 
-def test_post_400_when_evaluation_name_unknown(client_with_org):
-    """An evaluator name absent from the config returns 400."""
+def test_post_accepts_deprecated_evaluation_name(client_with_org):
+    """evaluation_name is a deprecated, accepted-but-ignored compatibility input.
+
+    Evaluation is singleton (one evaluator per org), so an arbitrary name no
+    longer triggers name-based validation — the request is accepted.
+    """
     client, _org_id = client_with_org
     resp = client.post(
         "/api/evaluations/regenerate",
@@ -26,7 +30,7 @@ def test_post_400_when_evaluation_name_unknown(client_with_org):
             "to_ts": 9_999_999_999,
         },
     )
-    assert resp.status_code == 400
+    assert resp.status_code == 200
 
 
 def test_get_unknown_job_id_returns_404(client_with_org):

@@ -384,8 +384,15 @@ class DeduplicationConfig(BaseModel):
     )
 
 
+SINGLETON_PROFILE_EXTRACTOR_NAME = "profile"
+SINGLETON_USER_PLAYBOOK_NAME = "playbook"
+SINGLETON_AGENT_SUCCESS_EVALUATION_NAME = "agent_success"
+
+
 class ProfileExtractorConfig(_ExtractorWindowOverrideCompatMixin, BaseModel):
-    extractor_name: NonEmptyStr
+    # Deprecated: kept for back-compat with stored configs. Extraction is singleton
+    # (one profile extractor per org), so the name is accepted but ignored.
+    extractor_name: NonEmptyStr | None = None
     extraction_definition_prompt: SanitizedNonEmptyStr
     context_prompt: str | None = None
     metadata_definition_prompt: str | None = None
@@ -434,7 +441,9 @@ class PlaybookAggregatorConfig(BaseModel):
 
 
 class UserPlaybookExtractorConfig(_ExtractorWindowOverrideCompatMixin, BaseModel):
-    extractor_name: NonEmptyStr
+    # Deprecated: kept for back-compat with stored configs. Extraction is singleton
+    # (one playbook extractor per org), so the name is accepted but ignored.
+    extractor_name: NonEmptyStr | None = None
     extraction_definition_prompt: SanitizedNonEmptyStr
     context_prompt: str | None = None
     metadata_definition_prompt: str | None = None
@@ -464,7 +473,9 @@ class ToolUseConfig(BaseModel):
 
 # define what success looks like for agent
 class AgentSuccessConfig(_ExtractorWindowOverrideCompatMixin, BaseModel):
-    evaluation_name: NonEmptyStr
+    # Deprecated: kept for back-compat with stored configs. Evaluation is singleton
+    # (one agent-success evaluator per org), so the name is accepted but ignored.
+    evaluation_name: NonEmptyStr | None = None
     success_definition_prompt: SanitizedNonEmptyStr
     metadata_definition_prompt: str | None = None
     sampling_rate: float = Field(
@@ -660,7 +671,6 @@ class LLMConfig(BaseModel):
 
 def _default_profile_extractor_config() -> ProfileExtractorConfig:
     return ProfileExtractorConfig(
-        extractor_name="default_profile_extractor",
         extraction_definition_prompt=(
             "Extract key information about the user and their working "
             "environment: name, role, preferences, and stable facts the "
@@ -676,7 +686,6 @@ def _default_profile_extractor_config() -> ProfileExtractorConfig:
 
 def _default_user_playbook_extractor_config() -> UserPlaybookExtractorConfig:
     return UserPlaybookExtractorConfig(
-        extractor_name="default_playbook_extractor",
         extraction_definition_prompt="Extract playbook rules about agent performance, including areas where the agent was helpful, areas for improvement, and any issues encountered during the interaction.",
     )
 

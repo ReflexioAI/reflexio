@@ -55,6 +55,7 @@ class TestRunPlaybookAggregation:
         mock_agg_instance = MagicMock()
         mock_agg_cls.return_value = mock_agg_instance
 
+        # playbook_name is a deprecated, accepted-but-ignored compatibility input.
         mixin.run_playbook_aggregation(agent_version="v2", playbook_name="my_fb")
 
         mock_agg_cls.assert_called_once_with(
@@ -65,7 +66,6 @@ class TestRunPlaybookAggregation:
         mock_agg_instance.run.assert_called_once()
         request_arg = mock_agg_instance.run.call_args[0][0]
         assert request_arg.agent_version == "v2"
-        assert request_arg.playbook_name == "my_fb"
         assert request_arg.rerun is True
 
     def test_raises_when_storage_not_configured(self):

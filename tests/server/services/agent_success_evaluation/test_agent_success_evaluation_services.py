@@ -114,25 +114,6 @@ def test_loads_no_agent_success_config_when_disabled():
         assert service._load_extractor_config() is None
 
 
-def test_loads_no_agent_success_config_when_name_filter_mismatches():
-    """Regenerate filters out the configured evaluator when names do not match."""
-    with tempfile.TemporaryDirectory() as temp_dir:
-        service = _make_agent_success_service(temp_dir)
-        success_config = AgentSuccessConfig(
-            evaluation_name="overall_success",
-            success_definition_prompt="Evaluate task success",
-        )
-        service.configurator.set_config_by_name("agent_success_config", success_config)
-        service.service_config = AgentSuccessGenerationServiceConfig(
-            session_id="test_group",
-            agent_version="1.0",
-            request_interaction_data_models=[],
-            evaluation_name_filter="other_success",
-        )
-
-        assert service._load_extractor_config() is None
-
-
 def test_evaluate_agent_success(mock_chat_completion):
     """Test successful agent success evaluation generation."""
     user_id = "test_user_id"

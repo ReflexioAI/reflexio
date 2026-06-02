@@ -56,7 +56,6 @@ def run_group_evaluation(
     llm_client: LiteLLMClient,
     *,
     force_regenerate: bool = False,
-    evaluation_name: str | None = None,
 ) -> None:
     """Run agent success evaluation for an entire session.
 
@@ -65,7 +64,7 @@ def run_group_evaluation(
     2. Fetch all requests for the session
     3. Verify completion (latest request created_at >= delay ago; skipped when force_regenerate)
     4. Fetch interactions and build data models
-    5. Capture prior result_ids (when regenerating a single evaluator) so they
+    5. Capture prior result_ids (when regenerating) so they
        can be removed AFTER the new save lands
     6. Run evaluation service (which saves new rows)
     7. On success, delete the captured prior rows by id — the new rows have
@@ -84,13 +83,6 @@ def run_group_evaluation(
         force_regenerate: When True, bypass the already-evaluated short-circuit
             and the completeness delay gate so the regenerate worker can
             re-evaluate sessions of any age regardless of prior state.
-        evaluation_name: When set, narrow the evaluation to a single
-            AgentSuccessConfig.evaluation_name. Propagated to the service via
-            AgentSuccessEvaluationRequest.evaluation_name_filter. When combined
-            with force_regenerate, any prior result rows for
-            (session_id, evaluation_name, agent_version) are deleted AFTER
-            the new run saves successfully so a failure mid-regen cannot leave
-            the session with zero eval rows (durability over freshness).
     """
     storage = request_context.storage
     state_key = _build_state_key(org_id, user_id, session_id)
@@ -166,15 +158,15 @@ def run_group_evaluation(
         )
         return
 
-    # 5. When regenerating a single evaluator, capture the prior result_ids
+    # 5. When regenerating, capture the prior result_ids
     # so we can delete ONLY them AFTER the new rows have been saved. Doing
     # the delete before the LLM call risks wiping the session's rows if the
     # call fails (rate limit, network) and nothing replaces them. The new
     # rows always get fresh auto-increment ids, so deleting the captured set
     # afterwards cannot remove the new rows.
     old_result_ids: list[int] = []
-    if force_regenerate and evaluation_name is not None:
-        # Eval rows per (session, name) are tiny (usually 1), so pulling a
+    if force_regenerate:
+        # Eval rows per session are tiny (usually 1), so pulling a
         # generous limit and filtering in-process is cheap and avoids adding
         # a third query shape to the storage contract.
         prior_rows = storage.get_agent_success_evaluation_results(  # type: ignore[reportOptionalMemberAccess]
@@ -183,17 +175,16 @@ def run_group_evaluation(
         old_result_ids = [
             r.result_id
             for r in prior_rows
-            if r.session_id == session_id and r.evaluation_name == evaluation_name
+            if r.session_id == session_id
         ]
 
     logger.info(
         "Running group evaluation for session=%s with %d requests and %d interactions"
-        " (force_regenerate=%s, evaluation_name=%s, prior_result_ids=%d)",
+        " (force_regenerate=%s, prior_result_ids=%d)",
         session_id,
         len(request_interaction_data_models),
         len(all_interactions),
         force_regenerate,
-        evaluation_name,
         len(old_result_ids),
     )
 
@@ -202,7 +193,6 @@ def run_group_evaluation(
         agent_version=agent_version,
         source=source,
         request_interaction_data_models=request_interaction_data_models,
-        evaluation_name_filter=evaluation_name,
     )
 
     evaluation_service = AgentSuccessEvaluationService(
@@ -252,10 +242,9 @@ def run_group_evaluation(
         )
         logger.info(
             "Regenerate cleanup: deleted %d prior result row(s) for session=%s"
-            " evaluation_name=%s (expected %d)",
+            " (expected %d)",
             deleted,
             session_id,
-            evaluation_name,
             len(old_result_ids),
         )
 

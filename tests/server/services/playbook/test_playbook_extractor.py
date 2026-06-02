@@ -899,7 +899,8 @@ class TestBuildUserPlaybook:
         assert result is not None
         assert result.trigger == "processing external data"
         assert result.content == "validate inputs before processing"
-        assert result.playbook_name == extractor_config.extractor_name
+        # Singleton extraction: playbook_name is always the singleton constant.
+        assert result.playbook_name == "playbook"
 
     def test_returns_none_for_entry_without_content(
         self,
@@ -1051,7 +1052,8 @@ class TestBuildUserPlaybook:
             "agent provides a factual correction during debugging",
         }
         assert all(p.source_interaction_ids == [1, 2, 3] for p in result)
-        assert all(p.playbook_name == extractor_config.extractor_name for p in result)
+        # Singleton extraction: playbook_name is always the singleton constant.
+        assert all(p.playbook_name == "playbook" for p in result)
 
     def test_mock_mode_routes_through_process_structured_response_list(
         self,

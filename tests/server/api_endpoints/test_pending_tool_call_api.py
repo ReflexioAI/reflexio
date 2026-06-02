@@ -71,7 +71,6 @@ def _agent_run(run_id: str, status: AgentRunStatus) -> AgentRunRecord:
         binding=AgentBinding(
             org_id="org_1",
             extractor_kind="profile",
-            extractor_name="default_profile_extractor",
             user_id="user_1",
             request_id="request_1",
             agent_version="v1",

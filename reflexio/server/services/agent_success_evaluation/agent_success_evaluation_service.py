@@ -27,16 +27,12 @@ class AgentSuccessGenerationServiceConfig:
         agent_version: The agent version
         request_interaction_data_models: The interactions to evaluate
         source: Source of the interactions
-        evaluation_name_filter: Optional evaluator-name filter. When set,
-            _load_extractor_config returns the configured AgentSuccessConfig only
-            when its evaluation_name matches.
     """
 
     session_id: str
     agent_version: str
     request_interaction_data_models: list[RequestInteractionDataModel]
     source: str | None = None
-    evaluation_name_filter: str | None = None
 
 
 class AgentSuccessEvaluationService(
@@ -84,34 +80,17 @@ class AgentSuccessEvaluationService(
             agent_version=request.agent_version,
             request_interaction_data_models=request.request_interaction_data_models,
             source=request.source,
-            evaluation_name_filter=request.evaluation_name_filter,
         )
 
     def _load_extractor_config(self) -> AgentSuccessConfig | None:
         """
         Load agent success config from configurator.
 
-        When the active service_config carries an evaluation_name_filter
-        (set by run_group_evaluation in regenerate mode), return None when
-        the configured evaluator's name does not match.
-
-        When the active service_config carries an evaluation_name_filter
-        (set by run_group_evaluation in regenerate mode), skip every config
-        whose evaluation_name does not match — so the regenerate flow only
-        re-runs the targeted evaluator instead of every configured rubric.
-
         Returns:
-            AgentSuccessConfig | None: Configured evaluator, or None when disabled
-            or filtered out.
+            AgentSuccessConfig | None: Configured evaluator, or None when disabled.
         """
         root_config = self.configurator.get_config()
-        config = getattr(root_config, "agent_success_config", None)
-        name_filter = getattr(self.service_config, "evaluation_name_filter", None)
-        if name_filter is None:
-            return config
-        if config and config.evaluation_name == name_filter:
-            return config
-        return None
+        return getattr(root_config, "agent_success_config", None)
 
     def _create_extractor(
         self,

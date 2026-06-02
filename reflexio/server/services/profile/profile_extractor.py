@@ -17,6 +17,7 @@ from reflexio.server.services.extraction.resumable_agent import (
     run_resumable_extraction_agent,
 )
 from reflexio.server.services.extraction.tools import new_profile_id
+from reflexio.server.services.extractor_config_utils import get_extractor_name
 from reflexio.server.services.extractor_interaction_utils import (
     get_effective_source_filter,
     get_extractor_window_params,
@@ -179,7 +180,7 @@ class ProfileExtractor:
         )
         mgr = self._create_state_manager()
         mgr.update_extractor_bookmark(
-            extractor_name=self.config.extractor_name,
+            extractor_name=get_extractor_name(self.config),
             processed_interactions=all_interactions,
             user_id=self.service_config.user_id,
         )
@@ -220,7 +221,7 @@ class ProfileExtractor:
             logger.error(
                 "event=profile_extract_failed user_id=%s extractor_name=%s error_type=%s error=%s",
                 self.service_config.user_id,
-                self.config.extractor_name,
+                get_extractor_name(self.config),
                 type(e).__name__,
                 str(e),
             )
@@ -305,7 +306,7 @@ class ProfileExtractor:
                 profile_time_to_live=ttl,
                 expiration_timestamp=calculate_expiration_timestamp(now_ts, ttl),
                 custom_features=custom_features or None,
-                extractor_names=[self.config.extractor_name],
+                extractor_names=None,
             )
 
             new_profiles.append(added_profile)
@@ -361,7 +362,7 @@ class ProfileExtractor:
         logger.info(
             "event=profile_extract_llm_start user_id=%s extractor_name=%s sessions=%d interactions=%d history_chars=%d existing_profiles=%d model=%s timeout=%d max_retries=%d response_format=%s",
             self.service_config.user_id,
-            self.config.extractor_name,
+            get_extractor_name(self.config),
             session_count,
             interaction_count,
             history_chars,
@@ -378,7 +379,6 @@ class ProfileExtractor:
             request_context=self.request_context,
             client=self.client,
             extractor_kind="profile",
-            extractor_name=self.config.extractor_name,
             user_id=self.service_config.user_id,
             request_id=self.service_config.request_id,
             agent_version=None,

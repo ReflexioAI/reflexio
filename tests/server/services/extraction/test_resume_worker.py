@@ -51,7 +51,6 @@ def request_context(storage):
     ctx.configurator.get_config.return_value = Config(
         storage_config=StorageConfigSQLite(),
         profile_extractor_config=ProfileExtractorConfig(
-            extractor_name="default_profile_extractor",
             extraction_definition_prompt="Extract durable user deployment facts.",
         ),
         pending_tool_call_config=PendingToolCallConfig(enabled=True),
@@ -104,7 +103,6 @@ def _seed_ready_run(storage: SQLiteStorage) -> None:
             binding=AgentBinding(
                 org_id="org_1",
                 extractor_kind="profile",
-                extractor_name="default_profile_extractor",
                 user_id="user_1",
                 request_id="request_1",
                 agent_version="v1",

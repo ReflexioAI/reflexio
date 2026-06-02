@@ -58,7 +58,7 @@ def seeded_storage(tmp_path):
 
 @pytest.fixture
 def ctx():
-    return ExtractionCtx(user_id="u_1", agent_version="v1", extractor_name="coding")
+    return ExtractionCtx(user_id="u_1", agent_version="v1")
 
 
 def test_search_user_profiles_populates_known_ids(seeded_storage, ctx):

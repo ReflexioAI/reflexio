@@ -1791,7 +1791,6 @@ CREATE TABLE IF NOT EXISTS _agent_runs (
     id TEXT PRIMARY KEY,
     org_id TEXT NOT NULL,
     extractor_kind TEXT NOT NULL,
-    extractor_name TEXT NOT NULL,
     user_id TEXT,
     request_id TEXT NOT NULL,
     agent_version TEXT,
@@ -1820,7 +1819,7 @@ CREATE TABLE IF NOT EXISTS _agent_runs (
     last_error TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_agent_runs_ready ON _agent_runs(status, next_resume_at, updated_at);
-CREATE INDEX IF NOT EXISTS idx_agent_runs_binding ON _agent_runs(org_id, extractor_kind, extractor_name, user_id);
+CREATE INDEX IF NOT EXISTS idx_agent_runs_binding ON _agent_runs(org_id, extractor_kind, user_id);
 
 CREATE TABLE IF NOT EXISTS _pending_tool_calls (
     id TEXT PRIMARY KEY,

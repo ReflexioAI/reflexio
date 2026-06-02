@@ -66,7 +66,6 @@ class PendingToolCallToolContext:
     run_id: str
     org_id: str
     extractor_kind: str
-    extractor_name: str
     user_id: str | None = None
     config: PendingToolCallConfig = field(default_factory=PendingToolCallConfig)
     dispatcher: PendingToolCallDispatcher = field(
@@ -139,16 +138,14 @@ def handle_ask_human(
     unresolved_count = ctx.storage.count_unresolved_followup_dependencies(
         org_id=ctx.org_id,
         extractor_kind=ctx.extractor_kind,
-        extractor_name=ctx.extractor_name,
         tool_name=spec.tool_name,
     )
     if unresolved_count >= tool_config.max_pending_followups_per_scope:
         logger.warning(
             "event=pending_followup_soft_cap_exceeded org_id=%s extractor_kind=%s "
-            "extractor_name=%s tool_name=%s current_count=%d soft_cap=%d",
+            "tool_name=%s current_count=%d soft_cap=%d",
             ctx.org_id,
             ctx.extractor_kind,
-            ctx.extractor_name,
             spec.tool_name,
             unresolved_count,
             tool_config.max_pending_followups_per_scope,
@@ -185,7 +182,6 @@ def handle_ask_human(
         event_category="extraction_agent",
         user_id=ctx.user_id,
         pipeline=ctx.extractor_kind,
-        extractor_name=ctx.extractor_name,
         outcome="created" if upsert.created else "deduped",
         metadata={
             "run_id": ctx.run_id,
@@ -197,12 +193,11 @@ def handle_ask_human(
         ctx.dispatcher.dispatch(upsert.pending_tool_call)
         logger.info(
             "event=pending_tool_call_created org_id=%s user_id=%s "
-            "extractor_kind=%s extractor_name=%s run_id=%s pending_tool_call_id=%s "
+            "extractor_kind=%s run_id=%s pending_tool_call_id=%s "
             "tool_name=%s",
             ctx.org_id,
             ctx.user_id,
             ctx.extractor_kind,
-            ctx.extractor_name,
             ctx.run_id,
             upsert.pending_tool_call.id,
             upsert.pending_tool_call.tool_name,
@@ -210,12 +205,11 @@ def handle_ask_human(
     else:
         logger.info(
             "event=extraction_agent_followup_attached org_id=%s user_id=%s "
-            "extractor_kind=%s extractor_name=%s run_id=%s pending_tool_call_id=%s "
+            "extractor_kind=%s run_id=%s pending_tool_call_id=%s "
             "tool_name=%s deduped=true",
             ctx.org_id,
             ctx.user_id,
             ctx.extractor_kind,
-            ctx.extractor_name,
             ctx.run_id,
             upsert.pending_tool_call.id,
             upsert.pending_tool_call.tool_name,
@@ -296,12 +290,11 @@ def handle_attach_pending_info_request(
     )
     logger.info(
         "event=extraction_agent_followup_attached org_id=%s user_id=%s "
-        "extractor_kind=%s extractor_name=%s run_id=%s pending_tool_call_id=%s "
+        "extractor_kind=%s run_id=%s pending_tool_call_id=%s "
         "tool_name=%s",
         ctx.org_id,
         ctx.user_id,
         ctx.extractor_kind,
-        ctx.extractor_name,
         ctx.run_id,
         record.id,
         record.tool_name,

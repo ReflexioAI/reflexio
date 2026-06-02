@@ -22,6 +22,7 @@ from reflexio.server.services.agent_success_evaluation.agent_success_evaluation_
 from reflexio.server.services.agent_success_evaluation.agent_success_evaluation_utils import (
     construct_agent_success_evaluation_messages_from_sessions,
 )
+from reflexio.server.services.extractor_config_utils import get_extractor_name
 from reflexio.server.services.extractor_interaction_utils import (
     filter_interactions_by_source,
     get_effective_source_filter,
@@ -222,7 +223,7 @@ class AgentSuccessEvaluator:
             "event=agent_success_eval_llm_start session_id=%s evaluation_name=%s "
             "requests=%d interactions=%d model=%s",
             self.service_config.session_id,
-            self.config.evaluation_name,
+            get_extractor_name(self.config),
             session_request_count,
             interaction_count,
             self.default_evaluate_model_name,
@@ -289,7 +290,7 @@ class AgentSuccessEvaluator:
         return AgentSuccessEvaluationResult(
             session_id=self.service_config.session_id,
             agent_version=self.service_config.agent_version,
-            evaluation_name=self.config.evaluation_name,
+            evaluation_name=get_extractor_name(self.config),
             is_success=evaluation_response.is_success,
             failure_type=evaluation_response.failure_type or "",
             failure_reason=evaluation_response.failure_reason or "",

@@ -53,7 +53,6 @@ class JobFailure:
 class RegenJob:
     job_id: str
     org_id: str
-    evaluation_name: str
     from_ts: int
     to_ts: int
     status: JobStatus
@@ -75,24 +74,23 @@ class RegenJob:
 
 
 class RegenJobRegistry:
-    """Process-local job registry. One active job per (org_id, evaluation_name)."""
+    """Process-local job registry. One active singleton job per org."""
 
     def __init__(self) -> None:
         self._jobs: dict[str, RegenJob] = {}
-        self._by_org_evaluator: dict[tuple[str, str], str] = {}
+        self._by_org: dict[str, str] = {}
         self._lock = threading.Lock()
 
     def create(
         self,
         *,
         org_id: str,
-        evaluation_name: str,
         from_ts: int,
         to_ts: int,
         total: int,
     ) -> RegenJob:
         """Register a new running job. Raises RuntimeError when an actively-running
-        job exists for (org, evaluator).
+        job exists for the org.
 
         Only *running* jobs block; a previous completed/cancelled/errored job for
         the same key is replaced. Eviction by TTL is a separate cleanup concern —
@@ -101,23 +99,20 @@ class RegenJobRegistry:
         """
         with self._lock:
             self._evict_completed_locked(DEFAULT_TTL_SECONDS)
-            key = (org_id, evaluation_name)
+            key = org_id
             active = self._active_job_for_locked(key)
             if active is not None:
-                raise RuntimeError(
-                    f"A regenerate is already running for evaluator '{evaluation_name}'"
-                )
+                raise RuntimeError("A regenerate is already running for this org")
             job = RegenJob(
                 job_id=uuid.uuid4().hex,
                 org_id=org_id,
-                evaluation_name=evaluation_name,
                 from_ts=from_ts,
                 to_ts=to_ts,
                 status="running",
                 total=total,
             )
             self._jobs[job.job_id] = job
-            self._by_org_evaluator[key] = job.job_id
+            self._by_org[key] = job.job_id
             return job
 
     def get(self, job_id: str) -> RegenJob | None:
@@ -131,13 +126,13 @@ class RegenJobRegistry:
         if job is not None:
             job.cancel_event.set()
 
-    def has_active(self, org_id: str, evaluation_name: str) -> bool:
+    def has_active(self, org_id: str) -> bool:
         with self._lock:
             self._evict_completed_locked(DEFAULT_TTL_SECONDS)
-            return self._active_job_for_locked((org_id, evaluation_name)) is not None
+            return self._active_job_for_locked(org_id) is not None
 
-    def _active_job_for_locked(self, key: tuple[str, str]) -> RegenJob | None:
-        """Return the running job for (org, evaluator), or None when no live job exists.
+    def _active_job_for_locked(self, key: str) -> RegenJob | None:
+        """Return the running job for an org, or None when no live job exists.
 
         A registry entry whose job has already finished
         (``completed`` / ``cancelled`` / ``error``) is treated as having no active
@@ -145,7 +140,7 @@ class RegenJobRegistry:
         registry still holds the finished job until TTL eviction so status polls
         keep working, but it doesn't block new submissions.
         """
-        job_id = self._by_org_evaluator.get(key)
+        job_id = self._by_org.get(key)
         if job_id is None:
             return None
         job = self._jobs.get(job_id)
@@ -168,7 +163,7 @@ class RegenJobRegistry:
         ]
         for jid in drop:
             j = self._jobs.pop(jid)
-            self._by_org_evaluator.pop((j.org_id, j.evaluation_name), None)
+            self._by_org.pop(j.org_id, None)
 
 
 # Single process-local instance.
@@ -311,7 +306,6 @@ def _dispatch_one(
         request_context=request_context,
         llm_client=llm_client,
         force_regenerate=True,
-        evaluation_name=job.evaluation_name,
     )
 
 

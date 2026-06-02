@@ -10,13 +10,12 @@ from reflexio.server.services.agent_success_evaluation.regen_jobs import (
 def _minimal_job(**overrides: Any) -> RegenJob:
     """Build a RegenJob using the discovered required-field set.
 
-    Required fields on RegenJob: job_id, org_id, evaluation_name, from_ts,
+    Required fields on RegenJob: job_id, org_id, from_ts,
     to_ts, status, total. Everything else has a default.
     """
     base: dict[str, Any] = {
         "job_id": "j1",
         "org_id": "o",
-        "evaluation_name": "e",
         "from_ts": 0,
         "to_ts": 1,
         "status": "running",
