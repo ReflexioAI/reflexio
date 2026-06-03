@@ -124,8 +124,11 @@ def sentry_tags(**tags: Any) -> Iterator[None]:
     # request fail. If the Sentry SDK throws while opening or closing the
     # scope, log and continue rather than letting the exception escape the
     # caller's `with sentry_tags(...)` block and mask the original failure.
+    # `new_scope()` is the sentry-sdk >=2.0 replacement for the deprecated
+    # `push_scope()`; the AttributeError on the older 1.x SDK is caught by
+    # the broad `except` below so the helper still degrades cleanly.
     try:
-        scope_cm = sentry_sdk.push_scope()
+        scope_cm = sentry_sdk.new_scope()
         scope = scope_cm.__enter__()
     except Exception as exc:  # noqa: BLE001
         logger.warning("Failed to open Sentry scope for tags: %s", exc)
