@@ -382,7 +382,7 @@ class GenerationService:
                 logger.exception(
                     "Failed to refresh user profile for user id: %s", user_id,
                 )
-            raise e
+            raise
 
     # ===============================
     # private methods

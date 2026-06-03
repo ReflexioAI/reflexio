@@ -120,12 +120,36 @@ def sentry_tags(**tags: Any) -> Iterator[None]:
         yield
         return
 
-    with sentry_sdk.push_scope() as scope:
-        for key, value in tags.items():
-            if value is None:
-                continue
-            try:
-                scope.set_tag(key, str(value))
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("Failed to set Sentry tag %s: %s", key, exc)
+    # Mirrors `profile_step` above: instrumentation must never make a product
+    # request fail. If the Sentry SDK throws while opening or closing the
+    # scope, log and continue rather than letting the exception escape the
+    # caller's `with sentry_tags(...)` block and mask the original failure.
+    try:
+        scope_cm = sentry_sdk.push_scope()
+        scope = scope_cm.__enter__()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to open Sentry scope for tags: %s", exc)
         yield
+        return
+
+    for key, value in tags.items():
+        if value is None:
+            continue
+        try:
+            scope.set_tag(key, str(value))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to set Sentry tag %s: %s", key, exc)
+
+    try:
+        yield
+    except BaseException as exc:
+        try:
+            scope_cm.__exit__(type(exc), exc, exc.__traceback__)
+        except Exception as cleanup_exc:  # noqa: BLE001
+            logger.warning("Failed to close Sentry scope: %s", cleanup_exc)
+        raise
+    else:
+        try:
+            scope_cm.__exit__(None, None, None)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to close Sentry scope: %s", exc)
