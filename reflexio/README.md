@@ -6,16 +6,15 @@ Describe the code structure and component dependencies for source code of reflex
 - [Overview](#overview)
 - [models and client](#models-and-client)
 - [cli](#cli)
-- [reflexio_lib](#reflexio_lib)
+- [lib](#lib)
 - [server](#server)
-- [data](#data)
 - [See Also](#see-also)
 
 ## Overview
 Reflexio is a user profiling and agent playbook system with three main access patterns:
 
 1. **Remote API Access** (`client`) - Applications use Python SDK to call REST API
-2. **Local Library Access** (`reflexio_lib`) - Direct synchronous access without HTTP layer
+2. **Local Library Access** (`lib/reflexio_lib.py`) - Direct synchronous access without HTTP layer
 3. **CLI Access** (`cli`) - Local command-line workflows for services, publishing, search, auth, config, and diagnostics
 
 **Core Flow**: User Interactions → Server Processing → Profile/Playbook/Evaluation → Storage
@@ -23,7 +22,6 @@ Reflexio is a user profiling and agent playbook system with three main access pa
 **Shared Components**:
 - `models` - API and internal schemas shared by client, CLI, and server
 - `server` - FastAPI backend with LLM-based processing services
-- `data` - Bundled configs and local fixtures
 - `docs` - Next.js API documentation site
 
 ## models and client
@@ -80,11 +78,12 @@ Local operator interface to:
 ### Architecture Pattern
 Thin Typer layer over the Python client and local service manager. Use `uv run reflexio --help` to inspect command groups.
 
-## reflexio_lib
+## lib
 Description: Local Python library interface for direct (non-API) access to Reflexio functionality
 
 ### Main Entry Point
-- **Library**: `reflexio_lib.py` - `Reflexio` class
+- **Library**: `lib/reflexio_lib.py` - `Reflexio` class
+- **Domain helpers**: `lib/_profiles.py`, `lib/_user_playbook.py`, `lib/_agent_playbook.py`, `lib/_search.py`, `lib/_generation.py`, `lib/_reflection.py`, `lib/_dashboard.py`, `lib/_operations.py` - focused method groups mixed into `Reflexio`
 
 ### Purpose
 Direct programmatic access without HTTP/API layer:
@@ -116,7 +115,7 @@ Receives user interactions from clients and processes them to:
 client (Python SDK)
   -> api.py (FastAPI routes)
     -> api_endpoints/ (request handlers)
-      -> reflexio_lib.Reflexio (main entry)
+      -> lib/reflexio_lib.py Reflexio (main entry)
         -> services/generation_service.py (orchestrator)
           ├─> services/profile/ -> storage (BaseStorage)
           ├─> services/playbook/ (playbook extraction) -> storage (BaseStorage)
@@ -125,8 +124,7 @@ client (Python SDK)
 
 ### Key Components
 - **`api_endpoints/`**: Request handling, `RequestContext` (bundles storage/config/prompts), auth
-- **`db/`**: Auth & config storage only (SQLite) - NOT for profiles/interactions
-- **`llm/`**: Unified LLM client (auto-detects OpenAI/Claude from model name)
+- **`llm/`**: LiteLLM-based generation, embedding providers, tool schemas, and rerankers
 - **`prompt/`**: Versioned prompt templates in `prompt_bank/`
 - **`services/`**: Core business logic
   - `generation_service.py` - Orchestrator (runs profile/playbook/success services)
@@ -141,6 +139,8 @@ client (Python SDK)
   - `playbook_optimizer/` - Scenario-based playbook optimization experiments
   - `braintrust/` - Braintrust eval export/sync support
   - `storage/` - Abstract layer (SQLite prod, LocalJSON test)
+  - `retrieval/` - Relevance-floor helpers for search result filtering
+  - `search/` - Search-specific support modules
   - `pre_retrieval/` - Query rewriting and document expansion helpers
   - `configurator/` - YAML config loader
 - **`site_var/`**: Global settings singleton
@@ -155,24 +155,6 @@ client (Python SDK)
 **Storage Abstraction**: All access via `BaseStorage` interface, implementation selected by configurator, supports vector similarity search
 
 **Data Flow**: `User Interaction -> Storage (save) -> Services (parallel: LLM + Prompts) -> Results -> Storage (save)`
-
-
-## data
-Description: Local storage directory for configuration files and SQLite databases
-
-### Main Entry Points
-- **Configs**: `configs/` - YAML configuration files for extractors and evaluators
-- **Database**: `sql_app.db` - SQLite database for auth and config storage
-- **JSON Storage**: `user_profiles_*.json` - Local JSON files for testing
-
-### Purpose
-Local data storage for:
-1. **Configuration files** - YAML configs defining extraction/evaluation behavior
-2. **Authentication database** - User credentials and API tokens (SQLite/Postgres)
-3. **Test data** - LocalJsonStorage files for development/testing
-
-### Architecture Pattern
-Referenced by `SimpleConfigurator` for loading configs and by database operations for auth/config persistence. Not directly accessed by application code.
 
 ## See Also
 

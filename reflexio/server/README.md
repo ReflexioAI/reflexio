@@ -21,6 +21,7 @@ Description: FastAPI backend server that processes user interactions to generate
   - [Playbook Optimizer and Braintrust](#playbook-optimizer-and-braintrust)
   - [Query Reformulator](#query-reformulator)
   - [Unified Search Service](#unified-search-service)
+  - [Retrieval Relevance Floor](#retrieval-relevance-floor)
   - [Storage](#storage)
   - [Configurator](#configurator)
 - [Architecture Patterns](#architecture-patterns)
@@ -88,9 +89,11 @@ Description: FastAPI backend server that processes user interactions to generate
 
 Key files:
 - `litellm_client.py`: Unified LiteLLMClient using LiteLLM for multi-provider support
-- `openai_client.py`: OpenAI implementation (legacy, do not use directly)
-- `claude_client.py`: Claude implementation (legacy, do not use directly)
 - `llm_utils.py`: Helper functions for Pydantic model conversion
+- `model_defaults.py`: Default model identifiers and provider aliases
+- `embedding_service.py`: Local/remote embedding service integration
+- `providers/`: Provider adapters for local/Nomic embeddings and Claude Code parsing
+- `rerank/`: LLM and cross-encoder rerankers for search result ordering
 
 **Features**:
 - Uses LiteLLM for multi-provider support (OpenAI, Claude, Azure, OpenRouter, Gemini, custom endpoints, etc.)
@@ -181,6 +184,7 @@ python -m reflexio.server.scripts.manage_invitation_codes list --show-used
 - **Evaluation**: `agent_success_evaluation/`, `shadow_comparison/`, and `evaluation_overview/` handle session grading, per-turn shadow verdicts, regeneration jobs, and dashboard-facing rollups.
 - **Async clarification**: `extraction/` and `reflection/` manage resumable agent runs, pending tool calls, prior-answer search, and long-horizon reflection updates.
 - **Search preparation**: `pre_retrieval/` and `unified_search_service.py` handle query reformulation, document expansion, embeddings, and cross-entity search orchestration.
+- **Retrieval filtering**: `retrieval/relevance_floor.py` applies configurable score floors before returning search results.
 - **Optimization/integrations**: `playbook_optimizer/` and `braintrust/` run candidate playbook optimization, rollout support, and Braintrust export/sync.
 - **Persistence/config**: `storage/`, `configurator/`, and `operation_state_utils.py` provide storage abstractions, config loading, locks, bookmarks, progress, and cancellation.
 
@@ -453,6 +457,15 @@ Searches across all entity types (profiles, agent_playbooks, user_playbooks) in 
 - **Phase B**: Entity searches across all types (parallel via ThreadPoolExecutor, 3 workers)
 
 Pre-computed embeddings passed to storage methods via `query_embedding` parameter to avoid redundant embedding calls.
+
+### Retrieval Relevance Floor
+
+**Directory**: `services/retrieval/`
+
+Key files:
+- `relevance_floor.py`: Computes and applies result score floors for profile, user playbook, and agent playbook searches.
+
+**Pattern**: Search endpoints and `run_unified_search()` should use retrieval-floor helpers rather than duplicating threshold logic. Configuration lives in `Config.retrieval_floor` so callers can keep score filtering consistent across entity types.
 
 ### Storage
 
