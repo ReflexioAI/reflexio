@@ -93,3 +93,39 @@ def set_span_data(span: TraceSpan, values: Mapping[str, Any]) -> None:
             span.set_data(key, value)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Tracer failed to set span data %s: %s", key, exc)
+
+
+@contextmanager
+def sentry_tags(**tags: Any) -> Iterator[None]:
+    """Attach tags to any Sentry events produced inside the block.
+
+    Used inside ``except`` handlers, immediately wrapping a
+    ``logger.exception(...)`` call, so the event auto-captured by
+    Sentry's ``LoggingIntegration`` is filterable by org / subsystem.
+
+    No-op when ``sentry-sdk`` is not installed (the OS package does not
+    declare it as a dependency; enterprise deployments pull it in).
+    Tag values that are ``None`` are skipped to avoid noisy "None" tags.
+
+    Args:
+        **tags: arbitrary tag name → value pairs. Values are stringified.
+
+    Yields:
+        None. Re-enters the active Sentry scope for the duration of the
+        ``with`` block.
+    """
+    try:
+        import sentry_sdk  # type: ignore[import-not-found]
+    except ImportError:
+        yield
+        return
+
+    with sentry_sdk.push_scope() as scope:
+        for key, value in tags.items():
+            if value is None:
+                continue
+            try:
+                scope.set_tag(key, str(value))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Failed to set Sentry tag %s: %s", key, exc)
+        yield

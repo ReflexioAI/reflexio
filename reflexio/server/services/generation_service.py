@@ -48,6 +48,7 @@ from reflexio.server.services.storage.retention import (
     delete_count_for_retention,
     get_row_retention_limits,
 )
+from reflexio.server.tracing import sentry_tags
 from reflexio.server.usage_metrics import record_usage_event
 
 if TYPE_CHECKING:
@@ -308,16 +309,25 @@ class GenerationService:
                         future.result(timeout=GENERATION_SERVICE_TIMEOUT_SECONDS)
                     except FuturesTimeoutError:  # noqa: PERF203
                         msg = f"{service_name} timed out after {GENERATION_SERVICE_TIMEOUT_SECONDS}s"
-                        logger.error("%s for request %s", msg, request_id)
+                        with sentry_tags(
+                            subsystem="generation",
+                            service=service_name,
+                            request_id=request_id,
+                            error_type="timeout",
+                        ):
+                            logger.error("%s for request %s", msg, request_id)
                         result.warnings.append(msg)
                     except Exception as e:
                         msg = f"{service_name} failed: {e}"
-                        logger.error(
-                            "Generation service failed for request %s: %s, exception type: %s",
-                            request_id,
-                            str(e),
-                            type(e).__name__,
-                        )
+                        with sentry_tags(
+                            subsystem="generation",
+                            service=service_name,
+                            request_id=request_id,
+                            error_type=type(e).__name__,
+                        ):
+                            logger.exception(
+                                "Generation service failed for request %s", request_id,
+                            )
                         result.warnings.append(msg)
             finally:
                 executor.shutdown(wait=False, cancel_futures=True)
@@ -361,13 +371,17 @@ class GenerationService:
                 duration_ms=int((time.perf_counter() - publish_start) * 1000),
                 error_kind=type(e).__name__,
             )
-            # log exception
-            logger.error(
-                "Failed to refresh user profile for user id: %s due to %s, exception type: %s",
-                user_id,
-                e,
-                type(e).__name__,
-            )
+            with sentry_tags(
+                subsystem="generation",
+                op="refresh_profile",
+                org_id=self.org_id,
+                user_id=user_id,
+                request_id=result.request_id,
+                error_type=type(e).__name__,
+            ):
+                logger.exception(
+                    "Failed to refresh user profile for user id: %s", user_id,
+                )
             raise e
 
     # ===============================
@@ -459,12 +473,18 @@ class GenerationService:
                 )
             )
         except Exception as exc:  # noqa: BLE001 — must not break publish
-            logger.warning(
-                "reflection step failed for user %s: %s (error_type=%s)",
-                user_id,
-                exc,
-                type(exc).__name__,
-            )
+            # Promoted to logger.exception so Sentry's LoggingIntegration
+            # captures the event. The except still doesn't re-raise — the
+            # publish loop continues — but on-call now sees the failure
+            # instead of it being buried at WARNING level.
+            with sentry_tags(
+                subsystem="generation",
+                op="reflection",
+                org_id=self.org_id,
+                user_id=user_id,
+                error_type=type(exc).__name__,
+            ):
+                logger.exception("reflection step failed for user %s", user_id)
 
     def _cleanup_storage_tables_if_needed(self) -> None:
         """Best-effort publish-boundary cleanup for capped storage tables."""
@@ -493,16 +513,27 @@ class GenerationService:
                     try:
                         self._cleanup_retention_target(target_name, limit)
                     except Exception as e:  # noqa: BLE001
-                        logger.error(
-                            "Failed to cleanup retention target %s: %s",
-                            target_name,
-                            e,
-                        )
+                        with sentry_tags(
+                            subsystem="generation",
+                            op="cleanup_retention_target",
+                            org_id=self.org_id,
+                            target_name=target_name,
+                            error_type=type(e).__name__,
+                        ):
+                            logger.exception(
+                                "Failed to cleanup retention target %s", target_name,
+                            )
             finally:
                 mgr.release_simple_lock()
 
         except Exception as e:
-            logger.error("Failed to cleanup storage tables: %s", e)
+            with sentry_tags(
+                subsystem="generation",
+                op="cleanup_storage_tables",
+                org_id=self.org_id,
+                error_type=type(e).__name__,
+            ):
+                logger.exception("Failed to cleanup storage tables")
             # Don't raise - cleanup failure shouldn't block normal operation
 
     def _should_check_retention_target(self, target_name: str, now: float) -> bool:
