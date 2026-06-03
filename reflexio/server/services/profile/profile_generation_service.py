@@ -38,6 +38,7 @@ from reflexio.server.services.profile.profile_generation_service_utils import (
 from reflexio.server.services.service_utils import (
     format_sessions_to_history_string,
 )
+from reflexio.server.tracing import sentry_tags
 
 logger = logging.getLogger(__name__)
 
@@ -188,12 +189,17 @@ class ProfileGenerationService(
             try:
                 self.storage.add_user_profile(user_id, all_new_profiles)  # type: ignore[reportOptionalMemberAccess]
             except Exception as e:
-                logger.error(
-                    "Failed to save profiles for user id: %s due to %s, exception type: %s",
-                    user_id,
-                    str(e),
-                    type(e).__name__,
-                )
+                with sentry_tags(
+                    subsystem="profile_generation",
+                    op="save_profiles",
+                    org_id=self.org_id,
+                    user_id=user_id,
+                    request_id=request_id,
+                    error_type=type(e).__name__,
+                ):
+                    logger.exception(
+                        "Failed to save profiles for user id: %s", user_id,
+                    )
                 return
 
         # Delete superseded existing profiles
@@ -207,12 +213,19 @@ class ProfileGenerationService(
                         )
                     )
                 except Exception as e:  # noqa: PERF203
-                    logger.error(
-                        "Failed to delete superseded profile %s for user %s: %s",
-                        profile_id,
-                        user_id,
-                        str(e),
-                    )
+                    with sentry_tags(
+                        subsystem="profile_generation",
+                        op="delete_superseded_profile",
+                        org_id=self.org_id,
+                        user_id=user_id,
+                        request_id=request_id,
+                        profile_id=profile_id,
+                        error_type=type(e).__name__,
+                    ):
+                        logger.exception(
+                            "Failed to delete superseded profile %s for user %s",
+                            profile_id, user_id,
+                        )
 
         # Create profile changelog post-deduplication
         if all_new_profiles or superseded_profiles:
@@ -228,11 +241,17 @@ class ProfileGenerationService(
                 )
                 self.storage.add_profile_change_log(profile_change_log)  # type: ignore[reportOptionalMemberAccess]
             except Exception as e:
-                logger.error(
-                    "Failed to add profile change log for user %s: %s",
-                    user_id,
-                    str(e),
-                )
+                with sentry_tags(
+                    subsystem="profile_generation",
+                    op="add_profile_change_log",
+                    org_id=self.org_id,
+                    user_id=user_id,
+                    request_id=request_id,
+                    error_type=type(e).__name__,
+                ):
+                    logger.exception(
+                        "Failed to add profile change log for user %s", user_id,
+                    )
 
     def check_and_update_profiles(self, profiles: list[UserProfile]) -> None:
         """check if the profiles are expired and update them if they are"""

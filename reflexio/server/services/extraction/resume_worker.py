@@ -62,6 +62,7 @@ from reflexio.server.services.storage.storage_base import (
     PendingToolCallStatus,
 )
 from reflexio.server.site_var.site_var_manager import SiteVarManager
+from reflexio.server.tracing import sentry_tags
 
 logger = logging.getLogger(__name__)
 
@@ -243,12 +244,17 @@ class ExtractionResumeWorker:
                 )
             items, pending_tool_call_ids = self._resume_run(run, resolved_calls)
         except Exception as exc:
-            logger.exception(
-                "event=resumable_extraction_resume_failed run_id=%s error_type=%s error=%s",
-                run.id,
-                type(exc).__name__,
-                exc,
-            )
+            with sentry_tags(
+                subsystem="extraction",
+                op="resume_run",
+                org_id=self.request_context.org_id,
+                run_id=run.id,
+                error_type=type(exc).__name__,
+            ):
+                logger.exception(
+                    "event=resumable_extraction_resume_failed run_id=%s",
+                    run.id,
+                )
             failed_status = (
                 AgentRunStatus.FAILED
                 if run.resume_attempts >= pending_config.max_resume_attempts
@@ -276,12 +282,17 @@ class ExtractionResumeWorker:
                 pending_tool_call_ids=pending_tool_call_ids,
             )
         except Exception as exc:
-            logger.exception(
-                "event=resumable_extraction_finalization_failed run_id=%s error_type=%s error=%s",
-                run.id,
-                type(exc).__name__,
-                exc,
-            )
+            with sentry_tags(
+                subsystem="extraction",
+                op="finalize_run",
+                org_id=self.request_context.org_id,
+                run_id=run.id,
+                error_type=type(exc).__name__,
+            ):
+                logger.exception(
+                    "event=resumable_extraction_finalization_failed run_id=%s",
+                    run.id,
+                )
             next_attempt_count = run.finalization_attempts + 1
             failed_status = (
                 AgentRunStatus.FAILED
@@ -314,13 +325,17 @@ class ExtractionResumeWorker:
                 pending_tool_call_ids=pending_tool_call_ids,
             )
         except Exception as exc:
-            logger.exception(
-                "event=resumable_extraction_finalization_retry_failed run_id=%s "
-                "error_type=%s error=%s",
-                run.id,
-                type(exc).__name__,
-                exc,
-            )
+            with sentry_tags(
+                subsystem="extraction",
+                op="finalize_run_retry",
+                org_id=self.request_context.org_id,
+                run_id=run.id,
+                error_type=type(exc).__name__,
+            ):
+                logger.exception(
+                    "event=resumable_extraction_finalization_retry_failed run_id=%s",
+                    run.id,
+                )
             next_attempt_count = run.finalization_attempts + 1
             failed_status = (
                 AgentRunStatus.FAILED

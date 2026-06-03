@@ -23,6 +23,7 @@ from reflexio.server.services.deduplication_utils import (
     BaseDeduplicator,
     format_dedup_timestamp,
 )
+from reflexio.server.tracing import sentry_tags
 
 logger = logging.getLogger(__name__)
 
@@ -461,7 +462,16 @@ class PlaybookConsolidator(BaseDeduplicator):
                 new_playbooks, existing_playbooks
             )
         except Exception as e:
-            logger.error("Failed to identify duplicates: %s", str(e))
+            with sentry_tags(
+                subsystem="playbook_consolidator",
+                op="identify_duplicates",
+                org_id=self.request_context.org_id,
+                user_id=user_id,
+                request_id=request_id,
+                agent_version=agent_version,
+                error_type=type(e).__name__,
+            ):
+                logger.exception("Failed to identify duplicates")
             return new_playbooks, []
 
         if not dedup_output.decisions:
@@ -547,21 +557,22 @@ class PlaybookConsolidator(BaseDeduplicator):
                 )
             except Exception as exc:  # noqa: BLE001 — per-decision isolation
                 result_counters.failed_count += 1
-                logger.warning(
-                    "event=consolidation_apply_failed kind=%s error_type=%s error=%s",
-                    decision.kind,
-                    type(exc).__name__,
-                    exc,
-                )
                 new_id_str = getattr(decision, "new_id", "unknown")
                 existing_id_str = getattr(decision, "existing_id", "unknown")
-                logger.warning(
-                    "playbook_consolidation.failure kind=%s new_id=%s existing_id=%s error=%s",
-                    decision.kind,
-                    new_id_str,
-                    existing_id_str,
-                    type(exc).__name__,
-                )
+                with sentry_tags(
+                    subsystem="playbook_consolidator",
+                    op="apply_decision",
+                    org_id=self.request_context.org_id,
+                    request_id=request_id,
+                    kind=decision.kind,
+                    new_id=new_id_str,
+                    existing_id=existing_id_str,
+                    error_type=type(exc).__name__,
+                ):
+                    logger.exception(
+                        "event=consolidation_apply_failed kind=%s new_id=%s existing_id=%s",
+                        decision.kind, new_id_str, existing_id_str,
+                    )
                 continue
             new_rows.extend(rows)
             handled_new_ids.update(marked_new_ids)

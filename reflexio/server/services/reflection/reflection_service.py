@@ -48,6 +48,7 @@ from reflexio.server.services.reflection.reflection_service_utils import (
     ReflectionResult,
     ReflectionServiceRequest,
 )
+from reflexio.server.tracing import sentry_tags
 
 if TYPE_CHECKING:
     from reflexio.models.api_schema.internal_schema import (
@@ -198,12 +199,17 @@ class ReflectionService:
                 horizon_by_key=horizon_by_key,
             )
         except Exception as exc:  # noqa: BLE001 — best-effort
-            logger.warning(
-                "event=reflection_extractor_failed user_id=%s error_type=%s error=%s",
-                request.user_id,
-                type(exc).__name__,
-                exc,
-            )
+            with sentry_tags(
+                subsystem="reflection",
+                op="extractor",
+                org_id=self.request_context.org_id,
+                user_id=request.user_id,
+                error_type=type(exc).__name__,
+            ):
+                logger.exception(
+                    "event=reflection_extractor_failed user_id=%s",
+                    request.user_id,
+                )
             # Don't advance bookmark — let the next publish retry.
             return result
 
@@ -236,14 +242,19 @@ class ReflectionService:
                 )
             except Exception as exc:  # noqa: BLE001 — per-decision isolation
                 result.failed_count += 1
-                logger.warning(
-                    "event=reflection_apply_failed kind=%s target_id=%s "
-                    "error_type=%s error=%s",
-                    decision.target_kind,
-                    decision.target_id,
-                    type(exc).__name__,
-                    exc,
-                )
+                with sentry_tags(
+                    subsystem="reflection",
+                    op="apply_decision",
+                    org_id=self.request_context.org_id,
+                    user_id=request.user_id,
+                    target_kind=decision.target_kind,
+                    target_id=decision.target_id,
+                    error_type=type(exc).__name__,
+                ):
+                    logger.exception(
+                        "event=reflection_apply_failed kind=%s target_id=%s",
+                        decision.target_kind, decision.target_id,
+                    )
                 continue
             if applied:
                 result.revised_count += 1
@@ -474,22 +485,38 @@ class ReflectionService:
                 user_id=request.user_id, profile_id=cited.profile_id
             )
         except Exception as exc:  # noqa: BLE001
-            logger.error(
-                "event=reflection_archive_after_insert_failed kind=profile "
-                "cited_id=%s new_id=%s error_type=%s error=%s",
-                cited.profile_id,
-                new_profile.profile_id,
-                type(exc).__name__,
-                exc,
-            )
+            with sentry_tags(
+                subsystem="reflection",
+                op="archive_after_insert",
+                kind="profile",
+                org_id=self.request_context.org_id,
+                user_id=cited.user_id,
+                cited_id=cited.profile_id,
+                new_id=new_profile.profile_id,
+                error_type=type(exc).__name__,
+            ):
+                logger.exception(
+                    "event=reflection_archive_after_insert_failed kind=profile "
+                    "cited_id=%s new_id=%s",
+                    cited.profile_id, new_profile.profile_id,
+                )
             return True
         if not archived:
-            logger.error(
-                "event=reflection_archive_after_insert_noop kind=profile "
-                "cited_id=%s new_id=%s",
-                cited.profile_id,
-                new_profile.profile_id,
-            )
+            with sentry_tags(
+                subsystem="reflection",
+                op="archive_after_insert_noop",
+                kind="profile",
+                org_id=self.request_context.org_id,
+                user_id=cited.user_id,
+                cited_id=cited.profile_id,
+                new_id=new_profile.profile_id,
+            ):
+                logger.error(
+                    "event=reflection_archive_after_insert_noop kind=profile "
+                    "cited_id=%s new_id=%s",
+                    cited.profile_id,
+                    new_profile.profile_id,
+                )
         return True
 
     def _replace_playbook(
@@ -557,22 +584,38 @@ class ReflectionService:
                 user_playbook_id=cited.user_playbook_id,
             )
         except Exception as exc:  # noqa: BLE001
-            logger.error(
-                "event=reflection_archive_after_insert_failed kind=playbook "
-                "cited_id=%s new_id=%s error_type=%s error=%s",
-                cited.user_playbook_id,
-                new_playbook.user_playbook_id,
-                type(exc).__name__,
-                exc,
-            )
+            with sentry_tags(
+                subsystem="reflection",
+                op="archive_after_insert",
+                kind="playbook",
+                org_id=self.request_context.org_id,
+                user_id=owning_user_id,
+                cited_id=cited.user_playbook_id,
+                new_id=new_playbook.user_playbook_id,
+                error_type=type(exc).__name__,
+            ):
+                logger.exception(
+                    "event=reflection_archive_after_insert_failed kind=playbook "
+                    "cited_id=%s new_id=%s",
+                    cited.user_playbook_id, new_playbook.user_playbook_id,
+                )
             return True
         if not archived:
-            logger.error(
-                "event=reflection_archive_after_insert_noop kind=playbook "
-                "cited_id=%s new_id=%s",
-                cited.user_playbook_id,
-                new_playbook.user_playbook_id,
-            )
+            with sentry_tags(
+                subsystem="reflection",
+                op="archive_after_insert_noop",
+                kind="playbook",
+                org_id=self.request_context.org_id,
+                user_id=owning_user_id,
+                cited_id=cited.user_playbook_id,
+                new_id=new_playbook.user_playbook_id,
+            ):
+                logger.error(
+                    "event=reflection_archive_after_insert_noop kind=playbook "
+                    "cited_id=%s new_id=%s",
+                    cited.user_playbook_id,
+                    new_playbook.user_playbook_id,
+                )
         return True
 
 

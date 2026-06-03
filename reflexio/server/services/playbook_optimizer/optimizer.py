@@ -17,6 +17,7 @@ from reflexio.models.api_schema.domain import (
 from reflexio.models.config_schema import PlaybookOptimizerConfig
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient
+from reflexio.server.tracing import sentry_tags
 
 from .assistant_webhook import AssistantCallable, LocalScriptAssistant, WebhookAssistant
 from .gepa_adapter import PLAYBOOK_CONTENT_COMPONENT, ReflexioPlaybookGEPAAdapter
@@ -161,7 +162,16 @@ class PlaybookOptimizer:
                 adapter,
             )
         except Exception as exc:
-            logger.exception("Playbook optimization failed")
+            with sentry_tags(
+                subsystem="playbook_optimizer",
+                op="run",
+                org_id=self.request_context.org_id,
+                job_id=job.job_id,
+                target_kind=target.kind,
+                target_id=target.target_id,
+                error_type=type(exc).__name__,
+            ):
+                logger.exception("Playbook optimization failed")
             self.storage.update_playbook_optimization_job(
                 job.job_id, status="failed", decision_reason=str(exc)
             )

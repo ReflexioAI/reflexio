@@ -10,6 +10,7 @@ from reflexio.models.api_schema.domain import (
     PlaybookOptimizationEvaluation,
 )
 from reflexio.server.services.storage.storage_base import BaseStorage
+from reflexio.server.tracing import sentry_tags
 
 from .assistant_webhook import AssistantFailedError
 from .judge import PairwiseJudge
@@ -240,7 +241,15 @@ class ReflexioPlaybookGEPAAdapter:
                 candidate_rollout=candidate_rollout,
             )
         except AssistantFailedError as exc:
-            logger.exception("Playbook optimizer assistant failed")
+            with sentry_tags(
+                subsystem="playbook_optimizer",
+                op="assistant",
+                job_id=self.job_id,
+                target_kind=self.target_kind,
+                target_id=self.target_id,
+                error_type=type(exc).__name__,
+            ):
+                logger.exception("Playbook optimizer assistant failed")
             return CandidateEvaluationOutput(
                 score=0.0,
                 verdict="aborted",
@@ -248,7 +257,15 @@ class ReflexioPlaybookGEPAAdapter:
                 rationale=f"Assistant failed: {exc}",
             )
         except Exception as exc:
-            logger.exception("Playbook optimizer evaluation failed")
+            with sentry_tags(
+                subsystem="playbook_optimizer",
+                op="evaluate",
+                job_id=self.job_id,
+                target_kind=self.target_kind,
+                target_id=self.target_id,
+                error_type=type(exc).__name__,
+            ):
+                logger.exception("Playbook optimizer evaluation failed")
             return CandidateEvaluationOutput(
                 score=0.0,
                 verdict="aborted",

@@ -20,6 +20,7 @@ from reflexio.server.services.extraction.resumable_agent import (
     pending_tool_calls_enabled,
 )
 from reflexio.server.services.extraction.resume_worker import ExtractionResumeWorker
+from reflexio.server.tracing import sentry_tags
 
 logger = logging.getLogger(__name__)
 
@@ -104,13 +105,16 @@ class ExtractionResumeScheduler:
                     resumed,
                 )
         except Exception as exc:
-            logger.exception(
-                "event=extraction_resume_scheduler_org_failed org_id=%s "
-                "error_type=%s error=%s",
-                org_id,
-                type(exc).__name__,
-                exc,
-            )
+            with sentry_tags(
+                subsystem="extraction",
+                op="scheduler_org_drain",
+                org_id=org_id,
+                error_type=type(exc).__name__,
+            ):
+                logger.exception(
+                    "event=extraction_resume_scheduler_org_failed org_id=%s",
+                    org_id,
+                )
 
     def _run_loop(self) -> None:
         while not self._stop_event.is_set():
@@ -127,12 +131,12 @@ class ExtractionResumeScheduler:
                         break
                     self._drain_org(org_id)
             except Exception as exc:
-                logger.exception(
-                    "event=extraction_resume_scheduler_tick_failed "
-                    "error_type=%s error=%s",
-                    type(exc).__name__,
-                    exc,
-                )
+                with sentry_tags(
+                    subsystem="extraction",
+                    op="scheduler_tick",
+                    error_type=type(exc).__name__,
+                ):
+                    logger.exception("event=extraction_resume_scheduler_tick_failed")
             self._stop_event.wait(poll_interval)
 
 
