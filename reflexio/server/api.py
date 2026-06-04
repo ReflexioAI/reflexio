@@ -465,6 +465,44 @@ class CorrelationIdMiddleware(BaseHTTPMiddleware):
 core_router = APIRouter()
 
 
+def _meter_applied_learnings(
+    *,
+    org_id: str,
+    caller_type: str,
+    surfaced_count: int,
+    request_id: str | None = None,
+    session_id: str | None = None,
+) -> None:
+    """Emit the ③ Application event via the OSS emission helper.
+
+    No-op unless a production-agent caller surfaced >= 1 result.  The cheap
+    caller-type and count guard runs first so the get_reflexio / config lookup
+    is skipped on the free paths (dashboard / empty result).
+
+    Args:
+        org_id: Organization ID for the requesting caller.
+        caller_type: Resolved caller classification (e.g. ``"production_agent"``).
+        surfaced_count: Total number of learnings returned to the caller.
+        request_id: Optional request correlation ID from the payload.
+        session_id: Optional session ID from the payload.
+    """
+    if caller_type != "production_agent" or surfaced_count <= 0:
+        return
+    from reflexio.server.billing_meter import record_applied_learnings
+    from reflexio.server.billing_signals import platform_llm_from_config
+
+    config = get_reflexio(org_id=org_id).request_context.configurator.get_config()
+    record_applied_learnings(
+        org_id=org_id,
+        surfaced_count=surfaced_count,
+        caller_type=caller_type,
+        platform_llm=platform_llm_from_config(config),
+        platform_storage=None,  # resolved enterprise-side at rollup (Phase 1)
+        request_id=request_id,
+        session_id=session_id,
+    )
+
+
 @core_router.get("/")
 def root() -> dict[str, str]:
     return {
@@ -656,17 +694,26 @@ def search_user_profiles(
     request: Request,
     payload: SearchUserProfileRequest,
     org_id: str = Depends(default_get_org_id),
+    caller_type: str = Depends(default_get_caller_type),
 ) -> SearchProfilesViewResponse:
     response = _run_limited_api(
         org_id,
         "search",
         lambda: get_reflexio(org_id=org_id).search_user_profiles(payload),
     )
-    return SearchProfilesViewResponse(
+    resp = SearchProfilesViewResponse(
         success=response.success,
         user_profiles=[to_profile_view(p) for p in response.user_profiles],
         msg=response.msg,
     )
+    _meter_applied_learnings(
+        org_id=org_id,
+        caller_type=caller_type,
+        surfaced_count=len(resp.user_profiles),
+        request_id=getattr(payload, "request_id", None),
+        session_id=getattr(payload, "session_id", None),
+    )
+    return resp
 
 
 @core_router.post(
@@ -766,6 +813,7 @@ def search_user_playbooks_endpoint(
     request: Request,
     payload: SearchUserPlaybookRequest,
     org_id: str = Depends(default_get_org_id),
+    caller_type: str = Depends(default_get_caller_type),
 ) -> SearchUserPlaybooksViewResponse:
     """Search user playbooks with semantic search and advanced filtering.
 
@@ -776,6 +824,7 @@ def search_user_playbooks_endpoint(
         request (Request): The HTTP request object (for rate limiting)
         payload (SearchUserPlaybookRequest): The search request
         org_id (str): Organization ID
+        caller_type (str): Billing caller classification (injected via dependency).
 
     Returns:
         SearchUserPlaybooksViewResponse: Response containing matching user playbooks
@@ -785,11 +834,19 @@ def search_user_playbooks_endpoint(
         "search",
         lambda: get_reflexio(org_id=org_id).search_user_playbooks(payload),
     )
-    return SearchUserPlaybooksViewResponse(
+    resp = SearchUserPlaybooksViewResponse(
         success=response.success,
         user_playbooks=[to_user_playbook_view(rf) for rf in response.user_playbooks],
         msg=response.msg,
     )
+    _meter_applied_learnings(
+        org_id=org_id,
+        caller_type=caller_type,
+        surfaced_count=len(resp.user_playbooks),
+        request_id=getattr(payload, "request_id", None),
+        session_id=getattr(payload, "session_id", None),
+    )
+    return resp
 
 
 @core_router.post(
@@ -802,6 +859,7 @@ def search_agent_playbooks_endpoint(
     request: Request,
     payload: SearchAgentPlaybookRequest,
     org_id: str = Depends(default_get_org_id),
+    caller_type: str = Depends(default_get_caller_type),
 ) -> SearchAgentPlaybooksViewResponse:
     """Search agent playbooks with semantic search and advanced filtering.
 
@@ -812,6 +870,7 @@ def search_agent_playbooks_endpoint(
         request (Request): The HTTP request object (for rate limiting)
         payload (SearchAgentPlaybookRequest): The search request
         org_id (str): Organization ID
+        caller_type (str): Billing caller classification (injected via dependency).
 
     Returns:
         SearchAgentPlaybooksViewResponse: Response containing matching agent playbooks
@@ -821,11 +880,19 @@ def search_agent_playbooks_endpoint(
         "search",
         lambda: get_reflexio(org_id=org_id).search_agent_playbooks(payload),
     )
-    return SearchAgentPlaybooksViewResponse(
+    resp = SearchAgentPlaybooksViewResponse(
         success=response.success,
         agent_playbooks=[to_agent_playbook_view(fb) for fb in response.agent_playbooks],
         msg=response.msg,
     )
+    _meter_applied_learnings(
+        org_id=org_id,
+        caller_type=caller_type,
+        surfaced_count=len(resp.agent_playbooks),
+        request_id=getattr(payload, "request_id", None),
+        session_id=getattr(payload, "session_id", None),
+    )
+    return resp
 
 
 @core_router.post(
@@ -838,6 +905,7 @@ def unified_search_endpoint(
     request: Request,
     payload: UnifiedSearchRequest,
     org_id: str = Depends(default_get_org_id),
+    caller_type: str = Depends(default_get_caller_type),
 ) -> UnifiedSearchViewResponse:
     """Search across all entity types (profiles, agent playbooks, user playbooks).
 
@@ -849,6 +917,7 @@ def unified_search_endpoint(
         request (Request): The HTTP request object (for rate limiting)
         payload (UnifiedSearchRequest): The unified search request
         org_id (str): Organization ID
+        caller_type (str): Billing caller classification (injected via dependency).
 
     Returns:
         UnifiedSearchViewResponse: Combined search results
@@ -858,7 +927,7 @@ def unified_search_endpoint(
         "search",
         lambda: get_reflexio(org_id=org_id).unified_search(payload, org_id=org_id),
     )
-    return UnifiedSearchViewResponse(
+    resp = UnifiedSearchViewResponse(
         success=response.success,
         profiles=[to_profile_view(p) for p in response.profiles],
         agent_playbooks=[to_agent_playbook_view(fb) for fb in response.agent_playbooks],
@@ -868,6 +937,16 @@ def unified_search_endpoint(
         agent_trace=response.agent_trace,
         rehydrated_text=response.rehydrated_text,
     )
+    _meter_applied_learnings(
+        org_id=org_id,
+        caller_type=caller_type,
+        surfaced_count=len(resp.profiles)
+        + len(resp.agent_playbooks)
+        + len(resp.user_playbooks),
+        request_id=getattr(payload, "request_id", None),
+        session_id=getattr(payload, "session_id", None),
+    )
+    return resp
 
 
 @core_router.get("/api/profile_change_log", response_model=ProfileChangeLogViewResponse)
@@ -1580,23 +1659,33 @@ def get_user_playbooks(
 def get_agent_playbooks(
     request: GetAgentPlaybooksRequest,
     org_id: str = Depends(default_get_org_id),
+    caller_type: str = Depends(default_get_caller_type),
 ) -> GetAgentPlaybooksViewResponse:
     """Get agent playbooks with internal fields filtered out.
 
     Args:
         request (GetAgentPlaybooksRequest): The get request
         org_id (str): Organization ID
+        caller_type (str): Billing caller classification (injected via dependency).
 
     Returns:
         GetAgentPlaybooksViewResponse: Response containing agent playbooks without internal fields
     """
     reflexio = get_reflexio(org_id=org_id)
     response = reflexio.get_agent_playbooks(request)
-    return GetAgentPlaybooksViewResponse(
+    resp = GetAgentPlaybooksViewResponse(
         success=response.success,
         agent_playbooks=[to_agent_playbook_view(fb) for fb in response.agent_playbooks],
         msg=response.msg,
     )
+    _meter_applied_learnings(
+        org_id=org_id,
+        caller_type=caller_type,
+        surfaced_count=len(resp.agent_playbooks),
+        request_id=getattr(request, "request_id", None),
+        session_id=getattr(request, "session_id", None),
+    )
+    return resp
 
 
 @core_router.post(
