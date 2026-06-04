@@ -12,6 +12,7 @@ import struct
 import tempfile
 import zlib
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import litellm
@@ -2124,3 +2125,45 @@ class TestConfigDefaults:
 
     def test_fallback_models_supports_empty_list_to_disable(self):
         assert LiteLLMConfig(model="x", fallback_models=[]).fallback_models == []
+
+
+class TestPerCallOverrides:
+    def test_per_call_max_retries_forwards_to_make_request(self, monkeypatch):
+        client = LiteLLMClient(LiteLLMConfig(model="x", max_retries=3))
+        seen_kwargs: dict[str, Any] = {}
+        monkeypatch.setattr(
+            client,
+            "_make_request",
+            lambda _messages, **kw: seen_kwargs.update(kw) or "ok",
+        )
+        client.generate_chat_response(
+            [{"role": "user", "content": "hi"}], max_retries=7
+        )
+        assert seen_kwargs.get("max_retries") == 7
+
+    def test_per_call_fallback_models_forwards_to_make_request(self, monkeypatch):
+        client = LiteLLMClient(LiteLLMConfig(model="x"))
+        seen_kwargs: dict[str, Any] = {}
+        monkeypatch.setattr(
+            client,
+            "_make_request",
+            lambda _messages, **kw: seen_kwargs.update(kw) or "ok",
+        )
+        client.generate_chat_response(
+            [{"role": "user", "content": "hi"}], fallback_models=["claude-x"]
+        )
+        assert seen_kwargs.get("fallback_models") == ["claude-x"]
+
+    def test_per_call_overrides_optional_default_to_config(self, monkeypatch):
+        # When caller doesn't pass, neither flows through -- _make_request reads
+        # the config defaults.
+        client = LiteLLMClient(LiteLLMConfig(model="x"))
+        seen_kwargs: dict[str, Any] = {}
+        monkeypatch.setattr(
+            client,
+            "_make_request",
+            lambda _messages, **kw: seen_kwargs.update(kw) or "ok",
+        )
+        client.generate_chat_response([{"role": "user", "content": "hi"}])
+        assert "max_retries" not in seen_kwargs
+        assert "fallback_models" not in seen_kwargs

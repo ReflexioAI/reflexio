@@ -490,6 +490,8 @@ class LiteLLMClient:
         tools: list[Any] | None = None,
         tool_choice: str | dict[str, Any] | None = None,
         model_role: ModelRole | None = None,
+        max_retries: int | None = None,
+        fallback_models: list[str] | None = None,
         **kwargs: Any,
     ) -> str | BaseModel | ToolCallingChatResponse:
         """
@@ -505,6 +507,12 @@ class LiteLLMClient:
             model_role: Optional ``ModelRole`` to override the model selected for
                 this request. The role is resolved via ``resolve_model_name`` using
                 the client's ``api_key_config``.
+            max_retries (int | None): Optional per-call override for the number of
+                retry attempts. When ``None`` (the default), the value falls back to
+                ``LiteLLMConfig.max_retries``.
+            fallback_models (list[str] | None): Optional per-call override for the
+                fallback model chain. When ``None`` (the default), the value falls
+                back to ``LiteLLMConfig.fallback_models``.
             **kwargs: Additional parameters including:
                 - response_format: Pydantic BaseModel class for structured output
                 - parse_structured_output: Whether to parse structured output (default True)
@@ -547,6 +555,10 @@ class LiteLLMClient:
             kwargs["tool_choice"] = tool_choice
         if model_role is not None:
             kwargs["model_role"] = model_role
+        if max_retries is not None:
+            kwargs["max_retries"] = max_retries
+        if fallback_models is not None:
+            kwargs["fallback_models"] = fallback_models
 
         return self._make_request(final_messages, **kwargs)
 
