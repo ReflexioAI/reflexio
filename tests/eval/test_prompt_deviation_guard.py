@@ -8,6 +8,8 @@ the registry/wiring is sanity-checked cheaply instead.
 
 from __future__ import annotations
 
+import pytest
+
 from tests.eval import prompt_deviation_guard as guard
 from tests.eval.consolidation.runner import CaseOutcome as ConsOutcome
 from tests.eval.consolidation.runner import EvalResults as ConsResults
@@ -192,3 +194,45 @@ def test_report_json_round_trips() -> None:
     assert blob["candidate_version"] == "v9.9.9"
     assert blob["passed"] is True
     assert isinstance(blob["metrics"], list)
+
+
+# ---------------------------------------------------------------------------
+# Input validation + exit-code semantics
+# ---------------------------------------------------------------------------
+
+
+def test_negative_tolerance_raises() -> None:
+    rows = [("a", "unify", "unify")]
+    with pytest.raises(ValueError, match="tolerance must be >= 0"):
+        guard.compare(
+            component="consolidation",
+            baseline=_cons(rows),
+            candidate=_cons(rows),
+            tolerance=-0.1,
+        )
+
+
+def test_main_rejects_negative_tolerance() -> None:
+    # argparse parser.error() exits with SystemExit before any eval runs.
+    with pytest.raises(SystemExit):
+        guard.main(
+            [
+                "--component",
+                "consolidation",
+                "--candidate-version",
+                "v2.3.0",
+                "--tolerance",
+                "-0.1",
+            ]
+        )
+
+
+def test_main_returns_2_on_eval_infra_error(monkeypatch) -> None:
+    # An eval/provider failure must surface as exit code 2, not 1 (regression).
+    def _boom(**_kwargs):
+        raise RuntimeError("provider down")
+
+    monkeypatch.setattr(guard, "_active_version", lambda _c: "v2.3.0")
+    monkeypatch.setattr(guard, "_run_component_eval", _boom)
+    rc = guard.main(["--component", "consolidation", "--candidate-version", "v2.3.0"])
+    assert rc == 2

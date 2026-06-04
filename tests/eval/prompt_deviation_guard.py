@@ -28,8 +28,9 @@ Usage (from the repository root)::
         --candidate-version v2.4.0 \\
         --judge-model claude-haiku-4-5
 
-Exits 0 when the candidate holds (PASS), 1 when it regresses (FAIL) — so an
-orchestrator can branch on the exit code.
+Exit codes: 0 when the candidate holds (PASS), 1 when it regresses (FAIL), and
+2 on an eval/infra error (provider or judge failed) — distinct from 1 so an
+orchestrator never misreads an outage as a prompt regression.
 """
 
 from __future__ import annotations
@@ -234,7 +235,13 @@ def compare(
 
     Returns:
         A :class:`GuardReport`; ``passed`` is False if any metric regressed.
+
+    Raises:
+        ValueError: If ``tolerance`` is negative (a negative tolerance would
+            invert the regression test and flag unchanged metrics).
     """
+    if tolerance < 0:
+        raise ValueError(f"tolerance must be >= 0, got {tolerance}")
     report = GuardReport(
         component=component,
         baseline_version=baseline_version,
@@ -354,7 +361,12 @@ def _active_version(component: Component) -> str | None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """CLI entry point. Returns the process exit code (0 PASS, 1 FAIL)."""
+    """CLI entry point. Returns the process exit code.
+
+    Exit codes: ``0`` PASS (candidate holds), ``1`` FAIL (a metric regressed),
+    ``2`` eval/infra error (provider or judge failed) — kept distinct from ``1``
+    so an orchestrator never misreads an outage as a prompt regression.
+    """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--component", required=True, choices=COMPONENTS)
     parser.add_argument(
@@ -381,21 +393,29 @@ def main(argv: list[str] | None = None) -> int:
         help="Optional path to dump the report JSON.",
     )
     args = parser.parse_args(argv)
+    if args.tolerance < 0:
+        parser.error("--tolerance must be >= 0")
     component: Component = args.component
 
     baseline_version = args.baseline_version or _active_version(component)
-    baseline = _run_component_eval(
-        component=component,
-        version=baseline_version,
-        model=args.model,
-        judge_model=args.judge_model,
-    )
-    candidate = _run_component_eval(
-        component=component,
-        version=args.candidate_version,
-        model=args.model,
-        judge_model=args.judge_model,
-    )
+    # Eval execution (LLM provider + judge) can fail for infra reasons —
+    # surface those as exit code 2, distinct from a regression FAIL (1).
+    try:
+        baseline = _run_component_eval(
+            component=component,
+            version=baseline_version,
+            model=args.model,
+            judge_model=args.judge_model,
+        )
+        candidate = _run_component_eval(
+            component=component,
+            version=args.candidate_version,
+            model=args.model,
+            judge_model=args.judge_model,
+        )
+    except Exception as exc:  # noqa: BLE001 — any eval failure is an infra error
+        print(f"[prompt-deviation-guard] eval execution failed: {exc}", file=sys.stderr)
+        return 2
     report = compare(
         component=component,
         baseline=baseline,
