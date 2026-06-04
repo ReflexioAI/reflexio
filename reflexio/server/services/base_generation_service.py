@@ -20,6 +20,7 @@ from reflexio.models.api_schema.internal_schema import RequestInteractionDataMod
 from reflexio.models.api_schema.service_schemas import Status
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient
+from reflexio.server.llm.token_accounting import RunTokenTotals
 from reflexio.server.services.extraction.outcome import ExtractionOutcome
 from reflexio.server.services.extractor_config_utils import (
     filter_extractor_configs,
@@ -209,6 +210,7 @@ class BaseGenerationService(
             "timed_out": 0,
         }
         self._last_extraction_run_ids: list[str] = []
+        self._last_token_totals: RunTokenTotals | None = None
 
     def _usage_pipeline(self) -> str | None:
         service_name = self._get_service_name()
@@ -834,6 +836,7 @@ class BaseGenerationService(
             if isinstance(result, ExtractionOutcome):
                 if result.run_id:
                     self._last_extraction_run_ids.append(result.run_id)
+                self._last_token_totals = result.token_totals
                 if result.status == "completed" and result.items:
                     return result.items
                 logger.info(

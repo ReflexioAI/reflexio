@@ -11,6 +11,7 @@ from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
 from reflexio.server.services.extraction.outcome import ExtractionOutcome
+from reflexio.server.llm.token_accounting import RunTokenTotals, sum_trace_tokens
 from reflexio.server.services.extraction.resumable_agent import (
     run_resumable_extraction_agent,
 )
@@ -79,6 +80,7 @@ class PlaybookExtractor:
         self.service_config: PlaybookGenerationServiceConfig = service_config
         self.agent_context: str = agent_context
         self._last_resumable_run_id: str | None = None
+        self._last_resumable_trace: RunTokenTotals | None = None
 
         # Get LLM config overrides from configuration
         config = self.request_context.configurator.get_config()
@@ -223,6 +225,7 @@ class PlaybookExtractor:
             return ExtractionOutcome.completed(
                 user_playbooks,
                 run_id=self._last_resumable_run_id,
+                token_totals=self._last_resumable_trace,
             )
         return user_playbooks
 
@@ -318,6 +321,7 @@ class PlaybookExtractor:
             log_label="Playbook extraction",
         )
         self._last_resumable_run_id = result.run_id
+        self._last_resumable_trace = sum_trace_tokens(result.trace)
         if not isinstance(result.output, StructuredPlaybookList):
             logger.warning(
                 "Playbook extraction did not finish: %s",
