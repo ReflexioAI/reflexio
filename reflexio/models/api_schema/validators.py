@@ -126,10 +126,15 @@ def _is_strict_mode() -> bool:
     )
 
 
+def _is_metadata_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """Return whether an IP address is a known cloud metadata endpoint."""
+    return str(ip) in METADATA_IPS
+
+
 def _is_forbidden_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     """Return whether an IP address is unsafe for server-side HTTP callbacks."""
     return (
-        str(ip) in METADATA_IPS
+        _is_metadata_ip(ip)
         or ip.is_private
         or ip.is_reserved
         or ip.is_loopback
@@ -173,7 +178,7 @@ def _check_safe_url(v: Any) -> Any:
 
     try:
         ip = ipaddress.ip_address(host)
-        if str(ip) in METADATA_IPS:
+        if _is_metadata_ip(ip):
             raise ValueError(f"URL must not target cloud metadata endpoint: {host}")
 
         # In strict mode, also block private/localhost
@@ -185,24 +190,39 @@ def _check_safe_url(v: Any) -> Any:
     except ValueError as e:
         if "must not target" in str(e) or "targets private" in str(e):
             raise
-        # Not an IP (hostname) — check localhost in strict mode
-        if _is_strict_mode() and host in ("localhost", "0.0.0.0"):  # noqa: S104
+        # Not an IP literal (hostname). Resolve and inspect each IP: cloud
+        # metadata endpoints are ALWAYS blocked (no legitimate use case),
+        # while private/reserved ranges are blocked only in strict mode.
+        strict = _is_strict_mode()
+        if strict and host in ("localhost", "0.0.0.0"):  # noqa: S104
             raise ValueError(
                 f"URL targets '{host}'. "
                 f"If running locally, unset REFLEXIO_BLOCK_PRIVATE_URLS."
             ) from None
-        if _is_strict_mode():
-            for resolved_ip in _resolved_host_ips(host, parsed.port):
-                try:
-                    ip = ipaddress.ip_address(resolved_ip)
-                except ValueError:
-                    continue
-                if _is_forbidden_ip(ip):
-                    raise ValueError(
-                        f"URL hostname '{host}' resolves to private/reserved IP "
-                        f"'{resolved_ip}'. If running locally, unset "
-                        f"REFLEXIO_BLOCK_PRIVATE_URLS."
-                    ) from None
+        try:
+            resolved_ips = _resolved_host_ips(host, parsed.port)
+        except ValueError:
+            # A resolution failure is only fatal in strict mode; otherwise we
+            # cannot confirm a metadata target and must not break local dev.
+            if strict:
+                raise
+            resolved_ips = set()
+        for resolved_ip in resolved_ips:
+            try:
+                ip = ipaddress.ip_address(resolved_ip)
+            except ValueError:
+                continue
+            if _is_metadata_ip(ip):
+                raise ValueError(
+                    f"URL hostname '{host}' resolves to cloud metadata "
+                    f"endpoint '{resolved_ip}'."
+                ) from None
+            if strict and _is_forbidden_ip(ip):
+                raise ValueError(
+                    f"URL hostname '{host}' resolves to private/reserved IP "
+                    f"'{resolved_ip}'. If running locally, unset "
+                    f"REFLEXIO_BLOCK_PRIVATE_URLS."
+                ) from None
 
     return v
 

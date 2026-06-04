@@ -195,6 +195,28 @@ class TestSSRFPrevention:
         )
         assert "openai.azure.com" in str(config.endpoint)
 
+    def test_blocks_hostname_resolving_to_metadata_by_default(
+        self, non_strict_mode, monkeypatch
+    ):
+        """A hostname that resolves to a metadata IP is blocked even when
+        REFLEXIO_BLOCK_PRIVATE_URLS is unset (DNS-rebinding defense)."""
+
+        def fake_getaddrinfo(host, port, *args, **kwargs):
+            return [(2, 1, 0, "", ("169.254.169.254", port or 80))]
+
+        monkeypatch.setattr(
+            "reflexio.models.api_schema.validators.socket.getaddrinfo",
+            fake_getaddrinfo,
+        )
+        with pytest.raises(ValidationError, match="cloud metadata"):
+            CustomEndpointConfig.model_validate(
+                {
+                    "model": "x",
+                    "api_key": "k",
+                    "api_base": "http://rebind.example.test/v1",
+                }
+            )
+
 
 # =============================================================================
 # Image URL SSRF Tests

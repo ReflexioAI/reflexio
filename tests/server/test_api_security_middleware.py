@@ -1,6 +1,9 @@
+import asyncio
+
+from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
-from reflexio.server.api import create_app
+from reflexio.server.api import BodySizeLimitMiddleware, create_app
 
 
 def test_cors_uses_frontend_url_allowlist(monkeypatch):
@@ -83,6 +86,55 @@ def test_body_size_limit_rejects_large_declared_body(monkeypatch):
 
     assert response.status_code == 413
     assert response.json() == {"detail": "Request body too large"}
+
+
+def test_body_size_limit_rejects_streamed_body_without_content_length(monkeypatch):
+    monkeypatch.setenv("REFLEXIO_MAX_BODY_BYTES", "4")
+
+    app = FastAPI()
+    app.add_middleware(BodySizeLimitMiddleware)
+
+    @app.post("/consume")
+    async def consume_body(request: Request):
+        return {"size": len(await request.body())}
+
+    messages = [
+        {"type": "http.request", "body": b"12", "more_body": True},
+        {"type": "http.request", "body": b"345", "more_body": False},
+    ]
+    sent = []
+
+    async def receive():
+        if messages:
+            return messages.pop(0)
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        sent.append(message)
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/consume",
+        "raw_path": b"/consume",
+        "query_string": b"",
+        "root_path": "",
+        "headers": [(b"host", b"testserver"), (b"user-agent", b"testclient")],
+        "client": ("testclient", 50000),
+        "server": ("testserver", 80),
+    }
+
+    asyncio.run(app(scope, receive, send))
+
+    response_start = next(m for m in sent if m["type"] == "http.response.start")
+    response_body = b"".join(
+        m.get("body", b"") for m in sent if m["type"] == "http.response.body"
+    )
+    assert response_start["status"] == 413
+    assert response_body == b'{"detail":"Request body too large"}'
 
 
 def test_security_headers_are_added(monkeypatch):

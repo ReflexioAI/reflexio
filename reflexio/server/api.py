@@ -22,6 +22,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.responses import Response
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from reflexio.models.api_schema.braintrust_schema import (
     BraintrustStatusResponse,
@@ -358,27 +359,60 @@ class TimeoutMiddleware(BaseHTTPMiddleware):
             )
 
 
-class BodySizeLimitMiddleware(BaseHTTPMiddleware):
-    """Reject requests whose declared body size exceeds the configured limit."""
+class _RequestBodyTooLargeError(Exception):
+    """Raised when the streamed request body exceeds the configured limit."""
 
-    async def dispatch(
-        self, request: Request, call_next: RequestResponseEndpoint
-    ) -> Response:
+
+class BodySizeLimitMiddleware:
+    """Reject requests whose declared or streamed body size exceeds the limit."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         from starlette.responses import JSONResponse
 
-        content_length = request.headers.get("content-length")
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        max_body_bytes = _max_body_bytes_from_env()
+        content_length = None
+        for name, value in scope.get("headers", []):
+            if name.lower() == b"content-length":
+                content_length = value.decode("latin-1")
+                break
+
         if content_length is not None:
             try:
                 body_bytes = int(content_length)
             except ValueError:
                 body_bytes = 0
-            if body_bytes > _max_body_bytes_from_env():
-                return JSONResponse(
+            if body_bytes > max_body_bytes:
+                await JSONResponse(
                     status_code=status.HTTP_413_CONTENT_TOO_LARGE,
                     content={"detail": "Request body too large"},
-                )
+                )(scope, receive, send)
+                return
 
-        return await call_next(request)
+        consumed_bytes = 0
+
+        async def limited_receive() -> Message:
+            nonlocal consumed_bytes
+            message = await receive()
+            if message["type"] == "http.request":
+                consumed_bytes += len(message.get("body", b""))
+                if consumed_bytes > max_body_bytes:
+                    raise _RequestBodyTooLargeError
+            return message
+
+        try:
+            await self.app(scope, limited_receive, send)
+        except _RequestBodyTooLargeError:
+            await JSONResponse(
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                content={"detail": "Request body too large"},
+            )(scope, receive, send)
 
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
@@ -388,18 +422,15 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         self, request: Request, call_next: RequestResponseEndpoint
     ) -> Response:
         response = await call_next(request)
-        response.headers.setdefault("X-Content-Type-Options", "nosniff")
-        response.headers.setdefault("X-Frame-Options", "DENY")
-        response.headers.setdefault(
-            "Referrer-Policy", "strict-origin-when-cross-origin"
-        )
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         if (
             request.url.scheme == "https"
             or request.headers.get("x-forwarded-proto", "").lower() == "https"
         ):
-            response.headers.setdefault(
-                "Strict-Transport-Security",
-                "max-age=31536000; includeSubDomains",
+            response.headers["Strict-Transport-Security"] = (
+                "max-age=31536000; includeSubDomains"
             )
         return response
 
