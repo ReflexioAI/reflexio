@@ -98,7 +98,7 @@ paths:
 ### Derive Paths with Semantic Names
 ```python
 _THIS_DIR = Path(__file__).resolve().parent
-_PROJECT_ROOT = _THIS_DIR.parent.parent  # reflexio_ext/scripts/ -> repo root
+_PROJECT_ROOT = _THIS_DIR.parent.parent  # src/scripts/ -> repo root
 DATA_DIR = _PROJECT_ROOT / "data"
 CONFIG_PATH = _PROJECT_ROOT / "configs" / "default.yaml"
 ```

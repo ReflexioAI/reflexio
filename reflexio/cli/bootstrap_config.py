@@ -1,7 +1,6 @@
 """CLI bootstrap config: resolve and persist storage settings without a running server.
 
 Provides the priority chain: CLI flag > env var (.env) > config file > default.
-See docs_for_coding_agent/cli-config-state-management.md for the full design.
 """
 
 from __future__ import annotations

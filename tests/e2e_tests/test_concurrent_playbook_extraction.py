@@ -1,4 +1,4 @@
-"""Concurrent playbook extraction (reflexio-enterprise#59 / R2 — fixed).
+"""Concurrent playbook extraction (R2 — fixed).
 
 Three publishes for distinct user_ids land within ~2s of each other on the
 shared per-org ``playbook_generation`` lock. Pre-fix:

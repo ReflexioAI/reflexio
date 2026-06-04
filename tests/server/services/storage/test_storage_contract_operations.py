@@ -75,7 +75,7 @@ class TestOperationStateCRUD:
 
 
 # ---------------------------------------------------------------------------
-# TestPendingRequestQueue — R2 / reflexio-enterprise#59
+# TestPendingRequestQueue — R2
 # ---------------------------------------------------------------------------
 
 

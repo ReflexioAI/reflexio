@@ -492,7 +492,7 @@ class BaseGenerationService(
         reproduce the original publish (user_id, request_id, agent_version,
         source, force_extraction, etc.). Without this, the rerun runs with the
         wrong holder's request and the queued user's interactions are silently
-        skipped (R2 / reflexio-enterprise#59).
+        skipped (R2).
 
         Returns ``None`` to opt out — the queue then stores only the
         request_id and the rerun falls back to the original holder's request,
@@ -580,7 +580,7 @@ class BaseGenerationService(
 
         # Try to acquire lock — pass the serialized payload so blocked
         # publishes land in the queue with their own data attached. This is
-        # the fix for R2 / reflexio-enterprise#59: without the payload, the
+        # the fix for R2: without the payload, the
         # rerun re-uses the holder's request and the queued users' batches
         # never get extracted.
         my_payload = self._serialize_request_for_queue(request)

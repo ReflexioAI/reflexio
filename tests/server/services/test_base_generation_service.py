@@ -1398,7 +1398,7 @@ class TestInProgressLockMechanism:
 
 class TestPayloadAwareDrain:
     """Drain loop must rerun against the QUEUED request's payload, not the
-    original holder's. This is the R2 fix (reflexio-enterprise#59).
+    original holder's. This is the R2 fix.
     """
 
     def test_drain_uses_queued_payload_not_original(self, llm_client, request_context):

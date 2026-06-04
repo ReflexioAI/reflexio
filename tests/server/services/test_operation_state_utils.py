@@ -561,7 +561,7 @@ class TestClearLock:
 
 
 # ===============================
-# Use Case 2b: Pending-Request Queue (R2 / reflexio-enterprise#59)
+# Use Case 2b: Pending-Request Queue (R2)
 # ===============================
 #
 # Replaces the single-slot pending_request_id mechanism. When N>1 publishes

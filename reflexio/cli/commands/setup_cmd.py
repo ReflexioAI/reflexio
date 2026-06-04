@@ -885,9 +885,8 @@ def openai_codex_setup(
     reads from this file directly — no dependency on OpenClaw or any other
     CLI. The proxy auto-refreshes the access token when it nears expiry.
 
-    Run this once, then start the codex proxy with::
-
-        ./reflexio_ext/scripts/start_with_codex_proxy.sh
+    Run this once; the codex proxy (``codex_proxy.py``) then picks up the
+    stored tokens automatically on start.
 
     Re-run this command if your subscription tier changes or the
     refresh_token gets revoked (rare).

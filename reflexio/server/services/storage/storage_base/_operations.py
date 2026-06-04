@@ -160,7 +160,7 @@ class OperationMixin:
             payload (dict | None): Optional serialized request payload preserved
                 for the rerun loop. Required so the rerun runs against the SAME
                 interactions the blocked publish enqueued, not whatever the
-                bookmark currently points at (R2 / reflexio-enterprise#59).
+                bookmark currently points at (R2).
 
         Returns:
             dict: Result with keys:

@@ -403,7 +403,7 @@ class OperationStateManager:
                 request when the lock is held by someone else. Required for the
                 rerun loop to operate on the SAME interactions the original
                 publish enqueued, not whatever the bookmark currently points at
-                (R2 / reflexio-enterprise#59).
+                (R2).
 
         Returns:
             bool: True if lock acquired (proceed with generation), False if skipped
@@ -545,7 +545,7 @@ class OperationStateManager:
         FIFO drain — preserves order so blocked publishes are processed in the
         order they arrived. Replaces the older single-slot ``pending_request_id``
         last-wins behaviour that silently dropped earlier blocked publishes
-        (R2 / reflexio-enterprise#59).
+        (R2).
 
         On a legacy state row (written by a pre-fix server before redeploy)
         the queue is missing but ``pending_request_id`` may be set; we surface
