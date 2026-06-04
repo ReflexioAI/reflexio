@@ -657,7 +657,11 @@ class LiteLLMClient:
             if api_version:
                 params["api_version"] = api_version
 
-            response = litellm.embedding(**params, timeout=self.config.timeout)
+            response = litellm.embedding(
+                **params,
+                timeout=self.config.timeout,
+                num_retries=self.config.max_retries,
+            )
             return response.data[0]["embedding"]
         except Exception as e:
             raise LiteLLMClientError(f"Embedding generation failed: {str(e)}") from e
@@ -741,7 +745,11 @@ class LiteLLMClient:
             if api_version:
                 params["api_version"] = api_version
 
-            response = litellm.embedding(**params, timeout=self.config.timeout)
+            response = litellm.embedding(
+                **params,
+                timeout=self.config.timeout,
+                num_retries=self.config.max_retries,
+            )
             # Response data may not be in order, sort by index to ensure correct ordering
             sorted_data = sorted(response.data, key=lambda x: x["index"])
             return [item["embedding"] for item in sorted_data]

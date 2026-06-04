@@ -2229,3 +2229,94 @@ class TestFallbackObservability:
         client.generate_chat_response([{"role": "user", "content": "hi"}])
 
         assert "llm.fallback_used" not in tags
+
+
+class TestEmbeddingRetries:
+    """Embedding calls get num_retries parity with chat. Cross-model
+    fallback is intentionally NOT added — embedding vector spaces are
+    model-specific; switching mid-call would silently corrupt the index."""
+
+    @staticmethod
+    def _force_litellm_route(monkeypatch):
+        """Neutralize the embedding-service router so the call reaches
+        litellm.embedding. The CI/local env may have
+        CLAUDE_SMART_USE_LOCAL_EMBEDDING=1 or REFLEXIO_EMBEDDING_SERVICE_URL
+        set, both of which divert to the HTTP service path.
+        """
+        monkeypatch.delenv("REFLEXIO_EMBEDDING_PROVIDER", raising=False)
+        monkeypatch.delenv("REFLEXIO_EMBEDDING_SERVICE_URL", raising=False)
+        monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_EMBEDDING", raising=False)
+
+    def test_get_embedding_passes_num_retries(self, monkeypatch):
+        from types import SimpleNamespace
+
+        self._force_litellm_route(monkeypatch)
+        client = LiteLLMClient(LiteLLMConfig(model="x", max_retries=3))
+        captured: dict[str, Any] = {}
+
+        def _fake(**params):
+            captured.update(params)
+            return SimpleNamespace(data=[{"embedding": [0.1] * 1536, "index": 0}])
+
+        monkeypatch.setattr("litellm.embedding", _fake)
+        monkeypatch.setattr(
+            client,
+            "_resolve_default_embedding_model",
+            lambda: "text-embedding-3-small",
+        )
+        client.get_embedding("hello")
+        assert captured.get("num_retries") == 3
+
+    def test_get_embeddings_batch_passes_num_retries(self, monkeypatch):
+        from types import SimpleNamespace
+
+        self._force_litellm_route(monkeypatch)
+        client = LiteLLMClient(LiteLLMConfig(model="x", max_retries=3))
+        captured: dict[str, Any] = {}
+
+        def _fake(**params):
+            captured.update(params)
+            return SimpleNamespace(
+                data=[
+                    {"embedding": [0.1] * 1536, "index": 0},
+                    {"embedding": [0.2] * 1536, "index": 1},
+                ]
+            )
+
+        monkeypatch.setattr("litellm.embedding", _fake)
+        monkeypatch.setattr(
+            client,
+            "_resolve_default_embedding_model",
+            lambda: "text-embedding-3-small",
+        )
+        client.get_embeddings(["a", "b"])
+        assert captured.get("num_retries") == 3
+
+    def test_embedding_never_receives_fallbacks_kwarg(self, monkeypatch):
+        """Even with fallback_models set on the config, embedding calls
+        MUST NOT receive a fallbacks kwarg — vector spaces are model-
+        specific and silent cross-model fallback would corrupt the index."""
+        from types import SimpleNamespace
+
+        self._force_litellm_route(monkeypatch)
+        client = LiteLLMClient(
+            LiteLLMConfig(
+                model="x",
+                max_retries=3,
+                fallback_models=["gpt-5-mini"],
+            )
+        )
+        captured: dict[str, Any] = {}
+
+        def _fake(**params):
+            captured.update(params)
+            return SimpleNamespace(data=[{"embedding": [0.1] * 1536, "index": 0}])
+
+        monkeypatch.setattr("litellm.embedding", _fake)
+        monkeypatch.setattr(
+            client,
+            "_resolve_default_embedding_model",
+            lambda: "text-embedding-3-small",
+        )
+        client.get_embedding("hi")
+        assert "fallbacks" not in captured
