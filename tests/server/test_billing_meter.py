@@ -32,7 +32,18 @@ def test_record_extraction_tokens_still_captures_on_byo_llm():
             org_id="org1", billing_input_tokens=850, prompt_tokens=900,
             completion_tokens=100, platform_llm=False, platform_storage=None,
         )
+    hook.assert_called_once()
     assert hook.call_args.kwargs["platform_llm"] is False
+
+
+def test_record_extraction_tokens_noop_on_negative():
+    # Negative billing_input_tokens (e.g. from a corrupt trace) must not emit an event.
+    with patch(HOOK) as hook:
+        record_extraction_tokens(
+            org_id="org1", billing_input_tokens=-1, prompt_tokens=0,
+            completion_tokens=0, platform_llm=True, platform_storage=None,
+        )
+    hook.assert_not_called()
 
 
 def test_record_extraction_tokens_noop_when_zero_input():
