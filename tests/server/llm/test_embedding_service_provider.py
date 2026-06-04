@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import httpx
 import pytest
 
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
@@ -159,3 +160,88 @@ def test_service_response_rejects_index_mismatch(monkeypatch) -> None:
 
     with pytest.raises(EmbeddingUnavailableError, match="duplicate index 1"):
         get_service_embeddings(["a", "b"], model="local/nomic-embed-v1.5")
+
+
+class TestEmbeddingServiceExceptionScope:
+    """Narrow exception scope: real transient errors retry, programming bugs propagate raw.
+
+    The retry loop in ``get_service_embeddings`` previously caught bare
+    ``Exception``, meaning a programming bug (``AttributeError``,
+    ``TypeError``) would be retried once and then wrapped as
+    ``EmbeddingUnavailableError`` — hiding the real defect. These tests pin
+    the narrowed scope: only ``httpx.HTTPError``, ``json.JSONDecodeError``,
+    and ``ValueError`` (the shape-error signal from
+    ``_ordered_embeddings_from_response``) are caught.
+    """
+
+    @staticmethod
+    def _route_to_local_service(monkeypatch) -> None:
+        """Configure env so ``get_service_embeddings`` reaches the retry loop.
+
+        ``REFLEXIO_EMBEDDING_PROVIDER=local_service`` is one of the
+        ``_SERVICE_MODES`` that passes the routing guards.
+        """
+        monkeypatch.setenv("REFLEXIO_EMBEDDING_PROVIDER", "local_service")
+        monkeypatch.delenv("REFLEXIO_EMBEDDING_SERVICE_URL", raising=False)
+
+    def test_programming_bug_propagates_raw_without_retry(self, monkeypatch) -> None:
+        """An ``AttributeError`` inside the call body must propagate raw on
+        the first attempt — not be caught, retried, and re-wrapped as
+        ``EmbeddingUnavailableError``.
+        """
+        self._route_to_local_service(monkeypatch)
+        call_count = {"n": 0}
+
+        class _BrokenClient:
+            def __init__(self, timeout: float) -> None:
+                self.timeout = timeout
+
+            def __enter__(self) -> _BrokenClient:
+                return self
+
+            def __exit__(self, *_args) -> None:
+                return None
+
+            def post(self, *_a, **_k):
+                call_count["n"] += 1
+                raise AttributeError("simulated programming bug")
+
+        monkeypatch.setattr(
+            "reflexio.server.llm.providers.embedding_service_provider.httpx.Client",
+            _BrokenClient,
+        )
+
+        with pytest.raises(AttributeError, match="simulated programming bug"):
+            get_service_embeddings(["text"], model="local/nomic-embed-v1.5")
+        assert call_count["n"] == 1, "programming bug must NOT be retried"
+
+    def test_httpx_request_error_still_retries(self, monkeypatch) -> None:
+        """Network errors continue to retry once then surface as
+        ``EmbeddingUnavailableError`` — existing transient-error behavior
+        is preserved by the narrowed clause.
+        """
+        self._route_to_local_service(monkeypatch)
+        call_count = {"n": 0}
+
+        class _FlakyClient:
+            def __init__(self, timeout: float) -> None:
+                self.timeout = timeout
+
+            def __enter__(self) -> _FlakyClient:
+                return self
+
+            def __exit__(self, *_args) -> None:
+                return None
+
+            def post(self, *_a, **_k):
+                call_count["n"] += 1
+                raise httpx.RequestError("connection refused")
+
+        monkeypatch.setattr(
+            "reflexio.server.llm.providers.embedding_service_provider.httpx.Client",
+            _FlakyClient,
+        )
+
+        with pytest.raises(EmbeddingUnavailableError):
+            get_service_embeddings(["text"], model="local/nomic-embed-v1.5")
+        assert call_count["n"] == 2, "transient HTTP error must retry once"

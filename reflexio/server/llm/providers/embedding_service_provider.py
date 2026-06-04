@@ -8,6 +8,7 @@ also supporting a horizontally-scaled internal service in cloud deployments.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import time
@@ -199,7 +200,15 @@ def get_service_embeddings(
             response.raise_for_status()
             body = response.json()
             return _ordered_embeddings_from_response(body.get("data"), len(texts))
-        except Exception as exc:  # noqa: BLE001 - normalized to typed degradation signal
+        except (httpx.HTTPError, json.JSONDecodeError, ValueError) as exc:
+            # Real transient + remote-data-shape classes only: httpx.HTTPError
+            # covers RequestError (network) + HTTPStatusError (4xx/5xx, raised
+            # by raise_for_status); JSONDecodeError covers response.json()
+            # parse failures; ValueError is the typed signal raised by
+            # _ordered_embeddings_from_response for malformed service payloads.
+            # Anything outside this set (AttributeError, TypeError, etc.) is a
+            # programming bug and propagates raw — retrying won't help and
+            # wrapping it as EmbeddingUnavailableError hides the real defect.
             last_error = exc
             if attempt == 0:
                 time.sleep(0.1)
