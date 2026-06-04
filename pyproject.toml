@@ -49,10 +49,13 @@ dependencies = [
     # so the CrossEncoder/SentenceTransformer surface is guaranteed.
     "sentence-transformers>=3.0",
     "einops>=0.8.0",
+    # Native KNN search via the sqlite-vec loadable extension. A pure-Python
+    # fallback exists (see sqlite_storage/_base.py) for the rare platform whose
+    # SQLite build can't load extensions, but ship the fast path by default.
+    "sqlite-vec>=0.1.6",
 ]
 
 [project.optional-dependencies]
-vec = ["sqlite-vec>=0.1.6"]
 notebooks = ["pandas>=3.0.2"]
 benchmark = [
     "datasets>=4.8.4",

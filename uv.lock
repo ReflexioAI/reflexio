@@ -5063,6 +5063,7 @@ dependencies = [
     { name = "rich" },
     { name = "sentence-transformers" },
     { name = "slowapi" },
+    { name = "sqlite-vec" },
     { name = "tenacity" },
     { name = "tiktoken" },
     { name = "typer" },
@@ -5085,9 +5086,6 @@ benchmark = [
 ]
 notebooks = [
     { name = "pandas" },
-]
-vec = [
-    { name = "sqlite-vec" },
 ]
 
 [package.dev-dependencies]
@@ -5162,7 +5160,7 @@ requires-dist = [
     { name = "rich", specifier = ">=13.0.0" },
     { name = "sentence-transformers", specifier = ">=3.0" },
     { name = "slowapi", specifier = ">=0.1.9" },
-    { name = "sqlite-vec", marker = "extra == 'vec'", specifier = ">=0.1.6" },
+    { name = "sqlite-vec", specifier = ">=0.1.6" },
     { name = "tenacity", specifier = ">=9.0.0" },
     { name = "tiktoken", specifier = ">=0.12.0" },
     { name = "typer", specifier = ">=0.15.0" },
@@ -5170,7 +5168,7 @@ requires-dist = [
     { name = "websocket-client", specifier = ">=1.8.0" },
     { name = "xlsxwriter", specifier = ">=3.2.2" },
 ]
-provides-extras = ["vec", "notebooks", "benchmark"]
+provides-extras = ["notebooks", "benchmark"]
 
 [package.metadata.requires-dev]
 dev = [
