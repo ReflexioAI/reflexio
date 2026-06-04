@@ -34,6 +34,12 @@ class UsageEvent:
     backend: str | None = None
     outcome: str | None = None
     count_value: int = 1
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    billing_input_tokens: int | None = None
+    platform_llm: bool | None = None
+    platform_storage: bool | None = None
+    caller_type: str | None = None
     duration_ms: int | None = None
     error_kind: str | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
@@ -73,6 +79,12 @@ def record_usage_event(
     backend: str | None = None,
     outcome: str | None = None,
     count_value: int = 1,
+    prompt_tokens: int | None = None,
+    completion_tokens: int | None = None,
+    billing_input_tokens: int | None = None,
+    platform_llm: bool | None = None,
+    platform_storage: bool | None = None,
+    caller_type: str | None = None,
     duration_ms: int | None = None,
     error_kind: str | None = None,
     metadata: Mapping[str, Any] | None = None,
@@ -104,6 +116,12 @@ def record_usage_event(
                 backend=backend,
                 outcome=outcome,
                 count_value=count_value,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                billing_input_tokens=billing_input_tokens,
+                platform_llm=platform_llm,
+                platform_storage=platform_storage,
+                caller_type=caller_type,
                 duration_ms=duration_ms,
                 error_kind=error_kind,
                 metadata=metadata or {},
