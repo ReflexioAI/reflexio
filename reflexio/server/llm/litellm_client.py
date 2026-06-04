@@ -11,7 +11,7 @@ import logging
 import os
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any
 
@@ -207,24 +207,40 @@ class LiteLLMConfig:
     Configuration for LiteLLM client.
 
     Args:
-        model: Model name to use (e.g., 'gpt-4o', 'claude-3-5-sonnet-20241022', 'azure/gpt-4')
-        temperature: Temperature for response generation (0.0 to 2.0)
-        max_tokens: Maximum tokens to generate
-        timeout: Request timeout in seconds
-        max_retries: Maximum number of retry attempts
-        retry_delay: Initial delay between retries in seconds (exponential backoff)
-        top_p: Top-p sampling parameter
-        api_key_config: Optional API key configuration from Config (overrides env vars)
+        model: Model name to use (e.g., 'gpt-4o', 'claude-3-5-sonnet-20241022').
+        temperature: Temperature for response generation (0.0 to 2.0).
+        max_tokens: Maximum tokens to generate.
+        timeout: Request timeout in seconds.
+        max_retries: Maximum retry attempts on the primary model. Passed
+            directly to litellm's num_retries. Default 3.
+        retry_delay: Currently unused — LiteLLM owns retry backoff. Kept for
+            backward compatibility; remove in a follow-up sweep.
+        top_p: Top-p sampling parameter.
+        api_key_config: Optional API key configuration from Config (overrides env vars).
+        fallback_models: Models LiteLLM tries in order after the primary
+            exhausts num_retries. Passed directly to litellm's fallbacks param.
+            Default is an empty list (no fallback) so local reflexio and the
+            claude-smart integration are never silently routed to an unintended
+            provider. Production opts in via the env var
+            REFLEXIO_LLM_FALLBACK_MODELS (comma-separated, e.g. "gpt-5-mini").
+            Self-references are deduped at request time.
     """
 
     model: str
     temperature: float = 0.7
     max_tokens: int | None = None
     timeout: int = 120
-    max_retries: int = 1
+    max_retries: int = 3
     retry_delay: float = 1.0
     top_p: float = 1.0
     api_key_config: APIKeyConfig | None = None
+    fallback_models: list[str] = field(
+        default_factory=lambda: [
+            m.strip()
+            for m in os.environ.get("REFLEXIO_LLM_FALLBACK_MODELS", "").split(",")
+            if m.strip()
+        ]
+    )
 
 
 @dataclass

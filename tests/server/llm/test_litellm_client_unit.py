@@ -2096,3 +2096,31 @@ class TestBuildCompletionParamsEdgeCases:
         )
         assert params["model"] == "claude-3-5-sonnet"
         assert params["api_key"] == "ant-key"
+
+
+class TestConfigDefaults:
+    def test_max_retries_default_is_three(self):
+        assert LiteLLMConfig(model="x").max_retries == 3
+
+    def test_fallback_models_default_is_empty_without_env_var(self, monkeypatch):
+        """Default is OFF so local reflexio + claude-smart never silently
+        route to an unintended provider."""
+        monkeypatch.delenv("REFLEXIO_LLM_FALLBACK_MODELS", raising=False)
+        assert LiteLLMConfig(model="x").fallback_models == []
+
+    def test_fallback_models_reads_env_var_when_set(self, monkeypatch):
+        """Production opt-in: REFLEXIO_LLM_FALLBACK_MODELS=gpt-5-mini in
+        the deploy env enables the fallback for every chat call site."""
+        monkeypatch.setenv("REFLEXIO_LLM_FALLBACK_MODELS", "gpt-5-mini")
+        assert LiteLLMConfig(model="x").fallback_models == ["gpt-5-mini"]
+
+    def test_fallback_models_env_var_is_comma_separated(self, monkeypatch):
+        monkeypatch.setenv("REFLEXIO_LLM_FALLBACK_MODELS", "gpt-5-mini, gpt-5-nano")
+        assert LiteLLMConfig(model="x").fallback_models == ["gpt-5-mini", "gpt-5-nano"]
+
+    def test_fallback_models_can_be_overridden_at_construction(self):
+        cfg = LiteLLMConfig(model="x", fallback_models=["gpt-5-mini", "gpt-5-nano"])
+        assert cfg.fallback_models == ["gpt-5-mini", "gpt-5-nano"]
+
+    def test_fallback_models_supports_empty_list_to_disable(self):
+        assert LiteLLMConfig(model="x", fallback_models=[]).fallback_models == []
