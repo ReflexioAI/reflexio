@@ -165,21 +165,48 @@ def test_unify_archive_existing_ids_accepts_position_labels(raw_value, expected)
     assert unify.archive_existing_ids == expected
 
 
-def test_reject_new_superseded_id_accepts_position_label():
-    """``RejectNewDecision.superseded_by_existing_id`` tolerates ``EXISTING-N``."""
-    r = RejectNewDecision(new_id="NEW-0", superseded_by_existing_id="EXISTING-4")  # type: ignore[arg-type]
-    assert r.superseded_by_existing_id == 4
+def test_reject_new_superseded_id_rejects_position_label():
+    """``RejectNewDecision.superseded_by_existing_id`` is a DB ``user_playbook_id``,
+    not a list position — ``"EXISTING-N"`` must fail loudly.
+
+    The design contract (``_consolidation_decisions`` docstring) resolves this
+    field via ``existing_by_id`` (DB id), not ``existing_by_position``.
+    Coercing ``"EXISTING-N"`` to ``N`` here would silently misroute decisions
+    when the position int doesn't map to a real DB id.
+    """
+    with pytest.raises(ValidationError):
+        RejectNewDecision(new_id="NEW-0", superseded_by_existing_id="EXISTING-4")  # type: ignore[arg-type]
 
 
-def test_differentiate_existing_id_accepts_position_label():
-    """``DifferentiateDecision.existing_id`` tolerates ``EXISTING-N``."""
+def test_differentiate_existing_id_rejects_position_label():
+    """``DifferentiateDecision.existing_id`` is a DB ``user_playbook_id``,
+    not a list position — ``"EXISTING-N"`` must fail loudly. Same reasoning
+    as ``test_reject_new_superseded_id_rejects_position_label``.
+    """
+    with pytest.raises(ValidationError):
+        DifferentiateDecision(
+            new_id="NEW-0",
+            existing_id="EXISTING-9",  # type: ignore[arg-type]
+            refined_new_trigger="narrow new",
+            refined_existing_trigger="narrow existing",
+        )
+
+
+def test_reject_new_superseded_id_accepts_bare_int():
+    """Sanity check: bare ints (DB ``user_playbook_id`` values) still pass."""
+    r = RejectNewDecision(new_id="NEW-0", superseded_by_existing_id=12345)
+    assert r.superseded_by_existing_id == 12345
+
+
+def test_differentiate_existing_id_accepts_bare_int():
+    """Sanity check: bare ints (DB ``user_playbook_id`` values) still pass."""
     d = DifferentiateDecision(
         new_id="NEW-0",
-        existing_id="EXISTING-9",  # type: ignore[arg-type]
+        existing_id=12345,
         refined_new_trigger="narrow new",
         refined_existing_trigger="narrow existing",
     )
-    assert d.existing_id == 9
+    assert d.existing_id == 12345
 
 
 def test_existing_position_rejects_garbage():
@@ -192,3 +219,62 @@ def test_existing_position_rejects_garbage():
             trigger="t",
             rationale="r",
         )
+
+
+@pytest.mark.parametrize("bad", [-1, "-1", "EXISTING--1", "existing_-2"])
+def test_existing_position_rejects_negative(bad):
+    """List positions are always ``>= 0`` — negatives are rejected.
+
+    A negative position (or any post-strip negative parse like ``EXISTING--1``)
+    can only fail later in apply. Fail fast here so the validator behaves as
+    a sharp domain check, not a passthrough that defers the error.
+    """
+    with pytest.raises(ValidationError):
+        UnifyDecision(
+            new_id="NEW-0",
+            archive_existing_ids=[bad],  # type: ignore[list-item]
+            content="c",
+            trigger="t",
+            rationale="r",
+        )
+
+
+def test_unify_coerced_position_resolves_via_existing_by_position():
+    """Apply-path regression: a coerced ``"EXISTING-N"`` resolves to the
+    expected row through ``existing_by_position`` (the lookup
+    ``_apply_unify`` actually uses).
+
+    The unit tests above prove decode-time coercion (``"EXISTING-3"`` → ``3``).
+    This test closes the loop: index 3 in the position-keyed lookup must
+    point at the third existing playbook, so the coercion is end-to-end
+    correct for the one field where it's wired.
+    """
+    from reflexio.models.api_schema.domain.entities import UserPlaybook
+
+    existing = [
+        UserPlaybook(
+            content=f"existing-{i}",
+            trigger="t",
+            user_playbook_id=1000 + i,
+            agent_version="v0",
+            request_id="r0",
+        )
+        for i in range(5)
+    ]
+    # This is the same construction _build_deduplicated_results uses.
+    existing_by_position = {f"EXISTING-{idx}": pb for idx, pb in enumerate(existing)}
+
+    unify = UnifyDecision(
+        new_id="NEW-0",
+        archive_existing_ids=["EXISTING-3"],  # type: ignore[list-item]
+        content="c",
+        trigger="t",
+        rationale="r",
+    )
+    # Coerced to int position
+    assert unify.archive_existing_ids == [3]
+    # And that position resolves through the apply-path lookup
+    resolved = existing_by_position.get(f"EXISTING-{unify.archive_existing_ids[0]}")
+    assert resolved is not None
+    assert resolved.user_playbook_id == 1003
+    assert resolved.content == "existing-3"
