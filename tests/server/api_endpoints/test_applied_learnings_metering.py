@@ -118,3 +118,39 @@ def test_empty_result_meters_nothing() -> None:
         configure_usage_event_recorder(None)
 
     assert [e for e in events if e.event_name == "learning_applied"] == []
+
+
+def test_metering_failure_does_not_break_search_response() -> None:
+    """A get_reflexio error inside the metering helper must not turn a 200 into a 500."""
+    events = _capture()
+    profiles = [_make_profile_view("u1")]
+    try:
+        # The unified_search mock is wired via _patch_unified_search (first get_reflexio call).
+        # Inside the helper, get_reflexio is called a second time; we make *that* call's
+        # get_config raise so the metering path fails while the search response succeeds.
+        mock_reflexio_search = MagicMock()
+        mock_response = MagicMock()
+        mock_response.success = True
+        mock_response.msg = "OK"
+        mock_response.reformulated_query = None
+        mock_response.agent_trace = None
+        mock_response.rehydrated_text = None
+        mock_response.profiles = profiles
+        mock_response.agent_playbooks = []
+        mock_response.user_playbooks = []
+        mock_reflexio_search.unified_search.return_value = mock_response
+        # Make get_config raise so metering blows up after the search completes.
+        mock_reflexio_search.request_context.configurator.get_config.side_effect = RuntimeError(
+            "boom"
+        )
+
+        with patch("reflexio.server.api.get_reflexio", return_value=mock_reflexio_search):
+            resp = _client("production_agent").post(
+                "/api/search", json={"query": "x", "user_id": "u1"}
+            )
+        assert resp.status_code == 200
+    finally:
+        configure_usage_event_recorder(None)
+
+    # Metering failed silently — no learning_applied event should have been emitted.
+    assert [e for e in events if e.event_name == "learning_applied"] == []

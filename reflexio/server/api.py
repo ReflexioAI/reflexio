@@ -488,19 +488,22 @@ def _meter_applied_learnings(
     """
     if caller_type != "production_agent" or surfaced_count <= 0:
         return
-    from reflexio.server.billing_meter import record_applied_learnings
-    from reflexio.server.billing_signals import platform_llm_from_config
+    try:
+        from reflexio.server.billing_meter import record_applied_learnings
+        from reflexio.server.billing_signals import platform_llm_from_config
 
-    config = get_reflexio(org_id=org_id).request_context.configurator.get_config()
-    record_applied_learnings(
-        org_id=org_id,
-        surfaced_count=surfaced_count,
-        caller_type=caller_type,
-        platform_llm=platform_llm_from_config(config),
-        platform_storage=None,  # resolved enterprise-side at rollup (Phase 1)
-        request_id=request_id,
-        session_id=session_id,
-    )
+        config = get_reflexio(org_id=org_id).request_context.configurator.get_config()
+        record_applied_learnings(
+            org_id=org_id,
+            surfaced_count=surfaced_count,
+            caller_type=caller_type,
+            platform_llm=platform_llm_from_config(config),
+            platform_storage=None,  # resolved enterprise-side at rollup (Phase 1)
+            request_id=request_id,
+            session_id=session_id,
+        )
+    except Exception:
+        logger.warning("applied-learnings metering failed for org %s", org_id, exc_info=True)
 
 
 @core_router.get("/")
