@@ -23,3 +23,19 @@ def default_get_org_id() -> str:
         str: The default org identifier used for self-hosted deployments.
     """
     return DEFAULT_ORG_ID
+
+
+def default_get_caller_type() -> str:
+    """Return the default caller type for local / self-hosted deployments.
+
+    Every call is treated as ``"internal"`` (no billing discrimination) in the
+    OSS build.  Enterprise deployments override this via
+    ``app.dependency_overrides[default_get_caller_type] = <classifier>``
+    inside :func:`reflexio.server.api.create_app`, exactly like
+    :func:`default_get_org_id`.
+
+    Returns:
+        str: The literal ``"internal"`` — equals ``BillingCallerType.INTERNAL.value``
+            (kept as a plain string here so OSS stays free of reflexio_ext imports).
+    """
+    return "internal"  # == BillingCallerType.INTERNAL.value; literal keeps OSS clean

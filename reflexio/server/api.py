@@ -156,7 +156,11 @@ from reflexio.models.config_schema import (
     SINGLETON_AGENT_SUCCESS_EVALUATION_NAME,
     Config,
 )
-from reflexio.server._auth import DEFAULT_ORG_ID, default_get_org_id
+from reflexio.server._auth import (
+    DEFAULT_ORG_ID,
+    default_get_caller_type,
+    default_get_org_id,
+)
 from reflexio.server.api_endpoints import (
     account_api,
     health_api,
@@ -187,7 +191,12 @@ logger = logging.getLogger(__name__)
 # Re-exported for backwards compatibility — callers that did
 # ``from reflexio.server.api import default_get_org_id`` or ``DEFAULT_ORG_ID``
 # continue to work.
-__all__ = ["DEFAULT_ORG_ID", "create_app", "default_get_org_id"]
+__all__ = [
+    "DEFAULT_ORG_ID",
+    "create_app",
+    "default_get_caller_type",
+    "default_get_org_id",
+]
 
 # Bot protection configuration
 REQUEST_TIMEOUT_SECONDS = 60
@@ -2714,6 +2723,7 @@ def create_app(
     additional_routers: list[APIRouter] | None = None,
     middleware_config: dict | None = None,
     require_auth: bool = False,
+    get_caller_type: Callable[..., str] | None = None,
 ) -> FastAPI:
     """Factory to create a FastAPI app.
 
@@ -2724,6 +2734,9 @@ def create_app(
         middleware_config: Optional middleware overrides (not used yet, reserved for future).
         require_auth: When True, declares a Bearer security scheme in the OpenAPI spec
             so Swagger UI shows lock icons and the Authorize button works.
+        get_caller_type: Custom dependency for classifying the caller (e.g., production
+            agent vs dashboard).  When provided, overrides the default_get_caller_type
+            dependency globally, exactly mirroring the get_org_id override.
 
     Returns:
         Configured FastAPI application.
@@ -2731,7 +2744,7 @@ def create_app(
     from collections.abc import AsyncIterator
     from contextlib import asynccontextmanager
 
-    from reflexio.server._auth import default_get_org_id
+    from reflexio.server._auth import default_get_caller_type, default_get_org_id
     from reflexio.server.api_endpoints.request_context import RequestContext
     from reflexio.server.llm.model_defaults import validate_llm_availability
     from reflexio.server.services.extraction.resume_scheduler import (
@@ -2836,6 +2849,10 @@ def create_app(
     # Override get_org_id dependency if custom one provided
     if get_org_id is not None:
         app.dependency_overrides[default_get_org_id] = get_org_id
+
+    # Override get_caller_type dependency if custom one provided
+    if get_caller_type is not None:
+        app.dependency_overrides[default_get_caller_type] = get_caller_type
 
     # When a custom get_org_id is provided together with require_auth,
     # auth is enforced on every route — mark this app instance so the
