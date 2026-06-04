@@ -12,8 +12,8 @@ from reflexio.models.api_schema.service_schemas import (
 from reflexio.models.config_schema import ProfileExtractorConfig
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient
-from reflexio.server.services.extraction.outcome import ExtractionOutcome
 from reflexio.server.llm.token_accounting import RunTokenTotals, sum_trace_tokens
+from reflexio.server.services.extraction.outcome import ExtractionOutcome
 from reflexio.server.services.extraction.resumable_agent import (
     run_resumable_extraction_agent,
 )
@@ -242,6 +242,9 @@ class ProfileExtractor:
             return ExtractionOutcome.completed(
                 user_profiles,
                 run_id=raw_profiles.run_id,
+                # `or` is safe: a dataclass instance (even RunTokenTotals(0,0)) is
+                # always truthy, so a real-but-zero total is never overwritten by
+                # the fallback trace.
                 token_totals=raw_profiles.token_totals or self._last_resumable_trace,
             )
         user_profiles = self._convert_raw_to_user_profiles(

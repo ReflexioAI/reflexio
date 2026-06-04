@@ -677,6 +677,7 @@ class BaseGenerationService(
                 },
             )
             self._last_extraction_run_ids = []
+            self._last_token_totals = None
             result = self._execute_extractor(
                 prepared.extractor_config, prepared.identifier
             )
