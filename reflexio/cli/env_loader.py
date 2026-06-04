@@ -107,8 +107,8 @@ def load_reflexio_env(
 
     Args:
         package_data_module: Module containing bundled .env.example
-            (for importlib.resources). OS package uses "reflexio.data",
-            enterprise uses "reflexio_ext.data".
+            (for importlib.resources). The OS package passes "reflexio.data";
+            a downstream build may pass its own data module.
         auto_generate_keys: Env var names to auto-generate as hex tokens
             (e.g., ["JWT_SECRET_KEY"]).
 
@@ -150,8 +150,8 @@ def ensure_user_env_for_setup(
 
     Args:
         package_data_module: Module containing the bundled ``.env.example``
-            template (for ``importlib.resources``). OS uses ``reflexio.data``,
-            enterprise uses ``reflexio_ext.data``.
+            template (for ``importlib.resources``). The OS package passes
+            ``reflexio.data``; a downstream build may pass its own data module.
         auto_generate_keys: Env var names to auto-fill with random hex
             tokens when creating from the template.
 

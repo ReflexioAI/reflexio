@@ -24,8 +24,8 @@ def describe_storage(
     to print anywhere.
 
     Enterprise-only storage types (Supabase, Postgres, local directory)
-    are matched by class name so we don't take a hard import dependency
-    on ``reflexio_ext`` from the open-source package.
+    are matched by class name so the open-source package takes no hard
+    import dependency on its enterprise extension.
 
     Args:
         storage_config: The storage configuration to describe.
