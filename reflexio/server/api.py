@@ -2766,14 +2766,26 @@ def create_app(
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)  # type: ignore[reportArgumentType]
 
     # CORS
-    origins = _resolve_cors_origins()
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=origins,
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+    # The locked-down, credentialed allowlist is an enterprise concern: only
+    # hosts that wire in auth (``require_auth=True``) restrict browser origins.
+    # OSS/local runs have no auth and bundle their own docs playground on a
+    # separate port, so they allow any origin (no credentials needed).
+    if require_auth:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=_resolve_cors_origins(),
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+    else:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=["*"],
+            allow_credentials=False,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
 
     # Reject oversized requests before they reach endpoint handlers.
     app.add_middleware(BodySizeLimitMiddleware)
