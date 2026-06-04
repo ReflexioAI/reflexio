@@ -285,9 +285,11 @@ class BaseGenerationService(
             window_size, _ = get_extractor_window_params(
                 prepared.extractor_config, global_window_size, global_stride_size
             )
-            _, effective_source = get_effective_source_filter(
+            should_skip, effective_source = get_effective_source_filter(
                 prepared.extractor_config, getattr(self.service_config, "source", None)
             )
+            if should_skip:
+                return ""
             session_data_models, _ = self.storage.get_last_k_interactions_grouped(
                 user_id=getattr(self.service_config, "user_id", None),
                 k=window_size,
@@ -298,6 +300,10 @@ class BaseGenerationService(
             )
             return format_sessions_to_history_string(session_data_models)
         except Exception:
+            logger.warning(
+                "_extraction_input_text failed; billing_input_tokens will be 0",
+                exc_info=True,
+            )
             return ""
 
     def _record_billing_learning_events(
