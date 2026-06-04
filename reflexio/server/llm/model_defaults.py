@@ -187,12 +187,12 @@ _PROVIDER_DEFAULTS: dict[str, ProviderDefaults] = {
         embedding="local/minilm-l6-v2",
     ),
     "openai": ProviderDefaults(
-        generation="gpt-5-mini",
+        generation="gpt-5.5",
         evaluation="gpt-5-mini",
         should_run="gpt-5-nano",
         pre_retrieval="gpt-5-nano",
         embedding="text-embedding-3-small",
-        extraction_agent="gpt-5-mini",
+        extraction_agent="gpt-5.5",
     ),
     "anthropic": ProviderDefaults(
         generation="claude-sonnet-4-6",

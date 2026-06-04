@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from reflexio.models.config_schema import PendingToolCallConfig
 from reflexio.server.llm.tools import (
@@ -37,6 +37,13 @@ class AskHumanArgs(BaseModel):
     question: Annotated[str, Field(min_length=1)]
     answer_format: str | None = None
     tags: list[str] = Field(default_factory=list)
+
+    @field_validator("tags", mode="before")
+    @classmethod
+    def _coerce_tags(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return [tag.strip() for tag in value.split(",") if tag.strip()]
+        return value
 
 
 class AttachPendingInfoRequestArgs(BaseModel):

@@ -1,10 +1,12 @@
 """Tests for reflexio_commons api_schema validators."""
 
+import socket
 from datetime import datetime
 
 import pytest
 from pydantic import BaseModel, ValidationError
 
+from reflexio.models.api_schema import validators as validators_module
 from reflexio.models.api_schema.validators import (
     EMBEDDING_DIMENSIONS,
     NonEmptyStr,
@@ -164,6 +166,55 @@ class TestCheckSafeUrl:
             mp.setenv("REFLEXIO_BLOCK_PRIVATE_URLS", "true")
             with pytest.raises(ValueError, match="targets"):
                 _check_safe_url("http://0.0.0.0:8080/api")
+
+    def test_hostname_resolving_to_private_ip_blocked_in_strict(self, monkeypatch):
+        monkeypatch.setenv("REFLEXIO_BLOCK_PRIVATE_URLS", "true")
+        monkeypatch.setattr(
+            validators_module.socket,
+            "getaddrinfo",
+            lambda *_args, **_kwargs: [
+                (
+                    socket.AF_INET,
+                    socket.SOCK_STREAM,
+                    6,
+                    "",
+                    ("10.0.0.5", 443),
+                )
+            ],
+        )
+
+        with pytest.raises(ValueError, match="resolves to private/reserved IP"):
+            _check_safe_url("https://api.example.com/v1")
+
+    def test_hostname_resolving_to_public_ip_allowed_in_strict(self, monkeypatch):
+        monkeypatch.setenv("REFLEXIO_BLOCK_PRIVATE_URLS", "true")
+        monkeypatch.setattr(
+            validators_module.socket,
+            "getaddrinfo",
+            lambda *_args, **_kwargs: [
+                (
+                    socket.AF_INET,
+                    socket.SOCK_STREAM,
+                    6,
+                    "",
+                    ("93.184.216.34", 443),
+                )
+            ],
+        )
+
+        result = _check_safe_url("https://api.example.com/v1")
+
+        assert str(result) == "https://api.example.com/v1"
+
+    def test_unresolvable_hostname_blocked_in_strict(self, monkeypatch):
+        def raise_gaierror(*_args, **_kwargs):
+            raise socket.gaierror("no such host")
+
+        monkeypatch.setenv("REFLEXIO_BLOCK_PRIVATE_URLS", "true")
+        monkeypatch.setattr(validators_module.socket, "getaddrinfo", raise_gaierror)
+
+        with pytest.raises(ValueError, match="could not be resolved"):
+            _check_safe_url("https://api.example.com/v1")
 
 
 # ===============================

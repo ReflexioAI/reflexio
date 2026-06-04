@@ -23,4 +23,3 @@ def test_structured_playbook_content_accepts_optional_fields() -> None:
     )
     assert c.source_span == "quote"
     assert c.reader_angle == "trigger"
-

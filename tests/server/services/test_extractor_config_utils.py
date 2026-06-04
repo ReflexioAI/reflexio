@@ -251,8 +251,12 @@ class TestGetExtractorName:
         assert get_extractor_name(config) == SINGLETON_AGENT_SUCCESS_EVALUATION_NAME
 
     def test_unknown_config_falls_back_to_name_attribute(self):
-        assert get_extractor_name(MockExtractorConfig(extractor_name="legacy")) == "legacy"
-        assert get_extractor_name(MockEvaluationConfig(evaluation_name="eval1")) == "eval1"
+        assert (
+            get_extractor_name(MockExtractorConfig(extractor_name="legacy")) == "legacy"
+        )
+        assert (
+            get_extractor_name(MockEvaluationConfig(evaluation_name="eval1")) == "eval1"
+        )
 
     def test_unknown_config_with_none_names_returns_unknown(self):
         config = type(

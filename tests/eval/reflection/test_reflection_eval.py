@@ -683,9 +683,7 @@ def test_live_reflection_provider_real(tmp_path):  # pragma: no cover - manual
 
     client = LiteLLMClient(LiteLLMConfig(model="claude-haiku-4-5"))
     ctx = RequestContext(org_id="eval", storage_base_dir=str(tmp_path))
-    provider = make_reflection_decision_provider(
-        llm_client=client, request_context=ctx
-    )
+    provider = make_reflection_decision_provider(llm_client=client, request_context=ctx)
 
     cases = load_illustrative_cases()
     res = run_eval(cases=cases, decision_provider=provider, llm_client=None)

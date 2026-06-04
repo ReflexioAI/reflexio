@@ -110,6 +110,25 @@ def test_ask_human_creates_org_scoped_pending_call_and_dependency(storage):
     assert outcome.result["status"] == "request_pending"
 
 
+def test_ask_human_accepts_comma_separated_tags(storage):
+    storage.create_agent_run(_agent_run("run_1"))
+    tool = create_ask_human_tool()
+
+    outcome = tool.handler(
+        AskHumanArgs(
+            question="What deployment target should this agent optimize for?",
+            answer_format="short text",
+            tags="deployment, org-standard",  # type: ignore[arg-type]
+        ),
+        _tool_context(storage, run_id="run_1"),
+    )
+
+    assert isinstance(outcome, AsyncAccepted)
+    pending = storage.get_pending_tool_call(outcome.pending_tool_call_id)
+    assert pending is not None
+    assert pending.tags == ["deployment", "org-standard"]
+
+
 def test_same_human_question_attaches_across_users_with_org_scope(storage):
     storage.create_agent_run(_agent_run("run_1", user_id="user_1"))
     storage.create_agent_run(_agent_run("run_2", user_id="user_2"))
