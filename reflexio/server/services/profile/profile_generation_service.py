@@ -81,6 +81,9 @@ class ProfileGenerationService(
 ):
     """Service to generate user profiles from interactions"""
 
+    # Profile generation produces learnings — opt in to ② Learning billing.
+    EMITS_LEARNING_BILLING: bool = True
+
     def __init__(
         self,
         llm_client: LiteLLMClient,

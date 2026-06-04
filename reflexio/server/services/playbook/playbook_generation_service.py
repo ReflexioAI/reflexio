@@ -84,6 +84,9 @@ class PlaybookGenerationService(
     Runs the configured PlaybookExtractor for each generation request.
     """
 
+    # Playbook generation produces learnings — opt in to ② Learning billing.
+    EMITS_LEARNING_BILLING: bool = True
+
     def __init__(
         self,
         llm_client: LiteLLMClient,

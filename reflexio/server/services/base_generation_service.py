@@ -166,6 +166,10 @@ class BaseGenerationService(
     ABC,
     Generic[TExtractorConfig, TExtractor, TGenerationServiceConfig, TRequest],  # noqa: UP046
 ):
+    # Only profile/playbook GENERATION services bill the ② Learning line;
+    # reflection/consolidation/aggregation/evaluation are bundled, not metered.
+    # Default is False so any future subclass is safe by default (opt-IN).
+    EMITS_LEARNING_BILLING: bool = False
     """
     Base class for generation services that run one configured extractor.
 
@@ -315,48 +319,61 @@ class BaseGenerationService(
         (cost facet) via the OSS emission helpers. ``platform_storage`` is left
         ``None`` here and resolved enterprise-side at rollup (Phase 1).
 
+        Gated by ``EMITS_LEARNING_BILLING`` — only profile/playbook generation
+        services opt in. Evaluation, reflection, consolidation and aggregation
+        are bundled and must NOT separately meter the ② Learning line.
+
         Args:
             prepared: The prepared generation run (used for input-text computation).
             generated_count: Number of learnings produced by this extraction run.
         """
-        from reflexio.server.billing_meter import (
-            record_extraction_tokens,
-            record_learnings_generated,
-        )
-        from reflexio.server.billing_signals import (
-            count_input_tokens,
-            platform_llm_from_config,
-        )
+        if not self.EMITS_LEARNING_BILLING:
+            return
 
-        config = self.request_context.configurator.get_config()
-        platform_llm = platform_llm_from_config(config)
-        ctx = self._usage_context()
+        try:
+            from reflexio.server.billing_meter import (
+                record_extraction_tokens,
+                record_learnings_generated,
+            )
+            from reflexio.server.billing_signals import (
+                count_input_tokens,
+                platform_llm_from_config,
+            )
 
-        # ② Learning — value: learnings generated (helper no-ops on count <= 0).
-        record_learnings_generated(
-            org_id=ctx["org_id"],
-            count=generated_count,
-            platform_llm=platform_llm,
-            platform_storage=None,
-            pipeline=ctx.get("pipeline"),
-            request_id=ctx.get("request_id"),
-            session_id=ctx.get("session_id"),
-        )
+            config = self.request_context.configurator.get_config()
+            platform_llm = platform_llm_from_config(config)
+            ctx = self._usage_context()
 
-        # ② Learning — cost: input-anchored extraction tokens + real provider tokens.
-        totals = self._last_token_totals or RunTokenTotals()
-        billing_input_tokens = count_input_tokens(self._extraction_input_text(prepared))
-        record_extraction_tokens(
-            org_id=ctx["org_id"],
-            billing_input_tokens=billing_input_tokens,
-            prompt_tokens=totals.prompt_tokens,
-            completion_tokens=totals.completion_tokens,
-            platform_llm=platform_llm,
-            platform_storage=None,
-            pipeline=ctx.get("pipeline"),
-            request_id=ctx.get("request_id"),
-            session_id=ctx.get("session_id"),
-        )
+            # ② Learning — value: learnings generated (helper no-ops on count <= 0).
+            record_learnings_generated(
+                org_id=ctx["org_id"],
+                count=generated_count,
+                platform_llm=platform_llm,
+                platform_storage=None,
+                pipeline=ctx.get("pipeline"),
+                request_id=ctx.get("request_id"),
+                session_id=ctx.get("session_id"),
+            )
+
+            # ② Learning — cost: input-anchored extraction tokens + real provider tokens.
+            totals = self._last_token_totals or RunTokenTotals()
+            billing_input_tokens = count_input_tokens(self._extraction_input_text(prepared))
+            record_extraction_tokens(
+                org_id=ctx["org_id"],
+                billing_input_tokens=billing_input_tokens,
+                prompt_tokens=totals.prompt_tokens,
+                completion_tokens=totals.completion_tokens,
+                platform_llm=platform_llm,
+                platform_storage=None,
+                pipeline=ctx.get("pipeline"),
+                request_id=ctx.get("request_id"),
+                session_id=ctx.get("session_id"),
+            )
+        except Exception:
+            logger.warning(
+                "_record_billing_learning_events failed; billing learning events not emitted",
+                exc_info=True,
+            )
 
     @staticmethod
     def _count_generated_results(result: Any) -> int:
