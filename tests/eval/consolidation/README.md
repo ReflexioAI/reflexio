@@ -114,9 +114,9 @@ covers the provider's construction in default CI.
 
 ## Comparing two prompt versions (deviation guard)
 
-To gate a candidate `playbook_consolidation` version against a baseline (the
-between-epoch degradation check of the prompt-tuning loop), use the shared CLI
-which runs this harness under both pinned versions and fails on regression:
+To gate a candidate `playbook_consolidation` version against a baseline (catch
+regressions when iterating the prompt across versions), use the shared CLI which
+runs this harness under both pinned versions and fails on regression:
 
 ```bash
 uv run python -m tests.eval.prompt_deviation_guard \

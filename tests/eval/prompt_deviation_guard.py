@@ -1,11 +1,9 @@
 """Prompt deviation guard — gate a candidate prompt version against a baseline.
 
-The between-epoch check of the agent-driven prompt-tuning loop (see
-``benchmarks/swe_bench_verified/PROMPT_TUNING_LOOP.md`` §4.5). After an epoch
-edits a memory prompt, this runs the component's deterministic eval harness
-under **two pinned prompt versions** — the prior (baseline) and the new
-(candidate) — and fails if any guard metric regresses beyond a tolerance, so a
-degrading edit can't advance to the next epoch.
+When you iterate on a memory prompt and add a new version, this runs that
+component's deterministic eval harness under **two pinned prompt versions** —
+the prior (baseline) and the new (candidate) — and fails if any guard metric
+regresses beyond a tolerance, so a degrading edit is caught before you adopt it.
 
 Two components are covered, each driven by its existing live provider + judge:
 
@@ -23,7 +21,7 @@ This makes real LLM calls (provider + optional judge), so it is a manual /
 gated tool — run with API keys. The pure gate logic (:func:`compare`) is unit
 tested without any LLM.
 
-Usage (from the ``open_source/reflexio`` submodule root)::
+Usage (from the repository root)::
 
     uv run python -m tests.eval.prompt_deviation_guard \\
         --component consolidation \\
