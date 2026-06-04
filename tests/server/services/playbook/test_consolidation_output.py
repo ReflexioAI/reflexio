@@ -133,3 +133,62 @@ def test_legacy_kind_literals_no_longer_parse(legacy_payload):
     """
     with pytest.raises(ValidationError):
         PlaybookConsolidationOutput.model_validate({"decisions": [legacy_payload]})
+
+
+@pytest.mark.parametrize(
+    "raw_value,expected",
+    [
+        ([0, 1], [0, 1]),
+        (["EXISTING-0", "EXISTING-3"], [0, 3]),
+        (["existing-2"], [2]),
+        (["5", "EXISTING-6"], [5, 6]),
+        ([0, "EXISTING-7"], [0, 7]),
+        (None, []),
+    ],
+)
+def test_unify_archive_existing_ids_accepts_position_labels(raw_value, expected):
+    """``archive_existing_ids`` tolerates either bare ints or ``EXISTING-N`` strings.
+
+    Strong structured-output models (GPT-4o, Claude) honor ``list[int]`` and return
+    bare integers, but weaker models (MiniMax-M3) ignore the int constraint and
+    return the literal ``"EXISTING-0"`` label from the prompt. The validator strips
+    the prefix so both shapes round-trip; the apply path keeps using ints
+    downstream.
+    """
+    unify = UnifyDecision(
+        new_id="NEW-0",
+        archive_existing_ids=raw_value,  # type: ignore[arg-type]
+        content="c",
+        trigger="t",
+        rationale="r",
+    )
+    assert unify.archive_existing_ids == expected
+
+
+def test_reject_new_superseded_id_accepts_position_label():
+    """``RejectNewDecision.superseded_by_existing_id`` tolerates ``EXISTING-N``."""
+    r = RejectNewDecision(new_id="NEW-0", superseded_by_existing_id="EXISTING-4")  # type: ignore[arg-type]
+    assert r.superseded_by_existing_id == 4
+
+
+def test_differentiate_existing_id_accepts_position_label():
+    """``DifferentiateDecision.existing_id`` tolerates ``EXISTING-N``."""
+    d = DifferentiateDecision(
+        new_id="NEW-0",
+        existing_id="EXISTING-9",  # type: ignore[arg-type]
+        refined_new_trigger="narrow new",
+        refined_existing_trigger="narrow existing",
+    )
+    assert d.existing_id == 9
+
+
+def test_existing_position_rejects_garbage():
+    """Garbage strings that aren't ``EXISTING-N`` or numeric still fail loudly."""
+    with pytest.raises(ValidationError):
+        UnifyDecision(
+            new_id="NEW-0",
+            archive_existing_ids=["not-a-real-id"],  # type: ignore[list-item]
+            content="c",
+            trigger="t",
+            rationale="r",
+        )

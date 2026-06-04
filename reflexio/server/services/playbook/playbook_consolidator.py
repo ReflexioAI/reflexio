@@ -33,6 +33,50 @@ logger = logging.getLogger(__name__)
 # ===============================
 
 
+def _coerce_existing_position(value: object) -> int:
+    """Accept either a bare int position or an ``"EXISTING-N"`` label.
+
+    The consolidation prompt labels rows as ``[EXISTING-0]``, ``[EXISTING-1]``
+    etc. (see ``_format_playbooks_with_prefix``) and the apply path
+    reconstructs ``f"EXISTING-{position}"`` from the integer the LLM returns.
+    Strong structured-output models (GPT-4o, Claude) honor the
+    ``list[int]`` schema and return the bare integer ``0``; weaker models
+    (e.g. MiniMax-M3) ignore the int constraint and return the literal
+    label ``"EXISTING-0"`` instead — which then fails pydantic validation
+    and the whole consolidation batch dies.
+
+    Strip the prefix when present so the schema tolerates both shapes
+    without changing the int contract downstream consumers rely on. Plain
+    numeric strings (``"5"``) are also accepted for symmetry with how
+    most JSON-coerced models handle ID-like values.
+
+    Raises:
+        ValueError: when ``value`` is neither an int nor a recognized
+            position-label / numeric string.
+    """
+    if isinstance(value, bool):
+        # ``bool`` is a subclass of ``int`` in Python; reject explicitly so a
+        # stray ``True`` doesn't silently become position 1.
+        raise ValueError(f"existing-position must be int, got bool: {value!r}")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        stripped = value.strip()
+        for prefix in ("EXISTING-", "EXISTING_", "existing-", "existing_"):
+            if stripped.startswith(prefix):
+                stripped = stripped[len(prefix):]
+                break
+        try:
+            return int(stripped)
+        except ValueError as exc:
+            raise ValueError(
+                f"existing-position must be int or 'EXISTING-N' label, got {value!r}"
+            ) from exc
+    raise ValueError(
+        f"existing-position must be int or 'EXISTING-N' label, got {type(value).__name__}: {value!r}"
+    )
+
+
 class UnifyDecision(BaseModel):
     """Collapse NEW (+ 0..N EXISTING) into one row with LLM-supplied content.
 
@@ -57,6 +101,15 @@ class UnifyDecision(BaseModel):
     rationale: str
     reason: str = ""
 
+    @field_validator("archive_existing_ids", mode="before")
+    @classmethod
+    def _coerce_archive_ids(cls, value: object) -> object:
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return [_coerce_existing_position(item) for item in value]
+        return value
+
     model_config = ConfigDict(json_schema_extra={"additionalProperties": False})
 
 
@@ -67,6 +120,11 @@ class RejectNewDecision(BaseModel):
     new_id: str
     superseded_by_existing_id: int
     reason: str = ""
+
+    @field_validator("superseded_by_existing_id", mode="before")
+    @classmethod
+    def _coerce_superseded(cls, value: object) -> object:
+        return _coerce_existing_position(value)
 
     model_config = ConfigDict(json_schema_extra={"additionalProperties": False})
 
@@ -80,6 +138,11 @@ class DifferentiateDecision(BaseModel):
     refined_new_trigger: str
     refined_existing_trigger: str
     reason: str = ""
+
+    @field_validator("existing_id", mode="before")
+    @classmethod
+    def _coerce_existing_id(cls, value: object) -> object:
+        return _coerce_existing_position(value)
 
     @field_validator("refined_new_trigger", "refined_existing_trigger")
     @classmethod
