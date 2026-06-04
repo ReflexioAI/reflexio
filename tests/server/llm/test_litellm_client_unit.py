@@ -2163,3 +2163,69 @@ class TestLitellmIntegration:
                 parse_structured_output=True,
             )
         assert len(attempts) == 2  # initial + one parse-retry, then give up
+
+
+# ===================================================================
+# Fallback observability: Sentry tags + structured log line
+# ===================================================================
+
+
+class TestFallbackObservability:
+    """Verify Sentry tags fire when litellm served the request via a
+    fallback model, and stay silent when the primary served. The detection
+    mechanism reads ``response.model`` / ``response._hidden_params`` and
+    compares against the requested primary.
+
+    ``sentry_sdk`` is an enterprise-only dependency and is not installed
+    in the OSS test env. ``_emit_fallback_observability`` performs a local
+    ``import sentry_sdk`` inside its ``try`` block, so we inject a fake
+    module into ``sys.modules`` to capture the ``set_tag`` calls without
+    pulling in the real SDK.
+    """
+
+    @staticmethod
+    def _install_fake_sentry(monkeypatch) -> dict[str, str]:
+        """Register a fake ``sentry_sdk`` module that records ``set_tag``
+        calls into the returned dict."""
+        import sys  # noqa: PLC0415
+        import types  # noqa: PLC0415
+
+        tags: dict[str, str] = {}
+        fake = types.ModuleType("sentry_sdk")
+        fake.set_tag = lambda k, v: tags.__setitem__(k, str(v))  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "sentry_sdk", fake)
+        return tags
+
+    def test_sentry_tag_set_when_response_indicates_fallback(self, monkeypatch):
+        tags = self._install_fake_sentry(monkeypatch)
+        client = LiteLLMClient(LiteLLMConfig(model="minimax/MiniMax-M3"))
+
+        # Forge a litellm response where the served model differs from the
+        # requested primary — i.e. a fallback served the request.
+        response = _make_completion_response("ok")
+        response._hidden_params = {"model_id": "gpt-5-mini"}
+        response.model = "gpt-5-mini"
+
+        monkeypatch.setattr("litellm.completion", lambda **_p: response)
+
+        client.generate_chat_response([{"role": "user", "content": "hi"}])
+
+        assert tags.get("llm.fallback_used") == "true"
+        assert tags.get("llm.primary_model") == "minimax/MiniMax-M3"
+        assert tags.get("llm.fallback_model") == "gpt-5-mini"
+
+    def test_sentry_tag_not_set_when_primary_served(self, monkeypatch):
+        tags = self._install_fake_sentry(monkeypatch)
+        client = LiteLLMClient(LiteLLMConfig(model="minimax/MiniMax-M3"))
+
+        # Forge a response where the served model matches the primary —
+        # no fallback occurred.
+        response = _make_completion_response("ok")
+        response._hidden_params = {"model_id": "minimax/MiniMax-M3"}
+        response.model = "minimax/MiniMax-M3"
+
+        monkeypatch.setattr("litellm.completion", lambda **_p: response)
+
+        client.generate_chat_response([{"role": "user", "content": "hi"}])
+
+        assert "llm.fallback_used" not in tags
