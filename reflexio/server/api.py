@@ -158,6 +158,7 @@ from reflexio.models.config_schema import (
 )
 from reflexio.server._auth import (
     DEFAULT_ORG_ID,
+    default_billing_gate,
     default_get_caller_type,
     default_get_org_id,
 )
@@ -194,6 +195,7 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "DEFAULT_ORG_ID",
     "create_app",
+    "default_billing_gate",
     "default_get_caller_type",
     "default_get_org_id",
 ]
@@ -584,6 +586,7 @@ def publish_user_interaction(
     background_tasks: BackgroundTasks,
     org_id: str = Depends(default_get_org_id),
     wait_for_response: bool = False,
+    _gate: None = Depends(default_billing_gate("learnings_generated")),  # noqa: B008
 ) -> PublishUserInteractionResponse:
     if wait_for_response:
         # Process synchronously so the caller gets the real result
@@ -698,6 +701,7 @@ def search_user_profiles(
     payload: SearchUserProfileRequest,
     org_id: str = Depends(default_get_org_id),
     caller_type: str = Depends(default_get_caller_type),
+    _gate: None = Depends(default_billing_gate("application")),  # noqa: B008
 ) -> SearchProfilesViewResponse:
     response = _run_limited_api(
         org_id,
@@ -817,6 +821,7 @@ def search_user_playbooks_endpoint(
     payload: SearchUserPlaybookRequest,
     org_id: str = Depends(default_get_org_id),
     caller_type: str = Depends(default_get_caller_type),
+    _gate: None = Depends(default_billing_gate("application")),  # noqa: B008
 ) -> SearchUserPlaybooksViewResponse:
     """Search user playbooks with semantic search and advanced filtering.
 
@@ -863,6 +868,7 @@ def search_agent_playbooks_endpoint(
     payload: SearchAgentPlaybookRequest,
     org_id: str = Depends(default_get_org_id),
     caller_type: str = Depends(default_get_caller_type),
+    _gate: None = Depends(default_billing_gate("application")),  # noqa: B008
 ) -> SearchAgentPlaybooksViewResponse:
     """Search agent playbooks with semantic search and advanced filtering.
 
@@ -909,6 +915,7 @@ def unified_search_endpoint(
     payload: UnifiedSearchRequest,
     org_id: str = Depends(default_get_org_id),
     caller_type: str = Depends(default_get_caller_type),
+    _gate: None = Depends(default_billing_gate("application")),  # noqa: B008
 ) -> UnifiedSearchViewResponse:
     """Search across all entity types (profiles, agent playbooks, user playbooks).
 
@@ -1663,6 +1670,7 @@ def get_agent_playbooks(
     request: GetAgentPlaybooksRequest,
     org_id: str = Depends(default_get_org_id),
     caller_type: str = Depends(default_get_caller_type),
+    _gate: None = Depends(default_billing_gate("application")),  # noqa: B008
 ) -> GetAgentPlaybooksViewResponse:
     """Get agent playbooks with internal fields filtered out.
 
@@ -2816,6 +2824,7 @@ def create_app(
     middleware_config: dict | None = None,
     require_auth: bool = False,
     get_caller_type: Callable[..., str] | None = None,
+    get_billing_gate: Callable[[str], Callable[..., None]] | None = None,
 ) -> FastAPI:
     """Factory to create a FastAPI app.
 
@@ -2829,6 +2838,12 @@ def create_app(
         get_caller_type: Custom dependency for classifying the caller (e.g., production
             agent vs dashboard).  When provided, overrides the default_get_caller_type
             dependency globally, exactly mirroring the get_org_id override.
+        get_billing_gate: Optional factory ``(line: str) -> FastAPI dependency`` that
+            replaces the default no-op gate for each billable billing line.  When
+            provided, for every line used in the app (``"application"`` and
+            ``"learnings_generated"``) the returned dependency overrides the
+            ``default_billing_gate(line)`` sentinel in ``dependency_overrides``,
+            exactly mirroring the ``get_caller_type`` override pattern.
 
     Returns:
         Configured FastAPI application.
@@ -2836,7 +2851,11 @@ def create_app(
     from collections.abc import AsyncIterator
     from contextlib import asynccontextmanager
 
-    from reflexio.server._auth import default_get_caller_type, default_get_org_id
+    from reflexio.server._auth import (
+        default_billing_gate,
+        default_get_caller_type,
+        default_get_org_id,
+    )
     from reflexio.server.api_endpoints.request_context import RequestContext
     from reflexio.server.llm.model_defaults import validate_llm_availability
     from reflexio.server.services.extraction.resume_scheduler import (
@@ -2945,6 +2964,15 @@ def create_app(
     # Override get_caller_type dependency if custom one provided
     if get_caller_type is not None:
         app.dependency_overrides[default_get_caller_type] = get_caller_type
+
+    # Override billing gate dependencies if a custom gate factory is provided.
+    # Each billing line needs its own override because dependency_overrides is
+    # keyed by callable identity.  ``default_billing_gate`` uses lru_cache so
+    # the same sentinel object is returned for the same line — which is why
+    # the overrides reliably fire at request time.
+    if get_billing_gate is not None:
+        for _line in ("application", "learnings_generated"):
+            app.dependency_overrides[default_billing_gate(_line)] = get_billing_gate(_line)
 
     # When a custom get_org_id is provided together with require_auth,
     # auth is enforced on every route — mark this app instance so the
