@@ -41,7 +41,7 @@ Still to do:
 
 ## Phase B — Task selection (one-time, ~10 min)
 
-Load the GDPVal 50-task subset (`/Users/yilu/repos/OpenSpace/gdpval_bench/tasks_50.json`).
+Load the GDPVal 50-task subset (`$OPENSPACE_PATH/gdpval_bench/tasks_50.json`).
 Pick 10 tasks that satisfy ALL of:
 
 1. No hard format requirement in the prompt (no `\b(pdf|docx|xlsx|pptx|powerpoint|excel|word document)\b`, case-insensitive)
@@ -59,7 +59,7 @@ Save the selected task IDs + short names to
 Single invocation, fresh `--run-name`, all hosts and phases:
 
 ```bash
-cd /Users/yilu/repos/reflexio-gdpval-bench/open_source/reflexio
+cd /path/to/reflexio   # repo root
 BACKEND_PORT=8091 uv run python -m benchmark.gdpval.run_benchmark \
   --hosts openspace,hermes --phases p1,p2,p3 \
   --task-ids "<10 task IDs from Phase B>" \

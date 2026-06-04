@@ -28,15 +28,14 @@ from pathlib import Path
 from typing import Any
 
 _THIS_DIR = Path(__file__).resolve().parent  # open_source/reflexio/benchmark/gdpval/
-# The benchmark package lives inside the reflexio submodule at
-# open_source/reflexio/benchmark/gdpval/. Adding the submodule root
-# to sys.path makes `import benchmark.gdpval.x` work whether the user runs
-# `python -m benchmark.gdpval.run_benchmark` from the submodule root or from
-# the outer reflexio-gdpval-bench repo root.
-_SUBMODULE_ROOT = _THIS_DIR.parents[1]  # open_source/reflexio/
+# The benchmark package lives at benchmark/gdpval/ in the repo. Adding the
+# repo root to sys.path makes `import benchmark.gdpval.x` work whether the user
+# runs `python -m benchmark.gdpval.run_benchmark` from the repo root or
+# elsewhere.
+_REPO_ROOT = _THIS_DIR.parents[1]  # repo root (contains benchmark/)
 
-if str(_SUBMODULE_ROOT) not in sys.path:
-    sys.path.insert(0, str(_SUBMODULE_ROOT))
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 from dotenv import load_dotenv  # noqa: E402
 

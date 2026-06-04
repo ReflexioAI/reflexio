@@ -2,8 +2,7 @@
 
 This module holds alternate `GDPVAL_PLAYBOOK_EXTRACTOR_PROMPT` + injection
 header pairs that can be swapped into `reflexio_bridge.py` /
-`injection.py` during the iteration loop (see
-`/Users/yilu/.claude/plans/ethereal-wiggling-pike.md`).
+`injection.py` during the iteration loop.
 
 Each variant is a stand-alone string. When iterating, copy the chosen
 variant into the actual call sites — don't import from here in production

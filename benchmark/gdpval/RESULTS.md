@@ -411,10 +411,10 @@ directory. The benchmark package lives at
 module.
 
 ```bash
-cd /Users/yilu/repos/reflexio-gdpval-bench/open_source/reflexio
+cd /path/to/reflexio   # repo root
 
 # 1. Start a Reflexio backend on port 8091
-nohup uv run python -m reflexio_ext.cli services start --only backend \
+nohup uv run python -m reflexio.cli services start --only backend \
   --backend-port 8091 > /tmp/reflexio-bench-logs/backend.log 2>&1 &
 
 # 2. Pin Reflexio's internal LLM pipeline to openai/gpt-5-mini.
