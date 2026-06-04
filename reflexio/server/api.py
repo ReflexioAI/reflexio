@@ -1666,8 +1666,10 @@ def get_user_playbooks(
     response_model=GetAgentPlaybooksViewResponse,
     response_model_exclude_none=True,
 )
+@limiter.limit("120/minute")  # Rate limit for read operations
 def get_agent_playbooks(
-    request: GetAgentPlaybooksRequest,
+    request: Request,
+    payload: GetAgentPlaybooksRequest,
     org_id: str = Depends(default_get_org_id),
     caller_type: str = Depends(default_get_caller_type),
     _gate: None = Depends(default_billing_gate("application")),  # noqa: B008
@@ -1675,7 +1677,8 @@ def get_agent_playbooks(
     """Get agent playbooks with internal fields filtered out.
 
     Args:
-        request (GetAgentPlaybooksRequest): The get request
+        request (Request): The HTTP request object (for rate limiting)
+        payload (GetAgentPlaybooksRequest): The get request
         org_id (str): Organization ID
         caller_type (str): Billing caller classification (injected via dependency).
 
@@ -1683,7 +1686,7 @@ def get_agent_playbooks(
         GetAgentPlaybooksViewResponse: Response containing agent playbooks without internal fields
     """
     reflexio = get_reflexio(org_id=org_id)
-    response = reflexio.get_agent_playbooks(request)
+    response = reflexio.get_agent_playbooks(payload)
     resp = GetAgentPlaybooksViewResponse(
         success=response.success,
         agent_playbooks=[to_agent_playbook_view(fb) for fb in response.agent_playbooks],
@@ -1693,8 +1696,8 @@ def get_agent_playbooks(
         org_id=org_id,
         caller_type=caller_type,
         surfaced_count=len(resp.agent_playbooks),
-        request_id=getattr(request, "request_id", None),
-        session_id=getattr(request, "session_id", None),
+        request_id=getattr(payload, "request_id", None),
+        session_id=getattr(payload, "session_id", None),
     )
     return resp
 
