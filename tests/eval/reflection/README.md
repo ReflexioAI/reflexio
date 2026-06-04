@@ -83,3 +83,17 @@ calls, so it lives behind the `@skip_low_priority` smoke
 `test_live_reflection_provider_real` (run with `RUN_LOW_PRIORITY=1` + an API
 key); a non-skipped mocked-seam test covers the provider's construction in
 default CI.
+
+## Comparing two prompt versions (deviation guard)
+
+To gate a candidate `memory_reflection` version against a baseline (the
+between-epoch degradation check of the prompt-tuning loop), use the shared CLI
+which runs this harness under both pinned versions and fails on regression:
+
+```bash
+uv run python -m tests.eval.prompt_deviation_guard \
+    --component reflection --candidate-version vX.Y.Z --judge-model claude-haiku-4-5
+```
+
+See `tests/eval/prompt_deviation_guard.py` (gate logic unit-tested in
+`tests/eval/test_prompt_deviation_guard.py`).
