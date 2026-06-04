@@ -254,6 +254,104 @@ class BaseGenerationService(
             metadata=metadata,
         )
 
+    def _extraction_input_text(self, prepared: "PreparedGenerationRun[Any]") -> str:
+        """Return the interaction content fed to the extractor as a single string.
+
+        Replays the same storage query the extractor uses (same user_id, source,
+        window params) so ``count_input_tokens`` sees the same text the LLM saw.
+        Returns an empty string when storage is unavailable or no interactions exist.
+
+        Args:
+            prepared: The prepared generation run, used to access extractor_config
+                for window/source parameters.
+
+        Returns:
+            str: Formatted interaction history string, or "" if nothing is found.
+        """
+        from reflexio.server.services.service_utils import (
+            format_sessions_to_history_string,
+        )
+
+        if self.storage is None or self.service_config is None:
+            return ""
+        try:
+            root_config = self.request_context.configurator.get_config()
+            global_window_size = (
+                getattr(root_config, "window_size", None) if root_config else None
+            )
+            global_stride_size = (
+                getattr(root_config, "stride_size", None) if root_config else None
+            )
+            window_size, _ = get_extractor_window_params(
+                prepared.extractor_config, global_window_size, global_stride_size
+            )
+            _, effective_source = get_effective_source_filter(
+                prepared.extractor_config, getattr(self.service_config, "source", None)
+            )
+            session_data_models, _ = self.storage.get_last_k_interactions_grouped(
+                user_id=getattr(self.service_config, "user_id", None),
+                k=window_size,
+                sources=effective_source,
+                start_time=getattr(self.service_config, "rerun_start_time", None),
+                end_time=getattr(self.service_config, "rerun_end_time", None),
+                **self._get_precheck_interaction_query_kwargs(),
+            )
+            return format_sessions_to_history_string(session_data_models)
+        except Exception:
+            return ""
+
+    def _record_billing_learning_events(
+        self, *, prepared: "PreparedGenerationRun[Any]", generated_count: int
+    ) -> None:
+        """Emit the ② Learning billing events. Called ONLY when extraction fired.
+
+        Emits ``learnings_generated`` (value facet) and ``extraction_tokens``
+        (cost facet) via the OSS emission helpers. ``platform_storage`` is left
+        ``None`` here and resolved enterprise-side at rollup (Phase 1).
+
+        Args:
+            prepared: The prepared generation run (used for input-text computation).
+            generated_count: Number of learnings produced by this extraction run.
+        """
+        from reflexio.server.billing_meter import (
+            record_extraction_tokens,
+            record_learnings_generated,
+        )
+        from reflexio.server.billing_signals import (
+            count_input_tokens,
+            platform_llm_from_config,
+        )
+
+        config = self.request_context.configurator.get_config()
+        platform_llm = platform_llm_from_config(config)
+        ctx = self._usage_context()
+
+        # ② Learning — value: learnings generated (helper no-ops on count <= 0).
+        record_learnings_generated(
+            org_id=ctx["org_id"],
+            count=generated_count,
+            platform_llm=platform_llm,
+            platform_storage=None,
+            pipeline=ctx.get("pipeline"),
+            request_id=ctx.get("request_id"),
+            session_id=ctx.get("session_id"),
+        )
+
+        # ② Learning — cost: input-anchored extraction tokens + real provider tokens.
+        totals = self._last_token_totals or RunTokenTotals()
+        billing_input_tokens = count_input_tokens(self._extraction_input_text(prepared))
+        record_extraction_tokens(
+            org_id=ctx["org_id"],
+            billing_input_tokens=billing_input_tokens,
+            prompt_tokens=totals.prompt_tokens,
+            completion_tokens=totals.completion_tokens,
+            platform_llm=platform_llm,
+            platform_storage=None,
+            pipeline=ctx.get("pipeline"),
+            request_id=ctx.get("request_id"),
+            session_id=ctx.get("session_id"),
+        )
+
     @staticmethod
     def _count_generated_results(result: Any) -> int:
         if isinstance(result, list):
@@ -706,6 +804,9 @@ class BaseGenerationService(
                         self._last_extractor_run_stats.get("timed_out")
                     ),
                 },
+            )
+            self._record_billing_learning_events(
+                prepared=prepared, generated_count=generated_count
             )
 
         except Exception as e:
