@@ -23,13 +23,14 @@ from __future__ import annotations
 
 import os
 import tempfile
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from reflexio.models.api_schema.service_schemas import UserPlaybook
 from reflexio.server.api_endpoints.request_context import RequestContext
-from reflexio.server.llm.litellm_client import LiteLLMClient
+from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.services.playbook.playbook_consolidator import (
     DifferentiateDecision,
     IndependentDecision,
@@ -873,3 +874,167 @@ class TestContradictionResolutionContract:
         # The assertion above pins the contract: if the apply layer ever grows
         # a runtime guard, this test will fail and should be updated to assert
         # that the violation is rejected at apply time instead.
+
+
+# ===============================
+# End-to-end: native litellm retry + fallback flows through the consolidator
+# ===============================
+
+
+def _make_completion_response(content: str) -> MagicMock:
+    """Build a minimal mock ``litellm.completion`` response.
+
+    Mirrors the shape consumed by :class:`LiteLLMClient._make_request`: a
+    single choice with ``message.content`` plus a token-usage object whose
+    cache-detail fields are present but empty so the logging path does not
+    raise. Matches the helper in ``tests/server/llm/test_litellm_client_unit.py``
+    so the behaviour observed here is identical to that suite.
+
+    Args:
+        content (str): Raw text body the consolidator will parse as JSON into
+            ``PlaybookConsolidationOutput``.
+
+    Returns:
+        MagicMock: Object compatible with ``response.choices[0].message.content``.
+    """
+    choice = MagicMock()
+    choice.message.content = content
+    choice.finish_reason = "stop"
+    resp = MagicMock()
+    resp.choices = [choice]
+    resp.usage = MagicMock(prompt_tokens=10, completion_tokens=5, total_tokens=15)
+    resp.usage.prompt_tokens_details = None
+    resp.usage.cache_creation_input_tokens = None
+    resp.usage.cache_read_input_tokens = None
+    # ``_emit_fallback_observability`` reads ``_hidden_params`` and falls back
+    # to ``response.model``; leave both unset so it short-circuits without
+    # tripping the Sentry path.
+    resp._hidden_params = {}
+    resp.model = None
+    return resp
+
+
+def _build_real_client_consolidator(
+    request_context: RequestContext,
+    *,
+    config: LiteLLMConfig,
+) -> PlaybookConsolidator:
+    """Build a ``PlaybookConsolidator`` wired to a real ``LiteLLMClient``.
+
+    The shared ``consolidator`` fixture in this file wires the consolidator to
+    a ``MagicMock(spec=LiteLLMClient)`` — useful for testing the apply path
+    but it never reaches ``litellm.completion``, so the native fallback
+    delegation cannot be observed through it. These end-to-end tests need a
+    real ``LiteLLMClient`` instance so the request actually flows into
+    ``_make_request`` -> ``litellm.completion``.
+
+    Args:
+        request_context (RequestContext): Real ``RequestContext`` (storage +
+            mocked prompt manager + real configurator).
+        config (LiteLLMConfig): Fully-formed config — built fresh per-test so
+            the ``fallback_models`` default factory reads the test's env state
+            at construction time.
+
+    Returns:
+        PlaybookConsolidator: Consolidator whose ``client`` is a real
+            ``LiteLLMClient``; ``model_name`` is fixed to ``"gpt-test"`` via
+            the same ``SiteVarManager`` patch used by the file's shared
+            fixture so the apply path is comparable.
+    """
+    client = LiteLLMClient(config)
+    with patch(
+        "reflexio.server.services.deduplication_utils.SiteVarManager"
+    ) as mock_svm:
+        mock_svm.return_value.get_site_var.return_value = {
+            "default_generation_model_name": "gpt-test"
+        }
+        return PlaybookConsolidator(request_context=request_context, llm_client=client)
+
+
+class TestConsolidatorNativeFallbackEndToEnd:
+    """End-to-end: ``_consolidation_decisions`` forwards retry + fallback into ``litellm.completion``.
+
+    The consolidator was the original production incident site (structured
+    output parse path on top of native retry + fallback), so this is the
+    highest-fidelity exercise of the Task 1-4 plumbing. Pinning both the
+    "env var on => fallback configured" and "env var unset => no fallback"
+    branches at this level prevents regressions where the plumbing works in
+    isolation but breaks once a structured-output wrapper sits on top.
+    """
+
+    def test_consolidator_calls_litellm_with_fallback_configured(
+        self, request_context, monkeypatch
+    ):
+        """Production-style: ``REFLEXIO_LLM_FALLBACK_MODELS`` set globally.
+
+        Asserts the consolidator's call into ``litellm.completion`` carries
+        ``num_retries=3`` (the default ``LiteLLMConfig.max_retries``) and
+        ``fallbacks=["gpt-5-mini"]`` end-to-end — proving Task 1-3's native
+        delegation survives the structured-output parse wrapper.
+        """
+        monkeypatch.setenv("REFLEXIO_LLM_FALLBACK_MODELS", "gpt-5-mini")
+        # LiteLLMConfig.fallback_models is a default_factory that reads
+        # os.environ at construction — build the config AFTER setenv so the
+        # new value flows in. The shared ``consolidator`` fixture builds its
+        # mock client lazily but caches it for the test's lifetime; this
+        # parallel builder sidesteps that cache entirely.
+        consolidator = _build_real_client_consolidator(
+            request_context,
+            config=LiteLLMConfig(model="minimax/MiniMax-M3"),
+        )
+
+        captured: dict[str, Any] = {}
+
+        def _fake(**params: Any) -> MagicMock:
+            captured.update(params)
+            return _make_completion_response('{"decisions": []}')
+
+        monkeypatch.setattr("litellm.completion", _fake)
+
+        result = consolidator._consolidation_decisions(
+            new_playbooks=[], existing_playbooks=[]
+        )
+
+        # End-to-end shape: parsed cleanly into the structured-output model.
+        assert isinstance(result, PlaybookConsolidationOutput)
+        assert result.decisions == []
+
+        # Linchpin: native delegation forwarded both knobs to litellm.
+        assert captured.get("num_retries") == 3
+        assert captured.get("fallbacks") == ["gpt-5-mini"]
+
+    def test_consolidator_uses_no_fallback_when_env_unset(
+        self, request_context, monkeypatch
+    ):
+        """Local / OSS safety contract: no env var => no fallback configured.
+
+        With ``REFLEXIO_LLM_FALLBACK_MODELS`` unset and no explicit
+        construction-arg, ``litellm.completion`` MUST NOT receive a
+        ``fallbacks`` kwarg. This preserves the "never silently route to an
+        unintended provider" guarantee for local reflexio and the
+        claude-smart integration documented in ``LiteLLMConfig``.
+        """
+        monkeypatch.delenv("REFLEXIO_LLM_FALLBACK_MODELS", raising=False)
+        consolidator = _build_real_client_consolidator(
+            request_context,
+            config=LiteLLMConfig(model="claude-code/claude-sonnet-4-6"),
+        )
+
+        captured: dict[str, Any] = {}
+
+        def _fake(**params: Any) -> MagicMock:
+            captured.update(params)
+            return _make_completion_response('{"decisions": []}')
+
+        monkeypatch.setattr("litellm.completion", _fake)
+
+        result = consolidator._consolidation_decisions(
+            new_playbooks=[], existing_playbooks=[]
+        )
+
+        assert isinstance(result, PlaybookConsolidationOutput)
+        assert result.decisions == []
+        # ``num_retries`` still flows (default 3); only ``fallbacks`` must be
+        # absent so litellm has no fallback chain to traverse.
+        assert captured.get("num_retries") == 3
+        assert "fallbacks" not in captured
