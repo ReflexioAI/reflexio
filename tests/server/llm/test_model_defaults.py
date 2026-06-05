@@ -182,7 +182,11 @@ class TestResolveModelName:
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
         for role in ModelRole:
             result = resolve_model_name(role)
-            expected = getattr(_PROVIDER_DEFAULTS["openai"], role.value)
+            expected = (
+                _PROVIDER_DEFAULTS["local"].embedding
+                if role == ModelRole.EMBEDDING
+                else getattr(_PROVIDER_DEFAULTS["openai"], role.value)
+            )
             assert result == expected, f"Mismatch for {role}"
 
     def test_auto_detect_anthropic(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -213,8 +217,8 @@ class TestResolveModelName:
         result = resolve_model_name(ModelRole.GENERATION)
         assert result == _PROVIDER_DEFAULTS["anthropic"].generation
 
-    def test_embedding_cross_provider_anthropic_primary(self) -> None:
-        """When only Anthropic key is in APIKeyConfig, embedding falls back to OpenAI via env."""
+    def test_embedding_config_default_ignores_cloud_api_keys(self) -> None:
+        """Embedding defaults to the OSS local model unless config overrides it."""
         from reflexio.models.config_schema import APIKeyConfig
 
         config = APIKeyConfig(
@@ -225,12 +229,12 @@ class TestResolveModelName:
             ModelRole.EMBEDDING,
             api_key_config=config,
         )
-        assert result == _PROVIDER_DEFAULTS["openai"].embedding
+        assert result == _PROVIDER_DEFAULTS["local"].embedding
 
     def test_gemini_embedding(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("GEMINI_API_KEY", "gem-test")
         result = resolve_model_name(ModelRole.EMBEDDING)
-        assert result == _PROVIDER_DEFAULTS["gemini"].embedding
+        assert result == _PROVIDER_DEFAULTS["local"].embedding
 
     def test_embedding_fallback_to_local_when_no_cloud(
         self, monkeypatch: pytest.MonkeyPatch
@@ -246,14 +250,14 @@ class TestResolveModelName:
     def test_embedding_fallback_skipped_when_cloud_available(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Cloud embedder beats local fallback when both are available."""
+        """Local default still wins when cloud embedding keys are available."""
         from reflexio.server.llm.providers import local_embedding_provider as lep
 
         monkeypatch.setenv("ANTHROPIC_API_KEY", "ant-test")
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
         monkeypatch.setattr(lep.importlib.util, "find_spec", lambda _name: object())
         result = resolve_model_name(ModelRole.EMBEDDING)
-        assert result == _PROVIDER_DEFAULTS["openai"].embedding
+        assert result == _PROVIDER_DEFAULTS["local"].embedding
 
     def test_embedding_explicit_opt_in_beats_cloud(
         self, monkeypatch: pytest.MonkeyPatch
@@ -267,16 +271,15 @@ class TestResolveModelName:
         result = resolve_model_name(ModelRole.EMBEDDING)
         assert result == _PROVIDER_DEFAULTS["local"].embedding
 
-    def test_embedding_no_chromadb_raises(
+    def test_embedding_default_does_not_probe_chromadb(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Anthropic only + chromadb missing → RuntimeError with install hint."""
+        """Saved config owns overrides; default model selection does not inspect imports."""
         from reflexio.server.llm.providers import local_embedding_provider as lep
 
         monkeypatch.setenv("ANTHROPIC_API_KEY", "ant-test")
         monkeypatch.setattr(lep.importlib.util, "find_spec", lambda _name: None)
-        with pytest.raises(RuntimeError, match="chromadb"):
-            resolve_model_name(ModelRole.EMBEDDING)
+        assert resolve_model_name(ModelRole.EMBEDDING) == _PROVIDER_DEFAULTS["local"].embedding
 
 
 # ---------------------------------------------------------------------------

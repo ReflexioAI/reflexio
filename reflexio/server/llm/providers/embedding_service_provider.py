@@ -30,8 +30,11 @@ _ENV_CLAUDE_SMART_LOCAL = "CLAUDE_SMART_USE_LOCAL_EMBEDDING"
 _DEFAULT_LOCAL_PORT = 8072
 _DEFAULT_INTERNAL_SERVICE_TIMEOUT_MS = 2_000
 _DEFAULT_LOCAL_SERVICE_TIMEOUT_MS = 30_000
+_LOCAL_SERVICE_PROBE_TIMEOUT_SECONDS = 0.2
+_LOCAL_SERVICE_PROBE_CACHE_SECONDS = 5.0
 _SERVICE_MODES = {"local_service", "internal_service"}
 _VALID_MODES = {"cloud", *_SERVICE_MODES, "inprocess", "off"}
+_local_service_probe_cache: tuple[float, bool, str | None] | None = None
 
 
 class EmbeddingUnavailableError(RuntimeError):
@@ -79,6 +82,43 @@ def embedding_service_timeout_seconds(
     return max(timeout_ms, 1) / 1000
 
 
+def _is_local_model(model: str | None) -> bool:
+    return bool(model and model.startswith("local/"))
+
+
+def _local_service_status() -> tuple[bool, str | None]:
+    global _local_service_probe_cache
+    now = time.monotonic()
+    if (
+        _local_service_probe_cache is not None
+        and now - _local_service_probe_cache[0] < _LOCAL_SERVICE_PROBE_CACHE_SECONDS
+    ):
+        return _local_service_probe_cache[1], _local_service_probe_cache[2]
+
+    try:
+        response = httpx.get(
+            f"{_local_service_url()}/health",
+            timeout=_LOCAL_SERVICE_PROBE_TIMEOUT_SECONDS,
+        )
+        reachable = response.status_code < 500
+        active_model = response.json().get("active_model") if reachable else None
+        if not isinstance(active_model, str):
+            active_model = None
+    except httpx.HTTPError:
+        reachable = False
+        active_model = None
+    except ValueError:
+        reachable = False
+        active_model = None
+    _local_service_probe_cache = (now, reachable, active_model)
+    return reachable, active_model
+
+
+def _local_service_supports_model(model: str | None) -> bool:
+    reachable, active_model = _local_service_status()
+    return reachable and (active_model is None or active_model == model)
+
+
 def _ordered_embeddings_from_response(
     data: Any, expected_count: int
 ) -> list[list[float]]:
@@ -124,10 +164,10 @@ def _ordered_embeddings_from_response(
 def embedding_provider_mode(model: str | None = None) -> EmbeddingProviderMode:
     """Resolve the embedding provider mode for a model.
 
-    Backwards compatibility: a ``local/*`` model still uses the in-process
-    embedder unless the user explicitly chooses a mode or Claude Smart's legacy
-    ``CLAUDE_SMART_USE_LOCAL_EMBEDDING=1`` flag is present. That legacy flag
-    now means "use the shared local service" by default.
+    Explicit legacy env modes keep their historical behavior. With no explicit
+    env mode, routing is model-driven: ``local/*`` uses the local daemon when it
+    is reachable and otherwise falls back to the in-process embedder; cloud
+    models use their provider directly.
     """
     configured = os.environ.get(_ENV_PROVIDER)
     if configured:
@@ -145,8 +185,8 @@ def embedding_provider_mode(model: str | None = None) -> EmbeddingProviderMode:
     if os.environ.get(_ENV_SERVICE_URL):
         return "internal_service"
 
-    if model and model.startswith("local/"):
-        return "inprocess"
+    if _is_local_model(model):
+        return "local_service" if _local_service_supports_model(model) else "inprocess"
     return "cloud"
 
 

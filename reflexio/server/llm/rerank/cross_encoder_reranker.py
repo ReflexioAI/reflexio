@@ -108,12 +108,13 @@ def _get_model() -> Any:
             return _MODEL
         cross_encoder_cls = _import_cross_encoder()
         try:
+            _LOGGER.info("Loading reranker model %s", _MODEL_NAME)
             _MODEL = cross_encoder_cls(_MODEL_NAME)
         except Exception as e:  # noqa: BLE001 — surface as a typed failure
             raise CrossEncoderUnavailableError(
                 f"Failed to load cross-encoder model {_MODEL_NAME!r}: {e}"
             ) from e
-        _LOGGER.info("Loaded cross-encoder model %s", _MODEL_NAME)
+        _LOGGER.info("Reranker model ready (model=%s)", _MODEL_NAME)
         return _MODEL
 
 

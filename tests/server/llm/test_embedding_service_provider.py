@@ -6,6 +6,7 @@ import httpx
 import pytest
 
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
+from reflexio.server.llm.providers import embedding_service_provider as esp
 from reflexio.server.llm.providers.embedding_service_provider import (
     EmbeddingUnavailableError,
     embedding_provider_mode,
@@ -34,6 +35,46 @@ def test_local_model_without_opt_in_preserves_inprocess_mode(monkeypatch) -> Non
     monkeypatch.delenv("REFLEXIO_EMBEDDING_PROVIDER", raising=False)
     monkeypatch.delenv("REFLEXIO_EMBEDDING_SERVICE_URL", raising=False)
     monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_EMBEDDING", raising=False)
+    monkeypatch.setattr(esp, "_local_service_probe_cache", None)
+    monkeypatch.setattr(
+        esp.httpx,
+        "get",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            httpx.RequestError("connection refused")
+        ),
+    )
+
+    assert embedding_provider_mode("local/minilm-l6-v2") == "inprocess"
+
+
+def test_local_model_auto_uses_reachable_matching_daemon(monkeypatch) -> None:
+    class _HealthResponse:
+        status_code = 200
+
+        def json(self) -> dict[str, str]:
+            return {"active_model": "local/nomic-embed-text-v1.5"}
+
+    monkeypatch.delenv("REFLEXIO_EMBEDDING_PROVIDER", raising=False)
+    monkeypatch.delenv("REFLEXIO_EMBEDDING_SERVICE_URL", raising=False)
+    monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_EMBEDDING", raising=False)
+    monkeypatch.setattr(esp, "_local_service_probe_cache", None)
+    monkeypatch.setattr(esp.httpx, "get", lambda *_args, **_kwargs: _HealthResponse())
+
+    assert embedding_provider_mode("local/nomic-embed-text-v1.5") == "local_service"
+
+
+def test_local_model_auto_avoids_reachable_mismatched_daemon(monkeypatch) -> None:
+    class _HealthResponse:
+        status_code = 200
+
+        def json(self) -> dict[str, str]:
+            return {"active_model": "local/nomic-embed-text-v1.5"}
+
+    monkeypatch.delenv("REFLEXIO_EMBEDDING_PROVIDER", raising=False)
+    monkeypatch.delenv("REFLEXIO_EMBEDDING_SERVICE_URL", raising=False)
+    monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_EMBEDDING", raising=False)
+    monkeypatch.setattr(esp, "_local_service_probe_cache", None)
+    monkeypatch.setattr(esp.httpx, "get", lambda *_args, **_kwargs: _HealthResponse())
 
     assert embedding_provider_mode("local/minilm-l6-v2") == "inprocess"
 

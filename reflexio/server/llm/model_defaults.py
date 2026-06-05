@@ -2,8 +2,8 @@
 
 Resolution order (highest priority first):
     1. LLMConfig override (org-level configuration)
-    2. llm_model_setting.json site var (non-empty string values)
-    3. Auto-detect from available API keys in environment / APIKeyConfig
+    2. For embeddings, Reflexio's local default model
+    3. For other roles, llm_model_setting.json site var and provider autodetection
 """
 
 from __future__ import annotations
@@ -372,16 +372,16 @@ def resolve_model_name(
     config_override: str | None = None,
     api_key_config: APIKeyConfig | None = None,
 ) -> str:
-    """Resolve a model name using the 3-tier chain.
+    """Resolve a model name using the role-specific default chain.
 
     Resolution order (highest priority first):
         1. config_override (from LLMConfig, org-level)
-        2. site_var_value (from llm_model_setting.json, non-empty strings only)
-        3. Auto-detect from available API keys
+        2. For EMBEDDING, the OSS local MiniLM model
+        3. For other roles, site_var_value then auto-detect from available API keys
 
     Args:
         role: The model role to resolve.
-        site_var_value: Value from llm_model_setting.json. Empty strings are treated as unset.
+        site_var_value: Value from llm_model_setting.json. Ignored for embeddings.
         config_override: Value from org-level LLMConfig.
         api_key_config: Optional org-level API key configuration for provider detection.
 
@@ -393,6 +393,11 @@ def resolve_model_name(
     """
     if config_override:
         return config_override
+    if role == ModelRole.EMBEDDING:
+        return (
+            _PROVIDER_DEFAULTS[_LOCAL_EMBEDDING_PROVIDER].embedding
+            or "local/minilm-l6-v2"
+        )
     if site_var_value:
         return site_var_value
     providers = detect_available_providers(api_key_config)
@@ -404,7 +409,7 @@ def validate_llm_availability(
 ) -> None:
     """Validate that at least one LLM provider and one embedding provider are available.
 
-    Should be called once during startup. Logs the auto-selected provider at INFO level.
+    Should be called once during startup. Logs available providers at INFO level.
 
     Args:
         api_key_config: Optional org-level API key configuration.
@@ -449,7 +454,11 @@ def validate_llm_availability(
         (p for p in providers if _PROVIDER_DEFAULTS[p].embedding), None
     )
     if embedding_provider:
-        logger.info("Embedding provider: %s", embedding_provider)
+        logger.info(
+            "Cloud embedding provider available: %s (used when the saved "
+            "embedding model selects this provider)",
+            embedding_provider,
+        )
         return
 
     from reflexio.server.llm.providers.local_embedding_provider import (
@@ -458,7 +467,8 @@ def validate_llm_availability(
 
     if is_chromadb_importable():
         logger.info(
-            "Embedding provider: %s (fallback — no cloud embedder configured)",
+            "Local MiniLM embedding fallback available: %s "
+            "(no cloud embedding provider configured)",
             _LOCAL_EMBEDDING_PROVIDER,
         )
         return

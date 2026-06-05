@@ -59,6 +59,10 @@ class NomicEmbedderError(RuntimeError):
     """Raised when the Nomic embedder is requested but its deps are missing."""
 
 
+def _huggingface_cache_path() -> str:
+    return os.environ.get("HF_HOME") or "~/.cache/huggingface"
+
+
 class NomicEmbedder:
     """Lazily-loaded singleton wrapping a sentence-transformers model.
 
@@ -102,8 +106,9 @@ class NomicEmbedder:
                 ) from exc
             _LOGGER.info(
                 "Loading Nomic embedding model %s — first call may download "
-                "~550 MB to ~/.cache/huggingface/",
+                "~550 MB to %s",
                 _HF_MODEL_NAME,
+                _huggingface_cache_path(),
             )
             # Force CPU device — MPS init has been observed to hang on some
             # Apple Silicon + macOS combos for several minutes during model
@@ -120,7 +125,7 @@ class NomicEmbedder:
                 "Nomic embedder ready (model=%s, target_dim=%d, native_dim=%d)",
                 _HF_MODEL_NAME,
                 _TARGET_DIM,
-                self._model.get_sentence_embedding_dimension(),
+                _embedding_dimension(self._model),
             )
             return self._model
 
@@ -165,6 +170,15 @@ def _truncate_and_renormalise(vec: list[float]) -> list[float]:
     if norm <= 0:
         return sliced
     return [x / norm for x in sliced]
+
+
+def _embedding_dimension(model: Any) -> int:
+    get_embedding_dimension = getattr(model, "get_embedding_dimension", None)
+    if callable(get_embedding_dimension):
+        dimension = get_embedding_dimension()
+    else:
+        dimension = model.get_sentence_embedding_dimension()
+    return int(dimension)  # type: ignore[arg-type]
 
 
 _REGISTERED = False

@@ -154,7 +154,7 @@ def register_if_chromadb_available() -> bool:
         _LOGGER.debug("Local embedder not registered: `chromadb` is not installed.")
         return False
     _REGISTERED = True
-    _LOGGER.info("Local embedding provider enabled (model=%s)", _MODEL_KEY)
+    _LOGGER.debug("Registered local MiniLM embedding handler (model=%s)", _MODEL_KEY)
     return True
 
 

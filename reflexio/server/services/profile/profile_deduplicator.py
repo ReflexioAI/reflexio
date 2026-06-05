@@ -7,6 +7,7 @@ import logging
 import os
 import uuid
 from datetime import UTC, datetime
+from typing import cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -302,11 +303,32 @@ class ProfileDeduplicator(BaseDeduplicator):
         if not query_texts:
             return []
 
-        # Batch-generate embeddings
+        # Generate embeddings with the request storage backend so dedup search
+        # uses the same model/prefix/routing as normal profile search.
+        embeddings: list[list[float] | None]
         try:
-            embeddings = self.client.get_embeddings(
-                query_texts, dimensions=EMBEDDING_DIMENSIONS
-            )
+            get_storage_embedding = getattr(storage, "_get_embedding", None)
+            if callable(get_storage_embedding):
+                logger.info(
+                    "Profile dedup query embeddings: source=storage model=%s",
+                    getattr(storage, "embedding_model_name", "unknown"),
+                )
+                embeddings = [
+                    cast(
+                        list[float],
+                        get_storage_embedding(query_text, purpose="query"),
+                    )
+                    for query_text in query_texts
+                ]
+            else:
+                logger.info(
+                    "Profile dedup query embeddings: source=llm_client model=default"
+                )
+                embeddings = list(
+                    self.client.get_embeddings(
+                        query_texts, dimensions=EMBEDDING_DIMENSIONS
+                    )
+                )
         except Exception as e:
             logger.warning("Failed to generate embeddings for dedup search: %s", e)
             embeddings = [None] * len(query_texts)

@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 import math
 import threading
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
@@ -15,16 +18,19 @@ from reflexio.server.llm.providers.nomic_embedding_provider import (
     is_nomic_model,
 )
 
-_MINILM_MODEL = "local/minilm-l6-v2"
+logger = logging.getLogger(__name__)
+
+MINILM_MODEL = "local/minilm-l6-v2"
+NOMIC_TEXT_MODEL = "local/nomic-embed-text-v1.5"
 _SUPPORTED_MODELS = {
-    _MINILM_MODEL,
+    MINILM_MODEL,
     "local/nomic-embed-v1.5",
-    "local/nomic-embed-text-v1.5",
+    NOMIC_TEXT_MODEL,
 }
 _ACTIVE_MODEL: str | None = None
 _ACTIVE_MODEL_LOCK = threading.Lock()
 
-app = FastAPI(title="Reflexio Embedding Service")
+DEFAULT_OSS_EMBEDDING_MODEL = MINILM_MODEL
 
 
 class EmbeddingRequest(BaseModel):
@@ -45,36 +51,59 @@ class EmbeddingResponse(BaseModel):
     model: str
 
 
-@app.get("/health")
-def health() -> dict[str, Any]:
-    """Health check endpoint."""
-    return {"status": "ok", "active_model": _ACTIVE_MODEL}
+def create_embedding_app(default_model: str | None = None) -> FastAPI:
+    """Create the embedding daemon app and optionally warm a default model."""
 
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        if not default_model:
+            yield
+            return
+        try:
+            _embed_texts(default_model, ["reflexio embedding daemon warmup"])
+        except Exception:
+            logger.exception("Failed to warm embedding model %s", default_model)
+            raise
+        yield
 
-@app.post("/v1/embeddings")
-def create_embeddings(request: EmbeddingRequest) -> EmbeddingResponse:
-    """Create embeddings using the daemon's single active local model."""
-    _activate_model(request.model)
-    texts = [request.input] if isinstance(request.input, str) else list(request.input)
-    if is_nomic_model(request.model):
-        embeddings = NomicEmbedder.get().embed(texts)
-    elif request.model == _MINILM_MODEL:
-        embeddings = LocalEmbedder.get().embed(texts)
-    else:
-        raise HTTPException(
-            status_code=400, detail=f"Unsupported model: {request.model}"
+    embedding_app = FastAPI(title="Reflexio Embedding Service", lifespan=lifespan)
+
+    @embedding_app.get("/health")
+    def health() -> dict[str, Any]:
+        """Health check endpoint."""
+        return {"status": "ok", "active_model": _ACTIVE_MODEL}
+
+    @embedding_app.post("/v1/embeddings")
+    def create_embeddings(request: EmbeddingRequest) -> EmbeddingResponse:
+        """Create embeddings using the daemon's single active local model."""
+        texts = (
+            [request.input] if isinstance(request.input, str) else list(request.input)
+        )
+        embeddings = _embed_texts(request.model, texts)
+
+        if request.dimensions:
+            embeddings = [
+                _resize_embedding(vec, request.dimensions) for vec in embeddings
+            ]
+
+        return EmbeddingResponse(
+            data=[
+                EmbeddingData(embedding=embedding, index=index)
+                for index, embedding in enumerate(embeddings)
+            ],
+            model=request.model,
         )
 
-    if request.dimensions:
-        embeddings = [_resize_embedding(vec, request.dimensions) for vec in embeddings]
+    return embedding_app
 
-    return EmbeddingResponse(
-        data=[
-            EmbeddingData(embedding=embedding, index=index)
-            for index, embedding in enumerate(embeddings)
-        ],
-        model=request.model,
-    )
+
+def _embed_texts(model: str, texts: list[str]) -> list[list[float]]:
+    _activate_model(model)
+    if is_nomic_model(model):
+        return NomicEmbedder.get().embed(texts)
+    if model == MINILM_MODEL:
+        return LocalEmbedder.get().embed(texts)
+    raise HTTPException(status_code=400, detail=f"Unsupported model: {model}")
 
 
 def _activate_model(model: str) -> None:
@@ -108,3 +137,6 @@ def _resize_embedding(vec: list[float], dimensions: int) -> list[float]:
     if norm <= 0:
         return sliced
     return [value / norm for value in sliced]
+
+
+app = create_embedding_app(default_model=DEFAULT_OSS_EMBEDDING_MODEL)
