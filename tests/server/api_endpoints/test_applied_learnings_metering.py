@@ -8,9 +8,14 @@ dashboard callers or empty result sets.
 from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
+import pytest
 from fastapi.testclient import TestClient
 
-from reflexio.models.api_schema.ui.entities import AgentPlaybookView, ProfileView
+from reflexio.models.api_schema.ui.entities import (
+    AgentPlaybookView,
+    ProfileView,
+    UserPlaybookView,
+)
 from reflexio.server.api import create_app
 from reflexio.server.usage_metrics import UsageEvent, configure_usage_event_recorder
 
@@ -27,6 +32,10 @@ def _make_profile_view(user_id: str = "u1") -> ProfileView:
 
 def _make_agent_playbook_view() -> AgentPlaybookView:
     return AgentPlaybookView(agent_version="v1", content="content")
+
+
+def _make_user_playbook_view() -> UserPlaybookView:
+    return UserPlaybookView(agent_version="v1", request_id="r1", content="content")
 
 
 def _client(caller_type: str) -> TestClient:
@@ -90,7 +99,9 @@ def test_production_agent_search_meters_surfaced_count() -> None:
 
     applied = [e for e in events if e.event_name == "learning_applied"]
     assert len(applied) == 1
-    assert applied[0].count_value == 3  # 2 profiles + 1 agent_playbook + 0 user_playbooks
+    assert (
+        applied[0].count_value == 3
+    )  # 2 profiles + 1 agent_playbook + 0 user_playbooks
     assert applied[0].caller_type == "production_agent"
 
 
@@ -99,7 +110,9 @@ def test_dashboard_search_meters_nothing() -> None:
     events = _capture()
     try:
         with _patch_unified_search([_make_profile_view()], [], []):
-            _client("dashboard").post("/api/search", json={"query": "x", "user_id": "u1"})
+            _client("dashboard").post(
+                "/api/search", json={"query": "x", "user_id": "u1"}
+            )
     finally:
         configure_usage_event_recorder(None)
 
@@ -140,11 +153,13 @@ def test_metering_failure_does_not_break_search_response() -> None:
         mock_response.user_playbooks = []
         mock_reflexio_search.unified_search.return_value = mock_response
         # Make get_config raise so metering blows up after the search completes.
-        mock_reflexio_search.request_context.configurator.get_config.side_effect = RuntimeError(
-            "boom"
+        mock_reflexio_search.request_context.configurator.get_config.side_effect = (
+            RuntimeError("boom")
         )
 
-        with patch("reflexio.server.api.get_reflexio", return_value=mock_reflexio_search):
+        with patch(
+            "reflexio.server.api.get_reflexio", return_value=mock_reflexio_search
+        ):
             resp = _client("production_agent").post(
                 "/api/search", json={"query": "x", "user_id": "u1"}
             )
@@ -153,4 +168,143 @@ def test_metering_failure_does_not_break_search_response() -> None:
         configure_usage_event_recorder(None)
 
     # Metering failed silently — no learning_applied event should have been emitted.
+    assert [e for e in events if e.event_name == "learning_applied"] == []
+
+
+# --- Per-endpoint metering (the four non-unified routes) -----------------------
+#
+# Each of these endpoints calls a distinct service method on get_reflexio and
+# derives surfaced_count from a distinct response list attribute. The cases below
+# exercise the real endpoint handler + view conversion + _meter_applied_learnings
+# wiring for each, asserting the emitted surfaced_count matches that route's shape.
+
+
+@contextmanager
+def _patch_service_method(method_name: str, response_attr: str, items: list):
+    """Patch get_reflexio so ``method_name`` returns a canned service response.
+
+    The response carries ``items`` on ``response_attr`` (e.g. ``user_profiles``)
+    so the endpoint's view conversion and surfaced_count computation run for real.
+    get_config() returns None so platform_llm_from_config(None) is True without
+    iterating a MagicMock.
+    """
+    mock_reflexio = MagicMock()
+    mock_response = MagicMock()
+    mock_response.success = True
+    mock_response.msg = "OK"
+    setattr(mock_response, response_attr, items)
+    getattr(mock_reflexio, method_name).return_value = mock_response
+    mock_reflexio.request_context.configurator.get_config.return_value = None
+
+    with patch("reflexio.server.api.get_reflexio", return_value=mock_reflexio):
+        yield
+
+
+# (path, payload, service method, response attribute, surfaced item factory)
+_ENDPOINT_CASES = [
+    pytest.param(
+        "/api/search_profiles",
+        {"user_id": "u1", "query": "x"},
+        "search_user_profiles",
+        "user_profiles",
+        _make_profile_view,
+        id="search_profiles",
+    ),
+    pytest.param(
+        "/api/search_user_playbooks",
+        {"query": "x"},
+        "search_user_playbooks",
+        "user_playbooks",
+        _make_user_playbook_view,
+        id="search_user_playbooks",
+    ),
+    pytest.param(
+        "/api/search_agent_playbooks",
+        {"query": "x"},
+        "search_agent_playbooks",
+        "agent_playbooks",
+        _make_agent_playbook_view,
+        id="search_agent_playbooks",
+    ),
+    pytest.param(
+        "/api/get_agent_playbooks",
+        {},
+        "get_agent_playbooks",
+        "agent_playbooks",
+        _make_agent_playbook_view,
+        id="get_agent_playbooks",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("path", "payload", "method_name", "response_attr", "make_item"),
+    _ENDPOINT_CASES,
+)
+def test_production_agent_per_endpoint_meters_surfaced_count(
+    path: str,
+    payload: dict,
+    method_name: str,
+    response_attr: str,
+    make_item,
+) -> None:
+    """Each non-unified route emits one learning_applied event with its own count."""
+    events = _capture()
+    items = [make_item(), make_item()]
+    try:
+        with _patch_service_method(method_name, response_attr, items):
+            resp = _client("production_agent").post(path, json=payload)
+        assert resp.status_code == 200
+    finally:
+        configure_usage_event_recorder(None)
+
+    applied = [e for e in events if e.event_name == "learning_applied"]
+    assert len(applied) == 1
+    assert applied[0].count_value == 2  # len(items) for this endpoint's response shape
+    assert applied[0].caller_type == "production_agent"
+
+
+@pytest.mark.parametrize(
+    ("path", "payload", "method_name", "response_attr", "make_item"),
+    _ENDPOINT_CASES,
+)
+def test_dashboard_per_endpoint_meters_nothing(
+    path: str,
+    payload: dict,
+    method_name: str,
+    response_attr: str,
+    make_item,
+) -> None:
+    """A dashboard caller never meters, regardless of the route or result size."""
+    events = _capture()
+    try:
+        with _patch_service_method(method_name, response_attr, [make_item()]):
+            resp = _client("dashboard").post(path, json=payload)
+        assert resp.status_code == 200
+    finally:
+        configure_usage_event_recorder(None)
+
+    assert [e for e in events if e.event_name == "learning_applied"] == []
+
+
+@pytest.mark.parametrize(
+    ("path", "payload", "method_name", "response_attr", "make_item"),
+    _ENDPOINT_CASES,
+)
+def test_empty_result_per_endpoint_meters_nothing(
+    path: str,
+    payload: dict,
+    method_name: str,
+    response_attr: str,
+    make_item,
+) -> None:
+    """A production-agent call surfacing zero results meters nothing on any route."""
+    events = _capture()
+    try:
+        with _patch_service_method(method_name, response_attr, []):
+            resp = _client("production_agent").post(path, json=payload)
+        assert resp.status_code == 200
+    finally:
+        configure_usage_event_recorder(None)
+
     assert [e for e in events if e.event_name == "learning_applied"] == []

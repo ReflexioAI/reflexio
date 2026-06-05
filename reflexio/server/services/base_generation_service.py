@@ -344,6 +344,13 @@ class BaseGenerationService(
             platform_llm = platform_llm_from_config(config)
             ctx = self._usage_context()
 
+            # session_id is intentionally not passed: the generation path has no
+            # session_id source. _usage_context() never includes it, and neither
+            # the Profile/Playbook service configs nor their requests carry a
+            # session_id (unlike the Application-line path in server/api.py, which
+            # reads it from the publish payload). Learning events therefore meter
+            # without session attribution by design.
+
             # ② Learning — value: learnings generated (helper no-ops on count <= 0).
             record_learnings_generated(
                 org_id=ctx["org_id"],
@@ -352,12 +359,13 @@ class BaseGenerationService(
                 platform_storage=None,
                 pipeline=ctx.get("pipeline"),
                 request_id=ctx.get("request_id"),
-                session_id=ctx.get("session_id"),
             )
 
             # ② Learning — cost: input-anchored extraction tokens + real provider tokens.
             totals = self._last_token_totals or RunTokenTotals()
-            billing_input_tokens = count_input_tokens(self._extraction_input_text(prepared))
+            billing_input_tokens = count_input_tokens(
+                self._extraction_input_text(prepared)
+            )
             record_extraction_tokens(
                 org_id=ctx["org_id"],
                 billing_input_tokens=billing_input_tokens,
@@ -367,7 +375,6 @@ class BaseGenerationService(
                 platform_storage=None,
                 pipeline=ctx.get("pipeline"),
                 request_id=ctx.get("request_id"),
-                session_id=ctx.get("session_id"),
             )
         except Exception:
             logger.warning(

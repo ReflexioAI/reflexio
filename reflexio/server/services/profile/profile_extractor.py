@@ -84,7 +84,7 @@ class ProfileExtractor:
         self.service_config: ProfileGenerationServiceConfig = service_config
         self.agent_context = agent_context
         self._last_resumable_run_id: str | None = None
-        self._last_resumable_trace: RunTokenTotals | None = None
+        self._last_resumable_token_totals: RunTokenTotals | None = None
 
         # Get LLM config overrides from configuration
         config = self.request_context.configurator.get_config()
@@ -245,7 +245,8 @@ class ProfileExtractor:
                 # `or` is safe: a dataclass instance (even RunTokenTotals(0,0)) is
                 # always truthy, so a real-but-zero total is never overwritten by
                 # the fallback trace.
-                token_totals=raw_profiles.token_totals or self._last_resumable_trace,
+                token_totals=raw_profiles.token_totals
+                or self._last_resumable_token_totals,
             )
         user_profiles = self._convert_raw_to_user_profiles(
             raw_profiles=raw_profiles or [],
@@ -265,7 +266,7 @@ class ProfileExtractor:
             return ExtractionOutcome.completed(
                 user_profiles,
                 run_id=self._last_resumable_run_id,
-                token_totals=self._last_resumable_trace,
+                token_totals=self._last_resumable_token_totals,
             )
         return user_profiles or None
 
@@ -400,7 +401,7 @@ class ProfileExtractor:
             log_label="Profile extraction",
         )
         self._last_resumable_run_id = result.run_id
-        self._last_resumable_trace = sum_trace_tokens(result.trace)
+        self._last_resumable_token_totals = sum_trace_tokens(result.trace)
         if not isinstance(result.output, StructuredProfilesOutput):
             logger.warning(
                 "Profile extraction did not finish: %s", result.finished_reason
