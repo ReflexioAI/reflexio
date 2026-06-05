@@ -56,7 +56,9 @@ class SearchUserProfileRequest(BaseModel):
     top_k: int | None = Field(default=10, gt=0)
     source: str | None = None
     custom_feature: str | None = None
-    extractor_name: str | None = None  # Deprecated compatibility field; accepted but ignored.
+    extractor_name: str | None = (
+        None  # Deprecated compatibility field; accepted but ignored.
+    )
     threshold: float | None = Field(default=0.4, ge=0.0, le=1.0)
     enable_reformulation: bool | None = False
     search_mode: SearchMode = SearchMode.HYBRID

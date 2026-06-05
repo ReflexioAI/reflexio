@@ -34,9 +34,12 @@ def get_extractor_name(config: object) -> str:
         return SINGLETON_USER_PLAYBOOK_NAME
     if isinstance(config, AgentSuccessConfig):
         return SINGLETON_AGENT_SUCCESS_EVALUATION_NAME
-    return getattr(config, "extractor_name", None) or getattr(
-        config, "playbook_name", None
-    ) or getattr(config, "evaluation_name", "unknown") or "unknown"
+    return (
+        getattr(config, "extractor_name", None)
+        or getattr(config, "playbook_name", None)
+        or getattr(config, "evaluation_name", "unknown")
+        or "unknown"
+    )
 
 
 def filter_extractor_configs[TExtractorConfig](

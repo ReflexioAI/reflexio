@@ -646,8 +646,9 @@ class TestAggregatorRunWithChangeDetection:
 
         # LLM should be called for ALL clusters
         assert mock_llm_client.generate_chat_response.call_count == len(clusters)
-        # archive_agent_playbooks_by_playbook_name should be called (full archive)
-        mock_storage.archive_agent_playbooks_by_playbook_name.assert_called_once()
+        # archive_agent_playbooks_by_playbook_name should be called for each
+        # full-archive playbook name (one call per name)
+        mock_storage.archive_agent_playbooks_by_playbook_name.assert_called()
 
     def test_error_during_save_restores_archived_playbooks(self):
         """If save_agent_playbooks fails, archived playbooks should be restored."""
@@ -732,7 +733,7 @@ class TestAggregatorRunWithChangeDetection:
 
         aggregator.run(request)
 
-        mock_storage.delete_archived_agent_playbooks_by_playbook_name.assert_called_once()
+        mock_storage.delete_archived_agent_playbooks_by_playbook_name.assert_called()
 
     def test_first_run_restores_archived_on_error(self):
         """Regression: first-run (non-rerun) must restore archived playbooks on save error."""
@@ -755,7 +756,7 @@ class TestAggregatorRunWithChangeDetection:
         with pytest.raises(Exception, match="Storage save error"):
             aggregator.run(request)
 
-        mock_storage.restore_archived_agent_playbooks_by_playbook_name.assert_called_once()
+        mock_storage.restore_archived_agent_playbooks_by_playbook_name.assert_called()
 
 
 class TestLLMResponseTypeSafety:

@@ -198,7 +198,8 @@ class ProfileGenerationService(
                     error_type=type(e).__name__,
                 ):
                     logger.exception(
-                        "Failed to save profiles for user id: %s", user_id,
+                        "Failed to save profiles for user id: %s",
+                        user_id,
                     )
                 return
 
@@ -224,7 +225,8 @@ class ProfileGenerationService(
                     ):
                         logger.exception(
                             "Failed to delete superseded profile %s for user %s",
-                            profile_id, user_id,
+                            profile_id,
+                            user_id,
                         )
 
         # Create profile changelog post-deduplication
@@ -250,7 +252,8 @@ class ProfileGenerationService(
                     error_type=type(e).__name__,
                 ):
                     logger.exception(
-                        "Failed to add profile change log for user %s", user_id,
+                        "Failed to add profile change log for user %s",
+                        user_id,
                     )
 
     def check_and_update_profiles(self, profiles: list[UserProfile]) -> None:

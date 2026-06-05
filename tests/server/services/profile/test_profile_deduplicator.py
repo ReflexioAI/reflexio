@@ -294,7 +294,7 @@ class TestProfileDeduplicatorInit:
                 request_context=mock_request_context,
                 llm_client=mock_llm_client,
             )
-            assert deduplicator.model_name == "gpt-5-mini"
+            assert deduplicator.model_name == "gpt-5.5"
 
 
 # ===============================

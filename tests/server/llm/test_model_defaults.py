@@ -407,9 +407,9 @@ class TestExtractionAgentRole:
         assert anthropic.extraction_agent is not None
         assert "sonnet" in anthropic.extraction_agent.lower()
 
-    def test_openai_defaults_map_to_gpt5_mini(self) -> None:
+    def test_openai_defaults_map_to_gpt5(self) -> None:
         openai = _PROVIDER_DEFAULTS["openai"]
-        assert openai.extraction_agent == "gpt-5-mini"
+        assert openai.extraction_agent == "gpt-5.5"
 
     def test_claude_code_defaults_cover_extraction_agent(self) -> None:
         cc = _PROVIDER_DEFAULTS["claude-code"]
@@ -452,7 +452,7 @@ class TestMinimaxExtractionAgentRole:
         )
 
         result = _auto_detect_model(ModelRole.EXTRACTION_AGENT, providers=["minimax"])
-        assert result == "minimax/MiniMax-M2.7"
+        assert result == "minimax/MiniMax-M3"
 
 
 # ---------------------------------------------------------------------------
@@ -467,7 +467,7 @@ class TestMinimaxOnlyEnvRegression:
     The contract this class locks in: when the only LLM env var in scope
     is MINIMAX_API_KEY, every generation-family role (the slots that
     profile_extractor / playbook_extractor / agent_success_evaluator
-    resolve at construction time) must resolve to ``minimax/MiniMax-M2.7``,
+    resolve at construction time) must resolve to ``minimax/MiniMax-M3``,
     not to any OpenAI default. This is the runtime expectation the
     setup-init wizard documents to MiniMax-only users.
 
@@ -483,8 +483,8 @@ class TestMinimaxOnlyEnvRegression:
         """``default_generation_model_name`` must be the MiniMax model."""
         monkeypatch.setenv("MINIMAX_API_KEY", "mm-test")
         result = resolve_model_name(ModelRole.GENERATION)
-        assert result == "minimax/MiniMax-M2.7", (
-            f"Expected minimax/MiniMax-M2.7, got {result!r}. If this fails, "
+        assert result == "minimax/MiniMax-M3", (
+            f"Expected minimax/MiniMax-M3, got {result!r}. If this fails, "
             "MiniMax-only users will hit OpenAI auth errors at extraction time."
         )
 
@@ -494,7 +494,7 @@ class TestMinimaxOnlyEnvRegression:
         """``should_run_model_name`` must also resolve to the MiniMax model."""
         monkeypatch.setenv("MINIMAX_API_KEY", "mm-test")
         result = resolve_model_name(ModelRole.SHOULD_RUN)
-        assert result == "minimax/MiniMax-M2.7"
+        assert result == "minimax/MiniMax-M3"
 
     def test_all_generation_roles_resolve_to_minimax(
         self, monkeypatch: pytest.MonkeyPatch
@@ -537,7 +537,7 @@ class TestMinimaxOnlyEnvRegression:
         assert "openai" not in providers, (
             f"Empty OPENAI_API_KEY must not promote OpenAI; got {providers}"
         )
-        assert resolve_model_name(ModelRole.GENERATION) == "minimax/MiniMax-M2.7"
+        assert resolve_model_name(ModelRole.GENERATION) == "minimax/MiniMax-M3"
 
     def test_minimax_with_chromadb_resolves_embedding_to_local(
         self, monkeypatch: pytest.MonkeyPatch

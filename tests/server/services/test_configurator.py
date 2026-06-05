@@ -37,15 +37,9 @@ def test_init_creates_config_file(temp_dir, test_org_id):
         loaded_config = Config.model_validate(json.load(f))
         assert isinstance(loaded_config.storage_config, StorageConfigSQLite)
         assert loaded_config.profile_extractor_config is not None
-        assert (
-            loaded_config.profile_extractor_config.extractor_name
-            == "default_profile_extractor"
-        )
+        assert loaded_config.profile_extractor_config.extraction_definition_prompt
         assert loaded_config.user_playbook_extractor_config is not None
-        assert (
-            loaded_config.user_playbook_extractor_config.extractor_name
-            == "default_playbook_extractor"
-        )
+        assert loaded_config.user_playbook_extractor_config.extraction_definition_prompt
 
 
 def test_get_config_with_default(configurator):

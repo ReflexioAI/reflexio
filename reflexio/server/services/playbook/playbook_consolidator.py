@@ -77,7 +77,7 @@ def _coerce_existing_position(value: object) -> int:
         stripped = value.strip()
         for prefix in ("EXISTING-", "EXISTING_", "existing-", "existing_"):
             if stripped.startswith(prefix):
-                stripped = stripped[len(prefix):]
+                stripped = stripped[len(prefix) :]
                 break
         try:
             parsed = int(stripped)
@@ -86,9 +86,7 @@ def _coerce_existing_position(value: object) -> int:
                 f"existing-position must be int or 'EXISTING-N' label, got {value!r}"
             ) from exc
         if parsed < 0:
-            raise ValueError(
-                f"existing-position must be >= 0, got {value!r}"
-            )
+            raise ValueError(f"existing-position must be >= 0, got {value!r}")
         return parsed
     raise ValueError(
         f"existing-position must be int or 'EXISTING-N' label, got {type(value).__name__}: {value!r}"
@@ -656,7 +654,9 @@ class PlaybookConsolidator(BaseDeduplicator):
                 ):
                     logger.exception(
                         "event=consolidation_apply_failed kind=%s new_id=%s existing_id=%s",
-                        decision.kind, new_id_str, existing_id_str,
+                        decision.kind,
+                        new_id_str,
+                        existing_id_str,
                     )
                 continue
             new_rows.extend(rows)

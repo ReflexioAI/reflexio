@@ -253,7 +253,8 @@ class ReflectionService:
                 ):
                     logger.exception(
                         "event=reflection_apply_failed kind=%s target_id=%s",
-                        decision.target_kind, decision.target_id,
+                        decision.target_kind,
+                        decision.target_id,
                     )
                 continue
             if applied:
@@ -498,7 +499,8 @@ class ReflectionService:
                 logger.exception(
                     "event=reflection_archive_after_insert_failed kind=profile "
                     "cited_id=%s new_id=%s",
-                    cited.profile_id, new_profile.profile_id,
+                    cited.profile_id,
+                    new_profile.profile_id,
                 )
             return True
         if not archived:
@@ -597,7 +599,8 @@ class ReflectionService:
                 logger.exception(
                     "event=reflection_archive_after_insert_failed kind=playbook "
                     "cited_id=%s new_id=%s",
-                    cited.user_playbook_id, new_playbook.user_playbook_id,
+                    cited.user_playbook_id,
+                    new_playbook.user_playbook_id,
                 )
             return True
         if not archived:

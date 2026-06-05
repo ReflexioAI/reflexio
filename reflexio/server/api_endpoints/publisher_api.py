@@ -155,7 +155,9 @@ def delete_user_profile(
     try:
         return reflexio.delete_profile(request)
     except Exception as e:
-        with sentry_tags(subsystem="publisher_api", action="delete_user_profile", org_id=org_id):
+        with sentry_tags(
+            subsystem="publisher_api", action="delete_user_profile", org_id=org_id
+        ):
             logger.exception("Failed to delete user profile")
         return DeleteUserProfileResponse(success=False, message=str(e))
 
@@ -176,7 +178,9 @@ def delete_user_interaction(
     try:
         return reflexio.delete_interaction(request)
     except Exception as e:
-        with sentry_tags(subsystem="publisher_api", action="delete_user_interaction", org_id=org_id):
+        with sentry_tags(
+            subsystem="publisher_api", action="delete_user_interaction", org_id=org_id
+        ):
             logger.exception("Failed to delete user interaction")
         return DeleteUserInteractionResponse(success=False, message=str(e))
 
@@ -195,7 +199,9 @@ def delete_request(org_id: str, request: DeleteRequestRequest) -> DeleteRequestR
     try:
         return reflexio.delete_request(request)
     except Exception as e:
-        with sentry_tags(subsystem="publisher_api", action="delete_request", org_id=org_id):
+        with sentry_tags(
+            subsystem="publisher_api", action="delete_request", org_id=org_id
+        ):
             logger.exception("Failed to delete request")
         return DeleteRequestResponse(success=False, message=str(e))
 
@@ -214,7 +220,9 @@ def delete_session(org_id: str, request: DeleteSessionRequest) -> DeleteSessionR
     try:
         return reflexio.delete_session(request)
     except Exception as e:
-        with sentry_tags(subsystem="publisher_api", action="delete_session", org_id=org_id):
+        with sentry_tags(
+            subsystem="publisher_api", action="delete_session", org_id=org_id
+        ):
             logger.exception("Failed to delete session")
         return DeleteSessionResponse(success=False, message=str(e))
 
@@ -235,7 +243,9 @@ def delete_agent_playbook(
     try:
         return reflexio.delete_agent_playbook(request)
     except Exception as e:
-        with sentry_tags(subsystem="publisher_api", action="delete_agent_playbook", org_id=org_id):
+        with sentry_tags(
+            subsystem="publisher_api", action="delete_agent_playbook", org_id=org_id
+        ):
             logger.exception("Failed to delete agent playbook")
         return DeleteAgentPlaybookResponse(success=False, message=str(e))
 
@@ -256,7 +266,9 @@ def delete_user_playbook(
     try:
         return reflexio.delete_user_playbook(request)
     except Exception as e:
-        with sentry_tags(subsystem="publisher_api", action="delete_user_playbook", org_id=org_id):
+        with sentry_tags(
+            subsystem="publisher_api", action="delete_user_playbook", org_id=org_id
+        ):
             logger.exception("Failed to delete user playbook")
         return DeleteUserPlaybookResponse(success=False, message=str(e))
 
@@ -434,7 +446,9 @@ def run_playbook_aggregation(
             request.agent_version, request.playbook_name
         )
     except Exception as e:
-        with sentry_tags(subsystem="publisher_api", action="run_playbook_aggregation", org_id=org_id):
+        with sentry_tags(
+            subsystem="publisher_api", action="run_playbook_aggregation", org_id=org_id
+        ):
             logger.exception("Failed to run playbook aggregation")
         return RunPlaybookAggregationResponse(success=False, message=str(e))
 
@@ -472,7 +486,9 @@ def update_agent_playbook_status(
     try:
         return reflexio.update_agent_playbook_status(request)
     except Exception as e:
-        with sentry_tags(subsystem="publisher_api", action="update_playbook_status", org_id=org_id):
+        with sentry_tags(
+            subsystem="publisher_api", action="update_playbook_status", org_id=org_id
+        ):
             logger.exception("Failed to update playbook status")
         return UpdatePlaybookStatusResponse(success=False, msg=str(e))
 
@@ -493,7 +509,9 @@ def update_agent_playbook(
     try:
         return reflexio.update_agent_playbook(request)
     except Exception as e:
-        with sentry_tags(subsystem="publisher_api", action="update_agent_playbook", org_id=org_id):
+        with sentry_tags(
+            subsystem="publisher_api", action="update_agent_playbook", org_id=org_id
+        ):
             logger.exception("Failed to update agent playbook")
         return UpdateAgentPlaybookResponse(success=False, msg=str(e))
 
@@ -514,7 +532,9 @@ def update_user_playbook(
     try:
         return reflexio.update_user_playbook(request)
     except Exception as e:
-        with sentry_tags(subsystem="publisher_api", action="update_user_playbook", org_id=org_id):
+        with sentry_tags(
+            subsystem="publisher_api", action="update_user_playbook", org_id=org_id
+        ):
             logger.exception("Failed to update user playbook")
         return UpdateUserPlaybookResponse(success=False, msg=str(e))
 
@@ -535,6 +555,8 @@ def update_user_profile(
     try:
         return reflexio.update_user_profile(request)
     except Exception as e:
-        with sentry_tags(subsystem="publisher_api", action="update_user_profile", org_id=org_id):
+        with sentry_tags(
+            subsystem="publisher_api", action="update_user_profile", org_id=org_id
+        ):
             logger.exception("Failed to update user profile")
         return UpdateUserProfileResponse(success=False, msg=str(e))

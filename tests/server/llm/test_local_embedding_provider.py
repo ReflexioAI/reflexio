@@ -272,6 +272,12 @@ class TestLiteLLMClientShortCircuit:
         from reflexio.server.llm import litellm_client
         from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 
+        # Force "cloud" provider mode so the embedding-service short-circuit
+        # in get_embedding() doesn't intercept the call before litellm runs.
+        monkeypatch.delenv("REFLEXIO_EMBEDDING_PROVIDER", raising=False)
+        monkeypatch.delenv("REFLEXIO_EMBEDDING_SERVICE_URL", raising=False)
+        monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_EMBEDDING", raising=False)
+
         client = LiteLLMClient(LiteLLMConfig(model="claude-code/default"))
 
         fake_response = MagicMock()
@@ -334,6 +340,11 @@ class TestLiteLLMClientShortCircuit:
             LiteLLMConfig,
         )
 
+        # Force "inprocess" provider mode so the embedding-service short-circuit
+        # doesn't intercept the local/* model before the chromadb-import check.
+        monkeypatch.delenv("REFLEXIO_EMBEDDING_PROVIDER", raising=False)
+        monkeypatch.delenv("REFLEXIO_EMBEDDING_SERVICE_URL", raising=False)
+        monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_EMBEDDING", raising=False)
         monkeypatch.setattr(lep.importlib.util, "find_spec", lambda _name: None)
 
         client = LiteLLMClient(LiteLLMConfig(model="claude-code/default"))

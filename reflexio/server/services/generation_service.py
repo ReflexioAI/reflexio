@@ -326,7 +326,8 @@ class GenerationService:
                             error_type=type(e).__name__,
                         ):
                             logger.exception(
-                                "Generation service failed for request %s", request_id,
+                                "Generation service failed for request %s",
+                                request_id,
                             )
                         result.warnings.append(msg)
             finally:
@@ -380,7 +381,8 @@ class GenerationService:
                 error_type=type(e).__name__,
             ):
                 logger.exception(
-                    "Failed to refresh user profile for user id: %s", user_id,
+                    "Failed to refresh user profile for user id: %s",
+                    user_id,
                 )
             raise
 
@@ -521,7 +523,8 @@ class GenerationService:
                             error_type=type(e).__name__,
                         ):
                             logger.exception(
-                                "Failed to cleanup retention target %s", target_name,
+                                "Failed to cleanup retention target %s",
+                                target_name,
                             )
             finally:
                 mgr.release_simple_lock()

@@ -48,11 +48,10 @@ def test_post_409_when_job_already_running(client_with_org_and_evaluator):
         "from_ts": 0,
         "to_ts": 9_999_999_999,
     }
-    # Patch threading.Thread so the worker never starts and the first job
-    # stays "running" — otherwise the empty-storage worker would finish
-    # immediately and the second POST would succeed.
-    with patch("reflexio.server.api.threading.Thread") as thread_cls:
-        thread_cls.return_value.start = lambda: None
+    # Patch the regen ThreadPoolExecutor's submit so the worker never starts
+    # and the first job stays "running" — otherwise the empty-storage worker
+    # would finish immediately and the second POST would succeed.
+    with patch("reflexio.server.api._regen_executor.submit", return_value=None):
         first = client.post("/api/evaluations/regenerate", json=body)
         assert first.status_code == 200, first.text
         second = client.post("/api/evaluations/regenerate", json=body)
@@ -92,8 +91,7 @@ def test_delete_cancels_running_job(client_with_org_and_evaluator):
         "from_ts": 0,
         "to_ts": 9_999_999_999,
     }
-    with patch("reflexio.server.api.threading.Thread") as thread_cls:
-        thread_cls.return_value.start = lambda: None
+    with patch("reflexio.server.api._regen_executor.submit", return_value=None):
         resp = client.post("/api/evaluations/regenerate", json=body)
         assert resp.status_code == 200, resp.text
         job_id = resp.json()["job_id"]

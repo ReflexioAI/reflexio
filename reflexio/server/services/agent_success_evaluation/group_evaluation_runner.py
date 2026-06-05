@@ -172,11 +172,7 @@ def run_group_evaluation(
         prior_rows = storage.get_agent_success_evaluation_results(  # type: ignore[reportOptionalMemberAccess]
             limit=10000, agent_version=agent_version
         )
-        old_result_ids = [
-            r.result_id
-            for r in prior_rows
-            if r.session_id == session_id
-        ]
+        old_result_ids = [r.result_id for r in prior_rows if r.session_id == session_id]
 
     logger.info(
         "Running group evaluation for session=%s with %d requests and %d interactions"

@@ -286,6 +286,10 @@ class TestSetupInitEmbeddingStep:
         so this is enough to keep the test from touching the real home dir.
         """
         fake_home.mkdir(parents=True, exist_ok=True)
+        # Clear REFLEXIO_LOG_DIR — the OSS conftest sets it session-wide to
+        # protect tests that don't patch home, but here we want `reflexio_home()`
+        # to fall through to the patched `Path.home()`.
+        monkeypatch.delenv("REFLEXIO_LOG_DIR", raising=False)
         monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
         # ``setup init`` queries chromadb importability via the module-level
         # helper. Force True so the local option appears as choice [1].

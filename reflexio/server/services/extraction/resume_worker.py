@@ -161,7 +161,9 @@ def _select_current_extractor_config(
             f"Unsupported extractor kind {run.binding.extractor_kind!r}"
         )
 
-    if config is not None and isinstance(config, ProfileExtractorConfig | PlaybookConfig):
+    if config is not None and isinstance(
+        config, ProfileExtractorConfig | PlaybookConfig
+    ):
         return config
     raise ResumeWorkerError(
         f"Current extractor config not found for {run.binding.extractor_kind}"
