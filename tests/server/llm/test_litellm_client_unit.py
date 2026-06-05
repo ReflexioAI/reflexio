@@ -518,8 +518,34 @@ class TestGenerateChatResponse:
 # ===================================================================
 
 
+# Env vars that route embedding calls away from litellm.embedding.
+# When any of these is set in the shell, embedding_provider_mode() may resolve
+# to "local_service" or "internal_service", causing get_embedding /
+# get_embeddings to detour through get_service_embeddings (HTTP to
+# 127.0.0.1:8072 by default) before reaching the mocked litellm.embedding.
+# Tests below mock litellm.embedding and assert against that code path, so the
+# routing env vars must be cleared per-test. Production routing logic is
+# covered in tests/server/llm/test_embedding_service_provider.py.
+_EMBEDDING_ROUTING_ENV_VARS = (
+    "REFLEXIO_EMBEDDING_PROVIDER",
+    "REFLEXIO_EMBEDDING_SERVICE_URL",
+    "CLAUDE_SMART_USE_LOCAL_EMBEDDING",
+)
+
+
+def _force_litellm_embedding_route(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Clear shell-leaked embedding-routing env vars so tests exercise the
+    litellm.embedding code path, not the local/internal service branches."""
+    for name in _EMBEDDING_ROUTING_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
+
+
 class TestGetEmbedding:
     """Tests for the single-text embedding endpoint."""
+
+    @pytest.fixture(autouse=True)
+    def _force_litellm_route(self, monkeypatch):
+        _force_litellm_embedding_route(monkeypatch)
 
     @pytest.fixture(autouse=True)
     def _pin_default_model(self, monkeypatch):
@@ -594,6 +620,10 @@ class TestGetEmbeddings:
     """Tests for the batch embedding endpoint."""
 
     @pytest.fixture(autouse=True)
+    def _force_litellm_route(self, monkeypatch):
+        _force_litellm_embedding_route(monkeypatch)
+
+    @pytest.fixture(autouse=True)
     def _pin_default_model(self, monkeypatch):
         # See TestGetEmbedding._pin_default_model — these tests assert against
         # the litellm-backed default and must not be intercepted by the
@@ -656,6 +686,10 @@ class TestGetEmbeddings:
 
 class TestEmbeddingDefaultResolution:
     """Tests for the caching and routing behavior of the embedding default."""
+
+    @pytest.fixture(autouse=True)
+    def _force_litellm_route(self, monkeypatch):
+        _force_litellm_embedding_route(monkeypatch)
 
     def test_resolve_default_embedding_model_is_cached(self, monkeypatch):
         """``_resolve_default_embedding_model`` must hit resolve_model_name once.
@@ -722,6 +756,10 @@ class TestEmbeddingDefaultResolution:
 
 class TestEmbeddingTruncation:
     """Tests for the embedding-input truncation helpers."""
+
+    @pytest.fixture(autouse=True)
+    def _force_litellm_route(self, monkeypatch):
+        _force_litellm_embedding_route(monkeypatch)
 
     @pytest.fixture(autouse=True)
     def _reset_caches(self):
