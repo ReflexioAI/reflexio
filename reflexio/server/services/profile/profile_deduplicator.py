@@ -7,13 +7,12 @@ import logging
 import os
 import uuid
 from datetime import UTC, datetime
-from typing import cast
+from typing import Any, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from reflexio.models.api_schema.retriever_schema import SearchUserProfileRequest
 from reflexio.models.api_schema.service_schemas import Status, UserProfile
-from reflexio.models.config_schema import EMBEDDING_DIMENSIONS
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.services.deduplication_utils import (
@@ -21,6 +20,7 @@ from reflexio.server.services.deduplication_utils import (
     format_dedup_timestamp,
     parse_item_id,
 )
+from reflexio.server.services.embedding_text import embedding_input
 from reflexio.server.services.profile.profile_generation_service_utils import (
     ProfileTimeToLive,
     calculate_expiration_timestamp,
@@ -321,12 +321,21 @@ class ProfileDeduplicator(BaseDeduplicator):
                     for query_text in query_texts
                 ]
             else:
+                storage_with_embeddings = cast(Any, storage)
+                embedding_model_name = storage_with_embeddings.embedding_model_name
+                embedding_dimensions = storage_with_embeddings.embedding_dimensions
                 logger.info(
-                    "Profile dedup query embeddings: source=llm_client model=default"
+                    "Profile dedup query embeddings: source=llm_client model=%s",
+                    embedding_model_name,
                 )
                 embeddings = list(
                     self.client.get_embeddings(
-                        query_texts, dimensions=EMBEDDING_DIMENSIONS
+                        [
+                            embedding_input(query_text, purpose="query")
+                            for query_text in query_texts
+                        ],
+                        model=embedding_model_name,
+                        dimensions=embedding_dimensions,
                     )
                 )
         except Exception as e:

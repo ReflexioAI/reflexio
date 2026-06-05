@@ -138,7 +138,7 @@ class TestPydanticModels:
             item_ids=["NEW-0"],
             merged_content="test",
             merged_time_to_live="one_day",
-            extra_field="not allowed",
+            extra_field="not allowed",  # pyright: ignore[reportCallIssue]
         )
         assert group.item_ids == ["NEW-0"]
         # JSON schema should forbid additional properties (used for LLM structured output)
@@ -1394,6 +1394,31 @@ class TestRetrieveExistingProfilesStatusFilter:
             llm_client=mock_llm_client,
         )
         assert deduplicator.output_pending_status is False
+
+    def test_fallback_embeddings_use_storage_model_and_query_prefix(
+        self, mock_request_context, mock_llm_client, mock_site_var_manager
+    ):
+        """Fallback batch embeddings stay compatible with stored profile vectors."""
+        mock_request_context.storage._get_embedding = None
+        mock_request_context.storage.embedding_model_name = "local/test-embedding-model"
+        mock_request_context.storage.embedding_dimensions = 768
+        mock_llm_client.get_embeddings.return_value = [[0.1] * 768]
+
+        deduplicator = ProfileDeduplicator(
+            request_context=mock_request_context,
+            llm_client=mock_llm_client,
+        )
+
+        deduplicator._retrieve_existing_profiles(
+            [self._make_profile("User likes dark mode")],
+            "user",
+        )
+
+        mock_llm_client.get_embeddings.assert_called_once_with(
+            ["search_query: User likes dark mode"],
+            model="local/test-embedding-model",
+            dimensions=768,
+        )
 
     def test_rerun_mode_dedup_against_existing_pending(
         self, mock_request_context, mock_llm_client, mock_site_var_manager
