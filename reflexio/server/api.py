@@ -505,7 +505,9 @@ def _meter_applied_learnings(
             session_id=session_id,
         )
     except Exception:
-        logger.warning("applied-learnings metering failed for org %s", org_id, exc_info=True)
+        logger.warning(
+            "applied-learnings metering failed for org %s", org_id, exc_info=True
+        )
 
 
 @core_router.get("/")
@@ -2828,6 +2830,7 @@ def create_app(
     require_auth: bool = False,
     get_caller_type: Callable[..., str] | None = None,
     get_billing_gate: Callable[[str], Callable[..., None]] | None = None,
+    mount_data_plane: bool = True,
 ) -> FastAPI:
     """Factory to create a FastAPI app.
 
@@ -2847,6 +2850,14 @@ def create_app(
             ``"learnings_generated"``) the returned dependency overrides the
             ``default_billing_gate(line)`` sentinel in ``dependency_overrides``,
             exactly mirroring the ``get_caller_type`` override pattern.
+        mount_data_plane: When True (default), include the data-plane routers
+            (core, stall-state, pending-tool-call) and run the data-plane
+            lifespan work (LLM availability check, cross-encoder prewarm,
+            resume scheduler). When False, skip both so a control-plane host
+            can build an app without requiring LLM/storage or starting the
+            scheduler, while keeping all other scaffolding (middleware, CORS,
+            auth overrides, OpenAPI security, health, ``/meta/version``,
+            ``additional_routers``).
 
     Returns:
         Configured FastAPI application.
@@ -2882,18 +2893,20 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
-        validate_llm_availability()
-        from reflexio.server.llm.rerank import prewarm as _prewarm_cross_encoder
+        scheduler = None
+        if mount_data_plane:
+            validate_llm_availability()
+            from reflexio.server.llm.rerank import prewarm as _prewarm_cross_encoder
 
-        _prewarm_cross_encoder()
-        # The scheduler discovers every org with resumable work each tick and
-        # drives a per-org worker with org-scoped claims, so it is not limited
-        # to the bootstrap org. The bootstrap org is only used to read config
-        # and to seed cross-org discovery.
-        scheduler = maybe_start_resume_scheduler(
-            lambda org_id: RequestContext(org_id=org_id),
-            bootstrap_org_id=_lifespan_org_id(),
-        )
+            _prewarm_cross_encoder()
+            # The scheduler discovers every org with resumable work each tick and
+            # drives a per-org worker with org-scoped claims, so it is not limited
+            # to the bootstrap org. The bootstrap org is only used to read config
+            # and to seed cross-org discovery.
+            scheduler = maybe_start_resume_scheduler(
+                lambda org_id: RequestContext(org_id=org_id),
+                bootstrap_org_id=_lifespan_org_id(),
+            )
         try:
             yield
         finally:
@@ -2975,7 +2988,9 @@ def create_app(
     # the overrides reliably fire at request time.
     if get_billing_gate is not None:
         for _line in ("application", "learnings_generated"):
-            app.dependency_overrides[default_billing_gate(_line)] = get_billing_gate(_line)
+            app.dependency_overrides[default_billing_gate(_line)] = get_billing_gate(
+                _line
+            )
 
     # When a custom get_org_id is provided together with require_auth,
     # auth is enforced on every route — mark this app instance so the
@@ -2985,14 +3000,18 @@ def create_app(
     # multi-tenant embeddings) can coexist without leaking state.
     app.state.my_config_enabled = bool(get_org_id is not None and require_auth)
 
-    # Include core routes
-    app.include_router(core_router)
+    # Include data-plane routes (core, stall-state, pending-tool-call). A
+    # control-plane host sets mount_data_plane=False to skip these while
+    # keeping every other piece of scaffolding below.
+    if mount_data_plane:
+        # Include core routes
+        app.include_router(core_router)
 
-    # Include stall_state routes
-    app.include_router(stall_state_api.router)
+        # Include stall_state routes
+        app.include_router(stall_state_api.router)
 
-    # Include pending tool call routes
-    app.include_router(pending_tool_call_api.router)
+        # Include pending tool call routes
+        app.include_router(pending_tool_call_api.router)
 
     # Include additional routers
     for router in additional_routers or []:
