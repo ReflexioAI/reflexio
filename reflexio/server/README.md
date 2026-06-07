@@ -88,8 +88,10 @@ Description: FastAPI backend server that processes user interactions to generate
 
 Key files:
 - `litellm_client.py`: Unified LiteLLMClient using LiteLLM for multi-provider support
-- `openai_client.py`: OpenAI implementation (legacy, do not use directly)
-- `claude_client.py`: Claude implementation (legacy, do not use directly)
+- `model_defaults.py`: Provider autodetection and per-role default model resolution
+- `embedding_service.py`: OpenAI-compatible local embedding daemon
+- `providers/`: Claude Code, local embedding, Nomic, and embedding-service provider adapters
+- `rerank/`: Cross-encoder and LLM rerankers used by retrieval flows
 - `llm_utils.py`: Helper functions for Pydantic model conversion
 
 **Features**:
@@ -180,7 +182,7 @@ python -m reflexio.server.scripts.manage_invitation_codes list --show-used
 - **Playbook memory**: `playbook/` extracts user playbooks, consolidates them against existing rows, aggregates them into agent playbooks, and tracks aggregation change logs.
 - **Evaluation**: `agent_success_evaluation/`, `shadow_comparison/`, and `evaluation_overview/` handle session grading, per-turn shadow verdicts, regeneration jobs, and dashboard-facing rollups.
 - **Async clarification**: `extraction/` and `reflection/` manage resumable agent runs, pending tool calls, prior-answer search, and long-horizon reflection updates.
-- **Search preparation**: `pre_retrieval/` and `unified_search_service.py` handle query reformulation, document expansion, embeddings, and cross-entity search orchestration.
+- **Search preparation**: `pre_retrieval/`, `embedding_text.py`, and `unified_search_service.py` handle query reformulation, canonical embedding text/prefixes, document expansion, embeddings, and cross-entity search orchestration.
 - **Optimization/integrations**: `playbook_optimizer/` and `braintrust/` run candidate playbook optimization, rollout support, and Braintrust export/sync.
 - **Persistence/config**: `storage/`, `configurator/`, and `operation_state_utils.py` provide storage abstractions, config loading, locks, bookmarks, progress, and cancellation.
 
@@ -445,7 +447,9 @@ Reformulates user search queries into clean, normalized natural language for imp
 
 ### Unified Search Service
 
-**File**: `services/unified_search_service.py` - `run_unified_search()`
+**Files**:
+- `services/unified_search_service.py` - `run_unified_search()`
+- `services/embedding_text.py` - canonical entity embedding text plus `search_document:` / `search_query:` prefixes
 
 Searches across all entity types (profiles, agent_playbooks, user_playbooks) in parallel via a two-phase approach:
 
