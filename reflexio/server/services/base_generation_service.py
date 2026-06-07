@@ -857,6 +857,10 @@ class BaseGenerationService(
                 f"for {self._get_service_name()} identifier={identifier}"
             )
             logger.error(error_msg)
+            self._fail_active_extraction_runs(
+                extractor_kind=get_extractor_name(extractor_config),
+                last_error=error_msg,
+            )
             raise ExtractorExecutionError(error_msg) from exc
         except Exception as exc:
             self._last_extractor_run_stats = {"total": 1, "failed": 1, "timed_out": 0}
@@ -869,6 +873,44 @@ class BaseGenerationService(
         finally:
             if executor is not None:
                 executor.shutdown(wait=False, cancel_futures=True)
+
+    def _fail_active_extraction_runs(
+        self,
+        *,
+        extractor_kind: str,
+        last_error: str,
+    ) -> None:
+        """Mark active agent-run rows failed when the service timeout fires."""
+        if self.storage is None or self.service_config is None:
+            return
+        request_id = getattr(self.service_config, "request_id", None)
+        if not request_id:
+            return
+        user_id = getattr(self.service_config, "user_id", None)
+        try:
+            failed_count = self.storage.fail_running_agent_runs_for_request(
+                org_id=self.request_context.org_id,
+                extractor_kind=extractor_kind,
+                user_id=user_id,
+                request_id=request_id,
+                last_error=last_error,
+            )
+        except NotImplementedError:
+            return
+        except Exception as exc:  # noqa: BLE001 - keep timeout error primary
+            logger.warning(
+                "Failed to mark timed-out %s agent runs failed: %s",
+                extractor_kind,
+                exc,
+            )
+            return
+        if failed_count:
+            logger.warning(
+                "Marked %d timed-out %s agent run(s) failed for request_id=%s",
+                failed_count,
+                extractor_kind,
+                request_id,
+            )
 
     def _finalize_extraction_runs(self) -> None:
         if self.storage is None:

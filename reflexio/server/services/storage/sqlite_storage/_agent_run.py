@@ -333,6 +333,7 @@ class SQLiteAgentRunMixin:
         next_resume_at: datetime | None = None,
         last_error: str | None = None,
         increment_finalization_attempts: bool = False,
+        expected_statuses: tuple[AgentRunStatus, ...] | None = None,
     ) -> AgentRunRecord | None:
         current_timestamp = self._current_timestamp()
         assignments = ["status = ?", "updated_at = ?"]
@@ -361,13 +362,57 @@ class SQLiteAgentRunMixin:
             assignments.append("finalized_at = ?")
             params.append(current_timestamp)
         params.append(run_id)
+        status_filter = ""
+        if expected_statuses:
+            placeholders = ",".join("?" for _ in expected_statuses)
+            status_filter = f" AND status IN ({placeholders})"
+            params.extend(expected.value for expected in expected_statuses)
         with self._lock:
             self.conn.execute(
-                f"UPDATE _agent_runs SET {', '.join(assignments)} WHERE id = ?",
+                f"UPDATE _agent_runs SET {', '.join(assignments)} WHERE id = ?{status_filter}",
                 params,
             )
             self.conn.commit()
         return self.get_agent_run(run_id)
+
+    @SQLiteStorageBase.handle_exceptions
+    def fail_running_agent_runs_for_request(
+        self,
+        *,
+        org_id: str,
+        extractor_kind: str,
+        user_id: str | None,
+        request_id: str,
+        last_error: str,
+    ) -> int:
+        current_timestamp = self._current_timestamp()
+        with self._lock:
+            cursor = self.conn.execute(
+                """
+                UPDATE _agent_runs
+                SET status = ?,
+                    updated_at = ?,
+                    last_error = ?
+                WHERE org_id = ?
+                  AND extractor_kind = ?
+                  AND user_id IS ?
+                  AND request_id = ?
+                  AND status IN (?, ?)
+                """,
+                (
+                    AgentRunStatus.FAILED.value,
+                    current_timestamp,
+                    last_error,
+                    org_id,
+                    extractor_kind,
+                    user_id,
+                    request_id,
+                    AgentRunStatus.RUNNING.value,
+                    AgentRunStatus.RESUMING.value,
+                ),
+            )
+            self.conn.commit()
+            return cursor.rowcount
 
     @SQLiteStorageBase.handle_exceptions
     def create_pending_tool_call(

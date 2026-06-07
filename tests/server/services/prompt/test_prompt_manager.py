@@ -198,6 +198,25 @@ class TestPromptManager:
         assert result1 == result2
         assert result1 == "This is a test prompt with test_value and another_value"
 
+    def test_active_playbook_consolidation_prompt_renders_json_guidance(self):
+        """Guard literal JSON-shape guidance against str.format() parsing."""
+        current_dir = Path(prompt.__file__).parent
+        prompt_bank_path = (current_dir / "prompt_bank").resolve()
+        pm = PromptManager(str(prompt_bank_path))
+
+        rendered = pm.render_prompt(
+            "playbook_consolidation",
+            {
+                "new_playbook_count": "1",
+                "new_playbooks": "NEW-0: candidate",
+                "existing_playbooks": "EXISTING-0: prior",
+            },
+        )
+
+        assert "Output Format Guidance" in rendered
+        assert '"decisions"' in rendered
+        assert "Do not emit markdown" in rendered
+
     def test_all_prompt_md_files_valid(self):
         """Test that all .prompt.md files in prompt_bank have valid frontmatter."""
         current_dir = Path(prompt.__file__).parent

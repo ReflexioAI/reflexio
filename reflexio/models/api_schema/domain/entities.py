@@ -557,6 +557,13 @@ class InteractionData(BaseModel):
 # publish user interaction request
 class PublishUserInteractionRequest(BaseModel):
     request_id: NonEmptyStr | None = None
+    """Optional caller-supplied request id for idempotent/local tracing.
+
+    If omitted, the backend generates a UUID as before. Supplying this is useful
+    for async callers that need to observe the exact request in extraction
+    state without waiting for the full publish response.
+    """
+
     user_id: NonEmptyStr
     interaction_data_list: list[InteractionData] = Field(min_length=1)
     source: str = ""

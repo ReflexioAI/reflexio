@@ -443,14 +443,39 @@ class ResumableExtractionAgent:
         committed_output = (
             finish_ctx.output.model_dump() if finish_ctx.output is not None else None
         )
+        active_statuses = (AgentRunStatus.RUNNING, AgentRunStatus.RESUMING)
         if result.finished_reason == "finish_tool" and committed_output is not None:
-            self.storage.update_agent_run_status(
+            stored_run = self.storage.update_agent_run_status(
                 run.id,
                 AgentRunStatus.AGENT_COMPLETED,
                 committed_output=committed_output,
                 pending_tool_call_ids=result.pending_tool_call_ids,
                 max_steps_remaining=result.max_steps_remaining,
+                expected_statuses=active_statuses,
             )
+            if (
+                stored_run is None
+                or stored_run.status != AgentRunStatus.AGENT_COMPLETED
+            ):
+                logger.warning(
+                    "event=extraction_agent_late_output_discarded org_id=%s "
+                    "user_id=%s extractor_kind=%s run_id=%s request_id=%s "
+                    "stored_status=%s",
+                    run.binding.org_id,
+                    run.binding.user_id,
+                    run.binding.extractor_kind,
+                    run.id,
+                    run.binding.request_id,
+                    stored_run.status if stored_run is not None else None,
+                )
+                return AgentRunResult(
+                    run_id=run.id,
+                    output=None,
+                    pending_tool_call_ids=[],
+                    messages=result.messages,
+                    trace=result.trace,
+                    finished_reason="late_output_discarded",
+                )
             logger.info(
                 "event=extraction_agent_finished org_id=%s user_id=%s "
                 "extractor_kind=%s run_id=%s request_id=%s "
@@ -478,6 +503,7 @@ class ResumableExtractionAgent:
                 AgentRunStatus.FAILED,
                 max_steps_remaining=result.max_steps_remaining,
                 last_error=last_error,
+                expected_statuses=active_statuses,
             )
             logger.warning(
                 "event=extraction_agent_failed org_id=%s user_id=%s "

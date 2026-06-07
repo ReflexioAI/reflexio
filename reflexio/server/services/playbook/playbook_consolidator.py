@@ -8,7 +8,7 @@ import os
 from datetime import UTC, datetime
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from reflexio.models.api_schema.retriever_schema import SearchUserPlaybookRequest
 from reflexio.models.api_schema.service_schemas import UserPlaybook
@@ -199,6 +199,31 @@ class PlaybookConsolidationOutput(BaseModel):
     """
 
     decisions: list[ConsolidationDecision] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _repair_single_missing_new_id(cls, value: object) -> object:
+        """Recover the common one-candidate LLM omission of ``new_id``.
+
+        The consolidation prompt is usually called with a single extracted
+        playbook. Some weaker structured-output models emit a valid-looking
+        ``unify`` decision but omit ``new_id`` even though only ``NEW-0`` can
+        be meant. Repair only that unambiguous one-decision shape; multi-NEW
+        omissions remain validation errors.
+        """
+        if not isinstance(value, dict):
+            return value
+        decisions = value.get("decisions")
+        if not isinstance(decisions, list) or len(decisions) != 1:
+            return value
+        decision = decisions[0]
+        if not isinstance(decision, dict) or decision.get("new_id"):
+            return value
+        repaired = dict(value)
+        repaired_decision = dict(decision)
+        repaired_decision["new_id"] = "NEW-0"
+        repaired["decisions"] = [repaired_decision]
+        return repaired
 
     model_config = ConfigDict(json_schema_extra={"additionalProperties": False})
 

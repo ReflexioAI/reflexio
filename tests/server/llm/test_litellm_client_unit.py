@@ -742,11 +742,15 @@ class TestEmbeddingDefaultResolution:
             "reflexio.server.llm.litellm_client._is_chromadb_importable",
             lambda: True,
         )
+        monkeypatch.setattr(
+            "reflexio.server.llm.litellm_client.should_use_embedding_service",
+            lambda _model: False,
+        )
         fake_embedder = MagicMock()
         fake_embedder.embed.return_value = [[0.9, 0.8, 0.7]]
         monkeypatch.setattr(
-            "reflexio.server.llm.litellm_client.LocalEmbedder.get",
-            classmethod(lambda _cls: fake_embedder),
+            "reflexio.server.llm.litellm_client.LocalEmbedder",
+            MagicMock(get=MagicMock(return_value=fake_embedder)),
         )
 
         client = _build_client()

@@ -71,6 +71,52 @@ def test_unify_accepts_empty_archive_existing_ids():
     assert unify.archive_existing_ids == []
 
 
+def test_single_unify_decision_without_new_id_repairs_to_new_zero():
+    """A one-candidate consolidation response can safely infer ``NEW-0``.
+
+    MiniMax-M3 sometimes returned a ``unify`` decision with content, trigger,
+    rationale, and archive ids, but omitted ``new_id``. In the one-decision
+    shape there is only one possible candidate label, so the output schema
+    repairs it before the discriminated union validates.
+    """
+    out = PlaybookConsolidationOutput.model_validate(
+        {
+            "decisions": [
+                {
+                    "kind": "unify",
+                    "archive_existing_ids": ["EXISTING-0"],
+                    "content": "Unified guidance.",
+                    "trigger": "when fixing a known regression",
+                    "rationale": "The new rule extends the existing one.",
+                }
+            ]
+        }
+    )
+    decision = out.decisions[0]
+    assert isinstance(decision, UnifyDecision)
+    assert decision.new_id == "NEW-0"
+    assert decision.archive_existing_ids == [0]
+
+
+def test_multiple_decisions_without_new_id_still_fail_validation():
+    """Do not infer ``new_id`` when multiple NEW candidates are possible."""
+    with pytest.raises(ValidationError):
+        PlaybookConsolidationOutput.model_validate(
+            {
+                "decisions": [
+                    {
+                        "kind": "unify",
+                        "archive_existing_ids": [],
+                        "content": "A",
+                        "trigger": "t",
+                        "rationale": "r",
+                    },
+                    {"kind": "independent"},
+                ]
+            }
+        )
+
+
 def test_reject_new_requires_superseded_existing_id():
     """``RejectNewDecision`` must name the superseding existing id."""
     with pytest.raises(ValidationError):
