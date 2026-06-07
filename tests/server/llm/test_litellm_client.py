@@ -43,7 +43,7 @@ pytestmark = [
 
 def _get_openai_test_model() -> str:
     """Get an OpenAI model for testing."""
-    return os.getenv("OPENAI_TEST_MODEL", "gpt-5-mini")
+    return os.getenv("OPENAI_TEST_MODEL", "gpt-5.4-mini")
 
 
 def _get_claude_test_model() -> str:
@@ -162,7 +162,7 @@ class TestLiteLLMClientConfiguration:
     def test_create_client_with_config(self):
         """Test creating a client with explicit config."""
         config = LiteLLMConfig(
-            model="gpt-5-mini",
+            model="gpt-5.4-mini",
             temperature=0.5,
             max_tokens=100,
             timeout=30,
@@ -170,7 +170,7 @@ class TestLiteLLMClientConfiguration:
         )
         client = LiteLLMClient(config)
 
-        assert client.get_model() == "gpt-5-mini"
+        assert client.get_model() == "gpt-5.4-mini"
         assert client.get_config().temperature == 0.5
         assert client.get_config().max_tokens == 100
 
@@ -187,7 +187,7 @@ class TestLiteLLMClientConfiguration:
 
     def test_update_config(self):
         """Test updating client configuration."""
-        client = create_litellm_client(model="gpt-5-mini", temperature=0.5)
+        client = create_litellm_client(model="gpt-5.4-mini", temperature=0.5)
 
         client.update_config(temperature=0.8, max_tokens=500)
 
@@ -196,13 +196,13 @@ class TestLiteLLMClientConfiguration:
 
     def test_update_config_ignores_unknown_params(self):
         """Test that unknown config parameters are ignored."""
-        client = create_litellm_client(model="gpt-5-mini")
+        client = create_litellm_client(model="gpt-5.4-mini")
 
         # Should not raise, just log warning
         client.update_config(unknown_param="value")
 
         # Original config should be unchanged
-        assert client.get_model() == "gpt-5-mini"
+        assert client.get_model() == "gpt-5.4-mini"
 
 
 class TestLiteLLMClientOpenAI:
@@ -446,7 +446,7 @@ class TestLiteLLMClientImageEncoding:
 
     def test_encode_image_to_base64_from_file(self, test_image_file: str):
         """Test encoding an image file to base64."""
-        client = create_litellm_client(model="gpt-5-mini")
+        client = create_litellm_client(model="gpt-5.4-mini")
         base64_data, media_type = client.encode_image_to_base64(test_image_file)
 
         assert isinstance(base64_data, str)
@@ -455,14 +455,14 @@ class TestLiteLLMClientImageEncoding:
 
     def test_encode_image_to_base64_nonexistent_file(self):
         """Test that encoding a nonexistent file raises error."""
-        client = create_litellm_client(model="gpt-5-mini")
+        client = create_litellm_client(model="gpt-5.4-mini")
 
         with pytest.raises(LiteLLMClientError, match="Image file not found"):
             client.encode_image_to_base64("/nonexistent/path/image.png")
 
     def test_encode_image_to_base64_unsupported_format(self, tmp_path: Path):
         """Test that unsupported format raises error."""
-        client = create_litellm_client(model="gpt-5-mini")
+        client = create_litellm_client(model="gpt-5.4-mini")
         unsupported_file = tmp_path / "test.bmp"
         unsupported_file.write_bytes(b"fake image data")
 
@@ -471,7 +471,7 @@ class TestLiteLLMClientImageEncoding:
 
     def test_supported_image_formats(self):
         """Test that supported image formats are correctly defined."""
-        client = create_litellm_client(model="gpt-5-mini")
+        client = create_litellm_client(model="gpt-5.4-mini")
 
         assert ".jpg" in client.SUPPORTED_IMAGE_FORMATS
         assert ".jpeg" in client.SUPPORTED_IMAGE_FORMATS
@@ -492,7 +492,7 @@ class TestLiteLLMClientModelSwitching:
 
         # Create OpenAI client (GPT-5 needs more tokens due to reasoning)
         openai_client = create_litellm_client(
-            model="gpt-5-mini",
+            model="gpt-5.4-mini",
             temperature=0.1,
             max_tokens=300,
         )
@@ -514,7 +514,7 @@ class TestLiteLLMClientModelSwitching:
 
     def test_same_interface_different_models(self):
         """Test that the interface is consistent across models."""
-        openai_client = create_litellm_client(model="gpt-5-mini")
+        openai_client = create_litellm_client(model="gpt-5.4-mini")
         claude_client = create_litellm_client(model="claude-sonnet-4-5-20250929")
 
         # Both should have the same methods
@@ -540,12 +540,12 @@ class TestLiteLLMClientEdgeCases:
         """Test that empty images list works like no images."""
         # Should not raise - empty list is falsy
         # This is a configuration test, not an API call test
-        client = create_litellm_client(model="gpt-5-mini")
-        assert client.get_model() == "gpt-5-mini"
+        client = create_litellm_client(model="gpt-5.4-mini")
+        assert client.get_model() == "gpt-5.4-mini"
 
     def test_dict_based_response_format_raises_error(self):
         """Test that dict-based response_format raises error."""
-        client = create_litellm_client(model="gpt-5-mini")
+        client = create_litellm_client(model="gpt-5.4-mini")
         # Dict-based formats are no longer supported - must use Pydantic models
         with pytest.raises(
             LiteLLMClientError,
@@ -557,7 +557,7 @@ class TestLiteLLMClientEdgeCases:
 
     def test_dict_based_response_format_raises_error_chat(self):
         """Test that dict-based response_format raises error for chat responses."""
-        client = create_litellm_client(model="gpt-5-mini")
+        client = create_litellm_client(model="gpt-5.4-mini")
         messages = [{"role": "user", "content": "test message"}]
         with pytest.raises(
             LiteLLMClientError,
@@ -569,7 +569,7 @@ class TestLiteLLMClientEdgeCases:
 
     def test_config_defaults(self):
         """Test that config has sensible defaults."""
-        config = LiteLLMConfig(model="gpt-5-mini")
+        config = LiteLLMConfig(model="gpt-5.4-mini")
 
         assert config.temperature == 0.7
         assert config.max_tokens is None
@@ -607,13 +607,13 @@ class TestLiteLLMClientAPIKeyOverride:
             openai=OpenAIConfig(api_key="test-openai-key-12345")
         )
         config = LiteLLMConfig(
-            model="gpt-5-mini",
+            model="gpt-5.4-mini",
             temperature=0.5,
             api_key_config=api_key_config,
         )
         client = LiteLLMClient(config)
 
-        assert client.get_model() == "gpt-5-mini"
+        assert client.get_model() == "gpt-5.4-mini"
         assert client.get_config().api_key_config == api_key_config
         # Verify the API key was resolved correctly
         assert client._api_key == "test-openai-key-12345"
@@ -670,13 +670,13 @@ class TestLiteLLMClientAPIKeyOverride:
             openai=OpenAIConfig(api_key="factory-test-key-99999")
         )
         client = create_litellm_client(
-            model="gpt-5-mini",
+            model="gpt-5.4-mini",
             temperature=0.3,
             max_tokens=200,
             api_key_config=api_key_config,
         )
 
-        assert client.get_model() == "gpt-5-mini"
+        assert client.get_model() == "gpt-5.4-mini"
         assert client.get_config().temperature == 0.3
         assert client._api_key == "factory-test-key-99999"
 
@@ -735,7 +735,7 @@ class TestLiteLLMClientAPIKeyOverride:
 
     def test_no_api_key_config_returns_none(self):
         """Test that client without API key config has None resolved keys."""
-        config = LiteLLMConfig(model="gpt-5-mini")
+        config = LiteLLMConfig(model="gpt-5.4-mini")
         client = LiteLLMClient(config)
 
         assert client._api_key is None
@@ -749,7 +749,7 @@ class TestLiteLLMClientAPIKeyOverride:
             anthropic=AnthropicConfig(api_key="anthropic-only-key")
         )
         config = LiteLLMConfig(
-            model="gpt-5-mini",
+            model="gpt-5.4-mini",
             api_key_config=api_key_config,
         )
         client = LiteLLMClient(config)
@@ -813,7 +813,7 @@ class TestLiteLLMClientAPIKeyOverride:
 
         api_key_config = APIKeyConfig(openai=OpenAIConfig(api_key=openai_key))
         client = create_litellm_client(
-            model="gpt-5-mini",
+            model="gpt-5.4-mini",
             api_key_config=api_key_config,
         )
 
@@ -979,7 +979,7 @@ class TestSanitizeJsonString:
     @pytest.fixture
     def client(self):
         config = LiteLLMConfig(
-            model="gpt-5-mini",
+            model="gpt-5.4-mini",
             api_key_config=APIKeyConfig(openai=OpenAIConfig(api_key="test")),
         )
         return LiteLLMClient(config)

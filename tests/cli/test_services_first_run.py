@@ -71,7 +71,7 @@ class TestEnsureLlmConfigured:
             patch("sys.stdin.isatty", return_value=True),
             patch(
                 "reflexio.cli.commands.setup_cmd._prompt_llm_provider",
-                return_value=("OpenAI", "gpt-5-mini", "openai"),
+                return_value=("OpenAI", "gpt-5.4-mini", "openai"),
             ) as mock_llm,
             patch(
                 "reflexio.cli.commands.setup_cmd._prompt_embedding_provider",
@@ -166,7 +166,7 @@ class TestEnsureLlmConfigured:
             patch("sys.stdin.isatty", return_value=True),
             patch(
                 "reflexio.cli.commands.setup_cmd._prompt_llm_provider",
-                return_value=("OpenAI", "gpt-5-mini", "openai"),
+                return_value=("OpenAI", "gpt-5.4-mini", "openai"),
             ) as mock_llm,
             patch(
                 "reflexio.cli.commands.setup_cmd._prompt_embedding_provider",

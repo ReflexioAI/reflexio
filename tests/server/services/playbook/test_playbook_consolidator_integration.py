@@ -969,10 +969,10 @@ class TestConsolidatorNativeFallbackEndToEnd:
 
         Asserts the consolidator's call into ``litellm.completion`` carries
         ``num_retries=3`` (the default ``LiteLLMConfig.max_retries``) and
-        ``fallbacks=["gpt-5-mini"]`` end-to-end — proving Task 1-3's native
+        ``fallbacks=["gpt-5.4-mini"]`` end-to-end — proving Task 1-3's native
         delegation survives the structured-output parse wrapper.
         """
-        monkeypatch.setenv("REFLEXIO_LLM_FALLBACK_MODELS", "gpt-5-mini")
+        monkeypatch.setenv("REFLEXIO_LLM_FALLBACK_MODELS", "gpt-5.4-mini")
         # LiteLLMConfig.fallback_models is a default_factory that reads
         # os.environ at construction — build the config AFTER setenv so the
         # new value flows in. The shared ``consolidator`` fixture builds its
@@ -1001,7 +1001,7 @@ class TestConsolidatorNativeFallbackEndToEnd:
 
         # Linchpin: native delegation forwarded both knobs to litellm.
         assert captured.get("num_retries") == 3
-        assert captured.get("fallbacks") == ["gpt-5-mini"]
+        assert captured.get("fallbacks") == ["gpt-5.4-mini"]
 
     def test_consolidator_uses_no_fallback_when_env_unset(
         self, request_context, monkeypatch

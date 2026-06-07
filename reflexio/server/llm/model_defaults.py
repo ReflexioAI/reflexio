@@ -188,7 +188,7 @@ _PROVIDER_DEFAULTS: dict[str, ProviderDefaults] = {
     ),
     "openai": ProviderDefaults(
         generation="gpt-5.5",
-        evaluation="gpt-5-mini",
+        evaluation="gpt-5.4-mini",
         should_run="gpt-5-nano",
         pre_retrieval="gpt-5-nano",
         embedding="text-embedding-3-small",

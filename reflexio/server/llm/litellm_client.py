@@ -222,7 +222,7 @@ class LiteLLMConfig:
             Default is an empty list (no fallback) so local reflexio and the
             claude-smart integration are never silently routed to an unintended
             provider. Production opts in via the env var
-            REFLEXIO_LLM_FALLBACK_MODELS (comma-separated, e.g. "gpt-5-mini").
+            REFLEXIO_LLM_FALLBACK_MODELS (comma-separated, e.g. "gpt-5.4-mini").
             Self-references are deduped at request time.
     """
 
@@ -304,7 +304,7 @@ class LiteLLMClient:
     # Models that only support temperature=1.0 (custom values cause errors or degraded performance)
     TEMPERATURE_RESTRICTED_MODELS = {
         "gpt-5",
-        "gpt-5-mini",
+        "gpt-5.4-mini",
         "gpt-5-nano",
         "gpt-5-codex",
         "gemini-3-flash-preview",

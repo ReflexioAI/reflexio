@@ -612,7 +612,7 @@ class TestSupportsToolCallingOverrides:
             "litellm.supports_function_calling",
             lambda model: True,  # noqa: ARG005
         )
-        assert tools_mod.supports_tool_calling("openai/gpt-5-mini") is True
+        assert tools_mod.supports_tool_calling("openai/gpt-5.4-mini") is True
 
     def test_litellm_false_unknown_model_returns_false(self, monkeypatch):
         """litellm says False for a model not in the override list — return False."""

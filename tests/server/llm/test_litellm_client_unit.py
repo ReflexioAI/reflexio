@@ -1324,10 +1324,10 @@ class TestTemperatureRestriction:
         "model",
         [
             "gpt-5",
-            "gpt-5-mini",
+            "gpt-5.4-mini",
             "gpt-5-nano",
             "gpt-5-codex",
-            "GPT-5-Mini",
+            "GPT-5.4-Mini",
         ],
     )
     def test_restricted_models(self, client, model):
@@ -1355,7 +1355,7 @@ class TestTemperatureRestriction:
     @patch("reflexio.server.llm.litellm_client.litellm.completion")
     def test_restricted_model_omits_temperature(self, mock_completion):
         mock_completion.return_value = _make_completion_response("ok")
-        config = LiteLLMConfig(model="gpt-5-mini", temperature=0.7)
+        config = LiteLLMConfig(model="gpt-5.4-mini", temperature=0.7)
         client = LiteLLMClient(config)
 
         client.generate_response("hi")
@@ -1976,18 +1976,18 @@ class TestConfigDefaults:
         assert LiteLLMConfig(model="x").fallback_models == []
 
     def test_fallback_models_reads_env_var_when_set(self, monkeypatch):
-        """Production opt-in: REFLEXIO_LLM_FALLBACK_MODELS=gpt-5-mini in
+        """Production opt-in: REFLEXIO_LLM_FALLBACK_MODELS=gpt-5.4-mini in
         the deploy env enables the fallback for every chat call site."""
-        monkeypatch.setenv("REFLEXIO_LLM_FALLBACK_MODELS", "gpt-5-mini")
-        assert LiteLLMConfig(model="x").fallback_models == ["gpt-5-mini"]
+        monkeypatch.setenv("REFLEXIO_LLM_FALLBACK_MODELS", "gpt-5.4-mini")
+        assert LiteLLMConfig(model="x").fallback_models == ["gpt-5.4-mini"]
 
     def test_fallback_models_env_var_is_comma_separated(self, monkeypatch):
-        monkeypatch.setenv("REFLEXIO_LLM_FALLBACK_MODELS", "gpt-5-mini, gpt-5-nano")
-        assert LiteLLMConfig(model="x").fallback_models == ["gpt-5-mini", "gpt-5-nano"]
+        monkeypatch.setenv("REFLEXIO_LLM_FALLBACK_MODELS", "gpt-5.4-mini, gpt-5-nano")
+        assert LiteLLMConfig(model="x").fallback_models == ["gpt-5.4-mini", "gpt-5-nano"]
 
     def test_fallback_models_can_be_overridden_at_construction(self):
-        cfg = LiteLLMConfig(model="x", fallback_models=["gpt-5-mini", "gpt-5-nano"])
-        assert cfg.fallback_models == ["gpt-5-mini", "gpt-5-nano"]
+        cfg = LiteLLMConfig(model="x", fallback_models=["gpt-5.4-mini", "gpt-5-nano"])
+        assert cfg.fallback_models == ["gpt-5.4-mini", "gpt-5-nano"]
 
     def test_fallback_models_supports_empty_list_to_disable(self):
         assert LiteLLMConfig(model="x", fallback_models=[]).fallback_models == []
@@ -2062,7 +2062,7 @@ class TestLitellmIntegration:
     def test_passes_fallbacks_from_config(self, monkeypatch):
         # Config-explicit fallback (opt-in at construction)
         client = LiteLLMClient(
-            LiteLLMConfig(model="minimax/MiniMax-M3", fallback_models=["gpt-5-mini"])
+            LiteLLMConfig(model="minimax/MiniMax-M3", fallback_models=["gpt-5.4-mini"])
         )
         captured: dict[str, Any] = {}
 
@@ -2072,7 +2072,7 @@ class TestLitellmIntegration:
 
         monkeypatch.setattr("litellm.completion", _fake)
         client.generate_chat_response(self._messages())
-        assert captured.get("fallbacks") == ["gpt-5-mini"]
+        assert captured.get("fallbacks") == ["gpt-5.4-mini"]
 
     def test_no_fallbacks_when_env_var_unset(self, monkeypatch):
         """Local reflexio / claude-smart safety check: with no env var and
@@ -2092,7 +2092,7 @@ class TestLitellmIntegration:
     def test_env_var_enables_fallback_globally(self, monkeypatch):
         """Production-style: set the env var and every LiteLLMClient picks it
         up, no per-caller code changes."""
-        monkeypatch.setenv("REFLEXIO_LLM_FALLBACK_MODELS", "gpt-5-mini")
+        monkeypatch.setenv("REFLEXIO_LLM_FALLBACK_MODELS", "gpt-5.4-mini")
         client = LiteLLMClient(LiteLLMConfig(model="minimax/MiniMax-M3"))
         captured: dict[str, Any] = {}
 
@@ -2102,7 +2102,7 @@ class TestLitellmIntegration:
 
         monkeypatch.setattr("litellm.completion", _fake)
         client.generate_chat_response(self._messages())
-        assert captured.get("fallbacks") == ["gpt-5-mini"]
+        assert captured.get("fallbacks") == ["gpt-5.4-mini"]
 
     def test_per_call_override_wins_over_config(self, monkeypatch):
         client = LiteLLMClient(LiteLLMConfig(model="x", max_retries=3))
@@ -2114,16 +2114,16 @@ class TestLitellmIntegration:
 
         monkeypatch.setattr("litellm.completion", _fake)
         client.generate_chat_response(
-            self._messages(), max_retries=7, fallback_models=["gpt-5-mini"]
+            self._messages(), max_retries=7, fallback_models=["gpt-5.4-mini"]
         )
         assert captured.get("num_retries") == 7
-        assert captured.get("fallbacks") == ["gpt-5-mini"]
+        assert captured.get("fallbacks") == ["gpt-5.4-mini"]
 
     def test_fallback_self_reference_deduped(self, monkeypatch):
         """If primary equals a fallback entry, that entry is dropped."""
         client = LiteLLMClient(
             LiteLLMConfig(
-                model="gpt-5-mini", fallback_models=["gpt-5-mini", "gpt-5-nano"]
+                model="gpt-5.4-mini", fallback_models=["gpt-5.4-mini", "gpt-5-nano"]
             )
         )
         captured: dict[str, Any] = {}
@@ -2241,8 +2241,8 @@ class TestFallbackObservability:
         # Forge a litellm response where the served model differs from the
         # requested primary — i.e. a fallback served the request.
         response = _make_completion_response("ok")
-        response._hidden_params = {"model_id": "gpt-5-mini"}
-        response.model = "gpt-5-mini"
+        response._hidden_params = {"model_id": "gpt-5.4-mini"}
+        response.model = "gpt-5.4-mini"
 
         monkeypatch.setattr("litellm.completion", lambda **_p: response)
 
@@ -2250,7 +2250,7 @@ class TestFallbackObservability:
 
         assert tags.get("llm.fallback_used") == "true"
         assert tags.get("llm.primary_model") == "minimax/MiniMax-M3"
-        assert tags.get("llm.fallback_model") == "gpt-5-mini"
+        assert tags.get("llm.fallback_model") == "gpt-5.4-mini"
 
     def test_sentry_tag_not_set_when_primary_served(self, monkeypatch):
         tags = self._install_fake_sentry(monkeypatch)
@@ -2341,7 +2341,7 @@ class TestEmbeddingRetries:
             LiteLLMConfig(
                 model="x",
                 max_retries=3,
-                fallback_models=["gpt-5-mini"],
+                fallback_models=["gpt-5.4-mini"],
             )
         )
         captured: dict[str, Any] = {}

@@ -286,7 +286,7 @@ class TestReflexioBaseInit:
 
         mock_svm = MagicMock()
         mock_svm.get_site_var.return_value = {
-            "default_generation_model_name": "gpt-5-mini"
+            "default_generation_model_name": "gpt-5.4-mini"
         }
         mock_svm_cls.return_value = mock_svm
 

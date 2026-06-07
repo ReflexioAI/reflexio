@@ -465,7 +465,7 @@ class TestMinimaxExtractionAgentRole:
 
 class TestMinimaxOnlyEnvRegression:
     """Reproduces the e2e regression where a fresh setup-init with only
-    MINIMAX_API_KEY in env saw the extractor pick gpt-5-mini at runtime.
+    MINIMAX_API_KEY in env saw the extractor pick gpt-5.4-mini at runtime.
 
     The contract this class locks in: when the only LLM env var in scope
     is MINIMAX_API_KEY, every generation-family role (the slots that
