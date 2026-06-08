@@ -11,6 +11,8 @@ import logging
 import os
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any
@@ -278,6 +280,10 @@ class StructuredOutputParseError(Exception):
     Caught by the retry loop in ``_make_request`` so a malformed response
     burns a retry attempt rather than silently returning unparsed content.
     """
+
+
+class LLMHardTimeoutError(TimeoutError):
+    """Raised when an LLM call exceeds the client-side wall-clock timeout."""
 
 
 class LiteLLMClient:
@@ -959,6 +965,36 @@ class LiteLLMClient:
         except Exception:
             return None
 
+    def _completion_with_hard_timeout(self, params: dict[str, Any]) -> Any:
+        """Run ``litellm.completion`` with a client-side wall-clock bound.
+
+        Some providers can exceed LiteLLM's ``timeout`` kwarg. Run the blocking
+        call in an isolated worker so the caller can fail, release locks, and
+        discard any late result instead of waiting indefinitely.
+        """
+        provider_timeout = params.get("timeout", self.config.timeout)
+        try:
+            timeout_seconds = float(provider_timeout)
+        except (TypeError, ValueError):
+            timeout_seconds = float(self.config.timeout)
+        grace_seconds = float(
+            os.environ.get("REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS", "5")
+        )
+        hard_timeout = max(0.001, timeout_seconds) + max(0.0, grace_seconds)
+
+        executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="litellm")
+        future = executor.submit(litellm.completion, **params)
+        try:
+            return future.result(timeout=hard_timeout)
+        except FuturesTimeoutError as exc:
+            future.cancel()
+            raise LLMHardTimeoutError(
+                f"LLM request exceeded hard timeout of {hard_timeout:.3f}s "
+                f"(provider timeout={provider_timeout!r})"
+            ) from exc
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
+
     def _log_token_usage(self, params: dict[str, Any], response: Any) -> None:
         """Log token usage with cache statistics and cost from an LLM response.
 
@@ -1090,7 +1126,7 @@ class LiteLLMClient:
         )
 
         def _call_and_parse() -> str | BaseModel | ToolCallingChatResponse:
-            response = litellm.completion(**params)
+            response = self._completion_with_hard_timeout(params)
             self._emit_fallback_observability(response, params)
             message = response.choices[0].message  # type: ignore[reportAttributeAccessIssue]
             content = message.content

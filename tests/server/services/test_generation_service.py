@@ -71,6 +71,41 @@ def test_publish_request_with_session_id(mock_llm_responses):
         generation_service.run(request)
 
 
+def test_publish_request_honors_caller_request_id(mock_llm_responses):
+    user_id = "test_user_id"
+    org_id = "test_org"
+    session_id = "test_session_id"
+    request_id = "caller-request-id"
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        llm_config = LiteLLMConfig(model="gpt-4o-mini")
+        llm_client = LiteLLMClient(llm_config)
+        generation_service = GenerationService(
+            llm_client=llm_client,
+            request_context=RequestContext(org_id=org_id, storage_base_dir=temp_dir),
+        )
+
+        interaction = InteractionData(
+            content="test interaction",
+            created_at=int(datetime.datetime.now(UTC).timestamp()),
+        )
+
+        request = PublishUserInteractionRequest(
+            request_id=request_id,
+            user_id=user_id,
+            interaction_data_list=[interaction],
+            session_id=session_id,
+        )
+
+        result = generation_service.run(request)
+
+        assert result.request_id == request_id
+        assert generation_service.storage is not None
+        stored_request = generation_service.storage.get_request(request_id)
+        assert stored_request is not None
+        assert stored_request.request_id == request_id
+
+
 def test_empty_session_id_allows_multiple_requests(mock_llm_responses):
     """
     Test that multiple requests with empty session_id are allowed.

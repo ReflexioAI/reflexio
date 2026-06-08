@@ -31,13 +31,13 @@ _PROMPT_BANK_DIR = (
 # None means the prompt does not produce structured output relevant to mocking.
 PROMPT_VERSION_MAP: dict[str, tuple[str, str | None]] = {
     "playbook_extraction_main": ("v1.2.0", "playbook_extraction"),
-    "playbook_extraction_context": ("v4.2.0", None),
+    "playbook_extraction_context": ("v4.2.3", None),
     "playbook_should_generate": ("v3.0.0", "boolean_evaluation"),
     "playbook_should_generate_expert": ("v1.0.0", "boolean_evaluation"),
     "playbook_extraction_context_expert": ("v3.3.0", None),
     "playbook_extraction_main_expert": ("v1.2.0", "playbook_extraction"),
     "playbook_aggregation": ("v2.2.0", "playbook_aggregation"),
-    "playbook_consolidation": ("v2.3.0", "playbook_consolidation"),
+    "playbook_consolidation": ("v2.3.2", "playbook_consolidation"),
     "playbook_optimizer_judge": ("v1.2.0", None),
     "profile_update_main": ("v1.0.0", "profile_extraction"),
     "profile_update_instruction_start": ("v1.1.0", None),

@@ -172,8 +172,9 @@ class GenerationService:
         )
 
         try:
-            # Always generate a new UUID for request_id
-            request_id = str(uuid.uuid4())
+            request_id = publish_user_interaction_request.request_id or str(
+                uuid.uuid4()
+            )
             result.request_id = request_id
 
             new_interactions: list[Interaction] = (

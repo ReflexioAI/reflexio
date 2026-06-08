@@ -10,9 +10,10 @@ import json
 import logging
 import struct
 import tempfile
+import time
 import zlib
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 import litellm
@@ -2157,6 +2158,21 @@ class TestLitellmIntegration:
         # Per LiteLLM docs, omitting `fallbacks` is the documented "no
         # fallback" signal; passing [] is undefined behavior.
         assert "fallbacks" not in captured
+
+    def test_completion_has_client_side_hard_timeout(self, monkeypatch):
+        monkeypatch.setenv("REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS", "0")
+        client = LiteLLMClient(LiteLLMConfig(model="x", timeout=cast(Any, 0.01)))
+
+        def _slow(**_params):
+            time.sleep(1)
+            return _make_completion_response("late")
+
+        monkeypatch.setattr("litellm.completion", _slow)
+
+        start = time.perf_counter()
+        with pytest.raises(LiteLLMClientError, match="hard timeout"):
+            client.generate_chat_response(self._messages())
+        assert time.perf_counter() - start < 0.5
 
     def test_parse_failure_triggers_one_explicit_retry(self, monkeypatch):
         """Pre-refactor parse-retry preserved: when client-side Pydantic
