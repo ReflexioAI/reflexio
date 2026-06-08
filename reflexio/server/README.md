@@ -54,6 +54,8 @@ Description: FastAPI backend server that processes user interactions to generate
 
 **Directory**: `api_endpoints/`
 
+**Detailed Documentation**: See [`api_endpoints/README.md`](api_endpoints/README.md) for the `RequestContext` contract and per-file handler map.
+
 | File | Purpose |
 |------|---------|
 | `request_context.py` | RequestContext (bundles org_id, storage, configurator, prompt_manager) |
@@ -171,6 +173,8 @@ python -m reflexio.server.scripts.manage_invitation_codes list --show-used
 ## Services
 
 **Directory**: `services/`
+
+**Detailed Documentation**: See [`services/README.md`](services/README.md) for the per-directory file index across generation, evaluation, async extraction, search, and persistence.
 
 **Service Boundary**: The service layer owns LLM orchestration, extraction, evaluation, optimization, search preparation, storage access, and long-running operation state. API endpoints should validate/authenticate requests, build `RequestContext`, and delegate into `Reflexio` or focused service helpers rather than embedding business logic.
 
@@ -611,6 +615,8 @@ All services follow BaseGenerationService:
 ## See Also
 
 - [Code Map (root README)](../README.md) -- high-level overview of all Reflexio components
+- [API Endpoints README](api_endpoints/README.md) -- RequestContext contract and handler/helper map
+- [Services README](services/README.md) -- per-directory index of the business-logic layer
 - [Prompt Bank README](prompt/prompt_bank/README.md) -- versioned prompt template system
 - [Playbook Service README](services/playbook/README.md) -- playbook extraction, aggregation, and deduplication pipeline
 - [Site Variables README](site_var/README.md) -- global configuration and feature flags
