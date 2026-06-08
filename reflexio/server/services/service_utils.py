@@ -5,10 +5,13 @@ Utils for service layer
 import ast
 import json
 import logging
+import os
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
+
+import tiktoken
 
 from reflexio.cli.log_format import LLM_IO_LOG_FILE, next_llm_entry_id
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
@@ -24,6 +27,88 @@ logger = logging.getLogger(__name__)
 # Custom log level for model responses (between INFO=20 and WARNING=30)
 # Already registered in server/__init__.py; import the numeric constant only.
 MODEL_RESPONSE_LEVEL = 25
+
+# Per-interaction content token budget when formatting interactions into an
+# extraction/evaluation prompt. Read from REFLEXIO_MAX_INTERACTION_CONTENT_TOKENS;
+# a value <= 0 disables slicing. See _resolve_max_interaction_content_tokens.
+DEFAULT_MAX_INTERACTION_CONTENT_TOKENS = 512
+_MAX_INTERACTION_CONTENT_TOKENS_ENV = "REFLEXIO_MAX_INTERACTION_CONTENT_TOKENS"
+# Inserted between the head and tail of a sliced interaction so the LLM can see
+# that the middle of the content was elided.
+_CONTENT_TRUNCATION_MARKER = " …[truncated] "
+# Encoder used purely as a length heuristic for slicing. tiktoken does not know
+# the real tokenizer for non-OpenAI providers, but cl100k_base is a consistent,
+# good-enough proxy for budgeting prompt content (mirrors the embedding path).
+_CONTENT_ENCODING_NAME = "cl100k_base"
+_content_token_encoding: tiktoken.Encoding | None = None
+# Guards against logging the same malformed env value on every call.
+_INVALID_MAX_TOKENS_WARNED = False
+
+
+def _get_content_token_encoding() -> tiktoken.Encoding:
+    """Return a process-cached tiktoken encoder for content slicing."""
+    global _content_token_encoding
+    if _content_token_encoding is None:
+        _content_token_encoding = tiktoken.get_encoding(_CONTENT_ENCODING_NAME)
+    return _content_token_encoding
+
+
+def _resolve_max_interaction_content_tokens() -> int | None:
+    """Resolve the per-interaction content token budget from the environment.
+
+    Returns:
+        int | None: The positive token budget, or None when slicing is
+            disabled (env value <= 0). Unset or malformed values fall back to
+            ``DEFAULT_MAX_INTERACTION_CONTENT_TOKENS``.
+    """
+    global _INVALID_MAX_TOKENS_WARNED
+    raw = os.getenv(_MAX_INTERACTION_CONTENT_TOKENS_ENV, "").strip()
+    if not raw:
+        return DEFAULT_MAX_INTERACTION_CONTENT_TOKENS
+    try:
+        value = int(raw)
+    except ValueError:
+        if not _INVALID_MAX_TOKENS_WARNED:
+            logger.warning(
+                "Invalid %s=%r; falling back to default %d",
+                _MAX_INTERACTION_CONTENT_TOKENS_ENV,
+                raw,
+                DEFAULT_MAX_INTERACTION_CONTENT_TOKENS,
+            )
+            _INVALID_MAX_TOKENS_WARNED = True
+        return DEFAULT_MAX_INTERACTION_CONTENT_TOKENS
+    return value if value > 0 else None
+
+
+def slice_content_by_tokens(content: str, max_tokens: int | None) -> str:
+    """Slice interaction content to a token budget, keeping head and tail.
+
+    When the content exceeds ``max_tokens`` tokens, keep the first ``max_tokens
+    // 2`` tokens and the last ``max_tokens - max_tokens // 2`` tokens, joined by
+    a truncation marker so the elision is visible to the LLM. Content within
+    budget (or when ``max_tokens`` is None / content is empty) is returned
+    unchanged.
+
+    Args:
+        content (str): The interaction content to slice.
+        max_tokens (int | None): Token budget, or None to disable slicing.
+
+    Returns:
+        str: The original or head+marker+tail-sliced content.
+    """
+    if max_tokens is None or not content:
+        return content
+    encoding = _get_content_token_encoding()
+    tokens = encoding.encode(content)
+    if len(tokens) <= max_tokens:
+        return content
+    head = max_tokens // 2
+    tail = max_tokens - head
+    return (
+        f"{encoding.decode(tokens[:head])}"
+        f"{_CONTENT_TRUNCATION_MARKER}"
+        f"{encoding.decode(tokens[-tail:])}"
+    )
 
 
 def _format_response_for_logging(response: Any) -> Any:
@@ -188,22 +273,22 @@ def format_interactions_to_history_string(interactions: list[Interaction]) -> st
         user: I love sushi
         user: click menu item
     """
+    max_content_tokens = _resolve_max_interaction_content_tokens()
     formatted_interactions = []
     for interaction in interactions:
         # Add text content with tools_used prefix if present
         if interaction.content:
+            content = slice_content_by_tokens(interaction.content, max_content_tokens)
             if interaction.tools_used:
                 tool_prefix = " ".join(
                     f"[used tool: {t.tool_name}({json.dumps(t.tool_data)})]"
                     for t in interaction.tools_used
                 )
                 formatted_interactions.append(
-                    f"{interaction.role}: ```{tool_prefix} {interaction.content}```"
+                    f"{interaction.role}: ```{tool_prefix} {content}```"
                 )
             else:
-                formatted_interactions.append(
-                    f"{interaction.role}: ```{interaction.content}```"
-                )
+                formatted_interactions.append(f"{interaction.role}: ```{content}```")
 
         # Add user action
         if interaction.user_action != UserActionType.NONE:

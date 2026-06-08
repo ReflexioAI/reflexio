@@ -12,9 +12,16 @@ from reflexio.models.api_schema.service_schemas import (
     UserActionType,
 )
 from reflexio.server.services.service_utils import (
+    _CONTENT_TRUNCATION_MARKER,
+    DEFAULT_MAX_INTERACTION_CONTENT_TOKENS,
+    _get_content_token_encoding,
+    _resolve_max_interaction_content_tokens,
     format_interactions_to_history_string,
     format_sessions_to_history_string,
+    slice_content_by_tokens,
 )
+
+_ENV_MAX_TOKENS = "REFLEXIO_MAX_INTERACTION_CONTENT_TOKENS"
 
 
 def test_format_interactions_to_history_string_with_content():
@@ -207,8 +214,6 @@ def _create_request(request_id: str, created_at: int) -> Request:
         request_id=request_id,
         user_id="test_user",
         created_at=created_at,
-        app_id="test_app",
-        agent_id="test_agent",
     )
 
 
@@ -433,6 +438,102 @@ def test_format_sessions_to_history_string_preserves_order_within_group():
         "user: ```Late message```"
     )
     assert result == expected
+
+
+def test_slice_content_by_tokens_within_budget_unchanged():
+    """Content at or below the budget is returned verbatim."""
+    content = "short content well under budget"
+    assert slice_content_by_tokens(content, 512) == content
+
+
+def test_slice_content_by_tokens_none_disables_slicing():
+    """A None budget disables slicing even for very long content."""
+    content = " ".join(str(i) for i in range(2000))
+    assert slice_content_by_tokens(content, None) == content
+
+
+def test_slice_content_by_tokens_empty_content():
+    """Empty content is returned unchanged regardless of budget."""
+    assert slice_content_by_tokens("", 512) == ""
+
+
+def test_slice_content_by_tokens_keeps_head_and_tail():
+    """Over-budget content keeps the first half + last half with a marker."""
+    encoding = _get_content_token_encoding()
+    content = " ".join(str(i) for i in range(2000))
+    tokens = encoding.encode(content)
+    assert len(tokens) > 512  # precondition: actually over budget
+
+    result = slice_content_by_tokens(content, 512)
+
+    head = encoding.decode(tokens[:256])
+    tail = encoding.decode(tokens[-256:])
+    expected = f"{head}{_CONTENT_TRUNCATION_MARKER}{tail}"
+    assert result == expected
+    assert _CONTENT_TRUNCATION_MARKER in result
+    # The sliced result is materially shorter than the original.
+    assert len(encoding.encode(result)) < len(tokens)
+
+
+def test_resolve_max_tokens_unset_uses_default(monkeypatch):
+    """Unset env falls back to the 512 default."""
+    monkeypatch.delenv(_ENV_MAX_TOKENS, raising=False)
+    assert (
+        _resolve_max_interaction_content_tokens()
+        == DEFAULT_MAX_INTERACTION_CONTENT_TOKENS
+    )
+
+
+def test_resolve_max_tokens_valid_override(monkeypatch):
+    """A positive integer env value is used as-is."""
+    monkeypatch.setenv(_ENV_MAX_TOKENS, "1024")
+    assert _resolve_max_interaction_content_tokens() == 1024
+
+
+@pytest.mark.parametrize("raw", ["0", "-1", "-512"])
+def test_resolve_max_tokens_non_positive_disables(monkeypatch, raw):
+    """A value <= 0 disables slicing (returns None)."""
+    monkeypatch.setenv(_ENV_MAX_TOKENS, raw)
+    assert _resolve_max_interaction_content_tokens() is None
+
+
+def test_resolve_max_tokens_invalid_falls_back_to_default(monkeypatch):
+    """A malformed env value falls back to the default."""
+    monkeypatch.setenv(_ENV_MAX_TOKENS, "not-an-int")
+    assert (
+        _resolve_max_interaction_content_tokens()
+        == DEFAULT_MAX_INTERACTION_CONTENT_TOKENS
+    )
+
+
+def test_format_interactions_slices_long_content(monkeypatch):
+    """format_interactions_to_history_string slices content over the budget."""
+    monkeypatch.setenv(_ENV_MAX_TOKENS, "8")
+    long_content = " ".join(str(i) for i in range(500))
+    interactions = [
+        _create_interaction(1, long_content, "user", 1_700_000_000),
+    ]
+
+    result = format_interactions_to_history_string(interactions)
+
+    assert _CONTENT_TRUNCATION_MARKER in result
+    assert long_content not in result  # full content was not emitted verbatim
+    assert result.startswith("user: ```")
+    assert result.endswith("```")
+
+
+def test_format_interactions_no_slice_when_disabled(monkeypatch):
+    """Disabling via <=0 leaves content verbatim."""
+    monkeypatch.setenv(_ENV_MAX_TOKENS, "0")
+    long_content = " ".join(str(i) for i in range(500))
+    interactions = [
+        _create_interaction(1, long_content, "user", 1_700_000_000),
+    ]
+
+    result = format_interactions_to_history_string(interactions)
+
+    assert _CONTENT_TRUNCATION_MARKER not in result
+    assert long_content in result
 
 
 if __name__ == "__main__":
