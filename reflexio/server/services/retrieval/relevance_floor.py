@@ -15,6 +15,7 @@ from reflexio.server.llm.rerank import score_pairs
 from reflexio.server.llm.rerank.cross_encoder_reranker import (
     CrossEncoderUnavailableError,
 )
+from reflexio.server.tracing import profile_step
 
 logger = logging.getLogger(__name__)
 
@@ -44,27 +45,36 @@ def apply_relevance_floor[T](
     """
     if not items:
         return []
-    try:
-        scores = score_pairs(query, [content_of(item) for item in items])
-    except CrossEncoderUnavailableError:
-        logger.warning(
-            "event=relevance_floor_unavailable arm=%s items=%d (returning unfiltered top_k)",
-            arm,
-            len(items),
-        )
-        return items[:top_k]
+    with profile_step(
+        "search.rerank.relevance_floor",
+        arm=arm,
+        items=len(items),
+    ) as span:
+        try:
+            scores = score_pairs(query, [content_of(item) for item in items])
+        except CrossEncoderUnavailableError:
+            span.set_data("available", False)
+            logger.warning(
+                "event=relevance_floor_unavailable arm=%s items=%d (returning unfiltered top_k)",
+                arm,
+                len(items),
+            )
+            return items[:top_k]
+        span.set_data("available", True)
 
-    ranked = sorted(
-        zip(items, scores, strict=True), key=lambda pair: pair[1], reverse=True
-    )
-    survivors = [item for item, score in ranked if score >= floor]
-    dropped = len(ranked) - len(survivors)
-    if dropped:
-        logger.info(
-            "event=relevance_floor arm=%s kept=%d dropped=%d floor=%.2f",
-            arm,
-            len(survivors),
-            dropped,
-            floor,
+        ranked = sorted(
+            zip(items, scores, strict=True), key=lambda pair: pair[1], reverse=True
         )
-    return survivors[:top_k]
+        survivors = [item for item, score in ranked if score >= floor]
+        dropped = len(ranked) - len(survivors)
+        span.set_data("kept", len(survivors))
+        span.set_data("dropped", dropped)
+        if dropped:
+            logger.info(
+                "event=relevance_floor arm=%s kept=%d dropped=%d floor=%.2f",
+                arm,
+                len(survivors),
+                dropped,
+                floor,
+            )
+        return survivors[:top_k]

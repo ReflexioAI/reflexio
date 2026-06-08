@@ -357,7 +357,8 @@ def _apply_floors(
 ) -> tuple[list[UserProfile], list[AgentPlaybook], list[UserPlaybook]]:
     """Apply the per-arm relevance floor to each entity arm in parallel."""
     with ThreadPoolExecutor(max_workers=3) as ex:
-        f_profiles = ex.submit(
+        f_profiles = _submit_with_current_context(
+            ex,
             apply_relevance_floor,
             query,
             profiles,
@@ -365,7 +366,8 @@ def _apply_floors(
             top_k,
             arm="profiles",
         )
-        f_agent = ex.submit(
+        f_agent = _submit_with_current_context(
+            ex,
             apply_relevance_floor,
             query,
             agent_playbooks,
@@ -373,7 +375,8 @@ def _apply_floors(
             top_k,
             arm="agent_playbooks",
         )
-        f_user = ex.submit(
+        f_user = _submit_with_current_context(
+            ex,
             apply_relevance_floor,
             query,
             user_playbooks,
@@ -533,9 +536,10 @@ def _submit_with_current_context(
     executor: ThreadPoolExecutor,
     fn: Callable[..., object],
     *args: object,
+    **kwargs: object,
 ) -> Future[Any]:
     context = contextvars.copy_context()
-    return executor.submit(context.run, fn, *args)
+    return executor.submit(context.run, fn, *args, **kwargs)
 
 
 def _storage_backend_name(storage: BaseStorage) -> str:
