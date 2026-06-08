@@ -556,7 +556,7 @@ class InteractionData(BaseModel):
 
 # publish user interaction request
 class PublishUserInteractionRequest(BaseModel):
-    request_id: str | None = None
+    request_id: NonEmptyStr | None = None
     user_id: NonEmptyStr
     interaction_data_list: list[InteractionData] = Field(min_length=1)
     source: str = ""

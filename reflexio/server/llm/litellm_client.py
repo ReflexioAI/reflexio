@@ -8,11 +8,12 @@ using LiteLLM. It maintains the same interface as the existing LLMClient for eas
 import base64
 import json
 import logging
+import multiprocessing
 import os
+import pickle
+import queue
 import re
 import time
-from concurrent.futures import ThreadPoolExecutor
-from concurrent.futures import TimeoutError as FuturesTimeoutError
 from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any
@@ -284,6 +285,127 @@ class StructuredOutputParseError(Exception):
 
 class LLMHardTimeoutError(TimeoutError):
     """Raised when an LLM call exceeds the client-side wall-clock timeout."""
+
+
+@dataclass
+class _CompletionMessageSnapshot:
+    content: str | None = None
+    tool_calls: Any | None = None
+
+
+@dataclass
+class _CompletionChoiceSnapshot:
+    message: _CompletionMessageSnapshot
+    finish_reason: str | None = None
+
+
+@dataclass
+class _PromptTokenDetailsSnapshot:
+    cached_tokens: int = 0
+
+
+@dataclass
+class _CompletionUsageSnapshot:
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    total_tokens: int | None = None
+    prompt_tokens_details: _PromptTokenDetailsSnapshot | None = None
+    cache_creation_input_tokens: int | None = None
+    cache_read_input_tokens: int | None = None
+
+
+@dataclass
+class _CompletionResponseSnapshot:
+    choices: list[_CompletionChoiceSnapshot]
+    usage: _CompletionUsageSnapshot | None = None
+    model: str | None = None
+    _hidden_params: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class _CompletionErrorSnapshot:
+    type_name: str
+    message: str
+
+
+def _ensure_picklable(value: Any) -> Any:
+    try:
+        pickle.dumps(value)
+    except Exception:
+        return repr(value)
+    return value
+
+
+def _snapshot_completion_response(response: Any) -> _CompletionResponseSnapshot:
+    choices: list[_CompletionChoiceSnapshot] = []
+    for choice in getattr(response, "choices", []) or []:
+        message = getattr(choice, "message", None)
+        choices.append(
+            _CompletionChoiceSnapshot(
+                message=_CompletionMessageSnapshot(
+                    content=getattr(message, "content", None),
+                    tool_calls=_ensure_picklable(getattr(message, "tool_calls", None)),
+                ),
+                finish_reason=getattr(choice, "finish_reason", None),
+            )
+        )
+
+    usage = getattr(response, "usage", None)
+    usage_snapshot = None
+    if usage is not None:
+        prompt_details = getattr(usage, "prompt_tokens_details", None)
+        prompt_details_snapshot = None
+        if prompt_details is not None:
+            prompt_details_snapshot = _PromptTokenDetailsSnapshot(
+                cached_tokens=int(getattr(prompt_details, "cached_tokens", 0) or 0)
+            )
+        usage_snapshot = _CompletionUsageSnapshot(
+            prompt_tokens=getattr(usage, "prompt_tokens", None),
+            completion_tokens=getattr(usage, "completion_tokens", None),
+            total_tokens=getattr(usage, "total_tokens", None),
+            prompt_tokens_details=prompt_details_snapshot,
+            cache_creation_input_tokens=getattr(
+                usage, "cache_creation_input_tokens", None
+            ),
+            cache_read_input_tokens=getattr(usage, "cache_read_input_tokens", None),
+        )
+
+    hidden_params = getattr(response, "_hidden_params", {}) or {}
+    if not isinstance(hidden_params, dict):
+        hidden_params = {}
+
+    return _CompletionResponseSnapshot(
+        choices=choices,
+        usage=usage_snapshot,
+        model=getattr(response, "model", None),
+        _hidden_params={str(k): _ensure_picklable(v) for k, v in hidden_params.items()},
+    )
+
+
+def _picklable_completion_result(response: Any) -> Any:
+    try:
+        pickle.dumps(response)
+    except Exception:
+        return _snapshot_completion_response(response)
+    return response
+
+
+def _litellm_completion_worker(
+    params: dict[str, Any], result_queue: multiprocessing.Queue
+) -> None:
+    try:
+        result_queue.put(
+            ("ok", _picklable_completion_result(litellm.completion(**params)))
+        )
+    except BaseException as exc:
+        try:
+            pickle.dumps(exc)
+        except Exception:
+            result_queue.put(
+                ("error", _CompletionErrorSnapshot(type(exc).__name__, str(exc)))
+            )
+        else:
+            result_queue.put(("error", exc))
 
 
 class LiteLLMClient:
@@ -969,31 +1091,85 @@ class LiteLLMClient:
         """Run ``litellm.completion`` with a client-side wall-clock bound.
 
         Some providers can exceed LiteLLM's ``timeout`` kwarg. Run the blocking
-        call in an isolated worker so the caller can fail, release locks, and
-        discard any late result instead of waiting indefinitely.
+        call in a child process so the caller can fail, release locks, and
+        terminate the in-flight provider request instead of waiting indefinitely.
         """
         provider_timeout = params.get("timeout", self.config.timeout)
         try:
             timeout_seconds = float(provider_timeout)
         except (TypeError, ValueError):
             timeout_seconds = float(self.config.timeout)
-        grace_seconds = float(
-            os.environ.get("REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS", "5")
-        )
+        grace_seconds = self._hard_timeout_grace_seconds()
         hard_timeout = max(0.001, timeout_seconds) + max(0.0, grace_seconds)
 
-        executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="litellm")
-        future = executor.submit(litellm.completion, **params)
+        if not self._should_process_isolate_completion(timeout_seconds, grace_seconds):
+            return litellm.completion(**params)
+
+        process_context = multiprocessing.get_context()
+        result_queue = process_context.Queue(maxsize=1)
+        process = process_context.Process(
+            target=_litellm_completion_worker,
+            args=(params, result_queue),
+            daemon=True,
+        )
+        process.start()
         try:
-            return future.result(timeout=hard_timeout)
-        except FuturesTimeoutError as exc:
-            future.cancel()
-            raise LLMHardTimeoutError(
-                f"LLM request exceeded hard timeout of {hard_timeout:.3f}s "
-                f"(provider timeout={provider_timeout!r})"
-            ) from exc
+            process.join(timeout=hard_timeout)
+            if process.is_alive():
+                process.terminate()
+                process.join(timeout=1.0)
+                if process.is_alive():
+                    process.kill()
+                    process.join(timeout=1.0)
+                raise LLMHardTimeoutError(
+                    f"LLM request exceeded hard timeout of {hard_timeout:.3f}s "
+                    f"(provider timeout={provider_timeout!r})"
+                )
+
+            try:
+                status, payload = result_queue.get(timeout=1.0)
+            except queue.Empty as exc:
+                raise LiteLLMClientError(
+                    "LLM request process exited without returning a result "
+                    f"(exitcode={process.exitcode})"
+                ) from exc
+
+            if status == "ok":
+                return payload
+            if isinstance(payload, _CompletionErrorSnapshot):
+                raise LiteLLMClientError(
+                    f"litellm.completion raised {payload.type_name}: {payload.message}"
+                )
+            raise payload
         finally:
-            executor.shutdown(wait=False, cancel_futures=True)
+            result_queue.close()
+            result_queue.join_thread()
+
+    def _hard_timeout_grace_seconds(self) -> float:
+        raw = os.environ.get("REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS", "5") or "5"
+        try:
+            return max(0.0, float(raw))
+        except ValueError:
+            self.logger.warning(
+                "Invalid REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS=%r; using 5",
+                raw,
+            )
+            return 5.0
+
+    def _should_process_isolate_completion(
+        self, timeout_seconds: float, grace_seconds: float
+    ) -> bool:
+        """Use process isolation for real LiteLLM calls while preserving test doubles.
+
+        Unit tests often monkeypatch ``litellm.completion`` with local closures
+        that capture params in parent memory. Those closures cannot be observed
+        through a subprocess, so only real LiteLLM functions and explicit short
+        timeout tests go through the process path.
+        """
+        completion_module = getattr(litellm.completion, "__module__", "")
+        if completion_module.startswith("litellm"):
+            return True
+        return timeout_seconds + grace_seconds < 1.0
 
     def _log_token_usage(self, params: dict[str, Any], response: Any) -> None:
         """Log token usage with cache statistics and cost from an LLM response.
