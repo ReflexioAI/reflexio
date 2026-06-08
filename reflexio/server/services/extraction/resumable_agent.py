@@ -43,6 +43,12 @@ logger = logging.getLogger(__name__)
 FINISH_EXTRACTION_TOOL_NAME = "finish_extraction"
 PROFILE_EXTRACTOR_KIND = "profile"
 
+# Max in-process retries when the model returns a plain-text turn with no tool
+# call (finished_reason="no_tool_call"). tool_choice="required" is not always
+# honored by every provider/model, so a single bad turn would otherwise drop the
+# extraction entirely. Retries re-issue the same prompt from scratch.
+_NO_TOOL_CALL_MAX_RETRIES = 2
+
 
 def _record_agent_usage_event(
     *,
@@ -351,18 +357,6 @@ class ResumableExtractionAgent:
         extra_tool_context: Any | None = None,
         log_label: str | None = None,
     ) -> AgentRunResult:
-        finish_ctx = _FinishExtractionContext()
-        ctx: Any = (
-            _ExtractionAgentToolContext(
-                finish_context=finish_ctx,
-                extra_tool_context=extra_tool_context,
-            )
-            if extra_tool_context is not None
-            else finish_ctx
-        )
-        registry = ToolRegistry(
-            [*(extra_tools or []), create_finish_extraction_tool(output_schema)]
-        )
         max_steps = self.max_steps
         if run.max_steps_remaining is not None:
             max_steps = min(max_steps, max(0, run.max_steps_remaining))
@@ -387,17 +381,64 @@ class ResumableExtractionAgent:
             else "required"
         )
 
-        result = run_tool_loop(
-            client=self.client,
-            messages=messages,
-            registry=registry,
-            model_role=self.model_role,
-            max_steps=max_steps,
-            ctx=ctx,
-            finish_tool_name=FINISH_EXTRACTION_TOOL_NAME,
-            tool_choice=tool_choice,
-            log_label=log_label,
-        )
+        # Retry only the no_tool_call termination: the model emitted plain text
+        # with zero tool calls, so nothing was committed and re-issuing the same
+        # prompt is safe. Each attempt uses a fresh finish_ctx/registry so no
+        # partial state leaks across attempts. We do NOT retry once the model has
+        # already registered async tool calls (e.g. attach_pending_info_request)
+        # — restarting from scratch would discard them.
+        for attempt in range(_NO_TOOL_CALL_MAX_RETRIES + 1):
+            finish_ctx = _FinishExtractionContext()
+            ctx: Any = (
+                _ExtractionAgentToolContext(
+                    finish_context=finish_ctx,
+                    extra_tool_context=extra_tool_context,
+                )
+                if extra_tool_context is not None
+                else finish_ctx
+            )
+            registry = ToolRegistry(
+                [*(extra_tools or []), create_finish_extraction_tool(output_schema)]
+            )
+
+            result = run_tool_loop(
+                client=self.client,
+                messages=messages,
+                registry=registry,
+                model_role=self.model_role,
+                max_steps=max_steps,
+                ctx=ctx,
+                finish_tool_name=FINISH_EXTRACTION_TOOL_NAME,
+                tool_choice=tool_choice,
+                log_label=log_label,
+            )
+
+            should_retry = (
+                result.finished_reason == "no_tool_call"
+                and not result.pending_tool_call_ids
+                and attempt < _NO_TOOL_CALL_MAX_RETRIES
+            )
+            if not should_retry:
+                break
+            logger.warning(
+                "event=extraction_agent_retry org_id=%s user_id=%s "
+                "extractor_kind=%s run_id=%s request_id=%s "
+                "finished_reason=%s attempt=%d max_retries=%d",
+                run.binding.org_id,
+                run.binding.user_id,
+                run.binding.extractor_kind,
+                run.id,
+                run.binding.request_id,
+                result.finished_reason,
+                attempt + 1,
+                _NO_TOOL_CALL_MAX_RETRIES,
+            )
+            _record_agent_usage_event(
+                run=run,
+                event_name="extraction_agent_retry",
+                error_kind=result.finished_reason,
+                metadata={"attempt": attempt + 1},
+            )
 
         committed_output = (
             finish_ctx.output.model_dump() if finish_ctx.output is not None else None

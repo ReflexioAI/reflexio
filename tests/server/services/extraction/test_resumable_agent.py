@@ -224,31 +224,33 @@ def test_resumable_agent_marks_run_failed_on_loop_error(monkeypatch, storage):
     assert stored.last_error == "Extraction agent did not finish: error"
 
 
-def test_resumable_agent_no_tool_call_marks_failed(
+def test_resumable_agent_no_tool_call_marks_failed_after_retries(
     monkeypatch,
     storage,
     tool_call_completion,
 ):
-    """A no-tool-call turn is reported as 'no_tool_call' (not 'finish_tool').
+    """A persistent no-tool-call turn is retried up to the cap, then fails.
 
-    The model answered with plain text and zero tool calls, so the finish
-    handler never ran and no output was committed. The run must be marked
-    failed with the accurate, non-contradictory reason.
+    The model answers with plain text and zero tool calls on every attempt, so
+    the finish handler never runs and no output is committed. After exhausting
+    the retries (1 initial + 2 retries = 3 calls) the run is marked failed with
+    the accurate, non-contradictory reason.
     """
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_CLI", raising=False)
     _, make_stop = tool_call_completion
-    response = make_stop('{"profiles": null}')
+    responses = [make_stop('{"profiles": null}') for _ in range(3)]
     client = LiteLLMClient(LiteLLMConfig(model="claude-sonnet-4-6"))
     agent = ResumableExtractionAgent(client=client, storage=storage)
 
-    with patch("litellm.completion", side_effect=[response]):
+    with patch("litellm.completion", side_effect=responses) as completion:
         result = agent.start(
             run=_agent_run("run_no_tool"),
             messages=[{"role": "user", "content": "extract profiles"}],
             output_schema=StructuredProfilesOutput,
         )
 
+    assert completion.call_count == 3
     assert result.finished_reason == "no_tool_call"
     assert result.output is None
     stored = storage.get_agent_run("run_no_tool")
@@ -256,6 +258,48 @@ def test_resumable_agent_no_tool_call_marks_failed(
     assert stored.status == AgentRunStatus.FAILED
     assert stored.committed_output is None
     assert stored.last_error == "Extraction agent did not finish: no_tool_call"
+
+
+def test_resumable_agent_retries_no_tool_call_then_finishes(
+    monkeypatch,
+    storage,
+    tool_call_completion,
+):
+    """A transient no-tool-call turn is retried; a later finish_tool turn
+    recovers the output and the run completes."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_CLI", raising=False)
+    make_tc, make_stop = tool_call_completion
+    no_tool = make_stop('{"profiles": null}')
+    finish = make_tc(
+        FINISH_EXTRACTION_TOOL_NAME,
+        {
+            "profiles": [
+                {
+                    "content": "User prefers AWS ECS deployments.",
+                    "time_to_live": "infinity",
+                }
+            ]
+        },
+    )
+    client = LiteLLMClient(LiteLLMConfig(model="claude-sonnet-4-6"))
+    agent = ResumableExtractionAgent(client=client, storage=storage)
+
+    with patch("litellm.completion", side_effect=[no_tool, finish]) as completion:
+        result = agent.start(
+            run=_agent_run("run_retry"),
+            messages=[{"role": "user", "content": "extract profiles"}],
+            output_schema=StructuredProfilesOutput,
+        )
+
+    assert completion.call_count == 2
+    assert result.finished_reason == "finish_tool"
+    assert isinstance(result.output, StructuredProfilesOutput)
+    assert result.output.profiles is not None
+    assert result.output.profiles[0].content == "User prefers AWS ECS deployments."
+    stored = storage.get_agent_run("run_retry")
+    assert stored is not None
+    assert stored.status == AgentRunStatus.AGENT_COMPLETED
 
 
 def test_resumable_agent_requires_tool_call_when_extra_tools_present(
