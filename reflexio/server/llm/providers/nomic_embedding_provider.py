@@ -34,6 +34,8 @@ import os
 import threading
 from typing import Any
 
+from reflexio.server.llm.llm_utils import positive_int_env
+
 _LOGGER = logging.getLogger(__name__)
 
 _ENV_ENABLE = "CLAUDE_SMART_USE_LOCAL_EMBEDDING"
@@ -53,6 +55,18 @@ _TARGET_DIM = 512
 # The model has a 8192 token context window; we still cap chars
 # defensively to avoid pathological multi-MB inputs.
 _MAX_CHARS = 32_000
+
+# Encode in small mini-batches so a single large request can't spike memory:
+# peak activation memory scales with batch_size, not with the total number of
+# texts in the request. A small batch is what makes the daemon's bounded
+# concurrency (see ``embedding_service``) safe to raise above 1.
+_DEFAULT_ENCODE_BATCH_SIZE = 4
+_ENV_BATCH_SIZE = "REFLEXIO_EMBED_BATCH_SIZE"
+
+
+def _encode_batch_size() -> int:
+    """Resolve the encode mini-batch size from env, defaulting to 4."""
+    return positive_int_env(_ENV_BATCH_SIZE, _DEFAULT_ENCODE_BATCH_SIZE, _LOGGER)
 
 
 class NomicEmbedderError(RuntimeError):
@@ -146,7 +160,12 @@ class NomicEmbedder:
         # show_progress_bar=False so server logs stay clean during ingest
         # batches. convert_to_numpy=True returns a numpy ndarray; we slice
         # and renormalise per-row before converting to plain Python lists.
-        raw = model.encode(safe, show_progress_bar=False, convert_to_numpy=True)
+        raw = model.encode(
+            safe,
+            batch_size=_encode_batch_size(),
+            show_progress_bar=False,
+            convert_to_numpy=True,
+        )
         return [_truncate_and_renormalise(vec.tolist()) for vec in raw]
 
 

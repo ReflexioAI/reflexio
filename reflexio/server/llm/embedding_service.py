@@ -12,6 +12,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
+from reflexio.server.llm.llm_utils import positive_int_env
 from reflexio.server.llm.providers.local_embedding_provider import LocalEmbedder
 from reflexio.server.llm.providers.nomic_embedding_provider import (
     NomicEmbedder,
@@ -31,6 +32,33 @@ _ACTIVE_MODEL: str | None = None
 _ACTIVE_MODEL_LOCK = threading.Lock()
 
 DEFAULT_OSS_EMBEDDING_MODEL = MINILM_MODEL
+
+# Bound how many embed/encode calls run at once. The endpoint is a sync ``def``
+# served from Starlette's threadpool, so without a guard a burst of requests
+# would run that many model.encode() calls in parallel, stacking their
+# activation memory and OOM-killing the daemon. The semaphore caps simultaneous
+# encodes; excess requests block on acquire() and are picked up when a slot
+# frees — they queue, they are never rejected. Pair with a small encode
+# batch_size so each in-flight encode stays cheap.
+_DEFAULT_MAX_CONCURRENCY = 4
+_ENV_MAX_CONCURRENCY = "REFLEXIO_EMBED_MAX_CONCURRENCY"
+_ENCODE_SEMAPHORE: threading.BoundedSemaphore | None = None
+_ENCODE_SEMAPHORE_LOCK = threading.Lock()
+
+
+def _max_concurrency() -> int:
+    """Resolve the max simultaneous encodes from env, defaulting to 4."""
+    return positive_int_env(_ENV_MAX_CONCURRENCY, _DEFAULT_MAX_CONCURRENCY, logger)
+
+
+def _encode_semaphore() -> threading.BoundedSemaphore:
+    """Return the process-wide encode semaphore, building it on first use."""
+    global _ENCODE_SEMAPHORE
+    if _ENCODE_SEMAPHORE is None:
+        with _ENCODE_SEMAPHORE_LOCK:
+            if _ENCODE_SEMAPHORE is None:
+                _ENCODE_SEMAPHORE = threading.BoundedSemaphore(_max_concurrency())
+    return _ENCODE_SEMAPHORE
 
 
 class EmbeddingRequest(BaseModel):
@@ -99,11 +127,24 @@ def create_embedding_app(default_model: str | None = None) -> FastAPI:
 
 def _embed_texts(model: str, texts: list[str]) -> list[list[float]]:
     _activate_model(model)
-    if is_nomic_model(model):
-        return NomicEmbedder.get().embed(texts)
-    if model == MINILM_MODEL:
-        return LocalEmbedder.get().embed(texts)
-    raise HTTPException(status_code=400, detail=f"Unsupported model: {model}")
+    semaphore = _encode_semaphore()
+    # Non-blocking probe purely for observability: if no slot is free, this
+    # request will have to wait. The real acquire below blocks until a slot
+    # opens, so the request queues and is picked up later — never rejected.
+    if not semaphore.acquire(blocking=False):
+        logger.info(
+            "Embedding request queued; all %d encode slots busy",
+            _max_concurrency(),
+        )
+        semaphore.acquire()
+    try:
+        if is_nomic_model(model):
+            return NomicEmbedder.get().embed(texts)
+        if model == MINILM_MODEL:
+            return LocalEmbedder.get().embed(texts)
+        raise HTTPException(status_code=400, detail=f"Unsupported model: {model}")
+    finally:
+        semaphore.release()
 
 
 def _activate_model(model: str) -> None:

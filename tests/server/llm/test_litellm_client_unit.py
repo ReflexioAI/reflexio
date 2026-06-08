@@ -729,6 +729,14 @@ class TestEmbeddingDefaultResolution:
             "_resolve_default_embedding_model",
             lambda _: "local/minilm-l6-v2",
         )
+        # Stay hermetic: if a local embedding daemon happens to be running on
+        # this host, model-driven routing would call it instead of the
+        # in-process LocalEmbedder branch this test exercises. Force the service
+        # gate off.
+        monkeypatch.setattr(
+            "reflexio.server.llm.litellm_client.should_use_embedding_service",
+            lambda _model: False,
+        )
         monkeypatch.setattr(
             "reflexio.server.llm.litellm_client._is_chromadb_importable",
             lambda: True,

@@ -342,9 +342,15 @@ class TestLiteLLMClientShortCircuit:
 
         # Force "inprocess" provider mode so the embedding-service short-circuit
         # doesn't intercept the local/* model before the chromadb-import check.
+        # Clearing the env vars is not enough: model-driven routing probes the
+        # local daemon, so if one happens to be running on this host the call
+        # would route there. Force the service gate off to stay hermetic.
         monkeypatch.delenv("REFLEXIO_EMBEDDING_PROVIDER", raising=False)
         monkeypatch.delenv("REFLEXIO_EMBEDDING_SERVICE_URL", raising=False)
         monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_EMBEDDING", raising=False)
+        monkeypatch.setattr(
+            litellm_client, "should_use_embedding_service", lambda _model: False
+        )
         monkeypatch.setattr(lep.importlib.util, "find_spec", lambda _name: None)
 
         client = LiteLLMClient(LiteLLMConfig(model="claude-code/default"))
