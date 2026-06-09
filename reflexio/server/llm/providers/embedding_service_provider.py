@@ -26,11 +26,15 @@ _ENV_PROVIDER = "REFLEXIO_EMBEDDING_PROVIDER"
 _ENV_SERVICE_URL = "REFLEXIO_EMBEDDING_SERVICE_URL"
 _ENV_TIMEOUT_MS = "REFLEXIO_EMBEDDING_SERVICE_TIMEOUT_MS"
 _ENV_EMBEDDING_PORT = "EMBEDDING_PORT"
+_ENV_DAEMON_HOST = "REFLEXIO_EMBEDDING_DAEMON_HOST"
+_ENV_LOCAL_SERVICE_PROBE_TIMEOUT_MS = (
+    "REFLEXIO_EMBEDDING_LOCAL_SERVICE_PROBE_TIMEOUT_MS"
+)
 _ENV_CLAUDE_SMART_LOCAL = "CLAUDE_SMART_USE_LOCAL_EMBEDDING"
 _DEFAULT_LOCAL_PORT = 8072
 _DEFAULT_INTERNAL_SERVICE_TIMEOUT_MS = 2_000
 _DEFAULT_LOCAL_SERVICE_TIMEOUT_MS = 30_000
-_LOCAL_SERVICE_PROBE_TIMEOUT_SECONDS = 0.2
+_DEFAULT_LOCAL_SERVICE_PROBE_TIMEOUT_MS = 200
 _LOCAL_SERVICE_PROBE_CACHE_SECONDS = 5.0
 _SERVICE_MODES = {"local_service", "internal_service"}
 _VALID_MODES = {"cloud", *_SERVICE_MODES, "inprocess", "off"}
@@ -42,8 +46,25 @@ class EmbeddingUnavailableError(RuntimeError):
 
 
 def _local_service_url() -> str:
+    host = os.environ.get(_ENV_DAEMON_HOST, "").strip() or "127.0.0.1"
     port = os.environ.get(_ENV_EMBEDDING_PORT, str(_DEFAULT_LOCAL_PORT))
-    return f"http://127.0.0.1:{port}"
+    return f"http://{host}:{port}"
+
+
+def _local_service_probe_timeout_seconds() -> float:
+    raw = os.environ.get(_ENV_LOCAL_SERVICE_PROBE_TIMEOUT_MS)
+    if raw is None:
+        return _DEFAULT_LOCAL_SERVICE_PROBE_TIMEOUT_MS / 1000
+    try:
+        timeout_ms = int(raw)
+    except ValueError:
+        _LOGGER.warning(
+            "%s must be an integer number of milliseconds; using %dms",
+            _ENV_LOCAL_SERVICE_PROBE_TIMEOUT_MS,
+            _DEFAULT_LOCAL_SERVICE_PROBE_TIMEOUT_MS,
+        )
+        return _DEFAULT_LOCAL_SERVICE_PROBE_TIMEOUT_MS / 1000
+    return max(timeout_ms, 1) / 1000
 
 
 def embedding_service_url(mode: EmbeddingProviderMode | None = None) -> str:
@@ -98,7 +119,7 @@ def _local_service_status() -> tuple[bool, str | None]:
     try:
         response = httpx.get(
             f"{_local_service_url()}/health",
-            timeout=_LOCAL_SERVICE_PROBE_TIMEOUT_SECONDS,
+            timeout=_local_service_probe_timeout_seconds(),
         )
         reachable = response.status_code < 500
         active_model = response.json().get("active_model") if reachable else None

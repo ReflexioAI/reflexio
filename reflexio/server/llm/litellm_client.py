@@ -57,9 +57,6 @@ from reflexio.server.llm.providers.nomic_embedding_provider import (
     NomicEmbedder,
 )
 from reflexio.server.llm.providers.nomic_embedding_provider import (
-    is_enabled as _nomic_embedder_enabled,
-)
-from reflexio.server.llm.providers.nomic_embedding_provider import (
     is_nomic_model as _is_nomic_model,
 )
 from reflexio.server.llm.providers.nomic_embedding_provider import (
@@ -732,11 +729,14 @@ class LiteLLMClient:
                 [text], model=embedding_model, dimensions=dimensions
             )[0]
 
-        # local/nomic-embed-* routes to the sentence-transformers Nomic
-        # provider (137M params, 768d Matryoshka-truncated to 512). Higher
-        # quality than the chromadb MiniLM fallback below; preferred when
-        # the dep is installed.
-        if _is_nomic_model(embedding_model) and _nomic_embedder_enabled():
+        # local/nomic-embed-* must stay on the Nomic provider (137M params,
+        # 768d Matryoshka-truncated to 512). Falling through to MiniLM would
+        # mix embedding models inside existing vector stores.
+        if _is_nomic_model(embedding_model):
+            if mode == "cloud":
+                raise EmbeddingUnavailableError(
+                    f"Local embedding model {embedding_model!r} cannot use cloud mode"
+                )
             try:
                 return NomicEmbedder.get().embed([text])[0]
             except Exception as e:
@@ -830,7 +830,11 @@ class LiteLLMClient:
             )
 
         # See matching short-circuits in get_embedding above.
-        if _is_nomic_model(embedding_model) and _nomic_embedder_enabled():
+        if _is_nomic_model(embedding_model):
+            if mode == "cloud":
+                raise EmbeddingUnavailableError(
+                    f"Local embedding model {embedding_model!r} cannot use cloud mode"
+                )
             try:
                 return NomicEmbedder.get().embed(list(texts))
             except Exception as e:

@@ -32,11 +32,26 @@ class _ConcurrencyRecorder:
         return [[0.0] * 512 for _ in texts]
 
 
+class _BatchRecorder:
+    """Stand-in embedder that records each encode call's texts."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.calls: list[list[str]] = []
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        with self._lock:
+            self.calls.append(list(texts))
+        return [[float(index)] * 512 for index, _text in enumerate(texts)]
+
+
 def _reset_service_state(
-    monkeypatch: pytest.MonkeyPatch, recorder: _ConcurrencyRecorder
+    monkeypatch: pytest.MonkeyPatch, recorder: _ConcurrencyRecorder | _BatchRecorder
 ) -> None:
     monkeypatch.setattr(es, "_ENCODE_SEMAPHORE", None)
     monkeypatch.setattr(es, "_ACTIVE_MODEL", None)
+    monkeypatch.setattr(es, "_MICRO_BATCH_QUEUE", [])
+    monkeypatch.setattr(es, "_ACTIVE_BATCH_PROCESSORS", 0)
     monkeypatch.setattr(es.NomicEmbedder, "get", classmethod(lambda _cls: recorder))
 
 
@@ -55,9 +70,21 @@ def test_max_concurrency_ignores_invalid_env(monkeypatch: pytest.MonkeyPatch) ->
     assert es._max_concurrency() == 4
 
 
+def test_micro_batch_delay_respects_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("REFLEXIO_EMBED_MICRO_BATCH_DELAY_MS", "25")
+    assert es._micro_batch_delay_seconds() == 0.025
+
+
+def test_micro_batch_max_texts_respects_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("REFLEXIO_EMBED_MICRO_BATCH_MAX_TEXTS", "8")
+    assert es._micro_batch_max_texts() == 8
+
+
 def test_embed_texts_caps_and_queues(monkeypatch: pytest.MonkeyPatch) -> None:
     """Excess concurrent requests queue (never reject) and the cap is honored."""
     monkeypatch.setenv("REFLEXIO_EMBED_MAX_CONCURRENCY", "2")
+    monkeypatch.setenv("REFLEXIO_EMBED_MICRO_BATCH_DELAY_MS", "1")
+    monkeypatch.setenv("REFLEXIO_EMBED_MICRO_BATCH_MAX_TEXTS", "1")
     recorder = _ConcurrencyRecorder(hold=0.1)
     _reset_service_state(monkeypatch, recorder)
 
@@ -83,3 +110,38 @@ def test_embed_texts_caps_and_queues(monkeypatch: pytest.MonkeyPatch) -> None:
     assert recorder.peak <= 2
     # ...and concurrency was actually exercised (not accidentally serialized).
     assert recorder.peak >= 2
+
+
+def test_micro_batches_concurrent_requests(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Concurrent small requests can share one encode call."""
+    monkeypatch.setenv("REFLEXIO_EMBED_MAX_CONCURRENCY", "1")
+    monkeypatch.setenv("REFLEXIO_EMBED_MICRO_BATCH_DELAY_MS", "50")
+    monkeypatch.setenv("REFLEXIO_EMBED_MICRO_BATCH_MAX_TEXTS", "8")
+    recorder = _BatchRecorder()
+    _reset_service_state(monkeypatch, recorder)
+
+    model = "local/nomic-embed-text-v1.5"
+    barrier = threading.Barrier(2)
+    results: list[list[list[float]]] = []
+    errors: list[Exception] = []
+
+    def worker(text: str) -> None:
+        try:
+            barrier.wait(timeout=1)
+            results.append(es._embed_texts(model, [text]))
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [
+        threading.Thread(target=worker, args=("first",)),
+        threading.Thread(target=worker, args=("second",)),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert errors == []
+    assert len(results) == 2
+    assert len(recorder.calls) == 1
+    assert set(recorder.calls[0]) == {"first", "second"}

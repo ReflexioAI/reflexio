@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import threading
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
@@ -45,10 +48,55 @@ _ENV_MAX_CONCURRENCY = "REFLEXIO_EMBED_MAX_CONCURRENCY"
 _ENCODE_SEMAPHORE: threading.BoundedSemaphore | None = None
 _ENCODE_SEMAPHORE_LOCK = threading.Lock()
 
+# Opportunistically coalesce concurrent small requests before calling
+# model.encode(). This keeps request concurrency thread-based while giving the
+# GPU larger batches during bursts.
+_DEFAULT_MICRO_BATCH_DELAY_MS = 5
+_DEFAULT_MICRO_BATCH_MAX_TEXTS = 64
+_ENV_MICRO_BATCH_DELAY_MS = "REFLEXIO_EMBED_MICRO_BATCH_DELAY_MS"
+_ENV_MICRO_BATCH_MAX_TEXTS = "REFLEXIO_EMBED_MICRO_BATCH_MAX_TEXTS"
+_MICRO_BATCH_CONDITION = threading.Condition()
+_MICRO_BATCH_QUEUE: list[_EmbeddingJob] = []
+_ACTIVE_BATCH_PROCESSORS = 0
+
+
+@dataclass
+class _EmbeddingJob:
+    model: str
+    texts: list[str]
+    done: threading.Event = field(default_factory=threading.Event)
+    result: list[list[float]] | None = None
+    error: BaseException | None = None
+
+
+def _nonnegative_int_env(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning("Invalid %s=%r; falling back to default %d", name, raw, default)
+        return default
+    return value if value >= 0 else default
+
 
 def _max_concurrency() -> int:
     """Resolve the max simultaneous encodes from env, defaulting to 4."""
     return positive_int_env(_ENV_MAX_CONCURRENCY, _DEFAULT_MAX_CONCURRENCY, logger)
+
+
+def _micro_batch_delay_seconds() -> float:
+    return (
+        _nonnegative_int_env(_ENV_MICRO_BATCH_DELAY_MS, _DEFAULT_MICRO_BATCH_DELAY_MS)
+        / 1000
+    )
+
+
+def _micro_batch_max_texts() -> int:
+    return positive_int_env(
+        _ENV_MICRO_BATCH_MAX_TEXTS, _DEFAULT_MICRO_BATCH_MAX_TEXTS, logger
+    )
 
 
 def _encode_semaphore() -> threading.BoundedSemaphore:
@@ -127,6 +175,113 @@ def create_embedding_app(default_model: str | None = None) -> FastAPI:
 
 def _embed_texts(model: str, texts: list[str]) -> list[list[float]]:
     _activate_model(model)
+    if not texts:
+        return []
+
+    job = _EmbeddingJob(model=model, texts=list(texts))
+    should_process = False
+
+    global _ACTIVE_BATCH_PROCESSORS
+    with _MICRO_BATCH_CONDITION:
+        _MICRO_BATCH_QUEUE.append(job)
+        if _max_concurrency() > _ACTIVE_BATCH_PROCESSORS:
+            _ACTIVE_BATCH_PROCESSORS += 1
+            should_process = True
+        _MICRO_BATCH_CONDITION.notify()
+
+    if should_process:
+        threading.Thread(
+            target=_run_micro_batch_processor,
+            daemon=True,
+            name="embedding-micro-batch",
+        ).start()
+
+    job.done.wait()
+    if job.error is not None:
+        raise job.error
+    if job.result is None:
+        raise RuntimeError("Embedding micro-batch completed without a result")
+    return job.result
+
+
+def _run_micro_batch_processor() -> None:
+    global _ACTIVE_BATCH_PROCESSORS
+    try:
+        while True:
+            jobs = _take_micro_batch()
+            if not jobs:
+                with _MICRO_BATCH_CONDITION:
+                    if _MICRO_BATCH_QUEUE:
+                        continue
+                    _ACTIVE_BATCH_PROCESSORS -= 1
+                    _MICRO_BATCH_CONDITION.notify_all()
+                    return
+            _process_micro_batch(jobs)
+    except BaseException:
+        with _MICRO_BATCH_CONDITION:
+            _ACTIVE_BATCH_PROCESSORS -= 1
+            _MICRO_BATCH_CONDITION.notify_all()
+        raise
+
+
+def _take_micro_batch() -> list[_EmbeddingJob]:
+    max_texts = _micro_batch_max_texts()
+    deadline = time.monotonic() + _micro_batch_delay_seconds()
+
+    with _MICRO_BATCH_CONDITION:
+        if not _MICRO_BATCH_QUEUE:
+            return []
+
+        first = _MICRO_BATCH_QUEUE.pop(0)
+        jobs = [first]
+        total_texts = len(first.texts)
+
+        while total_texts < max_texts:
+            compatible_index = next(
+                (
+                    index
+                    for index, candidate in enumerate(_MICRO_BATCH_QUEUE)
+                    if candidate.model == first.model
+                    and total_texts + len(candidate.texts) <= max_texts
+                ),
+                None,
+            )
+            if compatible_index is not None:
+                candidate = _MICRO_BATCH_QUEUE.pop(compatible_index)
+                jobs.append(candidate)
+                total_texts += len(candidate.texts)
+                continue
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            _MICRO_BATCH_CONDITION.wait(timeout=remaining)
+
+        return jobs
+
+
+def _process_micro_batch(jobs: list[_EmbeddingJob]) -> None:
+    texts: list[str] = []
+    slices: list[tuple[_EmbeddingJob, int, int]] = []
+    for job in jobs:
+        start = len(texts)
+        texts.extend(job.texts)
+        slices.append((job, start, len(texts)))
+
+    try:
+        embeddings = _encode_texts_now(jobs[0].model, texts)
+    except BaseException as exc:
+        for job in jobs:
+            job.error = exc
+            job.done.set()
+        return
+
+    for job, start, end in slices:
+        job.result = embeddings[start:end]
+        job.done.set()
+
+
+def _encode_texts_now(model: str, texts: list[str]) -> list[list[float]]:
     semaphore = _encode_semaphore()
     # Non-blocking probe purely for observability: if no slot is free, this
     # request will have to wait. The real acquire below blocks until a slot
