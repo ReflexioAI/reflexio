@@ -110,6 +110,22 @@ def test_sqlite_update_agent_run_status_records_lifecycle_timestamps(storage):
     assert finalized.finalized_at is not None
 
 
+def test_sqlite_update_agent_run_status_honors_expected_statuses(storage):
+    storage.create_agent_run(_agent_run("run_1", AgentRunStatus.FAILED))
+
+    updated = storage.update_agent_run_status(
+        "run_1",
+        AgentRunStatus.AGENT_COMPLETED,
+        committed_output={"profiles": []},
+        expected_statuses=(AgentRunStatus.RUNNING, AgentRunStatus.RESUMING),
+    )
+
+    assert updated is not None
+    assert updated.status == AgentRunStatus.FAILED
+    assert updated.committed_output is None
+    assert updated.agent_completed_at is None
+
+
 def test_sqlite_pending_tool_call_active_dedup_lookup(storage):
     now = datetime(2026, 5, 28, tzinfo=UTC)
     pending = storage.create_pending_tool_call(_pending_call("ptc_1", now=now))

@@ -220,7 +220,19 @@ class AgentRunMixin:
         next_resume_at: datetime | None = None,
         last_error: str | None = None,
         increment_finalization_attempts: bool = False,
+        expected_statuses: tuple[AgentRunStatus, ...] | None = None,
     ) -> AgentRunRecord | None:
+        raise NotImplementedError(f"{type(self).__name__} does not support agent runs")
+
+    def fail_running_agent_runs_for_request(
+        self,
+        *,
+        org_id: str,
+        extractor_kind: str,
+        user_id: str | None,
+        request_id: str,
+        last_error: str,
+    ) -> int:
         raise NotImplementedError(f"{type(self).__name__} does not support agent runs")
 
     def create_pending_tool_call(

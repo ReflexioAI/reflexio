@@ -159,6 +159,52 @@ def test_resumable_agent_finishes_profile_output(
     }
 
 
+def test_resumable_agent_discards_late_output_after_timeout_failure(
+    monkeypatch,
+    storage,
+    tool_call_completion,
+):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_CLI", raising=False)
+    make_tc, _make_stop = tool_call_completion
+    response = make_tc(
+        FINISH_EXTRACTION_TOOL_NAME,
+        {
+            "profiles": [
+                {
+                    "content": "User prefers AWS ECS deployments.",
+                    "time_to_live": "infinity",
+                }
+            ]
+        },
+    )
+    client = LiteLLMClient(LiteLLMConfig(model="claude-sonnet-4-6"))
+    agent = ResumableExtractionAgent(client=client, storage=storage)
+
+    def fail_then_return(*args, **kwargs):
+        storage.update_agent_run_status(
+            "run_late",
+            AgentRunStatus.FAILED,
+            last_error="Extractor timed out after 300 seconds",
+        )
+        return response
+
+    with patch("litellm.completion", side_effect=fail_then_return):
+        result = agent.start(
+            run=_agent_run("run_late"),
+            messages=[{"role": "user", "content": "extract profiles"}],
+            output_schema=StructuredProfilesOutput,
+        )
+
+    assert result.finished_reason == "late_output_discarded"
+    assert result.output is None
+    stored = storage.get_agent_run("run_late")
+    assert stored is not None
+    assert stored.status == AgentRunStatus.FAILED
+    assert stored.committed_output is None
+    assert stored.last_error == "Extractor timed out after 300 seconds"
+
+
 def test_resumable_agent_finishes_playbook_output(
     monkeypatch,
     storage,
