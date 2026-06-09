@@ -100,6 +100,7 @@ Key files:
 - **Gemini support**: Model names with `gemini/` prefix route through Google Gemini; API key from `api_key_config.gemini`
 - **OpenRouter support**: Model names with `openrouter/` prefix (e.g., `openrouter/openai/gpt-5-nano`) route through OpenRouter; API key from `api_key_config.openrouter`
 - API keys read from environment variables (OPENAI_API_KEY, ANTHROPIC_API_KEY) or `ApiKeyConfig`
+- **Embedding routing**: `providers/embedding_service_provider.py` routes `local/*` embedding models to the shared OpenAI-compatible embedding daemon when available, falls back to in-process local embedders, and supports `REFLEXIO_EMBEDDING_PROVIDER` modes (`cloud`, `local_service`, `internal_service`, `inprocess`, `off`).
 - Interface: `generate_response()`, `generate_chat_response()`, `get_embedding()`
 - **Structured Outputs**: Supports Pydantic models via `response_format` parameter
 - Return types: `str` for text, or `BaseModel` for Pydantic models
@@ -222,7 +223,7 @@ Called by API endpoints via `Reflexio`
 - `extractor_interaction_utils.py`: Per-extractor utilities for stride_size checking and source filtering
 - `operation_state_utils.py`: Centralized `OperationStateManager` for all `_operation_state` table interactions (progress tracking, concurrency locks, extractor/aggregator bookmarks, simple locks)
 - `deduplication_utils.py`: Shared utilities for LLM-based deduplication (used by ProfileDeduplicator and PlaybookConsolidator)
-- `service_utils.py`: Utilities (`construct_messages_from_interactions()`, `format_interactions_to_history_string()` (prepends tool usage info when `tools_used` is present), `extract_json_from_string()`, `log_model_response()` for colored LLM response logging)
+- `service_utils.py`: Utilities (`construct_messages_from_interactions()`, `format_interactions_to_history_string()` (prepends tool usage info and slices long interaction content via `REFLEXIO_MAX_INTERACTION_CONTENT_TOKENS`), `extract_json_from_string()`, `log_model_response()` for colored LLM response logging)
 
 **Operation State Management** (via `OperationStateManager` in `operation_state_utils.py`):
 - Centralized manager for all `_operation_state` table interactions with 6 use cases:

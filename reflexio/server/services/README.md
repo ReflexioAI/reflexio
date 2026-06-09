@@ -13,7 +13,7 @@ Description: Core business-logic layer — LLM orchestration, extraction, evalua
 | `base_generation_service.py` | `BaseGenerationService` — abstract base; the **Service Pattern** (load configs → create actors → run in parallel → save results). Per-extractor timeout `EXTRACTOR_TIMEOUT_SECONDS = 300`. |
 | `operation_state_utils.py` | `OperationStateManager` — all `_operation_state` access (progress, concurrency locks, extractor/aggregator bookmarks, cluster fingerprints, cancellation). |
 | `extractor_config_utils.py`, `extractor_interaction_utils.py` | Filter extractors by source / `allow_manual_trigger` / names; per-extractor stride + window + bookmark handling. |
-| `deduplication_utils.py`, `service_utils.py`, `embedding_text.py` | LLM dedup helpers (used by `ProfileDeduplicator` + `PlaybookConsolidator`), message construction / JSON extraction / response logging, embedding text builders. |
+| `deduplication_utils.py`, `service_utils.py`, `embedding_text.py` | LLM dedup helpers (used by `ProfileDeduplicator` + `PlaybookConsolidator`), message construction / JSON extraction / response logging, per-interaction content slicing via `REFLEXIO_MAX_INTERACTION_CONTENT_TOKENS`, embedding text builders. |
 
 ## Generation Services
 
@@ -41,6 +41,8 @@ Description: Core business-logic layer — LLM orchestration, extraction, evalua
 | `pre_retrieval/` | `QueryReformulator` (`_query_reformulator.py`) + `_document_expander.py` — query rewrite & doc expansion for recall. |
 | `unified_search_service.py` | `run_unified_search()` — two-phase parallel search across profiles / agent playbooks / user playbooks. |
 | `retrieval/` | `relevance_floor.py` — result relevance thresholding. |
+
+Embedding requests leave the service layer through `llm/litellm_client.py`; local models (`local/minilm-l6-v2`, `local/nomic-embed-v1.5`) are routed by `llm/providers/embedding_service_provider.py` to the shared embedding daemon when reachable, otherwise to the in-process embedder.
 
 ## Persistence & Config
 
