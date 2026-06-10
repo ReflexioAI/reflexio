@@ -37,6 +37,7 @@ def test_sqlite_metadata_accepts_nested_values(storage):
     r = Request(
         request_id="r3",
         user_id="u1",
+        session_id="test_session",
         metadata={"reflexio_retrieval_enabled": False, "tags": ["a", "b"]},
     )
     storage.add_request(r)

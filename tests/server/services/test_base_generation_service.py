@@ -352,6 +352,7 @@ class TestFilterConfigByStride:
         request = Request(
             request_id="req1",
             user_id="test_user",
+            session_id="test_session",
             created_at=1000,
             source="api",
         )
@@ -2132,7 +2133,11 @@ class TestCheapShouldRunReject:
         return [
             RequestInteractionDataModel(
                 session_id="s",
-                request=Request(request_id="r", user_id="u"),
+                request=Request(
+                    request_id="r",
+                    user_id="u",
+                    session_id="test_session",
+                ),
                 interactions=[
                     Interaction(user_id="u", request_id="r", role="User", content=c)
                     for c in contents

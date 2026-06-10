@@ -285,6 +285,7 @@ def _create_mock_request_interaction_model(
     """Helper to create a RequestInteractionDataModel with specified number of interactions."""
     request = Request(
         user_id="user1",
+        session_id="test_session",
         agent_version="v1",
         request_id=f"req_{num_interactions}",
         source=source,

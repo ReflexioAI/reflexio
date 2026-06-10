@@ -97,6 +97,7 @@ def _sessions_to_ridm(
     request = Request(
         request_id=request_id,
         user_id=user_id,
+        session_id="test_session",
         created_at=0,
         source="api",
     )

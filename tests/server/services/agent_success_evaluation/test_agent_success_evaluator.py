@@ -116,12 +116,14 @@ def sample_request_interaction_models(sample_interactions):
     request1 = Request(
         request_id="req1",
         user_id="user1",
+        session_id="test_session",
         created_at=1000,
         source="api",
     )
     request2 = Request(
         request_id="req2",
         user_id="user2",
+        session_id="test_session",
         created_at=1002,
         source="api",
     )
@@ -259,12 +261,14 @@ class TestSourceFiltering:
         request1 = Request(
             request_id="req1",
             user_id="user1",
+            session_id="test_session",
             created_at=1000,
             source="api",
         )
         request2 = Request(
             request_id="req2",
             user_id="user2",
+            session_id="test_session",
             created_at=1002,
             source="web",
         )

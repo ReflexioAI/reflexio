@@ -418,7 +418,7 @@ class ReflexioClient:
             interactions: List of interaction data.
             source: The source of the interaction.
             agent_version: The agent version.
-            session_id: Optional session ID for grouping requests.
+            session_id: Required non-empty session ID for grouping requests.
             wait_for_response: If True, the **server** waits for
                 extraction to complete before returning (longer HTTP
                 call, response includes real profile/playbook counts).
@@ -448,6 +448,9 @@ class ReflexioClient:
                 mode it includes request_id, storage routing, and
                 deltas.
         """
+        if session_id is None or not session_id.strip():
+            raise ValueError("session_id is required and cannot be empty")
+
         interaction_data_list = [
             (
                 InteractionData(**interaction_request)

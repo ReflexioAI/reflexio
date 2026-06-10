@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import sqlite3
 import tempfile
 from collections.abc import Generator
 from unittest.mock import patch
 
 import pytest
+from pydantic import ValidationError
 
 from reflexio.models.api_schema.internal_schema import SessionDescriptor
 from reflexio.models.api_schema.service_schemas import (
@@ -79,21 +81,67 @@ def test_window_boundaries_are_inclusive(storage: BaseStorage) -> None:
     assert {d.session_id for d in out} == {"edge_low", "edge_high"}
 
 
-def test_null_session_excluded(storage: BaseStorage) -> None:
-    """Requests with session_id=None must be excluded from the result."""
-    _seed_request(storage, "u1", "s1", ts=1000)
-    req = Request(
-        request_id="req_null",
-        user_id="u1",
-        created_at=1000,
-        source="test",
-        agent_version="v1",
-        session_id=None,
-    )
-    storage.add_request(req)
+def test_null_session_rejected_by_request_model() -> None:
+    """Requests must include a non-empty session_id."""
+    with pytest.raises(ValidationError):
+        Request(
+            request_id="req_null",
+            user_id="u1",
+            created_at=1000,
+            source="test",
+            agent_version="v1",
+            session_id=None,
+        )
 
-    out = storage.get_session_ids_in_window(from_ts=0, to_ts=5000)
-    assert {d.session_id for d in out} == {"s1"}
+
+def test_sqlite_migration_backfills_blank_session_ids_per_request() -> None:
+    """Old nullable request rows get distinct legacy sessions during migration."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        db_path = f"{temp_dir}/reflexio.db"
+        conn = sqlite3.connect(db_path)
+        conn.executescript(
+            """
+            CREATE TABLE requests (
+                request_id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT '',
+                agent_version TEXT NOT NULL DEFAULT '',
+                session_id TEXT
+            );
+            INSERT INTO requests
+                (request_id, user_id, created_at, source, agent_version, session_id)
+            VALUES
+                ('r_null', 'u1', '1970-01-01T00:16:40+00:00', 'test', 'v1', NULL),
+                ('r_blank', 'u1', '1970-01-01T00:16:41+00:00', 'test', 'v1', ''),
+                ('r_ok', 'u1', '1970-01-01T00:16:42+00:00', 'test', 'v1', 'existing');
+            """
+        )
+        conn.commit()
+        conn.close()
+
+        storage = SQLiteStorage(
+            org_id="contract_test_session_migration",
+            db_path=db_path,
+        )
+
+        rows = {
+            row["request_id"]: row["session_id"]
+            for row in storage.conn.execute(
+                "SELECT request_id, session_id FROM requests"
+            ).fetchall()
+        }
+        assert rows["r_ok"] == "existing"
+        assert rows["r_null"].startswith("legacy-")
+        assert rows["r_blank"].startswith("legacy-")
+        assert rows["r_null"] != rows["r_blank"]
+
+        with pytest.raises(sqlite3.IntegrityError):
+            storage.conn.execute(
+                "INSERT INTO requests "
+                "(request_id, user_id, created_at, source, agent_version, session_id) "
+                "VALUES ('r_bad', 'u1', '1970-01-01T00:16:43+00:00', 'test', 'v1', '')"
+            )
 
 
 def test_distinct_agent_versions_split_into_separate_descriptors(

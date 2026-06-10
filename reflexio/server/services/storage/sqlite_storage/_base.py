@@ -53,7 +53,10 @@ from reflexio.server.llm.model_defaults import (
 from reflexio.server.llm.providers.embedding_service_provider import (
     EmbeddingUnavailableError,
 )
-from reflexio.server.services.storage.error import StorageError
+from reflexio.server.services.storage.error import (
+    StorageError,
+    require_non_empty_session_id,
+)
 from reflexio.server.services.storage.retention import RetentionTarget
 from reflexio.server.services.storage.retention_mixin import (
     RETENTION_DELETE_CHUNK,
@@ -425,7 +428,7 @@ def _row_to_request(row: sqlite3.Row) -> Request:
         created_at=_iso_to_epoch(d["created_at"]),
         source=d.get("source") or "",
         agent_version=d.get("agent_version") or "",
-        session_id=d.get("session_id"),
+        session_id=require_non_empty_session_id(d.get("session_id")),
         metadata=metadata,
     )
 
@@ -666,6 +669,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         self._migrate_agentic_signals()
         self._migrate_agent_playbook_source_windows()
         self._migrate_request_metadata()
+        self._migrate_request_session_id_required()
         self._migrate_shadow_comparison_verdicts()
         self._migrate_user_playbook_polarity()
         init_stall_state_table(self.conn)
@@ -1223,6 +1227,77 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             logger.info("Added metadata column to requests")
         self.conn.commit()
 
+    def _migrate_request_session_id_required(self) -> None:
+        """Require non-empty session ids on ``requests``.
+
+        SQLite cannot add a ``NOT NULL`` or ``CHECK`` constraint to an
+        existing column, so existing databases are rebuilt in place. Historical
+        null/blank sessions are intentionally backfilled per request to avoid
+        inventing conversation groupings that were never recorded.
+        """
+        cols = {
+            row["name"]: row
+            for row in self.conn.execute("PRAGMA table_info(requests)").fetchall()
+        }
+        if not cols or "session_id" not in cols:
+            return
+
+        table_sql_row = self.conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'requests'"
+        ).fetchone()
+        table_sql = (table_sql_row["sql"] if table_sql_row else "") or ""
+        blank_count = self.conn.execute(
+            "SELECT COUNT(*) FROM requests WHERE session_id IS NULL OR trim(session_id) = ''"
+        ).fetchone()[0]
+        has_required_schema = (
+            bool(cols["session_id"]["notnull"])
+            and "CHECK (trim(session_id) != '')" in table_sql
+        )
+        if has_required_schema and blank_count == 0:
+            return
+
+        metadata_expr = (
+            "COALESCE(metadata, '{}')" if "metadata" in cols else "'{}'"
+        )
+        # NOTE: this rebuild hardcodes the full `requests` column set. If a
+        # future migration adds a column to `requests`, it MUST be added here
+        # too (and to the SELECT below) or the rebuild will silently drop it.
+        self.conn.executescript(
+            f"""
+            CREATE TABLE requests_new (
+                request_id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT '',
+                agent_version TEXT NOT NULL DEFAULT '',
+                session_id TEXT NOT NULL CHECK (trim(session_id) != ''),
+                metadata TEXT NOT NULL DEFAULT '{{}}'
+            );
+            INSERT INTO requests_new
+                (request_id, user_id, created_at, source, agent_version, session_id, metadata)
+            SELECT
+                request_id,
+                user_id,
+                created_at,
+                COALESCE(source, ''),
+                COALESCE(agent_version, ''),
+                CASE
+                    WHEN session_id IS NULL OR trim(session_id) = ''
+                    THEN 'legacy-' || lower(hex(randomblob(16)))
+                    ELSE trim(session_id)
+                END,
+                {metadata_expr}
+            FROM requests;
+            DROP TABLE requests;
+            ALTER TABLE requests_new RENAME TO requests;
+            CREATE INDEX IF NOT EXISTS idx_requests_user_id ON requests(user_id);
+            CREATE INDEX IF NOT EXISTS idx_requests_session_id ON requests(session_id);
+            CREATE INDEX IF NOT EXISTS idx_requests_created_at ON requests(created_at);
+            """
+        )
+        self.conn.commit()
+        logger.info("Migrated requests.session_id to required non-empty values")
+
     def _migrate_shadow_comparison_verdicts(self) -> None:
         """F1: create the shadow_comparison_verdicts table if missing.
 
@@ -1617,7 +1692,7 @@ CREATE TABLE IF NOT EXISTS requests (
     created_at TEXT NOT NULL,
     source TEXT NOT NULL DEFAULT '',
     agent_version TEXT NOT NULL DEFAULT '',
-    session_id TEXT,
+    session_id TEXT NOT NULL CHECK (trim(session_id) != ''),
     metadata TEXT NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS idx_requests_user_id ON requests(user_id);

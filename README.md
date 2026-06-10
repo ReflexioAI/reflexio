@@ -265,7 +265,7 @@ client.publish_interaction(
         {"role": "assistant", "content": "..."},
     ],
     agent_version="v1",       # optional: track agent versions
-    session_id="session-abc", # optional: group requests into sessions
+    session_id="session-abc", # required: stable conversation/session id
 )
 
 # Search profiles

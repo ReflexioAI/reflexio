@@ -92,6 +92,7 @@ Reflexio learns most from interactions that contain a **signal** — a user corr
 ```shell
 uv run reflexio publish \
   --user-id alice \
+  --session-id style-session-1 \
   --user-message "Stop adding disclaimers and caveats. Give me the answer in one line." \
   --agent-response "Understood — I'll drop the boilerplate from now on." \
   --wait
@@ -102,7 +103,7 @@ uv run reflexio publish \
 For real dialogues (3+ turns, tool calls, corrections mid-conversation), pass a JSON object whose `interactions` field is a list of `{role, content}` items. Each item becomes one turn, in order. Roles are `user` and `assistant`; `system` and `tool` turns are also accepted.
 
 ```shell
-uv run reflexio publish --user-id alice --wait --data '{
+uv run reflexio publish --user-id alice --session-id deploy-session-1 --wait --data '{
   "interactions": [
     {"role": "user",      "content": "Deploy the payments service to us-east-1."},
     {"role": "assistant", "content": "Starting deployment to us-east-1..."},
@@ -123,11 +124,11 @@ You can also load inline JSON from a file with `@`: `--data @conversation.json`.
 For bulk publishing or conversations you already have on disk, point at a file. A `.json` file should be a single object (or a list of objects); a `.jsonl` file is one JSON object per line, one conversation per line.
 
 ```shell
-uv run reflexio publish --file conversations.jsonl --user-id alice --wait
-cat conversations.jsonl | uv run reflexio publish --stdin --user-id alice
+uv run reflexio publish --file conversations.jsonl --user-id alice --session-id bulk-session --wait
+cat conversations.jsonl | uv run reflexio publish --stdin --user-id alice --session-id bulk-session
 ```
 
-Each payload object accepts the same fields as Mode 2 (`interactions`, and optionally per-payload overrides for `user_id`, `session_id`, `source`, `agent_version`). A payload's own `user_id` wins over the `--user-id` flag, so you can publish a mixed-user JSONL file in a single call.
+Each payload object accepts the same fields as Mode 2 (`interactions`, `session_id`, and optionally per-payload overrides for `user_id`, `source`, `agent_version`). A payload's own `user_id` and `session_id` win over the corresponding flags, so you can publish a mixed-user or mixed-session JSONL file in a single call.
 
 ### Common flags
 
@@ -136,7 +137,7 @@ Apply to all three modes:
 | Flag                | Purpose                                                                 |
 | ------------------- | ----------------------------------------------------------------------- |
 | `--wait`            | Block until server-side extraction finishes (returns real counts).      |
-| `--session-id`      | Group multiple `publish` calls into one session.                         |
+| `--session-id`      | Required unless each payload includes `session_id`; group publishes into one session. |
 | `--agent-version`   | Tag the interaction with an agent version (used by playbook filtering). |
 | `--source`          | Free-form source tag (defaults to `cli`).                                |
 | `--skip-aggregation`| Extract profiles/playbooks but skip playbook aggregation.                |

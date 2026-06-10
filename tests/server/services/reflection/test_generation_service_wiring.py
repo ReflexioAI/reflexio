@@ -47,6 +47,7 @@ def llm_client():
 def publish_request():
     return PublishUserInteractionRequest(
         user_id="u1",
+        session_id="test_session",
         interaction_data_list=[
             InteractionData(role="User", content="hello"),
             InteractionData(role="Assistant", content="hi"),

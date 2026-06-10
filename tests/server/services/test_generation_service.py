@@ -117,6 +117,7 @@ def test_publish_request_rejects_empty_caller_request_id():
         PublishUserInteractionRequest(
             request_id="",
             user_id="test_user_id",
+            session_id="test_session_id",
             interaction_data_list=[interaction],
         )
 
@@ -142,11 +143,13 @@ def test_publish_request_rejects_duplicate_caller_request_id(mock_llm_responses)
         first_request = PublishUserInteractionRequest(
             request_id=request_id,
             user_id=user_id,
+            session_id="test_session_id",
             interaction_data_list=[interaction],
         )
         second_request = PublishUserInteractionRequest(
             request_id=request_id,
             user_id=user_id,
+            session_id="test_session_id",
             interaction_data_list=[interaction],
         )
 
@@ -163,50 +166,19 @@ def test_publish_request_rejects_duplicate_caller_request_id(mock_llm_responses)
         )
 
 
-def test_empty_session_id_allows_multiple_requests(mock_llm_responses):
-    """
-    Test that multiple requests with empty session_id are allowed.
-    """
-    user_id = "test_user_id"
-    org_id = "test_org"
+def test_empty_session_id_is_rejected():
+    """Publish requests must include a non-empty session_id."""
+    interaction = InteractionData(
+        content="interaction without session",
+        created_at=int(datetime.datetime.now(UTC).timestamp()),
+    )
 
-    with tempfile.TemporaryDirectory() as temp_dir:
-        llm_config = LiteLLMConfig(model="gpt-4o-mini")
-        llm_client = LiteLLMClient(llm_config)
-        generation_service = GenerationService(
-            llm_client=llm_client,
-            request_context=RequestContext(org_id=org_id, storage_base_dir=temp_dir),
-        )
-
-        interaction = InteractionData(
-            content="interaction without session",
-            created_at=int(datetime.datetime.now(UTC).timestamp()),
-        )
-
-        # Request without session_id (empty string)
-        request = PublishUserInteractionRequest(
-            user_id=user_id,
+    with pytest.raises(ValidationError):
+        PublishUserInteractionRequest(
+            user_id="test_user_id",
             interaction_data_list=[interaction],
-            session_id="",  # Empty session
-        )
-
-        # Should not raise any exception
-        generation_service.run(request)
-
-        # Try another request with empty session_id - should also succeed
-        another_interaction = InteractionData(
-            content="another interaction without session",
-            created_at=int(datetime.datetime.now(UTC).timestamp()),
-        )
-
-        another_request = PublishUserInteractionRequest(
-            user_id=user_id,
-            interaction_data_list=[another_interaction],
             session_id="",
         )
-
-        # Should not raise any exception
-        generation_service.run(another_request)
 
 
 # NOTE: TestWindowSizeStrideOverrides class was removed because the global

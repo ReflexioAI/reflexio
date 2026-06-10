@@ -127,6 +127,7 @@ def test_refresh_profiles_for_user(mock_chat_completion):
         # Create a PublishUserInteractionRequest first
         publish_request = PublishUserInteractionRequest(
             user_id=user_id,
+            session_id="test_session",
             interaction_data_list=[interaction_request],
         )
 
@@ -140,6 +141,7 @@ def test_refresh_profiles_for_user(mock_chat_completion):
         request_obj = Request(
             request_id="1",
             user_id=user_id,
+            session_id="test_session",
             source="",
         )
         profile_generation_service.storage.add_request(request_obj)
@@ -199,6 +201,7 @@ def test_test_refresh_profiles_for_user_with_image_encoding(mock_chat_completion
         # Create a PublishUserInteractionRequest first
         publish_request = PublishUserInteractionRequest(
             user_id=user_id,
+            session_id="test_session",
             interaction_data_list=[interaction_request],
         )
 
@@ -212,6 +215,7 @@ def test_test_refresh_profiles_for_user_with_image_encoding(mock_chat_completion
         request_obj = Request(
             request_id="1",
             user_id=user_id,
+            session_id="test_session",
             source="",
         )
         profile_generation_service.storage.add_request(request_obj)
@@ -288,6 +292,7 @@ def test_profile_extraction_message_construction():
             # Create a PublishUserInteractionRequest
             publish_request = PublishUserInteractionRequest(
                 user_id=user_id,
+                session_id="test_session",
                 interaction_data_list=[interaction1, interaction2],
             )
 
@@ -301,6 +306,7 @@ def test_profile_extraction_message_construction():
             request_obj = Request(
                 request_id="1",
                 user_id=user_id,
+                session_id="test_session",
                 source="",
             )
             profile_generation_service.storage.add_request(request_obj)
@@ -451,6 +457,7 @@ def test_refresh_profiles_with_output_pending_status(mock_chat_completion):
         # First, create CURRENT profiles (output_pending_status=False)
         publish_request1 = PublishUserInteractionRequest(
             user_id=user_id,
+            session_id="test_session",
             interaction_data_list=[interaction1],
         )
 
@@ -464,6 +471,7 @@ def test_refresh_profiles_with_output_pending_status(mock_chat_completion):
         request_obj1 = Request(
             request_id="1",
             user_id=user_id,
+            session_id="test_session",
             source="",
         )
         profile_generation_service.storage.add_request(request_obj1)
@@ -493,6 +501,7 @@ def test_refresh_profiles_with_output_pending_status(mock_chat_completion):
         # Add more interactions for the rerun
         publish_request2 = PublishUserInteractionRequest(
             user_id=user_id,
+            session_id="test_session",
             interaction_data_list=[interaction2],
         )
 
@@ -505,6 +514,7 @@ def test_refresh_profiles_with_output_pending_status(mock_chat_completion):
         request_obj2 = Request(
             request_id="2",
             user_id=user_id,
+            session_id="test_session",
             source="",
         )
         profile_generation_service.storage.add_request(request_obj2)
@@ -600,6 +610,7 @@ def test_run_manual_regular_no_window_size(mock_chat_completion):
         request_obj = Request(
             request_id="request_1",
             user_id=user_id,
+            session_id="test_session",
             source="",
         )
         profile_generation_service.storage.add_request(request_obj)
@@ -693,6 +704,7 @@ def test_run_manual_regular_with_interactions(mock_chat_completion):
         )
         publish_request = PublishUserInteractionRequest(
             user_id=user_id,
+            session_id="test_session",
             interaction_data_list=[interaction],
         )
         interactions = (
@@ -704,6 +716,7 @@ def test_run_manual_regular_with_interactions(mock_chat_completion):
         request_obj = Request(
             request_id="1",
             user_id=user_id,
+            session_id="test_session",
             source="",
         )
         profile_generation_service.storage.add_request(request_obj)
@@ -767,6 +780,7 @@ def test_run_manual_regular_with_source_filter(mock_chat_completion):
         )
         publish_request_a = PublishUserInteractionRequest(
             user_id=user_id,
+            session_id="test_session",
             interaction_data_list=[interaction_a],
             source="source_a",
         )
@@ -779,6 +793,7 @@ def test_run_manual_regular_with_source_filter(mock_chat_completion):
         request_a = Request(
             request_id="1",
             user_id=user_id,
+            session_id="test_session",
             source="source_a",
         )
         profile_generation_service.storage.add_request(request_a)
@@ -794,6 +809,7 @@ def test_run_manual_regular_with_source_filter(mock_chat_completion):
         )
         publish_request_b = PublishUserInteractionRequest(
             user_id=user_id,
+            session_id="test_session",
             interaction_data_list=[interaction_b],
             source="source_b",
         )
@@ -806,6 +822,7 @@ def test_run_manual_regular_with_source_filter(mock_chat_completion):
         request_b = Request(
             request_id="2",
             user_id=user_id,
+            session_id="test_session",
             source="source_b",
         )
         profile_generation_service.storage.add_request(request_b)

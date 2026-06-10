@@ -179,7 +179,7 @@ class Request(BaseModel):
     """A user-issued request that begins or continues a session.
 
     A Request is the unit of work the agent reacts to. Multiple Requests
-    share a ``session_id`` to form a multi-turn session. The optional
+    share a ``session_id`` to form a multi-turn session. The
     ``metadata`` dict carries per-request key/value annotations stamped by
     customer integration code — distinct from ``playbook_metadata`` (a
     JSON-encoded string) used by ``Playbook``-family entities elsewhere in
@@ -192,8 +192,7 @@ class Request(BaseModel):
             to the current UTC time.
         source (str): Free-form origin tag (integration name, etc.).
         agent_version (str): The agent version that handled this request.
-        session_id (str | None): Session this request belongs to, or None
-            if the request is not part of a multi-turn session.
+        session_id (str): Non-empty session this request belongs to.
         metadata (dict[str, Any]): Free-form per-request annotations.
             Always a dict — never None. Conventional keys:
 
@@ -215,7 +214,7 @@ class Request(BaseModel):
     created_at: int = Field(default_factory=lambda: int(datetime.now(UTC).timestamp()))
     source: str = ""
     agent_version: str = ""
-    session_id: str | None = None
+    session_id: NonEmptyStr
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -563,7 +562,7 @@ class PublishUserInteractionRequest(BaseModel):
     agent_version: str = (
         ""  # this is used for aggregating interactions for generating agent playbooks
     )
-    session_id: str | None = None  # used for grouping requests together
+    session_id: NonEmptyStr  # used for grouping requests together
     skip_aggregation: bool = (
         False  # when True, extract profiles/playbooks but skip aggregation
     )

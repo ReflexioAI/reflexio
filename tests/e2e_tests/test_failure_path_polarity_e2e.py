@@ -178,6 +178,7 @@ def _seed_citation_window(storage, user_id: str, playbook_id: int) -> None:
         Request(
             request_id=request_id,
             user_id=user_id,
+            session_id="test_session",
             source="api",
             agent_version="v1",
         )

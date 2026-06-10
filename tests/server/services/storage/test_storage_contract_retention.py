@@ -20,6 +20,7 @@ def _make_request(request_id: str, created_at: int) -> Request:
     return Request(
         request_id=request_id,
         user_id="u1",
+        session_id="test_session",
         created_at=created_at,
         source="test",
         agent_version="v1",

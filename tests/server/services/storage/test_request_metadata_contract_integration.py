@@ -42,7 +42,11 @@ def test_request_metadata_roundtrips(storage: BaseStorage) -> None:
 
 
 def test_request_metadata_empty_default(storage: BaseStorage) -> None:
-    r = Request(request_id="contract-meta-r2", user_id="contract-meta-u1")
+    r = Request(
+        request_id="contract-meta-r2",
+        user_id="contract-meta-u1",
+        session_id="test_session",
+    )
     storage.add_request(r)
     got = storage.get_request("contract-meta-r2")
     assert got is not None
@@ -76,6 +80,7 @@ def test_request_metadata_nested_values_roundtrip(storage: BaseStorage) -> None:
     r = Request(
         request_id="contract-meta-r5",
         user_id="contract-meta-u1",
+        session_id="test_session",
         metadata={"reflexio_retrieval_enabled": True, "nested": {"k": [1, 2, 3]}},
     )
     storage.add_request(r)

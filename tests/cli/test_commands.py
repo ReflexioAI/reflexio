@@ -457,6 +457,7 @@ class TestPublishUserIdResolution:
     def _write_payload(tmp_path, include_user_id: bool = False, **extras) -> str:
         """Write a minimal publish payload JSON and return its path."""
         payload: dict[str, object] = {
+            "session_id": "payload-session",
             "interactions": [
                 {"role": "user", "content": "hi"},
                 {"role": "assistant", "content": "hello"},
@@ -484,6 +485,10 @@ class TestPublishUserIdResolution:
         assert result.exit_code == 0, result.output
         mock_client.publish_interaction.assert_called_once()
         assert mock_client.publish_interaction.call_args.kwargs["user_id"] == "env-user"
+        assert (
+            mock_client.publish_interaction.call_args.kwargs["session_id"]
+            == "payload-session"
+        )
 
     def test_payload_user_id_beats_env(
         self, runner, app, mock_client, tmp_path, monkeypatch
@@ -522,12 +527,18 @@ class TestPublishUserIdResolution:
                 "flag-user",
                 "--file",
                 payload_file,
+                "--session-id",
+                "flag-session",
             ],
         )
 
         assert result.exit_code == 0, result.output
         assert (
             mock_client.publish_interaction.call_args.kwargs["user_id"] == "flag-user"
+        )
+        assert (
+            mock_client.publish_interaction.call_args.kwargs["session_id"]
+            == "payload-session"
         )
 
     def test_error_when_all_sources_missing(
@@ -561,8 +572,49 @@ class TestPublishUserIdResolution:
                 "hi",
                 "--agent-response",
                 "hello",
+                "--session-id",
+                "single-turn-session",
             ],
         )
 
         assert result.exit_code == 0, result.output
         assert mock_client.publish_interaction.call_args.kwargs["user_id"] == "env-user"
+        assert (
+            mock_client.publish_interaction.call_args.kwargs["session_id"]
+            == "single-turn-session"
+        )
+
+    def test_error_when_session_id_missing(
+        self, runner, app, mock_client, tmp_path, monkeypatch
+    ) -> None:
+        """Payload/file mode requires --session-id or payload session_id."""
+        monkeypatch.setenv("REFLEXIO_USER_ID", "env-user")
+        payload_file = self._write_payload(tmp_path, session_id=None)
+
+        result = runner.invoke(app, ["interactions", "publish", "--file", payload_file])
+
+        assert result.exit_code != 0
+        assert "session_id" in result.output
+        mock_client.publish_interaction.assert_not_called()
+
+    def test_single_turn_error_when_session_id_missing(
+        self, runner, app, mock_client, monkeypatch
+    ) -> None:
+        """Single-turn mode requires --session-id."""
+        monkeypatch.setenv("REFLEXIO_USER_ID", "env-user")
+
+        result = runner.invoke(
+            app,
+            [
+                "interactions",
+                "publish",
+                "--user-message",
+                "hi",
+                "--agent-response",
+                "hello",
+            ],
+        )
+
+        assert result.exit_code != 0
+        assert "session_id" in result.output
+        mock_client.publish_interaction.assert_not_called()

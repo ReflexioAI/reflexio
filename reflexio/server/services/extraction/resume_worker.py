@@ -133,7 +133,7 @@ def _request_interaction_models_from_ids(
             )
         models.append(
             RequestInteractionDataModel(
-                session_id=request.session_id or request.request_id,
+                session_id=request.session_id,
                 request=request,
                 interactions=ordered,
             )

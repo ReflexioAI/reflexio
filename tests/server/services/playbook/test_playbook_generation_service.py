@@ -321,6 +321,7 @@ def test_run_manual_regular_no_window_size(mock_chat_completion):
         request_obj = Request(
             request_id="request_1",
             user_id=user_id,
+            session_id="test_session",
             source="",
         )
         playbook_generation_service.storage.add_request(request_obj)
@@ -421,6 +422,7 @@ def test_run_manual_regular_with_interactions(mock_chat_completion):
         request_obj = Request(
             request_id="test_request_id",
             user_id=user_id,
+            session_id="test_session",
             source="",
             agent_version=agent_version,
         )
@@ -482,6 +484,7 @@ def test_run_manual_regular_with_source_filter(mock_chat_completion):
         request_a = Request(
             request_id="request_a",
             user_id=user_id,
+            session_id="test_session",
             source="source_a",
             agent_version=agent_version,
         )
@@ -500,6 +503,7 @@ def test_run_manual_regular_with_source_filter(mock_chat_completion):
         request_b = Request(
             request_id="request_b",
             user_id=user_id,
+            session_id="test_session",
             source="source_b",
             agent_version=agent_version,
         )
@@ -565,6 +569,7 @@ def test_run_manual_regular_output_pending_status_false(mock_chat_completion):
         request_obj = Request(
             request_id="test_request_id",
             user_id=user_id,
+            session_id="test_session",
             source="",
             agent_version=agent_version,
         )

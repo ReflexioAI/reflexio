@@ -49,7 +49,7 @@ def _build_publish_args(
 
     Args:
         user_id: Optional user identifier.
-        session_id: Optional session identifier.
+        session_id: Required session identifier for publish requests.
         source: Source tag recorded on the interaction.
         agent_version: Optional agent version tag.
         wait: When True, wait for processing to complete.
@@ -108,7 +108,7 @@ def register_shortcuts(app: typer.Typer) -> None:
             typer.Option("--user-id", help="User identifier (optional if in payload)"),
         ] = None,
         session_id: Annotated[
-            str | None, typer.Option("--session-id", help="Session ID")
+            str | None, typer.Option("--session-id", help="Required session ID")
         ] = None,
         source: Annotated[str, typer.Option(help="Source tag")] = "cli",
         agent_version: Annotated[

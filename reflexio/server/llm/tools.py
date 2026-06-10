@@ -268,6 +268,36 @@ def _serialize_tool_result_for_history(result: dict[str, Any]) -> str:
     return f"{payload[:_MULTI_STAGE_RESULT_CHAR_CAP]}... [truncated]"
 
 
+def _normalize_tool_call_for_history(tool_call: Any) -> dict[str, Any]:
+    """Return an OpenAI-compatible plain dict for assistant tool-call history."""
+
+    if isinstance(tool_call, dict):
+        function = tool_call.get("function") or {}
+        if not isinstance(function, dict):
+            function = {
+                "name": getattr(function, "name", None),
+                "arguments": getattr(function, "arguments", None),
+            }
+        return {
+            "id": tool_call.get("id"),
+            "type": tool_call.get("type") or "function",
+            "function": {
+                "name": function.get("name"),
+                "arguments": function.get("arguments") or "{}",
+            },
+        }
+
+    function = getattr(tool_call, "function", None)
+    return {
+        "id": getattr(tool_call, "id", None),
+        "type": getattr(tool_call, "type", None) or "function",
+        "function": {
+            "name": getattr(function, "name", None),
+            "arguments": getattr(function, "arguments", None) or "{}",
+        },
+    }
+
+
 def _run_multi_stage_fallback(
     *,
     client: LiteLLMClient,
@@ -627,21 +657,28 @@ def run_tool_loop(
                     pending_tool_call_ids=pending_tool_call_ids,
                     max_steps_remaining=max_steps - _step,
                 )
+            normalized_tool_calls = [
+                _normalize_tool_call_for_history(tc) for tc in tool_calls
+            ]
             # Emit ONE assistant message carrying ALL tool_calls from this turn.
             # OpenAI/Anthropic strict mode requires this shape.
             local_msgs.append(
-                {"role": "assistant", "content": None, "tool_calls": list(tool_calls)}
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": normalized_tool_calls,
+                }
             )
             # Process every tool call and append per-call tool result messages.
             # A single response's usage is attached to every turn it produced —
             # the summary helpers dedup by (model, prompt_tokens, completion_tokens).
-            for tc in tool_calls:
+            for tc in normalized_tool_calls:
                 # Time each tool individually — using the turn-start clock
                 # would inflate later tools' latencies with model time and
                 # earlier tools' work, masking the actual per-tool cost.
                 tool_t0 = time.monotonic()
-                name = tc.function.name
-                args_json = tc.function.arguments
+                name = tc["function"]["name"]
+                args_json = tc["function"]["arguments"]
                 outcome = registry.handle_outcome(name, args_json, ctx)
                 result = _tool_result_from_outcome(outcome, pending_tool_call_ids)
                 try:
@@ -664,13 +701,16 @@ def run_tool_loop(
                 local_msgs.append(
                     {
                         "role": "tool",
-                        "tool_call_id": tc.id,
+                        "tool_call_id": tc["id"],
                         "content": json.dumps(result),
                     }
                 )
             # After processing ALL tool calls, check whether the finish sentinel
             # appeared in this turn (may be alongside sibling calls).
-            if any(tc.function.name == finish_tool_name for tc in tool_calls):
+            if any(
+                tc["function"]["name"] == finish_tool_name
+                for tc in normalized_tool_calls
+            ):
                 trace.finished = True
                 return ToolLoopResult(
                     ctx=ctx,

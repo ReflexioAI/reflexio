@@ -102,6 +102,7 @@ def _seed_request_and_user_interaction(
         Request(
             request_id=request_id,
             user_id="u1",
+            session_id="test_session",
             source="test",
             agent_version="v1",
         )
@@ -831,6 +832,7 @@ json.dump({"content": "response for " + payload["playbooks"][0]["content"]}, sys
             Request(
                 request_id="request-1",
                 user_id="u1",
+                session_id="test_session",
                 source="test",
                 agent_version="v1",
             )

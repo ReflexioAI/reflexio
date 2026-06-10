@@ -82,6 +82,7 @@ def test_profile_extractor_filters_by_source_api(mock_chat_completion):
         # Create a PublishUserInteractionRequest
         publish_request = PublishUserInteractionRequest(
             user_id=user_id,
+            session_id="test_session",
             interaction_data_list=[interaction_request],
         )
 
@@ -95,6 +96,7 @@ def test_profile_extractor_filters_by_source_api(mock_chat_completion):
         request_obj = Request(
             request_id="1",
             user_id=user_id,
+            session_id="test_session",
             source="api",
         )
         profile_generation_service.storage.add_request(request_obj)
@@ -148,6 +150,7 @@ def test_profile_extractor_filters_by_source_webhook(mock_chat_completion):
 
         publish_request = PublishUserInteractionRequest(
             user_id=user_id,
+            session_id="test_session",
             interaction_data_list=[interaction_request],
         )
 
@@ -161,6 +164,7 @@ def test_profile_extractor_filters_by_source_webhook(mock_chat_completion):
         request_obj = Request(
             request_id="1",
             user_id=user_id,
+            session_id="test_session",
             source="webhook",
         )
         profile_generation_service.storage.add_request(request_obj)
@@ -214,6 +218,7 @@ def test_profile_extractor_none_enables_all_sources(mock_chat_completion):
 
         publish_request = PublishUserInteractionRequest(
             user_id=user_id,
+            session_id="test_session",
             interaction_data_list=[interaction_request],
         )
 
@@ -227,6 +232,7 @@ def test_profile_extractor_none_enables_all_sources(mock_chat_completion):
         request_obj = Request(
             request_id="1",
             user_id=user_id,
+            session_id="test_session",
             source="random_source",
         )
         profile_generation_service.storage.add_request(request_obj)
@@ -280,6 +286,7 @@ def test_profile_extractor_empty_list_enables_all_sources(mock_chat_completion):
 
         publish_request = PublishUserInteractionRequest(
             user_id=user_id,
+            session_id="test_session",
             interaction_data_list=[interaction_request],
         )
 
@@ -293,6 +300,7 @@ def test_profile_extractor_empty_list_enables_all_sources(mock_chat_completion):
         request_obj = Request(
             request_id="1",
             user_id=user_id,
+            session_id="test_session",
             source="another_random_source",
         )
         profile_generation_service.storage.add_request(request_obj)

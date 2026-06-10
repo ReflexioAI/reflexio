@@ -111,6 +111,7 @@ def neutral_request_interaction_models():
     request = Request(
         request_id="req_neutral",
         user_id="user_neutral",
+        session_id="test_session",
         created_at=1000,
         source="api",
     )
@@ -155,6 +156,7 @@ def failure_request_interaction_models():
     request = Request(
         request_id="req_failure",
         user_id="user_failure",
+        session_id="test_session",
         created_at=2000,
         source="api",
     )

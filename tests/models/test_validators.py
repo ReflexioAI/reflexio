@@ -564,7 +564,20 @@ class TestListMinLength:
     def test_publish_interaction_requires_data(self):
         """PublishUserInteractionRequest requires at least one interaction."""
         with pytest.raises(ValidationError):
-            PublishUserInteractionRequest(user_id="test", interaction_data_list=[])
+            PublishUserInteractionRequest(
+                user_id="test", session_id="session", interaction_data_list=[]
+            )
+
+    def test_publish_interaction_requires_non_empty_session_id(self):
+        """PublishUserInteractionRequest requires a non-empty session id."""
+        interaction = InteractionData(content="hello")
+        for value in (None, "", "   "):
+            with pytest.raises(ValidationError):
+                PublishUserInteractionRequest(
+                    user_id="test",
+                    session_id=value,
+                    interaction_data_list=[interaction],
+                )
 
     def test_add_user_playbook_requires_data(self):
         """AddUserPlaybookRequest requires at least one user playbook."""

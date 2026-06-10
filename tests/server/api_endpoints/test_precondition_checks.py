@@ -16,11 +16,13 @@ def _make_publish_request(
     if interactions is not None:
         return PublishUserInteractionRequest(
             user_id="test-user",
+            session_id="test-session",
             interaction_data_list=interactions,
         )
     # Bypass Pydantic min_length=1 validation to test the precondition check
     return PublishUserInteractionRequest.model_construct(
         user_id="test-user",
+        session_id="test-session",
         interaction_data_list=[],
     )
 
@@ -42,6 +44,16 @@ class TestValidatePublishUserInteractionRequest:
         valid, msg = validate_publish_user_interaction_request(request)
         assert valid is False
         assert msg == "User action description is required for user action"
+
+    def test_empty_session_id(self):
+        request = PublishUserInteractionRequest.model_construct(
+            user_id="test-user",
+            session_id="",
+            interaction_data_list=[InteractionData(content="hello")],
+        )
+        valid, msg = validate_publish_user_interaction_request(request)
+        assert valid is False
+        assert msg == "session_id is required and cannot be empty"
 
     def test_both_image_url_and_image_encoding(self):
         interaction = InteractionData(

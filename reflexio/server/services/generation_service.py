@@ -204,7 +204,7 @@ class GenerationService:
                 org_id=self.org_id,
                 user_id=user_id,
                 request_id=request_id,
-                session_id=publish_user_interaction_request.session_id or None,
+                session_id=publish_user_interaction_request.session_id,
                 source=publish_user_interaction_request.source,
                 agent_version=agent_version,
                 event_name="publish_request_received",
@@ -221,7 +221,7 @@ class GenerationService:
                 user_id=user_id,
                 source=publish_user_interaction_request.source,
                 agent_version=agent_version,
-                session_id=publish_user_interaction_request.session_id or None,
+                session_id=publish_user_interaction_request.session_id,
                 metadata=publish_user_interaction_request.metadata,
             )
             self.storage.add_request(new_request)  # type: ignore[reportOptionalMemberAccess]
@@ -343,7 +343,7 @@ class GenerationService:
             finally:
                 executor.shutdown(wait=False, cancel_futures=True)
 
-            # Schedule delayed group evaluation if session_id is present
+            # Schedule delayed group evaluation for the required session.
             self._schedule_group_evaluation_if_needed(
                 new_request=new_request,
                 user_id=user_id,
@@ -373,7 +373,7 @@ class GenerationService:
                 org_id=self.org_id,
                 user_id=user_id,
                 request_id=result.request_id,
-                session_id=publish_user_interaction_request.session_id or None,
+                session_id=publish_user_interaction_request.session_id,
                 source=publish_user_interaction_request.source,
                 agent_version=agent_version,
                 event_name="publish_request_failed",
@@ -408,7 +408,7 @@ class GenerationService:
         agent_version: str,
         source: str | None,
     ) -> None:
-        """Enqueue agent-success evaluation for this session, if session_id is set.
+        """Enqueue agent-success evaluation for this session.
 
         Must be called once per publish — from BOTH the classic and the agentic
         extraction code paths — so that ``AgentSuccessEvaluationResult`` records
@@ -417,15 +417,12 @@ class GenerationService:
 
         Args:
             new_request (Request): The just-stored request whose session is being
-                published into. ``new_request.session_id`` gates scheduling.
+                published into.
             user_id (str): The user owning the session.
             agent_version (str): Agent version string carried into the evaluator.
             source (str | None): Optional source label.
         """
         session_id = new_request.session_id
-        if not session_id:
-            return
-
         scheduler = GroupEvaluationScheduler.get_instance()
         key = (self.org_id, user_id, session_id)
 

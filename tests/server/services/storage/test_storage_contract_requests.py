@@ -17,7 +17,7 @@ pytestmark = pytest.mark.integration
 def _make_request(
     request_id: str,
     user_id: str,
-    session_id: str | None = None,
+    session_id: str = "s-default",
 ) -> Request:
     return Request(
         request_id=request_id,

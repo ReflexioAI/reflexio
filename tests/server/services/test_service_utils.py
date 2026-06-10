@@ -213,6 +213,7 @@ def _create_request(request_id: str, created_at: int) -> Request:
     return Request(
         request_id=request_id,
         user_id="test_user",
+        session_id="test_session",
         created_at=created_at,
     )
 

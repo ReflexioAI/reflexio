@@ -99,6 +99,7 @@ def test_publish_interaction_success(reflexio_with_config):
 
     request = PublishUserInteractionRequest(
         user_id=user_id,
+        session_id="test_session",
         interaction_data_list=[interaction_data],
         source="test_source",
         agent_version="v1.0",
@@ -213,7 +214,8 @@ def test_search_interactions(reflexio_with_config):
     )
 
     publish_request = PublishUserInteractionRequest(
-        user_id=user_id, interaction_data_list=[interaction_data]
+        user_id=user_id, interaction_data_list=[interaction_data],
+        session_id="test_session",
     )
     reflexio.publish_interaction(publish_request)
 
@@ -241,7 +243,8 @@ def test_search_profiles_current_only(reflexio_with_config):
     )
 
     publish_request = PublishUserInteractionRequest(
-        user_id=user_id, interaction_data_list=[interaction_data]
+        user_id=user_id, interaction_data_list=[interaction_data],
+        session_id="test_session",
     )
     reflexio.publish_interaction(publish_request)
 
@@ -269,7 +272,8 @@ def test_search_profiles_with_status_filter(reflexio_with_config):
     )
 
     publish_request = PublishUserInteractionRequest(
-        user_id=user_id, interaction_data_list=[interaction_data]
+        user_id=user_id, interaction_data_list=[interaction_data],
+        session_id="test_session",
     )
     reflexio.publish_interaction(publish_request)
 
@@ -298,7 +302,8 @@ def test_get_interactions_with_time_filters(reflexio_with_config):
     )
 
     publish_request = PublishUserInteractionRequest(
-        user_id=user_id, interaction_data_list=[interaction_data]
+        user_id=user_id, interaction_data_list=[interaction_data],
+        session_id="test_session",
     )
     reflexio.publish_interaction(publish_request)
 
@@ -329,7 +334,8 @@ def test_get_profiles_with_status_filter(reflexio_with_config):
     )
 
     publish_request = PublishUserInteractionRequest(
-        user_id=user_id, interaction_data_list=[interaction_data]
+        user_id=user_id, interaction_data_list=[interaction_data],
+        session_id="test_session",
     )
     reflexio.publish_interaction(publish_request)
 
@@ -355,7 +361,8 @@ def test_get_all_profiles_and_interactions(reflexio_with_config):
         )
 
         publish_request = PublishUserInteractionRequest(
-            user_id=user_id, interaction_data_list=[interaction_data]
+            user_id=user_id, interaction_data_list=[interaction_data],
+            session_id="test_session",
         )
         reflexio.publish_interaction(publish_request)
 
@@ -391,7 +398,8 @@ def test_rerun_profile_generation_single_user(reflexio_with_config):
     )
 
     publish_request = PublishUserInteractionRequest(
-        user_id=user_id, interaction_data_list=[interaction_data]
+        user_id=user_id, interaction_data_list=[interaction_data],
+        session_id="test_session",
     )
     reflexio.publish_interaction(publish_request)
 
@@ -417,7 +425,8 @@ def test_rerun_profile_generation_all_users(reflexio_with_config):
         )
 
         publish_request = PublishUserInteractionRequest(
-            user_id=user_id, interaction_data_list=[interaction_data]
+            user_id=user_id, interaction_data_list=[interaction_data],
+            session_id="test_session",
         )
         reflexio.publish_interaction(publish_request)
 
@@ -454,7 +463,8 @@ def test_rerun_profile_generation_with_time_filters(reflexio_with_config):
     )
 
     publish_request = PublishUserInteractionRequest(
-        user_id=user_id, interaction_data_list=[interaction_data]
+        user_id=user_id, interaction_data_list=[interaction_data],
+        session_id="test_session",
     )
     reflexio.publish_interaction(publish_request)
 
@@ -484,7 +494,8 @@ def test_rerun_profile_generation_with_source_filter(reflexio_with_config):
     )
 
     publish_request = PublishUserInteractionRequest(
-        user_id=user_id, interaction_data_list=[interaction_data], source="test_source"
+        user_id=user_id, interaction_data_list=[interaction_data], source="test_source",
+        session_id="test_session",
     )
     reflexio.publish_interaction(publish_request)
 
@@ -531,7 +542,8 @@ def test_upgrade_all_profiles(reflexio_with_config):
     )
 
     publish_request = PublishUserInteractionRequest(
-        user_id=user_id, interaction_data_list=[interaction_data]
+        user_id=user_id, interaction_data_list=[interaction_data],
+        session_id="test_session",
     )
     reflexio.publish_interaction(publish_request)
 
@@ -575,7 +587,8 @@ def test_downgrade_all_profiles(reflexio_with_config):
     )
 
     publish_request = PublishUserInteractionRequest(
-        user_id=user_id, interaction_data_list=[interaction_data]
+        user_id=user_id, interaction_data_list=[interaction_data],
+        session_id="test_session",
     )
     reflexio.publish_interaction(publish_request)
 
@@ -612,7 +625,8 @@ def test_upgrade_only_affected_users(reflexio_with_config):
             created_at=int(datetime.datetime.now(UTC).timestamp()),
         )
         publish_request = PublishUserInteractionRequest(
-            user_id=user_id, interaction_data_list=[interaction_data]
+            user_id=user_id, interaction_data_list=[interaction_data],
+            session_id="test_session",
         )
         reflexio.publish_interaction(publish_request)
 
@@ -695,7 +709,8 @@ def test_downgrade_only_affected_users(reflexio_with_config):
             created_at=int(datetime.datetime.now(UTC).timestamp()),
         )
         publish_request = PublishUserInteractionRequest(
-            user_id=user_id, interaction_data_list=[interaction_data]
+            user_id=user_id, interaction_data_list=[interaction_data],
+            session_id="test_session",
         )
         reflexio.publish_interaction(publish_request)
 
@@ -771,7 +786,8 @@ def test_get_profile_statistics(reflexio_with_config):
     )
 
     publish_request = PublishUserInteractionRequest(
-        user_id=user_id, interaction_data_list=[interaction_data]
+        user_id=user_id, interaction_data_list=[interaction_data],
+        session_id="test_session",
     )
     reflexio.publish_interaction(publish_request)
 
@@ -800,7 +816,8 @@ def test_delete_profile_success(reflexio_with_config):
     )
 
     publish_request = PublishUserInteractionRequest(
-        user_id=user_id, interaction_data_list=[interaction_data]
+        user_id=user_id, interaction_data_list=[interaction_data],
+        session_id="test_session",
     )
     reflexio.publish_interaction(publish_request)
 
@@ -836,7 +853,8 @@ def test_delete_interaction_success(reflexio_with_config):
     )
 
     publish_request = PublishUserInteractionRequest(
-        user_id=user_id, interaction_data_list=[interaction_data]
+        user_id=user_id, interaction_data_list=[interaction_data],
+        session_id="test_session",
     )
     reflexio.publish_interaction(publish_request)
 
@@ -878,7 +896,8 @@ def test_get_profile_change_logs(reflexio_with_config):
     )
 
     publish_request = PublishUserInteractionRequest(
-        user_id=user_id, interaction_data_list=[interaction_data]
+        user_id=user_id, interaction_data_list=[interaction_data],
+        session_id="test_session",
     )
     reflexio.publish_interaction(publish_request)
 
@@ -937,7 +956,8 @@ def test_get_dashboard_stats(reflexio_with_config):
     )
 
     publish_request = PublishUserInteractionRequest(
-        user_id=user_id, interaction_data_list=[interaction_data]
+        user_id=user_id, interaction_data_list=[interaction_data],
+        session_id="test_session",
     )
     reflexio.publish_interaction(publish_request)
 
@@ -998,7 +1018,8 @@ def test_get_requests_with_filters(reflexio_with_config):
     )
 
     publish_request = PublishUserInteractionRequest(
-        user_id=user_id, interaction_data_list=[interaction_data]
+        user_id=user_id, interaction_data_list=[interaction_data],
+        session_id="test_session",
     )
     reflexio.publish_interaction(publish_request)
 

@@ -28,25 +28,25 @@ def service() -> GenerationService:
     return svc
 
 
-def test_no_schedule_when_session_id_is_none(
+def test_schedules_when_session_id_is_required(
     service: GenerationService, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """When new_request.session_id is None, the helper short-circuits."""
+    """The helper schedules because publish requests require a session_id."""
     scheduler = MagicMock()
     monkeypatch.setattr(
         "reflexio.server.services.generation_service.GroupEvaluationScheduler.get_instance",
         lambda: scheduler,
     )
-    request_with_no_session = MagicMock(session_id=None)
+    request_with_session = MagicMock(session_id="sess_required")
 
     service._schedule_group_evaluation_if_needed(
-        new_request=request_with_no_session,
+        new_request=request_with_session,
         user_id="user_test",
         agent_version="v_test",
         source=None,
     )
 
-    scheduler.schedule.assert_not_called()
+    scheduler.schedule.assert_called_once()
 
 
 def test_schedules_with_correct_key_when_session_id_present(

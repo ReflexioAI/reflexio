@@ -9,6 +9,7 @@ from reflexio.models.api_schema.service_schemas import (
     Interaction,
     Request,
 )
+from reflexio.server.services.storage.error import require_non_empty_session_id
 
 from ._base import (
     SQLiteStorageBase,
@@ -128,7 +129,7 @@ class OperationMixin:
                     created_at=_iso_to_epoch(d["r_created_at"]),
                     source=d.get("r_source") or "",
                     agent_version=d.get("r_agent_version") or "",
-                    session_id=d.get("r_session_id"),
+                    session_id=require_non_empty_session_id(d.get("r_session_id")),
                 )
                 interactions_by_request[req_id] = []
             interactions_by_request[req_id].append(_row_to_interaction(row))
@@ -210,7 +211,7 @@ class OperationMixin:
                     created_at=_iso_to_epoch(d["r_created_at"]),
                     source=d.get("r_source") or "",
                     agent_version=d.get("r_agent_version") or "",
-                    session_id=d.get("r_session_id"),
+                    session_id=require_non_empty_session_id(d.get("r_session_id")),
                 )
                 interactions_by_request[req_id] = []
 

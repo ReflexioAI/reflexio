@@ -131,6 +131,7 @@ def _seed_request_with_interactions(
         Request(
             request_id=request_id,
             user_id=user_id,
+            session_id="test_session",
             source="cli",
             agent_version="v1",
         )

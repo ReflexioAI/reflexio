@@ -50,6 +50,7 @@ def test_construct_profile_extraction_messages_with_sessions():
     request = Request(
         request_id="req_1",
         user_id="user_123",
+        session_id="test_session",
         created_at=timestamp,
     )
     sessions = [

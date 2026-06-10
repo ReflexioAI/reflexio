@@ -1,5 +1,6 @@
 import json
 import logging
+from copy import deepcopy
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -271,6 +272,65 @@ def test_run_tool_loop_records_async_accepted_and_continues(
     assert [turn.tool_name for turn in result.trace.turns] == ["ask_human", "finish"]
     tool_messages = [m for m in result.messages if m.get("role") == "tool"]
     assert "ptc_1" in tool_messages[0]["content"]
+
+
+def test_run_tool_loop_sends_plain_dict_tool_calls_in_followup_request(monkeypatch):
+    """Provider tool-call objects should not be reused in the next request."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_CLI", raising=False)
+
+    emit_call = MagicMock()
+    emit_call.id = "call_emit"
+    emit_call.type = "function"
+    emit_call.function = MagicMock()
+    emit_call.function.name = "emit"
+    emit_call.function.arguments = json.dumps({"value": "hello"})
+
+    finish_call = MagicMock()
+    finish_call.id = "call_finish"
+    finish_call.type = "function"
+    finish_call.function = MagicMock()
+    finish_call.function.name = "finish"
+    finish_call.function.arguments = "{}"
+
+    calls: list[list[dict]] = []
+
+    def fake_generate_chat_response(**kwargs):
+        calls.append(deepcopy(kwargs["messages"]))
+        tool_calls = [emit_call] if len(calls) == 1 else [finish_call]
+        return ToolCallingChatResponse(
+            content=None,
+            tool_calls=tool_calls,
+            finish_reason="tool_calls",
+        )
+
+    config = LiteLLMConfig(model="claude-sonnet-4-6")
+    client = LiteLLMClient(config)
+    monkeypatch.setattr(client, "generate_chat_response", fake_generate_chat_response)
+    ctx = LoopCtx()
+
+    result = run_tool_loop(
+        client=client,
+        messages=[{"role": "user", "content": "go"}],
+        registry=_make_registry(ctx),
+        model_role=ModelRole.EXTRACTION_AGENT,
+        ctx=ctx,
+    )
+
+    assert result.finished_reason == "finish_tool"
+    assistant_history = calls[1][-2]
+    assert assistant_history["role"] == "assistant"
+    assert assistant_history["tool_calls"] == [
+        {
+            "id": "call_emit",
+            "type": "function",
+            "function": {
+                "name": "emit",
+                "arguments": json.dumps({"value": "hello"}),
+            },
+        }
+    ]
+    assert assistant_history["tool_calls"][0] is not emit_call
 
 
 def test_run_tool_loop_honours_max_steps(monkeypatch, tool_call_completion):

@@ -136,6 +136,7 @@ def sample_request_interaction_models(sample_interactions):
     request = Request(
         request_id="req1",
         user_id="test_user",
+        session_id="test_session",
         created_at=1000,
         source="api",
     )
