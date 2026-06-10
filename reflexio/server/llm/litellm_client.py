@@ -260,6 +260,15 @@ class LiteLLMConfig:
     )
 
 
+# Reasoning models that routinely exceed the default 120s provider timeout on
+# large extraction contexts. Values are floors, not overrides: the effective
+# timeout is max(configured, floor), and an explicit per-call timeout kwarg
+# always wins.
+_MODEL_TIMEOUT_FLOOR_SECONDS: dict[str, int] = {
+    "minimax/MiniMax-M3": 240,
+}
+
+
 @dataclass
 class ToolCallingChatResponse:
     """Response from a chat call that was routed in tool-calling mode.
@@ -955,7 +964,9 @@ class LiteLLMClient:
         params: dict[str, Any] = {
             "model": actual_model,
             "messages": messages,
-            "timeout": kwargs.pop("timeout", self.config.timeout),
+            "timeout": kwargs.pop(
+                "timeout", self._effective_timeout_for_model(actual_model)
+            ),
         }
 
         # Drop any fallback entry that points back at the primary — sending the
@@ -1153,6 +1164,18 @@ class LiteLLMClient:
         finally:
             result_queue.close()
             result_queue.join_thread()
+
+    def _effective_timeout_for_model(self, model: str) -> int:
+        """Return the configured timeout, raised to the model's floor if one exists.
+
+        Args:
+            model: Resolved model name (e.g. 'minimax/MiniMax-M3').
+
+        Returns:
+            int: max(config.timeout, per-model floor). Callers that pass an
+            explicit timeout kwarg bypass this entirely.
+        """
+        return max(self.config.timeout, _MODEL_TIMEOUT_FLOOR_SECONDS.get(model, 0))
 
     def _hard_timeout_grace_seconds(self) -> float:
         raw = os.environ.get("REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS", "5") or "5"
@@ -1355,6 +1378,15 @@ class LiteLLMClient:
                 # mitigation.
                 self.logger.warning(
                     "event=llm_parse_retry model=%s — primary returned malformed structured output, retrying once",
+                    params.get("model"),
+                )
+                return _call_and_parse()
+            except LLMHardTimeoutError:
+                # The hard timeout kills the litellm subprocess, so litellm's
+                # num_retries never gets a chance — we owe one explicit retry
+                # at this level to cover transient provider hangs.
+                self.logger.warning(
+                    "event=llm_hard_timeout_retry model=%s — request hit hard timeout, retrying once",
                     params.get("model"),
                 )
                 return _call_and_parse()

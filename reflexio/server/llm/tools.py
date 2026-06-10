@@ -578,6 +578,9 @@ def run_tool_loop(
         )
 
     # ---- Native tool loop ---------------------------------------------
+    # Local import keeps litellm_client a type-only dependency of this module.
+    from reflexio.server.llm.litellm_client import LiteLLMClientError
+
     local_msgs = list(messages)
     try:
         for _step in range(max_steps):
@@ -677,6 +680,20 @@ def run_tool_loop(
                     pending_tool_call_ids=pending_tool_call_ids,
                     max_steps_remaining=max_steps - _step - 1,
                 )
+    except LiteLLMClientError as e:
+        # LLM failure after the client exhausted its retries and fallbacks —
+        # a known failure mode (timeouts, provider errors), not a bug. Log at
+        # warning so it doesn't surface as a Sentry error.
+        logger.warning("event=tool_loop_llm_error error=%s", e)
+        trace.finished = False
+        return ToolLoopResult(
+            ctx=ctx,
+            trace=trace,
+            finished_reason="error",
+            messages=local_msgs,
+            pending_tool_call_ids=pending_tool_call_ids,
+            max_steps_remaining=0,
+        )
     except Exception:
         logger.exception("Tool loop raised an unexpected exception")
         trace.finished = False

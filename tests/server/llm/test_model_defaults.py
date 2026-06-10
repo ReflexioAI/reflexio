@@ -279,7 +279,10 @@ class TestResolveModelName:
 
         monkeypatch.setenv("ANTHROPIC_API_KEY", "ant-test")
         monkeypatch.setattr(lep.importlib.util, "find_spec", lambda _name: None)
-        assert resolve_model_name(ModelRole.EMBEDDING) == _PROVIDER_DEFAULTS["local"].embedding
+        assert (
+            resolve_model_name(ModelRole.EMBEDDING)
+            == _PROVIDER_DEFAULTS["local"].embedding
+        )
 
 
 # ---------------------------------------------------------------------------

@@ -31,6 +31,7 @@ def positive_int_env(name: str, default: int, logger: logging.Logger) -> int:
         return default
     return value if value > 0 else default
 
+
 _STRICT_SCHEMA_UNSUPPORTED_KEYWORDS = frozenset(
     {
         "exclusiveMaximum",

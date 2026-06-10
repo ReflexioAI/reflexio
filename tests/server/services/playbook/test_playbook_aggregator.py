@@ -656,9 +656,7 @@ class TestRun:
         mock_gen.return_value = [(_agent_playbook(fid=100), raws)]
         agg.storage.save_agent_playbooks.return_value = [_agent_playbook(fid=100)]
 
-        req = PlaybookAggregatorRequest(
-            agent_version="v1", rerun=True
-        )
+        req = PlaybookAggregatorRequest(agent_version="v1", rerun=True)
         agg.run(req)
 
         agg.storage.archive_agent_playbooks_by_playbook_name.assert_has_calls(
@@ -679,9 +677,7 @@ class TestRun:
         mock_gen.return_value = [(_agent_playbook(fid=100), raws)]
         agg.storage.save_agent_playbooks.return_value = [_agent_playbook(fid=100)]
 
-        req = PlaybookAggregatorRequest(
-            agent_version="v1", rerun=True
-        )
+        req = PlaybookAggregatorRequest(agent_version="v1", rerun=True)
         agg.run(req)
 
         agg.storage.delete_archived_agent_playbooks_by_playbook_name.assert_has_calls(
@@ -766,9 +762,7 @@ class TestRun:
         mock_clust.return_value = {0: [_raw(rid=1)]}
         mock_gen.side_effect = RuntimeError("LLM failed")
 
-        req = PlaybookAggregatorRequest(
-            agent_version="v1", rerun=True
-        )
+        req = PlaybookAggregatorRequest(agent_version="v1", rerun=True)
 
         with pytest.raises(RuntimeError, match="LLM failed"):
             agg.run(req)
@@ -814,9 +808,7 @@ class TestRun:
             "DB down"
         )
 
-        req = PlaybookAggregatorRequest(
-            agent_version="v1", rerun=True
-        )
+        req = PlaybookAggregatorRequest(agent_version="v1", rerun=True)
 
         # Should NOT raise
         agg.run(req)

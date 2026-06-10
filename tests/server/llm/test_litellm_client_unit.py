@@ -41,6 +41,7 @@ from reflexio.server.llm.litellm_client import (
     LiteLLMClient,
     LiteLLMClientError,
     LiteLLMConfig,
+    LLMHardTimeoutError,
     StructuredOutputParseError,
     _get_embedding_encoding,
     _get_embedding_limit,
@@ -1514,6 +1515,45 @@ class TestBuildCompletionParams:
         assert "top_p" not in call_kwargs
 
     @patch("reflexio.server.llm.litellm_client.litellm.completion")
+    def test_model_timeout_floor_raises_default(self, mock_completion):
+        """MiniMax-M3 has a 240s floor; the default 120s config is raised to it."""
+        mock_completion.return_value = _make_completion_response("ok")
+        client = LiteLLMClient(LiteLLMConfig(model="minimax/MiniMax-M3"))
+
+        client.generate_response("hi")
+
+        assert mock_completion.call_args.kwargs["timeout"] == 240
+
+    @patch("reflexio.server.llm.litellm_client.litellm.completion")
+    def test_model_timeout_floor_does_not_lower_higher_config(self, mock_completion):
+        """A configured timeout above the floor is preserved."""
+        mock_completion.return_value = _make_completion_response("ok")
+        client = LiteLLMClient(LiteLLMConfig(model="minimax/MiniMax-M3", timeout=600))
+
+        client.generate_response("hi")
+
+        assert mock_completion.call_args.kwargs["timeout"] == 600
+
+    @patch("reflexio.server.llm.litellm_client.litellm.completion")
+    def test_explicit_timeout_kwarg_beats_model_floor(self, mock_completion):
+        """A per-call timeout kwarg bypasses the floor entirely."""
+        mock_completion.return_value = _make_completion_response("ok")
+        client = LiteLLMClient(LiteLLMConfig(model="minimax/MiniMax-M3"))
+
+        client.generate_chat_response([{"role": "user", "content": "hi"}], timeout=90)
+
+        assert mock_completion.call_args.kwargs["timeout"] == 90
+
+    @patch("reflexio.server.llm.litellm_client.litellm.completion")
+    def test_model_without_floor_keeps_config_timeout(self, mock_completion):
+        mock_completion.return_value = _make_completion_response("ok")
+        client = LiteLLMClient(LiteLLMConfig(model="gpt-4o"))
+
+        client.generate_response("hi")
+
+        assert mock_completion.call_args.kwargs["timeout"] == 120
+
+    @patch("reflexio.server.llm.litellm_client.litellm.completion")
     def test_custom_endpoint_overrides_model(self, mock_completion):
         mock_completion.return_value = _make_completion_response("ok")
         api_key_config = APIKeyConfig(
@@ -2175,7 +2215,44 @@ class TestLitellmIntegration:
         start = time.perf_counter()
         with pytest.raises(LiteLLMClientError, match="hard timeout"):
             client.generate_chat_response(self._messages())
-        assert time.perf_counter() - start < 0.5
+        # Two subprocess spawn/kill cycles (initial attempt + one hard-timeout
+        # retry) — still far below the 1s the blocked call would take.
+        assert time.perf_counter() - start < 1.0
+
+    def test_hard_timeout_retried_once_then_succeeds(self, monkeypatch):
+        """A transient hard timeout is retried exactly once at the client level
+        (litellm's num_retries dies with the killed subprocess, so it can never
+        cover this case)."""
+        client = LiteLLMClient(LiteLLMConfig(model="x"))
+        attempts: list[int] = []
+
+        def _flaky(params):
+            attempts.append(1)
+            if len(attempts) == 1:
+                raise LLMHardTimeoutError("LLM request exceeded hard timeout")
+            return _make_completion_response("recovered")
+
+        monkeypatch.setattr(client, "_completion_with_hard_timeout", _flaky)
+
+        result = client.generate_chat_response(self._messages())
+
+        assert result == "recovered"
+        assert len(attempts) == 2
+
+    def test_hard_timeout_not_retried_more_than_once(self, monkeypatch):
+        """A second consecutive hard timeout propagates as LiteLLMClientError."""
+        client = LiteLLMClient(LiteLLMConfig(model="x"))
+        attempts: list[int] = []
+
+        def _always_timeout(params):
+            attempts.append(1)
+            raise LLMHardTimeoutError("LLM request exceeded hard timeout")
+
+        monkeypatch.setattr(client, "_completion_with_hard_timeout", _always_timeout)
+
+        with pytest.raises(LiteLLMClientError, match="hard timeout"):
+            client.generate_chat_response(self._messages())
+        assert len(attempts) == 2
 
     def test_invalid_hard_timeout_grace_env_falls_back(self, monkeypatch, caplog):
         monkeypatch.setenv("REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS", "not-a-float")

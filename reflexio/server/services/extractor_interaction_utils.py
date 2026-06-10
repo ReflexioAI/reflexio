@@ -23,7 +23,7 @@ def get_extractor_window_params[TExtractorConfig](
     Get effective window_size and stride_size for a specific extractor.
 
     Uses extractor's override values if set, otherwise falls back to global values,
-    then to defaults (window_size=10, stride_size=5).
+    then to defaults (DEFAULT_WINDOW_SIZE / DEFAULT_STRIDE_SIZE from config_schema).
 
     Args:
         extractor_config: Extractor configuration object

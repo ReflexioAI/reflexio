@@ -26,7 +26,11 @@ app = typer.Typer(
 )
 
 _PROVIDERS: dict[str, dict[str, str]] = {
-    "openai": {"env_var": "OPENAI_API_KEY", "model": "gpt-5.4-mini", "display": "OpenAI"},
+    "openai": {
+        "env_var": "OPENAI_API_KEY",
+        "model": "gpt-5.4-mini",
+        "display": "OpenAI",
+    },
     "anthropic": {
         "env_var": "ANTHROPIC_API_KEY",
         "model": "claude-sonnet-4-6",

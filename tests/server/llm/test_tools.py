@@ -1,4 +1,5 @@
 import json
+import logging
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -6,6 +7,7 @@ from pydantic import BaseModel
 
 from reflexio.server.llm.litellm_client import (
     LiteLLMClient,
+    LiteLLMClientError,
     LiteLLMConfig,
     ToolCallingChatResponse,
 )
@@ -372,6 +374,50 @@ def test_run_tool_loop_returns_error_on_client_exception(
     assert result.finished_reason == "error"
     assert result.trace.finished is False
     assert result.trace.turns == []
+
+
+def test_run_tool_loop_logs_llm_client_error_as_warning(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """LiteLLMClientError (timeouts, provider errors after retries) is a known
+    failure mode: finished_reason='error' but logged at WARNING, not ERROR."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_CLI", raising=False)
+
+    ctx = LoopCtx()
+
+    def _emit_handler(args: BaseModel, c: LoopCtx) -> dict:
+        c.emitted.append(args.value)  # type: ignore[attr-defined]
+        return {"ok": True}
+
+    reg = ToolRegistry([Tool(name="emit", args_model=EmitArgs, handler=_emit_handler)])
+
+    client = LiteLLMClient(LiteLLMConfig(model="claude-sonnet-4-6"))
+
+    def boom(**_kwargs):
+        raise LiteLLMClientError("API call failed: hard timeout")
+
+    monkeypatch.setattr(client, "generate_chat_response", boom)
+
+    with caplog.at_level(logging.WARNING, logger="reflexio.server.llm.tools"):
+        result = run_tool_loop(
+            client=client,
+            messages=[{"role": "user", "content": "go"}],
+            registry=reg,
+            model_role=ModelRole.EXTRACTION_AGENT,
+            max_steps=5,
+            ctx=ctx,
+            finish_tool_name="finish",
+        )
+
+    assert result.finished_reason == "error"
+    assert result.trace.finished is False
+    tool_loop_records = [
+        r for r in caplog.records if r.name == "reflexio.server.llm.tools"
+    ]
+    assert any("tool_loop_llm_error" in r.getMessage() for r in tool_loop_records)
+    assert all(r.levelno < logging.ERROR for r in tool_loop_records)
 
 
 # ---------------- log_label (llm_io.log) integration ---------------- #

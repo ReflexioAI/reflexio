@@ -440,7 +440,7 @@ class TestFilterConfigByStride:
 
     def test_passes_config_when_stride_size_met(self, llm_client, request_context):
         """Verify config passes through when new interaction count >= stride_size."""
-        service = self._setup_stride_size_service(llm_client, request_context, 6)
+        service = self._setup_stride_size_service(llm_client, request_context, 8)
         service.service_config = MockServiceConfig(auto_run=True, source="api")
 
         config = MockExtractorConfig(extractor_name="ext1")

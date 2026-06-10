@@ -103,7 +103,7 @@ class TestGetExtractorWindowParams:
         assert stride == 20
 
     def test_defaults_when_nothing_set(self):
-        """Test defaults (window=10, stride=5) are returned when no values are set anywhere."""
+        """Test defaults (window=10, stride=8) are returned when no values are set anywhere."""
         config = MockExtractorConfig(extractor_name="test")
 
         window, stride = get_extractor_window_params(
@@ -113,7 +113,7 @@ class TestGetExtractorWindowParams:
         )
 
         assert window == 10
-        assert stride == 5
+        assert stride == 8
 
     def test_zero_values_respected(self):
         """Test that zero values ARE respected (0 is a valid override value)."""
