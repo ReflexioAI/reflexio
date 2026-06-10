@@ -50,6 +50,11 @@ class SearchInteractionRequest(BaseModel):
 class SearchUserProfileRequest(BaseModel):
     user_id: NonEmptyStr
     generated_from_request_id: str | None = None
+    # Caller correlation IDs for billing attribution on the Application line.
+    # Optional; when populated they flow into the usage event request_id /
+    # session_id columns via _meter_applied_learnings in server/api.py.
+    request_id: str | None = None
+    session_id: str | None = None
     query: str | None = None
     start_time: datetime | None = None
     end_time: datetime | None = None
@@ -233,6 +238,10 @@ class GetAgentPlaybooksRequest(BaseModel):
     agent_version: str | None = None
     status_filter: list[Status | None] | None = None
     playbook_status_filter: PlaybookStatus | None = None
+    # Caller correlation IDs for billing attribution on the Application line.
+    # Optional; consumed by _meter_applied_learnings in server/api.py.
+    request_id: str | None = None
+    session_id: str | None = None
 
 
 class GetAgentPlaybooksResponse(BaseModel):
@@ -267,6 +276,10 @@ class SearchUserPlaybookRequest(BaseModel):
     threshold: float | None = Field(default=0.4, ge=0.0, le=1.0)
     enable_reformulation: bool | None = False
     search_mode: SearchMode = SearchMode.HYBRID
+    # Caller correlation IDs for billing attribution on the Application line.
+    # Optional; consumed by _meter_applied_learnings in server/api.py.
+    request_id: str | None = None
+    session_id: str | None = None
 
     @model_validator(mode="after")
     def check_time_range(self) -> Self:
@@ -320,6 +333,10 @@ class SearchAgentPlaybookRequest(BaseModel):
     threshold: float | None = Field(default=0.4, ge=0.0, le=1.0)
     enable_reformulation: bool | None = False
     search_mode: SearchMode = SearchMode.HYBRID
+    # Caller correlation IDs for billing attribution on the Application line.
+    # Optional; consumed by _meter_applied_learnings in server/api.py.
+    request_id: str | None = None
+    session_id: str | None = None
 
     @model_validator(mode="after")
     def check_time_range(self) -> Self:
@@ -621,6 +638,10 @@ class UnifiedSearchRequest(BaseModel):
     enable_reformulation: bool | None = False
     enable_agent_answer: bool | None = False
     search_mode: SearchMode = SearchMode.HYBRID
+    # Caller correlation IDs for billing attribution on the Application line.
+    # Optional; consumed by _meter_applied_learnings in server/api.py.
+    request_id: str | None = None
+    session_id: str | None = None
 
 
 class UnifiedSearchResponse(BaseModel):

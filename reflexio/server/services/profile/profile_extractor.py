@@ -232,22 +232,6 @@ class ProfileExtractor:
             ) from e
 
         logger.info("Generated raw profiles: %s", raw_profiles)
-        if isinstance(raw_profiles, ExtractionOutcome):
-            user_profiles = self._convert_raw_to_user_profiles(
-                raw_profiles=raw_profiles.items,
-                user_id=self.service_config.user_id,
-                request_id=self.service_config.request_id,
-            )
-            self._update_operation_state(request_interaction_data_models)
-            return ExtractionOutcome.completed(
-                user_profiles,
-                run_id=raw_profiles.run_id,
-                # `or` is safe: a dataclass instance (even RunTokenTotals(0,0)) is
-                # always truthy, so a real-but-zero total is never overwritten by
-                # the fallback trace.
-                token_totals=raw_profiles.token_totals
-                or self._last_resumable_token_totals,
-            )
         user_profiles = self._convert_raw_to_user_profiles(
             raw_profiles=raw_profiles or [],
             user_id=self.service_config.user_id,

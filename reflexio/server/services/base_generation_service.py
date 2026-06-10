@@ -278,6 +278,9 @@ class BaseGenerationService(
 
         if self.storage is None or self.service_config is None:
             return ""
+        # Deliberate extra storage read: re-fetches the extractor's input window so
+        # billing token counting sees exactly the text the LLM saw. Kept separate
+        # from the extraction path on purpose; not refactored into a shared fetch.
         try:
             root_config = self.request_context.configurator.get_config()
             global_window_size = (
@@ -348,8 +351,8 @@ class BaseGenerationService(
             # session_id source. _usage_context() never includes it, and neither
             # the Profile/Playbook service configs nor their requests carry a
             # session_id (unlike the Application-line path in server/api.py, which
-            # reads it from the publish payload). Learning events therefore meter
-            # without session attribution by design.
+            # reads request_id/session_id off the search request payload). Learning
+            # events therefore meter without session attribution by design.
 
             # ② Learning — value: learnings generated (helper no-ops on count <= 0).
             record_learnings_generated(

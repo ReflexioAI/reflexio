@@ -7,6 +7,7 @@ Also provides the one canonical input-anchored tokenizer for the whole platform.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 import tiktoken
@@ -55,4 +56,9 @@ def platform_llm_from_config(config: Any) -> bool:
         if hasattr(api_key_config, "model_dump")
         else {}
     )
+    # Guard against a model_dump that returns a non-mapping: without this,
+    # `.values()` would raise. Default to platform-supplied (True) on a shape
+    # we don't understand rather than misclassifying the org as BYO-LLM.
+    if not isinstance(data, Mapping):
+        return True
     return not any(bool(v) for v in data.values())
