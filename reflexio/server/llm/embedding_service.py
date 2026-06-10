@@ -58,6 +58,8 @@ _ENV_MICRO_BATCH_MAX_TEXTS = "REFLEXIO_EMBED_MICRO_BATCH_MAX_TEXTS"
 _MICRO_BATCH_CONDITION = threading.Condition()
 _MICRO_BATCH_QUEUE: list[_EmbeddingJob] = []
 _ACTIVE_BATCH_PROCESSORS = 0
+# Failsafe bound for a submitter waiting on its job (see _embed_texts).
+_JOB_WAIT_TIMEOUT_SECONDS = 600.0
 
 
 @dataclass
@@ -196,7 +198,14 @@ def _embed_texts(model: str, texts: list[str]) -> list[list[float]]:
             name="embedding-micro-batch",
         ).start()
 
-    job.done.wait()
+    # Last-resort failsafe: a processor thread that dies between taking and
+    # completing jobs would otherwise leave this request hanging forever. The
+    # bound is far above any legitimate CPU bulk encode.
+    if not job.done.wait(timeout=_JOB_WAIT_TIMEOUT_SECONDS):
+        raise RuntimeError(
+            f"Embedding micro-batch did not complete within "
+            f"{_JOB_WAIT_TIMEOUT_SECONDS:.0f}s"
+        )
     if job.error is not None:
         raise job.error
     if job.result is None:
@@ -273,6 +282,18 @@ def _process_micro_batch(jobs: list[_EmbeddingJob]) -> None:
     except BaseException as exc:
         for job in jobs:
             job.error = exc
+            job.done.set()
+        return
+
+    if len(embeddings) != len(texts):
+        # Slicing a short result would silently hand jobs truncated/empty
+        # vectors; fail every job loudly at the source instead.
+        mismatch = RuntimeError(
+            f"Embedding count mismatch: encoded {len(texts)} texts but got "
+            f"{len(embeddings)} embeddings"
+        )
+        for job in jobs:
+            job.error = mismatch
             job.done.set()
         return
 
