@@ -21,6 +21,7 @@ this module never triggers a model download.
 from __future__ import annotations
 
 import logging
+import os
 import threading
 from typing import Any
 
@@ -30,6 +31,13 @@ _LOGGER = logging.getLogger(__name__)
 # size/quality trade-off: 22M parameters, ~50 ms for K=30 on CPU,
 # well-known MS-MARCO benchmark performance.
 _MODEL_NAME = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+
+# Device override for the cross-encoder. Defaults to CPU: without an
+# explicit device sentence-transformers auto-selects MPS on Apple
+# Silicon, where torch's caching allocator accumulates gigabytes of
+# GPU buffers it never returns to the OS — and the 22M-param model
+# gains nothing from GPU at K=30 pairs. Mirrors NOMIC_EMBED_DEVICE.
+_DEVICE_ENV_VAR = "REFLEXIO_RERANK_DEVICE"
 
 # Singleton state — never accessed directly outside ``_get_model``.
 _MODEL: Any | None = None
@@ -107,9 +115,10 @@ def _get_model() -> Any:
         if _MODEL is not None:
             return _MODEL
         cross_encoder_cls = _import_cross_encoder()
+        device = os.environ.get(_DEVICE_ENV_VAR, "cpu")
         try:
-            _LOGGER.info("Loading reranker model %s", _MODEL_NAME)
-            _MODEL = cross_encoder_cls(_MODEL_NAME)
+            _LOGGER.info("Loading reranker model %s (device=%s)", _MODEL_NAME, device)
+            _MODEL = cross_encoder_cls(_MODEL_NAME, device=device)
         except Exception as e:  # noqa: BLE001 — surface as a typed failure
             raise CrossEncoderUnavailableError(
                 f"Failed to load cross-encoder model {_MODEL_NAME!r}: {e}"
@@ -141,7 +150,7 @@ def score_pairs(query: str, docs: list[str]) -> list[float]:
         return []
     model = _get_model()
     pairs = [(query, doc) for doc in docs]
-    raw_scores = model.predict(pairs)
+    raw_scores = model.predict(pairs, show_progress_bar=False)
     # ``predict`` returns a numpy array; convert to plain Python floats so
     # the caller can serialise the result without numpy as a dependency.
     return [float(s) for s in raw_scores]
