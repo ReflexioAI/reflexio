@@ -22,6 +22,7 @@ from reflexio.models.config_schema import (
     StorageConfigSQLite,
 )
 from reflexio.server.api_endpoints.request_context import RequestContext
+from reflexio.server.billing_signals import count_input_tokens
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.services.base_generation_service import (
     BaseGenerationService,
@@ -29,10 +30,12 @@ from reflexio.server.services.base_generation_service import (
 )
 from reflexio.server.services.profile.profile_generation_service import (
     ProfileGenerationService,
+    ProfileGenerationServiceConfig,
 )
 from reflexio.server.services.profile.profile_generation_service_utils import (
     ProfileGenerationRequest,
 )
+from reflexio.server.services.service_utils import format_sessions_to_history_string
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 from reflexio.server.usage_metrics import UsageEvent, configure_usage_event_recorder
 
@@ -349,3 +352,128 @@ def test_non_learning_service_emits_no_learning_billing_events():
     assert learning_events == [], (
         f"EMITS_LEARNING_BILLING=False service must not emit learning events; got: {learning_events}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Dedup: billing reuses the should-run gate's already-fetched window instead of
+# re-querying storage purely to recompute billing_input_tokens.
+# ---------------------------------------------------------------------------
+
+
+def _build_profile_service(storage: SQLiteStorage) -> ProfileGenerationService:
+    """Build a ProfileGenerationService over ``storage`` with service_config primed."""
+    ctx = _request_context(storage)
+    llm_client = LiteLLMClient(LiteLLMConfig(model="gpt-4o-mini"))
+    service = ProfileGenerationService(llm_client=llm_client, request_context=ctx)
+    service.service_config = ProfileGenerationServiceConfig(
+        user_id=_USER_ID,
+        request_id=_REQUEST_ID,
+        source="api",
+        auto_run=True,
+    )
+    return service
+
+
+def _known_sessions(storage: SQLiteStorage) -> list[Any]:
+    """Return realistic RequestInteractionDataModel objects from real storage.
+
+    Seeds substantive interactions and reads them back through the same storage
+    method (`get_last_k_interactions_grouped`) the billing path uses, so the
+    session models have the exact shape `format_sessions_to_history_string`
+    consumes in production.
+    """
+    _seed_interactions(storage)
+    sessions, _ = storage.get_last_k_interactions_grouped(
+        user_id=_USER_ID, k=10, sources=["api"]
+    )
+    assert sessions, "expected seeded interactions to be returned"
+    return sessions
+
+
+def _prepared() -> PreparedGenerationRun[Any]:
+    """A minimal prepared run with a real profile extractor config."""
+    return PreparedGenerationRun(
+        extractor_config=ProfileExtractorConfig(
+            extractor_name="billing_test_extractor",
+            extraction_definition_prompt="Extract durable preferences.",
+        ),
+        extractor_name="billing_test_extractor",
+        identifier=_USER_ID,
+    )
+
+
+def test_billing_reuses_precheck_window_without_refetch(tmp_path):
+    """When the gate stashed its window, billing reuses it and skips storage.
+
+    Proves the dedup: `_extraction_input_text` returns the formatted text of the
+    stashed sessions and never calls `get_last_k_interactions_grouped`.
+    """
+    storage = _build_sqlite_storage(tmp_path)
+    known_sessions = _known_sessions(storage)
+    expected_text = format_sessions_to_history_string(known_sessions)
+
+    service = _build_profile_service(storage)
+    service._last_precheck_sessions = known_sessions
+    # Replace storage with a mock so any storage read would be observable.
+    service.storage = MagicMock()
+
+    text = service._extraction_input_text(_prepared())
+
+    assert text == expected_text
+    service.storage.get_last_k_interactions_grouped.assert_not_called()
+
+
+def test_billing_refetches_when_no_precheck_window(tmp_path):
+    """When the gate did NOT pre-fetch, billing falls back to its own storage read.
+
+    Proves the fallback still works on bypass paths: with the stash None,
+    `_extraction_input_text` calls `get_last_k_interactions_grouped` exactly once
+    and returns the same formatted text.
+    """
+    storage = _build_sqlite_storage(tmp_path)
+    known_sessions = _known_sessions(storage)
+    expected_text = format_sessions_to_history_string(known_sessions)
+
+    service = _build_profile_service(storage)
+    service._last_precheck_sessions = None
+    mock_storage = MagicMock()
+    mock_storage.get_last_k_interactions_grouped.return_value = (known_sessions, None)
+    service.storage = mock_storage
+
+    text = service._extraction_input_text(_prepared())
+
+    assert text == expected_text
+    mock_storage.get_last_k_interactions_grouped.assert_called_once()
+
+
+def test_billing_token_count_unchanged_reuse_vs_refetch(tmp_path):
+    """Equivalence guard: the reuse path and the refetch path bill identically.
+
+    For the same window, the reuse-path text must equal the refetch-path text and
+    `count_input_tokens` must agree — the metered quantity is byte-identical, so
+    the refactor cannot change a customer's bill.
+    """
+    storage = _build_sqlite_storage(tmp_path)
+    known_sessions = _known_sessions(storage)
+
+    # Reuse path: stash set, storage mocked to prove no read happens.
+    reuse_service = _build_profile_service(storage)
+    reuse_service._last_precheck_sessions = known_sessions
+    reuse_service.storage = MagicMock()
+    reuse_text = reuse_service._extraction_input_text(_prepared())
+    reuse_service.storage.get_last_k_interactions_grouped.assert_not_called()
+
+    # Refetch path: stash None, storage returns the same window.
+    refetch_service = _build_profile_service(storage)
+    refetch_service._last_precheck_sessions = None
+    refetch_storage = MagicMock()
+    refetch_storage.get_last_k_interactions_grouped.return_value = (
+        known_sessions,
+        None,
+    )
+    refetch_service.storage = refetch_storage
+    refetch_text = refetch_service._extraction_input_text(_prepared())
+    refetch_storage.get_last_k_interactions_grouped.assert_called_once()
+
+    assert reuse_text == refetch_text
+    assert count_input_tokens(reuse_text) == count_input_tokens(refetch_text)

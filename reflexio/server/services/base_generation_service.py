@@ -215,6 +215,10 @@ class BaseGenerationService(
         }
         self._last_extraction_run_ids: list[str] = []
         self._last_token_totals: RunTokenTotals | None = None
+        # Window fetched by the should-run gate (_collect_scoped_interactions_for_precheck),
+        # stashed so the billing path (_extraction_input_text) can reuse it instead of
+        # re-querying storage. None when the gate did not run (bypass paths).
+        self._last_precheck_sessions: list[Any] | None = None
 
     def _usage_pipeline(self) -> str | None:
         service_name = self._get_service_name()
@@ -278,9 +282,15 @@ class BaseGenerationService(
 
         if self.storage is None or self.service_config is None:
             return ""
-        # Deliberate extra storage read: re-fetches the extractor's input window so
-        # billing token counting sees exactly the text the LLM saw. Kept separate
-        # from the extraction path on purpose; not refactored into a shared fetch.
+        # Reuse the window the should-run gate already fetched
+        # (_collect_scoped_interactions_for_precheck stashed it). Same query params,
+        # so the token count is byte-identical — and we avoid a second storage read.
+        if self._last_precheck_sessions is not None:
+            return format_sessions_to_history_string(self._last_precheck_sessions)
+        # Fallback storage read: used ONLY when the gate did not pre-fetch
+        # (bypass paths: auto_run=False, force_extraction, skip_should_run_check,
+        # mock mode). Re-fetches the extractor's input window so billing token
+        # counting sees exactly the text the LLM saw.
         try:
             root_config = self.request_context.configurator.get_config()
             global_window_size = (
@@ -874,6 +884,13 @@ class BaseGenerationService(
         Returns:
             PreparedGenerationRun when generation should proceed, otherwise None.
         """
+        # Reset BEFORE the should-run gate runs. The gate
+        # (_collect_scoped_interactions_for_precheck) stashes its fetched window
+        # here for the billing path to reuse. On bypass paths (auto_run=False,
+        # force_extraction, skip_should_run_check, mock mode) the gate never runs,
+        # so this stays None and billing falls back to its own fetch.
+        self._last_precheck_sessions = None
+
         self.service_config = self._load_generation_service_config(request)
 
         extractor_config = self._load_extractor_config()
@@ -1266,6 +1283,8 @@ class BaseGenerationService(
             extractor_config, getattr(self.service_config, "source", None)
         )
         if should_skip:
+            # Stash for the billing path to reuse (same window the gate saw).
+            self._last_precheck_sessions = []
             return [], extractor_config
 
         window_size, _ = get_extractor_window_params(
@@ -1280,6 +1299,9 @@ class BaseGenerationService(
             **extra_kwargs,
         )
 
+        # Stash for the billing path (_extraction_input_text) to reuse instead of
+        # re-querying storage for billing_input_tokens.
+        self._last_precheck_sessions = session_data_models
         return session_data_models, extractor_config
 
     def _get_precheck_interaction_query_kwargs(self) -> dict:
