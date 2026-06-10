@@ -31,10 +31,16 @@ _ENV_LOCAL_SERVICE_PROBE_TIMEOUT_MS = (
     "REFLEXIO_EMBEDDING_LOCAL_SERVICE_PROBE_TIMEOUT_MS"
 )
 _ENV_CLAUDE_SMART_LOCAL = "CLAUDE_SMART_USE_LOCAL_EMBEDDING"
+_ENV_MAX_TEXTS_PER_REQUEST = "REFLEXIO_EMBEDDING_SERVICE_MAX_TEXTS_PER_REQUEST"
 _DEFAULT_LOCAL_PORT = 8072
 _DEFAULT_INTERNAL_SERVICE_TIMEOUT_MS = 2_000
 _DEFAULT_LOCAL_SERVICE_TIMEOUT_MS = 30_000
 _DEFAULT_LOCAL_SERVICE_PROBE_TIMEOUT_MS = 200
+# Each request embeds its whole ``input`` list in one ``model.encode()`` on the
+# service, so an unbounded request can exceed the client read timeout on a CPU
+# daemon. Cap texts per request and concatenate; encode batching is a separate
+# server-side knob (REFLEXIO_EMBED_BATCH_SIZE).
+_DEFAULT_MAX_TEXTS_PER_REQUEST = 32
 _LOCAL_SERVICE_PROBE_CACHE_SECONDS = 5.0
 _SERVICE_MODES = {"local_service", "internal_service"}
 _VALID_MODES = {"cloud", *_SERVICE_MODES, "inprocess", "off"}
@@ -248,11 +254,35 @@ def get_service_embeddings(
         )
 
     url = f"{embedding_service_url(mode)}/v1/embeddings"
+    timeout = embedding_service_timeout_seconds(mode)
+
+    # Bound each request so a single large publish cannot exceed the client read
+    # timeout: split into fixed-size chunks and concatenate the results in order.
+    chunk_size = _max_texts_per_request()
+    embeddings: list[list[float]] = []
+    for start in range(0, len(texts), chunk_size):
+        chunk = texts[start : start + chunk_size]
+        embeddings.extend(
+            _post_embedding_batch(
+                url, model=model, texts=chunk, dimensions=dimensions, timeout=timeout
+            )
+        )
+    return embeddings
+
+
+def _post_embedding_batch(
+    url: str,
+    *,
+    model: str,
+    texts: list[str],
+    dimensions: int | None,
+    timeout: float,
+) -> list[list[float]]:
+    """POST one bounded batch of texts to the embedding service."""
     payload: dict[str, Any] = {"model": model, "input": texts}
     if dimensions:
         payload["dimensions"] = dimensions
 
-    timeout = embedding_service_timeout_seconds(mode)
     last_error: Exception | None = None
     for attempt in range(2):
         try:
@@ -261,20 +291,48 @@ def get_service_embeddings(
             response.raise_for_status()
             body = response.json()
             return _ordered_embeddings_from_response(body.get("data"), len(texts))
-        except (httpx.HTTPError, json.JSONDecodeError, ValueError) as exc:
-            # Real transient + remote-data-shape classes only: httpx.HTTPError
-            # covers RequestError (network) + HTTPStatusError (4xx/5xx, raised
-            # by raise_for_status); JSONDecodeError covers response.json()
-            # parse failures; ValueError is the typed signal raised by
-            # _ordered_embeddings_from_response for malformed service payloads.
-            # Anything outside this set (AttributeError, TypeError, etc.) is a
-            # programming bug and propagates raw — retrying won't help and
-            # wrapping it as EmbeddingUnavailableError hides the real defect.
+        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+            # Connection never established — the request never reached the
+            # server, so a single retry is safe and cannot duplicate work.
             last_error = exc
             if attempt == 0:
                 time.sleep(0.1)
+        except (httpx.HTTPError, json.JSONDecodeError, ValueError) as exc:
+            # The server already received the request: a read timeout means it
+            # is still encoding, and retrying would queue a second identical
+            # encode behind the first and amplify load on an already-saturated
+            # daemon. HTTPStatusError (4xx/5xx) and malformed-payload errors
+            # (JSONDecodeError / the ValueError raised by
+            # _ordered_embeddings_from_response) will not change on retry
+            # either. Fail fast. Anything outside this set (AttributeError,
+            # TypeError, ...) is a programming bug and propagates raw.
+            last_error = exc
+            break
 
     _LOGGER.warning("Embedding service unavailable at %s: %s", url, last_error)
     raise EmbeddingUnavailableError(
         f"Embedding service unavailable at {url}: {last_error}"
     ) from last_error
+
+
+def _max_texts_per_request() -> int:
+    raw = os.environ.get(_ENV_MAX_TEXTS_PER_REQUEST)
+    if raw is None:
+        return _DEFAULT_MAX_TEXTS_PER_REQUEST
+    try:
+        value = int(raw)
+    except ValueError:
+        _LOGGER.warning(
+            "%s must be an integer; using %d",
+            _ENV_MAX_TEXTS_PER_REQUEST,
+            _DEFAULT_MAX_TEXTS_PER_REQUEST,
+        )
+        return _DEFAULT_MAX_TEXTS_PER_REQUEST
+    if value < 1:
+        _LOGGER.warning(
+            "%s must be >= 1; using %d",
+            _ENV_MAX_TEXTS_PER_REQUEST,
+            _DEFAULT_MAX_TEXTS_PER_REQUEST,
+        )
+        return _DEFAULT_MAX_TEXTS_PER_REQUEST
+    return value

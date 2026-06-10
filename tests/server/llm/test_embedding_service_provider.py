@@ -318,10 +318,9 @@ class TestEmbeddingServiceExceptionScope:
             get_service_embeddings(["text"], model="local/nomic-embed-v1.5")
         assert call_count["n"] == 1, "programming bug must NOT be retried"
 
-    def test_httpx_request_error_still_retries(self, monkeypatch) -> None:
-        """Network errors continue to retry once then surface as
-        ``EmbeddingUnavailableError`` — existing transient-error behavior
-        is preserved by the narrowed clause.
+    def test_connect_error_retries_once(self, monkeypatch) -> None:
+        """A connection-establishment failure (request never reached the
+        server) retries once, then surfaces as ``EmbeddingUnavailableError``.
         """
         self._route_to_local_service(monkeypatch)
         call_count = {"n": 0}
@@ -338,7 +337,7 @@ class TestEmbeddingServiceExceptionScope:
 
             def post(self, *_a, **_k):
                 call_count["n"] += 1
-                raise httpx.RequestError("connection refused")
+                raise httpx.ConnectError("connection refused")
 
         monkeypatch.setattr(
             "reflexio.server.llm.providers.embedding_service_provider.httpx.Client",
@@ -347,7 +346,142 @@ class TestEmbeddingServiceExceptionScope:
 
         with pytest.raises(EmbeddingUnavailableError):
             get_service_embeddings(["text"], model="local/nomic-embed-v1.5")
-        assert call_count["n"] == 2, "transient HTTP error must retry once"
+        assert call_count["n"] == 2, "connection error must retry once"
+
+    def test_read_timeout_does_not_retry(self, monkeypatch) -> None:
+        """A read timeout means the server already received the request and may
+        still be encoding it. Retrying would queue a second identical encode and
+        amplify load on a saturated daemon, so it must fail fast (one call).
+        """
+        self._route_to_local_service(monkeypatch)
+        call_count = {"n": 0}
+
+        class _SlowClient:
+            def __init__(self, timeout: float) -> None:
+                self.timeout = timeout
+
+            def __enter__(self) -> _SlowClient:
+                return self
+
+            def __exit__(self, *_args) -> None:
+                return None
+
+            def post(self, *_a, **_k):
+                call_count["n"] += 1
+                raise httpx.ReadTimeout("timed out")
+
+        monkeypatch.setattr(
+            "reflexio.server.llm.providers.embedding_service_provider.httpx.Client",
+            _SlowClient,
+        )
+
+        with pytest.raises(EmbeddingUnavailableError):
+            get_service_embeddings(["text"], model="local/nomic-embed-v1.5")
+        assert call_count["n"] == 1, "read timeout must NOT be retried"
+
+
+class TestRequestChunking:
+    """``get_service_embeddings`` bounds each request to
+    ``REFLEXIO_EMBEDDING_SERVICE_MAX_TEXTS_PER_REQUEST`` texts and concatenates
+    the per-chunk results in input order, so a single large publish cannot
+    exceed the client read timeout.
+    """
+
+    @staticmethod
+    def _route_to_local_service(monkeypatch) -> None:
+        monkeypatch.setenv("REFLEXIO_EMBEDDING_PROVIDER", "local_service")
+        monkeypatch.delenv("REFLEXIO_EMBEDDING_SERVICE_URL", raising=False)
+
+    @staticmethod
+    def _client_recording_payloads(payloads: list[dict]) -> type:
+        """A fake httpx.Client that records each POST payload and answers with
+        one embedding per input text, derived from the text's ``t<n>`` suffix
+        so concatenation order is observable.
+        """
+
+        class _Response:
+            @staticmethod
+            def raise_for_status() -> None:
+                return None
+
+            @staticmethod
+            def json() -> dict:
+                texts = payloads[-1]["input"]
+                return {
+                    "data": [
+                        {"index": i, "embedding": [float(text[1:])]}
+                        for i, text in enumerate(texts)
+                    ]
+                }
+
+        class _Client:
+            def __init__(self, timeout: float) -> None:
+                self.timeout = timeout
+
+            def __enter__(self) -> _Client:
+                return self
+
+            def __exit__(self, *_args) -> None:
+                return None
+
+            def post(self, _url, *, json):
+                payloads.append(json)
+                return _Response()
+
+        return _Client
+
+    def test_large_input_is_chunked_and_concatenated_in_order(
+        self, monkeypatch
+    ) -> None:
+        self._route_to_local_service(monkeypatch)
+        monkeypatch.setenv("REFLEXIO_EMBEDDING_SERVICE_MAX_TEXTS_PER_REQUEST", "2")
+        payloads: list[dict] = []
+        monkeypatch.setattr(
+            "reflexio.server.llm.providers.embedding_service_provider.httpx.Client",
+            self._client_recording_payloads(payloads),
+        )
+
+        result = get_service_embeddings(
+            ["t0", "t1", "t2", "t3", "t4"], model="local/nomic-embed-v1.5"
+        )
+
+        assert [p["input"] for p in payloads] == [["t0", "t1"], ["t2", "t3"], ["t4"]]
+        assert result == [[0.0], [1.0], [2.0], [3.0], [4.0]]
+
+    def test_chunk_failure_surfaces_embedding_unavailable(self, monkeypatch) -> None:
+        """A failure on a later chunk discards earlier partial results and
+        raises ``EmbeddingUnavailableError`` — callers never see a short list.
+        """
+        self._route_to_local_service(monkeypatch)
+        monkeypatch.setenv("REFLEXIO_EMBEDDING_SERVICE_MAX_TEXTS_PER_REQUEST", "2")
+        payloads: list[dict] = []
+        good_client = self._client_recording_payloads(payloads)
+
+        class _FailsOnSecondChunk(good_client):
+            def post(self, _url, *, json):
+                if len(payloads) >= 1:
+                    raise httpx.ReadTimeout("timed out")
+                return super().post(_url, json=json)
+
+        monkeypatch.setattr(
+            "reflexio.server.llm.providers.embedding_service_provider.httpx.Client",
+            _FailsOnSecondChunk,
+        )
+
+        with pytest.raises(EmbeddingUnavailableError):
+            get_service_embeddings(["t0", "t1", "t2"], model="local/nomic-embed-v1.5")
+        assert [p["input"] for p in payloads] == [["t0", "t1"]]
+
+    @pytest.mark.parametrize("raw", ["abc", "0", "-3"])
+    def test_invalid_max_texts_env_falls_back_to_default(
+        self, monkeypatch, raw: str
+    ) -> None:
+        monkeypatch.setenv("REFLEXIO_EMBEDDING_SERVICE_MAX_TEXTS_PER_REQUEST", raw)
+        assert esp._max_texts_per_request() == esp._DEFAULT_MAX_TEXTS_PER_REQUEST
+
+    def test_valid_max_texts_env_is_honored(self, monkeypatch) -> None:
+        monkeypatch.setenv("REFLEXIO_EMBEDDING_SERVICE_MAX_TEXTS_PER_REQUEST", "8")
+        assert esp._max_texts_per_request() == 8
 
 
 def test_nomic_inprocess_fallback_uses_nomic_embedder(monkeypatch) -> None:
