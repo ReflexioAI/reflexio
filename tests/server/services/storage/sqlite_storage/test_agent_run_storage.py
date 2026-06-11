@@ -6,6 +6,7 @@ from unittest.mock import patch
 import pytest
 
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
+from reflexio.server.services.storage.sqlite_storage._agent_run import _dt
 from reflexio.server.services.storage.storage_base import (
     AgentBinding,
     AgentRunRecord,
@@ -26,6 +27,12 @@ def storage():
         patch.object(SQLiteStorage, "_get_embedding", return_value=[0.0] * 512),
     ):
         yield SQLiteStorage(org_id="org_1", db_path=f"{temp_dir}/reflexio.db")
+
+
+def test_sqlite_agent_run_parser_treats_offsetless_timestamp_as_utc():
+    parsed = _dt("2026-06-10T23:47:07.50016")
+
+    assert parsed == datetime(2026, 6, 10, 23, 47, 7, 500160, tzinfo=UTC)
 
 
 def _agent_run(

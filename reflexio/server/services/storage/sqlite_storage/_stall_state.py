@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from reflexio.models.api_schema.stall_state_schema import StallReason
@@ -163,10 +163,13 @@ def _parse_ts(raw: str | None) -> datetime | None:
     if raw is None:
         return None
     try:
-        return datetime.fromisoformat(raw)
+        parsed = datetime.fromisoformat(raw)
     except ValueError:
         _LOGGER.warning("Malformed timestamp in stall_state: %r", raw)
         return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed
 
 
 class SQLiteStallStateMixin:

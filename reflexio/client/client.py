@@ -391,6 +391,7 @@ class ReflexioClient:
         wait_for_response: bool = False,
         skip_aggregation: bool = False,
         force_extraction: bool = False,
+        evaluation_only: bool = False,
         override_learning_stall: bool = False,
         metadata: dict[str, Any] | None = None,
     ) -> PublishUserInteractionResponse:
@@ -430,6 +431,9 @@ class ReflexioClient:
             force_extraction: If True, bypass all extraction gates
                 (stride_size, cheap pre-filter, LLM should_run) and
                 always run extractors.
+            evaluation_only: If True, store the interaction for
+                session-level evaluation only and permanently exclude it
+                from profile/playbook extraction.
             override_learning_stall: If True, run extraction even when
                 Reflexio has recorded a provider auth/billing stall. Keep
                 this False for automatic hook publishes; use it only for an
@@ -467,6 +471,7 @@ class ReflexioClient:
             agent_version=agent_version,
             skip_aggregation=skip_aggregation,
             force_extraction=force_extraction,
+            evaluation_only=evaluation_only,
             override_learning_stall=override_learning_stall,
             metadata=metadata or {},
         )

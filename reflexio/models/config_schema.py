@@ -397,6 +397,16 @@ class DeduplicationConfig(BaseModel):
 SINGLETON_PROFILE_EXTRACTOR_NAME = "profile"
 SINGLETON_USER_PLAYBOOK_NAME = "playbook"
 SINGLETON_AGENT_SUCCESS_EVALUATION_NAME = "agent_success"
+DEFAULT_AGENT_SUCCESS_SAMPLING_RATE = 0.05
+DEFAULT_AGENT_SUCCESS_DEFINITION_PROMPT = (
+    "Evaluate whether the AI agent successfully handled the user's session.\n\n"
+    "Mark the session successful when, by the end of the conversation, the agent:\n"
+    "1. Identified and addressed the user's main goal or question.\n"
+    "2. Provided a correct, useful, and actionable response or completed the requested action.\n"
+    "Mark the session unsuccessful when the agent failed to understand the request,\n"
+    "gave incorrect or unhelpful guidance, did not complete an available action,\n"
+    "ignored important constraints, or left the user unsatisfied."
+)
 
 
 class ProfileExtractorConfig(_ExtractorWindowOverrideCompatMixin, BaseModel):
@@ -488,9 +498,15 @@ class AgentSuccessConfig(_ExtractorWindowOverrideCompatMixin, BaseModel):
     evaluation_name: NonEmptyStr | None = None
     success_definition_prompt: SanitizedNonEmptyStr
     metadata_definition_prompt: str | None = None
+    request_sources_enabled: list[str] | None = (
+        None  # default enabled for all sources, if set, only evaluate requests from the enabled request sources
+    )
     sampling_rate: float = Field(
-        default=1.0, ge=0.0, le=1.0
-    )  # fraction of window of interactions to be sampled for success evaluation
+        default=DEFAULT_AGENT_SUCCESS_SAMPLING_RATE,
+        ge=0.0,
+        le=1.0,
+        description="Fraction of sessions to evaluate automatically.",
+    )
     window_size_override: int | None = Field(default=None, gt=0)
     stride_size_override: int | None = Field(default=None, gt=0)
 
@@ -498,6 +514,14 @@ class AgentSuccessConfig(_ExtractorWindowOverrideCompatMixin, BaseModel):
     @classmethod
     def _migrate_field_names(cls, data: Any) -> Any:
         return _migrate_dict(data, _EXTRACTOR_OVERRIDE_MIGRATION)
+
+
+def _default_agent_success_config() -> AgentSuccessConfig:
+    return AgentSuccessConfig(
+        evaluation_name=SINGLETON_AGENT_SUCCESS_EVALUATION_NAME,
+        success_definition_prompt=DEFAULT_AGENT_SUCCESS_DEFINITION_PROMPT,
+        sampling_rate=DEFAULT_AGENT_SUCCESS_SAMPLING_RATE,
+    )
 
 
 class ReflectionConfig(BaseModel):
@@ -749,7 +773,9 @@ class Config(BaseModel):
         default_factory=_default_user_playbook_extractor_config
     )
     # agent level success
-    agent_success_config: AgentSuccessConfig | None = None
+    agent_success_config: AgentSuccessConfig | None = Field(
+        default_factory=_default_agent_success_config
+    )
     # extraction preset — selects bundled window_size/stride_size values
     extraction_preset: ExtractionPreset | None = None
     # extraction parameters

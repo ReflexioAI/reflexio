@@ -279,6 +279,13 @@ def publish(
             help="Bypass all extraction gates (stride_size, cheap pre-filter, LLM should_run) and always run extractors",
         ),
     ] = False,
+    evaluation_only: Annotated[
+        bool,
+        typer.Option(
+            "--evaluation-only",
+            help="Store for session-level evaluation only and skip profile/playbook extraction",
+        ),
+    ] = False,
     override_learning_stall: Annotated[
         bool,
         typer.Option(
@@ -340,6 +347,7 @@ def publish(
             wait_for_response=wait,
             skip_aggregation=skip_aggregation,
             force_extraction=force_extraction,
+            evaluation_only=evaluation_only,
             override_learning_stall=override_learning_stall,
         )
         if json_mode:
@@ -401,6 +409,7 @@ def publish(
             wait_for_response=wait,
             skip_aggregation=payload.get("skip_aggregation", skip_aggregation),
             force_extraction=payload.get("force_extraction", force_extraction),
+            evaluation_only=payload.get("evaluation_only", evaluation_only),
             override_learning_stall=payload.get(
                 "override_learning_stall", override_learning_stall
             ),
@@ -462,7 +471,7 @@ def search(
 @handle_errors
 def delete(
     ctx: typer.Context,
-    interaction_id: Annotated[str, typer.Option(help="Interaction ID to delete")],
+    interaction_id: Annotated[int, typer.Option(help="Interaction ID to delete")],
     user_id: Annotated[str, typer.Option(help="User ID that owns the interaction")],
 ) -> None:
     """Delete a single interaction by ID."""

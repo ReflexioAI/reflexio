@@ -142,6 +142,7 @@ Apply to all three modes:
 | `--source`          | Free-form source tag (defaults to `cli`).                                |
 | `--skip-aggregation`| Extract profiles/playbooks but skip playbook aggregation.                |
 | `--force-extraction`| Bypass all extraction gates (`stride_size`, cheap pre-filter, LLM `should_run`) and always run extractors. |
+| `--evaluation-only` | Store the request for session-level evaluation only; requires `--session-id` and skips profile/playbook extraction. |
 
 Full options via `uv run reflexio interactions publish --help`.
 

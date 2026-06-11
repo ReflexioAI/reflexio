@@ -4,6 +4,14 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+from reflexio.server.services.storage.sqlite_storage._stall_state import _parse_ts
+
+
+def test_parse_ts_treats_offsetless_timestamp_as_utc():
+    parsed = _parse_ts("2026-06-10T23:47:07.50016")
+
+    assert parsed == datetime(2026, 6, 10, 23, 47, 7, 500160, tzinfo=UTC)
+
 
 def test_default_is_clean(storage):
     """A fresh DB returns stalled=False with all fields default-null."""

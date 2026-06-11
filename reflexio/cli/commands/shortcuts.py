@@ -39,6 +39,7 @@ def _build_publish_args(
     stdin: bool,
     skip_aggregation: bool,
     force_extraction: bool,
+    evaluation_only: bool,
 ) -> list[str]:
     """Assemble the argv the ``interactions publish`` command expects.
 
@@ -61,6 +62,8 @@ def _build_publish_args(
         skip_aggregation: When True, skip post-extract aggregation.
         force_extraction: When True, bypass all extraction gates
             (stride_size, cheap pre-filter, LLM should_run).
+        evaluation_only: When True, store for session-level evaluation
+            only and skip profile/playbook extraction.
 
     Returns:
         list[str]: argv list ready to hand to ``interactions_app(...)``.
@@ -89,6 +92,8 @@ def _build_publish_args(
         args.append("--skip-aggregation")
     if force_extraction:
         args.append("--force-extraction")
+    if evaluation_only:
+        args.append("--evaluation-only")
     return args
 
 
@@ -147,6 +152,13 @@ def register_shortcuts(app: typer.Typer) -> None:
                 help="Bypass all extraction gates (stride_size, cheap pre-filter, LLM should_run) and always run extractors",
             ),
         ] = False,
+        evaluation_only: Annotated[
+            bool,
+            typer.Option(
+                "--evaluation-only",
+                help="Store for session-level evaluation only and skip profile/playbook extraction",
+            ),
+        ] = False,
     ) -> None:
         """Publish interactions (shortcut for: interactions publish)."""
         from reflexio.cli.commands.interactions import app as interactions_app
@@ -164,6 +176,7 @@ def register_shortcuts(app: typer.Typer) -> None:
             stdin=stdin,
             skip_aggregation=skip_aggregation,
             force_extraction=force_extraction,
+            evaluation_only=evaluation_only,
         )
 
         # Propagate context

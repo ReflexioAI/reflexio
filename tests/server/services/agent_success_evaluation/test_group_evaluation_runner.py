@@ -21,6 +21,24 @@ def _make_request(request_id: str, user_id: str, session_id: str) -> Request:
     )
 
 
+def _make_recent_request(
+    request_id: str,
+    user_id: str,
+    session_id: str,
+    *,
+    evaluation_only: bool = False,
+) -> Request:
+    """Create a request too recent to pass completion delay checks."""
+    now = int(datetime.now(UTC).timestamp())
+    return Request(
+        request_id=request_id,
+        user_id=user_id,
+        session_id=session_id,
+        created_at=now,
+        evaluation_only=evaluation_only,
+    )
+
+
 def _make_interaction(request_id: str, user_id: str) -> Interaction:
     """Create an interaction object tied to a request."""
     now = int(datetime.now(UTC).timestamp())
@@ -152,6 +170,45 @@ def test_effective_delay_seconds_symbol_exists() -> None:
         "symbol name in sync if you rename it."
     )
     assert isinstance(group_evaluation_runner._EFFECTIVE_DELAY_SECONDS, int)
+
+
+def test_run_group_evaluation_waits_for_recent_evaluation_only_session() -> None:
+    """Evaluation-only publishes still wait for session inactivity."""
+    org_id = "org_a"
+    user_id = "user_a"
+    session_id = "group_a"
+
+    storage = MagicMock()
+    storage.get_operation_state.return_value = None
+    storage.get_requests_by_session.return_value = [
+        _make_recent_request(
+            "req_1",
+            user_id,
+            session_id,
+            evaluation_only=True,
+        )
+    ]
+
+    request_context = MagicMock()
+    request_context.storage = storage
+    llm_client = MagicMock()
+
+    with patch(
+        "reflexio.server.services.agent_success_evaluation.group_evaluation_runner.AgentSuccessEvaluationService"
+    ) as service_cls:
+        run_group_evaluation(
+            org_id=org_id,
+            user_id=user_id,
+            session_id=session_id,
+            agent_version="1.0.0",
+            source="api",
+            request_context=request_context,
+            llm_client=llm_client,
+        )
+
+    service_cls.assert_not_called()
+    storage.get_interactions_by_request_ids.assert_not_called()
+    storage.upsert_operation_state.assert_not_called()
 
 
 def test_run_group_evaluation_skips_mark_when_nothing_saved() -> None:

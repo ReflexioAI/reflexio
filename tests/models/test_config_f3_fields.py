@@ -4,7 +4,12 @@ documented defaults."""
 import pytest
 from pydantic import ValidationError
 
-from reflexio.models.config_schema import Config, StorageConfigSQLite
+from reflexio.models.config_schema import (
+    DEFAULT_AGENT_SUCCESS_DEFINITION_PROMPT,
+    DEFAULT_AGENT_SUCCESS_SAMPLING_RATE,
+    Config,
+    StorageConfigSQLite,
+)
 
 
 def _minimal_config(**overrides) -> Config:
@@ -19,6 +24,24 @@ def test_eval_sample_n_per_stratum_defaults_to_200():
 def test_eval_concurrency_limit_defaults_to_10():
     c = _minimal_config()
     assert c.eval_concurrency_limit == 10
+
+
+def test_agent_success_evaluation_defaults_on_at_five_percent():
+    c = _minimal_config()
+
+    assert c.agent_success_config is not None
+    assert c.agent_success_config.sampling_rate == DEFAULT_AGENT_SUCCESS_SAMPLING_RATE
+    assert c.agent_success_config.sampling_rate == 0.05
+    assert (
+        c.agent_success_config.success_definition_prompt
+        == DEFAULT_AGENT_SUCCESS_DEFINITION_PROMPT
+    )
+
+
+def test_agent_success_evaluation_can_be_disabled_explicitly():
+    c = _minimal_config(agent_success_config=None)
+
+    assert c.agent_success_config is None
 
 
 def test_eval_sample_n_per_stratum_must_be_positive():
