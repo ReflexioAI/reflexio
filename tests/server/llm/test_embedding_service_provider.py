@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+from contextlib import contextmanager
 from unittest.mock import patch
 
 import httpx
@@ -17,6 +19,32 @@ from reflexio.server.llm.providers.embedding_service_provider import (
     embedding_service_timeout_seconds,
     get_service_embeddings,
 )
+from reflexio.server.tracing import configure_tracer
+
+
+class _UnreachableHttpClient:
+    """Stands in for the shared client when the daemon is down."""
+
+    def get(self, *_args, **_kwargs):
+        raise httpx.RequestError("connection refused")
+
+
+class _RecordingSpan:
+    def __init__(self) -> None:
+        self.data: dict[str, object] = {}
+
+    def set_data(self, key: str, value: object) -> None:
+        self.data[key] = value
+
+
+class _RecordingTracer:
+    def __init__(self) -> None:
+        self.started: list[tuple[str, dict[str, object]]] = []
+
+    @contextmanager
+    def span(self, name: str, **data: object):
+        self.started.append((name, data))
+        yield _RecordingSpan()
 
 
 def test_claude_smart_legacy_flag_defaults_to_local_service(monkeypatch) -> None:
@@ -40,13 +68,7 @@ def test_local_model_without_opt_in_preserves_inprocess_mode(monkeypatch) -> Non
     monkeypatch.delenv("REFLEXIO_EMBEDDING_SERVICE_URL", raising=False)
     monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_EMBEDDING", raising=False)
     monkeypatch.setattr(esp, "_local_service_probe_cache", None)
-    monkeypatch.setattr(
-        esp.httpx,
-        "get",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            httpx.RequestError("connection refused")
-        ),
-    )
+    monkeypatch.setattr(esp, "_http_client", lambda: _UnreachableHttpClient())
 
     assert embedding_provider_mode("local/minilm-l6-v2") == "inprocess"
 
@@ -58,11 +80,15 @@ def test_local_model_auto_uses_reachable_matching_daemon(monkeypatch) -> None:
         def json(self) -> dict[str, str]:
             return {"active_model": "local/nomic-embed-text-v1.5"}
 
+    class _Client:
+        def get(self, *_args, **_kwargs) -> _HealthResponse:
+            return _HealthResponse()
+
     monkeypatch.delenv("REFLEXIO_EMBEDDING_PROVIDER", raising=False)
     monkeypatch.delenv("REFLEXIO_EMBEDDING_SERVICE_URL", raising=False)
     monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_EMBEDDING", raising=False)
     monkeypatch.setattr(esp, "_local_service_probe_cache", None)
-    monkeypatch.setattr(esp.httpx, "get", lambda *_args, **_kwargs: _HealthResponse())
+    monkeypatch.setattr(esp, "_http_client", lambda: _Client())
 
     assert embedding_provider_mode("local/nomic-embed-text-v1.5") == "local_service"
 
@@ -74,11 +100,15 @@ def test_local_model_auto_avoids_reachable_mismatched_daemon(monkeypatch) -> Non
         def json(self) -> dict[str, str]:
             return {"active_model": "local/nomic-embed-text-v1.5"}
 
+    class _Client:
+        def get(self, *_args, **_kwargs) -> _HealthResponse:
+            return _HealthResponse()
+
     monkeypatch.delenv("REFLEXIO_EMBEDDING_PROVIDER", raising=False)
     monkeypatch.delenv("REFLEXIO_EMBEDDING_SERVICE_URL", raising=False)
     monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_EMBEDDING", raising=False)
     monkeypatch.setattr(esp, "_local_service_probe_cache", None)
-    monkeypatch.setattr(esp.httpx, "get", lambda *_args, **_kwargs: _HealthResponse())
+    monkeypatch.setattr(esp, "_http_client", lambda: _Client())
 
     assert embedding_provider_mode("local/minilm-l6-v2") == "inprocess"
 
@@ -92,19 +122,52 @@ def test_local_service_probe_timeout_env_is_honored(monkeypatch) -> None:
 
     observed: dict[str, float] = {}
 
-    def _get(_url: str, *, timeout: float) -> _HealthResponse:
-        observed["timeout"] = timeout
-        return _HealthResponse()
+    class _Client:
+        def get(self, _url: str, *, timeout: float) -> _HealthResponse:
+            observed["timeout"] = timeout
+            return _HealthResponse()
 
     monkeypatch.delenv("REFLEXIO_EMBEDDING_PROVIDER", raising=False)
     monkeypatch.delenv("REFLEXIO_EMBEDDING_SERVICE_URL", raising=False)
     monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_EMBEDDING", raising=False)
     monkeypatch.setenv("REFLEXIO_EMBEDDING_LOCAL_SERVICE_PROBE_TIMEOUT_MS", "1250")
     monkeypatch.setattr(esp, "_local_service_probe_cache", None)
-    monkeypatch.setattr(esp.httpx, "get", _get)
+    monkeypatch.setattr(esp, "_http_client", lambda: _Client())
 
     assert embedding_provider_mode("local/nomic-embed-text-v1.5") == "local_service"
     assert observed["timeout"] == 1.25
+
+
+def test_probe_success_cache_outlives_failure_cache(monkeypatch) -> None:
+    """A cached success skips the /health round trip for up to 60s; a cached
+    failure is retried after 5s so a restarted daemon is re-adopted quickly.
+    """
+
+    class _HealthResponse:
+        status_code = 200
+
+        def json(self) -> dict[str, str]:
+            return {"active_model": "local/m"}
+
+    probes = {"n": 0}
+
+    class _Client:
+        def get(self, *_args, **_kwargs) -> _HealthResponse:
+            probes["n"] += 1
+            return _HealthResponse()
+
+    monkeypatch.setattr(esp, "_http_client", lambda: _Client())
+
+    now = time.monotonic()
+    # A 30s-old success is still fresh under the 60s success TTL: no probe.
+    monkeypatch.setattr(esp, "_local_service_probe_cache", (now - 30, True, "local/m"))
+    assert esp._local_service_status() == (True, "local/m")
+    assert probes["n"] == 0
+
+    # A 30s-old failure has outlived the 5s failure TTL: re-probe.
+    monkeypatch.setattr(esp, "_local_service_probe_cache", (now - 30, False, None))
+    assert esp._local_service_status() == (True, "local/m")
+    assert probes["n"] == 1
 
 
 def test_local_service_default_timeout_allows_cold_start(monkeypatch) -> None:
@@ -166,27 +229,15 @@ def test_service_response_is_sorted_by_index(monkeypatch) -> None:
             }
 
     class _Client:
-        def __init__(self, timeout: float) -> None:
-            assert timeout == 30
-            self.timeout = timeout
-
-        def __enter__(self) -> _Client:
-            return self
-
-        def __exit__(self, *args) -> None:
-            return None
-
-        def post(self, url: str, json: dict) -> _Response:  # noqa: A002
+        def post(self, url: str, *, json: dict, timeout: float) -> _Response:  # noqa: A002
             assert url == "http://127.0.0.1:8072/v1/embeddings"
             assert json["model"] == "local/nomic-embed-v1.5"
+            assert timeout == 30
             return _Response()
 
     monkeypatch.setenv("REFLEXIO_EMBEDDING_PROVIDER", "local_service")
     monkeypatch.delenv("REFLEXIO_EMBEDDING_SERVICE_URL", raising=False)
-    monkeypatch.setattr(
-        "reflexio.server.llm.providers.embedding_service_provider.httpx.Client",
-        _Client,
-    )
+    monkeypatch.setattr(esp, "_http_client", lambda: _Client())
 
     assert get_service_embeddings(["a", "b"], model="local/nomic-embed-v1.5") == [
         [0.1, 0.2],
@@ -203,16 +254,7 @@ def test_local_service_daemon_host_override_changes_url(monkeypatch) -> None:
             return {"data": [{"index": 0, "embedding": [0.1, 0.2]}]}
 
     class _Client:
-        def __init__(self, timeout: float) -> None:
-            self.timeout = timeout
-
-        def __enter__(self) -> _Client:
-            return self
-
-        def __exit__(self, *args) -> None:
-            return None
-
-        def post(self, url: str, json: dict) -> _Response:  # noqa: A002
+        def post(self, url: str, *, json: dict, timeout: float) -> _Response:  # noqa: A002, ARG002
             assert url == "http://embedding.internal:8072/v1/embeddings"
             assert json["model"] == "local/nomic-embed-v1.5"
             return _Response()
@@ -220,10 +262,7 @@ def test_local_service_daemon_host_override_changes_url(monkeypatch) -> None:
     monkeypatch.setenv("REFLEXIO_EMBEDDING_PROVIDER", "local_service")
     monkeypatch.setenv("REFLEXIO_EMBEDDING_DAEMON_HOST", "embedding.internal")
     monkeypatch.delenv("REFLEXIO_EMBEDDING_SERVICE_URL", raising=False)
-    monkeypatch.setattr(
-        "reflexio.server.llm.providers.embedding_service_provider.httpx.Client",
-        _Client,
-    )
+    monkeypatch.setattr(esp, "_http_client", lambda: _Client())
 
     assert get_service_embeddings(["a"], model="local/nomic-embed-v1.5") == [[0.1, 0.2]]
 
@@ -242,27 +281,49 @@ def test_service_response_rejects_index_mismatch(monkeypatch) -> None:
             }
 
     class _Client:
-        def __init__(self, timeout: float) -> None:
-            self.timeout = timeout
-
-        def __enter__(self) -> _Client:
-            return self
-
-        def __exit__(self, *args) -> None:
-            return None
-
-        def post(self, url: str, json: dict) -> _Response:  # noqa: A002, ARG002
+        def post(self, url: str, *, json: dict, timeout: float) -> _Response:  # noqa: A002, ARG002
             return _Response()
 
     monkeypatch.setenv("REFLEXIO_EMBEDDING_PROVIDER", "local_service")
     monkeypatch.delenv("REFLEXIO_EMBEDDING_SERVICE_URL", raising=False)
-    monkeypatch.setattr(
-        "reflexio.server.llm.providers.embedding_service_provider.httpx.Client",
-        _Client,
-    )
+    monkeypatch.setattr(esp, "_http_client", lambda: _Client())
 
     with pytest.raises(EmbeddingUnavailableError, match="duplicate index 1"):
         get_service_embeddings(["a", "b"], model="local/nomic-embed-v1.5")
+
+
+def test_shared_client_is_constructed_once_and_reused(monkeypatch) -> None:
+    """`_http_client` must hand back one keep-alive client across calls so
+    embedding requests stop paying DNS + TCP setup per call.
+    """
+    constructed = {"n": 0}
+
+    class _Response:
+        @staticmethod
+        def raise_for_status() -> None:
+            return None
+
+        @staticmethod
+        def json() -> dict:
+            return {"data": [{"index": 0, "embedding": [0.1]}]}
+
+    class _Client:
+        def __init__(self, **_kwargs) -> None:
+            constructed["n"] += 1
+
+        def post(self, _url, *, json, timeout):  # noqa: A002, ARG002
+            return _Response()
+
+    monkeypatch.setenv("REFLEXIO_EMBEDDING_PROVIDER", "local_service")
+    monkeypatch.delenv("REFLEXIO_EMBEDDING_SERVICE_URL", raising=False)
+    monkeypatch.setattr(esp.httpx, "Client", _Client)
+    monkeypatch.setattr(esp, "_http_client_instance", None)
+    monkeypatch.setattr(esp, "_http_client_pid", None)
+
+    get_service_embeddings(["a"], model="local/nomic-embed-v1.5")
+    get_service_embeddings(["b"], model="local/nomic-embed-v1.5")
+
+    assert constructed["n"] == 1
 
 
 class TestEmbeddingServiceExceptionScope:
@@ -287,32 +348,32 @@ class TestEmbeddingServiceExceptionScope:
         monkeypatch.setenv("REFLEXIO_EMBEDDING_PROVIDER", "local_service")
         monkeypatch.delenv("REFLEXIO_EMBEDDING_SERVICE_URL", raising=False)
 
+    @staticmethod
+    def _install_posting_client(monkeypatch, post) -> dict[str, int]:
+        """Route ``_http_client`` to a fake whose ``post`` calls ``post`` after
+        bumping a shared call counter; returns the counter dict.
+        """
+        call_count = {"n": 0}
+
+        class _Client:
+            def post(self, *_a, **_k):
+                call_count["n"] += 1
+                return post()
+
+        monkeypatch.setattr(esp, "_http_client", lambda: _Client())
+        return call_count
+
     def test_programming_bug_propagates_raw_without_retry(self, monkeypatch) -> None:
         """An ``AttributeError`` inside the call body must propagate raw on
         the first attempt — not be caught, retried, and re-wrapped as
         ``EmbeddingUnavailableError``.
         """
         self._route_to_local_service(monkeypatch)
-        call_count = {"n": 0}
 
-        class _BrokenClient:
-            def __init__(self, timeout: float) -> None:
-                self.timeout = timeout
+        def _post():
+            raise AttributeError("simulated programming bug")
 
-            def __enter__(self) -> _BrokenClient:
-                return self
-
-            def __exit__(self, *_args) -> None:
-                return None
-
-            def post(self, *_a, **_k):
-                call_count["n"] += 1
-                raise AttributeError("simulated programming bug")
-
-        monkeypatch.setattr(
-            "reflexio.server.llm.providers.embedding_service_provider.httpx.Client",
-            _BrokenClient,
-        )
+        call_count = self._install_posting_client(monkeypatch, _post)
 
         with pytest.raises(AttributeError, match="simulated programming bug"):
             get_service_embeddings(["text"], model="local/nomic-embed-v1.5")
@@ -323,30 +384,65 @@ class TestEmbeddingServiceExceptionScope:
         server) retries once, then surfaces as ``EmbeddingUnavailableError``.
         """
         self._route_to_local_service(monkeypatch)
-        call_count = {"n": 0}
 
-        class _FlakyClient:
-            def __init__(self, timeout: float) -> None:
-                self.timeout = timeout
+        def _post():
+            raise httpx.ConnectError("connection refused")
 
-            def __enter__(self) -> _FlakyClient:
-                return self
-
-            def __exit__(self, *_args) -> None:
-                return None
-
-            def post(self, *_a, **_k):
-                call_count["n"] += 1
-                raise httpx.ConnectError("connection refused")
-
-        monkeypatch.setattr(
-            "reflexio.server.llm.providers.embedding_service_provider.httpx.Client",
-            _FlakyClient,
-        )
+        call_count = self._install_posting_client(monkeypatch, _post)
 
         with pytest.raises(EmbeddingUnavailableError):
             get_service_embeddings(["text"], model="local/nomic-embed-v1.5")
         assert call_count["n"] == 2, "connection error must retry once"
+
+    def test_retry_backoff_is_traced(self, monkeypatch) -> None:
+        """Retry backoff should be visible as a child search span so the
+        parent embedding API span does not contain unexplained latency.
+        """
+        self._route_to_local_service(monkeypatch)
+
+        def _post():
+            raise httpx.ConnectError("connection refused")
+
+        self._install_posting_client(monkeypatch, _post)
+        slept: list[float] = []
+        monkeypatch.setattr(esp.time, "sleep", slept.append)
+
+        tracer = _RecordingTracer()
+        configure_tracer(tracer)
+        try:
+            with pytest.raises(EmbeddingUnavailableError):
+                get_service_embeddings(["text"], model="local/nomic-embed-v1.5")
+        finally:
+            configure_tracer(None)
+
+        assert slept == [esp._EMBEDDING_RETRY_BACKOFF_SECONDS]
+        assert tracer.started == [
+            (
+                "search.embedding.api.retry_backoff",
+                {
+                    "retry_reason": "ConnectError",
+                    "retry_backoff_ms": 100,
+                    "attempt": 1,
+                    "max_attempts": 2,
+                },
+            )
+        ]
+
+    def test_remote_protocol_error_retries_once(self, monkeypatch) -> None:
+        """The server closing a pooled keep-alive connection before sending a
+        response (stale-reuse race) means the request was not processed, so a
+        single retry is safe.
+        """
+        self._route_to_local_service(monkeypatch)
+
+        def _post():
+            raise httpx.RemoteProtocolError("Server disconnected")
+
+        call_count = self._install_posting_client(monkeypatch, _post)
+
+        with pytest.raises(EmbeddingUnavailableError):
+            get_service_embeddings(["text"], model="local/nomic-embed-v1.5")
+        assert call_count["n"] == 2, "stale keep-alive disconnect must retry once"
 
     def test_read_timeout_does_not_retry(self, monkeypatch) -> None:
         """A read timeout means the server already received the request and may
@@ -354,26 +450,11 @@ class TestEmbeddingServiceExceptionScope:
         amplify load on a saturated daemon, so it must fail fast (one call).
         """
         self._route_to_local_service(monkeypatch)
-        call_count = {"n": 0}
 
-        class _SlowClient:
-            def __init__(self, timeout: float) -> None:
-                self.timeout = timeout
+        def _post():
+            raise httpx.ReadTimeout("timed out")
 
-            def __enter__(self) -> _SlowClient:
-                return self
-
-            def __exit__(self, *_args) -> None:
-                return None
-
-            def post(self, *_a, **_k):
-                call_count["n"] += 1
-                raise httpx.ReadTimeout("timed out")
-
-        monkeypatch.setattr(
-            "reflexio.server.llm.providers.embedding_service_provider.httpx.Client",
-            _SlowClient,
-        )
+        call_count = self._install_posting_client(monkeypatch, _post)
 
         with pytest.raises(EmbeddingUnavailableError):
             get_service_embeddings(["text"], model="local/nomic-embed-v1.5")
@@ -415,16 +496,7 @@ class TestRequestChunking:
                 }
 
         class _Client:
-            def __init__(self, timeout: float) -> None:
-                self.timeout = timeout
-
-            def __enter__(self) -> _Client:
-                return self
-
-            def __exit__(self, *_args) -> None:
-                return None
-
-            def post(self, _url, *, json):
+            def post(self, _url, *, json, timeout):  # noqa: A002, ARG002
                 payloads.append(json)
                 return _Response()
 
@@ -436,10 +508,8 @@ class TestRequestChunking:
         self._route_to_local_service(monkeypatch)
         monkeypatch.setenv("REFLEXIO_EMBEDDING_SERVICE_MAX_TEXTS_PER_REQUEST", "2")
         payloads: list[dict] = []
-        monkeypatch.setattr(
-            "reflexio.server.llm.providers.embedding_service_provider.httpx.Client",
-            self._client_recording_payloads(payloads),
-        )
+        client_cls = self._client_recording_payloads(payloads)
+        monkeypatch.setattr(esp, "_http_client", lambda: client_cls())
 
         result = get_service_embeddings(
             ["t0", "t1", "t2", "t3", "t4"], model="local/nomic-embed-v1.5"
@@ -458,15 +528,12 @@ class TestRequestChunking:
         good_client = self._client_recording_payloads(payloads)
 
         class _FailsOnSecondChunk(good_client):
-            def post(self, _url, *, json):
+            def post(self, _url, *, json, timeout):  # noqa: A002
                 if len(payloads) >= 1:
                     raise httpx.ReadTimeout("timed out")
-                return super().post(_url, json=json)
+                return super().post(_url, json=json, timeout=timeout)
 
-        monkeypatch.setattr(
-            "reflexio.server.llm.providers.embedding_service_provider.httpx.Client",
-            _FailsOnSecondChunk,
-        )
+        monkeypatch.setattr(esp, "_http_client", lambda: _FailsOnSecondChunk())
 
         with pytest.raises(EmbeddingUnavailableError):
             get_service_embeddings(["t0", "t1", "t2"], model="local/nomic-embed-v1.5")
@@ -499,13 +566,7 @@ def test_nomic_inprocess_fallback_uses_nomic_embedder(monkeypatch) -> None:
     monkeypatch.delenv("REFLEXIO_EMBEDDING_SERVICE_URL", raising=False)
     monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_EMBEDDING", raising=False)
     monkeypatch.setattr(esp, "_local_service_probe_cache", None)
-    monkeypatch.setattr(
-        esp.httpx,
-        "get",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            httpx.RequestError("connection refused")
-        ),
-    )
+    monkeypatch.setattr(esp, "_http_client", lambda: _UnreachableHttpClient())
     monkeypatch.setattr(
         "reflexio.server.llm.litellm_client.NomicEmbedder",
         _NomicFactory,
@@ -538,13 +599,7 @@ def test_nomic_inprocess_fallback_does_not_use_minilm(monkeypatch) -> None:
     monkeypatch.delenv("REFLEXIO_EMBEDDING_SERVICE_URL", raising=False)
     monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_EMBEDDING", raising=False)
     monkeypatch.setattr(esp, "_local_service_probe_cache", None)
-    monkeypatch.setattr(
-        esp.httpx,
-        "get",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            httpx.RequestError("connection refused")
-        ),
-    )
+    monkeypatch.setattr(esp, "_http_client", lambda: _UnreachableHttpClient())
     monkeypatch.setattr(
         "reflexio.server.llm.litellm_client.NomicEmbedder",
         _NomicFactory,

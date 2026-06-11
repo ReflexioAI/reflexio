@@ -11,10 +11,13 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import time
 from typing import Any, Literal
 
 import httpx
+
+from reflexio.server.tracing import profile_step
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -41,10 +44,22 @@ _DEFAULT_LOCAL_SERVICE_PROBE_TIMEOUT_MS = 200
 # daemon. Cap texts per request and concatenate; encode batching is a separate
 # server-side knob (REFLEXIO_EMBED_BATCH_SIZE).
 _DEFAULT_MAX_TEXTS_PER_REQUEST = 32
-_LOCAL_SERVICE_PROBE_CACHE_SECONDS = 5.0
+# A reachable daemon is stable, so positive probe results are cached long
+# enough that steady-state requests skip the sequential /health round trip.
+# Failures stay short-lived so a restarted daemon is re-adopted quickly and
+# the inprocess-fallback window stays small.
+_LOCAL_SERVICE_PROBE_CACHE_SECONDS = 60.0
+_LOCAL_SERVICE_PROBE_FAILURE_CACHE_SECONDS = 5.0
+# Keep-alive must expire below the ALB's default 60s idle timeout so the pool
+# never hands out a connection the load balancer already closed.
+_HTTP_KEEPALIVE_EXPIRY_SECONDS = 50.0
+_EMBEDDING_RETRY_BACKOFF_SECONDS = 0.1
 _SERVICE_MODES = {"local_service", "internal_service"}
 _VALID_MODES = {"cloud", *_SERVICE_MODES, "inprocess", "off"}
 _local_service_probe_cache: tuple[float, bool, str | None] | None = None
+_http_client_lock = threading.Lock()
+_http_client_instance: httpx.Client | None = None
+_http_client_pid: int | None = None
 
 
 class EmbeddingUnavailableError(RuntimeError):
@@ -113,17 +128,39 @@ def _is_local_model(model: str | None) -> bool:
     return bool(model and model.startswith("local/"))
 
 
+def _http_client() -> httpx.Client:
+    """Shared keep-alive client for health probes and embedding POSTs.
+
+    A per-request client pays DNS resolution plus a TCP handshake on every
+    embedding call. The client is recreated after fork (PID check) so worker
+    children never reuse sockets inherited from the parent process.
+    """
+    global _http_client_instance, _http_client_pid
+    pid = os.getpid()
+    with _http_client_lock:
+        if _http_client_instance is None or _http_client_pid != pid:
+            _http_client_instance = httpx.Client(
+                limits=httpx.Limits(keepalive_expiry=_HTTP_KEEPALIVE_EXPIRY_SECONDS)
+            )
+            _http_client_pid = pid
+        return _http_client_instance
+
+
 def _local_service_status() -> tuple[bool, str | None]:
     global _local_service_probe_cache
     now = time.monotonic()
-    if (
-        _local_service_probe_cache is not None
-        and now - _local_service_probe_cache[0] < _LOCAL_SERVICE_PROBE_CACHE_SECONDS
-    ):
-        return _local_service_probe_cache[1], _local_service_probe_cache[2]
+    if _local_service_probe_cache is not None:
+        cached_at, cached_reachable, cached_model = _local_service_probe_cache
+        ttl = (
+            _LOCAL_SERVICE_PROBE_CACHE_SECONDS
+            if cached_reachable
+            else _LOCAL_SERVICE_PROBE_FAILURE_CACHE_SECONDS
+        )
+        if now - cached_at < ttl:
+            return cached_reachable, cached_model
 
     try:
-        response = httpx.get(
+        response = _http_client().get(
             f"{_local_service_url()}/health",
             timeout=_local_service_probe_timeout_seconds(),
         )
@@ -286,17 +323,29 @@ def _post_embedding_batch(
     last_error: Exception | None = None
     for attempt in range(2):
         try:
-            with httpx.Client(timeout=timeout) as client:
-                response = client.post(url, json=payload)
+            response = _http_client().post(url, json=payload, timeout=timeout)
             response.raise_for_status()
             body = response.json()
             return _ordered_embeddings_from_response(body.get("data"), len(texts))
-        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
-            # Connection never established — the request never reached the
-            # server, so a single retry is safe and cannot duplicate work.
+        except (
+            httpx.ConnectError,
+            httpx.ConnectTimeout,
+            httpx.RemoteProtocolError,
+        ) as exc:
+            # Connection never established, or the server closed a pooled
+            # keep-alive connection before sending a response (stale-reuse
+            # race) — the request was not processed, so a single retry is
+            # safe and cannot duplicate work.
             last_error = exc
             if attempt == 0:
-                time.sleep(0.1)
+                with profile_step(
+                    "search.embedding.api.retry_backoff",
+                    retry_reason=type(exc).__name__,
+                    retry_backoff_ms=int(_EMBEDDING_RETRY_BACKOFF_SECONDS * 1000),
+                    attempt=attempt + 1,
+                    max_attempts=2,
+                ):
+                    time.sleep(_EMBEDDING_RETRY_BACKOFF_SECONDS)
         except (httpx.HTTPError, json.JSONDecodeError, ValueError) as exc:
             # The server already received the request: a read timeout means it
             # is still encoding, and retrying would queue a second identical
