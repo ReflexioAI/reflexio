@@ -403,11 +403,9 @@ DEFAULT_AGENT_SUCCESS_DEFINITION_PROMPT = (
     "Mark the session successful when, by the end of the conversation, the agent:\n"
     "1. Identified and addressed the user's main goal or question.\n"
     "2. Provided a correct, useful, and actionable response or completed the requested action.\n"
-    "3. Handled necessary clarification, tool use, or limitations transparently.\n"
-    "4. Left the user with a resolved issue, clear next step, or appropriate escalation.\n\n"
     "Mark the session unsuccessful when the agent failed to understand the request,\n"
     "gave incorrect or unhelpful guidance, did not complete an available action,\n"
-    "ignored important constraints, or left the user without a useful path forward."
+    "ignored important constraints, or left the user unsatisfied."
 )
 
 
