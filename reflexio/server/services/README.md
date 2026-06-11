@@ -15,6 +15,8 @@ Description: Core business-logic layer — LLM orchestration, extraction, evalua
 | `extractor_config_utils.py`, `extractor_interaction_utils.py` | Filter extractors by source / `allow_manual_trigger` / names; per-extractor stride + window + bookmark handling. |
 | `deduplication_utils.py`, `service_utils.py`, `embedding_text.py` | LLM dedup helpers (used by `ProfileDeduplicator` + `PlaybookConsolidator`), message construction / JSON extraction / response logging, embedding text builders. |
 
+Usage metering stays OSS-safe: `generation_service.py` and search endpoints call root-level `server/billing_meter.py` helpers, `server/billing_signals.py` owns canonical input-token counts and platform-LLM detection, and extraction actors expose per-run totals via `server/llm/token_accounting.py`.
+
 ## Generation Services
 
 | Directory | Entry class | Key files |
@@ -55,4 +57,5 @@ Description: Core business-logic layer — LLM orchestration, extraction, evalua
 - **NEVER import storage implementations directly** — use `request_context.storage` (`BaseStorage`).
 - **ALWAYS use `LiteLLMClient`** for completions/embeddings and `request_context.prompt_manager.render_prompt(...)` for prompts — no hardcoded prompts, no direct OpenAI/Claude clients.
 - **All `_operation_state` writes go through `OperationStateManager`** — don't touch the table directly (it backs locks, bookmarks, progress, and cancellation).
+- **Billing usage events go through `server/billing_meter.py`/`server/billing_signals.py`** — do not import enterprise billing types into OSS services.
 - **`tool_can_use` lives at root `Config`** — shared by playbook extraction and success evaluation, not per-service.

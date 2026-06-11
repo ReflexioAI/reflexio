@@ -34,6 +34,7 @@ Description: FastAPI backend server that processes user interactions to generate
 - **API**: `api.py` - FastAPI routes (only place to expose endpoints)
 - **Endpoint Helpers**: `api_endpoints/` - Bridge between routes and business logic
 - **Core Service**: `services/generation_service.py` - Main orchestrator
+- **Auth/Billing Hooks**: `_auth.py`, `billing_meter.py`, `billing_signals.py`, `usage_metrics.py` - OSS-safe dependency hooks and usage-event emission points for enterprise overrides
 
 ## Cache
 
@@ -90,12 +91,16 @@ Description: FastAPI backend server that processes user interactions to generate
 
 Key files:
 - `litellm_client.py`: Unified LiteLLMClient using LiteLLM for multi-provider support
+- `embedding_service.py`: OpenAI-compatible local embedding daemon (`/v1/embeddings`) with bounded concurrency and micro-batching
+- `providers/embedding_service_provider.py`: Client-side provider for the local/internal embedding service
+- `token_accounting.py`: Dependency-free per-run token totals for extraction billing signals
 - `openai_client.py`: OpenAI implementation (legacy, do not use directly)
 - `claude_client.py`: Claude implementation (legacy, do not use directly)
 - `llm_utils.py`: Helper functions for Pydantic model conversion
 
 **Features**:
 - Uses LiteLLM for multi-provider support (OpenAI, Claude, Azure, OpenRouter, Gemini, custom endpoints, etc.)
+- Local embedding service supports `local/minilm-l6-v2`, `local/nomic-embed-v1.5`, and `local/nomic-embed-text-v1.5`; tune encode concurrency with `REFLEXIO_EMBED_MAX_CONCURRENCY` and burst batching with `REFLEXIO_EMBED_MICRO_BATCH_*`
 - **Custom endpoint support**: `CustomEndpointConfig` (model, api_key, api_base) takes priority over all other providers for LLM completion calls when configured with non-empty fields (but not embeddings)
 - **Gemini support**: Model names with `gemini/` prefix route through Google Gemini; API key from `api_key_config.gemini`
 - **OpenRouter support**: Model names with `openrouter/` prefix (e.g., `openrouter/openai/gpt-5-nano`) route through OpenRouter; API key from `api_key_config.openrouter`
