@@ -409,9 +409,15 @@ def _run_phase_b_single_rpc(
         if allowed_agent_statuses
         else list(_DEFAULT_AGENT_PLAYBOOK_STATUSES)
     )
+    # Resolve storage.unified_hybrid_search before submit so missing or stale
+    # capability flags can fall back to the fan-out path.
+    unified_hybrid_search = getattr(storage, "unified_hybrid_search", None)
+    if not callable(unified_hybrid_search):
+        return None
+
     future = _submit_with_current_context(
         _SEARCH_FANOUT_EXECUTOR,
-        storage.unified_hybrid_search,  # type: ignore[reportAttributeAccessIssue]
+        unified_hybrid_search,
         query=query,
         query_embedding=embedding,
         top_k=top_k,

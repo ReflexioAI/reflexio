@@ -54,6 +54,26 @@ class _CombinedStorage:
         return []
 
 
+class _MissingCombinedMethodStorage:
+    supports_embedding = True
+    supports_unified_hybrid_search = True
+
+    def __init__(self) -> None:
+        self.fanout_calls: list[str] = []
+
+    def search_user_profile(self, *_args: Any, **_kwargs: Any) -> list[Any]:
+        self.fanout_calls.append("profiles")
+        return []
+
+    def search_agent_playbooks(self, *_args: Any, **_kwargs: Any) -> list[Any]:
+        self.fanout_calls.append("agent_playbooks")
+        return []
+
+    def search_user_playbooks(self, *_args: Any, **_kwargs: Any) -> list[Any]:
+        self.fanout_calls.append("user_playbooks")
+        return []
+
+
 def _run_phase_b(storage: _CombinedStorage, *, user_id: str | None = "u"):
     return uss._run_phase_b(
         request=UnifiedSearchRequest(query="q", user_id=user_id, top_k=5),
@@ -68,7 +88,11 @@ def _run_phase_b(storage: _CombinedStorage, *, user_id: str | None = "u"):
 
 def test_single_rpc_used_when_supported(monkeypatch):
     monkeypatch.delenv("REFLEXIO_UNIFIED_SEARCH_SINGLE_RPC", raising=False)
-    playbooks = [_agent_playbook(1, "a"), _agent_playbook(1, "dup"), _agent_playbook(2, "b")]
+    playbooks = [
+        _agent_playbook(1, "a"),
+        _agent_playbook(1, "dup"),
+        _agent_playbook(2, "b"),
+    ]
     user_playbooks = [UserPlaybook(agent_version="v1", request_id="r1", content="up")]
     storage = _CombinedStorage(result=([], playbooks, user_playbooks))
 
@@ -107,6 +131,28 @@ def test_single_rpc_failure_falls_back_to_fanout(monkeypatch):
     profiles, agent_playbooks, user_playbooks = _run_phase_b(storage)
 
     assert len(storage.combined_calls) == 1
+    assert set(storage.fanout_calls) == {
+        "profiles",
+        "agent_playbooks",
+        "user_playbooks",
+    }
+    assert (profiles, agent_playbooks, user_playbooks) == ([], [], [])
+
+
+def test_single_rpc_missing_callable_falls_back_to_fanout(monkeypatch):
+    monkeypatch.delenv("REFLEXIO_UNIFIED_SEARCH_SINGLE_RPC", raising=False)
+    storage = _MissingCombinedMethodStorage()
+
+    profiles, agent_playbooks, user_playbooks = uss._run_phase_b(
+        request=UnifiedSearchRequest(query="q", user_id="u", top_k=5),
+        org_id="o",
+        storage=cast(BaseStorage, storage),
+        embedding=[0.1, 0.2],
+        query="q",
+        top_k=5,
+        threshold=0.3,
+    )
+
     assert set(storage.fanout_calls) == {
         "profiles",
         "agent_playbooks",

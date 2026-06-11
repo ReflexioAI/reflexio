@@ -326,6 +326,32 @@ def test_shared_client_is_constructed_once_and_reused(monkeypatch) -> None:
     assert constructed["n"] == 1
 
 
+def test_shared_client_closes_stale_client_after_pid_change(monkeypatch) -> None:
+    clients = []
+    pid = {"value": 100}
+
+    class _Client:
+        def __init__(self, **_kwargs) -> None:
+            self.closed = False
+            clients.append(self)
+
+        def close(self) -> None:
+            self.closed = True
+
+    monkeypatch.setattr(esp.httpx, "Client", _Client)
+    monkeypatch.setattr(esp.os, "getpid", lambda: pid["value"])
+    monkeypatch.setattr(esp, "_http_client_instance", None)
+    monkeypatch.setattr(esp, "_http_client_pid", None)
+
+    first = esp._http_client()
+    pid["value"] = 200
+    second = esp._http_client()
+
+    assert first is clients[0]
+    assert second is clients[1]
+    assert clients[0].closed is True
+
+
 class TestEmbeddingServiceExceptionScope:
     """Narrow exception scope: real transient errors retry, programming bugs propagate raw.
 

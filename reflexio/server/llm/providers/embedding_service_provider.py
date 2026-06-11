@@ -139,6 +139,13 @@ def _http_client() -> httpx.Client:
     pid = os.getpid()
     with _http_client_lock:
         if _http_client_instance is None or _http_client_pid != pid:
+            if _http_client_instance is not None and _http_client_pid != pid:
+                try:
+                    _http_client_instance.close()
+                except Exception:
+                    _LOGGER.debug(
+                        "Failed to close stale embedding HTTP client", exc_info=True
+                    )
             _http_client_instance = httpx.Client(
                 limits=httpx.Limits(keepalive_expiry=_HTTP_KEEPALIVE_EXPIRY_SECONDS)
             )
