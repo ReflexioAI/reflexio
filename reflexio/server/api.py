@@ -2987,9 +2987,9 @@ def create_app(
     # the same sentinel object is returned for the same line — which is why
     # the overrides reliably fire at request time.
     if get_billing_gate is not None:
-        for _line in ("application", "learnings_generated"):
-            app.dependency_overrides[default_billing_gate(_line)] = get_billing_gate(
-                _line
+        for line in ("application", "learnings_generated"):
+            app.dependency_overrides[default_billing_gate(line)] = get_billing_gate(
+                line
             )
 
     # When a custom get_org_id is provided together with require_auth,

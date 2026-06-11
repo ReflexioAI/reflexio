@@ -38,8 +38,12 @@ def _make_user_playbook_view() -> UserPlaybookView:
     return UserPlaybookView(agent_version="v1", request_id="r1", content="content")
 
 
-def _client(caller_type: str) -> TestClient:
-    app = create_app(get_org_id=lambda: "test-org", get_caller_type=lambda: caller_type)
+def _client(caller_type: str, get_billing_gate=None) -> TestClient:
+    app = create_app(
+        get_org_id=lambda: "test-org",
+        get_caller_type=lambda: caller_type,
+        get_billing_gate=get_billing_gate,
+    )
     return TestClient(app, raise_server_exceptions=False)
 
 
@@ -131,6 +135,44 @@ def test_empty_result_meters_nothing() -> None:
         configure_usage_event_recorder(None)
 
     assert [e for e in events if e.event_name == "learning_applied"] == []
+
+
+def test_get_billing_gate_override_seam() -> None:
+    """create_app wires the get_billing_gate override for every billing line.
+
+    The enterprise enforcement gate is injected through this seam: create_app must
+    register an override for each line ("application" + "learnings_generated"),
+    keyed by the lru_cached ``default_billing_gate`` sentinel the routes depend on,
+    and the override must actually fire when an application route is served. This
+    pins the core DI contract so it can't silently regress.
+    """
+    from reflexio.server.api import default_billing_gate
+
+    fired: list[str] = []
+
+    def gate_factory(line: str):
+        def _gate() -> None:
+            fired.append(line)
+
+        return _gate
+
+    app = create_app(
+        get_org_id=lambda: "test-org",
+        get_caller_type=lambda: "production_agent",
+        get_billing_gate=gate_factory,
+    )
+
+    # Both billing lines are overridden, keyed by the exact sentinel the routes use.
+    overrides = app.dependency_overrides
+    assert default_billing_gate("application") in overrides
+    assert default_billing_gate("learnings_generated") in overrides
+
+    # The "application" override fires for real on an application route.
+    client = TestClient(app, raise_server_exceptions=False)
+    with _patch_unified_search([_make_profile_view()], [], []):
+        resp = client.post("/api/search", json={"query": "x", "user_id": "u1"})
+    assert resp.status_code == 200
+    assert "application" in fired
 
 
 def test_metering_failure_does_not_break_search_response() -> None:
