@@ -21,6 +21,8 @@ logger = logging.getLogger(__name__)
 # Delay in seconds before evaluating a group after the last request
 GROUP_EVALUATION_DELAY_SECONDS = 600  # 10 minutes
 
+# Kept as a patch point for tests. Production should use the full inactivity
+# delay unless a test deliberately lowers this constant.
 IS_TEST_ENV = os.environ.get("IS_TEST_ENV", "false").strip() == "true"
 _EFFECTIVE_DELAY_SECONDS = 30 if IS_TEST_ENV else GROUP_EVALUATION_DELAY_SECONDS
 

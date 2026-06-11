@@ -26,7 +26,10 @@ from ._base import SQLiteStorageBase, _json_dumps, _json_loads
 def _dt(value: str | None) -> datetime | None:
     if value is None:
         return None
-    return datetime.fromisoformat(value)
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed
 
 
 def _dt_str(value: datetime | None) -> str | None:

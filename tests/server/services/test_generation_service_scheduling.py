@@ -6,10 +6,16 @@ silently bypassed the scheduler call, leaving /evaluations permanently empty.
 
 from __future__ import annotations
 
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
 
+from reflexio.models.config_schema import (
+    AgentSuccessConfig,
+    Config,
+    StorageConfigSQLite,
+)
 from reflexio.server.services.generation_service import GenerationService
 
 
@@ -25,6 +31,14 @@ def service() -> GenerationService:
     svc.org_id = "org_test"
     svc.request_context = MagicMock(name="request_context")
     svc.client = MagicMock(name="llm_client")
+    svc.configurator = MagicMock(name="configurator")
+    svc.configurator.get_config.return_value = Config(
+        storage_config=StorageConfigSQLite(),
+        agent_success_config=AgentSuccessConfig(
+            success_definition_prompt="Evaluate whether the agent succeeded.",
+            sampling_rate=1.0,
+        ),
+    )
     return svc
 
 
@@ -75,3 +89,31 @@ def test_schedules_with_correct_key_when_session_id_present(
     )
     assert key == ("org_test", "user_test", "sess_42")
     assert callable(callback)
+
+
+def test_evaluation_only_does_not_bypass_sampling_rate(
+    service: GenerationService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A 0% sample rate skips scheduling even for evaluation-only requests."""
+    cast(Any, service.configurator.get_config).return_value = Config(
+        storage_config=StorageConfigSQLite(),
+        agent_success_config=AgentSuccessConfig(
+            success_definition_prompt="Evaluate whether the agent succeeded.",
+            sampling_rate=0.0,
+        ),
+    )
+    scheduler = MagicMock()
+    monkeypatch.setattr(
+        "reflexio.server.services.generation_service.GroupEvaluationScheduler.get_instance",
+        lambda: scheduler,
+    )
+    request_with_session = MagicMock(session_id="sess_42", evaluation_only=True)
+
+    service._schedule_group_evaluation_if_needed(
+        new_request=request_with_session,
+        user_id="user_test",
+        agent_version="v_test",
+        source="ide",
+    )
+
+    scheduler.schedule.assert_not_called()

@@ -14,7 +14,7 @@ import math
 import re
 import sqlite3
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, ClassVar, Literal
@@ -185,10 +185,10 @@ def _effective_search_mode(
 
 
 def _vector_rank_rows(
-    rows: list[sqlite3.Row],
+    rows: Sequence[Any],
     query_embedding: list[float],
     match_count: int,
-) -> list[sqlite3.Row]:
+) -> list[Any]:
     """Rank rows by cosine similarity to the query embedding.
 
     Args:
@@ -199,7 +199,7 @@ def _vector_rank_rows(
     Returns:
         Top ``match_count`` rows sorted by cosine similarity descending.
     """
-    scored: list[tuple[sqlite3.Row, float]] = []
+    scored: list[tuple[Any, float]] = []
     for row in rows:
         raw_emb = row["embedding"] if "embedding" in row.keys() else None  # noqa: SIM118
         emb = _json_loads(raw_emb) if raw_emb else None
@@ -228,14 +228,14 @@ def _vector_rank_rows(
 
 
 def _true_rrf_merge(
-    fts_rows: list[sqlite3.Row],
-    vec_rows: list[sqlite3.Row],
+    fts_rows: Sequence[Any],
+    vec_rows: Sequence[Any],
     id_column: str,
     match_count: int,
     rrf_k: int = 60,
     vector_weight: float = 1.0,
     fts_weight: float = 1.0,
-) -> list[sqlite3.Row]:
+) -> list[Any]:
     """Merge independent FTS and vector result sets via Reciprocal Rank Fusion.
 
     Unlike ``_rrf_rerank`` (which re-ranks FTS results only), this function
@@ -258,7 +258,7 @@ def _true_rrf_merge(
         return []
 
     # Collect unique rows by ID (first-seen wins for the Row object)
-    row_by_id: dict[str | int, sqlite3.Row] = {}
+    row_by_id: dict[str | int, Any] = {}
     for row in (*fts_rows, *vec_rows):
         rid = row[id_column]
         if rid not in row_by_id:
@@ -274,7 +274,7 @@ def _true_rrf_merge(
     fts_penalty = len(fts_rows) + 1
     vec_penalty = len(vec_rows) + 1
 
-    scored: list[tuple[sqlite3.Row, float]] = []
+    scored: list[tuple[Any, float]] = []
     for rid, row in row_by_id.items():
         f_rank = fts_rank.get(rid, fts_penalty)
         v_rank = vec_rank.get(rid, vec_penalty)
@@ -343,7 +343,10 @@ def _iso_to_epoch(iso_str: str | None) -> int:
         return _epoch_now()
     try:
         cleaned = iso_str.replace("Z", "+00:00")
-        return int(datetime.fromisoformat(cleaned).timestamp())
+        parsed = datetime.fromisoformat(cleaned)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        return int(parsed.timestamp())
     except (ValueError, TypeError):
         return _epoch_now()
 
@@ -429,6 +432,7 @@ def _row_to_request(row: sqlite3.Row) -> Request:
         source=d.get("source") or "",
         agent_version=d.get("agent_version") or "",
         session_id=require_non_empty_session_id(d.get("session_id")),
+        evaluation_only=bool(d.get("evaluation_only", 0)),
         metadata=metadata,
     )
 
@@ -669,6 +673,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         self._migrate_agentic_signals()
         self._migrate_agent_playbook_source_windows()
         self._migrate_request_metadata()
+        self._migrate_request_evaluation_only()
         self._migrate_request_session_id_required()
         self._migrate_shadow_comparison_verdicts()
         self._migrate_user_playbook_polarity()
@@ -1227,6 +1232,21 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             logger.info("Added metadata column to requests")
         self.conn.commit()
 
+    def _migrate_request_evaluation_only(self) -> None:
+        """Add evaluation_only column to requests for learning exclusion."""
+        cols = {
+            row["name"]
+            for row in self.conn.execute("PRAGMA table_info(requests)").fetchall()
+        }
+        if not cols:
+            return
+        if "evaluation_only" not in cols:
+            self.conn.execute(
+                "ALTER TABLE requests ADD COLUMN evaluation_only INTEGER NOT NULL DEFAULT 0"
+            )
+            logger.info("Added evaluation_only column to requests")
+        self.conn.commit()
+
     def _migrate_request_session_id_required(self) -> None:
         """Require non-empty session ids on ``requests``.
 
@@ -1256,8 +1276,9 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         if has_required_schema and blank_count == 0:
             return
 
-        metadata_expr = (
-            "COALESCE(metadata, '{}')" if "metadata" in cols else "'{}'"
+        metadata_expr = "COALESCE(metadata, '{}')" if "metadata" in cols else "'{}'"
+        evaluation_only_expr = (
+            "COALESCE(evaluation_only, 0)" if "evaluation_only" in cols else "0"
         )
         # NOTE: this rebuild hardcodes the full `requests` column set. If a
         # future migration adds a column to `requests`, it MUST be added here
@@ -1271,10 +1292,20 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 source TEXT NOT NULL DEFAULT '',
                 agent_version TEXT NOT NULL DEFAULT '',
                 session_id TEXT NOT NULL CHECK (trim(session_id) != ''),
+                evaluation_only INTEGER NOT NULL DEFAULT 0,
                 metadata TEXT NOT NULL DEFAULT '{{}}'
             );
             INSERT INTO requests_new
-                (request_id, user_id, created_at, source, agent_version, session_id, metadata)
+                (
+                    request_id,
+                    user_id,
+                    created_at,
+                    source,
+                    agent_version,
+                    session_id,
+                    evaluation_only,
+                    metadata
+                )
             SELECT
                 request_id,
                 user_id,
@@ -1286,6 +1317,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                     THEN 'legacy-' || lower(hex(randomblob(16)))
                     ELSE trim(session_id)
                 END,
+                {evaluation_only_expr},
                 {metadata_expr}
             FROM requests;
             DROP TABLE requests;
@@ -1693,6 +1725,7 @@ CREATE TABLE IF NOT EXISTS requests (
     source TEXT NOT NULL DEFAULT '',
     agent_version TEXT NOT NULL DEFAULT '',
     session_id TEXT NOT NULL CHECK (trim(session_id) != ''),
+    evaluation_only INTEGER NOT NULL DEFAULT 0,
     metadata TEXT NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS idx_requests_user_id ON requests(user_id);

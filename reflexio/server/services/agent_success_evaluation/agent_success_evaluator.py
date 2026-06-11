@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import random
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
@@ -104,7 +103,7 @@ class AgentSuccessEvaluator:
 
         Treats all request_interaction_data_models as a single conversation.
         Applies source filtering based on extractor config.
-        Applies sampling rate once per group.
+        Sampling is handled by callers before invoking the evaluator.
 
         Returns:
             List of AgentSuccessEvaluationResult objects (single result for the group)
@@ -129,19 +128,6 @@ class AgentSuccessEvaluator:
         if not request_interaction_data_models:
             # No matching interactions after source filter
             return []
-
-        # Check sampling rate once per group
-        if self.config.sampling_rate < 1.0:
-            random_value = random.random()  # noqa: S311
-            if random_value >= self.config.sampling_rate:
-                logger.info(
-                    "Skipping evaluation for session %s due to sampling rate. "
-                    "sampling_rate=%s, random_value=%.3f",
-                    self.service_config.session_id,
-                    self.config.sampling_rate,
-                    random_value,
-                )
-                return []
 
         result = self._evaluate_group(request_interaction_data_models)
         return [result] if result else []

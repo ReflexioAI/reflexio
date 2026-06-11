@@ -193,6 +193,9 @@ class Request(BaseModel):
         source (str): Free-form origin tag (integration name, etc.).
         agent_version (str): The agent version that handled this request.
         session_id (str): Non-empty session this request belongs to.
+        evaluation_only (bool): Whether this request is stored for
+            session-level evaluation only and must be excluded from
+            profile/playbook learning windows.
         metadata (dict[str, Any]): Free-form per-request annotations.
             Always a dict — never None. Conventional keys:
 
@@ -215,6 +218,7 @@ class Request(BaseModel):
     source: str = ""
     agent_version: str = ""
     session_id: NonEmptyStr
+    evaluation_only: bool = False
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -567,6 +571,7 @@ class PublishUserInteractionRequest(BaseModel):
         False  # when True, extract profiles/playbooks but skip aggregation
     )
     force_extraction: bool = False  # when True, bypass all extraction gates (stride_size, cheap pre-filter, LLM should_run) and always run extractors
+    evaluation_only: bool = False  # when True, store for evaluation and permanently exclude from profile/playbook extraction
     override_learning_stall: bool = False  # when True, run extraction even if a provider auth/billing stall is recorded
     metadata: dict[str, Any] = Field(default_factory=dict)
     """Per-request annotations stamped by customer integration code.
@@ -582,6 +587,14 @@ class PublishUserInteractionRequest(BaseModel):
     Defaults to ``{}`` (never None) for backward compatibility — existing
     callers that don't pass ``metadata`` keep working unchanged.
     """
+
+    @model_validator(mode="after")
+    def validate_evaluation_only(self) -> Self:
+        if self.evaluation_only and self.force_extraction:
+            raise ValueError("evaluation_only cannot be combined with force_extraction")
+        if self.evaluation_only and not self.session_id:
+            raise ValueError("evaluation_only publishes require session_id")
+        return self
 
 
 # publish user interaction response

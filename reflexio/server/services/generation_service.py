@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextvars
+import hashlib
 import logging
 import os
 import threading
@@ -77,6 +78,13 @@ def _retention_cleanup_interval_seconds() -> float:
 _RETENTION_CLEANUP_INTERVAL_SECONDS = _retention_cleanup_interval_seconds()
 _retention_cleanup_last_run: dict[tuple[str, str], float] = {}
 _retention_cleanup_lock = threading.Lock()
+
+
+def _stable_group_sampling_fraction(org_id: str, user_id: str, session_id: str) -> float:
+    """Return a deterministic [0, 1) sample value for one session."""
+    key = f"{org_id}\0{user_id}\0{session_id}".encode()
+    digest = hashlib.sha256(key).digest()
+    return int.from_bytes(digest[:8], "big") / 2**64
 
 
 @dataclass
@@ -222,6 +230,7 @@ class GenerationService:
                 source=publish_user_interaction_request.source,
                 agent_version=agent_version,
                 session_id=publish_user_interaction_request.session_id,
+                evaluation_only=publish_user_interaction_request.evaluation_only,
                 metadata=publish_user_interaction_request.metadata,
             )
             self.storage.add_request(new_request)  # type: ignore[reportOptionalMemberAccess]
@@ -233,6 +242,33 @@ class GenerationService:
 
             # Extract source (empty string treated as None)
             source = publish_user_interaction_request.source or None
+
+            if publish_user_interaction_request.evaluation_only:
+                self._schedule_group_evaluation_if_needed(
+                    new_request=new_request,
+                    user_id=user_id,
+                    agent_version=agent_version,
+                    source=source,
+                )
+                record_usage_event(
+                    org_id=self.org_id,
+                    user_id=user_id,
+                    request_id=request_id,
+                    session_id=new_request.session_id,
+                    source=source,
+                    agent_version=agent_version,
+                    backend="evaluation_only",
+                    event_name="publish_request_succeeded",
+                    event_category="publish",
+                    outcome="success",
+                    count_value=len(new_interactions),
+                    duration_ms=int((time.perf_counter() - publish_start) * 1000),
+                    metadata={
+                        "evaluation_only": True,
+                        "warning_count": len(result.warnings),
+                    },
+                )
+                return result
 
             if (
                 not publish_user_interaction_request.override_learning_stall
@@ -423,6 +459,14 @@ class GenerationService:
             source (str | None): Optional source label.
         """
         session_id = new_request.session_id
+        if not self._should_sample_group_evaluation(user_id=user_id, session_id=session_id):
+            logger.info(
+                "Skipping group evaluation scheduling for unsampled session=%s user=%s",
+                session_id,
+                user_id,
+            )
+            return
+
         scheduler = GroupEvaluationScheduler.get_instance()
         key = (self.org_id, user_id, session_id)
 
@@ -459,6 +503,23 @@ class GenerationService:
                 self.request_context,
                 self.client,
             ),
+        )
+
+    def _should_sample_group_evaluation(self, *, user_id: str, session_id: str) -> bool:
+        config = self.configurator.get_config()
+        agent_success_config = getattr(config, "agent_success_config", None)
+        if agent_success_config is None:
+            return False
+
+        sampling_rate = agent_success_config.sampling_rate
+        if sampling_rate >= 1.0:
+            return True
+        if sampling_rate <= 0.0:
+            return False
+
+        return (
+            _stable_group_sampling_fraction(self.org_id, user_id, session_id)
+            < sampling_rate
         )
 
     def _maybe_run_reflection(

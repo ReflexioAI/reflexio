@@ -95,6 +95,32 @@ def test_service_returns_empty_state_when_no_results() -> None:
     assert response.rule_attribution == []
 
 
+def test_service_reports_single_recent_success_as_100_percent() -> None:
+    now = int(time.time())
+    storage = MagicMock()
+    storage.get_agent_success_evaluation_results.return_value = [
+        _eval_result(
+            result_id=1,
+            session_id="recent-success",
+            is_success=True,
+            created_at=now - 60,
+        ),
+    ]
+    storage.get_playbook_application_stats.return_value = []
+    storage.get_interactions_by_session.return_value = []
+    storage.get_imported_scores.return_value = []
+    storage.get_sessions.return_value = {}
+    config = Config(storage_config=StorageConfigSQLite())
+
+    svc = EvaluationOverviewService(storage=storage, config=config)
+    response = svc.run(
+        GetEvaluationOverviewRequest(from_ts=now - 3600, to_ts=now, bucket="day")
+    )
+
+    assert response.hero.regular_success_rate_pp == 100.0
+    assert response.context_tiles.success.current == 100.0
+
+
 def test_service_uses_first_ever_eval_for_hero_age() -> None:
     """A narrow window should not make a mature org look newly onboarded."""
     now = int(time.time())

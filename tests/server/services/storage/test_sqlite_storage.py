@@ -29,6 +29,7 @@ from reflexio.server.services.storage.sqlite_storage import (
     _true_rrf_merge,
     _vector_rank_rows,
 )
+from reflexio.server.services.storage.sqlite_storage._base import _iso_to_epoch
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -54,6 +55,12 @@ def storage():
 # ---------------------------------------------------------------------------
 # _sanitize_fts_query tests
 # ---------------------------------------------------------------------------
+
+
+def test_iso_to_epoch_treats_offsetless_timestamp_as_utc():
+    result = _iso_to_epoch("2026-06-10T23:47:07.50016")
+    expected = int(datetime(2026, 6, 10, 23, 47, 7, 500160, tzinfo=UTC).timestamp())
+    assert result == expected
 
 
 class TestSanitizeFtsQuery:
