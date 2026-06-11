@@ -40,6 +40,11 @@ class BaseStorageCore(ABC):  # noqa: B024
     # Capability flag — backends that implement `_get_embedding` set this to True.
     supports_embedding: ClassVar[bool] = False
 
+    # Capability flag — backends that can serve every unified-search arm in a
+    # single database round trip expose a `unified_hybrid_search` method and
+    # set this to True (see reflexio.server.services.unified_search_service).
+    supports_unified_hybrid_search: ClassVar[bool] = False
+
     def __init__(self, org_id: str, base_dir: str | None = None) -> None:
         self.org_id = org_id
         if base_dir is None:

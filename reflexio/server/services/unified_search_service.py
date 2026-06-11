@@ -41,7 +41,7 @@ from reflexio.models.config_schema import (
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.prompt.prompt_manager import PromptManager
 from reflexio.server.services.pre_retrieval import QueryReformulator
-from reflexio.server.services.retrieval.relevance_floor import apply_relevance_floor
+from reflexio.server.services.retrieval.relevance_floor import apply_relevance_floors
 from reflexio.server.services.storage.storage_base import BaseStorage
 from reflexio.server.tracing import profile_step, set_span_data
 
@@ -66,6 +66,7 @@ _SEARCH_FANOUT_EXECUTOR = ThreadPoolExecutor(
     max_workers=_SEARCH_FANOUT_MAX_WORKERS,
     thread_name_prefix="reflexio-search",
 )
+_ENV_SINGLE_RPC = "REFLEXIO_UNIFIED_SEARCH_SINGLE_RPC"
 _EMBEDDING_CACHE_TTL_SECONDS = max(
     0, int(os.getenv("REFLEXIO_QUERY_EMBEDDING_CACHE_TTL_SECONDS", "300") or "300")
 )
@@ -266,6 +267,33 @@ def _run_phase_b(
             entity_types=sorted(entity_types),
             top_k=top_k,
         ) as span:
+            if (
+                getattr(storage, "supports_unified_hybrid_search", False)
+                and _unified_single_rpc_enabled()
+            ):
+                combined = _run_phase_b_single_rpc(
+                    request=request,
+                    storage=storage,
+                    embedding=embedding,
+                    query=query,
+                    top_k=top_k,
+                    threshold=threshold,
+                    entity_types=entity_types,
+                    allowed_agent_statuses=allowed_agent_statuses,
+                )
+                if combined is not None:
+                    profiles, agent_playbooks, user_playbooks = combined
+                    set_span_data(
+                        span,
+                        {
+                            "single_rpc": True,
+                            "profiles_count": len(profiles),
+                            "agent_playbooks_count": len(agent_playbooks),
+                            "user_playbooks_count": len(user_playbooks),
+                        },
+                    )
+                    return profiles, agent_playbooks, user_playbooks
+                span.set_data("single_rpc_fallback", True)
             profiles_future = (
                 _submit_with_current_context(
                     _SEARCH_FANOUT_EXECUTOR,
@@ -347,6 +375,80 @@ def _run_phase_b(
     return profiles, agent_playbooks, user_playbooks
 
 
+def _unified_single_rpc_enabled() -> bool:
+    """Kill switch for the combined Phase B RPC (default on)."""
+    return os.getenv(_ENV_SINGLE_RPC, "1").strip().lower() not in {"0", "false", "off"}
+
+
+def _run_phase_b_single_rpc(
+    *,
+    request: UnifiedSearchRequest,
+    storage: BaseStorage,
+    embedding: list[float] | None,
+    query: str,
+    top_k: int,
+    threshold: float,
+    entity_types: set[str],
+    allowed_agent_statuses: list[PlaybookStatus] | None,
+) -> tuple[list[UserProfile], list[AgentPlaybook], list[UserPlaybook]] | None:
+    """Run all Phase B arms through one combined storage round trip.
+
+    Trades the per-arm round-trip overhead for serialized execution of the
+    three queries inside one database session — a win when round-trip
+    overhead dominates per-arm query time (toggle via
+    ``REFLEXIO_UNIFIED_SEARCH_SINGLE_RPC`` to compare).
+
+    Returns:
+        The three result lists, or None when the combined call fails so the
+        caller can fall back to the per-arm fan-out (e.g. the SQL function
+        is not yet migrated on this deployment). Timeouts propagate like the
+        fan-out path so a hung database is not retried.
+    """
+    statuses = (
+        list(allowed_agent_statuses)
+        if allowed_agent_statuses
+        else list(_DEFAULT_AGENT_PLAYBOOK_STATUSES)
+    )
+    future = _submit_with_current_context(
+        _SEARCH_FANOUT_EXECUTOR,
+        storage.unified_hybrid_search,  # type: ignore[reportAttributeAccessIssue]
+        query=query,
+        query_embedding=embedding,
+        top_k=top_k,
+        threshold=threshold,
+        user_id=request.user_id,
+        agent_version=request.agent_version,
+        playbook_name=request.playbook_name,
+        agent_playbook_statuses=statuses,
+        search_mode=request.search_mode,
+        include_profiles="profiles" in entity_types and bool(request.user_id),
+        include_agent_playbooks="agent_playbooks" in entity_types,
+        include_user_playbooks="user_playbooks" in entity_types,
+    )
+    try:
+        profiles, agent_playbooks, user_playbooks = future.result(timeout=30)
+    except FuturesTimeoutError:
+        raise
+    except Exception:
+        logger.warning(
+            "Unified single-RPC search failed; falling back to per-arm fan-out",
+            exc_info=True,
+        )
+        return None
+
+    # Mirror _search_agent_playbooks_via_storage: dedupe by id, cap at top_k.
+    deduped: list[AgentPlaybook] = []
+    seen_ids: set[str] = set()
+    for playbook in agent_playbooks:
+        playbook_id = str(getattr(playbook, "agent_playbook_id", ""))
+        if playbook_id and playbook_id not in seen_ids:
+            seen_ids.add(playbook_id)
+            deduped.append(playbook)
+            if len(deduped) >= top_k:
+                break
+    return profiles, deduped, user_playbooks
+
+
 def _apply_floors(
     query: str,
     profiles: list[UserProfile],
@@ -355,36 +457,17 @@ def _apply_floors(
     top_k: int,
     cfg: RetrievalFloorConfig,
 ) -> tuple[list[UserProfile], list[AgentPlaybook], list[UserPlaybook]]:
-    """Apply the per-arm relevance floor to each entity arm in parallel."""
-    with ThreadPoolExecutor(max_workers=3) as ex:
-        f_profiles = _submit_with_current_context(
-            ex,
-            apply_relevance_floor,
-            query,
-            profiles,
-            cfg.profile_floor,
-            top_k,
-            arm="profiles",
-        )
-        f_agent = _submit_with_current_context(
-            ex,
-            apply_relevance_floor,
-            query,
-            agent_playbooks,
-            cfg.agent_playbook_floor,
-            top_k,
-            arm="agent_playbooks",
-        )
-        f_user = _submit_with_current_context(
-            ex,
-            apply_relevance_floor,
-            query,
-            user_playbooks,
-            cfg.user_playbook_floor,
-            top_k,
-            arm="user_playbooks",
-        )
-        return f_profiles.result(), f_agent.result(), f_user.result()
+    """Apply the per-arm relevance floor with one batched cross-encoder call."""
+    floored_profiles, floored_agent, floored_user = apply_relevance_floors(
+        query,
+        [
+            ("profiles", profiles, cfg.profile_floor),
+            ("agent_playbooks", agent_playbooks, cfg.agent_playbook_floor),
+            ("user_playbooks", user_playbooks, cfg.user_playbook_floor),
+        ],
+        top_k,
+    )
+    return floored_profiles, floored_agent, floored_user
 
 
 def _get_cached_query_embedding(
