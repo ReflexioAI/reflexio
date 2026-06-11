@@ -9,7 +9,8 @@ never crashes, never silently returns the full unfiltered list.
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
+from typing import Any
 
 from reflexio.server.llm.rerank import score_pairs
 from reflexio.server.llm.rerank.cross_encoder_reranker import (
@@ -18,6 +19,14 @@ from reflexio.server.llm.rerank.cross_encoder_reranker import (
 from reflexio.server.tracing import profile_step
 
 logger = logging.getLogger(__name__)
+
+
+def _floor_and_sort[T](items: list[T], scores: list[float], floor: float) -> list[T]:
+    """Return items scoring >= ``floor``, sorted by score descending."""
+    ranked = sorted(
+        zip(items, scores, strict=True), key=lambda pair: pair[1], reverse=True
+    )
+    return [item for item, score in ranked if score >= floor]
 
 
 def apply_relevance_floor[T](
@@ -62,11 +71,8 @@ def apply_relevance_floor[T](
             return items[:top_k]
         span.set_data("available", True)
 
-        ranked = sorted(
-            zip(items, scores, strict=True), key=lambda pair: pair[1], reverse=True
-        )
-        survivors = [item for item, score in ranked if score >= floor]
-        dropped = len(ranked) - len(survivors)
+        survivors = _floor_and_sort(items, scores, floor)
+        dropped = len(items) - len(survivors)
         span.set_data("kept", len(survivors))
         span.set_data("dropped", dropped)
         if dropped:
@@ -78,3 +84,74 @@ def apply_relevance_floor[T](
                 floor,
             )
         return survivors[:top_k]
+
+
+def apply_relevance_floors(
+    query: str,
+    arms: Sequence[tuple[str, list[Any], float]],
+    top_k: int,
+    *,
+    content_of: Callable[[Any], str] = lambda item: item.content,
+) -> list[list[Any]]:
+    """Floor every arm with a single cross-encoder batch.
+
+    CPU cross-encoder inference does not parallelize across threads, so
+    scoring all arms in one ``score_pairs`` call beats one call per arm:
+    the model runs one batched forward pass and per-call overhead is paid
+    once.
+
+    Args:
+        query: The search query.
+        arms: ``(arm_name, items, floor)`` per arm; items must expose
+            ``.content`` or supply ``content_of``.
+        top_k: Max items to return per arm after flooring.
+        content_of: Extracts the text to score for an item.
+
+    Returns:
+        One survivor list per arm, in input order — each sorted by score
+        descending and capped at ``top_k``. On reranker unavailability,
+        every arm returns ``items[:top_k]`` unchanged (logged).
+    """
+    if not any(items for _, items, _ in arms):
+        return [[] for _ in arms]
+    arm_names = [name for name, _, _ in arms]
+    contents: list[str] = []
+    for _, items, _ in arms:
+        contents.extend(content_of(item) for item in items)
+    with profile_step(
+        "search.rerank.relevance_floor",
+        arm="all",
+        arms=arm_names,
+        items=len(contents),
+    ) as span:
+        try:
+            scores = score_pairs(query, contents)
+        except CrossEncoderUnavailableError:
+            span.set_data("available", False)
+            logger.warning(
+                "event=relevance_floor_unavailable arms=%s items=%d (returning unfiltered top_k)",
+                arm_names,
+                len(contents),
+            )
+            return [items[:top_k] for _, items, _ in arms]
+        span.set_data("available", True)
+
+        results: list[list[Any]] = []
+        offset = 0
+        for name, items, floor in arms:
+            arm_scores = scores[offset : offset + len(items)]
+            offset += len(items)
+            survivors = _floor_and_sort(items, arm_scores, floor)
+            dropped = len(items) - len(survivors)
+            span.set_data(f"kept_{name}", len(survivors))
+            span.set_data(f"dropped_{name}", dropped)
+            if dropped:
+                logger.info(
+                    "event=relevance_floor arm=%s kept=%d dropped=%d floor=%.2f",
+                    name,
+                    len(survivors),
+                    dropped,
+                    floor,
+                )
+            results.append(survivors[:top_k])
+        return results
