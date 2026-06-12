@@ -132,20 +132,18 @@ def reflexio_instance_profile_only(
         storage_config=sqlite_storage_config,
         agent_context_prompt="this is a sales agent",
         user_playbook_extractor_config=None,
-        profile_extractor_configs=[
-            ProfileExtractorConfig(
-                extractor_name="test_profile_extractor",
-                context_prompt="""
+        profile_extractor_config=ProfileExtractorConfig(
+            extractor_name="test_profile_extractor",
+            context_prompt="""
 Conversation between sales agent and user, extract any information from the interaction if contains any information listed under definition
 """,
-                extraction_definition_prompt="""
+            extraction_definition_prompt="""
 name, age, intent of the conversations
 """,
-                metadata_definition_prompt="""
+            metadata_definition_prompt="""
 choice of ['basic_info', 'conversation_intent']
 """,
-            )
-        ],
+        ),
     )
     configurator = DefaultConfigurator(org_id=test_org_id, config=config)
     return Reflexio(org_id=test_org_id, configurator=configurator)
@@ -165,23 +163,21 @@ def reflexio_instance_lifestyle_profile(
     config = Config(
         storage_config=sqlite_storage_config,
         agent_context_prompt="this is a personal assistant that learns about the user over time",
-        profile_extractor_configs=[
-            ProfileExtractorConfig(
-                extractor_name="lifestyle_extractor",
-                context_prompt="""
+        profile_extractor_config=ProfileExtractorConfig(
+            extractor_name="lifestyle_extractor",
+            context_prompt="""
 Extract enduring facts about the user's lifestyle, habits, preferences, and personal context
 from the conversation. Focus on things that describe who the user is and how they live.
 """,
-                extraction_definition_prompt="""
+            extraction_definition_prompt="""
 dietary habits and preferences (e.g., "vegetarian", "loves beef"),
 location and living situation (e.g., "lives in Austin"),
 hobbies and interests, work style, health conditions
 """,
-                metadata_definition_prompt="""
+            metadata_definition_prompt="""
 choice of ['diet', 'location', 'hobby', 'work', 'health']
 """,
-            )
-        ],
+        ),
     )
     configurator = DefaultConfigurator(org_id=test_org_id, config=config)
     return Reflexio(org_id=test_org_id, configurator=configurator)
@@ -454,21 +450,19 @@ def reflexio_instance_manual_profile(
         storage_config=sqlite_storage_config,
         agent_context_prompt="this is a sales agent",
         window_size=10,  # Required for manual generation
-        profile_extractor_configs=[
-            ProfileExtractorConfig(
-                extractor_name="manual_trigger_extractor",
-                context_prompt="""
+        profile_extractor_config=ProfileExtractorConfig(
+            extractor_name="manual_trigger_extractor",
+            context_prompt="""
 Conversation between sales agent and user, extract any information from the interaction if contains any information listed under definition
 """,
-                extraction_definition_prompt="""
+            extraction_definition_prompt="""
 name, age, intent of the conversations
 """,
-                metadata_definition_prompt="""
+            metadata_definition_prompt="""
 choice of ['basic_info', 'conversation_intent']
 """,
-                allow_manual_trigger=True,  # Required for manual generation
-            )
-        ],
+            allow_manual_trigger=True,  # Required for manual generation
+        ),
     )
     configurator = DefaultConfigurator(org_id=test_org_id, config=config)
     return Reflexio(org_id=test_org_id, configurator=configurator)
@@ -496,16 +490,14 @@ def reflexio_instance_manual_playbook(
         storage_config=sqlite_storage_config,
         agent_context_prompt="this is a sales agent",
         window_size=10,  # Required for manual generation
-        user_playbook_extractor_configs=[
-            PlaybookConfig(
-                extractor_name="manual_trigger_playbook",
-                extraction_definition_prompt="""
+        user_playbook_extractor_config=PlaybookConfig(
+            extractor_name="manual_trigger_playbook",
+            extraction_definition_prompt="""
 playbook should be something user told you to do differently in the next session. something sales rep did that makes user not satisfied.
 playbook content is what agent should do differently in the next session based on the conversation history and be actionable as much as possible.
 """,
-                allow_manual_trigger=True,  # Required for manual generation
-            )
-        ],
+            allow_manual_trigger=True,  # Required for manual generation
+        ),
     )
     configurator = DefaultConfigurator(org_id=test_org_id, config=config)
     return Reflexio(org_id=test_org_id, configurator=configurator)

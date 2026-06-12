@@ -29,6 +29,9 @@ from tests.server.test_utils import skip_in_precommit, skip_low_priority
 
 pytestmark = pytest.mark.e2e
 
+# Shared session id for publish payloads in this module (single source of truth).
+E2E_TEST_SESSION_ID = "e2e_test_session"
+
 
 @skip_in_precommit
 def test_publish_interaction_playbook_only(
@@ -777,7 +780,7 @@ def test_rerun_playbook_generation_end_to_end(
         publish_response = reflexio_instance_playbook_only.publish_interaction(
             {
                 "user_id": user_id,
-                "session_id": "e2e_test_session",
+                "session_id": E2E_TEST_SESSION_ID,
                 "interaction_data_list": sample_interaction_requests,
                 "source": "test_rerun_source",
                 "agent_version": agent_version,
@@ -873,7 +876,7 @@ def test_rerun_playbook_generation_with_time_filters(
         publish_response = reflexio_instance_playbook_only.publish_interaction(
             {
                 "user_id": user_id,
-                "session_id": "e2e_test_session",
+                "session_id": E2E_TEST_SESSION_ID,
                 "interaction_data_list": sample_interaction_requests,
                 "source": "test_rerun_time_source",
                 "agent_version": agent_version,
@@ -940,7 +943,7 @@ def test_playbook_source_filtering_with_matching_source(
     response_api = reflexio_instance_playbook_source_filtering.publish_interaction(
         {
             "user_id": user_id,
-            "session_id": "e2e_test_session",
+            "session_id": E2E_TEST_SESSION_ID,
             "interaction_data_list": sample_interaction_requests,
             "source": "api",
             "agent_version": agent_version,
@@ -1000,7 +1003,7 @@ def test_playbook_source_filtering_with_non_matching_source(
     response = reflexio_instance_playbook_source_filtering.publish_interaction(
         {
             "user_id": user_id,
-            "session_id": "e2e_test_session",
+            "session_id": E2E_TEST_SESSION_ID,
             "interaction_data_list": sample_interaction_requests,
             "source": "other",
             "agent_version": agent_version,
@@ -1058,7 +1061,7 @@ def test_playbook_source_filtering_webhook_source(
     response = reflexio_instance_playbook_source_filtering.publish_interaction(
         {
             "user_id": user_id,
-            "session_id": "e2e_test_session",
+            "session_id": E2E_TEST_SESSION_ID,
             "interaction_data_list": sample_interaction_requests,
             "source": "webhook",
             "agent_version": agent_version,
@@ -1128,7 +1131,7 @@ def test_manual_playbook_generation_end_to_end(
         publish_response = reflexio_instance_manual_playbook.publish_interaction(
             {
                 "user_id": user_id,
-                "session_id": "e2e_test_session",
+                "session_id": E2E_TEST_SESSION_ID,
                 "interaction_data_list": sample_interaction_requests,
                 "source": "test_manual_source",
                 "agent_version": agent_version,
@@ -1190,7 +1193,7 @@ def test_manual_playbook_generation_no_window_size(
     publish_response = reflexio_instance_playbook_only.publish_interaction(
         {
             "user_id": user_id,
-            "session_id": "e2e_test_session",
+            "session_id": E2E_TEST_SESSION_ID,
             "interaction_data_list": sample_interaction_requests,
             "source": "test_source",
             "agent_version": agent_version,
@@ -1234,7 +1237,7 @@ def test_manual_playbook_generation_with_source_filter(
         response_a = reflexio_instance_manual_playbook.publish_interaction(
             {
                 "user_id": user_id,
-                "session_id": "e2e_test_session",
+                "session_id": E2E_TEST_SESSION_ID,
                 "interaction_data_list": sample_interaction_requests,
                 "source": "source_a",
                 "agent_version": agent_version,
@@ -1246,7 +1249,7 @@ def test_manual_playbook_generation_with_source_filter(
         response_b = reflexio_instance_manual_playbook.publish_interaction(
             {
                 "user_id": user_id,
-                "session_id": "e2e_test_session",
+                "session_id": E2E_TEST_SESSION_ID,
                 "interaction_data_list": [
                     InteractionData(
                         content="Simple message for source B",
@@ -1302,7 +1305,7 @@ def test_manual_playbook_generation_with_dict_input(
         publish_response = reflexio_instance_manual_playbook.publish_interaction(
             {
                 "user_id": user_id,
-                "session_id": "e2e_test_session",
+                "session_id": E2E_TEST_SESSION_ID,
                 "interaction_data_list": sample_interaction_requests,
                 "source": "test_source",
                 "agent_version": agent_version,
@@ -1350,7 +1353,7 @@ def test_manual_playbook_generation_with_playbook_name_filter(
         publish_response = reflexio_instance_manual_playbook.publish_interaction(
             {
                 "user_id": user_id,
-                "session_id": "e2e_test_session",
+                "session_id": E2E_TEST_SESSION_ID,
                 "interaction_data_list": sample_interaction_requests,
                 "source": "test_source",
                 "agent_version": agent_version,
@@ -1406,7 +1409,7 @@ def test_rerun_playbook_generation_with_source_filter(
             reflexio_instance_multiple_playbook_extractors.publish_interaction(
                 {
                     "user_id": user_id,
-                    "session_id": "e2e_test_session",
+                    "session_id": E2E_TEST_SESSION_ID,
                     "interaction_data_list": sample_interaction_requests,
                     "source": "api",
                     "agent_version": agent_version,
@@ -1420,7 +1423,7 @@ def test_rerun_playbook_generation_with_source_filter(
             reflexio_instance_multiple_playbook_extractors.publish_interaction(
                 {
                     "user_id": user_id,
-                    "session_id": "e2e_test_session",
+                    "session_id": E2E_TEST_SESSION_ID,
                     "interaction_data_list": [
                         InteractionData(
                             content="Webhook message",
@@ -1510,7 +1513,7 @@ def test_rerun_playbook_generation_multiple_extractors_all_sources(
         reflexio_instance_multiple_playbook_extractors.publish_interaction(
             {
                 "user_id": user_id,
-                "session_id": "e2e_test_session",
+                "session_id": E2E_TEST_SESSION_ID,
                 "interaction_data_list": sample_interaction_requests,
                 "source": "api",
                 "agent_version": agent_version,
@@ -1521,7 +1524,7 @@ def test_rerun_playbook_generation_multiple_extractors_all_sources(
         reflexio_instance_multiple_playbook_extractors.publish_interaction(
             {
                 "user_id": user_id,
-                "session_id": "e2e_test_session",
+                "session_id": E2E_TEST_SESSION_ID,
                 "interaction_data_list": [
                     InteractionData(
                         content="Webhook interaction",
@@ -1537,7 +1540,7 @@ def test_rerun_playbook_generation_multiple_extractors_all_sources(
         reflexio_instance_multiple_playbook_extractors.publish_interaction(
             {
                 "user_id": user_id,
-                "session_id": "e2e_test_session",
+                "session_id": E2E_TEST_SESSION_ID,
                 "interaction_data_list": [
                     InteractionData(
                         content="Other source interaction",
@@ -1612,7 +1615,7 @@ def test_rerun_playbook_generation_with_extractor_names_filter(
         reflexio_instance_multiple_playbook_extractors.publish_interaction(
             {
                 "user_id": user_id,
-                "session_id": "e2e_test_session",
+                "session_id": E2E_TEST_SESSION_ID,
                 "interaction_data_list": sample_interaction_requests,
                 "source": "api",
                 "agent_version": agent_version,
@@ -1703,7 +1706,7 @@ def test_playbook_pipeline_preserves_structured_fields(
         publish_response = reflexio_instance_playbook_only.publish_interaction(
             {
                 "user_id": user_id,
-                "session_id": "e2e_test_session",
+                "session_id": E2E_TEST_SESSION_ID,
                 "interaction_data_list": sample_interaction_requests,
                 "source": "test_structured_data",
                 "agent_version": agent_version,
@@ -1749,7 +1752,7 @@ def test_playbook_pipeline_preserves_structured_fields(
             reflexio_instance_playbook_only.publish_interaction(
                 {
                     "user_id": f"{user_id}_{i}",
-                    "session_id": "e2e_test_session",
+                    "session_id": E2E_TEST_SESSION_ID,
                     "interaction_data_list": sample_interaction_requests,
                     "source": "test_structured_data",
                     "agent_version": agent_version,
@@ -1845,7 +1848,7 @@ def test_knowledge_gap_playbook_extraction(
         response = reflexio_instance_playbook_only.publish_interaction(
             {
                 "user_id": user_id,
-                "session_id": "e2e_test_session",
+                "session_id": E2E_TEST_SESSION_ID,
                 "interaction_data_list": knowledge_gap_interactions,
                 "source": "test_knowledge_gap",
                 "agent_version": agent_version,
