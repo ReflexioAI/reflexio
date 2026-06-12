@@ -31,7 +31,7 @@ def load_env() -> tuple[str, str]:
     """Load environment variables and return the Reflexio server URL and API key.
 
     Walks up from the notebooks directory to find the nearest `.env` file,
-    loads it, then reads REFLEXIO_API_URL and REFLEXIO_API_KEY.
+    loads it, then reads REFLEXIO_URL and REFLEXIO_API_KEY.
 
     Returns:
         tuple[str, str]: A (url, api_key) pair for constructing a ReflexioClient.
@@ -45,7 +45,7 @@ def load_env() -> tuple[str, str]:
             break
 
     url = os.environ.get(
-        "REFLEXIO_API_URL", f"http://localhost:{os.environ.get('BACKEND_PORT', '8081')}"
+        "REFLEXIO_URL", f"http://localhost:{os.environ.get('BACKEND_PORT', '8081')}"
     )
     api_key = os.environ.get("REFLEXIO_API_KEY", "")
 

@@ -150,12 +150,12 @@ class ReflexioClient:
 
         Args:
             api_key (str): API key for authentication. Falls back to REFLEXIO_API_KEY env var.
-            url_endpoint (str): Base URL for the API. Falls back to REFLEXIO_API_URL env var,
+            url_endpoint (str): Base URL for the API. Falls back to REFLEXIO_URL env var,
                 then to the default backend URL.
             timeout (int): Default request timeout in seconds (default 300)
         """
         self.base_url = (
-            url_endpoint or os.environ.get("REFLEXIO_API_URL", "") or BACKEND_URL
+            url_endpoint or os.environ.get("REFLEXIO_URL", "") or BACKEND_URL
         )
         self.api_key = api_key or os.environ.get("REFLEXIO_API_KEY", "")
         self.timeout = timeout
