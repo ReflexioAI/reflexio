@@ -133,6 +133,133 @@ def load_reflexio_env(
     return created
 
 
+def resolve_mode(cli_mode: str | None = None) -> str | None:
+    """Resolve the active deployment mode for mode-aware env loading.
+
+    Selection precedence:
+        1. Explicit ``--mode`` flag (``cli_mode``)
+        2. ``DEPLOYMENT_MODE`` environment variable
+        3. None (caller falls back to the plain ``.env`` loader)
+
+    Args:
+        cli_mode: Mode passed explicitly via a CLI flag, if any.
+
+    Returns:
+        The normalized (stripped, lowercased) mode string, or None when no
+        mode is selected.
+    """
+    import os
+
+    if cli_mode:
+        return cli_mode.strip().lower()
+    env_mode = os.environ.get("DEPLOYMENT_MODE", "").strip().lower()
+    return env_mode or None
+
+
+def load_reflexio_env_for_mode(
+    *,
+    cli_mode: str | None = None,
+    package_data_module: str = "reflexio.data",
+) -> Path | None:
+    """Load ``.env.<mode>`` presets plus optional home secrets, mode-aware.
+
+    Loads the committed ``.env.<mode>`` presets (from CWD or the user home dir)
+    together with the optional gitignored ``~/.reflexio/.env.<mode>`` secrets
+    file. Both are loaded with ``override=False`` so the process environment
+    (task-def / shell ``export``) always wins, and home secrets take precedence
+    over committed presets for any disjoint keys.
+
+    When no mode is resolved, this falls back to :func:`load_reflexio_env`.
+
+    Args:
+        cli_mode: Mode passed explicitly via a CLI flag, if any.
+        package_data_module: Module containing the bundled ``.env.<mode>``
+            template (for ``importlib.resources``).
+
+    Returns:
+        Path to the loaded mode env file, or None if nothing was found/created.
+    """
+    global _loaded_env_path
+    mode = resolve_mode(cli_mode)
+    if mode is None:
+        return load_reflexio_env(package_data_module=package_data_module)
+
+    # Optional gitignored home secrets, loaded first so committed presets and
+    # process env both still win where they define the same keys.
+    home_secrets = _USER_ENV_DIR / f".env.{mode}"
+    if home_secrets.exists():
+        load_dotenv(dotenv_path=home_secrets, override=False)
+
+    for env_path in (Path(f".env.{mode}"), _USER_ENV_DIR / f".env.{mode}"):
+        if env_path.exists():
+            load_dotenv(dotenv_path=env_path, override=False)
+            _loaded_env_path = env_path.resolve()
+            _logger.debug("Loaded mode env from: %s (mode=%s)", _loaded_env_path, mode)
+            return env_path
+
+    return _create_default_env_for_mode(mode, package_data_module)
+
+
+def _create_default_env_for_mode(mode: str, package_data_module: str) -> Path | None:
+    """Create ``~/.reflexio/.env.<mode>`` from the bundled mode template.
+
+    Args:
+        mode: The resolved deployment mode (e.g. ``"platform"``).
+        package_data_module: Module path for finding the ``.env.<mode>``
+            template.
+
+    Returns:
+        Path to the newly created mode env file, or None if no template found.
+    """
+    global _loaded_env_path
+    content = _find_mode_template(mode, package_data_module)
+    if content is None:
+        return None
+    _USER_ENV_DIR.mkdir(parents=True, exist_ok=True)
+    target = _USER_ENV_DIR / f".env.{mode}"
+    target.write_text(content)
+    target.chmod(0o600)
+    load_dotenv(dotenv_path=target, override=False)
+    _loaded_env_path = target.resolve()
+    return target
+
+
+def _find_mode_template(mode: str, package_data_module: str) -> str | None:
+    """Find ``.env.<mode>`` template content from CWD or package data.
+
+    Args:
+        mode: The resolved deployment mode (e.g. ``"platform"``).
+        package_data_module: Dotted module path for importlib.resources lookup.
+
+    Returns:
+        The template content as a string, or None if not found anywhere.
+    """
+    # 1. Current directory (local dev checkout)
+    local = Path(f".env.{mode}")
+    if local.exists():
+        return local.read_text()
+
+    # 2. Package data (installed package)
+    try:
+        ref = importlib.resources.files(package_data_module).joinpath(f".env.{mode}")
+        return ref.read_text(encoding="utf-8")
+    except (ModuleNotFoundError, FileNotFoundError):
+        pass
+
+    # 3. Editable install: .env.<mode> lives at project root, two levels up.
+    try:
+        import reflexio as _pkg
+
+        project_root = Path(_pkg.__file__).resolve().parent.parent
+        candidate = project_root / f".env.{mode}"
+        if candidate.is_file():
+            return candidate.read_text()
+    except Exception:  # noqa: BLE001, S110
+        pass
+
+    return None
+
+
 def ensure_user_env_for_setup(
     *,
     package_data_module: str = "reflexio.data",

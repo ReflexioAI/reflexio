@@ -123,7 +123,7 @@ def _ensure_llm_configured(env_path: Path) -> None:
         )
         _prompt_embedding_provider(env_path, non_embedding_provider)
 
-    load_dotenv(dotenv_path=env_path, override=True)
+    load_dotenv(dotenv_path=env_path, override=False)
     typer.echo()
 
 

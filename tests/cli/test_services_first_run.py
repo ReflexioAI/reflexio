@@ -60,7 +60,7 @@ class TestEnsureLlmConfigured:
         mock_emb.assert_not_called()
 
     def test_prompts_when_no_providers_and_tty(self, tmp_path: Path) -> None:
-        """No keys + interactive stdin → both wizard helpers run, env reloads with override."""
+        """No keys + interactive stdin → both wizard helpers run, env reloads (process env wins)."""
         env = tmp_path / ".env"
         env.write_text("")
         with (
@@ -82,7 +82,7 @@ class TestEnsureLlmConfigured:
             _ensure_llm_configured(env)
         mock_llm.assert_called_once_with(env)
         mock_emb.assert_called_once_with(env, "openai")
-        mock_load.assert_called_once_with(dotenv_path=env, override=True)
+        mock_load.assert_called_once_with(dotenv_path=env, override=False)
 
     def test_exits_cleanly_when_no_providers_and_non_tty(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
