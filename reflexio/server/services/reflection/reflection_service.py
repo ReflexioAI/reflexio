@@ -799,5 +799,4 @@ def _filter_citations_by_horizon(
                     citation=cite, position=position, has_full_horizon=False
                 )
             )
-        # else: deferred — not included
     return out

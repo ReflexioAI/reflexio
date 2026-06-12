@@ -9,6 +9,7 @@ backends later.
 from __future__ import annotations
 
 import tempfile
+from collections.abc import Generator
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -34,7 +35,9 @@ def _make_local_file_storage(tmp_dir: str) -> LocalFileConfigStorage:
         pytest.param("local_file", id="LocalFileConfigStorage"),
     ]
 )
-def config_storage(request: pytest.FixtureRequest) -> ConfigStorage:
+def config_storage(
+    request: pytest.FixtureRequest,
+) -> Generator[ConfigStorage, None, None]:
     """Yield a fresh ConfigStorage instance backed by a temporary directory."""
     with tempfile.TemporaryDirectory() as tmp_dir:
         match request.param:
@@ -120,6 +123,7 @@ class TestConfigStorageContract:
         storage = LocalFileConfigStorage(org_id="atomic-org", base_dir=str(tmp_path))
         cfg = storage.get_default_config()
         cfg.window_size = 7
+        cfg.stride_size = 7
         storage.save_config(cfg)
 
         final = Path(storage.config_file)
@@ -129,6 +133,7 @@ class TestConfigStorageContract:
 
         loaded = storage.load_config()
         assert loaded.window_size == 7
+        assert loaded.stride_size == 7
 
     def test_save_config_propagates_write_failure(self, tmp_path, monkeypatch) -> None:
         """save_config must raise on OSError; callers must not see a false success.

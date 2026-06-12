@@ -129,6 +129,14 @@ class TestBuildBackendService:
         assert "reflexio.server.llm.embedding_service:app" in svc.command
         assert svc.env == {"REFLEXIO_EMBEDDING_DAEMON": "1"}
 
+    def test_build_embedding_service_accepts_app_module_override(self) -> None:
+        svc = build_embedding_service(
+            {"embedding": 8072},
+            app_module="reflexio_ext.server.embedding_service:app",
+        )
+
+        assert "reflexio_ext.server.embedding_service:app" in svc.command
+
     def test_should_start_local_embedding_service_for_claude_smart(
         self, monkeypatch
     ) -> None:

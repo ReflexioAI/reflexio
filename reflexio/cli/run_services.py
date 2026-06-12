@@ -252,7 +252,11 @@ def build_nextjs_service(
     )
 
 
-def build_embedding_service(ports: dict[str, int]) -> ServiceConfig:
+def build_embedding_service(
+    ports: dict[str, int],
+    *,
+    app_module: str = "reflexio.server.llm.embedding_service:app",
+) -> ServiceConfig:
     """Build the local embedding daemon service configuration."""
     return ServiceConfig(
         name="embedding",
@@ -260,7 +264,7 @@ def build_embedding_service(ports: dict[str, int]) -> ServiceConfig:
             sys.executable,
             "-m",
             "uvicorn",
-            "reflexio.server.llm.embedding_service:app",
+            app_module,
             "--host",
             "127.0.0.1",
             "--port",

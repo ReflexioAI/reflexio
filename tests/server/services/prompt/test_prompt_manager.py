@@ -287,14 +287,6 @@ class TestPromptManager:
         if errors:
             pytest.fail("Active version errors:\n" + "\n".join(errors))
 
-    # NOTE: ``test_agentic_user_playbook_prompt_extracts_compact_task_recipes``
-    # was removed. The agentic ``extraction_user_playbook`` prompt (the only
-    # prompt carrying the "Failure/Avoidance Recipes"/"detour" recipe wording)
-    # was deleted in the post-horizon reflection + polarity-aware playbook
-    # lifecycle work. The surviving compact-recipe behavior is covered by
-    # ``test_classic_playbook_context_extracts_compact_task_recipes`` below,
-    # which exercises the live ``playbook_extraction_context`` prompt.
-
     def test_classic_playbook_context_extracts_compact_task_recipes(self):
         """Classic playbook prompt uses the same compact recipe shape."""
         rendered = PromptManager().render_prompt(
