@@ -1,6 +1,5 @@
 """Request CRUD methods for SQLite storage."""
 
-import json
 import sqlite3
 from typing import Any
 
@@ -39,8 +38,8 @@ class RequestMixin:
         created_at_iso = _epoch_to_iso(request.created_at)
         self._execute(
             """INSERT OR REPLACE INTO requests
-               (request_id, user_id, created_at, source, agent_version, session_id, evaluation_only, metadata)
-               VALUES (?,?,?,?,?,?,?,?)""",
+               (request_id, user_id, created_at, source, agent_version, session_id, evaluation_only)
+               VALUES (?,?,?,?,?,?,?)""",
             (
                 request.request_id,
                 request.user_id,
@@ -49,7 +48,6 @@ class RequestMixin:
                 request.agent_version,
                 request.session_id,
                 1 if request.evaluation_only else 0,
-                json.dumps(request.metadata, sort_keys=True),
             ),
         )
 

@@ -23,7 +23,7 @@ from reflexio.models.api_schema.service_schemas import (
     UpgradeUserPlaybooksRequest,
     UserPlaybook,
 )
-from reflexio.models.config_schema import SearchMode
+from reflexio.models.config_schema import SINGLETON_USER_PLAYBOOK_NAME, SearchMode
 from tests.e2e_tests.conftest import save_user_playbooks
 from tests.server.test_utils import skip_in_precommit, skip_low_priority
 
@@ -47,6 +47,7 @@ def test_publish_interaction_playbook_only(
             "interaction_data_list": sample_interaction_requests,
             "source": "test_conversation",
             "agent_version": agent_version,
+            "session_id": "test_session_playbook_only",
         }
     )
 
@@ -63,12 +64,11 @@ def test_publish_interaction_playbook_only(
     # Verify playbooks were generated and stored
     user_playbooks = (
         reflexio_instance_playbook_only.request_context.storage.get_user_playbooks(
-            playbook_name="test_playbook"
+            playbook_name=SINGLETON_USER_PLAYBOOK_NAME
         )
     )
     assert len(user_playbooks) > 0 and user_playbooks[0].content.strip() != ""
-    # The user-configured playbook extractor must actually run (beyond any defaults)
-    assert any(p.playbook_name == "test_playbook" for p in user_playbooks)
+    assert all(p.playbook_name == SINGLETON_USER_PLAYBOOK_NAME for p in user_playbooks)
 
     # No agent success evaluation results — this fixture does not configure
     # agent_success_configs, and group evaluation is never triggered in this flow.

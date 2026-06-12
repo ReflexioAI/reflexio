@@ -24,6 +24,7 @@ from reflexio.models.api_schema.service_schemas import (
     RerunProfileGenerationRequest,
     Status,
 )
+from reflexio.models.config_schema import SINGLETON_USER_PLAYBOOK_NAME
 from reflexio.server.services.agent_success_evaluation.group_evaluation_runner import (
     run_group_evaluation,
 )
@@ -57,6 +58,7 @@ def test_complete_workflow_end_to_end(
             "interaction_data_list": sample_interaction_requests,
             "source": "test_conversation",
             "agent_version": "test_agent_complete",
+            "session_id": "test_session_complete_workflow",
         }
     )
     assert publish_response.success is True
@@ -698,7 +700,7 @@ def test_full_workflow_with_all_features(
 
     # Step 3: Verify playbooks were generated
     user_playbooks = reflexio_instance.request_context.storage.get_user_playbooks(
-        playbook_name="test_playbook"
+        playbook_name=SINGLETON_USER_PLAYBOOK_NAME
     )
     assert len(user_playbooks) > 0, "User playbooks should be generated"
     assert user_playbooks[0].content.strip() != ""

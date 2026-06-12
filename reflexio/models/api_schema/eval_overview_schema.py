@@ -173,32 +173,6 @@ class BraintrustTileRow(BaseModel):
     delta: float
 
 
-class TrendPoint(BaseModel):
-    """One point on a grouped success-rate trend curve (F2).
-
-    Args:
-        ts (int): Unix epoch seconds — bucket start.
-        rate (float): Success rate for sessions in this bucket, [0.0, 1.0].
-        n (int): Session count backing the rate. Must be non-negative.
-    """
-
-    ts: int
-    rate: float
-    n: int = Field(ge=0)
-
-
-class SuccessRateTrendByGroup(BaseModel):
-    """Legacy metadata-split trend data for older dashboard clients.
-
-    Source-set comparison is carried by ``SourceSetComparison``. This field is
-    kept for backward compatibility with older frontend builds.
-    """
-
-    treatment: list[TrendPoint] = Field(default_factory=list)
-    control: list[TrendPoint] = Field(default_factory=list)
-    untagged: list[TrendPoint] = Field(default_factory=list)
-
-
 class ShadowWinRateTrendPoint(BaseModel):
     """One daily bucket of per-turn shadow-comparison verdicts (F1).
 
@@ -297,9 +271,6 @@ class GetEvaluationOverviewResponse(BaseModel):
     rule_attribution: list[RuleAttributionRow]
     score_distribution: ScoreDistribution
     braintrust_tiles: list[BraintrustTileRow] = Field(default_factory=list)
-    success_rate_trend_by_group: SuccessRateTrendByGroup = Field(
-        default_factory=SuccessRateTrendByGroup
-    )
     shadow_win_rate_trend: ShadowWinRateTrend = Field(
         default_factory=ShadowWinRateTrend
     )

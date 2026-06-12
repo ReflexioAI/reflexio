@@ -13,6 +13,7 @@ from reflexio.models.api_schema.service_schemas import (
     DeleteUserInteractionRequest,
     InteractionData,
 )
+from reflexio.models.config_schema import SINGLETON_USER_PLAYBOOK_NAME
 from reflexio.server.services.agent_success_evaluation.group_evaluation_runner import (
     run_group_evaluation,
 )
@@ -84,7 +85,7 @@ def test_publish_interaction_end_to_end(
 
     # Verify playbooks were generated and stored
     user_playbooks = reflexio_instance.request_context.storage.get_user_playbooks(
-        playbook_name="test_playbook"
+        playbook_name=SINGLETON_USER_PLAYBOOK_NAME
     )
     assert len(user_playbooks) > 0 and user_playbooks[0].content.strip() != ""
 

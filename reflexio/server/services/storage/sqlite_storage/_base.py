@@ -415,16 +415,6 @@ def _row_to_interaction(row: sqlite3.Row) -> Interaction:
 
 def _row_to_request(row: sqlite3.Row) -> Request:
     d = dict(row)
-    metadata_raw = d.get("metadata") or "{}"
-    try:
-        parsed = _json_loads(metadata_raw)
-        metadata = parsed if isinstance(parsed, dict) else {}
-    except json.JSONDecodeError:
-        logger.warning(
-            "Malformed metadata JSON for request %s; defaulting to empty dict",
-            d.get("request_id"),
-        )
-        metadata = {}
     return Request(
         request_id=d["request_id"],
         user_id=d["user_id"],
@@ -433,7 +423,6 @@ def _row_to_request(row: sqlite3.Row) -> Request:
         agent_version=d.get("agent_version") or "",
         session_id=require_non_empty_session_id(d.get("session_id")),
         evaluation_only=bool(d.get("evaluation_only", 0)),
-        metadata=metadata,
     )
 
 
@@ -672,7 +661,6 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         self._migrate_expanded_terms()
         self._migrate_agentic_signals()
         self._migrate_agent_playbook_source_windows()
-        self._migrate_request_metadata()
         self._migrate_request_evaluation_only()
         self._migrate_request_session_id_required()
         self._migrate_shadow_comparison_verdicts()
@@ -1212,26 +1200,6 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         )
         self.conn.commit()
 
-    def _migrate_request_metadata(self) -> None:
-        """Add metadata column to requests for databases created before F2.
-
-        The column stores a JSON-encoded dict per request (see Request.metadata
-        in the Pydantic model). Backfill-safe: existing rows pick up the
-        ``'{}'`` default and round-trip as an empty dict.
-        """
-        cols = {
-            row["name"]
-            for row in self.conn.execute("PRAGMA table_info(requests)").fetchall()
-        }
-        if not cols:
-            return
-        if "metadata" not in cols:
-            self.conn.execute(
-                "ALTER TABLE requests ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}'"
-            )
-            logger.info("Added metadata column to requests")
-        self.conn.commit()
-
     def _migrate_request_evaluation_only(self) -> None:
         """Add evaluation_only column to requests for learning exclusion."""
         cols = {
@@ -1276,7 +1244,6 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         if has_required_schema and blank_count == 0:
             return
 
-        metadata_expr = "COALESCE(metadata, '{}')" if "metadata" in cols else "'{}'"
         evaluation_only_expr = (
             "COALESCE(evaluation_only, 0)" if "evaluation_only" in cols else "0"
         )
@@ -1292,8 +1259,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 source TEXT NOT NULL DEFAULT '',
                 agent_version TEXT NOT NULL DEFAULT '',
                 session_id TEXT NOT NULL CHECK (trim(session_id) != ''),
-                evaluation_only INTEGER NOT NULL DEFAULT 0,
-                metadata TEXT NOT NULL DEFAULT '{{}}'
+                evaluation_only INTEGER NOT NULL DEFAULT 0
             );
             INSERT INTO requests_new
                 (
@@ -1303,8 +1269,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                     source,
                     agent_version,
                     session_id,
-                    evaluation_only,
-                    metadata
+                    evaluation_only
                 )
             SELECT
                 request_id,
@@ -1317,8 +1282,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                     THEN 'legacy-' || lower(hex(randomblob(16)))
                     ELSE trim(session_id)
                 END,
-                {evaluation_only_expr},
-                {metadata_expr}
+                {evaluation_only_expr}
             FROM requests;
             DROP TABLE requests;
             ALTER TABLE requests_new RENAME TO requests;
@@ -1335,8 +1299,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
 
         Idempotent; safe to run on every startup. The PRAGMA-LBYL guard
         avoids running the CREATE statements on every boot for
-        already-migrated DBs — mirrors the :meth:`_migrate_request_metadata`
-        pattern. The ``CREATE TABLE IF NOT EXISTS`` in :data:`_DDL` will
+        already-migrated DBs. The ``CREATE TABLE IF NOT EXISTS`` in :data:`_DDL` will
         also create this table on a fresh database, so this helper is a
         no-op there; its purpose is explicit symmetry with the per-feature
         migration convention and a single named hook the disk/supabase
@@ -1725,8 +1688,7 @@ CREATE TABLE IF NOT EXISTS requests (
     source TEXT NOT NULL DEFAULT '',
     agent_version TEXT NOT NULL DEFAULT '',
     session_id TEXT NOT NULL CHECK (trim(session_id) != ''),
-    evaluation_only INTEGER NOT NULL DEFAULT 0,
-    metadata TEXT NOT NULL DEFAULT '{}'
+    evaluation_only INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_requests_user_id ON requests(user_id);
 CREATE INDEX IF NOT EXISTS idx_requests_session_id ON requests(session_id);

@@ -22,7 +22,7 @@ def _stub_storage(descriptors: list[SessionDescriptor]) -> MagicMock:
 
     Returns the supplied descriptors from ``get_session_ids_in_window`` and
     one synthetic Request per (user, session) from ``get_requests_by_session``
-    so the sampler can read a first-request created_at and metadata dict.
+    so the sampler can read a first-request created_at and source.
     """
     storage = MagicMock()
     storage.get_session_ids_in_window.return_value = descriptors
@@ -36,7 +36,6 @@ def _stub_storage(descriptors: list[SessionDescriptor]) -> MagicMock:
                 source="src",
                 agent_version="v1",
                 session_id=session_id,
-                metadata={},
             )
         ]
 

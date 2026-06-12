@@ -15,8 +15,7 @@ from reflexio.models.api_schema.eval_overview_schema import ShadowComparisonVerd
 class Outcome(StrEnum):
     """Reflexio-relative outcome derived from a judge's position-randomized verdict.
 
-    Mirrors the GroupAssignment pattern from F2's group_aggregation module —
-    StrEnum so values serialize transparently to JSON / SQL.
+    Uses StrEnum so values serialize transparently to JSON / SQL.
     """
 
     WIN = "win"

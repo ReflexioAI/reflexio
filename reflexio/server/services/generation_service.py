@@ -80,7 +80,9 @@ _retention_cleanup_last_run: dict[tuple[str, str], float] = {}
 _retention_cleanup_lock = threading.Lock()
 
 
-def _stable_group_sampling_fraction(org_id: str, user_id: str, session_id: str) -> float:
+def _stable_group_sampling_fraction(
+    org_id: str, user_id: str, session_id: str
+) -> float:
     """Return a deterministic [0, 1) sample value for one session."""
     key = f"{org_id}\0{user_id}\0{session_id}".encode()
     digest = hashlib.sha256(key).digest()
@@ -221,9 +223,8 @@ class GenerationService:
                 count_value=len(new_interactions),
             )
 
-            # Store Request — propagate customer-stamped metadata so the
-            # eval pipeline (e.g. F2 sticky-group aggregator) can read it
-            # back from the first request of each session.
+            # Store Request before adding interactions so downstream workers can
+            # resolve the session's source and evaluation-only status.
             new_request = Request(
                 request_id=request_id,
                 user_id=user_id,
@@ -231,7 +232,6 @@ class GenerationService:
                 agent_version=agent_version,
                 session_id=publish_user_interaction_request.session_id,
                 evaluation_only=publish_user_interaction_request.evaluation_only,
-                metadata=publish_user_interaction_request.metadata,
             )
             self.storage.add_request(new_request)  # type: ignore[reportOptionalMemberAccess]
 
@@ -459,7 +459,9 @@ class GenerationService:
             source (str | None): Optional source label.
         """
         session_id = new_request.session_id
-        if not self._should_sample_group_evaluation(user_id=user_id, session_id=session_id):
+        if not self._should_sample_group_evaluation(
+            user_id=user_id, session_id=session_id
+        ):
             logger.info(
                 "Skipping group evaluation scheduling for unsampled session=%s user=%s",
                 session_id,

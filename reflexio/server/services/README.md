@@ -35,7 +35,7 @@ Description: Core business-logic layer — LLM orchestration, extraction, evalua
 | Path | Purpose |
 |------|---------|
 | `shadow_comparison/` | `ShadowComparisonJudge` — per-turn regular-vs-shadow verdicts written to a separate table (session-level shadow was retracted due to trajectory contamination). |
-| `evaluation_overview/` | Dashboard rollups: `service.py`, `hero_state.py`, `distribution.py`, `group_aggregation.py`, `rule_attribution.py`, `shadow_aggregation.py`, `eval_sampler.py`. |
+| `evaluation_overview/` | Dashboard rollups: `service.py`, `hero_state.py`, `distribution.py`, `rule_attribution.py`, `shadow_aggregation.py`, `eval_sampler.py`. |
 | `playbook_optimizer/` | Scenario-based playbook optimization: `optimizer.py`, `scheduler.py`, `rollout.py`, `judge.py`, `scenario_resolver.py`, `gepa_adapter.py`, `assistant_webhook.py`. |
 | `braintrust/` | Braintrust export/sync: `service.py`, `client.py`, `_cron.py`, `_encryption.py`. |
 | `pre_retrieval/` | `QueryReformulator` (`_query_reformulator.py`) + `_document_expander.py` — query rewrite & doc expansion for recall. |

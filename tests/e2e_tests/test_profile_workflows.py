@@ -21,6 +21,7 @@ from reflexio.models.api_schema.service_schemas import (
     UpgradeProfilesRequest,
     UserProfile,
 )
+from reflexio.models.config_schema import SINGLETON_USER_PLAYBOOK_NAME
 from tests.e2e_tests.conftest import scenario_batch_to_interactions
 from tests.server.test_utils import skip_in_precommit, skip_low_priority
 
@@ -31,7 +32,7 @@ pytestmark = pytest.mark.e2e
 def test_publish_interaction_profile_only(
     reflexio_instance_profile_only: Reflexio,
     sample_interaction_requests: list[InteractionData],
-    cleanup_after_test: Callable[[], None],
+    cleanup_profile_only: Callable[[], None],
 ):
     """Test interaction publishing with only profile extraction enabled."""
     user_id = "test_user_profile_only"
@@ -44,6 +45,7 @@ def test_publish_interaction_profile_only(
             "interaction_data_list": sample_interaction_requests,
             "source": "test_conversation",
             "agent_version": agent_version,
+            "session_id": "test_session_profile_only",
         }
     )
 
@@ -73,7 +75,7 @@ def test_publish_interaction_profile_only(
     # Verify NO playbooks were generated (since playbook config is not enabled)
     user_playbooks = (
         reflexio_instance_profile_only.request_context.storage.get_user_playbooks(
-            playbook_name="test_playbook"
+            user_id=user_id, playbook_name=SINGLETON_USER_PLAYBOOK_NAME
         )
     )
     assert len(user_playbooks) == 0

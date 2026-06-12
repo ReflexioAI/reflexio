@@ -13,7 +13,7 @@ import time
 import uuid
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Literal
 
 from reflexio.models.api_schema.internal_schema import SessionDescriptor
 from reflexio.server.api_endpoints.request_context import RequestContext
@@ -174,29 +174,27 @@ def _load_first_request(
     storage: BaseStorage,
     user_id: str,
     session_id: str,
-    cache: dict[str, tuple[int, dict[str, Any]]],
-) -> tuple[int, dict[str, Any]]:
-    """Return the (created_at, metadata) of a session's earliest request, memoized.
+    cache: dict[str, tuple[int, str]],
+) -> tuple[int, str]:
+    """Return the (created_at, source) of a session's earliest request, memoized.
 
     The regen worker can see multiple SessionDescriptors for the same
     session_id (one per distinct agent_version/source tuple). This
-    helper guarantees each session_id triggers at most one storage call,
-    mirroring the amortized pattern F2's evaluation overview service
-    uses.
+    helper guarantees each session_id triggers at most one storage call.
 
     Args:
         storage (BaseStorage): Storage backend bound to the request_context.
         user_id (str): Owner of the session's requests.
         session_id (str): Session whose first-request data to return.
-        cache (dict[str, tuple[int, dict[str, Any]]]): Memoization dict
-            keyed by session_id; updated in place.
+        cache (dict[str, tuple[int, str]]): Memoization dict keyed by
+            session_id; updated in place.
 
     Returns:
-        tuple[int, dict[str, Any]]: ``(first_created_at, first_metadata)``.
-        Falls back to ``(0, {})`` when the session has no requests (the
+        tuple[int, str]: ``(first_created_at, first_source)``. Falls back
+        to ``(0, "")`` when the session has no requests (the
         descriptor is still kept so the regen worker can attempt
         evaluation; the sampler simply treats it as the epoch-zero day
-        bucket and the untagged group).
+        bucket and the empty-source stratum).
     """
     cached = cache.get(session_id)
     if cached is not None:
@@ -206,24 +204,24 @@ def _load_first_request(
     except Exception as e:  # noqa: BLE001 — per-session resilience boundary
         logger.warning(
             "Failed to fetch requests for session %s during F3 sampler candidate "
-            "discovery (%s); falling back to (created_at=0, metadata={}). The "
+            "discovery (%s); falling back to (created_at=0, source=''). The "
             "session will be retried in the per-session loop below.",
             session_id,
             e,
         )
-        cache[session_id] = (0, {})
+        cache[session_id] = (0, "")
         return cache[session_id]
     if not requests:
         logger.warning(
             "Session %s has no requests in storage despite being returned by "
             "get_session_ids_in_window (possible race or contract violation); "
-            "falling back to (created_at=0, metadata={}).",
+            "falling back to (created_at=0, source='').",
             session_id,
         )
-        cache[session_id] = (0, {})
+        cache[session_id] = (0, "")
         return cache[session_id]
     first = min(requests, key=lambda r: r.created_at)
-    cache[session_id] = (first.created_at, first.metadata or {})
+    cache[session_id] = (first.created_at, first.source or "")
     return cache[session_id]
 
 
@@ -231,7 +229,7 @@ def _build_sample_candidates(
     storage: BaseStorage,
     descriptors: list[SessionDescriptor],
 ) -> list[SampleCandidate]:
-    """Convert raw SessionDescriptors into SampleCandidates with metadata.
+    """Convert raw SessionDescriptors into SampleCandidates.
 
     Reads the first-request data for each distinct session_id at most
     once via ``_load_first_request``'s cache, then assembles one
@@ -248,10 +246,10 @@ def _build_sample_candidates(
         list[SampleCandidate]: One candidate per descriptor, ready for the
         pure ``sample_candidates`` function.
     """
-    cache: dict[str, tuple[int, dict[str, Any]]] = {}
+    cache: dict[str, tuple[int, str]] = {}
     candidates: list[SampleCandidate] = []
     for sd in descriptors:
-        created_at, metadata = _load_first_request(
+        created_at, first_source = _load_first_request(
             storage, sd.user_id, sd.session_id, cache
         )
         candidates.append(
@@ -261,7 +259,7 @@ def _build_sample_candidates(
                 agent_version=sd.agent_version,
                 source=sd.source,
                 created_at=created_at,
-                first_request_metadata=metadata,
+                first_request_source=first_source,
             )
         )
     return candidates
@@ -328,7 +326,7 @@ def run_regen(
 
     Step 1 enumerates all candidate sessions in ``[from_ts, to_ts]`` via
     ``storage.get_session_ids_in_window``. Step 2 stratifies them by
-    (day-bucket x F2 group) and samples up to
+    (day-bucket x first request source) and samples up to
     ``config.eval_sample_n_per_stratum`` per stratum — giving the regen
     pipeline predictable cost regardless of traffic volume. Step 3
     dispatches the sampled subset through a ``ThreadPoolExecutor`` whose

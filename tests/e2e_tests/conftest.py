@@ -14,6 +14,7 @@ from reflexio.models.api_schema.service_schemas import (
     UserPlaybook,
 )
 from reflexio.models.config_schema import (
+    SINGLETON_USER_PLAYBOOK_NAME,
     AgentSuccessConfig,
     Config,
     PlaybookAggregatorConfig,
@@ -86,20 +87,18 @@ choice of ['basic_info', 'conversation_intent']
 """,
             )
         ],
-        user_playbook_extractor_configs=[
-            PlaybookConfig(
-                extractor_name="test_playbook",
-                extraction_definition_prompt="""
+        user_playbook_extractor_config=PlaybookConfig(
+            extractor_name="test_playbook",
+            extraction_definition_prompt="""
 playbook should be something user told you to do differently in the next session. something sales rep did that makes user not satisfied.
 playbook content is what agent should do differently in the next session based on the conversation history and be actionable as much as possible.
 for example:
 if user mentions "I don't like the way you talked to me", summarize conversation history and playbook content should be what is the way agent talk which is not preferred by user.
 """,
-                aggregation_config=PlaybookAggregatorConfig(
-                    min_cluster_size=3,
-                ),
-            )
-        ],
+            aggregation_config=PlaybookAggregatorConfig(
+                min_cluster_size=3,
+            ),
+        ),
         agent_success_configs=[
             AgentSuccessConfig(
                 evaluation_name="test_agent_success",
@@ -126,6 +125,7 @@ def reflexio_instance_profile_only(
     config = Config(
         storage_config=sqlite_storage_config,
         agent_context_prompt="this is a sales agent",
+        user_playbook_extractor_config=None,
         profile_extractor_configs=[
             ProfileExtractorConfig(
                 extractor_name="test_profile_extractor",
@@ -226,20 +226,18 @@ def reflexio_instance_playbook_only(
     config = Config(
         storage_config=sqlite_storage_config,
         agent_context_prompt="this is a sales agent",
-        user_playbook_extractor_configs=[
-            PlaybookConfig(
-                extractor_name="test_playbook",
-                extraction_definition_prompt="""
+        user_playbook_extractor_config=PlaybookConfig(
+            extractor_name="test_playbook",
+            extraction_definition_prompt="""
 playbook should be something user told you to do differently in the next session. something sales rep did that makes user not satisfied.
 playbook content is what agent should do differently in the next session based on the conversation history and be actionable as much as possible.
 for example:
 if user mentions "I don't like the way you talked to me", summarize conversation history and playbook content should be what is the way agent talk which is not preferred by user.
 """,
-                aggregation_config=PlaybookAggregatorConfig(
-                    min_cluster_size=3,
-                ),
-            )
-        ],
+            aggregation_config=PlaybookAggregatorConfig(
+                min_cluster_size=3,
+            ),
+        ),
     )
     configurator = DefaultConfigurator(org_id=test_org_id, config=config)
     return Reflexio(org_id=test_org_id, configurator=configurator)
@@ -308,9 +306,22 @@ def save_user_playbooks(reflexio_instance: Reflexio):
 def _get_playbook_names(instance: Reflexio) -> list[str]:
     """Extract playbook names from the Reflexio instance's config."""
     config = instance.request_context.configurator.get_config()
-    if config and config.user_playbook_extractor_configs:
-        return [fc.extractor_name for fc in config.user_playbook_extractor_configs]
-    return []
+    if not config:
+        return []
+
+    playbook_config = config.user_playbook_extractor_config
+    if playbook_config:
+        names = {SINGLETON_USER_PLAYBOOK_NAME}
+        if playbook_config.extractor_name:
+            names.add(playbook_config.extractor_name)
+        return list(names)
+
+    legacy_configs = getattr(config, "user_playbook_extractor_configs", None)
+    if legacy_configs:
+        names = {SINGLETON_USER_PLAYBOOK_NAME}
+        names.update(fc.extractor_name for fc in legacy_configs if fc.extractor_name)
+        return list(names)
+    return [SINGLETON_USER_PLAYBOOK_NAME]
 
 
 def _cleanup_storage(instance: Reflexio):

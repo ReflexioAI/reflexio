@@ -222,7 +222,7 @@ Reflexio will automatically generate profiles and extract playbooks in the backg
 - Session-level evaluation triggered automatically (10 min after last request)
 - Shadow comparison mode: A/B test regular vs shadow agent responses
 - Tool usage analysis for blocking issue detection
-- **Causal measurement of Reflexio's impact** — session-level A/B grouping on the Evaluation page driven by `Request.metadata.reflexio_retrieval_enabled` (with per-turn shadow comparison in development)
+- **Causal measurement of Reflexio's impact** — source-set comparison on the Evaluation page groups evaluated sessions by the first request's `source`
 
 [Read more about evaluation →](https://www.reflexio.ai/docs/examples/agent-evaluation)
 

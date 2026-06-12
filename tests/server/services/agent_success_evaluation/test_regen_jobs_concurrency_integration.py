@@ -68,7 +68,6 @@ def _seed(storage: SQLiteStorage, session_id: str, ts: int) -> None:
             source="test",
             agent_version="v1",
             session_id=session_id,
-            metadata={"reflexio_retrieval_enabled": True},
         )
     )
     storage.save_agent_success_evaluation_results(
