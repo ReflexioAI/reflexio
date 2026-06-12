@@ -26,10 +26,12 @@ from reflexio.models.api_schema.service_schemas import (
     UserPlaybook,
 )
 from reflexio.models.config_schema import (
+    SINGLETON_USER_PLAYBOOK_NAME,
     Config,
     PlaybookAggregatorConfig,
     PlaybookConfig,
     ProfileExtractorConfig,
+    RetrievalFloorConfig,
     StorageConfigSQLite,
 )
 from reflexio.server.services.configurator.configurator import DefaultConfigurator
@@ -44,7 +46,9 @@ pytestmark = pytest.mark.e2e
 _ALPHA_USER = "instance-alpha"
 _BETA_USER = "instance-beta"
 _AGENT_VERSION = "openclaw-v1"
-_PLAYBOOK_NAME = "openclaw_playbook"
+# Generated and aggregated playbooks are stored under the singleton name
+# regardless of the configured extractor_name, so seed and query under it.
+_PLAYBOOK_NAME = SINGLETON_USER_PLAYBOOK_NAME
 
 
 def _make_correction_interactions(topic: str) -> list[InteractionData]:
@@ -99,19 +103,24 @@ def _make_reflexio_with_playbook(
     config = Config(
         storage_config=storage_config,
         agent_context_prompt="AI coding assistant that helps developers",
-        user_playbook_extractor_configs=[
-            PlaybookConfig(
-                extractor_name=_PLAYBOOK_NAME,
-                extraction_definition_prompt=(
-                    "Extract any correction the user gave the assistant — "
-                    "something the assistant did wrong that the user asked to change. "
-                    "Playbook content should be an actionable instruction for the next session."
-                ),
-                aggregation_config=PlaybookAggregatorConfig(
-                    min_cluster_size=min_cluster_size,
-                ),
-            )
-        ],
+        # These tests seed a single playbook per arm and search with a generic query
+        # to verify search plumbing (both playbook types surface), not relevance
+        # ranking. Disable the read-path cross-encoder relevance floor so a lone
+        # weakly-scoring seed is not dropped before it can be returned.
+        retrieval_floor=RetrievalFloorConfig(enabled=False),
+        # Single configured playbook extractor (the list-valued field is retired and
+        # the Config constructor would ignore it, leaving aggregation_config unset).
+        user_playbook_extractor_config=PlaybookConfig(
+            extractor_name=_PLAYBOOK_NAME,
+            extraction_definition_prompt=(
+                "Extract any correction the user gave the assistant — "
+                "something the assistant did wrong that the user asked to change. "
+                "Playbook content should be an actionable instruction for the next session."
+            ),
+            aggregation_config=PlaybookAggregatorConfig(
+                min_cluster_size=min_cluster_size,
+            ),
+        ),
     )
     configurator = DefaultConfigurator(org_id=org_id, config=config)
     return Reflexio(org_id=org_id, configurator=configurator)

@@ -764,7 +764,9 @@ def test_rerun_playbook_generation_end_to_end(
     """
     user_id = "test_user_rerun_playbook"
     agent_version = "test_agent_rerun_playbook"
-    playbook_name = "test_playbook"
+    # Generated playbooks are stored under the singleton name regardless of the
+    # configured extractor_name, so query by the singleton to retrieve them.
+    playbook_name = SINGLETON_USER_PLAYBOOK_NAME
 
     # Use mock mode to ensure consistent LLM responses
     original_env = os.environ.get("MOCK_LLM_RESPONSE")
@@ -1113,7 +1115,9 @@ def test_manual_playbook_generation_end_to_end(
     """
     user_id = "test_user_manual_playbook"
     agent_version = "test_agent_manual_playbook"
-    playbook_name = "manual_trigger_playbook"
+    # Generated playbooks are stored under the singleton name regardless of the
+    # configured extractor_name, so query by the singleton to retrieve them.
+    playbook_name = SINGLETON_USER_PLAYBOOK_NAME
 
     # Use mock mode to ensure consistent LLM responses
     original_env = os.environ.get("MOCK_LLM_RESPONSE")
@@ -1687,7 +1691,9 @@ def test_playbook_pipeline_preserves_structured_fields(
     """
     user_id = "test_user_structured_data"
     agent_version = "test_agent_structured_data"
-    playbook_name = "test_playbook"
+    # Generated playbooks are stored under the singleton name regardless of the
+    # configured extractor_name, so query by the singleton to retrieve them.
+    playbook_name = SINGLETON_USER_PLAYBOOK_NAME
 
     original_env = os.environ.get("MOCK_LLM_RESPONSE")
     try:
@@ -1821,6 +1827,14 @@ def test_knowledge_gap_playbook_extraction(
             role="Agent",
             content="You're right, I apologize. I don't actually have access to look up real-time order tracking information. I was making assumptions based on general timelines. For accurate order status, I'd recommend checking the tracking link in your confirmation email or contacting our order support team directly.",
         ),
+        InteractionData(
+            role="User",
+            content="Okay, thank you for being honest about that. So just to be clear, you genuinely can't see my order or tracking details on your end at all?",
+        ),
+        InteractionData(
+            role="Agent",
+            content="That's correct. I don't have a connection to the order or tracking systems, so I can't see your order details. Rather than guess, the reliable path is the tracking link in your confirmation email or our order support team, who can see the live data.",
+        ),
     ]
 
     original_env = os.environ.get("MOCK_LLM_RESPONSE")
@@ -1842,7 +1856,7 @@ def test_knowledge_gap_playbook_extraction(
         # Retrieve extracted playbooks
         playbooks_response = reflexio_instance_playbook_only.get_user_playbooks(
             GetUserPlaybooksRequest(
-                playbook_name="test_playbook",
+                playbook_name=SINGLETON_USER_PLAYBOOK_NAME,
                 status_filter=[None],
             )
         )

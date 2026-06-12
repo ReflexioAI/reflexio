@@ -78,20 +78,21 @@ def reflexio_instance(
     config = Config(
         storage_config=sqlite_storage_config,
         agent_context_prompt="this is a sales agent",
-        profile_extractor_configs=[
-            ProfileExtractorConfig(
-                extractor_name="test_profile_extractor",
-                context_prompt="""
+        # Single configured profile extractor (the list-valued field is retired and
+        # the Config constructor would ignore it, dropping metadata_definition_prompt
+        # and with it the mock's custom_features["metadata"]).
+        profile_extractor_config=ProfileExtractorConfig(
+            extractor_name="test_profile_extractor",
+            context_prompt="""
 Conversation between sales agent and user, extract any information from the interaction if contains any information listed under definition
 """,
-                extraction_definition_prompt="""
+            extraction_definition_prompt="""
 name, age, intent of the conversations
 """,
-                metadata_definition_prompt="""
+            metadata_definition_prompt="""
 choice of ['basic_info', 'conversation_intent']
 """,
-            )
-        ],
+        ),
         user_playbook_extractor_config=PlaybookConfig(
             extractor_name="test_playbook",
             extraction_definition_prompt="""
