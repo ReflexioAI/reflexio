@@ -1,5 +1,7 @@
 import os
 
+import pytest
+
 from reflexio.cli import env_loader
 
 
@@ -9,6 +11,21 @@ def test_resolve_mode_prefers_flag_then_env(monkeypatch):
     assert env_loader.resolve_mode(cli_mode=None) == "self_host"
     monkeypatch.delenv("DEPLOYMENT_MODE", raising=False)
     assert env_loader.resolve_mode(cli_mode=None) is None
+
+
+def test_resolve_mode_blank_is_none(monkeypatch):
+    monkeypatch.delenv("DEPLOYMENT_MODE", raising=False)
+    # A whitespace-only flag must not fall through to a ".env." filename.
+    assert env_loader.resolve_mode(cli_mode="   ") is None
+    monkeypatch.setenv("DEPLOYMENT_MODE", "  ")
+    assert env_loader.resolve_mode(cli_mode=None) is None
+
+
+def test_resolve_mode_rejects_path_traversal(monkeypatch):
+    monkeypatch.delenv("DEPLOYMENT_MODE", raising=False)
+    for unsafe in ("../etc/passwd", "a/b", "self_host/..", "mode$"):
+        with pytest.raises(ValueError, match="Invalid deployment mode"):
+            env_loader.resolve_mode(cli_mode=unsafe)
 
 
 def test_mode_filename(tmp_path, monkeypatch):

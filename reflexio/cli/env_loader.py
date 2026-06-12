@@ -141,19 +141,33 @@ def resolve_mode(cli_mode: str | None = None) -> str | None:
         2. ``DEPLOYMENT_MODE`` environment variable
         3. None (caller falls back to the plain ``.env`` loader)
 
+    The resolved mode is spliced into ``.env.<mode>`` file paths, so it is
+    validated against a safe slug pattern: an empty/whitespace value resolves to
+    None (fall back to the plain loader), and anything containing path
+    characters (``/``, ``..``) or other non-slug characters raises ValueError
+    rather than redirecting reads/writes/chmods outside ``~/.reflexio/``.
+
     Args:
         cli_mode: Mode passed explicitly via a CLI flag, if any.
 
     Returns:
         The normalized (stripped, lowercased) mode string, or None when no
         mode is selected.
+
+    Raises:
+        ValueError: If the selected mode is not a safe slug.
     """
     import os
 
-    if cli_mode:
-        return cli_mode.strip().lower()
-    env_mode = os.environ.get("DEPLOYMENT_MODE", "").strip().lower()
-    return env_mode or None
+    raw_mode = cli_mode if cli_mode is not None else os.environ.get("DEPLOYMENT_MODE")
+    if raw_mode is None:
+        return None
+    mode = raw_mode.strip().lower()
+    if not mode:
+        return None
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", mode):
+        raise ValueError(f"Invalid deployment mode: {raw_mode!r}")
+    return mode
 
 
 def load_reflexio_env_for_mode(
