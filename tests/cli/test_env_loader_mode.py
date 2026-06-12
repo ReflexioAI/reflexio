@@ -29,3 +29,15 @@ def test_override_false_process_env_wins(tmp_path, monkeypatch):
     monkeypatch.setenv("BACKEND_PORT", "9999")
     env_loader.load_reflexio_env_for_mode()
     assert os.environ["BACKEND_PORT"] == "9999"
+
+
+def test_autogen_writes_home_not_committed(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env.platform").write_text("DEPLOYMENT_MODE=platform\n")
+    monkeypatch.setenv("DEPLOYMENT_MODE", "platform")
+    monkeypatch.setattr(env_loader, "_USER_ENV_DIR", tmp_path / "home")
+    monkeypatch.delenv("JWT_SECRET_KEY", raising=False)
+    env_loader.load_reflexio_env_for_mode(auto_generate_keys=["JWT_SECRET_KEY"])
+    assert "JWT_SECRET_KEY" not in (tmp_path / ".env.platform").read_text()
+    assert (tmp_path / "home" / ".env.platform").exists()
+    assert "JWT_SECRET_KEY" in (tmp_path / "home" / ".env.platform").read_text()

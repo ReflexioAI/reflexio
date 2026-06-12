@@ -160,6 +160,7 @@ def load_reflexio_env_for_mode(
     *,
     cli_mode: str | None = None,
     package_data_module: str = "reflexio.data",
+    auto_generate_keys: list[str] | None = None,
 ) -> Path | None:
     """Load ``.env.<mode>`` presets plus optional home secrets, mode-aware.
 
@@ -175,6 +176,11 @@ def load_reflexio_env_for_mode(
         cli_mode: Mode passed explicitly via a CLI flag, if any.
         package_data_module: Module containing the bundled ``.env.<mode>``
             template (for ``importlib.resources``).
+        auto_generate_keys: Env var names to auto-generate as hex tokens
+            (e.g., ``["JWT_SECRET_KEY"]``) when missing. Generated secrets are
+            written ONLY to the gitignored ``~/.reflexio/.env.<mode>`` home
+            file — never the committed ``./.env.<mode>`` presets. Load-only
+            callers (the uvicorn / migration entrypoints) pass ``None``.
 
     Returns:
         Path to the loaded mode env file, or None if nothing was found/created.
@@ -182,7 +188,10 @@ def load_reflexio_env_for_mode(
     global _loaded_env_path
     mode = resolve_mode(cli_mode)
     if mode is None:
-        return load_reflexio_env(package_data_module=package_data_module)
+        return load_reflexio_env(
+            package_data_module=package_data_module,
+            auto_generate_keys=auto_generate_keys,
+        )
 
     # Optional gitignored home secrets, loaded first so committed presets and
     # process env both still win where they define the same keys.
@@ -190,14 +199,25 @@ def load_reflexio_env_for_mode(
     if home_secrets.exists():
         load_dotenv(dotenv_path=home_secrets, override=False)
 
-    for env_path in (Path(f".env.{mode}"), _USER_ENV_DIR / f".env.{mode}"):
+    loaded: Path | None = None
+    for env_path in (Path(f".env.{mode}"), home_secrets):
         if env_path.exists():
             load_dotenv(dotenv_path=env_path, override=False)
             _loaded_env_path = env_path.resolve()
             _logger.debug("Loaded mode env from: %s (mode=%s)", _loaded_env_path, mode)
-            return env_path
+            loaded = env_path
+            break
 
-    return _create_default_env_for_mode(mode, package_data_module)
+    if loaded is None:
+        loaded = _create_default_env_for_mode(mode, package_data_module)
+
+    # Auto-generate any missing secret keys into the gitignored home file ONLY,
+    # never the committed ./.env.<mode> presets file.
+    if auto_generate_keys:
+        _USER_ENV_DIR.mkdir(parents=True, exist_ok=True)
+        _backfill_missing_keys(home_secrets, auto_generate_keys)
+
+    return loaded
 
 
 def _create_default_env_for_mode(mode: str, package_data_module: str) -> Path | None:
