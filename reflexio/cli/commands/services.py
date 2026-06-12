@@ -123,7 +123,14 @@ def _ensure_llm_configured(env_path: Path) -> None:
         )
         _prompt_embedding_provider(env_path, non_embedding_provider)
 
-    load_dotenv(dotenv_path=env_path, override=False)
+    # override=True is required here: the wizard wrote the operator's chosen key
+    # to the .env FILE only (via set_env_var), never to os.environ. A fresh
+    # install ships an empty OPENAI_API_KEY placeholder already in os.environ, so
+    # with override=False this reload would skip the (present-but-empty) var and
+    # the key just entered would never reach the process env. For this OSS local
+    # first-run path the file value must win. (The enterprise mode-file path uses
+    # override=False in load_reflexio_env_for_mode and is unaffected.)
+    load_dotenv(dotenv_path=env_path, override=True)
     typer.echo()
 
 

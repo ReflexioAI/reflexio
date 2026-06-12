@@ -60,7 +60,7 @@ class TestEnsureLlmConfigured:
         mock_emb.assert_not_called()
 
     def test_prompts_when_no_providers_and_tty(self, tmp_path: Path) -> None:
-        """No keys + interactive stdin → both wizard helpers run, env reloads (process env wins)."""
+        """No keys + interactive stdin → both wizard helpers run, env reloads with override=True (file wins)."""
         env = tmp_path / ".env"
         env.write_text("")
         with (
@@ -82,7 +82,51 @@ class TestEnsureLlmConfigured:
             _ensure_llm_configured(env)
         mock_llm.assert_called_once_with(env)
         mock_emb.assert_called_once_with(env, "openai")
-        mock_load.assert_called_once_with(dotenv_path=env, override=False)
+        mock_load.assert_called_once_with(dotenv_path=env, override=True)
+
+    def test_wizard_key_reaches_os_environ_after_reload(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The key the wizard writes to the .env FILE must win over the shipped
+        empty placeholder already in ``os.environ`` after the reload.
+
+        This is the F002 regression guard: with ``override=False`` the empty
+        ``OPENAI_API_KEY`` placeholder would shadow the file value and the key
+        the operator just entered would be lost. ``load_dotenv`` runs for real
+        here (only the prompt helpers are mocked) so we exercise the actual
+        file-wins behaviour.
+        """
+        env = tmp_path / ".env"
+
+        # A fresh install ships an empty placeholder already present in the
+        # process env; that is exactly what must NOT shadow the file value.
+        monkeypatch.setenv("OPENAI_API_KEY", "")
+
+        def _write_real_key(_env_path: Path) -> tuple[str, str, str]:
+            # Stand in for the wizard's set_env_var: write to the FILE only.
+            env.write_text("OPENAI_API_KEY=sk-real-entered-key\n")
+            return ("OpenAI", "gpt-5.4-mini", "openai")
+
+        with (
+            patch(
+                "reflexio.server.llm.model_defaults.detect_available_providers",
+                return_value=[],
+            ),
+            patch("sys.stdin.isatty", return_value=True),
+            patch(
+                "reflexio.cli.commands.setup_cmd._prompt_llm_provider",
+                side_effect=_write_real_key,
+            ),
+            patch(
+                "reflexio.cli.commands.setup_cmd._prompt_embedding_provider",
+                return_value=None,
+            ),
+        ):
+            _ensure_llm_configured(env)
+
+        import os
+
+        assert os.environ["OPENAI_API_KEY"] == "sk-real-entered-key"
 
     def test_exits_cleanly_when_no_providers_and_non_tty(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]

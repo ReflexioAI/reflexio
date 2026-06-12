@@ -55,7 +55,7 @@ The client authenticates via Bearer token. Provide your API key in one of two wa
 1. **Constructor**: `ReflexioClient(api_key="your-key")`
 2. **Environment variable**: Set `REFLEXIO_API_KEY` (auto-detected)
 
-The base URL defaults to `https://www.reflexio.ai/` and can be overridden with `url_endpoint` or the `REFLEXIO_API_URL` env var.
+The base URL defaults to `https://www.reflexio.ai/` and can be overridden with `url_endpoint` or the `REFLEXIO_URL` env var.
 
 ## Publishing Interactions
 
