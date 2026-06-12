@@ -100,6 +100,7 @@ def test_search_profiles_end_to_end(
     reflexio_instance_profile_only.publish_interaction(
         {
             "user_id": user_id,
+            "session_id": "e2e_test_session",
             "interaction_data_list": sample_interaction_requests,
             "source": "test_conversation",
         }
@@ -157,6 +158,7 @@ def test_get_profiles_end_to_end(
     reflexio_instance_profile_only.publish_interaction(
         {
             "user_id": user_id,
+            "session_id": "e2e_test_session",
             "interaction_data_list": sample_interaction_requests,
             "source": "test_conversation",
         }
@@ -198,6 +200,7 @@ def test_delete_profile_end_to_end(
     response = reflexio_instance_profile_only.publish_interaction(
         {
             "user_id": user_id,
+            "session_id": "e2e_test_session",
             "interaction_data_list": sample_interaction_requests,
             "source": "test_conversation",
         }
@@ -246,6 +249,7 @@ def test_get_profile_change_logs_end_to_end(
     response = reflexio_instance_profile_only.publish_interaction(
         {
             "user_id": user_id,
+            "session_id": "e2e_test_session",
             "interaction_data_list": sample_interaction_requests,
             "source": "test_conversation",
         }
@@ -293,6 +297,7 @@ def test_rerun_profile_generation_end_to_end(
     response = reflexio_instance_profile_only.publish_interaction(
         {
             "user_id": user_id,
+            "session_id": "e2e_test_session",
             "interaction_data_list": sample_interaction_requests,
             "source": "test_conversation",
         }
@@ -384,6 +389,7 @@ def test_rerun_profile_generation_with_time_filters(
     response = reflexio_instance_profile_only.publish_interaction(
         {
             "user_id": user_id,
+            "session_id": "e2e_test_session",
             "interaction_data_list": sample_interaction_requests,
             "source": "test_conversation",
         }
@@ -462,6 +468,7 @@ def test_rerun_profile_generation_with_source_filter(
     response_a = reflexio_instance_profile_only.publish_interaction(
         {
             "user_id": user_id,
+            "session_id": "e2e_test_session",
             "interaction_data_list": sample_interaction_requests,
             "source": "test_source_a",
         }
@@ -472,6 +479,7 @@ def test_rerun_profile_generation_with_source_filter(
     response_b = reflexio_instance_profile_only.publish_interaction(
         {
             "user_id": user_id,
+            "session_id": "e2e_test_session",
             "interaction_data_list": [
                 InteractionData(
                     content="Just a test message for source B",
@@ -541,6 +549,7 @@ def test_status_filter_in_get_all_profiles(
     response = reflexio_instance_profile_only.publish_interaction(
         {
             "user_id": user_id,
+            "session_id": "e2e_test_session",
             "interaction_data_list": sample_interaction_requests,
             "source": "test_conversation",
         }
@@ -589,6 +598,7 @@ def test_status_filter_in_search_user_profiles(
     response = reflexio_instance_profile_only.publish_interaction(
         {
             "user_id": user_id,
+            "session_id": "e2e_test_session",
             "interaction_data_list": sample_interaction_requests,
             "source": "test_conversation",
         }
@@ -643,6 +653,7 @@ def test_status_filter_in_get_profiles_request(
     response = reflexio_instance_profile_only.publish_interaction(
         {
             "user_id": user_id,
+            "session_id": "e2e_test_session",
             "interaction_data_list": sample_interaction_requests,
             "source": "test_conversation",
         }
@@ -994,6 +1005,7 @@ def test_manual_profile_generation_end_to_end(
     publish_response = reflexio_instance_manual_profile.publish_interaction(
         {
             "user_id": user_id,
+            "session_id": "e2e_test_session",
             "interaction_data_list": sample_interaction_requests,
             "source": "test_manual_source",
         }
@@ -1050,6 +1062,7 @@ def test_manual_profile_generation_no_window_size(
     publish_response = reflexio_instance_profile_only.publish_interaction(
         {
             "user_id": user_id,
+            "session_id": "e2e_test_session",
             "interaction_data_list": sample_interaction_requests,
             "source": "test_source",
         }
@@ -1086,6 +1099,7 @@ def test_manual_profile_generation_with_source_filter(
     response_a = reflexio_instance_manual_profile.publish_interaction(
         {
             "user_id": user_id,
+            "session_id": "e2e_test_session",
             "interaction_data_list": sample_interaction_requests,
             "source": "source_a",
         }
@@ -1096,6 +1110,7 @@ def test_manual_profile_generation_with_source_filter(
     response_b = reflexio_instance_manual_profile.publish_interaction(
         {
             "user_id": user_id,
+            "session_id": "e2e_test_session",
             "interaction_data_list": [
                 InteractionData(
                     content="Simple message for source B",
@@ -1139,6 +1154,7 @@ def test_manual_profile_generation_with_dict_input(
     publish_response = reflexio_instance_manual_profile.publish_interaction(
         {
             "user_id": user_id,
+            "session_id": "e2e_test_session",
             "interaction_data_list": sample_interaction_requests,
             "source": "test_source",
         }
@@ -1173,6 +1189,7 @@ def test_rerun_profile_generation_with_extractor_names_filter(
         reflexio_instance_multiple_profile_extractors.publish_interaction(
             {
                 "user_id": user_id,
+                "session_id": "e2e_test_session",
                 "interaction_data_list": sample_interaction_requests,
                 "source": "test_source",
             }
@@ -1224,6 +1241,7 @@ def test_rerun_profile_generation_with_single_extractor(
         reflexio_instance_multiple_profile_extractors.publish_interaction(
             {
                 "user_id": user_id,
+                "session_id": "e2e_test_session",
                 "interaction_data_list": sample_interaction_requests,
                 "source": "test_source",
             }
@@ -1265,6 +1283,7 @@ def test_rerun_profile_generation_with_nonexistent_extractor_name(
         reflexio_instance_multiple_profile_extractors.publish_interaction(
             {
                 "user_id": user_id,
+                "session_id": "e2e_test_session",
                 "interaction_data_list": sample_interaction_requests,
                 "source": "test_source",
             }
@@ -1365,6 +1384,7 @@ def test_profile_dedup_resolves_contradiction(
     response = reflexio_instance_lifestyle_profile.publish_interaction(
         {
             "user_id": user_id,
+            "session_id": "e2e_test_session",
             "interaction_data_list": batch_1,
             "source": "contradiction_test",
         }
@@ -1389,6 +1409,7 @@ def test_profile_dedup_resolves_contradiction(
     response = reflexio_instance_lifestyle_profile.publish_interaction(
         {
             "user_id": user_id,
+            "session_id": "e2e_test_session",
             "interaction_data_list": batch_2,
             "source": "contradiction_test",
         }

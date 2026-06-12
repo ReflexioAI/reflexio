@@ -216,6 +216,7 @@ class TestOpenClawMultiUser:
         alpha_resp = instance.publish_interaction(
             {
                 "user_id": _ALPHA_USER,
+                "session_id": "e2e_test_session",
                 "interaction_data_list": alpha_turns,
                 "agent_version": _AGENT_VERSION,
                 "source": "openclaw",
@@ -226,6 +227,7 @@ class TestOpenClawMultiUser:
         beta_resp = instance.publish_interaction(
             {
                 "user_id": _BETA_USER,
+                "session_id": "e2e_test_session",
                 "interaction_data_list": beta_turns,
                 "agent_version": _AGENT_VERSION,
                 "source": "openclaw",
@@ -625,6 +627,7 @@ class TestGracefulDegradation:
         resp = instance.publish_interaction(
             {
                 "user_id": _ALPHA_USER,
+                "session_id": "e2e_test_session",
                 "interaction_data_list": single_turn,
                 "agent_version": _AGENT_VERSION,
                 "source": "openclaw",

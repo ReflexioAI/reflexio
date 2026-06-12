@@ -188,6 +188,7 @@ def test_error_handling_end_to_end(
     empty_response = reflexio_instance.publish_interaction(
         {
             "user_id": "test_user_empty",
+            "session_id": "e2e_test_session",
             "interaction_data_list": [],
         }
     )
@@ -299,6 +300,7 @@ def test_profile_status_filtering(
     publish_response = reflexio_instance.publish_interaction(
         {
             "user_id": user_id,
+            "session_id": "e2e_test_session",
             "interaction_data_list": sample_interaction_requests,
             "source": "test_source",
             "agent_version": "v1",
@@ -358,6 +360,7 @@ def test_profile_upgrade_downgrade_workflow(
     publish_response = reflexio_instance.publish_interaction(
         {
             "user_id": user_id,
+            "session_id": "e2e_test_session",
             "interaction_data_list": sample_interaction_requests,
             "source": "test_source",
             "agent_version": "v1",
@@ -443,6 +446,7 @@ def test_time_filtering_and_pagination(
     publish_response = reflexio_instance.publish_interaction(
         {
             "user_id": user_id,
+            "session_id": "e2e_test_session",
             "interaction_data_list": sample_interaction_requests,
             "source": "test_source",
             "agent_version": "v1",
@@ -506,6 +510,7 @@ def test_dashboard_statistics(
     publish_response = reflexio_instance.publish_interaction(
         {
             "user_id": user_id,
+            "session_id": "e2e_test_session",
             "interaction_data_list": sample_interaction_requests,
             "source": "test_source",
             "agent_version": "v1",
@@ -550,6 +555,7 @@ def test_rerun_profile_generation_with_filters(
     publish_response_1 = reflexio_instance.publish_interaction(
         {
             "user_id": user_id,
+            "session_id": "e2e_test_session",
             "interaction_data_list": sample_interaction_requests[:2],
             "source": "source_a",
             "agent_version": "v1",
@@ -560,6 +566,7 @@ def test_rerun_profile_generation_with_filters(
     publish_response_2 = reflexio_instance.publish_interaction(
         {
             "user_id": user_id,
+            "session_id": "e2e_test_session",
             "interaction_data_list": sample_interaction_requests[2:4],
             "source": "source_b",
             "agent_version": "v1",
@@ -608,6 +615,7 @@ def test_get_all_operations(
         publish_response = reflexio_instance.publish_interaction(
             {
                 "user_id": user_id,
+                "session_id": "e2e_test_session",
                 "interaction_data_list": sample_interaction_requests[:2],
                 "source": "test_source",
                 "agent_version": "v1",

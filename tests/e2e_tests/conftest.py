@@ -49,9 +49,14 @@ def _zero_group_evaluation_delay():
 
 
 @pytest.fixture
-def sqlite_storage_config() -> StorageConfigSQLite:
-    """Create a StorageConfigSQLite instance for e2e testing."""
-    return StorageConfigSQLite()
+def sqlite_storage_config(tmp_path) -> StorageConfigSQLite:
+    """Create a StorageConfigSQLite instance for e2e testing.
+
+    Each test gets its own SQLite DB in a temp dir so tests never share state
+    via the default ``~/.reflexio/data/reflexio.db`` path (which also avoids
+    stale-schema breakage when that shared DB predates a schema change).
+    """
+    return StorageConfigSQLite(db_path=str(tmp_path / "reflexio.db"))
 
 
 @pytest.fixture

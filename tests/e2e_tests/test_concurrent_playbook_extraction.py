@@ -101,6 +101,7 @@ def _publish_for_user(
     response = reflexio.publish_interaction(
         {
             "user_id": user_id,
+            "session_id": "e2e_test_session",
             "interaction_data_list": interactions,
             "source": "concurrent_test",
             "agent_version": agent_version,

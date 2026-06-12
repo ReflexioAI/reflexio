@@ -44,6 +44,7 @@ class TestPublishInteraction:
     def _publish_payload():
         return {
             "user_id": "user-1",
+            "session_id": "sess-1",
             "interaction_data_list": [
                 {
                     "user_id": "user-1",

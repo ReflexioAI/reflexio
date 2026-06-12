@@ -452,6 +452,7 @@ class TestPublishInteraction:
         response = mixin.publish_interaction(
             {
                 "user_id": "user1",
+                "session_id": "test_session",
                 "interaction_data_list": [{"role": "User", "content": "hi"}],
             }
         )

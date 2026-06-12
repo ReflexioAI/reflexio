@@ -123,6 +123,7 @@ def test_search_interactions_end_to_end(
     reflexio_instance.publish_interaction(
         {
             "user_id": user_id,
+            "session_id": "e2e_test_session",
             "interaction_data_list": sample_interaction_requests,
             "source": "test_conversation",
         }
@@ -161,6 +162,7 @@ def test_get_interactions_end_to_end(
     reflexio_instance.publish_interaction(
         {
             "user_id": user_id,
+            "session_id": "e2e_test_session",
             "interaction_data_list": sample_interaction_requests,
             "source": "test_conversation",
         }
@@ -201,6 +203,7 @@ def test_delete_interaction_end_to_end(
     response = reflexio_instance.publish_interaction(
         {
             "user_id": user_id,
+            "session_id": "e2e_test_session",
             "interaction_data_list": sample_interaction_requests,
             "source": "test_conversation",
         }
@@ -267,6 +270,7 @@ def test_dict_input_handling_end_to_end(
     response = reflexio_instance.publish_interaction(
         {
             "user_id": user_id,
+            "session_id": "e2e_test_session",
             "interaction_data_list": interaction_dicts,
             "source": "test_conversation",
         }

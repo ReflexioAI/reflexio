@@ -52,31 +52,27 @@ def test_set_config_end_to_end(
     # Create a new configuration
     new_config = Config(
         storage_config=sqlite_storage_config,
-        profile_extractor_configs=[
-            ProfileExtractorConfig(
-                extractor_name="test_config_extractor",
-                context_prompt="""
-                Test configuration: Extract key information from conversations.
-                """,
-                extraction_definition_prompt="""
-                Test profile content definition.
-                """,
-                metadata_definition_prompt="""
-                Test metadata definition.
-                """,
-            )
-        ],
-        user_playbook_extractor_configs=[
-            PlaybookConfig(
-                extractor_name="test_config_playbook",
-                extraction_definition_prompt="""
-                Test playbook definition for configuration test.
-                """,
-                aggregation_config=PlaybookAggregatorConfig(
-                    min_cluster_size=3,
-                ),
-            )
-        ],
+        profile_extractor_config=ProfileExtractorConfig(
+            extractor_name="test_config_extractor",
+            context_prompt="""
+            Test configuration: Extract key information from conversations.
+            """,
+            extraction_definition_prompt="""
+            Test profile content definition.
+            """,
+            metadata_definition_prompt="""
+            Test metadata definition.
+            """,
+        ),
+        user_playbook_extractor_config=PlaybookConfig(
+            extractor_name="test_config_playbook",
+            extraction_definition_prompt="""
+            Test playbook definition for configuration test.
+            """,
+            aggregation_config=PlaybookAggregatorConfig(
+                min_cluster_size=3,
+            ),
+        ),
     )
 
     # Test setting config with Config object
@@ -87,43 +83,37 @@ def test_set_config_end_to_end(
     # Verify configuration was actually set by checking the configurator
     current_config = reflexio.request_context.configurator.get_config()
     assert current_config is not None
-    assert len(current_config.profile_extractor_configs) == 1
+    assert current_config.profile_extractor_config is not None
     assert (
-        current_config.profile_extractor_configs[0].context_prompt.strip()
-        == new_config.profile_extractor_configs[0].context_prompt.strip()
+        current_config.profile_extractor_config.context_prompt.strip()
+        == new_config.profile_extractor_config.context_prompt.strip()
     )
-    assert len(current_config.user_playbook_extractor_configs) == 1
+    assert current_config.user_playbook_extractor_config is not None
     assert (
-        current_config.user_playbook_extractor_configs[0].extractor_name
+        current_config.user_playbook_extractor_config.extractor_name
         == "test_config_playbook"
     )
     assert (
-        current_config.user_playbook_extractor_configs[
-            0
-        ].aggregation_config.min_cluster_size
+        current_config.user_playbook_extractor_config.aggregation_config.min_cluster_size
         == 3
     )
 
     # Test setting config with dict input
     config_dict = {
         "storage_config": sqlite_storage_config.model_dump(),
-        "profile_extractor_configs": [
-            {
-                "extractor_name": "dict_test_extractor",
-                "context_prompt": "Updated test configuration from dict.",
-                "extraction_definition_prompt": "Updated profile content from dict.",
-                "metadata_definition_prompt": "Updated metadata from dict.",
-            }
-        ],
-        "user_playbook_extractor_configs": [
-            {
-                "extractor_name": "dict_test_playbook",
-                "extraction_definition_prompt": "Dict playbook definition.",
-                "aggregation_config": {
-                    "min_cluster_size": 5,
-                },
-            }
-        ],
+        "profile_extractor_config": {
+            "extractor_name": "dict_test_extractor",
+            "context_prompt": "Updated test configuration from dict.",
+            "extraction_definition_prompt": "Updated profile content from dict.",
+            "metadata_definition_prompt": "Updated metadata from dict.",
+        },
+        "user_playbook_extractor_config": {
+            "extractor_name": "dict_test_playbook",
+            "extraction_definition_prompt": "Dict playbook definition.",
+            "aggregation_config": {
+                "min_cluster_size": 5,
+            },
+        },
     }
 
     # Test setting config with dict
@@ -134,20 +124,18 @@ def test_set_config_end_to_end(
     # Verify dict configuration was set
     updated_config = reflexio.request_context.configurator.get_config()
     assert updated_config is not None
-    assert len(updated_config.profile_extractor_configs) == 1
+    assert updated_config.profile_extractor_config is not None
     assert (
         "Updated test configuration from dict"
-        in updated_config.profile_extractor_configs[0].context_prompt
+        in updated_config.profile_extractor_config.context_prompt
     )
-    assert len(updated_config.user_playbook_extractor_configs) == 1
+    assert updated_config.user_playbook_extractor_config is not None
     assert (
-        updated_config.user_playbook_extractor_configs[0].extractor_name
+        updated_config.user_playbook_extractor_config.extractor_name
         == "dict_test_playbook"
     )
     assert (
-        updated_config.user_playbook_extractor_configs[
-            0
-        ].aggregation_config.min_cluster_size
+        updated_config.user_playbook_extractor_config.aggregation_config.min_cluster_size
         == 5
     )
 
@@ -195,23 +183,19 @@ def test_get_config_end_to_end(
     # Step 2: Set a specific configuration
     new_config = Config(
         storage_config=sqlite_storage_config,
-        profile_extractor_configs=[
-            ProfileExtractorConfig(
-                extractor_name="get_config_test_extractor",
-                context_prompt="Get config test: Extract key information.",
-                extraction_definition_prompt="Get config test profile content.",
-                metadata_definition_prompt="Get config test metadata.",
-            )
-        ],
-        user_playbook_extractor_configs=[
-            PlaybookConfig(
-                extractor_name="get_config_test_playbook",
-                extraction_definition_prompt="Get config test playbook definition.",
-                aggregation_config=PlaybookAggregatorConfig(
-                    min_cluster_size=10,
-                ),
-            )
-        ],
+        profile_extractor_config=ProfileExtractorConfig(
+            extractor_name="get_config_test_extractor",
+            context_prompt="Get config test: Extract key information.",
+            extraction_definition_prompt="Get config test profile content.",
+            metadata_definition_prompt="Get config test metadata.",
+        ),
+        user_playbook_extractor_config=PlaybookConfig(
+            extractor_name="get_config_test_playbook",
+            extraction_definition_prompt="Get config test playbook definition.",
+            aggregation_config=PlaybookAggregatorConfig(
+                min_cluster_size=10,
+            ),
+        ),
     )
 
     set_response = reflexio.set_config(new_config)
@@ -222,23 +206,18 @@ def test_get_config_end_to_end(
     assert retrieved_config is not None
     assert isinstance(retrieved_config, Config)
 
-    # Verify profile extractor configs
-    assert len(retrieved_config.profile_extractor_configs) == 1
-    assert (
-        "Get config test"
-        in retrieved_config.profile_extractor_configs[0].context_prompt
-    )
+    # Verify profile extractor config
+    assert retrieved_config.profile_extractor_config is not None
+    assert "Get config test" in retrieved_config.profile_extractor_config.context_prompt
 
-    # Verify agent playbook configs
-    assert len(retrieved_config.user_playbook_extractor_configs) == 1
+    # Verify agent playbook config
+    assert retrieved_config.user_playbook_extractor_config is not None
     assert (
-        retrieved_config.user_playbook_extractor_configs[0].extractor_name
+        retrieved_config.user_playbook_extractor_config.extractor_name
         == "get_config_test_playbook"
     )
     assert (
-        retrieved_config.user_playbook_extractor_configs[
-            0
-        ].aggregation_config.min_cluster_size
+        retrieved_config.user_playbook_extractor_config.aggregation_config.min_cluster_size
         == 10
     )
 

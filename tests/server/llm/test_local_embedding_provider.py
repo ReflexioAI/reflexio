@@ -232,10 +232,16 @@ class TestLiteLLMClientShortCircuit:
         from reflexio.server.llm import litellm_client
         from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 
-        _install_fake_chroma(monkeypatch)
+        # CLAUDE_SMART_USE_LOCAL_EMBEDDING=1 selects the local embedding *service*
+        # (daemon) mode (see embedding_provider_mode). The request must route to
+        # that service and never reach litellm. Mock the service call so the test
+        # is hermetic (no running daemon required).
         monkeypatch.setenv("CLAUDE_SMART_USE_LOCAL_EMBEDDING", "1")
-        monkeypatch.setattr(lep.importlib.util, "find_spec", lambda _name: MagicMock())
-        register_if_enabled()
+        monkeypatch.setattr(
+            litellm_client,
+            "get_service_embeddings",
+            lambda texts, **_kwargs: [[0.0] * 512 for _ in texts],
+        )
 
         client = LiteLLMClient(LiteLLMConfig(model="claude-code/default"))
 
@@ -251,10 +257,14 @@ class TestLiteLLMClientShortCircuit:
         from reflexio.server.llm import litellm_client
         from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 
-        _install_fake_chroma(monkeypatch)
+        # CLAUDE_SMART_USE_LOCAL_EMBEDDING=1 routes the batch path to the local
+        # embedding *service* (daemon) too. Mock the service call for hermeticity.
         monkeypatch.setenv("CLAUDE_SMART_USE_LOCAL_EMBEDDING", "1")
-        monkeypatch.setattr(lep.importlib.util, "find_spec", lambda _name: MagicMock())
-        register_if_enabled()
+        monkeypatch.setattr(
+            litellm_client,
+            "get_service_embeddings",
+            lambda texts, **_kwargs: [[0.0] * 512 for _ in texts],
+        )
 
         client = LiteLLMClient(LiteLLMConfig(model="claude-code/default"))
 

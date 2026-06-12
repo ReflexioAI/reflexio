@@ -68,6 +68,7 @@ def test_knowledge_gap_extraction_real_llm(
         response = reflexio_instance_playbook_only.publish_interaction(
             {
                 "user_id": "knowledge_gap_user",
+                "session_id": "e2e_test_session",
                 "interaction_data_list": interactions,
                 "source": "test_knowledge_gap",
                 "agent_version": "v1.0",
