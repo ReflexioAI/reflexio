@@ -98,6 +98,24 @@ class ScoreDistribution(BaseModel):
     labels: list[str]
 
 
+class EvaluationSourceSetRequest(BaseModel):
+    """One labeled request-source cohort for evaluation comparison.
+
+    ``sources`` match ``Request.source`` exactly. The empty string is valid and
+    represents requests published without a source.
+    """
+
+    label: NonEmptyStr
+    sources: list[str] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_sources_are_unique(self) -> Self:
+        """Reject duplicate source values within a single set."""
+        if len(set(self.sources)) != len(self.sources):
+            raise ValueError("source set sources must be unique")
+        return self
+
+
 class GetEvaluationOverviewRequest(BaseModel):
     """Input for the overview endpoint.
 
@@ -107,18 +125,34 @@ class GetEvaluationOverviewRequest(BaseModel):
         bucket (BucketLiteral): Granularity of the hero trend buckets.
         include_shadow (bool): When False, skip the shadow-side aggregations
             (cheaper) — the hero will degrade to shadow_off state.
+        source_sets (list[EvaluationSourceSetRequest]): Optional labeled
+            request-source cohorts to compare. Sources are matched exactly
+            against the first request in each evaluated session.
     """
 
     from_ts: int = Field(ge=0)
     to_ts: int = Field(ge=0)
     bucket: BucketLiteral = "week"
     include_shadow: bool = True
+    source_sets: list[EvaluationSourceSetRequest] = Field(default_factory=list)
 
     @model_validator(mode="after")
-    def validate_time_window(self) -> Self:
-        """Ensure the requested time window is ordered."""
+    def validate_request(self) -> Self:
+        """Ensure the requested time window and source sets are valid."""
         if self.from_ts > self.to_ts:
             raise ValueError("from_ts must be <= to_ts")
+        labels = [s.label for s in self.source_sets]
+        if len(set(labels)) != len(labels):
+            raise ValueError("source set labels must be unique")
+        seen_sources: set[str] = set()
+        for source_set in self.source_sets:
+            overlap = seen_sources.intersection(source_set.sources)
+            if overlap:
+                overlap_list = ", ".join(sorted(repr(s) for s in overlap))
+                raise ValueError(
+                    f"source values cannot appear in multiple source sets: {overlap_list}"
+                )
+            seen_sources.update(source_set.sources)
         return self
 
 
@@ -154,19 +188,10 @@ class TrendPoint(BaseModel):
 
 
 class SuccessRateTrendByGroup(BaseModel):
-    """Group-split trend data for the dashboard's dual-curve chart (F2).
+    """Legacy metadata-split trend data for older dashboard clients.
 
-    Grouping is by ``Request.metadata.reflexio_retrieval_enabled``, read from
-    the first request of each session in the window. Sessions whose first
-    request has the key absent OR a non-bool value land in ``untagged``.
-
-    Args:
-        treatment (list[TrendPoint]): Curve for sessions where the first
-            request had ``metadata.reflexio_retrieval_enabled = True``.
-        control (list[TrendPoint]): Curve for ``... = False``.
-        untagged (list[TrendPoint]): Curve for sessions where the key is
-            absent or non-bool — surfaced (not silently coerced) so
-            customers can see how many of their sessions are untagged.
+    Source-set comparison is carried by ``SourceSetComparison``. This field is
+    kept for backward compatibility with older frontend builds.
     """
 
     treatment: list[TrendPoint] = Field(default_factory=list)
@@ -243,6 +268,29 @@ class ShadowWinRateTrend(BaseModel):
     judge_prompt_version: str = Field(default="v1.0.0")
 
 
+class SourceSetEvaluationMetrics(BaseModel):
+    """Metrics for one labeled request-source set."""
+
+    label: str
+    sources: list[str]
+    session_count: int = Field(ge=0)
+    session_ids: list[str] = Field(default_factory=list)
+    success_rate_pp: float
+    buckets: list[HeroBucket]
+    context_tiles: ContextTile
+    score_distribution: ScoreDistribution
+    rule_attribution: list[RuleAttributionRow]
+    braintrust_tiles: list[BraintrustTileRow] = Field(default_factory=list)
+
+
+class SourceSetComparison(BaseModel):
+    """Comparison payload for request-source cohorts."""
+
+    available_sources: list[str] = Field(default_factory=list)
+    sets: list[SourceSetEvaluationMetrics] = Field(default_factory=list)
+    unmatched_session_count: int = Field(default=0, ge=0)
+
+
 class GetEvaluationOverviewResponse(BaseModel):
     hero: HeroBlock
     context_tiles: ContextTile
@@ -254,6 +302,9 @@ class GetEvaluationOverviewResponse(BaseModel):
     )
     shadow_win_rate_trend: ShadowWinRateTrend = Field(
         default_factory=ShadowWinRateTrend
+    )
+    source_set_comparison: SourceSetComparison = Field(
+        default_factory=SourceSetComparison
     )
 
 

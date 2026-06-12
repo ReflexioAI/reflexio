@@ -1,4 +1,4 @@
-"""Pure aggregation helpers for F2's session-level A/B groups.
+"""Pure aggregation helpers for legacy metadata-based session groups.
 
 These functions are deliberately DB-free and LLM-free so they can be unit
 tested in milliseconds and exercised by mutmut. The storage layer hands
@@ -30,7 +30,7 @@ _MAX_CI_HALF_WIDTH = 0.5
 
 
 class GroupAssignment(StrEnum):
-    """Group label derived from `Request.metadata.reflexio_retrieval_enabled`."""
+    """Legacy group label derived from request metadata."""
 
     TREATMENT = "treatment"
     CONTROL = "control"
@@ -39,7 +39,7 @@ class GroupAssignment(StrEnum):
 
 def assign_group_from_metadata(metadata: dict[str, Any]) -> GroupAssignment:
     """
-    Bucket a session by its first request's metadata.
+    Bucket a session by its first request's legacy metadata.
 
     Reads ``metadata.reflexio_retrieval_enabled`` as a true bool. Anything
     else (missing, string, int, None) maps to UNTAGGED — we never silently

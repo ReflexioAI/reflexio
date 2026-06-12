@@ -3,11 +3,15 @@ extended GetEvaluationOverviewResponse field."""
 
 from reflexio.models.api_schema.eval_overview_schema import (
     ContextTile,
+    EvaluationSourceSetRequest,
+    GetEvaluationOverviewRequest,
     GetEvaluationOverviewResponse,
     HeroBlock,
     NumberWithDelta,
     PercentWithDelta,
     ScoreDistribution,
+    SourceSetComparison,
+    SourceSetEvaluationMetrics,
     SuccessRateTrendByGroup,
     TrendPoint,
 )
@@ -85,3 +89,82 @@ def test_overview_response_carries_provided_group_trend():
     assert r.success_rate_trend_by_group.treatment[0].rate == 0.7
     assert len(r.success_rate_trend_by_group.control) == 1
     assert r.success_rate_trend_by_group.untagged == []
+
+
+def test_source_set_request_accepts_empty_source_value():
+    request = GetEvaluationOverviewRequest(
+        from_ts=0,
+        to_ts=1,
+        source_sets=[EvaluationSourceSetRequest(label="empty", sources=[""])],
+    )
+    assert request.source_sets[0].sources == [""]
+
+
+def test_source_set_request_rejects_duplicate_labels():
+    import pytest
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        GetEvaluationOverviewRequest(
+            from_ts=0,
+            to_ts=1,
+            source_sets=[
+                EvaluationSourceSetRequest(label="same", sources=["a"]),
+                EvaluationSourceSetRequest(label="same", sources=["b"]),
+            ],
+        )
+
+
+def test_source_set_request_rejects_empty_sources():
+    import pytest
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        EvaluationSourceSetRequest(label="empty", sources=[])
+
+
+def test_source_set_request_rejects_overlapping_sources():
+    import pytest
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        GetEvaluationOverviewRequest(
+            from_ts=0,
+            to_ts=1,
+            source_sets=[
+                EvaluationSourceSetRequest(label="a", sources=["shared"]),
+                EvaluationSourceSetRequest(label="b", sources=["shared"]),
+            ],
+        )
+
+
+def test_overview_response_defaults_to_empty_source_set_comparison():
+    r = GetEvaluationOverviewResponse(**_minimal_response_kwargs())
+    assert r.source_set_comparison.available_sources == []
+    assert r.source_set_comparison.sets == []
+    assert r.source_set_comparison.unmatched_session_count == 0
+
+
+def test_overview_response_carries_source_set_comparison():
+    payload = _minimal_response_kwargs()
+    payload["source_set_comparison"] = SourceSetComparison(
+        available_sources=["a", "b"],
+        sets=[
+            SourceSetEvaluationMetrics(
+                label="A",
+                sources=["a"],
+                session_count=1,
+                session_ids=["s1"],
+                success_rate_pp=100.0,
+                buckets=[],
+                context_tiles=payload["context_tiles"],
+                score_distribution=payload["score_distribution"],
+                rule_attribution=[],
+            )
+        ],
+        unmatched_session_count=2,
+    )
+    r = GetEvaluationOverviewResponse(**payload)
+    assert r.source_set_comparison.available_sources == ["a", "b"]
+    assert r.source_set_comparison.sets[0].session_ids == ["s1"]
+    assert r.source_set_comparison.unmatched_session_count == 2

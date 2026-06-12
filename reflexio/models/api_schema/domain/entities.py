@@ -199,11 +199,10 @@ class Request(BaseModel):
         metadata (dict[str, Any]): Free-form per-request annotations.
             Always a dict — never None. Conventional keys:
 
-            - ``reflexio_retrieval_enabled`` (bool): F2 group-by signal;
-              customer integration code stamps this to indicate whether
-              Reflexio retrieval was active for the session. Read by the
-              ``/api/get_evaluation_overview`` aggregator from the FIRST
-              request of each session for sticky group assignment.
+            - ``reflexio_retrieval_enabled`` (bool): Legacy dashboard group-by
+              signal retained for compatibility. New evaluation source-set
+              comparison uses ``Request.source`` from the first request in a
+              session.
 
             Distinct from ``playbook_metadata`` on ``Playbook``-family
             entities (which is a JSON-encoded string, not a dict).
@@ -577,12 +576,11 @@ class PublishUserInteractionRequest(BaseModel):
     """Per-request annotations stamped by customer integration code.
 
     Mirrors ``Request.metadata`` — the publish path copies this dict
-    onto the ``Request`` row it creates so the eval pipeline (and the
-    F2 sticky-group aggregator in particular) can read it back from
-    the first request of each session.
+    onto the ``Request`` row it creates.
 
     Conventional keys:
-        - ``reflexio_retrieval_enabled`` (bool): F2 group assignment signal.
+        - ``reflexio_retrieval_enabled`` (bool): Legacy group assignment signal.
+          New evaluation source-set comparison uses ``Request.source``.
 
     Defaults to ``{}`` (never None) for backward compatibility — existing
     callers that don't pass ``metadata`` keep working unchanged.

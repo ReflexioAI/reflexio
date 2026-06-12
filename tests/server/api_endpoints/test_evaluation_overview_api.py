@@ -22,3 +22,8 @@ def test_endpoint_returns_empty_state_on_fresh_app() -> None:
     assert "context_tiles" in body
     assert "rule_attribution" in body
     assert body["score_distribution"]["labels"] == ["0", "1", "2", "3", "4", "5+"]
+    assert body["source_set_comparison"] == {
+        "available_sources": [],
+        "sets": [],
+        "unmatched_session_count": 0,
+    }
