@@ -34,6 +34,16 @@ _SUPPORTED_MODELS = {
 _ACTIVE_MODEL: str | None = None
 _ACTIVE_MODEL_LOCK = threading.Lock()
 
+# The underlying sentence-transformers / ONNX embedders share internal buffers
+# and are NOT thread-safe: concurrent ``.embed()`` calls interleave and corrupt
+# each other's padding/attention tensors (observed under concurrent publishes as
+# ``RuntimeError: The size of tensor a (62) must match the size of tensor b (61)
+# at non-singleton dimension 1``). The ``_ENCODE_SEMAPHORE`` below only caps how
+# many requests run at once (for memory), it does NOT serialize them, so this
+# lock guards the actual model inference. Throughput comes from micro-batch
+# coalescing (many texts per encode), not from parallel encodes on one model.
+_MODEL_ENCODE_LOCK = threading.Lock()
+
 DEFAULT_OSS_EMBEDDING_MODEL = MINILM_MODEL
 
 # Bound how many embed/encode calls run at once. The endpoint is a sync ``def``
@@ -314,10 +324,15 @@ def _encode_texts_now(model: str, texts: list[str]) -> list[list[float]]:
         )
         semaphore.acquire()
     try:
-        if is_nomic_model(model):
-            return NomicEmbedder.get().embed(texts)
-        if model == MINILM_MODEL:
-            return LocalEmbedder.get().embed(texts)
+        # Serialize the actual inference: the shared embedder models are not
+        # thread-safe, so concurrent encodes race and produce tensor-shape
+        # errors. The semaphore (above) bounds memory; this lock bounds the
+        # model to one in-flight encode at a time.
+        with _MODEL_ENCODE_LOCK:
+            if is_nomic_model(model):
+                return NomicEmbedder.get().embed(texts)
+            if model == MINILM_MODEL:
+                return LocalEmbedder.get().embed(texts)
         raise HTTPException(status_code=400, detail=f"Unsupported model: {model}")
     finally:
         semaphore.release()
