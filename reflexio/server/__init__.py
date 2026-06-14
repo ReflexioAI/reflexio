@@ -131,7 +131,7 @@ class _LLMIOFormatter(_TZAwareFormatter):
 def _truthy_env(name: str) -> bool:
     """Return whether an environment variable is explicitly truthy."""
     raw = os.environ.get(name, "").strip().lower()
-    return bool(raw) and raw not in ("false", "0", "no", "off")
+    return raw in ("true", "yes", "1", "on")
 
 
 def _is_production_environment() -> bool:

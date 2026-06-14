@@ -77,3 +77,12 @@ class TestConsoleDebugPolicy:
         monkeypatch.setenv("REFLEXIO_ALLOW_PRODUCTION_DEBUG_LOGS", "true")
 
         assert _debug_log_to_console_enabled() is True
+
+    def test_debug_console_rejects_ambiguous_production_override(
+        self, monkeypatch
+    ) -> None:
+        monkeypatch.setenv("SENTRY_ENVIRONMENT", "production")
+        monkeypatch.setenv("DEBUG_LOG_TO_CONSOLE", "true")
+        monkeypatch.setenv("REFLEXIO_ALLOW_PRODUCTION_DEBUG_LOGS", "foo")
+
+        assert _debug_log_to_console_enabled() is False
