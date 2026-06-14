@@ -113,6 +113,21 @@ def test_local_model_auto_avoids_reachable_mismatched_daemon(monkeypatch) -> Non
     assert embedding_provider_mode("local/minilm-l6-v2") == "inprocess"
 
 
+def test_configured_daemon_host_forces_local_service_without_probe(monkeypatch) -> None:
+    class _Client:
+        def get(self, *_args, **_kwargs):  # pragma: no cover - should not be called
+            raise AssertionError("configured daemon host should not be health-probed")
+
+    monkeypatch.delenv("REFLEXIO_EMBEDDING_PROVIDER", raising=False)
+    monkeypatch.delenv("REFLEXIO_EMBEDDING_SERVICE_URL", raising=False)
+    monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_EMBEDDING", raising=False)
+    monkeypatch.setenv("REFLEXIO_EMBEDDING_DAEMON_HOST", "embedding.internal")
+    monkeypatch.setattr(esp, "_local_service_probe_cache", None)
+    monkeypatch.setattr(esp, "_http_client", lambda: _Client())
+
+    assert embedding_provider_mode("local/nomic-embed-text-v1.5") == "local_service"
+
+
 def test_local_service_probe_timeout_env_is_honored(monkeypatch) -> None:
     class _HealthResponse:
         status_code = 200
@@ -237,6 +252,7 @@ def test_service_response_is_sorted_by_index(monkeypatch) -> None:
 
     monkeypatch.setenv("REFLEXIO_EMBEDDING_PROVIDER", "local_service")
     monkeypatch.delenv("REFLEXIO_EMBEDDING_SERVICE_URL", raising=False)
+    monkeypatch.delenv("EMBEDDING_PORT", raising=False)
     monkeypatch.setattr(esp, "_http_client", lambda: _Client())
 
     assert get_service_embeddings(["a", "b"], model="local/nomic-embed-v1.5") == [
@@ -262,9 +278,35 @@ def test_local_service_daemon_host_override_changes_url(monkeypatch) -> None:
     monkeypatch.setenv("REFLEXIO_EMBEDDING_PROVIDER", "local_service")
     monkeypatch.setenv("REFLEXIO_EMBEDDING_DAEMON_HOST", "embedding.internal")
     monkeypatch.delenv("REFLEXIO_EMBEDDING_SERVICE_URL", raising=False)
+    monkeypatch.delenv("EMBEDDING_PORT", raising=False)
     monkeypatch.setattr(esp, "_http_client", lambda: _Client())
 
     assert get_service_embeddings(["a"], model="local/nomic-embed-v1.5") == [[0.1, 0.2]]
+
+
+def test_daemon_host_auto_mode_uses_embedding_port(monkeypatch) -> None:
+    class _Response:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {"data": [{"index": 0, "embedding": [0.1, 0.2]}]}
+
+    class _Client:
+        def post(self, url: str, *, json: dict, timeout: float) -> _Response:  # noqa: A002, ARG002
+            assert url == "http://embedding.internal:80/v1/embeddings"
+            assert json["model"] == "local/nomic-embed-text-v1.5"
+            return _Response()
+
+    monkeypatch.delenv("REFLEXIO_EMBEDDING_PROVIDER", raising=False)
+    monkeypatch.delenv("REFLEXIO_EMBEDDING_SERVICE_URL", raising=False)
+    monkeypatch.setenv("REFLEXIO_EMBEDDING_DAEMON_HOST", "embedding.internal")
+    monkeypatch.setenv("EMBEDDING_PORT", "80")
+    monkeypatch.setattr(esp, "_http_client", lambda: _Client())
+
+    assert get_service_embeddings(["a"], model="local/nomic-embed-text-v1.5") == [
+        [0.1, 0.2]
+    ]
 
 
 def test_service_response_rejects_index_mismatch(monkeypatch) -> None:
