@@ -136,17 +136,15 @@ def _truthy_env(name: str) -> bool:
 
 def _is_production_environment() -> bool:
     """Return whether this process is running in a production deployment."""
-    return os.environ.get("SENTRY_ENVIRONMENT", "").strip().lower() in (
-        "prod",
-        "production",
-    )
+    return os.environ.get("ENVIRONMENT", "").strip().lower() in ("prod", "production")
 
 
 def _debug_log_to_console_enabled() -> bool:
     """Return whether verbose console logging should be enabled.
 
-    ``DEBUG_LOG_TO_CONSOLE`` is a local/dev switch. Production deployments must
-    stay quiet by default even if a copied local env file accidentally sets it;
+    ``DEBUG_LOG_TO_CONSOLE`` is a local/dev switch. Deployments with
+    ``ENVIRONMENT=production`` must stay quiet by default even if a copied local
+    env file accidentally sets it;
     use ``REFLEXIO_ALLOW_PRODUCTION_DEBUG_LOGS=true`` for a deliberate incident
     override.
     """
