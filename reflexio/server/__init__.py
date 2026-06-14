@@ -128,10 +128,39 @@ class _LLMIOFormatter(_TZAwareFormatter):
         )
 
 
-DEBUG_LOG_TO_CONSOLE = os.environ.get("DEBUG_LOG_TO_CONSOLE", "").strip().lower()
+def _truthy_env(name: str) -> bool:
+    """Return whether an environment variable is explicitly truthy."""
+    raw = os.environ.get(name, "").strip().lower()
+    return bool(raw) and raw not in ("false", "0", "no", "off")
+
+
+def _is_production_environment() -> bool:
+    """Return whether this process is running in a production deployment."""
+    return os.environ.get("SENTRY_ENVIRONMENT", "").strip().lower() in (
+        "prod",
+        "production",
+    )
+
+
+def _debug_log_to_console_enabled() -> bool:
+    """Return whether verbose console logging should be enabled.
+
+    ``DEBUG_LOG_TO_CONSOLE`` is a local/dev switch. Production deployments must
+    stay quiet by default even if a copied local env file accidentally sets it;
+    use ``REFLEXIO_ALLOW_PRODUCTION_DEBUG_LOGS=true`` for a deliberate incident
+    override.
+    """
+    if not _truthy_env("DEBUG_LOG_TO_CONSOLE"):
+        return False
+    return not _is_production_environment() or _truthy_env(
+        "REFLEXIO_ALLOW_PRODUCTION_DEBUG_LOGS"
+    )
+
+
+DEBUG_LOG_TO_CONSOLE = _debug_log_to_console_enabled()
 root_logger = logging.getLogger()
 
-if DEBUG_LOG_TO_CONSOLE and DEBUG_LOG_TO_CONSOLE not in ("false", "0", "no"):
+if DEBUG_LOG_TO_CONSOLE:
     # Correlation ID filter — injects %(correlation_id)s into every record
     from reflexio.server.correlation import CorrelationIdFilter
 
