@@ -85,6 +85,33 @@ class TestPublishInteraction:
         assert data["success"] is True
         assert "queued" in data["message"].lower()
 
+    def test_async_publish_waits_for_limiter_capacity(self, client, patched_reflexio):
+        captured: dict[str, bool] = {}
+
+        def _fake_run_with_limit(**kwargs):
+            captured["wait_forever"] = kwargs["wait_forever"]
+            return kwargs["fn"]()
+
+        with (
+            patch(
+                "reflexio.server.api.run_with_operation_limit",
+                side_effect=_fake_run_with_limit,
+            ),
+            patch(
+                "reflexio.server.api_endpoints.publisher_api.add_user_interaction",
+                return_value=PublishUserInteractionResponse(
+                    success=True, message="Interaction processed"
+                ),
+            ),
+        ):
+            response = client.post(
+                "/api/publish_interaction",
+                json=self._publish_payload(),
+            )
+
+        assert response.status_code == 200
+        assert captured["wait_forever"] is True
+
     def test_publish_missing_body_returns_422(self, client):
         response = client.post("/api/publish_interaction")
         assert response.status_code == 422

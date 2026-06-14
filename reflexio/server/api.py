@@ -606,6 +606,7 @@ def publish_user_interaction(
                 fn=lambda: publisher_api.add_user_interaction(
                     org_id=org_id, request=payload
                 ),
+                wait_forever=True,
             )
         except TimeoutError:
             logger.warning(
