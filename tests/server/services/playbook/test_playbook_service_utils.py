@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 
 import pytest
 
+from reflexio.models.api_schema.domain.entities import UserPlaybook
 from reflexio.models.api_schema.domain.enums import UserActionType
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
 from reflexio.models.api_schema.service_schemas import (
@@ -15,6 +16,7 @@ from reflexio.server.services.playbook.playbook_service_utils import (
     StructuredPlaybookContent,
     StructuredPlaybookList,
     construct_playbook_extraction_messages_from_sessions,
+    dedupe_and_drop_empty,
     ensure_playbook_content,
     format_structured_fields_for_display,
 )
@@ -162,6 +164,40 @@ def test_construct_playbook_extraction_messages_with_empty_sessions():
 
     # Should still create messages (system message + user message with prompt)
     assert len(messages) > 0, "No messages were created for empty sessions"
+
+
+def _playbook(content: str, trigger: str | None = "When debugging") -> UserPlaybook:
+    return UserPlaybook(
+        agent_version="1.0",
+        request_id="request_1",
+        content=content,
+        trigger=trigger,
+    )
+
+
+def test_dedupe_and_drop_empty_removes_blank_content():
+    """Blank persisted playbooks are dropped before storage."""
+    playbooks = [
+        _playbook(""),
+        _playbook("   \n\t"),
+        _playbook("Run the narrow verification first."),
+    ]
+
+    assert dedupe_and_drop_empty(playbooks) == [playbooks[2]]
+
+
+def test_dedupe_and_drop_empty_collapses_case_and_whitespace_duplicates():
+    """Same-batch byte/fold-equivalent duplicates keep the first row."""
+    first = _playbook("Run the narrow verification first.", " When Debugging ")
+    duplicate = _playbook("  run the narrow verification first.  ", "when debugging")
+    different_trigger = _playbook(
+        "Run the narrow verification first.", "When preparing a PR"
+    )
+
+    assert dedupe_and_drop_empty([first, duplicate, different_trigger]) == [
+        first,
+        different_trigger,
+    ]
 
 
 # ===============================

@@ -5,7 +5,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from reflexio.models.api_schema.domain.entities import Interaction
+from reflexio.models.api_schema.domain.entities import Interaction, UserPlaybook
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
 from reflexio.server.prompt.prompt_manager import PromptManager
 from reflexio.server.services.playbook.playbook_service_constants import (
@@ -20,6 +20,35 @@ from reflexio.server.services.service_utils import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _normalized_playbook_key(playbook: UserPlaybook) -> tuple[str, str]:
+    """Return the same-batch duplicate key for a user playbook."""
+    return (
+        (playbook.trigger or "").strip().casefold(),
+        playbook.content.strip().casefold(),
+    )
+
+
+def dedupe_and_drop_empty(playbooks: list[UserPlaybook]) -> list[UserPlaybook]:
+    """Drop empty user playbooks and collapse exact same-batch duplicates.
+
+    This is intentionally deterministic and local to one extraction batch. The
+    LLM-backed consolidator still handles semantic deduplication against stored
+    rows when its feature flag is enabled.
+    """
+    deduped: list[UserPlaybook] = []
+    seen: set[tuple[str, str]] = set()
+    for playbook in playbooks:
+        if not playbook.content.strip():
+            continue
+        key = _normalized_playbook_key(playbook)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(playbook)
+    return deduped
+
 
 # ===============================
 # Pydantic classes for playbook_extraction_main prompt output schema

@@ -1365,6 +1365,9 @@ class PlaybookAggregator:
         # content is always the LLM's freeform summary;
         # fall back to formatted structured fields for backward compatibility
         playbook_content = ensure_playbook_content(structured.content, structured)
+        if not playbook_content.strip():
+            logger.info("Aggregated playbook has no valid content, skipping")
+            return None
         logger.info(
             "Aggregated playbook content (freeform): %.200s",
             playbook_content,
