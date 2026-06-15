@@ -166,6 +166,46 @@ def test_construct_playbook_extraction_messages_with_empty_sessions():
     assert len(messages) > 0, "No messages were created for empty sessions"
 
 
+def test_extraction_prompt_keeps_general_triggers_specific_actions():
+    """Active extraction prompts should preserve retrieve-general/action-specific guidance."""
+    prompt_manager = PromptManager()
+    context_prompt = prompt_manager.render_prompt(
+        "playbook_extraction_context",
+        variables={
+            "agent_context_prompt": "agent",
+            "extraction_definition_prompt": "definition",
+            "tool_can_use": "tools",
+        },
+    )
+    main_prompt = prompt_manager.render_prompt(
+        "playbook_extraction_main",
+        variables={"interactions": "interaction text"},
+    )
+
+    for rendered in (context_prompt, main_prompt):
+        normalized = " ".join(rendered.replace("*", "").split())
+        assert "triggers retrieval-general and content action-specific" in normalized
+        assert "concrete downstream surfaces, checks, and avoid-detours" in normalized
+
+
+def test_consolidation_prompt_preserves_operational_surfaces():
+    """Consolidation must not merge concrete fanout rules into vague sweep rules."""
+    prompt_manager = PromptManager()
+    rendered = prompt_manager.render_prompt(
+        "playbook_consolidation",
+        variables={
+            "new_playbook_count": 1,
+            "new_playbooks": "[NEW-0]\nContent: x",
+            "existing_playbooks": "[EXISTING-0]\nContent: y",
+        },
+    )
+    normalized = " ".join(rendered.split())
+
+    assert "Preserve concrete operational surfaces" in normalized
+    assert "load balancer target groups, security groups, health checks, task definitions" in normalized
+    assert "generic sweep/audit rule" in normalized
+
+
 def _playbook(content: str, trigger: str | None = "When debugging") -> UserPlaybook:
     return UserPlaybook(
         agent_version="1.0",

@@ -1636,18 +1636,24 @@ class LiteLLMClient:
         """
         content = content.strip()
 
-        # Try to extract from markdown code blocks
-        json_block_pattern = r"```(?:json)?\s*([\s\S]*?)```"
-        matches = re.findall(json_block_pattern, content)
-        if matches:
-            return matches[0].strip()
-
-        # Try to find JSON object or array
+        # Prefer the outer JSON container first. Structured JSON may contain
+        # markdown fences inside string values; grabbing the first code block
+        # would extract the inner snippet instead of the response object.
+        # Assumes no stray braces/brackets in any prose surrounding the JSON —
+        # if a model emits e.g. "Result {x}: ```json\n{...}\n```", find/rfind
+        # would over-span; the markdown fallback below still covers fence-only
+        # responses that contain no top-level container.
         for start_char, end_char in [("{", "}"), ("[", "]")]:
             start_idx = content.find(start_char)
             end_idx = content.rfind(end_char)
             if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
                 return content[start_idx : end_idx + 1]
+
+        # Try to extract from markdown code blocks
+        json_block_pattern = r"```(?:json)?\s*([\s\S]*?)```"
+        matches = re.findall(json_block_pattern, content)
+        if matches:
+            return matches[0].strip()
 
         return content
 
