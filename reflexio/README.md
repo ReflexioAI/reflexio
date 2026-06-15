@@ -6,24 +6,24 @@ Describe the code structure and component dependencies for source code of reflex
 - [Overview](#overview)
 - [models and client](#models-and-client)
 - [cli](#cli)
-- [reflexio_lib](#reflexio_lib)
+- [lib](#lib)
 - [server](#server)
-- [data](#data)
+- [supporting packages](#supporting-packages)
 - [See Also](#see-also)
 
 ## Overview
 Reflexio is a user profiling and agent playbook system with three main access patterns:
 
 1. **Remote API Access** (`client`) - Applications use Python SDK to call REST API
-2. **Local Library Access** (`reflexio_lib`) - Direct synchronous access without HTTP layer
+2. **Local Library Access** (`lib`) - Direct synchronous access without HTTP layer
 3. **CLI Access** (`cli`) - Local command-line workflows for services, publishing, search, auth, config, and diagnostics
 
 **Core Flow**: User Interactions → Server Processing → Profile/Playbook/Evaluation → Storage
 
 **Shared Components**:
 - `models` - API and internal schemas shared by client, CLI, and server
+- `lib` - Local `Reflexio` facade and synchronous operations
 - `server` - FastAPI backend with LLM-based processing services
-- `data` - Bundled configs and local fixtures
 - `docs` - Next.js API documentation site
 
 ## models and client
@@ -80,11 +80,11 @@ Local operator interface to:
 ### Architecture Pattern
 Thin Typer layer over the Python client and local service manager. Use `uv run reflexio --help` to inspect command groups.
 
-## reflexio_lib
+## lib
 Description: Local Python library interface for direct (non-API) access to Reflexio functionality
 
 ### Main Entry Point
-- **Library**: `reflexio_lib.py` - `Reflexio` class
+- **Library**: `lib/reflexio_lib.py` - `Reflexio` class
 
 ### Purpose
 Direct programmatic access without HTTP/API layer:
@@ -93,7 +93,7 @@ Direct programmatic access without HTTP/API layer:
 3. **Testing/debugging** - Useful for local development and testing
 
 ### Architecture Pattern
-Creates `RequestContext` and directly calls `GenerationService` - bypasses FastAPI layer. Methods are **synchronous** unlike `ReflexioClient`.
+Creates `RequestContext` and directly calls server services - bypasses FastAPI layer. Methods are **synchronous** unlike `ReflexioClient`.
 
 ## server
 Description: FastAPI backend server that processes user interactions to generate profiles, extract playbooks, and evaluate agent success
@@ -101,9 +101,9 @@ Description: FastAPI backend server that processes user interactions to generate
 **Detailed Documentation**: See [`reflexio/server/README.md`](server/README.md) for component details, including the [Prompt Bank](server/prompt/prompt_bank/README.md), [Playbook Service](server/services/playbook/README.md), and [Site Variables](server/site_var/README.md)
 
 ### Main Entry Points
-- **API**: `api.py` - FastAPI routes
-- **Endpoint Helpers**: `api_endpoints/` - Request handlers calling `Reflexio` (reflexio_lib)
-- **Core Service**: `services/generation_service.py` - Main orchestrator
+- **API**: `server/api.py` - FastAPI routes
+- **Endpoint Helpers**: `server/api_endpoints/` - Request handlers calling `Reflexio` (`lib/reflexio_lib.py`)
+- **Core Service**: `server/services/generation_service.py` - Main orchestrator
 
 ### Purpose
 Receives user interactions from clients and processes them to:
@@ -114,19 +114,18 @@ Receives user interactions from clients and processes them to:
 ### Component Relationships
 ```
 client (Python SDK)
-  -> api.py (FastAPI routes)
-    -> api_endpoints/ (request handlers)
-      -> reflexio_lib.Reflexio (main entry)
-        -> services/generation_service.py (orchestrator)
-          ├─> services/profile/ -> storage (BaseStorage)
-          ├─> services/playbook/ (playbook extraction) -> storage (BaseStorage)
-          └─> services/agent_success_evaluation/ -> storage (BaseStorage)
+  -> server/api.py (FastAPI routes)
+    -> server/api_endpoints/ (request handlers)
+      -> lib/reflexio_lib.Reflexio (main entry)
+        -> server/services/generation_service.py (orchestrator)
+          ├─> server/services/profile/ -> storage (BaseStorage)
+          ├─> server/services/playbook/ (playbook extraction) -> storage (BaseStorage)
+          └─> server/services/agent_success_evaluation/ -> storage (BaseStorage)
 ```
 
 ### Key Components
 - **`api_endpoints/`**: Request handling, `RequestContext` (bundles storage/config/prompts), auth
-- **`db/`**: Auth & config storage only (SQLite) - NOT for profiles/interactions
-- **`llm/`**: Unified LLM client (auto-detects OpenAI/Claude from model name)
+- **`llm/`**: Unified LiteLLM client plus embedding providers, rerankers, token accounting, and tool helpers
 - **`prompt/`**: Versioned prompt templates in `prompt_bank/`
 - **`services/`**: Core business logic
   - `generation_service.py` - Orchestrator (runs profile/playbook/success services)
@@ -140,7 +139,7 @@ client (Python SDK)
   - `evaluation_overview/` - Evaluation-page aggregates and hero metrics
   - `playbook_optimizer/` - Scenario-based playbook optimization experiments
   - `braintrust/` - Braintrust eval export/sync support
-  - `storage/` - Abstract layer (SQLite prod, LocalJSON test)
+  - `storage/` - Abstract layer (SQLite implementation plus domain-split BaseStorage interfaces)
   - `pre_retrieval/` - Query rewriting and document expansion helpers
   - `configurator/` - YAML config loader
 - **`site_var/`**: Global settings singleton
@@ -157,22 +156,22 @@ client (Python SDK)
 **Data Flow**: `User Interaction -> Storage (save) -> Services (parallel: LLM + Prompts) -> Results -> Storage (save)`
 
 
-## data
-Description: Local storage directory for configuration files and SQLite databases
+## supporting packages
+Description: Small support modules used by tests, examples, and default configuration
 
 ### Main Entry Points
-- **Configs**: `configs/` - YAML configuration files for extractors and evaluators
-- **Database**: `sql_app.db` - SQLite database for auth and config storage
-- **JSON Storage**: `user_profiles_*.json` - Local JSON files for testing
+- **Defaults**: `defaults.py` - package-level defaults shared by CLI/server startup
+- **Test Support**: `test_support/` - LLM mocks and model registries for tests
+- **Benchmarks**: `benchmarks/` - package-local benchmark helpers and reports
 
 ### Purpose
-Local data storage for:
-1. **Configuration files** - YAML configs defining extraction/evaluation behavior
-2. **Authentication database** - User credentials and API tokens (SQLite/Postgres)
-3. **Test data** - LocalJsonStorage files for development/testing
+Support development and evaluation without becoming primary application entry points:
+1. **Defaults** - Keep startup constants near the package
+2. **Testing** - Provide mocks/fixtures for deterministic service tests
+3. **Benchmarking** - Package retrieval-latency benchmark code under importable modules
 
 ### Architecture Pattern
-Referenced by `SimpleConfigurator` for loading configs and by database operations for auth/config persistence. Not directly accessed by application code.
+Application code should enter through `client/`, `cli/`, `lib/`, or `server/`; support modules are imported only by those layers or by tests/benchmarks.
 
 ## See Also
 

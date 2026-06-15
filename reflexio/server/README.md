@@ -9,7 +9,6 @@ Description: FastAPI backend server that processes user interactions to generate
 - [LLM Client](#llm-client)
 - [Prompts](#prompts)
 - [Site Variables](#site-variables)
-- [Scripts](#scripts)
 - [Services](#services)
   - [Orchestrator](#orchestrator)
   - [Base Infrastructure](#base-infrastructure)
@@ -90,8 +89,10 @@ Description: FastAPI backend server that processes user interactions to generate
 
 Key files:
 - `litellm_client.py`: Unified LiteLLMClient using LiteLLM for multi-provider support
-- `openai_client.py`: OpenAI implementation (legacy, do not use directly)
-- `claude_client.py`: Claude implementation (legacy, do not use directly)
+- `embedding_service.py`: Local OpenAI-compatible embedding service used by the CLI-managed embedding daemon
+- `providers/`: Optional provider adapters (`local_embedding_provider.py`, `nomic_embedding_provider.py`, `embedding_service_provider.py`, Claude Code provider/stream parser)
+- `rerank/`: Cross-encoder and LLM rerankers used by search flows
+- `token_accounting.py`, `tools.py`: Shared LLM token/tool helpers
 - `llm_utils.py`: Helper functions for Pydantic model conversion
 
 **Features**:
@@ -99,6 +100,7 @@ Key files:
 - **Custom endpoint support**: `CustomEndpointConfig` (model, api_key, api_base) takes priority over all other providers for LLM completion calls when configured with non-empty fields (but not embeddings)
 - **Gemini support**: Model names with `gemini/` prefix route through Google Gemini; API key from `api_key_config.gemini`
 - **OpenRouter support**: Model names with `openrouter/` prefix (e.g., `openrouter/openai/gpt-5-nano`) route through OpenRouter; API key from `api_key_config.openrouter`
+- **Embedding routing**: Embeddings can route through LiteLLM, local providers, or the local embedding service; use `embedding_service.py` / `providers/` rather than adding ad hoc embedding clients.
 - API keys read from environment variables (OPENAI_API_KEY, ANTHROPIC_API_KEY) or `ApiKeyConfig`
 - Interface: `generate_response()`, `generate_chat_response()`, `get_embedding()`
 - **Structured Outputs**: Supports Pydantic models via `response_format` parameter
@@ -152,23 +154,6 @@ Key components:
 **Feature Flags**: Config in `site_var_sources/feature_flags.json`. Each flag has global `enabled` toggle and per-org `enabled_org_ids` allowlist. Unknown flags default to enabled (fail-open). Currently gates: `invitation_only` (global flag, gates registration to require invitation codes), `deduplicator` (gates playbook deduplication).
 
 Access: `SiteVarManager().get_site_var(key)` for raw values, `feature_flags.is_feature_enabled(org_id, name)` for flag checks
-
-## Scripts
-
-**Directory**: `scripts/`
-
-| File | Purpose |
-|------|---------|
-| `manage_invitation_codes.py` | CLI to generate and list invitation codes |
-| `show_raw_feedback_with_interactions.py` | Debug script to display user playbook alongside interaction context |
-
-**Usage**:
-```shell
-python -m reflexio.server.scripts.manage_invitation_codes generate --count 5
-python -m reflexio.server.scripts.manage_invitation_codes generate --count 3 --expires-in-days 30
-python -m reflexio.server.scripts.manage_invitation_codes list
-python -m reflexio.server.scripts.manage_invitation_codes list --show-used
-```
 
 ## Services
 
@@ -242,12 +227,12 @@ Called by API endpoints via `Reflexio`
 **Directory**: `services/profile/`
 
 Key files:
-- `profile_generation_service.py`: Service orchestrator
+- `profile_generation_service.py`: Service orchestrator; finalizes extracted items and writes profile add/delete operations to storage
 - `profile_extractor.py`: Extractor that generates profile updates
-- `profile_updater.py`: Applies updates (add/delete/mention) to storage
+- `profile_generation_service_utils.py`: Profile-generation request/output models and message construction helpers
 - `profile_deduplicator.py`: Deduplicates newly extracted profiles against existing DB profiles using LLM
 
-**Flow**: Interactions → ProfileExtractor (extraction-only) → ProfileDeduplicator (deduplicates new vs existing DB profiles) → ProfileUpdater → Storage
+**Flow**: Interactions → ProfileExtractor (extraction-only) → ProfileDeduplicator (deduplicates new vs existing DB profiles) → ProfileGenerationService finalization → Storage
 
 **Generation Modes** (detailed comparison):
 

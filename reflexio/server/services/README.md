@@ -28,7 +28,7 @@ Description: Core business-logic layer — LLM orchestration, extraction, evalua
 
 | Directory | Purpose |
 |-----------|---------|
-| `extraction/` | Resumable extraction agent: `resumable_agent.py`, `resume_scheduler.py`, `resume_worker.py`, `pending_tool_call_dispatch.py` (`ask_human`), `tools.py`, `plan.py`, `agent_run_records.py`, `invariants.py`. Long-horizon / tool-mediated extraction continues outside the request path. |
+| `extraction/` | Resumable extraction agent: `resumable_agent.py`, `resume_scheduler.py`, `resume_worker.py`, `pending_tool_call_dispatch.py` (`ask_human`), `prior_answer_search.py`, `agent_run_records.py`, `outcome.py`. Long-horizon / tool-mediated extraction continues outside the request path. |
 
 ## Evaluation, Search & Integrations
 
