@@ -521,7 +521,7 @@ def root() -> dict[str, str]:
 
 
 @core_router.get("/health")
-def health_check() -> dict[str, str]:
+async def health_check() -> dict[str, str]:
     """Health check endpoint for ECS/container orchestration."""
     return {"status": "healthy"}
 
@@ -607,7 +607,7 @@ def publish_user_interaction(
                 fn=lambda: publisher_api.add_user_interaction(
                     org_id=org_id, request=payload
                 ),
-                wait_forever=True,
+                wait_forever=False,
             )
         except TimeoutError:
             logger.warning(

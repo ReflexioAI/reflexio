@@ -583,7 +583,7 @@ class RetrievalFloorConfig(BaseModel):
     weak tail that drives false-positive citations. Calibrate per arm on real data.
     """
 
-    enabled: bool = True
+    enabled: bool = False
     pool_size: int = Field(
         default=30,
         gt=0,

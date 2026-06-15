@@ -6,6 +6,7 @@ fixture from conftest to isolate tests from real storage/LLM calls.
 """
 
 import tempfile
+from inspect import iscoroutinefunction
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -35,6 +36,11 @@ class TestHealthEndpoints:
         response = client.get("/health")
         assert response.status_code == 200
         assert response.json()["status"] == "healthy"
+
+    def test_health_check_is_async(self, client):
+        """Keep container healthchecks off the shared sync worker threadpool."""
+        route = next(route for route in client.app.routes if route.path == "/health")
+        assert iscoroutinefunction(route.endpoint)
 
 
 class TestPublishInteraction:
@@ -85,7 +91,9 @@ class TestPublishInteraction:
         assert data["success"] is True
         assert "queued" in data["message"].lower()
 
-    def test_async_publish_waits_for_limiter_capacity(self, client, patched_reflexio):
+    def test_async_publish_does_not_wait_forever_for_limiter_capacity(
+        self, client, patched_reflexio
+    ):
         captured: dict[str, bool] = {}
 
         def _fake_run_with_limit(**kwargs):
@@ -110,7 +118,7 @@ class TestPublishInteraction:
             )
 
         assert response.status_code == 200
-        assert captured["wait_forever"] is True
+        assert captured["wait_forever"] is False
 
     def test_publish_missing_body_returns_422(self, client):
         response = client.post("/api/publish_interaction")
