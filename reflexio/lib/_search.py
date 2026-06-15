@@ -13,6 +13,7 @@ from reflexio.models.api_schema.retriever_schema import (
 )
 from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
 from reflexio.server.site_var.site_var_manager import SiteVarManager
+from reflexio.server.tracing import profile_step
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -136,32 +137,40 @@ class SearchMixin(ReflexioBase):
         if isinstance(request, dict):
             request = UnifiedSearchRequest(**request)
 
-        config = self.request_context.configurator.get_config()
+        with profile_step(
+            "search.prepare",
+            enabled=bool(request.enable_reformulation),
+            has_conversation_history=bool(request.conversation_history),
+            search_mode=request.search_mode,
+        ):
+            config = self.request_context.configurator.get_config()
+            config_llm_config = config.llm_config if config else None
+
+            # Resolve pre_retrieval_model_name: config override -> site var -> auto-detect.
+            model_setting = SiteVarManager().get_site_var("llm_model_setting")
+            site_var = model_setting if isinstance(model_setting, dict) else {}
+            api_key_config = config.api_key_config if config else None
+
+            pre_retrieval_model_name = resolve_model_name(
+                ModelRole.PRE_RETRIEVAL,
+                site_var_value=site_var.get("pre_retrieval_model_name"),
+                config_override=config_llm_config.pre_retrieval_model_name
+                if config_llm_config
+                else None,
+                api_key_config=api_key_config,
+            )
+            storage = self._get_storage()
+            prompt_manager = self.request_context.prompt_manager
+            retrieval_floor = config.retrieval_floor if config else None
 
         from reflexio.server.services.unified_search_service import run_unified_search
-
-        config_llm_config = config.llm_config if config else None
-
-        # Resolve pre_retrieval_model_name: config override → site var → auto-detect
-        model_setting = SiteVarManager().get_site_var("llm_model_setting")
-        site_var = model_setting if isinstance(model_setting, dict) else {}
-        api_key_config = config.api_key_config if config else None
-
-        pre_retrieval_model_name = resolve_model_name(
-            ModelRole.PRE_RETRIEVAL,
-            site_var_value=site_var.get("pre_retrieval_model_name"),
-            config_override=config_llm_config.pre_retrieval_model_name
-            if config_llm_config
-            else None,
-            api_key_config=api_key_config,
-        )
 
         return run_unified_search(
             request=request,
             org_id=org_id,
-            storage=self._get_storage(),
+            storage=storage,
             llm_client=self.llm_client,
-            prompt_manager=self.request_context.prompt_manager,
+            prompt_manager=prompt_manager,
             pre_retrieval_model_name=pre_retrieval_model_name,
-            retrieval_floor=config.retrieval_floor if config else None,
+            retrieval_floor=retrieval_floor,
         )

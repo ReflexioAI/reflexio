@@ -8,6 +8,7 @@ from typing import Any, Final
 from cachetools import TTLCache
 
 from reflexio.lib.reflexio_lib import Reflexio
+from reflexio.server.tracing import profile_step
 
 logger = logging.getLogger(__name__)
 
@@ -112,8 +113,14 @@ def get_reflexio(org_id: str, storage_base_dir: str | None = None) -> Reflexio:
 
     # Cache lookup — held briefly to extract the entry, then released
     # before doing any I/O (file stat, DB query) for the version probe.
-    with _reflexio_cache_lock:
-        entry: _CacheEntry | None = _reflexio_cache.get(cache_key)
+    with profile_step("reflexio.cache.lookup") as span:
+        with _reflexio_cache_lock:
+            entry: _CacheEntry | None = _reflexio_cache.get(cache_key)
+        span.set_data("cache_hit", entry is not None)
+        span.set_data(
+            "has_cached_version",
+            entry is not None and entry.cached_version is not None,
+        )
 
     if entry is not None:
         cached_version = entry.cached_version
@@ -122,7 +129,13 @@ def get_reflexio(org_id: str, storage_base_dir: str | None = None) -> Reflexio:
         # rely on TTL + explicit invalidation instead.
         if cached_version is None:
             return entry.reflexio
-        current_version = _probe_version_safe(entry.reflexio)
+        with profile_step("reflexio.cache.version_probe", cache_state="hit") as span:
+            current_version = _probe_version_safe(entry.reflexio)
+            span.set_data("probe_failed", current_version is _PROBE_FAILED)
+            span.set_data(
+                "probe_supported",
+                current_version is not None and current_version is not _PROBE_FAILED,
+            )
         # Transient probe failure: keep the cached instance for this
         # request but DON'T mutate the stamp — the next request will
         # try again, so a brief outage doesn't permanently disable
@@ -134,15 +147,27 @@ def get_reflexio(org_id: str, storage_base_dir: str | None = None) -> Reflexio:
         # Stale entry. Evict only if the cached version still matches
         # the one we just compared against — another thread may have
         # already replaced the entry while we were probing.
-        with _reflexio_cache_lock:
-            existing = _reflexio_cache.get(cache_key)
-            if existing is not None and existing.cached_version == cached_version:
-                del _reflexio_cache[cache_key]
+        with profile_step("reflexio.cache.evict_stale") as span:
+            with _reflexio_cache_lock:
+                existing = _reflexio_cache.get(cache_key)
+                evicted = (
+                    existing is not None and existing.cached_version == cached_version
+                )
+                if evicted:
+                    del _reflexio_cache[cache_key]
+            span.set_data("evicted", evicted)
 
     # Cache miss (or just-evicted stale entry) - create a new instance
     # outside the lock to avoid blocking concurrent requests for other orgs.
-    reflexio = Reflexio(org_id=org_id, storage_base_dir=storage_base_dir)
-    new_version = _probe_version_safe(reflexio)
+    with profile_step("reflexio.cache.construct"):
+        reflexio = Reflexio(org_id=org_id, storage_base_dir=storage_base_dir)
+    with profile_step("reflexio.cache.version_probe", cache_state="miss") as span:
+        new_version = _probe_version_safe(reflexio)
+        span.set_data("probe_failed", new_version is _PROBE_FAILED)
+        span.set_data(
+            "probe_supported",
+            new_version is not None and new_version is not _PROBE_FAILED,
+        )
 
     # Construction-time probe failure: serve this request from the
     # newly-built instance but DON'T cache it. Caching with
@@ -159,13 +184,18 @@ def get_reflexio(org_id: str, storage_base_dir: str | None = None) -> Reflexio:
         cached_version=new_version,  # type: ignore[arg-type]
     )
 
-    with _reflexio_cache_lock:
-        # Double-check in case another thread populated while we were constructing.
-        existing = _reflexio_cache.get(cache_key)
-        if existing is None:
-            _reflexio_cache[cache_key] = new_entry
-            return reflexio
-        return existing.reflexio
+    with profile_step("reflexio.cache.store") as span:
+        with _reflexio_cache_lock:
+            # Double-check in case another thread populated while we were constructing.
+            existing = _reflexio_cache.get(cache_key)
+            stored = existing is None
+            if stored:
+                _reflexio_cache[cache_key] = new_entry
+                result = reflexio
+            else:
+                result = existing.reflexio
+        span.set_data("stored", stored)
+        return result
 
 
 def invalidate_reflexio_cache(org_id: str, storage_base_dir: str | None = None) -> bool:

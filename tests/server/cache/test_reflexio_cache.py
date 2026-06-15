@@ -11,6 +11,7 @@ Covers:
 7. Version-based auto-invalidation: stale entries are evicted on next get
 """
 
+from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -21,6 +22,7 @@ from reflexio.server.cache.reflexio_cache import (
     get_reflexio,
     invalidate_reflexio_cache,
 )
+from reflexio.server.tracing import configure_tracer
 
 # =============================================================================
 # Fixtures
@@ -31,8 +33,31 @@ from reflexio.server.cache.reflexio_cache import (
 def _clean_cache():
     """Clear the module-level cache before and after every test."""
     clear_reflexio_cache()
+    configure_tracer(None)
     yield
     clear_reflexio_cache()
+    configure_tracer(None)
+
+
+class _RecordingSpan:
+    def __init__(self) -> None:
+        self.data: dict[str, object] = {}
+
+    def set_data(self, key: str, value: object) -> None:
+        self.data[key] = value
+
+
+class _RecordingTracer:
+    def __init__(self) -> None:
+        self.started: list[tuple[str, dict[str, object]]] = []
+        self.spans: list[_RecordingSpan] = []
+
+    @contextmanager
+    def span(self, name: str, **data: object):
+        span = _RecordingSpan()
+        self.started.append((name, data))
+        self.spans.append(span)
+        yield span
 
 
 # =============================================================================
@@ -117,6 +142,37 @@ class TestGetReflexio:
         mock_reflexio_cls.assert_called_once_with(
             org_id="org-1", storage_base_dir="/custom/dir"
         )
+
+    @patch("reflexio.server.cache.reflexio_cache.Reflexio")
+    def test_cache_lookup_and_probe_emit_spans(self, mock_reflexio_cls: MagicMock):
+        """Cache misses and hits are visible as separate trace spans."""
+        tracer = _RecordingTracer()
+        configure_tracer(tracer)
+        mock_reflexio_cls.return_value = _stub_reflexio(("config", 1))
+
+        first = get_reflexio("org-1")
+        second = get_reflexio("org-1")
+
+        assert first is second
+        names = [name for name, _data in tracer.started]
+        assert names == [
+            "reflexio.cache.lookup",
+            "reflexio.cache.construct",
+            "reflexio.cache.version_probe",
+            "reflexio.cache.store",
+            "reflexio.cache.lookup",
+            "reflexio.cache.version_probe",
+        ]
+        assert tracer.spans[0].data == {
+            "cache_hit": False,
+            "has_cached_version": False,
+        }
+        assert tracer.started[2][1] == {"cache_state": "miss"}
+        assert tracer.spans[4].data == {
+            "cache_hit": True,
+            "has_cached_version": True,
+        }
+        assert tracer.started[5][1] == {"cache_state": "hit"}
 
 
 # =============================================================================

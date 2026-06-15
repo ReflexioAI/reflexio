@@ -186,6 +186,7 @@ from reflexio.server.services.agent_success_evaluation.regen_jobs import (
     REGEN_JOBS,
     run_regen,
 )
+from reflexio.server.tracing import profile_step
 
 logger = logging.getLogger(__name__)
 
@@ -935,30 +936,44 @@ def unified_search_endpoint(
     Returns:
         UnifiedSearchViewResponse: Combined search results
     """
-    response = _run_limited_api(
-        org_id,
-        "search",
-        lambda: get_reflexio(org_id=org_id).unified_search(payload, org_id=org_id),
-    )
-    resp = UnifiedSearchViewResponse(
-        success=response.success,
-        profiles=[to_profile_view(p) for p in response.profiles],
-        agent_playbooks=[to_agent_playbook_view(fb) for fb in response.agent_playbooks],
-        user_playbooks=[to_user_playbook_view(rf) for rf in response.user_playbooks],
-        reformulated_query=response.reformulated_query,
-        msg=response.msg,
-        agent_trace=response.agent_trace,
-        rehydrated_text=response.rehydrated_text,
-    )
-    _meter_applied_learnings(
-        org_id=org_id,
-        caller_type=caller_type,
-        surfaced_count=len(resp.profiles)
-        + len(resp.agent_playbooks)
-        + len(resp.user_playbooks),
-        request_id=getattr(payload, "request_id", None),
-        session_id=getattr(payload, "session_id", None),
-    )
+    with profile_step(
+        "search.endpoint",
+        enabled=bool(payload.enable_reformulation),
+        has_conversation_history=bool(payload.conversation_history),
+        search_mode=payload.search_mode,
+    ):
+
+        def run_search() -> Any:
+            with profile_step("search.reflexio_cache"):
+                reflexio = get_reflexio(org_id=org_id)
+            return reflexio.unified_search(payload, org_id=org_id)
+
+        response = _run_limited_api(org_id, "search", run_search)
+        with profile_step("search.response_view"):
+            resp = UnifiedSearchViewResponse(
+                success=response.success,
+                profiles=[to_profile_view(p) for p in response.profiles],
+                agent_playbooks=[
+                    to_agent_playbook_view(fb) for fb in response.agent_playbooks
+                ],
+                user_playbooks=[
+                    to_user_playbook_view(rf) for rf in response.user_playbooks
+                ],
+                reformulated_query=response.reformulated_query,
+                msg=response.msg,
+                agent_trace=response.agent_trace,
+                rehydrated_text=response.rehydrated_text,
+            )
+        with profile_step("search.meter_applied_learnings"):
+            _meter_applied_learnings(
+                org_id=org_id,
+                caller_type=caller_type,
+                surfaced_count=len(resp.profiles)
+                + len(resp.agent_playbooks)
+                + len(resp.user_playbooks),
+                request_id=getattr(payload, "request_id", None),
+                session_id=getattr(payload, "session_id", None),
+            )
     return resp
 
 

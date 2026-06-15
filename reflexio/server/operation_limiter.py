@@ -12,6 +12,7 @@ from typing import Any, Literal
 
 from fastapi import HTTPException, status
 
+from reflexio.server.tracing import profile_step
 from reflexio.server.usage_metrics import record_usage_event
 
 OperationName = Literal["search", "publish", "aggregation"]
@@ -120,12 +121,20 @@ def operation_limit(
         waiting = state.waiting
     acquired = False
     try:
-        acquired = (
-            state.semaphore.acquire()
-            if timeout is None
-            else state.semaphore.acquire(timeout=timeout)
-        )
-        wait_ms = int((time.perf_counter() - start) * 1000)
+        with profile_step(
+            f"{operation}.operation_limit.acquire",
+            limit=state.limit,
+            waiting=waiting,
+            wait_forever=wait_forever,
+        ) as span:
+            acquired = (
+                state.semaphore.acquire()
+                if timeout is None
+                else state.semaphore.acquire(timeout=timeout)
+            )
+            wait_ms = int((time.perf_counter() - start) * 1000)
+            span.set_data("wait_ms", wait_ms)
+            span.set_data("acquired", acquired)
         with _limiters_lock:
             state.waiting -= 1
             waiting_after = state.waiting

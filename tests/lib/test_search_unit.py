@@ -4,6 +4,8 @@ Tests get_agent_success_evaluation_results, get_requests, and
 unified_search with mocked storage.
 """
 
+from contextlib import contextmanager
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 from reflexio.lib._search import SearchMixin
@@ -15,6 +17,7 @@ from reflexio.models.api_schema.retriever_schema import (
     UnifiedSearchResponse,
 )
 from reflexio.models.api_schema.service_schemas import Interaction, Request
+from reflexio.server.tracing import configure_tracer
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -36,7 +39,7 @@ def _make_mixin(*, storage_configured: bool = True) -> SearchMixin:
 
 
 def _get_storage(mixin: SearchMixin) -> MagicMock:
-    return mixin.request_context.storage
+    return cast(MagicMock, mixin.request_context.storage)
 
 
 # ---------------------------------------------------------------------------
@@ -198,7 +201,9 @@ class TestUnifiedSearch:
         mixin.llm_client = MagicMock()
         mock_config = MagicMock()
         mock_config.llm_config = None
-        mixin.request_context.configurator.get_config.return_value = mock_config
+        cast(Any, mixin.request_context.configurator.get_config).return_value = (
+            mock_config
+        )
 
         expected_response = UnifiedSearchResponse(success=True)
 
@@ -215,6 +220,59 @@ class TestUnifiedSearch:
         assert call_kwargs["org_id"] == "org_1"
         assert call_kwargs["llm_client"] is mixin.llm_client
         assert "pre_retrieval_model_name" in call_kwargs
+
+    def test_prepare_span_wraps_setup_before_service_dispatch(self):
+        """Emits a setup span before the first phase-A search span."""
+        mixin = _make_mixin()
+        mixin.llm_client = MagicMock()
+        mock_config = MagicMock()
+        mock_config.llm_config = None
+        cast(Any, mixin.request_context.configurator.get_config).return_value = (
+            mock_config
+        )
+
+        events: list[tuple[str, str, dict[str, object] | None]] = []
+
+        class RecordingTracer:
+            @contextmanager
+            def span(self, name: str, **data: object):
+                events.append(("span_start", name, data))
+                yield MagicMock()
+                events.append(("span_end", name, None))
+
+        expected_response = UnifiedSearchResponse(success=True)
+
+        def run_service(**_kwargs):
+            events.append(("run_service", "run_unified_search", None))
+            return expected_response
+
+        configure_tracer(RecordingTracer())
+        try:
+            with patch(
+                "reflexio.server.services.unified_search_service.run_unified_search",
+                side_effect=run_service,
+            ):
+                request = UnifiedSearchRequest(
+                    query="test query", enable_reformulation=True
+                )
+                response = mixin.unified_search(request, org_id="org_1")
+        finally:
+            configure_tracer(None)
+
+        assert response is expected_response
+        assert events == [
+            (
+                "span_start",
+                "search.prepare",
+                {
+                    "enabled": True,
+                    "has_conversation_history": False,
+                    "search_mode": request.search_mode,
+                },
+            ),
+            ("span_end", "search.prepare", None),
+            ("run_service", "run_unified_search", None),
+        ]
 
     def test_storage_not_configured(self):
         """Returns success with message when storage is not configured."""
@@ -237,7 +295,9 @@ class TestUnifiedSearch:
         mixin.llm_client = MagicMock()
         mock_config = MagicMock()
         mock_config.llm_config = None
-        mixin.request_context.configurator.get_config.return_value = mock_config
+        cast(Any, mixin.request_context.configurator.get_config).return_value = (
+            mock_config
+        )
 
         expected_response = UnifiedSearchResponse(success=True)
 
