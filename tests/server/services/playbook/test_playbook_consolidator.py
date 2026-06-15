@@ -659,6 +659,24 @@ class TestBuildDeduplicatedResults:
         assert len(result) == 2
         assert delete_ids == [999]
 
+    def test_existing_reference_ignores_out_of_range_position_key(
+        self, mock_consolidator
+    ):
+        """Out-of-range position-like keys must not shadow legacy DB ids."""
+        db_row = _make_user_playbook(1, user_playbook_id=999)
+        stray_position_row = _make_user_playbook(2, user_playbook_id=123)
+
+        resolved = mock_consolidator._resolve_existing_reference(
+            999,
+            existing_by_position={
+                "EXISTING-0": db_row,
+                "EXISTING-999": stray_position_row,
+            },
+            existing_by_id={999: db_row},
+        )
+
+        assert resolved is db_row
+
     def test_safety_fallback_unhandled_playbooks(self, mock_consolidator):
         """NEW playbooks not referenced by any decision are added via safety fallback."""
         new_playbooks = [

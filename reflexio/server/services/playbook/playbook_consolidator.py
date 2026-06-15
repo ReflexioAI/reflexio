@@ -1014,9 +1014,11 @@ class PlaybookConsolidator(BaseDeduplicator):
         emit bare integers, so position is the primary interpretation. DB id is
         retained as a compatibility fallback for older prompt outputs.
         """
-        return existing_by_position.get(f"EXISTING-{raw_id}") or existing_by_id.get(
-            raw_id
-        )
+        if 0 <= raw_id < len(existing_by_position):
+            existing = existing_by_position.get(f"EXISTING-{raw_id}")
+            if existing is not None:
+                return existing
+        return existing_by_id.get(raw_id)
 
     @staticmethod
     def _bump_counter(result: PlaybookConsolidationResult, kind: str) -> None:

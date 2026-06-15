@@ -1636,18 +1636,12 @@ class LiteLLMClient:
         """
         content = content.strip()
 
-        # Prefer the outer JSON container first. Structured JSON may contain
+        # Prefer a balanced JSON container first. Structured JSON may contain
         # markdown fences inside string values; grabbing the first code block
         # would extract the inner snippet instead of the response object.
-        # Assumes no stray braces/brackets in any prose surrounding the JSON —
-        # if a model emits e.g. "Result {x}: ```json\n{...}\n```", find/rfind
-        # would over-span; the markdown fallback below still covers fence-only
-        # responses that contain no top-level container.
-        for start_char, end_char in [("{", "}"), ("[", "]")]:
-            start_idx = content.find(start_char)
-            end_idx = content.rfind(end_char)
-            if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
-                return content[start_idx : end_idx + 1]
+        json_container = self._extract_first_json_container(content)
+        if json_container is not None:
+            return json_container
 
         # Try to extract from markdown code blocks
         json_block_pattern = r"```(?:json)?\s*([\s\S]*?)```"
@@ -1656,6 +1650,61 @@ class LiteLLMClient:
             return matches[0].strip()
 
         return content
+
+    def _extract_first_json_container(self, content: str) -> str | None:
+        """Return the first balanced JSON-like object/array in ``content``."""
+        for start_idx, ch in enumerate(content):
+            if ch not in "{[":
+                continue
+            end_idx = self._find_json_container_end(content, start_idx)
+            if end_idx is None:
+                continue
+            candidate = content[start_idx : end_idx + 1]
+            if self._is_parseable_json_candidate(candidate):
+                return candidate
+        return None
+
+    @staticmethod
+    def _find_json_container_end(content: str, start_idx: int) -> int | None:
+        """Find the matching end of a JSON container, respecting strings."""
+        pairs = {"{": "}", "[": "]"}
+        stack = [pairs[content[start_idx]]]
+        in_str = False
+        escape = False
+
+        for idx in range(start_idx + 1, len(content)):
+            ch = content[idx]
+            if escape:
+                escape = False
+                continue
+            if ch == "\\" and in_str:
+                escape = True
+                continue
+            if ch == '"':
+                in_str = not in_str
+                continue
+            if in_str:
+                continue
+            if ch in pairs:
+                stack.append(pairs[ch])
+            elif ch in ("}", "]"):
+                if not stack or stack.pop() != ch:
+                    return None
+                if not stack:
+                    return idx
+        return None
+
+    def _is_parseable_json_candidate(self, candidate: str) -> bool:
+        """Return True if a balanced candidate can parse after normal sanitizing."""
+        try:
+            json.loads(candidate)
+            return True
+        except Exception:
+            try:
+                json.loads(self._sanitize_json_string(candidate))
+                return True
+            except Exception:
+                return False
 
     def _looks_truncated_json(self, json_str: str) -> bool:
         """

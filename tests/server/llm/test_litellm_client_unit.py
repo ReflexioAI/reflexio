@@ -1282,6 +1282,16 @@ class TestExtractJsonFromString:
         result = client._extract_json_from_string(content)
         assert result == '{"answer": 42}'
 
+    def test_json_object_ignores_stray_braces_in_text(self, client):
+        content = 'Result {not json}: {"answer": 42, "why": "{kept}"} trailing {x}'
+        result = client._extract_json_from_string(content)
+        assert result == '{"answer": 42, "why": "{kept}"}'
+
+    def test_json_array_ignores_stray_brackets_in_text(self, client):
+        content = "Candidates [not json] then [{\"answer\": 42}] trailing [x]"
+        result = client._extract_json_from_string(content)
+        assert result == '[{"answer": 42}]'
+
     def test_json_object_with_markdown_fence_in_string(self, client):
         content = json.dumps(
             {
