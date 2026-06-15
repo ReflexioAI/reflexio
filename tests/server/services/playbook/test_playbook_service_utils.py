@@ -184,8 +184,12 @@ def test_extraction_prompt_keeps_general_triggers_specific_actions():
 
     for rendered in (context_prompt, main_prompt):
         normalized = " ".join(rendered.replace("*", "").split())
-        assert "triggers retrieval-general and content action-specific" in normalized
-        assert "concrete downstream surfaces, checks, and avoid-detours" in normalized
+        assert "earliest observable situation" in normalized
+        assert "user's later repair request" in normalized
+    context_normalized = " ".join(context_prompt.replace("*", "").split())
+    assert "retrieval-general" in context_normalized
+    assert "content action-specific" in context_normalized
+    assert "concrete surfaces, checks, and avoid-detours" in context_normalized
 
 
 def test_consolidation_prompt_preserves_operational_surfaces():
@@ -202,7 +206,7 @@ def test_consolidation_prompt_preserves_operational_surfaces():
     normalized = " ".join(rendered.split())
 
     assert "Preserve concrete operational surfaces" in normalized
-    assert "load balancer target groups, security groups, health checks, task definitions" in normalized
+    assert "target groups, SGs, health checks, task defs" in normalized
     assert "generic sweep/audit rule" in normalized
 
 
