@@ -413,7 +413,7 @@ class TestMemoryReviewCandidates:
         # signal is computed from current_time - created_at >= days_back.
         stale = [c for c in candidates if "stale" in c.signals]
         assert len(stale) == 1
-        assert stale[0].entity_type == "playbook"
+        assert stale[0].entity_type == "user_playbook"
         assert stale[0].title == "stale-rule"
         assert stale[0].injection_count == 0
         assert stale[0].citation_count == 0
@@ -457,7 +457,7 @@ class TestMemoryReviewCandidates:
                          (org_id, event_name, event_category, entity_type,
                           entity_id, count_value, prompt_tokens, created_at)
                        VALUES (?, 'learning_injection', 'application',
-                               'playbook', ?, 1, 10,
+                               'user_playbook', ?, 1, 10,
                                strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))""",
                     (storage.org_id, str(pb_id)),
                 )
@@ -501,7 +501,7 @@ class TestMemoryReviewCandidates:
                          (org_id, event_name, event_category, entity_type,
                           entity_id, count_value, created_at)
                        VALUES (?, 'learning_injection', 'application',
-                               'playbook', ?, 1,
+                               'user_playbook', ?, 1,
                                strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))""",
                     (storage.org_id, str(pb_id)),
                 )
@@ -528,31 +528,9 @@ class TestMemoryReviewCandidates:
         if not _backend_supports_memory_review(storage):
             pytest.skip("Backend does not implement get_memory_review_candidates")
         # Insert one playbook per signal class so we can verify the
-        # relative sort order. Score ranges: supersedeable=100,
-        # stale=50-99, high_cost_low_cite=30-49.
+        # relative sort order. Score ranges: stale=50-99,
+        # high_cost_low_cite=30-49.
         with storage._lock:
-            # supersedeable: appears in a recent change log
-            cur = storage.conn.execute(
-                """INSERT INTO user_playbooks
-                     (user_id, request_id, agent_version, content,
-                      playbook_name, created_at, status)
-                   VALUES ('u1', 'r1', 'v1', 'x', 'super-rule',
-                           strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), NULL)"""
-            )
-            super_id = cur.lastrowid
-            storage.conn.execute(
-                """INSERT INTO playbook_aggregation_change_logs
-                     (created_at, playbook_name, agent_version, run_mode,
-                      added_playbooks, removed_playbooks, updated_playbooks)
-                   VALUES (?, 'super-playbook', 'v1', 'incremental',
-                           '[]', ?, '[]')""",
-                (
-                    int(__import__("datetime").datetime.now(
-                        __import__("datetime").UTC
-                    ).timestamp()),
-                    f'[{{"user_playbook_id": {super_id}}}]',
-                ),
-            )
             # stale: very old, no injection
             storage.conn.execute(
                 """INSERT INTO user_playbooks
@@ -576,7 +554,7 @@ class TestMemoryReviewCandidates:
                          (org_id, event_name, event_category, entity_type,
                           entity_id, count_value, created_at)
                        VALUES (?, 'learning_injection', 'application',
-                               'playbook', ?, 1,
+                               'user_playbook', ?, 1,
                                strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))""",
                     (storage.org_id, str(noisy_id)),
                 )
@@ -609,3 +587,55 @@ class TestMemoryReviewCandidates:
             f"Expected no stale signal for unparseable created_at, "
             f"got {[c.signals for c in candidates]}"
         )
+
+    def test_archived_playbooks_excluded(self, storage):
+        if not _backend_supports_memory_review(storage):
+            pytest.skip("Backend does not implement get_memory_review_candidates")
+        # An archived playbook would otherwise satisfy the stale signal
+        # (old, no injections). Once a data owner archives a candidate it
+        # must not reappear in the review queue.
+        with storage._lock:
+            storage.conn.execute(
+                """INSERT INTO user_playbooks
+                     (user_id, request_id, agent_version, content,
+                      playbook_name, created_at, status)
+                   VALUES ('u1', 'r1', 'v1', 'x', 'archived-rule',
+                           '2020-01-01T00:00:00.000Z', 'archived')"""
+            )
+            storage.conn.commit()
+        candidates = storage.get_memory_review_candidates(days_back=60)
+        assert candidates == [], (
+            f"Expected archived playbook to be excluded, got {candidates}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# TestUpdateUserPlaybookMetadata
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateUserPlaybookMetadata:
+    def test_playbook_metadata_persists(self, storage):
+        # The memory-review supersede action stamps a
+        # ``{"superseded_by": <id>}`` reference via update_user_playbook;
+        # this guards the user_playbooks.playbook_metadata column existing.
+        if not hasattr(storage, "update_user_playbook"):
+            pytest.skip("Backend does not implement update_user_playbook")
+        with storage._lock:
+            cur = storage.conn.execute(
+                """INSERT INTO user_playbooks
+                     (user_id, request_id, agent_version, content,
+                      playbook_name, created_at, status)
+                   VALUES ('u1', 'r1', 'v1', 'x', 'meta-rule',
+                           strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), NULL)"""
+            )
+            pb_id = cur.lastrowid
+            storage.conn.commit()
+        storage.update_user_playbook(
+            pb_id, playbook_metadata='{"superseded_by": 7}'
+        )
+        row = storage._fetchone(
+            "SELECT playbook_metadata FROM user_playbooks WHERE user_playbook_id = ?",
+            (pb_id,),
+        )
+        assert row["playbook_metadata"] == '{"superseded_by": 7}'

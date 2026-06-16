@@ -204,7 +204,7 @@ class DashboardMixin(ReflexioBase):
     def get_memory_review(
         self, request: GetMemoryReviewRequest | dict
     ) -> GetMemoryReviewResponse:
-        """Surface stale / duplicate / low-cite / supersedeable memories.
+        """Surface stale / low-cite user playbooks for review.
 
         Pairs with :meth:`get_injection_stats` and
         :meth:`get_playbook_application_stats` — together the three

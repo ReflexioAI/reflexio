@@ -160,7 +160,7 @@ def record_injection_events(
     ``usage_events`` table regardless of which channel adapter (claude-smart,
     Codex, custom) drove the search. Aggregated by the storage layer's
     :meth:`ExtrasMixin.get_injection_stats` and the
-    ``GET /api/get_injection_stats`` endpoint.
+    ``POST /api/get_injection_stats`` endpoint.
 
     Distinct from :func:`record_applied_learnings` (one row per search,
     billing-oriented). Per-entity rows are observability-oriented and
@@ -175,8 +175,9 @@ def record_injection_events(
         org_id: Organisation identifier.
         caller_type: Caller classification (e.g. ``"production_agent"``).
         entities: Sequence of ``(entity_type, entity_id)`` pairs, one per
-            surfaced entity. ``entity_type`` is ``"playbook"`` or
-            ``"profile"``; ``entity_id`` is the storage id (string-encoded).
+            surfaced entity. ``entity_type`` is ``"user_playbook"``,
+            ``"agent_playbook"`` or ``"profile"``; ``entity_id`` is the
+            storage id (string-encoded).
         pipeline: Optional pipeline tag (e.g. ``"unified_search"``).
         request_id: Optional request correlation id.
         session_id: Optional session id.

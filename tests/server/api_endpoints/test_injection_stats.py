@@ -28,7 +28,7 @@ def _patch_lib_method(method_name: str, return_value: MagicMock):
 
 
 def _make_injection_stat(
-    entity_type: str = "playbook",
+    entity_type: str = "user_playbook",
     entity_id: str = "42",
     surfaced_count: int = 5,
     distinct_session_count: int = 2,

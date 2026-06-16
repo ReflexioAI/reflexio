@@ -35,7 +35,7 @@ def _make_candidate(
     citation_count: int = 0,
 ) -> MemoryReviewCandidate:
     return MemoryReviewCandidate(
-        entity_type="playbook",
+        entity_type="user_playbook",
         entity_id=entity_id,
         title="rule-42",
         signals=signals or ["stale"],

@@ -334,7 +334,7 @@ class TestGetInjectionStats:
         """Returns injection stats from storage."""
         mixin = _make_dashboard_mixin()
         stat = InjectionStat(
-            entity_type="playbook",
+            entity_type="user_playbook",
             entity_id="1",
             surfaced_count=5,
             distinct_session_count=3,
@@ -409,7 +409,7 @@ class TestGetMemoryReview:
         """Returns hygiene candidates from storage."""
         mixin = _make_dashboard_mixin()
         candidate = MemoryReviewCandidate(
-            entity_type="playbook",
+            entity_type="user_playbook",
             entity_id="42",
             title="stale rule",
             signals=["stale"],
@@ -459,7 +459,7 @@ class TestGetMemoryReview:
         mixin = _make_dashboard_mixin()
         candidates = [
             MemoryReviewCandidate(
-                entity_type="playbook",
+                entity_type="user_playbook",
                 entity_id="1",
                 title="stale",
                 signals=["stale"],
@@ -468,7 +468,7 @@ class TestGetMemoryReview:
                 citation_count=0,
             ),
             MemoryReviewCandidate(
-                entity_type="playbook",
+                entity_type="user_playbook",
                 entity_id="2",
                 title="low cite",
                 signals=["high_cost_low_cite"],
@@ -477,7 +477,7 @@ class TestGetMemoryReview:
                 citation_count=1,
             ),
             MemoryReviewCandidate(
-                entity_type="playbook",
+                entity_type="user_playbook",
                 entity_id="3",
                 title="stale and low cite",
                 signals=["stale", "high_cost_low_cite"],
@@ -503,7 +503,7 @@ class TestGetMemoryReview:
             mixin
         ).get_memory_review_candidates.return_value = [
             MemoryReviewCandidate(
-                entity_type="playbook",
+                entity_type="user_playbook",
                 entity_id="1",
                 title="x",
                 signals=["stale"],
@@ -531,7 +531,7 @@ class TestGetMemoryReview:
             mixin
         ).get_memory_review_candidates.return_value = [
             MemoryReviewCandidate(
-                entity_type="playbook",
+                entity_type="user_playbook",
                 entity_id="1",
                 title="stale",
                 signals=["stale"],
@@ -540,7 +540,7 @@ class TestGetMemoryReview:
                 citation_count=0,
             ),
             MemoryReviewCandidate(
-                entity_type="playbook",
+                entity_type="user_playbook",
                 entity_id="2",
                 title="noisy",
                 signals=["high_cost_low_cite"],

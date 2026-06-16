@@ -551,9 +551,9 @@ def _meter_applied_learnings(
 def _wire_usage_event_sink() -> None:
     """Wire the per-entity observability sink into the process-global recorder.
 
-    Opt-in via the ``REFLEXIO_ENABLE_USAGE_EVENT_SINK=1`` env var. The CLI
-    entrypoint (``python -m reflexio.server``) sets this env var before
-    ``uvicorn.run``; tests do not, so the no-op default applies and
+    Opt-in via the ``REFLEXIO_ENABLE_USAGE_EVENT_SINK=1`` env var. The
+    services launcher (``reflexio/cli/run_services.py``) sets this env var
+    before starting the backend; tests do not, so the no-op default applies and
     existing test fixtures (which call ``configure_usage_event_recorder``
     themselves) are not disturbed.
 
@@ -588,7 +588,7 @@ def _meter_injection_events(
     Distinct from :func:`_meter_applied_learnings` (one row per search,
     billing-oriented). Per-entity rows land in the ``usage_events`` table
     and are aggregated by the storage-layer ``get_injection_stats`` and
-    the ``GET /api/get_injection_stats`` endpoint. Pairs with
+    the ``POST /api/get_injection_stats`` endpoint. Pairs with
     ``learning_applied`` so the dashboard can answer both "what was
     rendered into context?" and "what influenced the response?".
 
@@ -613,11 +613,14 @@ def _meter_injection_events(
         for p in resp.profiles:
             entities.append(("profile", p.profile_id))
             contents.append(p.content or "")
+        # User and agent playbooks have independent id spaces, so they are
+        # recorded under distinct entity_types to avoid id collisions in
+        # downstream per-entity rollups (e.g. get_memory_review_candidates).
         for pb in resp.user_playbooks:
-            entities.append(("playbook", str(pb.user_playbook_id)))
+            entities.append(("user_playbook", str(pb.user_playbook_id)))
             contents.append(pb.content or "")
         for ap in resp.agent_playbooks:
-            entities.append(("playbook", str(ap.agent_playbook_id)))
+            entities.append(("agent_playbook", str(ap.agent_playbook_id)))
             contents.append(ap.content or "")
         if not entities:
             return
@@ -2060,11 +2063,11 @@ def get_memory_review(
     request: GetMemoryReviewRequest,
     org_id: str = Depends(default_get_org_id),
 ) -> GetMemoryReviewResponse:
-    """Get memory review candidates — stale, duplicate, low-cite, superseded.
+    """Get memory review candidates — stale or low-cite user playbooks.
 
     Returns one row per flagged user_playbook with the detected
-    ``signals`` (``stale``, ``high_cost_low_cite``, ``supersedeable``;
-    ``duplicate`` reserved for a follow-up batch job). Pairs with
+    ``signals`` (``stale``, ``high_cost_low_cite``; ``duplicate`` and
+    ``supersedeable`` are reserved for a follow-up). Pairs with
     :func:`get_injection_stats` and :func:`get_playbook_application_stats`
     (existing) to give the dashboard a complete hygiene view.
 
@@ -2075,7 +2078,7 @@ def get_memory_review(
 
     Returns:
         GetMemoryReviewResponse: Response containing the candidates
-            list, sorted by ``(signals, -score)``.
+            list, sorted by ``score`` descending.
     """
     reflexio = get_reflexio(org_id=org_id)
     return reflexio.get_memory_review(request)

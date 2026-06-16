@@ -665,6 +665,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         self._migrate_request_session_id_required()
         self._migrate_shadow_comparison_verdicts()
         self._migrate_user_playbook_polarity()
+        self._migrate_user_playbook_metadata()
         self._migrate_usage_events()
         init_stall_state_table(self.conn)
         return True
@@ -1174,6 +1175,29 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         if "polarity" in cols:
             self.conn.execute("ALTER TABLE user_playbooks DROP COLUMN polarity")
             logger.info("Dropped legacy polarity column from user_playbooks")
+        self.conn.commit()
+
+    def _migrate_user_playbook_metadata(self) -> None:
+        """Add the ``playbook_metadata`` column to ``user_playbooks`` if missing.
+
+        Backfill-safe: the column is ``NOT NULL DEFAULT ''`` so existing rows
+        get an empty value. Memory-review actions stamp a
+        ``{"superseded_by": <id>}`` reference here via
+        :meth:`update_user_playbook`; without this column that update raises
+        ``OperationalError`` on databases created before the column existed.
+        """
+        cols = {
+            row["name"]
+            for row in self.conn.execute("PRAGMA table_info(user_playbooks)").fetchall()
+        }
+        if not cols:
+            return
+        if "playbook_metadata" not in cols:
+            self.conn.execute(
+                "ALTER TABLE user_playbooks "
+                "ADD COLUMN playbook_metadata TEXT NOT NULL DEFAULT ''"
+            )
+            logger.info("Added playbook_metadata column to user_playbooks")
         self.conn.commit()
 
     def _migrate_agent_playbook_source_windows(self) -> None:
@@ -1766,7 +1790,8 @@ CREATE TABLE IF NOT EXISTS user_playbooks (
     expanded_terms TEXT,
     source_span TEXT,
     notes TEXT,
-    reader_angle TEXT
+    reader_angle TEXT,
+    playbook_metadata TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_user_playbooks_playbook_name ON user_playbooks(playbook_name);
 CREATE INDEX IF NOT EXISTS idx_user_playbooks_agent_version ON user_playbooks(agent_version);

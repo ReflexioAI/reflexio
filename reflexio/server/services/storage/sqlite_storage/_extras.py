@@ -493,19 +493,26 @@ class ExtrasMixin:
     ) -> list[MemoryReviewCandidate]:
         """Surface user_playbooks flagged for memory review.
 
-        Implements three of the four signals in v1; the ``duplicate``
-        signal is reserved for a follow-up because cosine-on-content is
-        O(n²) per call and is better done as a periodic batch job
-        (long-term answer for installations with thousands of playbooks).
+        Implements two signals in v1. ``duplicate`` and ``supersedeable``
+        are reserved for a follow-up:
+
+        - ``duplicate``: cosine-on-content is O(n²) per call and is
+          better done as a periodic batch job (long-term answer for
+          installations with thousands of playbooks).
+        - ``supersedeable``: the aggregation change log records removed
+          *agent* playbooks (``agent_playbook_id``), not the
+          ``user_playbook_id`` this review keys on, so the signal can't
+          be derived correctly from the current change-log schema. It is
+          deferred until the source mapping is wired in.
+
+        Archived playbooks (``status = 'archived'``) are excluded — once a
+        data owner archives a candidate it must not reappear in the queue.
 
         Signals implemented:
-          - ``stale``: not used in ``days_back`` and not modified in
-            ``days_back``.
+          - ``stale``: not injected in ``days_back`` and created more
+            than ``days_back`` ago.
           - ``high_cost_low_cite``: injected >= 3 times and citation
             rate (citations / injections) is < 0.5.
-          - ``supersedeable``: appears in a recent
-            ``playbook_aggregation_change_logs`` entry as a removed
-            rule (we read the JSON snapshot).
 
         Args:
             days_back (int): Look-back window in days. Must be > 0.
@@ -513,9 +520,8 @@ class ExtrasMixin:
         Returns:
             list[MemoryReviewCandidate]: Sorted by ``-score``
             descending. Score encodes signal priority
-            (``supersedeable`` = 100, ``stale`` = 50-99,
-            ``high_cost_low_cite`` = 30-49) so this sort
-            groups by primary signal and orders within each
+            (``stale`` = 50-99, ``high_cost_low_cite`` = 30-49) so this
+            sort groups by primary signal and orders within each
             group by strength. Empty when no candidates.
         """
         if days_back <= 0:
@@ -525,16 +531,20 @@ class ExtrasMixin:
         start_ts = current_time - days_back * 24 * 60 * 60
         start_ts_iso = _epoch_to_iso(start_ts)
 
-        # Snapshot of all current user_playbooks.
+        # Snapshot of current, non-archived user_playbooks.
         playbook_rows = self._fetchall(
             """SELECT user_playbook_id, playbook_name, content, status,
                       created_at, source_span
-                 FROM user_playbooks"""
+                 FROM user_playbooks
+                 WHERE COALESCE(status, '') != 'archived'"""
         )
         if not playbook_rows:
             return []
 
         # Build (entity_id → injection stats) for the look-back window.
+        # Only ``user_playbook`` events are read: agent playbooks live in a
+        # separate id space and are recorded under ``entity_type =
+        # 'agent_playbook'`` to avoid id collisions here.
         injection_rows = self._fetchall(
             """SELECT entity_id,
                       COUNT(*) AS injection_count,
@@ -542,7 +552,7 @@ class ExtrasMixin:
                  FROM usage_events
                  WHERE org_id = ?
                    AND event_name = 'learning_injection'
-                   AND entity_type = 'playbook'
+                   AND entity_type = 'user_playbook'
                    AND created_at >= ?
                  GROUP BY entity_id""",
             (self.org_id, start_ts_iso),
@@ -557,28 +567,6 @@ class ExtrasMixin:
 
         # Citation counts from the existing applied-stats join.
         applied_rows = self._get_applied_counts_for_window(start_ts_iso)
-
-        # Supersedeable entity ids from recent aggregation change logs.
-        # Note: this table's created_at is INTEGER (epoch), not ISO,
-        # so the comparison uses the epoch value, not start_ts_iso.
-        change_log_rows = self._fetchall(
-            """SELECT removed_playbooks
-                 FROM playbook_aggregation_change_logs
-                 WHERE created_at >= ?""",
-            (start_ts,),
-        )
-        superseded_ids: set[str] = set()
-        for r in change_log_rows:
-            for snap in _json_loads(r["removed_playbooks"]) or []:
-                if not isinstance(snap, dict):
-                    continue
-                eid = str(
-                    snap.get("user_playbook_id")
-                    or snap.get("id")
-                    or ""
-                )
-                if eid:
-                    superseded_ids.add(eid)
 
         # Compose candidates.
         candidates: list[MemoryReviewCandidate] = []
@@ -597,11 +585,6 @@ class ExtrasMixin:
             signals: list[str] = []
             score = 0
 
-            # supersedeable
-            if eid in superseded_ids:
-                signals.append("supersedeable")
-                score = max(score, 100)
-
             # stale — only meaningful when we have a real created_at.
             if (
                 created_at_epoch is not None
@@ -609,8 +592,8 @@ class ExtrasMixin:
                 and (current_time - created_at_epoch) >= days_back * 24 * 60 * 60
             ):
                 signals.append("stale")
-                # Older = higher score; clamp to [50, 99] to keep
-                # below the supersedeable signal weight.
+                # Older = higher score; clamp to [50, 99] so stale
+                # outranks high_cost_low_cite (30-49).
                 age_days = max(
                     0, (current_time - created_at_epoch) // (24 * 60 * 60)
                 )
@@ -629,7 +612,7 @@ class ExtrasMixin:
             )
             candidates.append(
                 MemoryReviewCandidate(
-                    entity_type="playbook",
+                    entity_type="user_playbook",
                     entity_id=eid,
                     title=title,
                     signals=signals,

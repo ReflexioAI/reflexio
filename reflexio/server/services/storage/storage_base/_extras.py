@@ -96,8 +96,9 @@ class ExtrasMixin:
         """Insert one row into the ``usage_events`` table.
 
         Persistence sink for the process-global ``record_usage_event`` hook
-        in :mod:`reflexio.server.usage_metrics`. Wired by the CLI
-        entrypoint (``reflexio.server.__main__``) via
+        in :mod:`reflexio.server.usage_metrics`. Wired by the services
+        launcher (``reflexio/cli/run_services.py`` sets
+        ``REFLEXIO_ENABLE_USAGE_EVENT_SINK=1``) via
         :class:`reflexio.server.services.usage_event_sink.SqliteUsageEventSink`.
 
         Backends MUST implement this method. The hook is process-global, so
@@ -106,7 +107,7 @@ class ExtrasMixin:
         hot path.
 
         Args:
-            org_id: Org id (matches ``self.org_id`` for org-scoped
+            org_id (str): Org id (matches ``self.org_id`` for org-scoped
                 backends; passed explicitly for clarity and multi-tenant
                 flexibility).
             event_name (str): ``"learning_injection"``,
@@ -117,8 +118,8 @@ class ExtrasMixin:
             request_id (str | None): Correlation id.
             session_id (str | None): Conversation id.
             pipeline (str | None): Logical pipeline (e.g., ``"unified_search"``).
-            entity_type (str | None): ``"playbook"`` / ``"profile"`` for
-                per-entity events.
+            entity_type (str | None): ``"user_playbook"`` /
+                ``"agent_playbook"`` / ``"profile"`` for per-entity events.
             entity_id (str | None): Storage id of the surfaced entity.
             caller_type (str | None): Caller classification
                 (e.g., ``"production_agent"``).
@@ -170,15 +171,16 @@ class ExtrasMixin:
 
         Channel-agnostic: the result list is the same shape regardless
         of which channel adapter (claude-smart, Codex, custom) drove
-        the writes. Combines four signals:
+        the writes. Two signals are implemented in v1:
 
-        - ``stale``: not used in ``days_back`` and not modified recently.
-        - ``duplicate``: clusters of near-duplicate content (best-effort,
-          O(n²); a periodic batch job is the long-term answer for
-          installations with thousands of playbooks).
+        - ``stale``: not injected in ``days_back`` and created more than
+          ``days_back`` ago.
         - ``high_cost_low_cite``: injected often, cited rarely.
-        - ``supersedeable``: appears in a recent
-          ``playbook_aggregation_change_logs`` entry as a removed rule.
+
+        ``duplicate`` (near-duplicate content clusters; O(n²), better as a
+        periodic batch job) and ``supersedeable`` (the change log records
+        removed agent playbooks, not the user_playbook_id this review keys
+        on) are reserved for a follow-up.
 
         Concrete default returns ``[]`` so backends that do not yet
         implement this method degrade gracefully. See
@@ -188,7 +190,7 @@ class ExtrasMixin:
             days_back (int): Look-back window in days. Must be positive.
 
         Returns:
-            list[MemoryReviewCandidate]: Sorted by ``(signals, -score)``.
+            list[MemoryReviewCandidate]: Sorted by ``score`` descending.
                 Empty when the backend has no implementation.
         """
         del days_back
