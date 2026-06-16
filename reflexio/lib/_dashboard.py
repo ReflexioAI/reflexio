@@ -24,6 +24,8 @@ from reflexio.models.api_schema.retriever_schema import (
     GetDashboardStatsResponse,
     GetInjectionStatsRequest,
     GetInjectionStatsResponse,
+    GetMemoryHygieneRequest,
+    GetMemoryHygieneResponse,
     GetPlaybookApplicationStatsRequest,
     GetPlaybookApplicationStatsResponse,
     PeriodStats,
@@ -197,6 +199,54 @@ class DashboardMixin(ReflexioBase):
                 success=False,
                 stats=[],
                 msg=f"Failed to get injection stats: {str(e)}",
+            )
+
+    def get_memory_hygiene(
+        self, request: GetMemoryHygieneRequest | dict
+    ) -> GetMemoryHygieneResponse:
+        """Surface stale / duplicate / low-cite / supersedeable memories.
+
+        Pairs with :meth:`get_injection_stats` and
+        :meth:`get_playbook_application_stats` — together the three
+        views answer "what was rendered?", "what influenced the
+        response?", and "what should be cleaned up?".
+
+        Args:
+            request (Union[GetMemoryHygieneRequest, dict]): Request
+                containing ``days_back`` and optional ``signal_filter``.
+
+        Returns:
+            GetMemoryHygieneResponse: Response containing the
+                candidates list. Empty ``candidates`` when the storage
+                is not configured.
+        """
+        if not self._is_storage_configured():
+            return GetMemoryHygieneResponse(
+                success=True, candidates=[], msg=STORAGE_NOT_CONFIGURED_MSG
+            )
+        try:
+            if isinstance(request, dict):
+                request = GetMemoryHygieneRequest(**request)
+            candidates = self._get_storage().get_memory_hygiene_candidates(
+                days_back=request.days_back
+            )
+            if request.signal_filter:
+                filter_set = set(request.signal_filter)
+                candidates = [
+                    c
+                    for c in candidates
+                    if any(s in filter_set for s in c.signals)
+                ]
+            return GetMemoryHygieneResponse(
+                success=True,
+                candidates=candidates,
+                msg="Retrieved memory hygiene candidates successfully",
+            )
+        except Exception as e:
+            return GetMemoryHygieneResponse(
+                success=False,
+                candidates=[],
+                msg=f"Failed to get memory hygiene: {str(e)}",
             )
 
     # ==============================

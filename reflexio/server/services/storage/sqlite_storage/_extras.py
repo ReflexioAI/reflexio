@@ -11,6 +11,7 @@ from reflexio.models.api_schema.braintrust_schema import (
 )
 from reflexio.models.api_schema.retriever_schema import (
     InjectionStat,
+    MemoryHygieneCandidate,
     PlaybookApplicationStat,
 )
 from reflexio.models.api_schema.service_schemas import (
@@ -485,6 +486,188 @@ class ExtrasMixin:
             )
         )
         return stats
+
+    @SQLiteStorageBase.handle_exceptions
+    def get_memory_hygiene_candidates(
+        self, days_back: int = 60
+    ) -> list[MemoryHygieneCandidate]:
+        """Surface user_playbooks flagged for memory hygiene.
+
+        Implements three of the four signals in v1; the ``duplicate``
+        signal is reserved for a follow-up because cosine-on-content is
+        O(n²) per call and is better done as a periodic batch job
+        (long-term answer for installations with thousands of playbooks).
+
+        Signals implemented:
+          - ``stale``: not used in ``days_back`` and not modified in
+            ``days_back``.
+          - ``high_cost_low_cite``: injected >= 3 times and citation
+            rate (citations / injections) is < 0.5.
+          - ``supersedeable``: appears in a recent
+            ``playbook_aggregation_change_logs`` entry as a removed
+            rule (we read the JSON snapshot).
+
+        Args:
+            days_back (int): Look-back window in days. Must be > 0.
+
+        Returns:
+            list[MemoryHygieneCandidate]: Sorted by
+            ``(signals[0], -score)``. Empty when no candidates.
+        """
+        if days_back <= 0:
+            return []
+
+        current_time = _epoch_now()
+        start_ts_iso = _epoch_to_iso(current_time - days_back * 24 * 60 * 60)
+
+        # Snapshot of all current user_playbooks.
+        playbook_rows = self._fetchall(
+            """SELECT user_playbook_id, playbook_name, content, status,
+                      created_at, source_span
+                 FROM user_playbooks"""
+        )
+        if not playbook_rows:
+            return []
+
+        # Build (entity_id → injection stats) for the look-back window.
+        injection_rows = self._fetchall(
+            """SELECT entity_id,
+                      COUNT(*) AS injection_count,
+                      MAX(created_at) AS last_injected_at
+                 FROM usage_events
+                 WHERE org_id = ?
+                   AND event_name = 'learning_injection'
+                   AND entity_type = 'playbook'
+                   AND created_at >= ?
+                 GROUP BY entity_id""",
+            (self.org_id, start_ts_iso),
+        )
+        injection_by_id: dict[str, dict[str, Any]] = {
+            str(r["entity_id"]): {
+                "injection_count": int(r["injection_count"] or 0),
+                "last_injected_at": _iso_to_epoch(r["last_injected_at"]) if r["last_injected_at"] else None,
+            }
+            for r in injection_rows
+        }
+
+        # Citation counts from the existing applied-stats join.
+        applied_rows = self._get_applied_counts_for_window(start_ts_iso)
+
+        # Supersedeable entity ids from recent aggregation change logs.
+        change_log_rows = self._fetchall(
+            """SELECT removed_playbooks
+                 FROM playbook_aggregation_change_logs
+                 WHERE created_at >= ?""",
+            (start_ts_iso,),
+        )
+        superseded_ids: set[str] = set()
+        for r in change_log_rows:
+            for snap in _json_loads(r["removed_playbooks"]) or []:
+                if not isinstance(snap, dict):
+                    continue
+                eid = str(
+                    snap.get("user_playbook_id")
+                    or snap.get("id")
+                    or ""
+                )
+                if eid:
+                    superseded_ids.add(eid)
+
+        # Compose candidates.
+        candidates: list[MemoryHygieneCandidate] = []
+        for row in playbook_rows:
+            eid = str(row["user_playbook_id"])
+            created_at_epoch = _iso_to_epoch(row["created_at"]) or 0
+            inj = injection_by_id.get(
+                eid, {"injection_count": 0, "last_injected_at": None}
+            )
+            cite_count = applied_rows.get(eid, 0)
+            inj_count = inj["injection_count"]
+            cite_per_inj = (cite_count / inj_count) if inj_count > 0 else 0.0
+
+            signals: list[str] = []
+            score = 0
+
+            # supersedeable
+            if eid in superseded_ids:
+                signals.append("supersedeable")
+                score = max(score, 100)
+
+            # stale
+            if inj_count == 0 and (current_time - created_at_epoch) >= days_back * 24 * 60 * 60:
+                signals.append("stale")
+                # Older = higher score; clamp to [50, 99] to keep
+                # below the supersedeable signal weight.
+                age_days = max(
+                    0, (current_time - created_at_epoch) // (24 * 60 * 60)
+                )
+                score = max(score, min(99, 50 + age_days // 7))
+
+            # high_cost_low_cite
+            if inj_count >= 3 and cite_per_inj < 0.5:
+                signals.append("high_cost_low_cite")
+                score = max(score, min(49, 30 + min(19, inj_count)))
+
+            if not signals:
+                continue
+
+            title = row["playbook_name"] or (
+                (row["content"] or "")[:80] + ("..." if len(row["content"] or "") > 80 else "")
+            )
+            candidates.append(
+                MemoryHygieneCandidate(
+                    entity_type="playbook",
+                    entity_id=eid,
+                    title=title,
+                    signals=signals,
+                    score=score,
+                    injection_count=inj_count,
+                    citation_count=cite_count,
+                    last_injected_at=inj["last_injected_at"],
+                    last_cited_at=None,  # not currently exposed by get_playbook_application_stats
+                    last_modified_at=created_at_epoch if created_at_epoch > 0 else None,
+                )
+            )
+
+        candidates.sort(key=lambda c: (c.signals[0], -c.score))
+        return candidates
+
+    def _get_applied_counts_for_window(
+        self, start_ts_iso: str
+    ) -> dict[str, int]:
+        r"""Return ``{user_playbook_id: citation_count}`` for the window.
+
+        Reuses the same JSON-walk pattern as
+        :meth:\`get_playbook_application_stats` but collapses to a flat
+        count per playbook id. Avoids duplicating the join by sharing
+        the same SQL.
+        """
+        rows = self._fetchall(
+            """SELECT interaction_id, citations
+                 FROM interactions
+                 WHERE created_at >= ?
+                   AND citations IS NOT NULL
+                   AND citations != ''
+                   AND citations != '[]'""",
+            (start_ts_iso,),
+        )
+        counts: dict[str, int] = {}
+        for row in rows:
+            citations = _json_loads(row["citations"])
+            if not isinstance(citations, list):
+                continue
+            seen: set[str] = set()
+            for c in citations:
+                if not isinstance(c, dict):
+                    continue
+                if c.get("kind") != "playbook":
+                    continue
+                rid = c.get("real_id")
+                if rid is None or str(rid) in seen:
+                    continue
+                seen.add(str(rid))
+                counts[str(rid)] = counts.get(str(rid), 0) + 1
+        return counts
 
     # ------------------------------------------------------------------
     # Statistics methods

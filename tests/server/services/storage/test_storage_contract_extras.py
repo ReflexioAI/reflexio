@@ -228,6 +228,14 @@ def _backend_supports_usage_events(storage) -> bool:
     )
 
 
+def _backend_supports_memory_hygiene(storage) -> bool:
+    """True when the storage backend implements ``get_memory_hygiene_candidates``."""
+    return (
+        storage.__class__.get_memory_hygiene_candidates
+        is not ExtrasMixin.get_memory_hygiene_candidates
+    )
+
+
 class TestUsageEvents:
     def test_record_usage_event_persists_a_row(self, storage):
         if not _backend_supports_usage_events(storage):
@@ -364,3 +372,154 @@ class TestUsageEvents:
         stats = storage.get_injection_stats(days_back=3650)
         assert len(stats) == 1
         assert stats[0].entity_id == "99"
+
+
+# ---------------------------------------------------------------------------
+# TestMemoryHygieneCandidates
+# ---------------------------------------------------------------------------
+
+
+class TestMemoryHygieneCandidates:
+    def test_empty_when_no_playbooks(self, storage):
+        if not _backend_supports_memory_hygiene(storage):
+            pytest.skip("Backend does not implement get_memory_hygiene_candidates")
+        assert storage.get_memory_hygiene_candidates(days_back=60) == []
+
+    def test_empty_for_zero_days_back(self, storage):
+        if not _backend_supports_memory_hygiene(storage):
+            pytest.skip("Backend does not implement get_memory_hygiene_candidates")
+        # Defensive guard: zero/negative days_back returns [].
+        assert storage.get_memory_hygiene_candidates(days_back=0) == []
+        assert storage.get_memory_hygiene_candidates(days_back=-1) == []
+
+    def test_stale_signal_for_unused_playbook(self, storage):
+        if not _backend_supports_memory_hygiene(storage):
+            pytest.skip("Backend does not implement get_memory_hygiene_candidates")
+        # Insert a playbook with no injection events in the window and
+        # a creation timestamp older than the window. Use a direct SQL
+        # insert to control the timestamp.
+        old_iso = "2020-01-01T00:00:00.000Z"
+        with storage._lock:
+            storage.conn.execute(
+                """INSERT INTO user_playbooks
+                     (user_id, request_id, agent_version, content,
+                      playbook_name, created_at, status)
+                   VALUES ('u1', 'r1', 'v1', 'old rule', 'stale-rule', ?, NULL)""",
+                (old_iso,),
+            )
+            storage.conn.commit()
+        candidates = storage.get_memory_hygiene_candidates(days_back=60)
+        # The 2020 row is outside the 60-day window; the staleness
+        # signal is computed from current_time - created_at >= days_back.
+        stale = [c for c in candidates if "stale" in c.signals]
+        assert len(stale) == 1
+        assert stale[0].entity_type == "playbook"
+        assert stale[0].title == "stale-rule"
+        assert stale[0].injection_count == 0
+        assert stale[0].citation_count == 0
+
+    def test_no_stale_signal_for_fresh_playbook(self, storage):
+        if not _backend_supports_memory_hygiene(storage):
+            pytest.skip("Backend does not implement get_memory_hygiene_candidates")
+        # A playbook created NOW (within the look-back window) is NOT
+        # stale, even with zero injection events.
+        with storage._lock:
+            storage.conn.execute(
+                """INSERT INTO user_playbooks
+                     (user_id, request_id, agent_version, content,
+                      playbook_name, created_at, status)
+                   VALUES ('u1', 'r1', 'v1', 'fresh rule', 'fresh-rule',
+                           strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), NULL)"""
+            )
+            storage.conn.commit()
+        candidates = storage.get_memory_hygiene_candidates(days_back=60)
+        assert candidates == []
+
+    def test_high_cost_low_cite_signal(self, storage):
+        if not _backend_supports_memory_hygiene(storage):
+            pytest.skip("Backend does not implement get_memory_hygiene_candidates")
+        # Set up: playbook 42 was injected 5 times (low cite rate) and
+        # cited 1 time. Should be flagged.
+        with storage._lock:
+            # First create a playbook
+            cur = storage.conn.execute(
+                """INSERT INTO user_playbooks
+                     (user_id, request_id, agent_version, content,
+                      playbook_name, created_at, status)
+                   VALUES ('u1', 'r1', 'v1', 'noisy rule', 'noisy-rule',
+                           strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), NULL)"""
+            )
+            pb_id = cur.lastrowid
+            # Then inject it 5 times in the recent window
+            for _ in range(5):
+                storage.conn.execute(
+                    """INSERT INTO usage_events
+                         (org_id, event_name, event_category, entity_type,
+                          entity_id, count_value, prompt_tokens, created_at)
+                       VALUES (?, 'learning_injection', 'application',
+                               'playbook', ?, 1, 10,
+                               strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))""",
+                    (storage.org_id, str(pb_id)),
+                )
+            # And cite it once on an interaction
+            import json as _json
+            storage.conn.execute(
+                """INSERT INTO interactions
+                     (user_id, request_id, created_at, role, citations)
+                   VALUES ('u1', 'r-cite-1', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                           'Assistant', ?)""",
+                (_json.dumps([
+                    {"kind": "playbook", "real_id": str(pb_id), "tag": "s1-42", "title": "noisy"}
+                ]),),
+            )
+            storage.conn.commit()
+        candidates = storage.get_memory_hygiene_candidates(days_back=60)
+        high_cost = [c for c in candidates if "high_cost_low_cite" in c.signals]
+        assert len(high_cost) == 1
+        assert high_cost[0].entity_id == str(pb_id)
+        assert high_cost[0].injection_count == 5
+        assert high_cost[0].citation_count == 1
+
+    def test_no_high_cost_signal_when_well_cited(self, storage):
+        if not _backend_supports_memory_hygiene(storage):
+            pytest.skip("Backend does not implement get_memory_hygiene_candidates")
+        # Same injection volume but cited as often as injected — should
+        # NOT be flagged as high_cost_low_cite.
+        import json as _json
+        with storage._lock:
+            cur = storage.conn.execute(
+                """INSERT INTO user_playbooks
+                     (user_id, request_id, agent_version, content,
+                      playbook_name, created_at, status)
+                   VALUES ('u1', 'r1', 'v1', 'useful rule', 'useful-rule',
+                           strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), NULL)"""
+            )
+            pb_id = cur.lastrowid
+            for _ in range(5):
+                storage.conn.execute(
+                    """INSERT INTO usage_events
+                         (org_id, event_name, event_category, entity_type,
+                          entity_id, count_value, created_at)
+                       VALUES (?, 'learning_injection', 'application',
+                               'playbook', ?, 1,
+                               strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))""",
+                    (storage.org_id, str(pb_id)),
+                )
+            # 5 citations — equal to injection count
+            for i in range(5):
+                storage.conn.execute(
+                    """INSERT INTO interactions
+                         (user_id, request_id, created_at, role, citations)
+                       VALUES ('u1', ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                               'Assistant', ?)""",
+                    (
+                        f"r-cite-{i}",
+                        _json.dumps([
+                            {"kind": "playbook", "real_id": str(pb_id), "tag": "s1-42", "title": "useful"}
+                        ]),
+                    ),
+                )
+            storage.conn.commit()
+        candidates = storage.get_memory_hygiene_candidates(days_back=60)
+        high_cost = [c for c in candidates if "high_cost_low_cite" in c.signals]
+        assert high_cost == []

@@ -430,13 +430,24 @@ class UpdateAgentPlaybookResponse(BaseModel):
 
 
 class UpdateUserPlaybookRequest(BaseModel):
-    """Generic update for a user playbook. All fields except ID are optional."""
+    """Generic update for a user playbook. All fields except ID are optional.
+
+    Two new optional fields: ``status`` lets a client archive
+    candidates surfaced by the lib's ``get_memory_hygiene`` (or
+    ``GET /api/get_memory_hygiene``); ``playbook_metadata`` lets a
+    client stamp a ``{"superseded_by": <id>}`` reference on a
+    playbook that has been replaced by a newer one. Both are
+    backwards-compatible — older clients that omit them get the
+    same behaviour as before (no status change, no metadata change).
+    """
 
     user_playbook_id: int = Field(gt=0)
     playbook_name: str | None = None
     content: str | None = None
     trigger: str | None = None
     rationale: str | None = None
+    status: Status | None = None
+    playbook_metadata: str | None = None
 
 
 class UpdateUserPlaybookResponse(BaseModel):
@@ -632,6 +643,84 @@ class GetInjectionStatsResponse(BaseModel):
 
     success: bool
     stats: list[InjectionStat] = Field(default_factory=list)
+    msg: str | None = None
+
+
+class MemoryHygieneCandidate(BaseModel):
+    """A user-playbook/agent-playbook/profile flagged for memory hygiene.
+
+    Surfaces entities that are stale, duplicated, low-utility, or
+    superseded. One row per ``(entity_type, entity_id)``; ``signals``
+    carries the detected reason(s) (a single row can have multiple
+    signals). Channel-agnostic — the same response shape works for
+    any reflexio user, regardless of which channel adapter (claude-smart,
+    Codex, etc.) drove the writes.
+
+    Args:
+        entity_type (str): ``"playbook"`` or ``"profile"``.
+        entity_id (str): Storage id of the entity.
+        title (str): Human-readable label (playbook_name or first
+            80 chars of profile content).
+        signals (list[str]): One or more of ``"stale"``,
+            ``"duplicate"`` (reserved for follow-up), ``"high_cost_low_cite"``,
+            ``"supersedeable"``.
+        score (int): Higher = stronger hygiene signal. Ordering within
+            a signal group is by score descending.
+        injection_count (int): Times injected in the look-back window.
+        citation_count (int): Times cited on assistant turns in the
+            look-back window. From the existing
+            :meth:`get_playbook_application_stats` rollup.
+        last_injected_at (int | None): Unix epoch seconds.
+        last_cited_at (int | None): Unix epoch seconds.
+        last_modified_at (int | None): Unix epoch seconds.
+    """
+
+    entity_type: Literal["playbook", "profile"]
+    entity_id: str
+    title: str = ""
+    signals: list[
+        Literal["stale", "duplicate", "high_cost_low_cite", "supersedeable"]
+    ]
+    score: int = Field(ge=0)
+    injection_count: int = Field(ge=0)
+    citation_count: int = Field(ge=0)
+    last_injected_at: int | None = None
+    last_cited_at: int | None = None
+    last_modified_at: int | None = None
+
+
+class GetMemoryHygieneRequest(BaseModel):
+    """Request for a memory hygiene candidate list.
+
+    Args:
+        days_back (int): Look-back window in days. Defaults to 60; must be
+            positive.
+        signal_filter (list[str] | None): Optional whitelist of
+            ``signals`` to include. When omitted, all signals are
+            returned. Useful for the dashboard's "show me only stale"
+            view.
+    """
+
+    days_back: int = Field(default=60, gt=0)
+    signal_filter: list[
+        Literal["stale", "duplicate", "high_cost_low_cite", "supersedeable"]
+    ] | None = None
+
+
+class GetMemoryHygieneResponse(BaseModel):
+    """Response containing a memory hygiene candidate list.
+
+    Args:
+        success (bool): Whether the call succeeded.
+        candidates (list[MemoryHygieneCandidate]): One row per flagged
+            entity, sorted by ``(signals, score)``. Empty when
+            storage is not configured.
+        msg (str | None): Optional error message when ``success`` is
+            False.
+    """
+
+    success: bool
+    candidates: list[MemoryHygieneCandidate] = Field(default_factory=list)
     msg: str | None = None
 
 

@@ -380,6 +380,8 @@ class PlaybookMixin:
         trigger: str | None = None,
         rationale: str | None = None,
         blocking_issue: BlockingIssue | None = None,
+        status: Status | None = None,
+        playbook_metadata: str | None = None,
     ) -> None:
         """Update editable fields of a user playbook. Only non-None fields are updated.
 
@@ -390,6 +392,12 @@ class PlaybookMixin:
             trigger (str, optional): New trigger text
             rationale (str, optional): New rationale text
             blocking_issue (BlockingIssue, optional): New blocking issue
+            status (Status, optional): New lifecycle status. Lets a
+                client archive candidates surfaced by the lib's
+                ``get_memory_hygiene`` (or ``GET /api/get_memory_hygiene``).
+            playbook_metadata (str, optional): Free-form metadata. Used
+                for the ``{"superseded_by": <id>}`` convention on
+                playbooks that have been replaced by a newer one.
 
         Raises:
             ValueError: If user playbook with the given ID is not found

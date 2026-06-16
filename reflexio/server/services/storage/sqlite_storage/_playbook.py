@@ -799,6 +799,8 @@ class PlaybookMixin:
         trigger: str | None = None,
         rationale: str | None = None,
         blocking_issue: BlockingIssue | None = None,
+        status: Status | None = None,
+        playbook_metadata: str | None = None,
     ) -> None:
         row = self._fetchone(
             "SELECT user_playbook_id FROM user_playbooks WHERE user_playbook_id = ?",
@@ -823,6 +825,12 @@ class PlaybookMixin:
         if blocking_issue is not None:
             updates.append("blocking_issue = ?")
             params.append(json.dumps(blocking_issue.model_dump()))
+        if status is not None:
+            updates.append("status = ?")
+            params.append(status.value if hasattr(status, "value") else status)
+        if playbook_metadata is not None:
+            updates.append("playbook_metadata = ?")
+            params.append(playbook_metadata)
         if updates:
             params.append(user_playbook_id)
             self._execute(

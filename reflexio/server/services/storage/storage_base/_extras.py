@@ -13,6 +13,7 @@ from reflexio.models.api_schema.domain import (
 )
 from reflexio.models.api_schema.retriever_schema import (
     InjectionStat,
+    MemoryHygieneCandidate,
     PlaybookApplicationStat,
 )
 
@@ -158,6 +159,37 @@ class ExtrasMixin:
                 sorted by ``surfaced_count`` descending and then by
                 ``last_injected_at`` descending. Empty when the backend
                 has no implementation.
+        """
+        del days_back
+        return []
+
+    def get_memory_hygiene_candidates(
+        self, days_back: int = 60
+    ) -> list["MemoryHygieneCandidate"]:
+        """Surface entities flagged for memory hygiene.
+
+        Channel-agnostic: the result list is the same shape regardless
+        of which channel adapter (claude-smart, Codex, custom) drove
+        the writes. Combines four signals:
+
+        - ``stale``: not used in ``days_back`` and not modified recently.
+        - ``duplicate``: clusters of near-duplicate content (best-effort,
+          O(n²); a periodic batch job is the long-term answer for
+          installations with thousands of playbooks).
+        - ``high_cost_low_cite``: injected often, cited rarely.
+        - ``supersedeable``: appears in a recent
+          ``playbook_aggregation_change_logs`` entry as a removed rule.
+
+        Concrete default returns ``[]`` so backends that do not yet
+        implement this method degrade gracefully. See
+        ``sqlite_storage._extras`` for the reference implementation.
+
+        Args:
+            days_back (int): Look-back window in days. Must be positive.
+
+        Returns:
+            list[MemoryHygieneCandidate]: Sorted by ``(signals, -score)``.
+                Empty when the backend has no implementation.
         """
         del days_back
         return []
