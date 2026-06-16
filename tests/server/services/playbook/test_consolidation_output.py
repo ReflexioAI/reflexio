@@ -165,41 +165,45 @@ def test_unify_archive_existing_ids_accepts_position_labels(raw_value, expected)
     assert unify.archive_existing_ids == expected
 
 
-def test_reject_new_superseded_id_rejects_position_label():
-    """``RejectNewDecision.superseded_by_existing_id`` is a DB ``user_playbook_id``,
-    not a list position — ``"EXISTING-N"`` must fail loudly.
+def test_reject_new_superseded_id_coerces_position_label():
+    """``superseded_by_existing_id`` strips an ``EXISTING-N`` label to ``N``.
 
-    The design contract (``_consolidation_decisions`` docstring) resolves this
-    field via ``existing_by_id`` (DB id), not ``existing_by_position``.
-    Coercing ``"EXISTING-N"`` to ``N`` here would silently misroute decisions
-    when the position int doesn't map to a real DB id.
+    The prompt instructs the model to emit the list position as a bare integer,
+    but weaker models (MiniMax-M3) return the literal ``"EXISTING-4"`` label.
+    Coercing here keeps this field consistent with ``archive_existing_ids`` so
+    one stray label does not fail the whole batch.
     """
-    with pytest.raises(ValidationError):
-        RejectNewDecision(new_id="NEW-0", superseded_by_existing_id="EXISTING-4")  # type: ignore[arg-type]
+    r = RejectNewDecision(new_id="NEW-0", superseded_by_existing_id="EXISTING-4")  # type: ignore[arg-type]
+    assert r.superseded_by_existing_id == 4
 
 
-def test_differentiate_existing_id_rejects_position_label():
-    """``DifferentiateDecision.existing_id`` is a DB ``user_playbook_id``,
-    not a list position — ``"EXISTING-N"`` must fail loudly. Same reasoning
-    as ``test_reject_new_superseded_id_rejects_position_label``.
+def test_differentiate_existing_id_coerces_position_label():
+    """``existing_id`` strips an ``EXISTING-N`` label to ``N`` (see
+    ``test_reject_new_superseded_id_coerces_position_label``).
     """
+    d = DifferentiateDecision(
+        new_id="NEW-0",
+        existing_id="EXISTING-9",  # type: ignore[arg-type]
+        refined_new_trigger="narrow new",
+        refined_existing_trigger="narrow existing",
+    )
+    assert d.existing_id == 9
+
+
+def test_reject_new_superseded_id_rejects_non_numeric_label():
+    """A label that is not a position integer still fails loudly."""
     with pytest.raises(ValidationError):
-        DifferentiateDecision(
-            new_id="NEW-0",
-            existing_id="EXISTING-9",  # type: ignore[arg-type]
-            refined_new_trigger="narrow new",
-            refined_existing_trigger="narrow existing",
-        )
+        RejectNewDecision(new_id="NEW-0", superseded_by_existing_id="EXISTING-foo")  # type: ignore[arg-type]
 
 
 def test_reject_new_superseded_id_accepts_bare_int():
-    """Sanity check: bare ints (DB ``user_playbook_id`` values) still pass."""
+    """Sanity check: bare ints still pass."""
     r = RejectNewDecision(new_id="NEW-0", superseded_by_existing_id=12345)
     assert r.superseded_by_existing_id == 12345
 
 
 def test_differentiate_existing_id_accepts_bare_int():
-    """Sanity check: bare ints (DB ``user_playbook_id`` values) still pass."""
+    """Sanity check: bare ints still pass."""
     d = DifferentiateDecision(
         new_id="NEW-0",
         existing_id=12345,

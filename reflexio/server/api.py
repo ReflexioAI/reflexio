@@ -190,6 +190,7 @@ from reflexio.server.services.agent_success_evaluation.regen_jobs import (
     REGEN_JOBS,
     run_regen,
 )
+from reflexio.server.tracing import profile_step
 
 logger = logging.getLogger(__name__)
 
@@ -270,8 +271,41 @@ def get_rate_limit_key(request: Request) -> str:
     return get_remote_address(request)
 
 
+def _storage_backend_name(limiter_obj: Limiter) -> str:
+    storage = getattr(limiter_obj, "_storage", None)
+    if storage is None:
+        return "unknown"
+    return storage.__class__.__name__
+
+
+def _trace_external_rate_limit_backend(limiter_obj: Limiter) -> None:
+    """Trace rate-limit storage hits when the backend is an external service."""
+    backend = _storage_backend_name(limiter_obj)
+    if backend == "MemoryStorage":
+        return
+
+    strategy = getattr(limiter_obj, "limiter", None)
+    if strategy is None or getattr(strategy, "_reflexio_traced", False):
+        return
+
+    original_hit = strategy.hit
+
+    def traced_hit(item: Any, *identifiers: str, cost: int = 1) -> bool:
+        with profile_step(
+            "rate_limit.backend_hit",
+            storage_backend=backend,
+            strategy=strategy.__class__.__name__,
+            cost=cost,
+        ):
+            return original_hit(item, *identifiers, cost=cost)
+
+    strategy.hit = traced_hit
+    strategy._reflexio_traced = True
+
+
 # Initialize rate limiter
 limiter = Limiter(key_func=get_rate_limit_key)
+_trace_external_rate_limit_backend(limiter)
 
 
 def _run_limited_api[T](
@@ -612,7 +646,7 @@ def root() -> dict[str, str]:
 
 
 @core_router.get("/health")
-def health_check() -> dict[str, str]:
+async def health_check() -> dict[str, str]:
     """Health check endpoint for ECS/container orchestration."""
     return {"status": "healthy"}
 
@@ -698,6 +732,7 @@ def publish_user_interaction(
                 fn=lambda: publisher_api.add_user_interaction(
                     org_id=org_id, request=payload
                 ),
+                wait_forever=False,
             )
         except TimeoutError:
             logger.warning(
@@ -1026,37 +1061,52 @@ def unified_search_endpoint(
     Returns:
         UnifiedSearchViewResponse: Combined search results
     """
-    response = _run_limited_api(
-        org_id,
-        "search",
-        lambda: get_reflexio(org_id=org_id).unified_search(payload, org_id=org_id),
-    )
-    resp = UnifiedSearchViewResponse(
-        success=response.success,
-        profiles=[to_profile_view(p) for p in response.profiles],
-        agent_playbooks=[to_agent_playbook_view(fb) for fb in response.agent_playbooks],
-        user_playbooks=[to_user_playbook_view(rf) for rf in response.user_playbooks],
-        reformulated_query=response.reformulated_query,
-        msg=response.msg,
-        agent_trace=response.agent_trace,
-        rehydrated_text=response.rehydrated_text,
-    )
-    _meter_applied_learnings(
-        org_id=org_id,
-        caller_type=caller_type,
-        surfaced_count=len(resp.profiles)
-        + len(resp.agent_playbooks)
-        + len(resp.user_playbooks),
-        request_id=getattr(payload, "request_id", None),
-        session_id=getattr(payload, "session_id", None),
-    )
-    _meter_injection_events(
-        org_id=org_id,
-        caller_type=caller_type,
-        resp=resp,
-        request_id=getattr(payload, "request_id", None),
-        session_id=getattr(payload, "session_id", None),
-    )
+    with profile_step(
+        "search.endpoint",
+        enabled=bool(payload.enable_reformulation),
+        has_conversation_history=bool(payload.conversation_history),
+        search_mode=payload.search_mode,
+    ):
+
+        def run_search() -> Any:
+            with profile_step("search.reflexio_cache"):
+                reflexio = get_reflexio(org_id=org_id)
+            return reflexio.unified_search(payload, org_id=org_id)
+
+        response = _run_limited_api(org_id, "search", run_search)
+        with profile_step("search.response_view"):
+            resp = UnifiedSearchViewResponse(
+                success=response.success,
+                profiles=[to_profile_view(p) for p in response.profiles],
+                agent_playbooks=[
+                    to_agent_playbook_view(fb) for fb in response.agent_playbooks
+                ],
+                user_playbooks=[
+                    to_user_playbook_view(rf) for rf in response.user_playbooks
+                ],
+                reformulated_query=response.reformulated_query,
+                msg=response.msg,
+                agent_trace=response.agent_trace,
+                rehydrated_text=response.rehydrated_text,
+            )
+        with profile_step("search.meter_applied_learnings"):
+            _meter_applied_learnings(
+                org_id=org_id,
+                caller_type=caller_type,
+                surfaced_count=len(resp.profiles)
+                + len(resp.agent_playbooks)
+                + len(resp.user_playbooks),
+                request_id=getattr(payload, "request_id", None),
+                session_id=getattr(payload, "session_id", None),
+            )
+        with profile_step("search.meter_injection_events"):
+            _meter_injection_events(
+                org_id=org_id,
+                caller_type=caller_type,
+                resp=resp,
+                request_id=getattr(payload, "request_id", None),
+                session_id=getattr(payload, "session_id", None),
+            )
     return resp
 
 

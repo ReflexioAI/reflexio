@@ -36,18 +36,19 @@ logger = logging.getLogger(__name__)
 def _coerce_existing_position(value: object) -> int:
     """Accept either a bare int position or an ``"EXISTING-N"`` label.
 
-    Wired ONLY to ``UnifyDecision.archive_existing_ids`` — the one field whose
-    int contract is genuinely a list **position** (resolved via
-    ``existing_by_position`` as ``f"EXISTING-{idx}"`` in ``_apply_unify``).
+    Wired to all three EXISTING-id integer fields —
+    ``UnifyDecision.archive_existing_ids``,
     ``RejectNewDecision.superseded_by_existing_id`` and
-    ``DifferentiateDecision.existing_id`` are DB ``user_playbook_id`` values
-    (resolved via ``existing_by_id`` in ``_apply_reject_new`` /
-    ``_apply_differentiate``) — coercing ``"EXISTING-N"`` to ``N`` on those
-    fields would silently misroute decisions when the position int doesn't
-    map to a real DB id.
+    ``DifferentiateDecision.existing_id``. The consolidation prompt instructs
+    the model to emit a list **position** for every one of them, and the apply
+    path resolves each position-first via ``existing_by_position``
+    (``f"EXISTING-{idx}"``), falling back to ``existing_by_id`` only for older
+    prompt outputs. Coercing the label here keeps all three fields consistent
+    so a weak model that returns ``"EXISTING-0"`` for any of them does not kill
+    the whole batch.
 
     The consolidation prompt labels rows as ``[EXISTING-0]``, ``[EXISTING-1]``
-    etc. (see ``_format_playbooks_with_prefix``) and ``_apply_unify``
+    etc. (see ``_format_playbooks_with_prefix``) and the apply path
     reconstructs ``f"EXISTING-{position}"`` from the integer the LLM returns.
     Strong structured-output models (GPT-4o, Claude) honor the ``list[int]``
     schema and return the bare integer ``0``; weaker models (e.g. MiniMax-M3)
@@ -132,12 +133,11 @@ class UnifyDecision(BaseModel):
 class RejectNewDecision(BaseModel):
     """The new candidate is redundant; an existing row supersedes it (storage no-op).
 
-    ``superseded_by_existing_id`` is a DB ``user_playbook_id`` (resolved
-    against ``existing_by_id`` in ``_apply_reject_new``), NOT a list
-    position — no ``"EXISTING-N"`` coercion is wired here. If the LLM
-    returns ``"EXISTING-N"`` for this field, pydantic rejects it loudly
-    rather than silently misrouting the decision (see
-    ``_coerce_existing_position`` docstring).
+    ``superseded_by_existing_id`` is a bare integer that normally refers to the
+    rendered ``EXISTING-N`` list position. The apply path also accepts a DB
+    ``user_playbook_id`` fallback for older prompts/tests, but list position is
+    resolved first because it is the only identifier visible in the rendered
+    consolidation prompt.
     """
 
     kind: Literal["reject_new"] = "reject_new"
@@ -145,16 +145,22 @@ class RejectNewDecision(BaseModel):
     superseded_by_existing_id: int
     reason: str = ""
 
+    @field_validator("superseded_by_existing_id", mode="before")
+    @classmethod
+    def _coerce_superseded_id(cls, value: object) -> int:
+        return _coerce_existing_position(value)
+
     model_config = ConfigDict(json_schema_extra={"additionalProperties": False})
 
 
 class DifferentiateDecision(BaseModel):
     """Both rules valid in distinct contexts: refine both triggers.
 
-    ``existing_id`` is a DB ``user_playbook_id`` (resolved against
-    ``existing_by_id`` in ``_apply_differentiate``), NOT a list position —
-    no ``"EXISTING-N"`` coercion is wired here. See
-    ``_coerce_existing_position`` docstring.
+    ``existing_id`` is a bare integer that normally refers to the rendered
+    ``EXISTING-N`` list position. The apply path also accepts a DB
+    ``user_playbook_id`` fallback for older prompts/tests, but list position is
+    resolved first because it is the only identifier visible in the rendered
+    consolidation prompt.
     """
 
     kind: Literal["differentiate"] = "differentiate"
@@ -163,6 +169,11 @@ class DifferentiateDecision(BaseModel):
     refined_new_trigger: str
     refined_existing_trigger: str
     reason: str = ""
+
+    @field_validator("existing_id", mode="before")
+    @classmethod
+    def _coerce_existing_id(cls, value: object) -> int:
+        return _coerce_existing_position(value)
 
     @field_validator("refined_new_trigger", "refined_existing_trigger")
     @classmethod
@@ -662,7 +673,9 @@ class PlaybookConsolidator(BaseDeduplicator):
             new_rows.extend(rows)
             handled_new_ids.update(marked_new_ids)
             self._bump_counter(result_counters, decision.kind)
-            self._log_decision(decision, candidates_by_id, existing_by_id)
+            self._log_decision(
+                decision, candidates_by_id, existing_by_id, existing_by_position
+            )
 
         # Safety fallback: add any NEW entries the LLM did not reference, so a
         # misbehaving model cannot silently drop extracted playbooks.
@@ -729,12 +742,14 @@ class PlaybookConsolidator(BaseDeduplicator):
             return self._apply_reject_new(
                 decision,
                 existing_by_id=existing_by_id,
+                existing_by_position=existing_by_position,
             )
         if isinstance(decision, DifferentiateDecision):
             return self._apply_differentiate(
                 decision,
                 candidates_by_id=candidates_by_id,
                 existing_by_id=existing_by_id,
+                existing_by_position=existing_by_position,
                 archive_ids=archive_ids,
                 seen_archive=seen_archive,
                 request_id=request_id,
@@ -837,24 +852,33 @@ class PlaybookConsolidator(BaseDeduplicator):
         decision: RejectNewDecision,
         *,
         existing_by_id: dict[int, UserPlaybook],
+        existing_by_position: dict[str, UserPlaybook],
     ) -> tuple[list[UserPlaybook], list[str]]:
         """No-op apply: the existing row wins and the new candidate is dropped.
 
-        If ``decision.superseded_by_existing_id`` does not resolve to a known
-        existing row, the decision is treated as malformed: we log a warning
-        and return ``([], [])`` so the safety fallback re-inserts the candidate
-        rather than silently dropping extracted data.
+        Resolve the integer against the rendered ``EXISTING-N`` position first,
+        then as a DB ``user_playbook_id`` for backwards compatibility. If it
+        does not resolve to a known existing row, the decision is treated as
+        malformed: we log a warning and return ``([], [])`` so the safety
+        fallback re-inserts the candidate rather than silently dropping
+        extracted data.
 
         Args:
             decision: The ``RejectNewDecision`` to apply.
             existing_by_id: Mapping ``user_playbook_id`` -> existing playbook,
-                used to validate ``decision.superseded_by_existing_id``.
+                used as a fallback for ``decision.superseded_by_existing_id``.
+            existing_by_position: Mapping ``"EXISTING-M"`` -> existing playbook.
 
         Returns:
             Tuple of ([], [consumed NEW-N id]) when the existing id resolves,
             or ``([], [])`` when the existing id is unknown.
         """
-        if decision.superseded_by_existing_id not in existing_by_id:
+        existing = self._resolve_existing_reference(
+            decision.superseded_by_existing_id,
+            existing_by_position=existing_by_position,
+            existing_by_id=existing_by_id,
+        )
+        if existing is None:
             logger.warning(
                 "event=consolidation_reject_new_invalid new_id=%s existing_id=%d",
                 decision.new_id,
@@ -874,6 +898,7 @@ class PlaybookConsolidator(BaseDeduplicator):
         *,
         candidates_by_id: dict[str, UserPlaybook],
         existing_by_id: dict[int, UserPlaybook],
+        existing_by_position: dict[str, UserPlaybook],
         archive_ids: list[int],
         seen_archive: set[int],
         request_id: str,
@@ -889,6 +914,7 @@ class PlaybookConsolidator(BaseDeduplicator):
             decision: The ``DifferentiateDecision`` to apply.
             candidates_by_id: Mapping ``"NEW-N"`` -> candidate playbook.
             existing_by_id: Mapping ``user_playbook_id`` -> existing playbook.
+            existing_by_position: Mapping ``"EXISTING-M"`` -> existing playbook.
             archive_ids: Accumulator mutated with the existing id to archive.
             seen_archive: Dedup set for ``archive_ids``.
             request_id: Request ID stamped on both new rows.
@@ -901,15 +927,20 @@ class PlaybookConsolidator(BaseDeduplicator):
             raise KeyError(
                 f"differentiate references unknown NEW id: {decision.new_id}"
             )
-        existing = existing_by_id.get(decision.existing_id)
+        existing = self._resolve_existing_reference(
+            decision.existing_id,
+            existing_by_position=existing_by_position,
+            existing_by_id=existing_by_id,
+        )
         if existing is None:
             raise KeyError(
                 f"differentiate references unknown EXISTING id: {decision.existing_id}"
             )
 
-        if decision.existing_id not in seen_archive:
-            seen_archive.add(decision.existing_id)
-            archive_ids.append(decision.existing_id)
+        existing_db_id = existing.user_playbook_id
+        if existing_db_id and existing_db_id not in seen_archive:
+            seen_archive.add(existing_db_id)
+            archive_ids.append(existing_db_id)
 
         now_ts = int(datetime.now(UTC).timestamp())
         refined_candidate = candidate.model_copy(
@@ -971,6 +1002,25 @@ class PlaybookConsolidator(BaseDeduplicator):
         return combined
 
     @staticmethod
+    def _resolve_existing_reference(
+        raw_id: int,
+        *,
+        existing_by_position: dict[str, UserPlaybook],
+        existing_by_id: dict[int, UserPlaybook],
+    ) -> UserPlaybook | None:
+        """Resolve an LLM existing-row integer.
+
+        The rendered prompt labels rows as ``EXISTING-N`` and asks the model to
+        emit bare integers, so position is the primary interpretation. DB id is
+        retained as a compatibility fallback for older prompt outputs.
+        """
+        if 0 <= raw_id < len(existing_by_position):
+            existing = existing_by_position.get(f"EXISTING-{raw_id}")
+            if existing is not None:
+                return existing
+        return existing_by_id.get(raw_id)
+
+    @staticmethod
     def _bump_counter(result: PlaybookConsolidationResult, kind: str) -> None:
         """Increment the per-kind counter on ``result`` for a successful apply.
 
@@ -987,6 +1037,7 @@ class PlaybookConsolidator(BaseDeduplicator):
         decision: ConsolidationDecision,
         candidates_by_id: dict[str, UserPlaybook],
         existing_by_id: dict[int, UserPlaybook],
+        existing_by_position: dict[str, UserPlaybook],
     ) -> None:
         """Emit a structured per-decision log line for probe ingest.
 
@@ -1029,7 +1080,11 @@ class PlaybookConsolidator(BaseDeduplicator):
             "existing_id",
             getattr(decision, "superseded_by_existing_id", 0),
         )
-        existing_pb = existing_by_id.get(existing_id_raw)
+        existing_pb = PlaybookConsolidator._resolve_existing_reference(
+            existing_id_raw,
+            existing_by_position=existing_by_position,
+            existing_by_id=existing_by_id,
+        )
         trigger_match = (
             new_pb is not None
             and existing_pb is not None

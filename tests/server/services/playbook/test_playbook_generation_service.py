@@ -1,10 +1,12 @@
 import datetime
 import tempfile
 from datetime import UTC
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from reflexio.models.api_schema.domain.entities import UserPlaybook
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
 from reflexio.models.api_schema.service_schemas import (
     Interaction,
@@ -18,6 +20,7 @@ from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.services.playbook.playbook_generation_service import (
     PlaybookGenerationService,
+    PlaybookGenerationServiceConfig,
 )
 from reflexio.server.services.playbook.playbook_service_utils import (
     PlaybookGenerationRequest,
@@ -40,6 +43,11 @@ def create_request_interaction_data_model(
         request=request,
         interactions=interactions,
     )
+
+
+def _storage(service: PlaybookGenerationService) -> Any:
+    assert service.storage is not None
+    return cast(Any, service.storage)
 
 
 @pytest.fixture
@@ -117,8 +125,8 @@ def test_generate_playbook(mock_chat_completion):
             agent_version="1.0",
             session_id="session_1",
         )
-        playbook_generation_service.storage.add_request(request_obj)
-        playbook_generation_service.storage.add_user_interaction(user_id, interaction)
+        _storage(playbook_generation_service).add_request(request_obj)
+        _storage(playbook_generation_service).add_user_interaction(user_id, interaction)
 
         # Create playbook generation request - extractors collect from storage
         playbook_request = PlaybookGenerationRequest(
@@ -131,7 +139,7 @@ def test_generate_playbook(mock_chat_completion):
         playbook_generation_service.run(playbook_request)
 
         # Verify playbook was saved
-        user_playbooks = playbook_generation_service.storage.get_user_playbooks()
+        user_playbooks = _storage(playbook_generation_service).get_user_playbooks()
         assert len(user_playbooks) > 0
         playbook = user_playbooks[0]
         assert playbook.request_id == "test_request_id"
@@ -160,17 +168,17 @@ def test_empty_interactions(mock_chat_completion):
             "user_playbook_extractor_config", playbook_config
         )
 
-        # Create playbook generation request with empty request interaction data models
         playbook_request = PlaybookGenerationRequest(
             request_id="test_request_id",
             agent_version="1.0",
-            request_interaction_data_models=[],
+            user_id="test_user_id",
+            auto_run=False,
         )
 
         playbook_generation_service.run(playbook_request)
 
         # Verify no playbook was generated
-        user_playbooks = playbook_generation_service.storage.get_user_playbooks()
+        user_playbooks = _storage(playbook_generation_service).get_user_playbooks()
         assert len(user_playbooks) == 0
 
 
@@ -194,24 +202,31 @@ def test_missing_configs(mock_chat_completion):
             request_context=RequestContext(org_id=org_id, storage_base_dir=temp_dir),
         )
 
-        # Create request interaction data model
-        request_interaction_data_model = create_request_interaction_data_model(
-            user_id=user_id,
+        request_obj = Request(
             request_id="test_request_id",
-            interactions=[interaction],
+            user_id=user_id,
+            source="test",
+            agent_version="1.0",
+            session_id="session_1",
         )
+        _storage(playbook_generation_service).add_request(request_obj)
+        _storage(playbook_generation_service).add_user_interaction(user_id, interaction)
 
         # Create playbook generation request without setting up configs
         playbook_request = PlaybookGenerationRequest(
             request_id="test_request_id",
             agent_version="1.0",
-            request_interaction_data_models=[request_interaction_data_model],
+            user_id=user_id,
+            auto_run=False,
         )
 
-        playbook_generation_service.run(playbook_request)
+        with patch.object(
+            playbook_generation_service, "_load_extractor_config", return_value=None
+        ):
+            playbook_generation_service.run(playbook_request)
 
         # Verify no playbook was generated
-        user_playbooks = playbook_generation_service.storage.get_user_playbooks()
+        user_playbooks = _storage(playbook_generation_service).get_user_playbooks()
         assert len(user_playbooks) == 0
 
 
@@ -247,23 +262,27 @@ def test_error_handling(mock_chat_completion):
             "user_playbook_extractor_config", playbook_config
         )
 
-        # Create request interaction data model
-        request_interaction_data_model = create_request_interaction_data_model(
-            user_id=user_id,
+        request_obj = Request(
             request_id="test_request_id",
-            interactions=[interaction],
+            user_id=user_id,
+            source="test",
+            agent_version="1.0",
+            session_id="session_1",
         )
+        _storage(playbook_generation_service).add_request(request_obj)
+        _storage(playbook_generation_service).add_user_interaction(user_id, interaction)
 
         # Create playbook generation request
         playbook_request = PlaybookGenerationRequest(
             request_id="test_request_id",
             agent_version="1.0",
-            request_interaction_data_models=[request_interaction_data_model],
+            user_id=user_id,
+            auto_run=False,
         )
 
         # Mock storage.save_user_playbooks to raise an exception
         with patch.object(
-            playbook_generation_service.storage,
+            _storage(playbook_generation_service),
             "save_user_playbooks",
             side_effect=Exception("Storage error"),
         ):
@@ -271,8 +290,68 @@ def test_error_handling(mock_chat_completion):
             playbook_generation_service.run(playbook_request)
 
             # Verify no playbook was saved
-            user_playbooks = playbook_generation_service.storage.get_user_playbooks()
+            user_playbooks = _storage(playbook_generation_service).get_user_playbooks()
             assert len(user_playbooks) == 0
+
+
+def test_finalize_drops_empty_and_same_batch_duplicates_with_dedup_flag_off():
+    """The write path should be idempotent even without LLM deduplication."""
+    org_id = "0"
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        llm_config = LiteLLMConfig(model="gpt-4o-mini")
+        llm_client = LiteLLMClient(llm_config)
+        playbook_generation_service = PlaybookGenerationService(
+            llm_client=llm_client,
+            request_context=RequestContext(org_id=org_id, storage_base_dir=temp_dir),
+        )
+        playbook_generation_service.service_config = PlaybookGenerationServiceConfig(
+            request_id="test_request_id",
+            agent_version="1.0",
+            user_id="test_user",
+            source="test_source",
+        )
+
+        first = UserPlaybook(
+            agent_version="1.0",
+            request_id="test_request_id",
+            content="Run the narrow verification first.",
+            trigger="When debugging",
+        )
+        duplicate = UserPlaybook(
+            agent_version="1.0",
+            request_id="test_request_id",
+            content="  run the narrow verification first.  ",
+            trigger=" when debugging ",
+        )
+        blank = UserPlaybook(
+            agent_version="1.0",
+            request_id="test_request_id",
+            content="   ",
+            trigger="When debugging",
+        )
+
+        with (
+            patch(
+                "reflexio.server.site_var.feature_flags.is_deduplicator_enabled",
+                return_value=False,
+            ),
+            patch.object(
+                _storage(playbook_generation_service), "save_user_playbooks"
+            ) as save_user_playbooks,
+            patch.object(
+                playbook_generation_service, "_enqueue_user_playbook_optimization"
+            ),
+        ):
+            playbook_generation_service._finalize_extracted_items(
+                [first, duplicate, blank]
+            )
+
+        save_user_playbooks.assert_called_once()
+        saved_playbooks = save_user_playbooks.call_args.args[0]
+        assert saved_playbooks == [first]
+        assert first.status is None
+        assert first.source == "test_source"
 
 
 def test_run_manual_regular_no_window_size(mock_chat_completion):
@@ -324,8 +403,8 @@ def test_run_manual_regular_no_window_size(mock_chat_completion):
             session_id="test_session",
             source="",
         )
-        playbook_generation_service.storage.add_request(request_obj)
-        playbook_generation_service.storage.add_user_interaction(user_id, interaction)
+        _storage(playbook_generation_service).add_request(request_obj)
+        _storage(playbook_generation_service).add_user_interaction(user_id, interaction)
 
         from reflexio.models.api_schema.service_schemas import (
             ManualPlaybookGenerationRequest,
@@ -377,6 +456,7 @@ def test_run_manual_regular_no_interactions(mock_chat_completion):
         # Should succeed but with 0 playbooks since no interactions
         assert response.success is True
         assert response.playbooks_generated == 0
+        assert response.msg is not None
         assert "No interactions found" in response.msg
 
 
@@ -396,14 +476,13 @@ def test_run_manual_regular_with_interactions(mock_chat_completion):
             output_pending_status=False,
         )
 
-        # Set up playbook config WITH window size and allow_manual_trigger
+        # Set up playbook config WITH window size
         playbook_config = PlaybookConfig(
             extractor_name="test_playbook",
             extraction_definition_prompt="test",
             aggregation_config=PlaybookAggregatorConfig(
                 min_cluster_size=2,
             ),
-            allow_manual_trigger=True,  # Required for manual generation
         )
         playbook_generation_service.configurator.set_config_by_name(
             "user_playbook_extractor_config", playbook_config
@@ -426,8 +505,8 @@ def test_run_manual_regular_with_interactions(mock_chat_completion):
             source="",
             agent_version=agent_version,
         )
-        playbook_generation_service.storage.add_request(request_obj)
-        playbook_generation_service.storage.add_user_interaction(user_id, interaction)
+        _storage(playbook_generation_service).add_request(request_obj)
+        _storage(playbook_generation_service).add_user_interaction(user_id, interaction)
 
         from reflexio.models.api_schema.service_schemas import (
             ManualPlaybookGenerationRequest,
@@ -458,14 +537,13 @@ def test_run_manual_regular_with_source_filter(mock_chat_completion):
             output_pending_status=False,
         )
 
-        # Set up playbook config WITH window size and allow_manual_trigger
+        # Set up playbook config WITH window size
         playbook_config = PlaybookConfig(
             extractor_name="test_playbook",
             extraction_definition_prompt="test",
             aggregation_config=PlaybookAggregatorConfig(
                 min_cluster_size=2,
             ),
-            allow_manual_trigger=True,  # Required for manual generation
         )
         playbook_generation_service.configurator.set_config_by_name(
             "user_playbook_extractor_config", playbook_config
@@ -488,8 +566,10 @@ def test_run_manual_regular_with_source_filter(mock_chat_completion):
             source="source_a",
             agent_version=agent_version,
         )
-        playbook_generation_service.storage.add_request(request_a)
-        playbook_generation_service.storage.add_user_interaction(user_id, interaction_a)
+        _storage(playbook_generation_service).add_request(request_a)
+        _storage(playbook_generation_service).add_user_interaction(
+            user_id, interaction_a
+        )
 
         # Add interactions with source_b
         interaction_b = Interaction(
@@ -507,8 +587,10 @@ def test_run_manual_regular_with_source_filter(mock_chat_completion):
             source="source_b",
             agent_version=agent_version,
         )
-        playbook_generation_service.storage.add_request(request_b)
-        playbook_generation_service.storage.add_user_interaction(user_id, interaction_b)
+        _storage(playbook_generation_service).add_request(request_b)
+        _storage(playbook_generation_service).add_user_interaction(
+            user_id, interaction_b
+        )
 
         from reflexio.models.api_schema.service_schemas import (
             ManualPlaybookGenerationRequest,
@@ -543,14 +625,13 @@ def test_run_manual_regular_output_pending_status_false(mock_chat_completion):
             output_pending_status=False,
         )
 
-        # Set up playbook config WITH window size and allow_manual_trigger
+        # Set up playbook config WITH window size
         playbook_config = PlaybookConfig(
             extractor_name="test_playbook",
             extraction_definition_prompt="test",
             aggregation_config=PlaybookAggregatorConfig(
                 min_cluster_size=2,
             ),
-            allow_manual_trigger=True,  # Required for manual generation
         )
         playbook_generation_service.configurator.set_config_by_name(
             "user_playbook_extractor_config", playbook_config
@@ -573,8 +654,8 @@ def test_run_manual_regular_output_pending_status_false(mock_chat_completion):
             source="",
             agent_version=agent_version,
         )
-        playbook_generation_service.storage.add_request(request_obj)
-        playbook_generation_service.storage.add_user_interaction(user_id, interaction)
+        _storage(playbook_generation_service).add_request(request_obj)
+        _storage(playbook_generation_service).add_user_interaction(user_id, interaction)
 
         from reflexio.models.api_schema.service_schemas import (
             ManualPlaybookGenerationRequest,
@@ -589,7 +670,7 @@ def test_run_manual_regular_output_pending_status_false(mock_chat_completion):
         # Note: playbooks_generated may be 0 if mock returns no playbook
 
         # Verify no PENDING playbooks (output_pending_status=False)
-        pending_playbooks = playbook_generation_service.storage.get_user_playbooks(
+        pending_playbooks = _storage(playbook_generation_service).get_user_playbooks(
             status_filter=[Status.PENDING]
         )
 
@@ -642,8 +723,8 @@ class TestGetRerunItems:
                     agent_version=agent_version,
                     session_id="group_1",
                 )
-                service.storage.add_request(request_obj)
-                service.storage.add_user_interaction(user_id_1, interaction)
+                _storage(service).add_request(request_obj)
+                _storage(service).add_user_interaction(user_id_1, interaction)
 
             # User 2 - 1 request
             user_id_2 = "test_user_2"
@@ -663,8 +744,8 @@ class TestGetRerunItems:
                 agent_version=agent_version,
                 session_id="group_2",
             )
-            service.storage.add_request(request_obj)
-            service.storage.add_user_interaction(user_id_2, interaction)
+            _storage(service).add_request(request_obj)
+            _storage(service).add_user_interaction(user_id_2, interaction)
 
             from reflexio.models.api_schema.service_schemas import (
                 RerunPlaybookGenerationRequest,
@@ -711,8 +792,8 @@ class TestGetRerunItems:
                 agent_version=agent_version,
                 session_id="group_a",
             )
-            service.storage.add_request(request_a)
-            service.storage.add_user_interaction(user_id_a, interaction_a)
+            _storage(service).add_request(request_a)
+            _storage(service).add_user_interaction(user_id_a, interaction_a)
 
             # Add request with source_b for user_b
             user_id_b = "test_user_b"
@@ -731,8 +812,8 @@ class TestGetRerunItems:
                 agent_version=agent_version,
                 session_id="group_b",
             )
-            service.storage.add_request(request_b)
-            service.storage.add_user_interaction(user_id_b, interaction_b)
+            _storage(service).add_request(request_b)
+            _storage(service).add_user_interaction(user_id_b, interaction_b)
 
             from reflexio.models.api_schema.service_schemas import (
                 RerunPlaybookGenerationRequest,
@@ -808,7 +889,7 @@ def test_collect_scoped_interactions_for_precheck_uses_extractor_scope():
             interactions=[interaction],
         )
 
-        service.storage.get_last_k_interactions_grouped = MagicMock(
+        _storage(service).get_last_k_interactions_grouped = MagicMock(
             return_value=([session_id], [])
         )
 
@@ -827,8 +908,8 @@ def test_collect_scoped_interactions_for_precheck_uses_extractor_scope():
 
         assert len(scoped_groups) == 1
         assert scoped_config.extractor_name == "api_playbook"
-        service.storage.get_last_k_interactions_grouped.assert_called_once()
-        _, kwargs = service.storage.get_last_k_interactions_grouped.call_args
+        _storage(service).get_last_k_interactions_grouped.assert_called_once()
+        _, kwargs = _storage(service).get_last_k_interactions_grouped.call_args
         assert kwargs["k"] == 120
         assert kwargs["sources"] == ["api"]
 

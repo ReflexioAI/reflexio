@@ -12,6 +12,7 @@ Targets coverage gaps in:
          change log exception, full archive delete path, incremental archive delete)
 """
 
+from typing import Any
 from unittest.mock import MagicMock, call, patch
 
 import pytest
@@ -39,7 +40,7 @@ from reflexio.server.services.playbook.playbook_service_utils import (
 def _make_aggregator(
     storage: MagicMock | None = None,
     configurator: MagicMock | None = None,
-) -> PlaybookAggregator:
+) -> Any:
     """Build an aggregator with fully mocked dependencies."""
     llm = MagicMock()
     ctx = MagicMock()
@@ -1220,6 +1221,23 @@ class TestProcessAggregationResponse:
         assert result.trigger == "when testing"
         assert result.content == "do something"
         assert result.playbook_status == PlaybookStatus.PENDING
+
+    def test_empty_structured_response_returns_none(self):
+        from reflexio.server.services.playbook.playbook_service_utils import (
+            PlaybookAggregationOutput,
+            StructuredPlaybookContent,
+        )
+
+        agg = _make_aggregator()
+        response = PlaybookAggregationOutput(
+            playbook=StructuredPlaybookContent(
+                trigger=None,
+                content="   ",
+                rationale=None,
+            )
+        )
+
+        assert agg._process_aggregation_response(response, [_raw()]) is None
 
 
 # ---------------------------------------------------------------------------

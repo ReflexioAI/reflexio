@@ -236,9 +236,9 @@ def embedding_provider_mode(model: str | None = None) -> EmbeddingProviderMode:
     """Resolve the embedding provider mode for a model.
 
     Explicit legacy env modes keep their historical behavior. With no explicit
-    env mode, routing is model-driven: ``local/*`` uses the local daemon when it
-    is reachable and otherwise falls back to the in-process embedder; cloud
-    models use their provider directly.
+    env mode, routing is model-driven: ``local/*`` uses a configured daemon host
+    authoritatively, otherwise it uses the local daemon when reachable and falls
+    back to the in-process embedder. Cloud models use their provider directly.
     """
     configured = os.environ.get(_ENV_PROVIDER)
     if configured:
@@ -255,6 +255,9 @@ def embedding_provider_mode(model: str | None = None) -> EmbeddingProviderMode:
 
     if os.environ.get(_ENV_SERVICE_URL):
         return "internal_service"
+
+    if _is_local_model(model) and os.environ.get(_ENV_DAEMON_HOST, "").strip():
+        return "local_service"
 
     if _is_local_model(model):
         return "local_service" if _local_service_supports_model(model) else "inprocess"

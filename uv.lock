@@ -5031,7 +5031,7 @@ wheels = [
 
 [[package]]
 name = "reflexio-ai"
-version = "0.2.25"
+version = "0.2.13"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },

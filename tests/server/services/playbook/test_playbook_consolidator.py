@@ -12,6 +12,7 @@ import pytest
 
 from reflexio.models.api_schema.service_schemas import UserPlaybook
 from reflexio.server.services.playbook.playbook_consolidator import (
+    DifferentiateDecision,
     IndependentDecision,
     PlaybookConsolidationOutput,
     PlaybookConsolidationResult,
@@ -567,6 +568,114 @@ class TestBuildDeduplicatedResults:
         # the candidate was consumed by the decision.
         assert result == []
         assert delete_ids == []
+
+    def test_reject_new_resolves_existing_position(self, mock_consolidator):
+        """``reject_new`` ids may refer to the rendered ``EXISTING-N`` position.
+
+        The consolidation prompt shows rows as ``[EXISTING-0]`` etc. If the LLM
+        emits ``0`` for that first row, the apply path must consume the NEW
+        candidate rather than treating the id as invalid and triggering the
+        safety fallback.
+        """
+        new_playbooks = [_make_user_playbook(0)]
+        existing_playbooks = [_make_user_playbook(1, user_playbook_id=999)]
+
+        dedup_output = PlaybookConsolidationOutput(
+            decisions=[
+                RejectNewDecision(new_id="NEW-0", superseded_by_existing_id=0),
+            ],
+        )
+
+        result, delete_ids = mock_consolidator._build_deduplicated_results(
+            new_playbooks=new_playbooks,
+            existing_playbooks=existing_playbooks,
+            dedup_output=dedup_output,
+            request_id="req1",
+            agent_version="v1",
+        )
+
+        assert result == []
+        assert delete_ids == []
+
+    def test_differentiate_resolves_existing_position(self, mock_consolidator):
+        """``differentiate`` ids may refer to the rendered ``EXISTING-N`` position."""
+        new_playbooks = [_make_user_playbook(0, trigger="broad trigger")]
+        existing_playbooks = [_make_user_playbook(1, user_playbook_id=999)]
+
+        dedup_output = PlaybookConsolidationOutput(
+            decisions=[
+                DifferentiateDecision(
+                    new_id="NEW-0",
+                    existing_id=0,
+                    refined_new_trigger="narrow new trigger",
+                    refined_existing_trigger="narrow existing trigger",
+                ),
+            ],
+        )
+
+        result, delete_ids = mock_consolidator._build_deduplicated_results(
+            new_playbooks=new_playbooks,
+            existing_playbooks=existing_playbooks,
+            dedup_output=dedup_output,
+            request_id="req1",
+            agent_version="v1",
+        )
+
+        assert len(result) == 2
+        assert result[0].trigger == "narrow new trigger"
+        assert result[1].trigger == "narrow existing trigger"
+        assert delete_ids == [999]
+
+    def test_differentiate_falls_back_to_db_id(self, mock_consolidator):
+        """When the id misses every ``EXISTING-N`` position, the apply path
+        falls back to a DB ``user_playbook_id`` for older prompt outputs.
+
+        Here the single existing row sits at position 0 but carries DB id 999.
+        Emitting ``999`` misses ``EXISTING-999`` and must resolve via the DB-id
+        fallback, archiving the right row.
+        """
+        new_playbooks = [_make_user_playbook(0, trigger="broad trigger")]
+        existing_playbooks = [_make_user_playbook(1, user_playbook_id=999)]
+
+        dedup_output = PlaybookConsolidationOutput(
+            decisions=[
+                DifferentiateDecision(
+                    new_id="NEW-0",
+                    existing_id=999,
+                    refined_new_trigger="narrow new trigger",
+                    refined_existing_trigger="narrow existing trigger",
+                ),
+            ],
+        )
+
+        result, delete_ids = mock_consolidator._build_deduplicated_results(
+            new_playbooks=new_playbooks,
+            existing_playbooks=existing_playbooks,
+            dedup_output=dedup_output,
+            request_id="req1",
+            agent_version="v1",
+        )
+
+        assert len(result) == 2
+        assert delete_ids == [999]
+
+    def test_existing_reference_ignores_out_of_range_position_key(
+        self, mock_consolidator
+    ):
+        """Out-of-range position-like keys must not shadow legacy DB ids."""
+        db_row = _make_user_playbook(1, user_playbook_id=999)
+        stray_position_row = _make_user_playbook(2, user_playbook_id=123)
+
+        resolved = mock_consolidator._resolve_existing_reference(
+            999,
+            existing_by_position={
+                "EXISTING-0": db_row,
+                "EXISTING-999": stray_position_row,
+            },
+            existing_by_id={999: db_row},
+        )
+
+        assert resolved is db_row
 
     def test_safety_fallback_unhandled_playbooks(self, mock_consolidator):
         """NEW playbooks not referenced by any decision are added via safety fallback."""

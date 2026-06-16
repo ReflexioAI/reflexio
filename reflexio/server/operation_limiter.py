@@ -12,6 +12,7 @@ from typing import Any, Literal
 
 from fastapi import HTTPException, status
 
+from reflexio.server.tracing import profile_step
 from reflexio.server.usage_metrics import record_usage_event
 
 OperationName = Literal["search", "publish", "aggregation"]
@@ -105,18 +106,35 @@ def operation_limit(
     operation: OperationName,
     *,
     timeout_seconds: float | None = None,
+    wait_forever: bool = False,
 ) -> Any:
     """Acquire the per-org limiter for an operation, recording wait metrics."""
     state = _state_for(org_id, operation)
-    timeout = _timeout_for(operation) if timeout_seconds is None else timeout_seconds
+    timeout = (
+        None
+        if wait_forever
+        else (_timeout_for(operation) if timeout_seconds is None else timeout_seconds)
+    )
     start = time.perf_counter()
     with _limiters_lock:
         state.waiting += 1
         waiting = state.waiting
     acquired = False
     try:
-        acquired = state.semaphore.acquire(timeout=timeout)
-        wait_ms = int((time.perf_counter() - start) * 1000)
+        with profile_step(
+            f"{operation}.operation_limit.acquire",
+            limit=state.limit,
+            waiting=waiting,
+            wait_forever=wait_forever,
+        ) as span:
+            acquired = (
+                state.semaphore.acquire()
+                if timeout is None
+                else state.semaphore.acquire(timeout=timeout)
+            )
+            wait_ms = int((time.perf_counter() - start) * 1000)
+            span.set_data("wait_ms", wait_ms)
+            span.set_data("acquired", acquired)
         with _limiters_lock:
             state.waiting -= 1
             waiting_after = state.waiting
@@ -154,8 +172,14 @@ def run_with_operation_limit[T](
     operation: OperationName,
     fn: Callable[[], T],
     timeout_seconds: float | None = None,
+    wait_forever: bool = False,
 ) -> T:
-    with operation_limit(org_id, operation, timeout_seconds=timeout_seconds):
+    with operation_limit(
+        org_id,
+        operation,
+        timeout_seconds=timeout_seconds,
+        wait_forever=wait_forever,
+    ):
         return fn()
 
 

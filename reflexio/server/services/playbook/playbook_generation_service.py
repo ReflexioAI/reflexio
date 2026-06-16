@@ -260,6 +260,12 @@ class PlaybookGenerationService(
 
     def _finalize_extracted_items(self, all_playbooks: list[UserPlaybook]) -> None:
         """Deduplicate, persist, and aggregate extracted user playbook items."""
+        from reflexio.server.services.playbook.playbook_service_utils import (
+            dedupe_and_drop_empty,
+        )
+
+        all_playbooks = dedupe_and_drop_empty(all_playbooks)
+
         # Deduplicate against existing entries in DB when deduplicator is enabled
         existing_ids_to_delete: list[int] = []
         from reflexio.server.site_var.feature_flags import is_deduplicator_enabled

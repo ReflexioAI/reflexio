@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 
 import pytest
 
+from reflexio.models.api_schema.domain.entities import UserPlaybook
 from reflexio.models.api_schema.domain.enums import UserActionType
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
 from reflexio.models.api_schema.service_schemas import (
@@ -15,6 +16,7 @@ from reflexio.server.services.playbook.playbook_service_utils import (
     StructuredPlaybookContent,
     StructuredPlaybookList,
     construct_playbook_extraction_messages_from_sessions,
+    dedupe_and_drop_empty,
     ensure_playbook_content,
     format_structured_fields_for_display,
 )
@@ -162,6 +164,84 @@ def test_construct_playbook_extraction_messages_with_empty_sessions():
 
     # Should still create messages (system message + user message with prompt)
     assert len(messages) > 0, "No messages were created for empty sessions"
+
+
+def test_extraction_prompt_keeps_general_triggers_specific_actions():
+    """Active extraction prompts should preserve retrieve-general/action-specific guidance."""
+    prompt_manager = PromptManager()
+    context_prompt = prompt_manager.render_prompt(
+        "playbook_extraction_context",
+        variables={
+            "agent_context_prompt": "agent",
+            "extraction_definition_prompt": "definition",
+            "tool_can_use": "tools",
+        },
+    )
+    main_prompt = prompt_manager.render_prompt(
+        "playbook_extraction_main",
+        variables={"interactions": "interaction text"},
+    )
+
+    for rendered in (context_prompt, main_prompt):
+        normalized = " ".join(rendered.replace("*", "").split())
+        assert "earliest observable situation" in normalized
+        assert "user's later repair request" in normalized
+    context_normalized = " ".join(context_prompt.replace("*", "").split())
+    assert "retrieval-general" in context_normalized
+    assert "content action-specific" in context_normalized
+    assert "concrete surfaces, checks, and avoid-detours" in context_normalized
+
+
+def test_consolidation_prompt_preserves_operational_surfaces():
+    """Consolidation must not merge concrete fanout rules into vague sweep rules."""
+    prompt_manager = PromptManager()
+    rendered = prompt_manager.render_prompt(
+        "playbook_consolidation",
+        variables={
+            "new_playbook_count": 1,
+            "new_playbooks": "[NEW-0]\nContent: x",
+            "existing_playbooks": "[EXISTING-0]\nContent: y",
+        },
+    )
+    normalized = " ".join(rendered.split())
+
+    assert "Preserve concrete operational surfaces" in normalized
+    assert "target groups, SGs, health checks, task defs" in normalized
+    assert "generic sweep/audit rule" in normalized
+
+
+def _playbook(content: str, trigger: str | None = "When debugging") -> UserPlaybook:
+    return UserPlaybook(
+        agent_version="1.0",
+        request_id="request_1",
+        content=content,
+        trigger=trigger,
+    )
+
+
+def test_dedupe_and_drop_empty_removes_blank_content():
+    """Blank persisted playbooks are dropped before storage."""
+    playbooks = [
+        _playbook(""),
+        _playbook("   \n\t"),
+        _playbook("Run the narrow verification first."),
+    ]
+
+    assert dedupe_and_drop_empty(playbooks) == [playbooks[2]]
+
+
+def test_dedupe_and_drop_empty_collapses_case_and_whitespace_duplicates():
+    """Same-batch byte/fold-equivalent duplicates keep the first row."""
+    first = _playbook("Run the narrow verification first.", " When Debugging ")
+    duplicate = _playbook("  run the narrow verification first.  ", "when debugging")
+    different_trigger = _playbook(
+        "Run the narrow verification first.", "When preparing a PR"
+    )
+
+    assert dedupe_and_drop_empty([first, duplicate, different_trigger]) == [
+        first,
+        different_trigger,
+    ]
 
 
 # ===============================

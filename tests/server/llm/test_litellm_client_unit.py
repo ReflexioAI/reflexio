@@ -221,14 +221,14 @@ class TestInit:
             custom_endpoint=CustomEndpointConfig(
                 model="my-model",
                 api_key="ce-key",
-                api_base="https://custom.api.com/v1",  # type: ignore[arg-type]
+                api_base="https://example.com/v1",  # type: ignore[arg-type]
             )
         )
         config = LiteLLMConfig(model="gpt-4o", api_key_config=api_key_config)
         client = LiteLLMClient(config)
 
         assert client._api_key == "ce-key"
-        assert client._api_base == "https://custom.api.com/v1"
+        assert client._api_base == "https://example.com/v1"
 
 
 # ===================================================================
@@ -251,7 +251,7 @@ class TestResolveApiKey:
             custom_endpoint=CustomEndpointConfig(
                 model="custom-model",
                 api_key="ce-key",
-                api_base="https://custom.api.com/v1",  # type: ignore[arg-type]
+                api_base="https://example.com/v1",  # type: ignore[arg-type]
             ),
             openai=CommonsOpenAIConfig(api_key="sk-openai"),
         )
@@ -260,14 +260,14 @@ class TestResolveApiKey:
 
         key, base, version = client._resolve_api_key(for_embedding=False)
         assert key == "ce-key"
-        assert base == "https://custom.api.com/v1"
+        assert base == "https://example.com/v1"
 
     def test_custom_endpoint_skipped_for_embedding(self):
         api_key_config = APIKeyConfig(
             custom_endpoint=CustomEndpointConfig(
                 model="custom-model",
                 api_key="ce-key",
-                api_base="https://custom.api.com/v1",  # type: ignore[arg-type]
+                api_base="https://example.com/v1",  # type: ignore[arg-type]
             ),
             openai=CommonsOpenAIConfig(api_key="sk-openai"),
         )
@@ -980,6 +980,18 @@ class TestMaybeParseStructuredOutput:
         assert isinstance(result, SampleResponse)
         assert result.score == 5
 
+    def test_structured_json_with_markdown_fence_in_string(self, client):
+        content = json.dumps(
+            {
+                "answer": "Run:\n```bash\nmake package\n```",
+                "score": 5,
+            }
+        )
+        result = client._maybe_parse_structured_output(content, SampleResponse, True)
+        assert isinstance(result, SampleResponse)
+        assert result.score == 5
+        assert "make package" in result.answer
+
     def test_python_style_json_sanitized(self, client):
         """Python-style True/False/None and single quotes are sanitized."""
         content = "{'answer': 'ok', 'score': 5}"
@@ -1269,6 +1281,29 @@ class TestExtractJsonFromString:
         content = 'Here is the result: {"answer": 42} that is all'
         result = client._extract_json_from_string(content)
         assert result == '{"answer": 42}'
+
+    def test_json_object_ignores_stray_braces_in_text(self, client):
+        content = 'Result {not json}: {"answer": 42, "why": "{kept}"} trailing {x}'
+        result = client._extract_json_from_string(content)
+        assert result == '{"answer": 42, "why": "{kept}"}'
+
+    def test_json_array_ignores_stray_brackets_in_text(self, client):
+        content = "Candidates [not json] then [{\"answer\": 42}] trailing [x]"
+        result = client._extract_json_from_string(content)
+        assert result == '[{"answer": 42}]'
+
+    def test_json_object_with_markdown_fence_in_string(self, client):
+        content = json.dumps(
+            {
+                "key": "Use:\n```bash\nsupabase start\n```",
+                "value": 42,
+            }
+        )
+        result = client._extract_json_from_string(content)
+        assert json.loads(result) == {
+            "key": "Use:\n```bash\nsupabase start\n```",
+            "value": 42,
+        }
 
     def test_no_json_returns_original(self, client):
         content = "plain text"
@@ -1560,7 +1595,7 @@ class TestBuildCompletionParams:
             custom_endpoint=CustomEndpointConfig(
                 model="custom-model",
                 api_key="ce-key",
-                api_base="https://custom.api.com/v1",  # type: ignore[arg-type]
+                api_base="https://example.com/v1",  # type: ignore[arg-type]
             )
         )
         config = LiteLLMConfig(model="gpt-4o", api_key_config=api_key_config)
@@ -1571,7 +1606,7 @@ class TestBuildCompletionParams:
         call_kwargs = mock_completion.call_args.kwargs
         assert call_kwargs["model"] == "custom-model"
         assert call_kwargs["api_key"] == "ce-key"
-        assert call_kwargs["api_base"] == "https://custom.api.com/v1"
+        assert call_kwargs["api_base"] == "https://example.com/v1"
 
     def test_invalid_max_retries_fallback(self):
         config = LiteLLMConfig(model="gpt-4o", max_retries=2)
