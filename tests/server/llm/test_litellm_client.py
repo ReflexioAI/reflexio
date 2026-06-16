@@ -574,7 +574,7 @@ class TestLiteLLMClientEdgeCases:
         assert config.temperature == 0.7
         assert config.max_tokens is None
         assert config.timeout == 120
-        assert config.max_retries == 1
+        assert config.max_retries == 3
         assert config.retry_delay == 1.0
         assert config.top_p == 1.0
 
