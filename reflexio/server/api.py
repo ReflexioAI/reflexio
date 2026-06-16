@@ -50,6 +50,8 @@ from reflexio.models.api_schema.retriever_schema import (
     GetDashboardStatsRequest,
     GetDashboardStatsResponse,
     GetEvaluationResultsViewResponse,
+    GetInjectionStatsRequest,
+    GetInjectionStatsResponse,
     GetInteractionsRequest,
     GetInteractionsViewResponse,
     GetPlaybookApplicationStatsRequest,
@@ -510,6 +512,94 @@ def _meter_applied_learnings(
         )
 
 
+def _wire_usage_event_sink() -> None:
+    """Wire the per-entity observability sink into the process-global recorder.
+
+    Opt-in via the ``REFLEXIO_ENABLE_USAGE_EVENT_SINK=1`` env var. The CLI
+    entrypoint (``python -m reflexio.server``) sets this env var before
+    ``uvicorn.run``; tests do not, so the no-op default applies and
+    existing test fixtures (which call ``configure_usage_event_recorder``
+    themselves) are not disturbed.
+
+    The recorder is process-global; opt-in keeps test runs
+    (``create_app`` is called by 12+ test files) on the no-op default.
+    """
+    if os.environ.get("REFLEXIO_ENABLE_USAGE_EVENT_SINK") != "1":
+        return
+    from reflexio.server.cache.reflexio_cache import get_reflexio
+    from reflexio.server.services.usage_event_sink import SqliteUsageEventSink
+    from reflexio.server.usage_metrics import configure_usage_event_recorder
+
+    def _resolve_storage(org_id: str) -> Any:
+        try:
+            return get_reflexio(org_id=org_id).request_context.storage
+        except Exception:
+            return None
+
+    configure_usage_event_recorder(SqliteUsageEventSink(_resolve_storage))
+
+
+def _meter_injection_events(
+    *,
+    org_id: str,
+    caller_type: str,
+    resp: UnifiedSearchViewResponse,
+    request_id: str | None = None,
+    session_id: str | None = None,
+) -> None:
+    """Emit per-entity ``learning_injection`` events for observability.
+
+    Distinct from :func:`_meter_applied_learnings` (one row per search,
+    billing-oriented). Per-entity rows land in the ``usage_events`` table
+    and are aggregated by the storage-layer ``get_injection_stats`` and
+    the ``GET /api/get_injection_stats`` endpoint. Pairs with
+    ``learning_applied`` so the dashboard can answer both "what was
+    rendered into context?" and "what influenced the response?".
+
+    No-op unless ``caller_type == "production_agent"``. Failures are
+    caught and logged so the caller's hot path is never affected.
+
+    Args:
+        org_id: Organization id.
+        caller_type: Caller classification (e.g. ``"production_agent"``).
+        resp: The unified-search view response carrying the surfaced
+            ``profiles``, ``user_playbooks``, and ``agent_playbooks``.
+        request_id: Optional request correlation id.
+        session_id: Optional session id.
+    """
+    if caller_type != "production_agent":
+        return
+    try:
+        from reflexio.server.billing_meter import record_injection_events
+
+        entities: list[tuple[str, str]] = []
+        contents: list[str] = []
+        for p in resp.profiles:
+            entities.append(("profile", p.profile_id))
+            contents.append(p.content or "")
+        for pb in resp.user_playbooks:
+            entities.append(("playbook", str(pb.user_playbook_id)))
+            contents.append(pb.content or "")
+        for ap in resp.agent_playbooks:
+            entities.append(("playbook", str(ap.agent_playbook_id)))
+            contents.append(ap.content or "")
+        if not entities:
+            return
+        record_injection_events(
+            org_id=org_id,
+            caller_type=caller_type,
+            entities=entities,
+            pipeline="unified_search",
+            request_id=request_id,
+            session_id=session_id,
+            contents=contents,
+        )
+    except Exception:
+        logger.warning(
+            "injection-events metering failed for org %s", org_id, exc_info=True
+        )
+
+
 @core_router.get("/")
 def root() -> dict[str, str]:
     return {
@@ -955,6 +1045,13 @@ def unified_search_endpoint(
         surfaced_count=len(resp.profiles)
         + len(resp.agent_playbooks)
         + len(resp.user_playbooks),
+        request_id=getattr(payload, "request_id", None),
+        session_id=getattr(payload, "session_id", None),
+    )
+    _meter_injection_events(
+        org_id=org_id,
+        caller_type=caller_type,
+        resp=resp,
         request_id=getattr(payload, "request_id", None),
         session_id=getattr(payload, "session_id", None),
     )
@@ -1872,6 +1969,34 @@ def get_playbook_application_stats(
     """
     reflexio = get_reflexio(org_id=org_id)
     return reflexio.get_playbook_application_stats(request)
+
+
+@core_router.post(
+    "/api/get_injection_stats",
+    response_model=GetInjectionStatsResponse,
+    response_model_exclude_none=True,
+)
+def get_injection_stats(
+    request: GetInjectionStatsRequest,
+    org_id: str = Depends(default_get_org_id),
+) -> GetInjectionStatsResponse:
+    """Get per-entity injection counts aggregated from ``usage_events``.
+
+    Returns one row per ``(entity_type, entity_id)`` over the look-back
+    window, sorted by ``surfaced_count`` descending. Powers the "what was
+    rendered into context?" view on the dashboard — pairs with
+    :func:`get_playbook_application_stats` which counts the applied
+    side (citations on assistant turns).
+
+    Args:
+        request (GetInjectionStatsRequest): Request containing days_back.
+        org_id (str): Organization ID.
+
+    Returns:
+        GetInjectionStatsResponse: Response containing aggregated stats.
+    """
+    reflexio = get_reflexio(org_id=org_id)
+    return reflexio.get_injection_stats(request)
 
 
 # ============================================================================
@@ -3019,6 +3144,10 @@ def create_app(
 
     # Health/observability endpoint (per-worker metrics for recycling)
     health_api.install(app)
+
+    # Wire the usage-event sink. See helper docstring
+    # for the opt-in semantics.
+    _wire_usage_event_sink()
 
     return app
 

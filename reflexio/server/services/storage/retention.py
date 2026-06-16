@@ -77,6 +77,7 @@ RETENTION_TARGETS: tuple[RetentionTarget, ...] = (
         ("event_id",),
     ),
     RetentionTarget("skills", "skills", "created_at", ("skill_id",)),
+    RetentionTarget("usage_events", "usage_events", "created_at", ("event_id",)),
 )
 
 RETENTION_TARGETS_BY_NAME = {target.name: target for target in RETENTION_TARGETS}

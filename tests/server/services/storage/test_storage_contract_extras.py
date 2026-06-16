@@ -209,3 +209,158 @@ def _backend_supports_application_stats(storage) -> bool:
         storage.__class__.get_playbook_application_stats
         is not ExtrasMixin.get_playbook_application_stats
     )
+
+
+# ---------------------------------------------------------------------------
+# TestUsageEvents (per-entity observability)
+# ---------------------------------------------------------------------------
+
+
+def _backend_supports_usage_events(storage) -> bool:
+    """True when the storage backend implements ``record_usage_event`` and
+    ``get_injection_stats`` (not the default no-op / ``[]`` path)."""
+    return (
+        storage.__class__.record_usage_event
+        is not ExtrasMixin.record_usage_event
+    ) and (
+        storage.__class__.get_injection_stats
+        is not ExtrasMixin.get_injection_stats
+    )
+
+
+class TestUsageEvents:
+    def test_record_usage_event_persists_a_row(self, storage):
+        if not _backend_supports_usage_events(storage):
+            pytest.skip("Backend does not implement record_usage_event")
+        storage.record_usage_event(
+            org_id=storage.org_id,
+            event_name="learning_injection",
+            event_category="application",
+            entity_type="playbook",
+            entity_id="42",
+            caller_type="production_agent",
+            session_id="s1",
+            request_id="r1",
+            prompt_tokens=10,
+        )
+        # The row is queryable via get_injection_stats (it filters on
+        # event_name='learning_injection' and entity_id IS NOT NULL).
+        stats = storage.get_injection_stats(days_back=30)
+        assert len(stats) == 1
+        assert stats[0].entity_type == "playbook"
+        assert stats[0].entity_id == "42"
+        assert stats[0].surfaced_count == 1
+        assert stats[0].total_prompt_tokens == 10
+
+    def test_record_usage_event_rejects_org_mismatch(self, storage):
+        if not _backend_supports_usage_events(storage):
+            pytest.skip("Backend does not implement record_usage_event")
+        from reflexio.server.services.storage.error import StorageError
+        with pytest.raises(StorageError, match="org_id mismatch"):
+            storage.record_usage_event(
+                org_id="wrong-org",
+                event_name="learning_injection",
+                event_category="application",
+            )
+
+    def test_get_injection_stats_empty_when_no_events(self, storage):
+        if not _backend_supports_usage_events(storage):
+            pytest.skip("Backend does not implement get_injection_stats")
+        assert storage.get_injection_stats(days_back=30) == []
+
+    def test_get_injection_stats_empty_for_zero_days_back(self, storage):
+        if not _backend_supports_usage_events(storage):
+            pytest.skip("Backend does not implement get_injection_stats")
+        # Defensive guard: zero/negative days_back returns [] (mirrors
+        # get_playbook_application_stats). Pydantic at the API layer
+        # already enforces gt=0, but storage should be robust on its own.
+        assert storage.get_injection_stats(days_back=0) == []
+        assert storage.get_injection_stats(days_back=-1) == []
+
+    def test_get_injection_stats_aggregates_by_entity(self, storage):
+        if not _backend_supports_usage_events(storage):
+            pytest.skip("Backend does not implement get_injection_stats")
+        # Two events for playbook 42 (one in s1, one in s2), one for profile p-99.
+        for sid, rid in (("s1", "r1"), ("s2", "r2")):
+            storage.record_usage_event(
+                org_id=storage.org_id,
+                event_name="learning_injection",
+                event_category="application",
+                entity_type="playbook",
+                entity_id="42",
+                caller_type="production_agent",
+                session_id=sid,
+                request_id=rid,
+                prompt_tokens=5,
+            )
+        storage.record_usage_event(
+            org_id=storage.org_id,
+            event_name="learning_injection",
+            event_category="application",
+            entity_type="profile",
+            entity_id="p-99",
+            caller_type="production_agent",
+            session_id="s1",
+            request_id="r1",
+            prompt_tokens=3,
+        )
+        stats = storage.get_injection_stats(days_back=30)
+        assert len(stats) == 2
+        # Most-injected sorts first.
+        top = stats[0]
+        assert top.entity_type == "playbook"
+        assert top.entity_id == "42"
+        assert top.surfaced_count == 2
+        assert top.total_prompt_tokens == 10
+        assert top.distinct_session_count is None or top.distinct_session_count >= 1
+        # Profile row second.
+        bottom = stats[1]
+        assert bottom.entity_type == "profile"
+        assert bottom.entity_id == "p-99"
+        assert bottom.surfaced_count == 1
+        assert bottom.total_prompt_tokens == 3
+
+    def test_get_injection_stats_ignores_other_event_names(self, storage):
+        if not _backend_supports_usage_events(storage):
+            pytest.skip("Backend does not implement get_injection_stats")
+        # The aggregation only counts ``learning_injection``. A row of
+        # ``extraction_tokens`` for the same (entity_type, entity_id)
+        # must NOT inflate the surfaced_count.
+        storage.record_usage_event(
+            org_id=storage.org_id,
+            event_name="extraction_tokens",
+            event_category="learning",
+            entity_type="playbook",
+            entity_id="42",
+            caller_type="internal",
+            prompt_tokens=999,
+        )
+        stats = storage.get_injection_stats(days_back=30)
+        assert stats == []
+
+    def test_get_injection_stats_respects_days_back_window(self, storage):
+        if not _backend_supports_usage_events(storage):
+            pytest.skip("Backend does not implement get_injection_stats")
+        # Insert one event 60 days ago; the 30-day window excludes it.
+        # We use a custom created_at to bypass the auto-now default.
+        # The storage layer's row insert accepts created_at via the
+        # `record_usage_event` signature? No — the helper does not
+        # accept created_at. We rely on the default ``now()`` and a
+        # direct SQL insert for the backdated row.
+        now_iso = "2020-01-01T00:00:00.000Z"
+        with storage._lock:
+            storage.conn.execute(
+                """INSERT INTO usage_events
+                     (org_id, event_name, event_category, entity_type,
+                      entity_id, count_value, created_at)
+                   VALUES (?, 'learning_injection', 'application',
+                           'playbook', '99', 1, ?)""",
+                (storage.org_id, now_iso),
+            )
+            storage.conn.commit()
+        # 30-day window excludes the 2020 row.
+        assert storage.get_injection_stats(days_back=30) == []
+        # 3650-day window includes it.
+        stats = storage.get_injection_stats(days_back=3650)
+        assert len(stats) == 1
+        assert stats[0].entity_id == "99"

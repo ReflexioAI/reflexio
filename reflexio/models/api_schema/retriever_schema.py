@@ -570,6 +570,71 @@ class GetPlaybookApplicationStatsResponse(BaseModel):
     msg: str | None = None
 
 
+class InjectionStat(BaseModel):
+    """Per-entity injection rollup derived from ``usage_events``.
+
+    One row per ``(entity_type, entity_id)`` over a look-back window.
+    Unlike :class:`PlaybookApplicationStat` which counts the *applied* side
+    (citations on assistant turns), ``InjectionStat`` counts the *surfaced*
+    side (per-entity rows in ``usage_events`` for ``learning_injection``).
+    The two views answer different questions:
+    ``PlaybookApplicationStat`` tells you "what influenced the agent's
+    response?"; ``InjectionStat`` tells you "what was rendered into the
+    context window, and at what cost?".
+
+    Title is NOT included; callers that need the playbook / profile name
+    join with the corresponding tables using ``entity_id``.
+
+    Args:
+        entity_type (str): ``"playbook"`` or ``"profile"``.
+        entity_id (str): Storage id of the surfaced entity.
+        surfaced_count (int): Times the entity was injected in the window.
+        distinct_session_count (int): Number of distinct sessions that
+            triggered an injection of this entity in the window.
+        total_prompt_tokens (int): Sum of per-entity ``prompt_tokens``
+            (token count under ``cl100k_base`` via
+            :func:`reflexio.server.billing_signals.count_input_tokens`).
+        first_injected_at (int | None): Unix epoch seconds.
+        last_injected_at (int | None): Unix epoch seconds.
+        last_session_id (str): Most-recent session id; empty when unknown.
+    """
+
+    entity_type: str
+    entity_id: str
+    surfaced_count: int = Field(ge=0)
+    distinct_session_count: int = Field(ge=0)
+    total_prompt_tokens: int = Field(ge=0)
+    first_injected_at: int | None = None
+    last_injected_at: int | None = None
+    last_session_id: str = ""
+
+
+class GetInjectionStatsRequest(BaseModel):
+    """Request for per-entity injection stats.
+
+    Args:
+        days_back (int): Look-back window in days. Defaults to 30; must be
+            positive.
+    """
+
+    days_back: int = Field(default=30, gt=0)
+
+
+class GetInjectionStatsResponse(BaseModel):
+    """Response containing per-entity injection stats.
+
+    Args:
+        success (bool): Whether the call succeeded.
+        stats (list[InjectionStat]): One row per ``(entity_type,
+            entity_id)``, sorted by ``surfaced_count`` descending.
+        msg (str | None): Optional error message when ``success`` is False.
+    """
+
+    success: bool
+    stats: list[InjectionStat] = Field(default_factory=list)
+    msg: str | None = None
+
+
 # ===============================
 # Query Reformulation Models
 # ===============================

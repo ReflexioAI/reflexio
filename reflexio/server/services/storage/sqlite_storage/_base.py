@@ -665,6 +665,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         self._migrate_request_session_id_required()
         self._migrate_shadow_comparison_verdicts()
         self._migrate_user_playbook_polarity()
+        self._migrate_usage_events()
         init_stall_state_table(self.conn)
         return True
 
@@ -1331,6 +1332,59 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         """)
         self.conn.commit()
         logger.info("Created shadow_comparison_verdicts table (F1 migration)")
+
+    def _migrate_usage_events(self) -> None:
+        """Create the ``usage_events`` table if missing.
+
+        Idempotent. The DDL block already creates this table on a fresh
+        database; this helper exists for symmetry with the per-feature
+        migration convention and as a single named hook the future
+        Postgres / Supabase backends can mirror. Mirrors the
+        ``_migrate_shadow_comparison_verdicts`` pattern.
+        """
+        cols = {
+            row["name"]
+            for row in self.conn.execute("PRAGMA table_info(usage_events)").fetchall()
+        }
+        if cols:
+            return
+        self.conn.executescript("""
+            CREATE TABLE IF NOT EXISTS usage_events (
+                event_id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                org_id                TEXT    NOT NULL,
+                user_id               TEXT    NOT NULL DEFAULT '',
+                request_id            TEXT    NOT NULL DEFAULT '',
+                session_id            TEXT    NOT NULL DEFAULT '',
+                pipeline              TEXT,
+                entity_type           TEXT,
+                entity_id             TEXT,
+                event_name            TEXT    NOT NULL,
+                event_category        TEXT    NOT NULL,
+                caller_type           TEXT,
+                count_value           INTEGER NOT NULL DEFAULT 1,
+                prompt_tokens         INTEGER,
+                completion_tokens     INTEGER,
+                billing_input_tokens  INTEGER,
+                platform_llm          INTEGER,
+                platform_storage      INTEGER,
+                duration_ms           INTEGER,
+                error_kind            TEXT,
+                metadata_json         TEXT    NOT NULL DEFAULT '{}',
+                created_at            TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_usage_events_org_created
+                ON usage_events (org_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_usage_events_org_event_created
+                ON usage_events (org_id, event_name, created_at);
+            CREATE INDEX IF NOT EXISTS idx_usage_events_org_request
+                ON usage_events (org_id, request_id)
+                WHERE request_id != '';
+            CREATE INDEX IF NOT EXISTS idx_usage_events_org_entity
+                ON usage_events (org_id, entity_type, entity_id)
+                WHERE entity_id IS NOT NULL;
+        """)
+        self.conn.commit()
+        logger.info("Created usage_events table")
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -2012,4 +2066,47 @@ CREATE INDEX IF NOT EXISTS idx_shadow_verdicts_created_at
 CREATE INDEX IF NOT EXISTS idx_shadow_verdicts_prompt_v
     ON shadow_comparison_verdicts (judge_prompt_version);
 
+-- ============================================================================
+-- Usage telemetry events (per-entity observability)
+--
+-- One row per entity surfaced by a search. Aggregated by
+-- ``get_injection_stats`` and consumed by the ``/api/get_injection_stats``
+-- endpoint. Indexes are tuned for per-org time-window queries and the
+-- per-entity rollup query. A row-count retention sweep applies via
+-- ``RETENTION_TARGETS`` (retention.py).
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS usage_events (
+    event_id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    org_id                TEXT    NOT NULL,
+    user_id               TEXT    NOT NULL DEFAULT '',
+    request_id            TEXT    NOT NULL DEFAULT '',
+    session_id            TEXT    NOT NULL DEFAULT '',
+    pipeline              TEXT,
+    entity_type           TEXT,
+    entity_id             TEXT,
+    event_name            TEXT    NOT NULL,
+    event_category        TEXT    NOT NULL,
+    caller_type           TEXT,
+    count_value           INTEGER NOT NULL DEFAULT 1,
+    prompt_tokens         INTEGER,
+    completion_tokens     INTEGER,
+    billing_input_tokens  INTEGER,
+    platform_llm          INTEGER,
+    platform_storage      INTEGER,
+    duration_ms           INTEGER,
+    error_kind            TEXT,
+    metadata_json         TEXT    NOT NULL DEFAULT '{}',
+    created_at            TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_usage_events_org_created
+    ON usage_events (org_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_usage_events_org_event_created
+    ON usage_events (org_id, event_name, created_at);
+CREATE INDEX IF NOT EXISTS idx_usage_events_org_request
+    ON usage_events (org_id, request_id)
+    WHERE request_id != '';
+CREATE INDEX IF NOT EXISTS idx_usage_events_org_entity
+    ON usage_events (org_id, entity_type, entity_id)
+    WHERE entity_id IS NOT NULL;
 """

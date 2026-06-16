@@ -22,6 +22,8 @@ from reflexio.models.api_schema.retriever_schema import (
     DashboardStats,
     GetDashboardStatsRequest,
     GetDashboardStatsResponse,
+    GetInjectionStatsRequest,
+    GetInjectionStatsResponse,
     GetPlaybookApplicationStatsRequest,
     GetPlaybookApplicationStatsResponse,
     PeriodStats,
@@ -152,6 +154,49 @@ class DashboardMixin(ReflexioBase):
                 success=False,
                 stats=[],
                 msg=f"Failed to get playbook application stats: {str(e)}",
+            )
+
+    def get_injection_stats(
+        self, request: GetInjectionStatsRequest | dict
+    ) -> GetInjectionStatsResponse:
+        """Get per-entity injection counts from the ``usage_events`` table.
+
+        Surfaces how often each individual playbook or profile has been
+        rendered into a search response (the *surfaced* side) and at
+        what cost. Pairs with :meth:`get_playbook_application_stats` which
+        counts the *applied* side (citations on assistant turns); the
+        two together answer "what was rendered?" and "what influenced the
+        response?".
+
+        Args:
+            request (Union[GetInjectionStatsRequest, dict]): Request
+                containing days_back.
+
+        Returns:
+            GetInjectionStatsResponse: Response containing the aggregated
+                stats sorted by ``surfaced_count`` descending. Empty
+                ``stats`` when the storage is not configured.
+        """
+        if not self._is_storage_configured():
+            return GetInjectionStatsResponse(
+                success=True, stats=[], msg=STORAGE_NOT_CONFIGURED_MSG
+            )
+        try:
+            if isinstance(request, dict):
+                request = GetInjectionStatsRequest(**request)
+            stats = self._get_storage().get_injection_stats(
+                days_back=request.days_back
+            )
+            return GetInjectionStatsResponse(
+                success=True,
+                stats=stats,
+                msg="Retrieved injection stats successfully",
+            )
+        except Exception as e:
+            return GetInjectionStatsResponse(
+                success=False,
+                stats=[],
+                msg=f"Failed to get injection stats: {str(e)}",
             )
 
     # ==============================

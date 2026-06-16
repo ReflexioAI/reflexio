@@ -1,4 +1,6 @@
 from abc import abstractmethod
+from collections.abc import Mapping
+from typing import Any
 
 from reflexio.models.api_schema.braintrust_schema import (
     BraintrustConnection,
@@ -9,7 +11,10 @@ from reflexio.models.api_schema.domain import (
     PlaybookAggregationChangeLog,
     ProfileChangeLog,
 )
-from reflexio.models.api_schema.retriever_schema import PlaybookApplicationStat
+from reflexio.models.api_schema.retriever_schema import (
+    InjectionStat,
+    PlaybookApplicationStat,
+)
 
 
 class ExtrasMixin:
@@ -59,6 +64,100 @@ class ExtrasMixin:
             list[PlaybookApplicationStat]: One row per cited ``(kind,
                 real_id)``, sorted by ``applied_count`` descending. Empty
                 when the backend has no implementation.
+        """
+        del days_back
+        return []
+
+    @abstractmethod
+    def record_usage_event(
+        self,
+        *,
+        org_id: str,
+        event_name: str,
+        event_category: str,
+        user_id: str | None = None,
+        request_id: str | None = None,
+        session_id: str | None = None,
+        pipeline: str | None = None,
+        entity_type: str | None = None,
+        entity_id: str | None = None,
+        caller_type: str | None = None,
+        count_value: int = 1,
+        prompt_tokens: int | None = None,
+        completion_tokens: int | None = None,
+        billing_input_tokens: int | None = None,
+        platform_llm: bool | None = None,
+        platform_storage: bool | None = None,
+        duration_ms: int | None = None,
+        error_kind: str | None = None,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> None:
+        """Insert one row into the ``usage_events`` table.
+
+        Persistence sink for the process-global ``record_usage_event`` hook
+        in :mod:`reflexio.server.usage_metrics`. Wired by the CLI
+        entrypoint (``reflexio.server.__main__``) via
+        :class:`reflexio.server.services.usage_event_sink.SqliteUsageEventSink`.
+
+        Backends MUST implement this method. The hook is process-global, so
+        failure here would silently drop observability data; ``SqliteUsageEventSink``
+        catches and logs all exceptions to avoid breaking the caller's
+        hot path.
+
+        Args:
+            org_id: Org id (matches ``self.org_id`` for org-scoped
+                backends; passed explicitly for clarity and multi-tenant
+                flexibility).
+            event_name (str): ``"learning_injection"``,
+                ``"learning_applied"``, ``"extraction_tokens"``,
+                ``"learnings_generated"``, etc.
+            event_category (str): ``"application"``, ``"learning"``, etc.
+            user_id (str | None): Caller's user id.
+            request_id (str | None): Correlation id.
+            session_id (str | None): Conversation id.
+            pipeline (str | None): Logical pipeline (e.g., ``"unified_search"``).
+            entity_type (str | None): ``"playbook"`` / ``"profile"`` for
+                per-entity events.
+            entity_id (str | None): Storage id of the surfaced entity.
+            caller_type (str | None): Caller classification
+                (e.g., ``"production_agent"``).
+            count_value (int): Event multiplicity; default 1.
+            prompt_tokens (int | None): Tokens for the rendered content.
+            completion_tokens (int | None): Tokens for completions.
+            billing_input_tokens (int | None): Input-anchored billed tokens.
+            platform_llm (bool | None): Whether the platform supplies the LLM.
+            platform_storage (bool | None): Whether the platform supplies
+                storage.
+            duration_ms (int | None): Wall-clock duration in milliseconds.
+            error_kind (str | None): Error classification.
+            metadata (Mapping[str, Any] | None): Free-form per-event metadata.
+        """
+        raise NotImplementedError
+
+    def get_injection_stats(
+        self, days_back: int = 30
+    ) -> list[InjectionStat]:
+        """Per-entity injection rollup aggregated over the look-back window.
+
+        Aggregates the ``usage_events`` table for rows of
+        ``event_name = "learning_injection"`` within ``days_back`` and
+        groups by ``(entity_type, entity_id)``. Titles are NOT included
+        in the rollup; callers can join with the playbook / profile
+        tables when needed.
+
+        Concrete default returns ``[]`` so backends that do not yet
+        implement this method degrade gracefully. Storage backends
+        should override with a real implementation — see
+        ``sqlite_storage._extras`` for the reference implementation.
+
+        Args:
+            days_back (int): Look-back window in days. Must be positive.
+
+        Returns:
+            list[InjectionStat]: One row per ``(entity_type, entity_id)``,
+                sorted by ``surfaced_count`` descending and then by
+                ``last_injected_at`` descending. Empty when the backend
+                has no implementation.
         """
         del days_back
         return []

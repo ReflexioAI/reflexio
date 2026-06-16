@@ -2,13 +2,17 @@
 
 import sqlite3
 from collections import defaultdict
+from collections.abc import Mapping
 from typing import Any, Literal, cast
 
 from reflexio.models.api_schema.braintrust_schema import (
     BraintrustConnection,
     ImportedScore,
 )
-from reflexio.models.api_schema.retriever_schema import PlaybookApplicationStat
+from reflexio.models.api_schema.retriever_schema import (
+    InjectionStat,
+    PlaybookApplicationStat,
+)
 from reflexio.models.api_schema.service_schemas import (
     Interaction,
     PlaybookAggregationChangeLog,
@@ -291,6 +295,193 @@ class ExtrasMixin:
             key=lambda s: (
                 -s.applied_count,
                 -(s.last_applied_at if s.last_applied_at is not None else 0),
+            )
+        )
+        return stats
+
+    @SQLiteStorageBase.handle_exceptions
+    def record_usage_event(
+        self,
+        *,
+        org_id: str,
+        event_name: str,
+        event_category: str,
+        user_id: str | None = None,
+        request_id: str | None = None,
+        session_id: str | None = None,
+        pipeline: str | None = None,
+        entity_type: str | None = None,
+        entity_id: str | None = None,
+        caller_type: str | None = None,
+        count_value: int = 1,
+        prompt_tokens: int | None = None,
+        completion_tokens: int | None = None,
+        billing_input_tokens: int | None = None,
+        platform_llm: bool | None = None,
+        platform_storage: bool | None = None,
+        duration_ms: int | None = None,
+        error_kind: str | None = None,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> None:
+        """Insert one row into ``usage_events`` for the storage's org.
+
+        Mirrors the ``UsageEvent`` dataclass in
+        :mod:`reflexio.server.usage_metrics`. The :data:`org_id` argument
+        is required for explicitness and multi-tenant flexibility; SQLite
+        storage is per-org and the value should match ``self.org_id``.
+
+        Args:
+            org_id: Organisation id (must equal ``self.org_id``).
+            event_name: Stable event name (e.g., ``"learning_injection"``).
+            event_category: Stable event category (e.g., ``"application"``).
+            user_id: Caller user id.
+            request_id: Correlation id.
+            session_id: Conversation id.
+            pipeline: Logical pipeline tag.
+            entity_type: ``"playbook"`` / ``"profile"`` for per-entity events.
+            entity_id: Storage id of the surfaced entity.
+            caller_type: Caller classification.
+            count_value: Multiplicity; default 1.
+            prompt_tokens: Tokens for the rendered content.
+            completion_tokens: Tokens for completions.
+            billing_input_tokens: Input-anchored billed tokens.
+            platform_llm: Whether the platform supplies the LLM.
+            platform_storage: Whether the platform supplies storage.
+            duration_ms: Wall-clock duration in milliseconds.
+            error_kind: Error classification.
+            metadata: Free-form per-event metadata (serialised as JSON).
+        """
+        # SQLite storage is per-org; the assertion keeps the call site honest.
+        # Wrapped in ``StorageError`` so the ``@handle_exceptions`` decorator
+        # does not double-wrap and so the caller sees a typed exception
+        # rather than the raw ``ValueError``.
+        if org_id != self.org_id:
+            from reflexio.server.services.storage.error import StorageError
+            raise StorageError(
+                f"record_usage_event org_id mismatch: storage={self.org_id!r} "
+                f"event={org_id!r}"
+            )
+        self._execute(
+            """INSERT INTO usage_events
+                 (org_id, user_id, request_id, session_id, pipeline,
+                  entity_type, entity_id, event_name, event_category,
+                  caller_type, count_value, prompt_tokens, completion_tokens,
+                  billing_input_tokens, platform_llm, platform_storage,
+                  duration_ms, error_kind, metadata_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                org_id,
+                user_id or "",
+                request_id or "",
+                session_id or "",
+                pipeline,
+                entity_type,
+                entity_id,
+                event_name,
+                event_category,
+                caller_type,
+                count_value,
+                prompt_tokens,
+                completion_tokens,
+                billing_input_tokens,
+                int(platform_llm) if platform_llm is not None else None,
+                int(platform_storage) if platform_storage is not None else None,
+                duration_ms,
+                error_kind,
+                _json_dumps(dict(metadata) if metadata else {}),
+            ),
+        )
+
+    @SQLiteStorageBase.handle_exceptions
+    def get_injection_stats(
+        self, days_back: int = 30
+    ) -> list[InjectionStat]:
+        """Per-entity injection rollup from ``usage_events``.
+
+        Reads rows of ``event_name = "learning_injection"`` for
+        ``self.org_id`` within the look-back window and groups by
+        ``(entity_type, entity_id)`` to surface:
+
+        - ``surfaced_count``: times the entity was injected
+        - ``total_prompt_tokens``: sum of per-entity prompt tokens
+        - ``first_injected_at`` / ``last_injected_at``: epoch seconds
+        - ``last_session_id``: most-recent session that injected the entity
+
+        Titles are NOT joined here. Callers needing the playbook / profile
+        name should join with the corresponding tables using ``entity_id``.
+
+        Args:
+            days_back (int): Look-back window in days. Must be > 0.
+
+        Returns:
+            list[InjectionStat]: Sorted by ``surfaced_count`` DESC,
+            then ``last_injected_at`` DESC. Empty when no events in the
+            window.
+        """
+        if days_back <= 0:
+            return []
+
+        current_time = _epoch_now()
+        start_iso = _epoch_to_iso(current_time - days_back * 24 * 60 * 60)
+        rows = self._fetchall(
+            """SELECT entity_type, entity_id, session_id, prompt_tokens,
+                      created_at
+                 FROM usage_events
+                 WHERE event_name = 'learning_injection'
+                   AND org_id = ?
+                   AND created_at >= ?
+                   AND entity_id IS NOT NULL
+                 ORDER BY created_at DESC""",
+            (self.org_id, start_iso),
+        )
+        if not rows:
+            return []
+
+        aggregates: dict[tuple[str, str], dict[str, Any]] = {}
+        for row in rows:
+            entity_type = row["entity_type"] or ""
+            entity_id = str(row["entity_id"])
+            key: tuple[str, str] = (entity_type, entity_id)
+            agg = aggregates.get(key)
+            created_at_epoch = _iso_to_epoch(row["created_at"]) or 0
+            if agg is None:
+                agg = {
+                    "surfaced_count": 0,
+                    "distinct_sessions": set(),
+                    "total_prompt_tokens": 0,
+                    "first_injected_at": created_at_epoch,
+                    "last_injected_at": created_at_epoch,
+                    "last_session_id": row["session_id"] or "",
+                }
+                aggregates[key] = agg
+            agg["surfaced_count"] += 1
+            if row["session_id"]:
+                agg["distinct_sessions"].add(row["session_id"])
+            agg["total_prompt_tokens"] += int(row["prompt_tokens"] or 0)
+            # rows are DESC, so the first occurrence is the most recent
+            if created_at_epoch > agg["last_injected_at"]:
+                agg["last_injected_at"] = created_at_epoch
+                agg["last_session_id"] = row["session_id"] or ""
+            if created_at_epoch < agg["first_injected_at"]:
+                agg["first_injected_at"] = created_at_epoch
+
+        stats = [
+            InjectionStat(
+                entity_type=entity_type,
+                entity_id=entity_id,
+                surfaced_count=agg["surfaced_count"],
+                distinct_session_count=len(agg["distinct_sessions"]),
+                total_prompt_tokens=agg["total_prompt_tokens"],
+                first_injected_at=agg["first_injected_at"] or None,
+                last_injected_at=agg["last_injected_at"] or None,
+                last_session_id=agg["last_session_id"],
+            )
+            for (entity_type, entity_id), agg in aggregates.items()
+        ]
+        stats.sort(
+            key=lambda s: (
+                -s.surfaced_count,
+                -(s.last_injected_at if s.last_injected_at is not None else 0),
             )
         )
         return stats

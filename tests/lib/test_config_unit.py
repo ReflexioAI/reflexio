@@ -1,14 +1,19 @@
 """Unit tests for ConfigMixin and DashboardMixin.
 
 Tests get_config, set_config for ConfigMixin and
-get_dashboard_stats for DashboardMixin with mocked storage.
+get_dashboard_stats, get_injection_stats for DashboardMixin with
+mocked storage.
 """
 
 from unittest.mock import MagicMock
 
 from reflexio.lib._config import ConfigMixin
 from reflexio.lib._dashboard import DashboardMixin
-from reflexio.models.api_schema.retriever_schema import GetDashboardStatsRequest
+from reflexio.models.api_schema.retriever_schema import (
+    GetDashboardStatsRequest,
+    GetInjectionStatsRequest,
+    InjectionStat,
+)
 from reflexio.models.config_schema import Config
 
 # ---------------------------------------------------------------------------
@@ -313,5 +318,80 @@ class TestGetDashboardStats:
         mixin.get_dashboard_stats(request)
 
         _get_dashboard_storage(mixin).get_dashboard_stats.assert_called_once_with(
+            days_back=30
+        )
+
+
+# ---------------------------------------------------------------------------
+# get_injection_stats
+# ---------------------------------------------------------------------------
+
+
+class TestGetInjectionStats:
+    def test_returns_stats(self):
+        """Returns injection stats from storage."""
+        mixin = _make_dashboard_mixin()
+        stat = InjectionStat(
+            entity_type="playbook",
+            entity_id="1",
+            surfaced_count=5,
+            distinct_session_count=3,
+            total_prompt_tokens=120,
+        )
+        _get_dashboard_storage(mixin).get_injection_stats.return_value = [stat]
+
+        request = GetInjectionStatsRequest(days_back=30)
+        response = mixin.get_injection_stats(request)
+
+        assert response.success is True
+        assert len(response.stats) == 1
+        assert response.stats[0].entity_id == "1"
+        assert response.stats[0].surfaced_count == 5
+
+    def test_storage_not_configured(self):
+        """Returns empty stats when storage is not configured."""
+        mixin = _make_dashboard_mixin(storage_configured=False)
+
+        request = GetInjectionStatsRequest(days_back=30)
+        response = mixin.get_injection_stats(request)
+
+        assert response.success is True
+        assert response.stats == []
+        assert response.msg is not None
+
+    def test_dict_input(self):
+        """Accepts dict input and auto-converts."""
+        mixin = _make_dashboard_mixin()
+        _get_dashboard_storage(mixin).get_injection_stats.return_value = []
+
+        response = mixin.get_injection_stats({"days_back": 7})
+
+        assert response.success is True
+        _get_dashboard_storage(mixin).get_injection_stats.assert_called_once_with(
+            days_back=7
+        )
+
+    def test_exception_returns_failure(self):
+        """Returns failure on storage exception."""
+        mixin = _make_dashboard_mixin()
+        _get_dashboard_storage(mixin).get_injection_stats.side_effect = RuntimeError(
+            "db error"
+        )
+
+        request = GetInjectionStatsRequest(days_back=30)
+        response = mixin.get_injection_stats(request)
+
+        assert response.success is False
+        assert "db error" in (response.msg or "")
+
+    def test_default_days_back(self):
+        """Uses default 30 days when days_back is not provided."""
+        mixin = _make_dashboard_mixin()
+        _get_dashboard_storage(mixin).get_injection_stats.return_value = []
+
+        request = GetInjectionStatsRequest()
+        mixin.get_injection_stats(request)
+
+        _get_dashboard_storage(mixin).get_injection_stats.assert_called_once_with(
             days_back=30
         )

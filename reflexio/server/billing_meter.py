@@ -8,6 +8,10 @@ wrapper over the ``record_usage_event`` hook (which only enqueues). No DB I/O.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
+from typing import Any
+
+from reflexio.server.billing_signals import count_input_tokens
 from reflexio.server.usage_metrics import record_usage_event
 
 _INTERNAL = "internal"   # == BillingCallerType.INTERNAL.value (kept literal; OSS stays clean)
@@ -137,3 +141,71 @@ def record_applied_learnings(
         platform_storage=platform_storage,
         caller_type=caller_type,
     )
+
+
+def record_injection_events(
+    *,
+    org_id: str,
+    caller_type: str,
+    entities: Sequence[tuple[str, str]],
+    pipeline: str | None = None,
+    request_id: str | None = None,
+    session_id: str | None = None,
+    contents: Sequence[str] | None = None,
+    metadata: Mapping[str, Any] | None = None,
+) -> None:
+    """Emit one ``learning_injection`` event per surfaced entity.
+
+    Channel-agnostic observability surface: per-entity rows land in the
+    ``usage_events`` table regardless of which channel adapter (claude-smart,
+    Codex, custom) drove the search. Aggregated by the storage layer's
+    :meth:`ExtrasMixin.get_injection_stats` and the
+    ``GET /api/get_injection_stats`` endpoint.
+
+    Distinct from :func:`record_applied_learnings` (one row per search,
+    billing-oriented). Per-entity rows are observability-oriented and
+    answer "what was actually rendered into the context window?"
+
+    No-op unless ``caller_type == "production_agent"`` AND ``entities`` is
+    non-empty. Token cost is computed per-entity via
+    :func:`reflexio.server.billing_signals.count_input_tokens` when
+    ``contents`` is supplied; when omitted, ``prompt_tokens`` is 0.
+
+    Args:
+        org_id: Organisation identifier.
+        caller_type: Caller classification (e.g. ``"production_agent"``).
+        entities: Sequence of ``(entity_type, entity_id)`` pairs, one per
+            surfaced entity. ``entity_type`` is ``"playbook"`` or
+            ``"profile"``; ``entity_id`` is the storage id (string-encoded).
+        pipeline: Optional pipeline tag (e.g. ``"unified_search"``).
+        request_id: Optional request correlation id.
+        session_id: Optional session id.
+        contents: Optional parallel list of content strings, one per
+            entity. When supplied, ``prompt_tokens`` is set to the
+            ``cl100k_base`` token count of each content string.
+        metadata: Optional free-form metadata applied to every emitted row.
+
+    Returns:
+        None. Side-effect only.
+    """
+    if caller_type != "production_agent" or not entities:
+        return
+    for idx, (entity_type, entity_id) in enumerate(entities):
+        content = ""
+        if contents is not None and idx < len(contents):
+            content = contents[idx] or ""
+        prompt_tokens = count_input_tokens(content) if content else 0
+        record_usage_event(
+            org_id=org_id,
+            event_name="learning_injection",
+            event_category="application",
+            pipeline=pipeline,
+            request_id=request_id,
+            session_id=session_id,
+            entity_type=entity_type,
+            entity_id=str(entity_id),
+            count_value=1,
+            prompt_tokens=prompt_tokens,
+            caller_type=caller_type,
+            metadata=metadata,
+        )
