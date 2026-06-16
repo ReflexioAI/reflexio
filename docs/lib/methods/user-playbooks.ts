@@ -193,6 +193,20 @@ export const userPlaybookMethods: MethodDef[] = [
         required: false,
         description: "New rationale text",
       },
+      {
+        name: "status",
+        type: "enum",
+        required: false,
+        description: "New lifecycle status, e.g. archive a reviewed candidate",
+        enumValues: STATUS_ENUM,
+      },
+      {
+        name: "playbook_metadata",
+        type: "string",
+        required: false,
+        description:
+          "Free-form metadata string, e.g. JSON noting review or supersede context",
+      },
     ],
   },
   {

@@ -335,7 +335,7 @@ def execute(args: argparse.Namespace) -> None:
     # process-global, so we opt in explicitly via env var so the
     # backend subprocess can pick it up. Set to "0" in the parent
     # shell to disable. Tests do not go through this path.
-    os.environ["REFLEXIO_ENABLE_USAGE_EVENT_SINK"] = "1"
+    os.environ.setdefault("REFLEXIO_ENABLE_USAGE_EVENT_SINK", "1")
 
     only = parse_only_flag(args.only, {"backend", "docs"})
     if "backend" in only and should_start_local_embedding_service():

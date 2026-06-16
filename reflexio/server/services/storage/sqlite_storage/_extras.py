@@ -33,6 +33,9 @@ from ._base import (
 )
 
 type _CitationKind = Literal["playbook", "profile"]
+type _MemoryReviewSignal = Literal[
+    "stale", "duplicate", "high_cost_low_cite", "supersedeable"
+]
 
 
 class ExtrasMixin:
@@ -41,6 +44,7 @@ class ExtrasMixin:
     # Type hints for instance attributes/methods provided by SQLiteStorageBase via MRO
     _lock: Any
     conn: sqlite3.Connection
+    org_id: str
     _execute: Any
     _fetchall: Any
 
@@ -489,7 +493,10 @@ class ExtrasMixin:
 
     @SQLiteStorageBase.handle_exceptions
     def get_memory_review_candidates(
-        self, days_back: int = 60
+        self,
+        days_back: int = 60,
+        user_id: str | None = None,
+        include_all_users: bool = False,
     ) -> list[MemoryReviewCandidate]:
         """Surface user_playbooks flagged for memory review.
 
@@ -516,6 +523,9 @@ class ExtrasMixin:
 
         Args:
             days_back (int): Look-back window in days. Must be > 0.
+            user_id (str | None): User whose playbooks should be reviewed.
+                Required unless ``include_all_users`` is true.
+            include_all_users (bool): Explicit opt-in for org-wide review.
 
         Returns:
             list[MemoryReviewCandidate]: Sorted by ``-score``
@@ -526,17 +536,26 @@ class ExtrasMixin:
         """
         if days_back <= 0:
             return []
+        if not include_all_users and user_id is None:
+            return []
 
         current_time = _epoch_now()
         start_ts = current_time - days_back * 24 * 60 * 60
         start_ts_iso = _epoch_to_iso(start_ts)
 
         # Snapshot of current, non-archived user_playbooks.
+        user_filter = ""
+        params: list[Any] = []
+        if not include_all_users:
+            user_filter = " AND user_id = ?"
+            params.append(user_id)
         playbook_rows = self._fetchall(
             """SELECT user_playbook_id, playbook_name, content, status,
                       created_at, source_span
                  FROM user_playbooks
                  WHERE COALESCE(status, '') != 'archived'"""
+            + user_filter,
+            tuple(params),
         )
         if not playbook_rows:
             return []
@@ -582,7 +601,7 @@ class ExtrasMixin:
             inj_count = inj["injection_count"]
             cite_per_inj = (cite_count / inj_count) if inj_count > 0 else 0.0
 
-            signals: list[str] = []
+            signals: list[_MemoryReviewSignal] = []
             score = 0
 
             # stale — only meaningful when we have a real created_at.

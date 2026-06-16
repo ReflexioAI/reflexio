@@ -5,6 +5,7 @@ get_dashboard_stats, get_injection_stats, get_memory_review
 for DashboardMixin with mocked storage.
 """
 
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 from reflexio.lib._config import ConfigMixin
@@ -23,7 +24,7 @@ from reflexio.models.config_schema import Config
 # ---------------------------------------------------------------------------
 
 
-def _make_config_mixin(*, storage_configured: bool = True) -> ConfigMixin:
+def _make_config_mixin(*, storage_configured: bool = True) -> Any:
     """Create a ConfigMixin instance with mocked internals."""
     mixin = object.__new__(ConfigMixin)
     mock_storage = MagicMock()
@@ -183,7 +184,7 @@ class TestSetConfig:
 # ---------------------------------------------------------------------------
 
 
-def _make_dashboard_mixin(*, storage_configured: bool = True) -> DashboardMixin:
+def _make_dashboard_mixin(*, storage_configured: bool = True) -> Any:
     """Create a DashboardMixin instance with mocked internals."""
     mixin = object.__new__(DashboardMixin)
     mock_storage = MagicMock()
@@ -199,7 +200,7 @@ def _make_dashboard_mixin(*, storage_configured: bool = True) -> DashboardMixin:
 
 
 def _get_dashboard_storage(mixin: DashboardMixin) -> MagicMock:
-    return mixin.request_context.storage
+    return cast(MagicMock, mixin.request_context.storage)
 
 
 # ---------------------------------------------------------------------------
@@ -421,7 +422,7 @@ class TestGetMemoryReview:
             candidate
         ]
 
-        request = GetMemoryReviewRequest(days_back=60)
+        request = GetMemoryReviewRequest(days_back=60, user_id="userA")
         response = mixin.get_memory_review(request)
 
         assert response.success is True
@@ -433,7 +434,7 @@ class TestGetMemoryReview:
         """Returns empty list when storage is not configured."""
         mixin = _make_dashboard_mixin(storage_configured=False)
 
-        request = GetMemoryReviewRequest(days_back=60)
+        request = GetMemoryReviewRequest(days_back=60, user_id="userA")
         response = mixin.get_memory_review(request)
 
         assert response.success is True
@@ -447,12 +448,14 @@ class TestGetMemoryReview:
             mixin
         ).get_memory_review_candidates.return_value = []
 
-        response = mixin.get_memory_review({"days_back": 30})
+        response = mixin.get_memory_review({"days_back": 30, "user_id": "userA"})
 
         assert response.success is True
         _get_dashboard_storage(
             mixin
-        ).get_memory_review_candidates.assert_called_once_with(days_back=30)
+        ).get_memory_review_candidates.assert_called_once_with(
+            days_back=30, user_id="userA", include_all_users=False
+        )
 
     def test_signal_filter_narrows_candidates(self):
         """signal_filter keeps only candidates with at least one matching signal."""
@@ -490,7 +493,9 @@ class TestGetMemoryReview:
             mixin
         ).get_memory_review_candidates.return_value = candidates
 
-        request = GetMemoryReviewRequest(days_back=60, signal_filter=["stale"])
+        request = GetMemoryReviewRequest(
+            days_back=60, user_id="userA", signal_filter=["stale"]
+        )
         response = mixin.get_memory_review(request)
 
         ids = {c.entity_id for c in response.candidates}
@@ -513,7 +518,7 @@ class TestGetMemoryReview:
             )
         ]
 
-        request = GetMemoryReviewRequest(days_back=60)
+        request = GetMemoryReviewRequest(days_back=60, user_id="userA")
         response = mixin.get_memory_review(request)
 
         assert len(response.candidates) == 1
@@ -550,7 +555,9 @@ class TestGetMemoryReview:
             ),
         ]
 
-        request = GetMemoryReviewRequest(days_back=60, signal_filter=[])
+        request = GetMemoryReviewRequest(
+            days_back=60, user_id="userA", signal_filter=[]
+        )
         response = mixin.get_memory_review(request)
 
         assert response.candidates == []
@@ -562,7 +569,7 @@ class TestGetMemoryReview:
             mixin
         ).get_memory_review_candidates.side_effect = RuntimeError("db error")
 
-        request = GetMemoryReviewRequest(days_back=60)
+        request = GetMemoryReviewRequest(days_back=60, user_id="userA")
         response = mixin.get_memory_review(request)
 
         assert response.success is False
@@ -575,9 +582,28 @@ class TestGetMemoryReview:
             mixin
         ).get_memory_review_candidates.return_value = []
 
-        request = GetMemoryReviewRequest()
+        request = GetMemoryReviewRequest(user_id="userA")
         mixin.get_memory_review(request)
 
         _get_dashboard_storage(
             mixin
-        ).get_memory_review_candidates.assert_called_once_with(days_back=60)
+        ).get_memory_review_candidates.assert_called_once_with(
+            days_back=60, user_id="userA", include_all_users=False
+        )
+
+    def test_org_wide_review_must_be_explicit(self):
+        """include_all_users=True is the explicit org-wide review path."""
+        mixin = _make_dashboard_mixin()
+        _get_dashboard_storage(
+            mixin
+        ).get_memory_review_candidates.return_value = []
+
+        request = GetMemoryReviewRequest(include_all_users=True)
+        response = mixin.get_memory_review(request)
+
+        assert response.success is True
+        _get_dashboard_storage(
+            mixin
+        ).get_memory_review_candidates.assert_called_once_with(
+            days_back=60, user_id=None, include_all_users=True
+        )

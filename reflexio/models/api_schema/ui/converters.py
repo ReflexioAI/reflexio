@@ -103,6 +103,7 @@ def to_user_playbook_view(rf: UserPlaybook) -> UserPlaybookView:
         status=rf.status,
         source=rf.source,
         source_interaction_ids=rf.source_interaction_ids,
+        playbook_metadata=rf.playbook_metadata,
         source_span=rf.source_span,
     )
 

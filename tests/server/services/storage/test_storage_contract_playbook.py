@@ -34,6 +34,7 @@ def _make_user_playbook(
         created_at=1_700_000_000 + user_playbook_id,
         source="test",
         source_interaction_ids=source_interaction_ids or [],
+        playbook_metadata=f'{{"source_id": {user_playbook_id}}}',
     )
 
 
@@ -66,6 +67,7 @@ class TestUserPlaybookCRUD:
 
         result = storage.get_user_playbooks(playbook_name="fb")
         assert len(result) == 2
+        assert result[0].playbook_metadata
 
     def test_count_user_playbooks(self, storage):
         rfs = [

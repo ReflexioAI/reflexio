@@ -6,6 +6,7 @@ import { requestSessionMethods } from "./requests-sessions";
 import { userPlaybookMethods } from "./user-playbooks";
 import { agentPlaybookMethods } from "./agent-playbooks";
 import { agentEvaluationMethods } from "./agent-evaluation";
+import { observabilityMethods } from "./observability";
 import { unifiedSearchMethods } from "./unified-search";
 import { generationMethods } from "./generation";
 import { configurationMethods } from "./configuration";
@@ -17,6 +18,7 @@ const methodsByGroup: Record<string, MethodDef[]> = {
   "user-playbooks": userPlaybookMethods,
   "agent-playbooks": agentPlaybookMethods,
   "agent-evaluation": agentEvaluationMethods,
+  observability: observabilityMethods,
   "unified-search": unifiedSearchMethods,
   generation: generationMethods,
   configuration: configurationMethods,

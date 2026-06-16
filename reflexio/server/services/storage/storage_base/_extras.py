@@ -165,7 +165,10 @@ class ExtrasMixin:
         return []
 
     def get_memory_review_candidates(
-        self, days_back: int = 60
+        self,
+        days_back: int = 60,
+        user_id: str | None = None,
+        include_all_users: bool = False,
     ) -> list["MemoryReviewCandidate"]:
         """Surface entities flagged for memory review.
 
@@ -188,12 +191,14 @@ class ExtrasMixin:
 
         Args:
             days_back (int): Look-back window in days. Must be positive.
+            user_id (str | None): User whose playbooks should be reviewed.
+            include_all_users (bool): Explicit opt-in for org-wide review.
 
         Returns:
             list[MemoryReviewCandidate]: Sorted by ``score`` descending.
                 Empty when the backend has no implementation.
         """
-        del days_back
+        del days_back, user_id, include_all_users
         return []
 
     @abstractmethod

@@ -408,7 +408,7 @@ class TestMemoryReviewCandidates:
                 (old_iso,),
             )
             storage.conn.commit()
-        candidates = storage.get_memory_review_candidates(days_back=60)
+        candidates = storage.get_memory_review_candidates(days_back=60, user_id="u1")
         # The 2020 row is outside the 60-day window; the staleness
         # signal is computed from current_time - created_at >= days_back.
         stale = [c for c in candidates if "stale" in c.signals]
@@ -417,6 +417,54 @@ class TestMemoryReviewCandidates:
         assert stale[0].title == "stale-rule"
         assert stale[0].injection_count == 0
         assert stale[0].citation_count == 0
+
+    def test_user_scoped_review_excludes_other_users(self, storage):
+        if not _backend_supports_memory_review(storage):
+            pytest.skip("Backend does not implement get_memory_review_candidates")
+        old_iso = "2020-01-01T00:00:00.000Z"
+        with storage._lock:
+            storage.conn.execute(
+                """INSERT INTO user_playbooks
+                     (user_id, request_id, agent_version, content,
+                      playbook_name, created_at, status)
+                   VALUES ('u1', 'r1', 'v1', 'old u1', 'u1-stale', ?, NULL)""",
+                (old_iso,),
+            )
+            storage.conn.execute(
+                """INSERT INTO user_playbooks
+                     (user_id, request_id, agent_version, content,
+                      playbook_name, created_at, status)
+                   VALUES ('u2', 'r2', 'v1', 'old u2', 'u2-stale', ?, NULL)""",
+                (old_iso,),
+            )
+            storage.conn.commit()
+
+        candidates = storage.get_memory_review_candidates(days_back=60, user_id="u1")
+
+        assert {c.title for c in candidates} == {"u1-stale"}
+
+    def test_org_wide_review_requires_explicit_flag(self, storage):
+        if not _backend_supports_memory_review(storage):
+            pytest.skip("Backend does not implement get_memory_review_candidates")
+        old_iso = "2020-01-01T00:00:00.000Z"
+        with storage._lock:
+            for user_id in ("u1", "u2"):
+                storage.conn.execute(
+                    """INSERT INTO user_playbooks
+                         (user_id, request_id, agent_version, content,
+                          playbook_name, created_at, status)
+                       VALUES (?, ?, 'v1', 'old', ?, ?, NULL)""",
+                    (user_id, f"r-{user_id}", f"{user_id}-stale", old_iso),
+                )
+            storage.conn.commit()
+
+        implicit = storage.get_memory_review_candidates(days_back=60)
+        explicit = storage.get_memory_review_candidates(
+            days_back=60, include_all_users=True
+        )
+
+        assert implicit == []
+        assert {c.title for c in explicit} == {"u1-stale", "u2-stale"}
 
     def test_no_stale_signal_for_fresh_playbook(self, storage):
         if not _backend_supports_memory_review(storage):
@@ -432,7 +480,7 @@ class TestMemoryReviewCandidates:
                            strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), NULL)"""
             )
             storage.conn.commit()
-        candidates = storage.get_memory_review_candidates(days_back=60)
+        candidates = storage.get_memory_review_candidates(days_back=60, user_id="u1")
         assert candidates == []
 
     def test_high_cost_low_cite_signal(self, storage):
@@ -473,7 +521,7 @@ class TestMemoryReviewCandidates:
                 ]),),
             )
             storage.conn.commit()
-        candidates = storage.get_memory_review_candidates(days_back=60)
+        candidates = storage.get_memory_review_candidates(days_back=60, user_id="u1")
         high_cost = [c for c in candidates if "high_cost_low_cite" in c.signals]
         assert len(high_cost) == 1
         assert high_cost[0].entity_id == str(pb_id)
@@ -520,7 +568,7 @@ class TestMemoryReviewCandidates:
                     ),
                 )
             storage.conn.commit()
-        candidates = storage.get_memory_review_candidates(days_back=60)
+        candidates = storage.get_memory_review_candidates(days_back=60, user_id="u1")
         high_cost = [c for c in candidates if "high_cost_low_cite" in c.signals]
         assert high_cost == []
 
@@ -559,7 +607,7 @@ class TestMemoryReviewCandidates:
                     (storage.org_id, str(noisy_id)),
                 )
             storage.conn.commit()
-        candidates = storage.get_memory_review_candidates(days_back=60)
+        candidates = storage.get_memory_review_candidates(days_back=60, user_id="u1")
         scores = [c.score for c in candidates]
         assert scores == sorted(scores, reverse=True), (
             f"Expected candidates sorted by -score, got {scores}"
@@ -582,7 +630,7 @@ class TestMemoryReviewCandidates:
                            'not-a-date', NULL)"""
             )
             storage.conn.commit()
-        candidates = storage.get_memory_review_candidates(days_back=60)
+        candidates = storage.get_memory_review_candidates(days_back=60, user_id="u1")
         assert all("stale" not in c.signals for c in candidates), (
             f"Expected no stale signal for unparseable created_at, "
             f"got {[c.signals for c in candidates]}"
@@ -603,7 +651,7 @@ class TestMemoryReviewCandidates:
                            '2020-01-01T00:00:00.000Z', 'archived')"""
             )
             storage.conn.commit()
-        candidates = storage.get_memory_review_candidates(days_back=60)
+        candidates = storage.get_memory_review_candidates(days_back=60, user_id="u1")
         assert candidates == [], (
             f"Expected archived playbook to be excluded, got {candidates}"
         )
@@ -639,3 +687,25 @@ class TestUpdateUserPlaybookMetadata:
             (pb_id,),
         )
         assert row["playbook_metadata"] == '{"superseded_by": 7}'
+
+    def test_playbook_metadata_round_trips_through_model(self, storage):
+        if not hasattr(storage, "update_user_playbook"):
+            pytest.skip("Backend does not implement update_user_playbook")
+        with storage._lock:
+            cur = storage.conn.execute(
+                """INSERT INTO user_playbooks
+                     (user_id, request_id, agent_version, content,
+                      playbook_name, created_at, status)
+                   VALUES ('u1', 'r1', 'v1', 'x', 'meta-rule',
+                           strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), NULL)"""
+            )
+            pb_id = cur.lastrowid
+            storage.conn.commit()
+        storage.update_user_playbook(
+            pb_id, playbook_metadata='{"superseded_by": 7}'
+        )
+
+        playbook = storage.get_user_playbook_by_id(pb_id)
+
+        assert playbook is not None
+        assert playbook.playbook_metadata == '{"superseded_by": 7}'

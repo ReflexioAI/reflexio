@@ -82,6 +82,7 @@ class UserPlaybookView(BaseModel):
     status: Status | None = None
     source: str | None = None
     source_interaction_ids: list[int] = Field(default_factory=list)
+    playbook_metadata: str = ""
     source_span: str | None = None
 
 

@@ -706,6 +706,9 @@ class GetMemoryReviewRequest(BaseModel):
     Args:
         days_back (int): Look-back window in days. Defaults to 60; must be
             positive.
+        user_id (str | None): User whose playbooks should be reviewed.
+            Required unless ``include_all_users`` is true.
+        include_all_users (bool): Explicit opt-in for org-wide review.
         signal_filter (list[str] | None): Optional whitelist of
             ``signals`` to include. When omitted, all signals are
             returned. Useful for the dashboard's "show me only stale"
@@ -713,9 +716,18 @@ class GetMemoryReviewRequest(BaseModel):
     """
 
     days_back: int = Field(default=60, gt=0)
+    user_id: NonEmptyStr | None = None
+    include_all_users: bool = False
     signal_filter: list[
         Literal["stale", "duplicate", "high_cost_low_cite", "supersedeable"]
     ] | None = None
+
+    @model_validator(mode="after")
+    def check_scope(self) -> Self:
+        """Require explicit scope: one user, or deliberate org-wide review."""
+        if not self.include_all_users and self.user_id is None:
+            raise ValueError("user_id is required unless include_all_users is true")
+        return self
 
 
 class GetMemoryReviewResponse(BaseModel):

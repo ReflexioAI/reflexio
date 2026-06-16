@@ -244,6 +244,7 @@ class UserPlaybook(BaseModel):
     )
     source: str | None = None  # source of the interaction that generated this playbook
     source_interaction_ids: list[int] = Field(default_factory=list)
+    playbook_metadata: str = ""
     expanded_terms: str | None = None
     embedding: EmbeddingVector = []
     source_span: str | None = None
@@ -681,6 +682,7 @@ class PublicUserPlaybook(BaseModel):
     status: Status | None = None
     source: str | None = None
     source_interaction_ids: list[int] = Field(default_factory=list)
+    playbook_metadata: str = ""
 
 
 class PublicAgentPlaybook(BaseModel):
@@ -713,6 +715,7 @@ def user_playbook_to_public(rf: UserPlaybook) -> PublicUserPlaybook:
         status=rf.status,
         source=rf.source,
         source_interaction_ids=rf.source_interaction_ids,
+        playbook_metadata=rf.playbook_metadata,
     )
 
 

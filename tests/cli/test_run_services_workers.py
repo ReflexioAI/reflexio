@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 from typing import Any
 
 import pytest
@@ -125,3 +126,22 @@ def test_postgres_plus_multi_worker_no_warning(
     with caplog.at_level(logging.WARNING):
         _warn_if_sqlite_multi_worker(storage_backend="postgres", workers=2)
     assert not any("SQLite has limited" in rec.message for rec in caplog.records)
+
+
+def test_execute_preserves_usage_event_sink_opt_out(monkeypatch) -> None:
+    from reflexio.cli import run_services
+
+    def resolve_ports_stub(*_args: Any, **_kwargs: Any) -> dict[str, int]:
+        return {"backend": 8081, "docs": 8082, "embedding": 8072}
+
+    def parse_only_flag_stub(*_args: Any, **_kwargs: Any) -> set[str]:
+        return set()
+
+    monkeypatch.setenv("REFLEXIO_ENABLE_USAGE_EVENT_SINK", "0")
+    monkeypatch.setattr(run_services, "load_reflexio_env", lambda: None)
+    monkeypatch.setattr(run_services, "resolve_ports", resolve_ports_stub)
+    monkeypatch.setattr(run_services, "parse_only_flag", parse_only_flag_stub)
+
+    run_services.execute(argparse.Namespace(only=None))
+
+    assert run_services.os.environ["REFLEXIO_ENABLE_USAGE_EVENT_SINK"] == "0"

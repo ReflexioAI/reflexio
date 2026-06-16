@@ -1,6 +1,7 @@
 """Tests for the ``/api/get_memory_review`` endpoint."""
 
 from contextlib import contextmanager
+from typing import Literal
 from unittest.mock import MagicMock, patch
 
 from fastapi.testclient import TestClient
@@ -10,6 +11,10 @@ from reflexio.models.api_schema.retriever_schema import (
     MemoryReviewCandidate,
 )
 from reflexio.server.api import create_app
+
+type MemoryReviewSignal = Literal[
+    "stale", "duplicate", "high_cost_low_cite", "supersedeable"
+]
 
 
 def _client() -> TestClient:
@@ -29,7 +34,7 @@ def _patch_lib_method(method_name: str, return_value: MagicMock):
 
 def _make_candidate(
     entity_id: str = "42",
-    signals: list[str] | None = None,
+    signals: list[MemoryReviewSignal] | None = None,
     score: int = 75,
     injection_count: int = 0,
     citation_count: int = 0,
@@ -71,7 +76,7 @@ def test_get_memory_review_returns_candidates_list():
     response.msg = "OK"
     with _patch_lib_method("get_memory_review", response):
         resp = _client().post(
-            "/api/get_memory_review", json={"days_back": 60}
+            "/api/get_memory_review", json={"days_back": 60, "user_id": "userA"}
         )
     assert resp.status_code == 200
     body = resp.json()
@@ -90,7 +95,7 @@ def test_get_memory_review_empty_list_is_ok():
     response.msg = "OK"
     with _patch_lib_method("get_memory_review", response):
         resp = _client().post(
-            "/api/get_memory_review", json={"days_back": 60}
+            "/api/get_memory_review", json={"days_back": 60, "user_id": "userA"}
         )
     assert resp.status_code == 200
     body = resp.json()
@@ -106,7 +111,7 @@ def test_get_memory_review_failure_response():
     response.msg = "boom"
     with _patch_lib_method("get_memory_review", response):
         resp = _client().post(
-            "/api/get_memory_review", json={"days_back": 60}
+            "/api/get_memory_review", json={"days_back": 60, "user_id": "userA"}
         )
     assert resp.status_code == 200
     body = resp.json()
@@ -122,13 +127,17 @@ def test_get_memory_review_failure_response():
 
 def test_get_memory_review_rejects_zero_days_back():
     """``days_back`` must be > 0 (Pydantic ``gt=0``)."""
-    resp = _client().post("/api/get_memory_review", json={"days_back": 0})
+    resp = _client().post(
+        "/api/get_memory_review", json={"days_back": 0, "user_id": "userA"}
+    )
     assert resp.status_code == 422
 
 
 def test_get_memory_review_rejects_negative_days_back():
     """``days_back`` must be > 0."""
-    resp = _client().post("/api/get_memory_review", json={"days_back": -1})
+    resp = _client().post(
+        "/api/get_memory_review", json={"days_back": -1, "user_id": "userA"}
+    )
     assert resp.status_code == 422
 
 
@@ -136,7 +145,11 @@ def test_get_memory_review_rejects_invalid_signal_filter():
     """``signal_filter`` must use the ``Literal`` enum values."""
     resp = _client().post(
         "/api/get_memory_review",
-        json={"days_back": 60, "signal_filter": ["bogus_signal"]},
+        json={
+            "days_back": 60,
+            "user_id": "userA",
+            "signal_filter": ["bogus_signal"],
+        },
     )
     assert resp.status_code == 422
 
@@ -148,10 +161,11 @@ def test_get_memory_review_uses_default_days_back():
     response.candidates = []
     response.msg = "OK"
     with _patch_lib_method("get_memory_review", response) as mock_reflexio:
-        resp = _client().post("/api/get_memory_review", json={})
+        resp = _client().post("/api/get_memory_review", json={"user_id": "userA"})
     assert resp.status_code == 200
     call_arg = mock_reflexio.get_memory_review.call_args.args[0]
     assert call_arg.days_back == 60
+    assert call_arg.user_id == "userA"
     assert call_arg.signal_filter is None
 
 
@@ -164,8 +178,31 @@ def test_get_memory_review_forwards_signal_filter():
     with _patch_lib_method("get_memory_review", response) as mock_reflexio:
         resp = _client().post(
             "/api/get_memory_review",
-            json={"days_back": 60, "signal_filter": ["stale"]},
+            json={"days_back": 60, "user_id": "userA", "signal_filter": ["stale"]},
         )
     assert resp.status_code == 200
     call_arg = mock_reflexio.get_memory_review.call_args.args[0]
     assert call_arg.signal_filter == ["stale"]
+
+
+def test_get_memory_review_requires_scope():
+    """Review is user-scoped unless org-wide review is explicit."""
+    resp = _client().post("/api/get_memory_review", json={"days_back": 60})
+    assert resp.status_code == 422
+
+
+def test_get_memory_review_allows_explicit_org_wide_scope():
+    """include_all_users=True allows intentionally broad org review."""
+    response = MagicMock(spec=GetMemoryReviewResponse)
+    response.success = True
+    response.candidates = []
+    response.msg = "OK"
+    with _patch_lib_method("get_memory_review", response) as mock_reflexio:
+        resp = _client().post(
+            "/api/get_memory_review",
+            json={"days_back": 60, "include_all_users": True},
+        )
+    assert resp.status_code == 200
+    call_arg = mock_reflexio.get_memory_review.call_args.args[0]
+    assert call_arg.user_id is None
+    assert call_arg.include_all_users is True

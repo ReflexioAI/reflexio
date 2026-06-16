@@ -228,7 +228,9 @@ class DashboardMixin(ReflexioBase):
             if isinstance(request, dict):
                 request = GetMemoryReviewRequest(**request)
             candidates = self._get_storage().get_memory_review_candidates(
-                days_back=request.days_back
+                days_back=request.days_back,
+                user_id=request.user_id,
+                include_all_users=request.include_all_users,
             )
             if request.signal_filter is not None:
                 filter_set = set(request.signal_filter)

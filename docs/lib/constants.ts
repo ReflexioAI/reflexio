@@ -5,6 +5,7 @@ export const NAV_GROUPS = [
   { id: "user-playbooks", name: "User Playbooks", icon: "BookOpen" },
   { id: "agent-playbooks", name: "Agent Playbooks", icon: "BookMarked" },
   { id: "agent-evaluation", name: "Agent Evaluation", icon: "BarChart" },
+  { id: "observability", name: "Observability", icon: "Activity" },
   { id: "unified-search", name: "Unified Search", icon: "Search" },
   { id: "generation", name: "Generation", icon: "Cpu" },
   { id: "configuration", name: "Configuration", icon: "Settings" },

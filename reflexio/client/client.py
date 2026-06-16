@@ -20,8 +20,12 @@ from reflexio.models.api_schema.retriever_schema import (
     GetAgentPlaybooksViewResponse,
     GetAgentSuccessEvaluationResultsRequest,
     GetEvaluationResultsViewResponse,
+    GetInjectionStatsRequest,
+    GetInjectionStatsResponse,
     GetInteractionsRequest,
     GetInteractionsViewResponse,
+    GetMemoryReviewRequest,
+    GetMemoryReviewResponse,
     GetProfilesViewResponse,
     GetRequestsRequest,
     GetRequestsViewResponse,
@@ -679,6 +683,50 @@ class ReflexioClient:
             "GET", "/api/storage_stats", params={"user_id": user_id}
         )
         return StorageStatsResponse(**response)
+
+    def get_injection_stats(
+        self,
+        request: GetInjectionStatsRequest | dict | None = None,
+        *,
+        days_back: int | None = None,
+    ) -> GetInjectionStatsResponse:
+        """Get per-entity injection counts for the current organization."""
+        req = self._build_request(
+            request,
+            GetInjectionStatsRequest,
+            days_back=days_back,
+        )
+        response = self._make_request(
+            "POST",
+            "/api/get_injection_stats",
+            json=req.model_dump(),
+        )
+        return GetInjectionStatsResponse(**response)
+
+    def get_memory_review(
+        self,
+        request: GetMemoryReviewRequest | dict | None = None,
+        *,
+        user_id: str | None = None,
+        include_all_users: bool | None = None,
+        days_back: int | None = None,
+        signal_filter: list[str] | None = None,
+    ) -> GetMemoryReviewResponse:
+        """Get memory review candidates for one user, or explicitly all users."""
+        req = self._build_request(
+            request,
+            GetMemoryReviewRequest,
+            user_id=user_id,
+            include_all_users=include_all_users,
+            days_back=days_back,
+            signal_filter=signal_filter,
+        )
+        response = self._make_request(
+            "POST",
+            "/api/get_memory_review",
+            json=req.model_dump(),
+        )
+        return GetMemoryReviewResponse(**response)
 
     def search_user_playbooks(
         self,
@@ -1512,6 +1560,8 @@ class ReflexioClient:
         content: str | None = None,
         trigger: str | None = None,
         rationale: str | None = None,
+        status: Status | None = None,
+        playbook_metadata: str | None = None,
     ) -> UpdateUserPlaybookResponse:
         """Update editable fields of a user playbook in place.
 
@@ -1524,6 +1574,8 @@ class ReflexioClient:
             content (Optional[str]): New content text.
             trigger (Optional[str]): New trigger condition.
             rationale (Optional[str]): New rationale text.
+            status (Optional[Status]): New lifecycle status.
+            playbook_metadata (Optional[str]): New free-form metadata.
 
         Returns:
             UpdateUserPlaybookResponse: Response containing success status and message.
@@ -1534,6 +1586,8 @@ class ReflexioClient:
             content=content,
             trigger=trigger,
             rationale=rationale,
+            status=status,
+            playbook_metadata=playbook_metadata,
         )
         response = self._make_request(
             "PUT",
