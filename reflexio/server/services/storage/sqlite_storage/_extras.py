@@ -343,7 +343,8 @@ class ExtrasMixin:
             request_id: Correlation id.
             session_id: Conversation id.
             pipeline: Logical pipeline tag.
-            entity_type: ``"playbook"`` / ``"profile"`` for per-entity events.
+            entity_type: ``"user_playbook"`` / ``"agent_playbook"`` /
+                ``"profile"`` for per-entity events.
             entity_id: Storage id of the surfaced entity.
             caller_type: Caller classification.
             count_value: Multiplicity; default 1.

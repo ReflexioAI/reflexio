@@ -152,6 +152,35 @@ class TestClearUserData:
             p.agent_playbook_id for p in before
         }
 
+    def test_clears_usage_events(self, storage: BaseStorage) -> None:
+        """Usage telemetry rows carry a user_id and must be wiped too."""
+        if not hasattr(storage, "record_usage_event"):
+            pytest.skip("Backend does not implement record_usage_event")
+        _seed_user(storage, "userA", "a")
+        storage.record_usage_event(
+            org_id=storage.org_id,
+            event_name="learning_injection",
+            event_category="application",
+            user_id="userA",
+            entity_type="user_playbook",
+            entity_id="7",
+        )
+        # A sibling user's event must survive.
+        storage.record_usage_event(
+            org_id=storage.org_id,
+            event_name="learning_injection",
+            event_category="application",
+            user_id="userB",
+            entity_type="user_playbook",
+            entity_id="8",
+        )
+
+        counts = storage.clear_user_data("userA")
+
+        assert counts["usage_events"] == 1
+        # userB's telemetry row is untouched.
+        assert storage.clear_user_data("userB")["usage_events"] == 1
+
     def test_clear_unknown_user_is_noop(self, storage: BaseStorage) -> None:
         """Clearing an unknown user_id returns zero counts and does not raise."""
         _seed_user(storage, "userA", "a")

@@ -1,6 +1,6 @@
 import { MethodDef } from "../types";
 
-const SIGNAL_ENUM = ["stale", "duplicate", "high_cost_low_cite", "supersedeable"];
+const SIGNAL_ENUM = ["stale", "high_cost_low_cite"];
 
 export const observabilityMethods: MethodDef[] = [
   {

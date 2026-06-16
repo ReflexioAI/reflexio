@@ -1614,9 +1614,9 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
 
         Overrides the BaseStorage default with a single-transaction SQL
         implementation. Removes interactions, user playbooks, profiles,
-        and requests scoped to the user. Intentionally does NOT touch
-        ``agent_playbooks`` — they are the cross-project rollup of
-        skills and have no ``user_id`` column.
+        requests, and usage telemetry events scoped to the user.
+        Intentionally does NOT touch ``agent_playbooks`` — they are the
+        cross-project rollup of skills and have no ``user_id`` column.
 
         Also cleans up FTS and vector sidecars for the user's rows so
         subsequent searches don't surface deleted data.
@@ -1626,8 +1626,8 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
 
         Returns:
             dict[str, int]: Per-entity deletion counts with keys
-                ``interactions``, ``user_playbooks``, ``profiles``, and
-                ``requests``.
+                ``interactions``, ``user_playbooks``, ``profiles``,
+                ``requests``, and ``usage_events``.
         """
         with self._lock:
             # Snapshot rowids/ids that need FTS or vector cleanup before
@@ -1703,6 +1703,9 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             requests_cur = self.conn.execute(
                 "DELETE FROM requests WHERE user_id = ?", (user_id,)
             )
+            usage_events_cur = self.conn.execute(
+                "DELETE FROM usage_events WHERE user_id = ?", (user_id,)
+            )
             self.conn.commit()
 
             return {
@@ -1710,6 +1713,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 "user_playbooks": user_playbooks_cur.rowcount,
                 "profiles": profiles_cur.rowcount,
                 "requests": requests_cur.rowcount,
+                "usage_events": usage_events_cur.rowcount,
             }
 
 

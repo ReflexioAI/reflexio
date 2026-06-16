@@ -67,7 +67,7 @@ class TestUserPlaybookCRUD:
 
         result = storage.get_user_playbooks(playbook_name="fb")
         assert len(result) == 2
-        assert result[0].playbook_metadata
+        assert all(p.playbook_metadata for p in result)
 
     def test_count_user_playbooks(self, storage):
         rfs = [

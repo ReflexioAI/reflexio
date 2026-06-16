@@ -328,6 +328,35 @@ class TestUsageEvents:
         assert bottom.surfaced_count == 1
         assert bottom.total_prompt_tokens == 3
 
+    def test_get_injection_stats_splits_user_and_agent_playbook(self, storage):
+        if not _backend_supports_usage_events(storage):
+            pytest.skip("Backend does not implement get_injection_stats")
+        # Regression: user_playbook and agent_playbook share an
+        # AUTOINCREMENT id space, so the same entity_id ("7") can refer
+        # to two different entities. The rollup must key on
+        # (entity_type, entity_id) and keep them in separate buckets
+        # rather than collapsing them into one row.
+        for entity_type, tokens in (("user_playbook", 5), ("agent_playbook", 8)):
+            storage.record_usage_event(
+                org_id=storage.org_id,
+                event_name="learning_injection",
+                event_category="application",
+                entity_type=entity_type,
+                entity_id="7",
+                caller_type="production_agent",
+                session_id="s1",
+                request_id="r1",
+                prompt_tokens=tokens,
+            )
+        stats = storage.get_injection_stats(days_back=30)
+        assert len(stats) == 2
+        by_type = {s.entity_type: s for s in stats}
+        assert set(by_type) == {"user_playbook", "agent_playbook"}
+        assert by_type["user_playbook"].entity_id == "7"
+        assert by_type["user_playbook"].total_prompt_tokens == 5
+        assert by_type["agent_playbook"].entity_id == "7"
+        assert by_type["agent_playbook"].total_prompt_tokens == 8
+
     def test_get_injection_stats_ignores_other_event_names(self, storage):
         if not _backend_supports_usage_events(storage):
             pytest.skip("Backend does not implement get_injection_stats")

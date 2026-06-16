@@ -394,7 +394,7 @@ class PlaybookMixin:
             blocking_issue (BlockingIssue, optional): New blocking issue
             status (Status, optional): New lifecycle status. Lets a
                 client archive candidates surfaced by the lib's
-                ``get_memory_review`` (or ``GET /api/get_memory_review``).
+                ``get_memory_review`` (or ``POST /api/get_memory_review``).
             playbook_metadata (str, optional): Free-form metadata. Used
                 for the ``{"superseded_by": <id>}`` convention on
                 playbooks that have been replaced by a newer one.
