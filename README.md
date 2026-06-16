@@ -11,8 +11,9 @@
 [![Downloads](https://static.pepy.tech/badge/reflexio-ai/month)](https://pepy.tech/project/reflexio-ai)
 [![Search p50 57ms](https://img.shields.io/badge/search-57ms%20p50-brightgreen)](reflexio/benchmarks/retrieval_latency/results/report.md)
 [![GitHub stars](https://img.shields.io/github/stars/ReflexioAI/reflexio)](https://github.com/ReflexioAI/reflexio/stargazers)
+[![Discord](https://img.shields.io/badge/Discord-Join%20community-5865F2?logo=discord&logoColor=white)](https://discord.gg/7fnCxahase)
 
-[Quick Start](#quick-start) · [Features](#features) · [Integrations](#integrations) · [SDK](#sdk-usage) · [CLI](reflexio/cli/README.md) · [Architecture](#architecture) · [Docs](https://www.reflexio.ai/docs) · [Contributing](#contributing)
+[Quick Start](#quick-start) · [Features](#features) · [Integrations](#integrations) · [SDK](#sdk-usage) · [CLI](reflexio/cli/README.md) · [Architecture](#architecture) · [Docs](https://www.reflexio.ai/docs) · [Community](#community) · [Contributing](#contributing)
 
 </div>
 
@@ -85,6 +86,7 @@ Publish conversations from your agent, and Reflexio closes the self-improvement 
 - [SDK Usage](#sdk-usage)
 - [Architecture](#architecture)
 - [Documentation](#documentation)
+- [Community](#community)
 - [Contributing](#contributing)
 - [Star History](#star-history)
 - [License](#license)
@@ -324,6 +326,10 @@ See [developer.md](developer.md) for project structure, supported LLM providers,
 For comprehensive guides, examples, and API reference, visit the **[Reflexio Documentation](https://www.reflexio.ai/docs)**.
 
 For coding agents adding Reflexio to another agent, see **[Integrating an AI Agent with Reflexio](AI_AGENT_INTEGRATION.md)**.
+
+## Community
+
+Join the Reflexio community on Discord: [discord.gg/7fnCxahase](https://discord.gg/7fnCxahase).
 
 ## Contributing
 
