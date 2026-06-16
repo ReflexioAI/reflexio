@@ -26,7 +26,9 @@ class ExtractionOutcome[T]:
         run_id: str | None = None,
         token_totals: RunTokenTotals | None = None,
     ) -> ExtractionOutcome[T]:
-        return cls(status="completed", items=items, run_id=run_id, token_totals=token_totals)
+        return cls(
+            status="completed", items=items, run_id=run_id, token_totals=token_totals
+        )
 
     @classmethod
     def empty(cls, *, run_id: str | None = None) -> ExtractionOutcome[T]:

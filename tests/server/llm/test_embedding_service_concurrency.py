@@ -106,10 +106,12 @@ def test_embed_texts_caps_and_queues(monkeypatch: pytest.MonkeyPatch) -> None:
     # All six requests completed — they queued, none were rejected.
     assert errors == []
     assert recorder.calls == 6
-    # The semaphore never let more than the configured limit run at once.
-    assert recorder.peak <= 2
-    # ...and concurrency was actually exercised (not accidentally serialized).
-    assert recorder.peak >= 2
+    # Model inference itself is serialized by _MODEL_ENCODE_LOCK (see PR #153:
+    # concurrent .embed() calls on the shared, non-thread-safe model corrupt each
+    # other's tensors). The semaphore only bounds how many requests sit waiting
+    # for that lock; the recorder counts time inside embed(), which the lock
+    # makes mutually exclusive, so the peak simultaneous-encode count is exactly 1.
+    assert recorder.peak == 1
 
 
 def test_micro_batches_concurrent_requests(monkeypatch: pytest.MonkeyPatch) -> None:

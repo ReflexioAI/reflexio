@@ -47,7 +47,9 @@ def test_floor_applied_per_arm(monkeypatch):
             storage=cast(BaseStorage, _FakeStorage()),
             llm_client=cast(LiteLLMClient, object()),
             prompt_manager=cast(PromptManager, object()),
-            retrieval_floor=RetrievalFloorConfig(user_playbook_floor=-5.0),
+            retrieval_floor=RetrievalFloorConfig(
+                enabled=True, user_playbook_floor=-5.0
+            ),
         )
 
     assert resp.success is True

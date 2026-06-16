@@ -19,7 +19,13 @@ from reflexio.server.services.agent_success_evaluation.group_evaluation_runner i
 )
 from tests.server.test_utils import skip_in_precommit, skip_low_priority
 
-pytestmark = pytest.mark.e2e
+# These workflows publish a full 16-interaction conversation, which triggers
+# cold loading of the local embedder + cross-encoder on first use. Under the
+# default parallel run (-n auto) on a contended CI box, several workers load
+# models at once and a single publish can exceed the global per-test timeout
+# (120s), turning a correct test into a spurious timeout failure. Give them a
+# generous per-test budget so only genuine hangs fail.
+pytestmark = [pytest.mark.e2e, pytest.mark.timeout(300)]
 
 
 @skip_in_precommit

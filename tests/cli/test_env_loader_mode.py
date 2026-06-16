@@ -34,6 +34,11 @@ def test_mode_filename(tmp_path, monkeypatch):
         "DEPLOYMENT_MODE=platform\nBACKEND_PORT=8091\n"
     )
     monkeypatch.setenv("DEPLOYMENT_MODE", "platform")
+    # The loader uses override=False, so an ambient BACKEND_PORT already present in
+    # the process environment (e.g. exported by the shell running the test suite)
+    # would win over the file value. Clear it first so this test exercises file
+    # loading rather than whatever the surrounding shell happens to export.
+    monkeypatch.delenv("BACKEND_PORT", raising=False)
     loaded = env_loader.load_reflexio_env_for_mode()
     assert loaded is not None and loaded.name == ".env.platform"
     assert os.environ["BACKEND_PORT"] == "8091"

@@ -82,7 +82,9 @@ def test_daemon_mode_recycles_worker_after_max_requests() -> None:
     )
     try:
         url = f"http://127.0.0.1:{port}/healthz"
-        _wait_for_healthz(url, timeout=45.0)
+        # Cold start loads the local embedder + cross-encoder reranker into each
+        # worker, which is slow on a contended CI box — give it a generous budget.
+        _wait_for_healthz(url, timeout=90.0)
         # Collect an initial set of worker PIDs by hammering the endpoint a few times.
         initial_pids: set[int] = set()
         for _ in range(10):
@@ -96,9 +98,11 @@ def test_daemon_mode_recycles_worker_after_max_requests() -> None:
             with contextlib.suppress(httpx.HTTPError):
                 httpx.get(url, timeout=2.0)
 
-        # Let the supervisor respawn any recycled workers.
+        # Let the supervisor respawn any recycled workers. A respawned worker
+        # reloads the embedder + reranker models from scratch, so it can take far
+        # longer than a warm request to start serving again — wait accordingly.
         time.sleep(3.0)
-        _wait_for_healthz(url, timeout=15.0)
+        _wait_for_healthz(url, timeout=90.0)
 
         # Now collect post-traffic PIDs.
         post_pids: set[int] = set()

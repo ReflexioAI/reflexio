@@ -10,7 +10,9 @@ from __future__ import annotations
 
 from reflexio.server.usage_metrics import record_usage_event
 
-_INTERNAL = "internal"   # == BillingCallerType.INTERNAL.value (kept literal; OSS stays clean)
+_INTERNAL = (
+    "internal"  # == BillingCallerType.INTERNAL.value (kept literal; OSS stays clean)
+)
 
 
 def record_extraction_tokens(
