@@ -647,25 +647,35 @@ class GetInjectionStatsResponse(BaseModel):
 
 
 class MemoryReviewCandidate(BaseModel):
-    """A user-playbook/agent-playbook/profile flagged for memory review.
+    """A user playbook flagged for memory review.
 
-    Surfaces entities that are stale, duplicated, low-utility, or
-    superseded. One row per ``(entity_type, entity_id)``; ``signals``
-    carries the detected reason(s) (a single row can have multiple
-    signals). Channel-agnostic — the same response shape works for
-    any reflexio user, regardless of which channel adapter (claude-smart,
+    Surfaces playbooks that are stale, duplicated, low-utility, or
+    superseded. One row per ``entity_id``; ``signals`` carries the
+    detected reason(s) (a single row can have multiple signals).
+    Channel-agnostic — the same response shape works for any
+    reflexio user, regardless of which channel adapter (claude-smart,
     Codex, etc.) drove the writes.
 
+    Note: in v1 only ``user_playbooks`` are reviewed. The
+    ``entity_type`` field is fixed to ``"playbook"`` for now; a
+    follow-up will add profile review (and widen the type to
+    ``Literal["playbook", "profile"]``) once the storage layer
+    supports it.
+
     Args:
-        entity_type (str): ``"playbook"`` or ``"profile"``.
-        entity_id (str): Storage id of the entity.
+        entity_type (str): Always ``"playbook"`` in v1.
+        entity_id (str): Storage id of the playbook.
         title (str): Human-readable label (playbook_name or first
-            80 chars of profile content).
+            80 chars of playbook content).
         signals (list[str]): One or more of ``"stale"``,
             ``"duplicate"`` (reserved for follow-up), ``"high_cost_low_cite"``,
             ``"supersedeable"``.
-        score (int): Higher = stronger hygiene signal. Ordering within
-            a signal group is by score descending.
+        score (int): Higher = stronger signal. Ordering is by score
+            descending; the score encodes signal priority
+            (``supersedeable`` = 100, ``stale`` = 50-99,
+            ``high_cost_low_cite`` = 30-49) so sorting by score
+            groups by primary signal and orders within each group
+            by strength.
         injection_count (int): Times injected in the look-back window.
         citation_count (int): Times cited on assistant turns in the
             look-back window. From the existing
@@ -675,7 +685,7 @@ class MemoryReviewCandidate(BaseModel):
         last_modified_at (int | None): Unix epoch seconds.
     """
 
-    entity_type: Literal["playbook", "profile"]
+    entity_type: Literal["playbook"]
     entity_id: str
     title: str = ""
     signals: list[

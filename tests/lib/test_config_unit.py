@@ -518,6 +518,43 @@ class TestGetMemoryReview:
 
         assert len(response.candidates) == 1
 
+    def test_signal_filter_empty_list_filters_out_everything(self):
+        """signal_filter=[] is a real (empty) filter — returns nothing.
+
+        Distinct from signal_filter=None which returns the
+        unfiltered candidate set. The Pydantic field is typed
+        ``list[...] | None`` and the lib gates on
+        ``is not None`` so an explicit empty list is honored.
+        """
+        mixin = _make_dashboard_mixin()
+        _get_dashboard_storage(
+            mixin
+        ).get_memory_review_candidates.return_value = [
+            MemoryReviewCandidate(
+                entity_type="playbook",
+                entity_id="1",
+                title="stale",
+                signals=["stale"],
+                score=5,
+                injection_count=0,
+                citation_count=0,
+            ),
+            MemoryReviewCandidate(
+                entity_type="playbook",
+                entity_id="2",
+                title="noisy",
+                signals=["high_cost_low_cite"],
+                score=10,
+                injection_count=10,
+                citation_count=1,
+            ),
+        ]
+
+        request = GetMemoryReviewRequest(days_back=60, signal_filter=[])
+        response = mixin.get_memory_review(request)
+
+        assert response.candidates == []
+
     def test_exception_returns_failure(self):
         """Returns failure on storage exception."""
         mixin = _make_dashboard_mixin()

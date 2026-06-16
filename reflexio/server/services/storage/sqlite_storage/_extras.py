@@ -511,14 +511,19 @@ class ExtrasMixin:
             days_back (int): Look-back window in days. Must be > 0.
 
         Returns:
-            list[MemoryReviewCandidate]: Sorted by
-            ``(signals[0], -score)``. Empty when no candidates.
+            list[MemoryReviewCandidate]: Sorted by ``-score``
+            descending. Score encodes signal priority
+            (``supersedeable`` = 100, ``stale`` = 50-99,
+            ``high_cost_low_cite`` = 30-49) so this sort
+            groups by primary signal and orders within each
+            group by strength. Empty when no candidates.
         """
         if days_back <= 0:
             return []
 
         current_time = _epoch_now()
-        start_ts_iso = _epoch_to_iso(current_time - days_back * 24 * 60 * 60)
+        start_ts = current_time - days_back * 24 * 60 * 60
+        start_ts_iso = _epoch_to_iso(start_ts)
 
         # Snapshot of all current user_playbooks.
         playbook_rows = self._fetchall(
@@ -554,11 +559,13 @@ class ExtrasMixin:
         applied_rows = self._get_applied_counts_for_window(start_ts_iso)
 
         # Supersedeable entity ids from recent aggregation change logs.
+        # Note: this table's created_at is INTEGER (epoch), not ISO,
+        # so the comparison uses the epoch value, not start_ts_iso.
         change_log_rows = self._fetchall(
             """SELECT removed_playbooks
                  FROM playbook_aggregation_change_logs
                  WHERE created_at >= ?""",
-            (start_ts_iso,),
+            (start_ts,),
         )
         superseded_ids: set[str] = set()
         for r in change_log_rows:
@@ -577,7 +584,9 @@ class ExtrasMixin:
         candidates: list[MemoryReviewCandidate] = []
         for row in playbook_rows:
             eid = str(row["user_playbook_id"])
-            created_at_epoch = _iso_to_epoch(row["created_at"]) or 0
+            created_at_epoch = _iso_to_epoch(row["created_at"])
+            if created_at_epoch is None or created_at_epoch <= 0:
+                created_at_epoch = None
             inj = injection_by_id.get(
                 eid, {"injection_count": 0, "last_injected_at": None}
             )
@@ -593,8 +602,12 @@ class ExtrasMixin:
                 signals.append("supersedeable")
                 score = max(score, 100)
 
-            # stale
-            if inj_count == 0 and (current_time - created_at_epoch) >= days_back * 24 * 60 * 60:
+            # stale — only meaningful when we have a real created_at.
+            if (
+                created_at_epoch is not None
+                and inj_count == 0
+                and (current_time - created_at_epoch) >= days_back * 24 * 60 * 60
+            ):
                 signals.append("stale")
                 # Older = higher score; clamp to [50, 99] to keep
                 # below the supersedeable signal weight.
@@ -625,22 +638,25 @@ class ExtrasMixin:
                     citation_count=cite_count,
                     last_injected_at=inj["last_injected_at"],
                     last_cited_at=None,  # not currently exposed by get_playbook_application_stats
-                    last_modified_at=created_at_epoch if created_at_epoch > 0 else None,
+                    last_modified_at=created_at_epoch,
                 )
             )
 
-        candidates.sort(key=lambda c: (c.signals[0], -c.score))
+        candidates.sort(key=lambda c: -c.score)
         return candidates
 
     def _get_applied_counts_for_window(
         self, start_ts_iso: str
     ) -> dict[str, int]:
-        r"""Return ``{user_playbook_id: citation_count}`` for the window.
+        """Return ``{user_playbook_id: citation_count}`` for the window.
 
-        Reuses the same JSON-walk pattern as
-        :meth:\`get_playbook_application_stats` but collapses to a flat
-        count per playbook id. Avoids duplicating the join by sharing
-        the same SQL.
+        Reads ``interactions.citations`` (a JSON array of
+        ``{"kind", "real_id"}`` references) in the look-back window
+        and flattens to a count per user_playbook id. Reuses the same
+        JSON-walk pattern as :meth:`get_playbook_application_stats`
+        but with a different rollup shape (count per id vs. one row
+        per cited rule) and its own ``SELECT`` because the two
+        queries diverge on grouping and ordering.
         """
         rows = self._fetchall(
             """SELECT interaction_id, citations

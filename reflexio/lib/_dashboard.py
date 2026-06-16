@@ -230,7 +230,7 @@ class DashboardMixin(ReflexioBase):
             candidates = self._get_storage().get_memory_review_candidates(
                 days_back=request.days_back
             )
-            if request.signal_filter:
+            if request.signal_filter is not None:
                 filter_set = set(request.signal_filter)
                 candidates = [
                     c

@@ -523,3 +523,89 @@ class TestMemoryReviewCandidates:
         candidates = storage.get_memory_review_candidates(days_back=60)
         high_cost = [c for c in candidates if "high_cost_low_cite" in c.signals]
         assert high_cost == []
+
+    def test_candidates_sorted_by_score_descending(self, storage):
+        if not _backend_supports_memory_review(storage):
+            pytest.skip("Backend does not implement get_memory_review_candidates")
+        # Insert one playbook per signal class so we can verify the
+        # relative sort order. Score ranges: supersedeable=100,
+        # stale=50-99, high_cost_low_cite=30-49.
+        with storage._lock:
+            # supersedeable: appears in a recent change log
+            cur = storage.conn.execute(
+                """INSERT INTO user_playbooks
+                     (user_id, request_id, agent_version, content,
+                      playbook_name, created_at, status)
+                   VALUES ('u1', 'r1', 'v1', 'x', 'super-rule',
+                           strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), NULL)"""
+            )
+            super_id = cur.lastrowid
+            storage.conn.execute(
+                """INSERT INTO playbook_aggregation_change_logs
+                     (created_at, playbook_name, agent_version, run_mode,
+                      added_playbooks, removed_playbooks, updated_playbooks)
+                   VALUES (?, 'super-playbook', 'v1', 'incremental',
+                           '[]', ?, '[]')""",
+                (
+                    int(__import__("datetime").datetime.now(
+                        __import__("datetime").UTC
+                    ).timestamp()),
+                    f'[{{"user_playbook_id": {super_id}}}]',
+                ),
+            )
+            # stale: very old, no injection
+            storage.conn.execute(
+                """INSERT INTO user_playbooks
+                     (user_id, request_id, agent_version, content,
+                      playbook_name, created_at, status)
+                   VALUES ('u1', 'r1', 'v1', 'x', 'stale-rule',
+                           '2020-01-01T00:00:00.000Z', NULL)"""
+            )
+            # high_cost_low_cite: many injections, few citations
+            cur = storage.conn.execute(
+                """INSERT INTO user_playbooks
+                     (user_id, request_id, agent_version, content,
+                      playbook_name, created_at, status)
+                   VALUES ('u1', 'r1', 'v1', 'x', 'noisy-rule',
+                           strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), NULL)"""
+            )
+            noisy_id = cur.lastrowid
+            for _ in range(5):
+                storage.conn.execute(
+                    """INSERT INTO usage_events
+                         (org_id, event_name, event_category, entity_type,
+                          entity_id, count_value, created_at)
+                       VALUES (?, 'learning_injection', 'application',
+                               'playbook', ?, 1,
+                               strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))""",
+                    (storage.org_id, str(noisy_id)),
+                )
+            storage.conn.commit()
+        candidates = storage.get_memory_review_candidates(days_back=60)
+        scores = [c.score for c in candidates]
+        assert scores == sorted(scores, reverse=True), (
+            f"Expected candidates sorted by -score, got {scores}"
+        )
+
+    def test_stale_signal_skipped_when_created_at_unparseable(self, storage):
+        if not _backend_supports_memory_review(storage):
+            pytest.skip("Backend does not implement get_memory_review_candidates")
+        # A row whose created_at can't be parsed should not be flagged
+        # as stale (it would otherwise satisfy the threshold via the
+        # epoch-0 fallback). _iso_to_epoch returns None for malformed
+        # strings, and we now treat that as "no created_at known"
+        # rather than "epoch 0".
+        with storage._lock:
+            storage.conn.execute(
+                """INSERT INTO user_playbooks
+                     (user_id, request_id, agent_version, content,
+                      playbook_name, created_at, status)
+                   VALUES ('u1', 'r1', 'v1', 'x', 'unparseable',
+                           'not-a-date', NULL)"""
+            )
+            storage.conn.commit()
+        candidates = storage.get_memory_review_candidates(days_back=60)
+        assert all("stale" not in c.signals for c in candidates), (
+            f"Expected no stale signal for unparseable created_at, "
+            f"got {[c.signals for c in candidates]}"
+        )

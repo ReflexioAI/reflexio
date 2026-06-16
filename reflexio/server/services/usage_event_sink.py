@@ -3,9 +3,10 @@
 Wires :data:`reflexio.server.usage_metrics._recorder` so each emitted
 ``UsageEvent`` becomes a row in the ``usage_events`` table. The wiring
 is performed by :func:`reflexio.server.api.create_app` when the
-``REFLEXIO_DISABLE_USAGE_EVENT_SINK`` env var is unset, so production
-runs persist events but tests (which set the env var in
-``tests/conftest.py``) see the no-op default.
+``REFLEXIO_ENABLE_USAGE_EVENT_SINK=1`` env var is set, so production
+runs persist events but tests (which do not set the env var) see the
+no-op default. ``tests/conftest.py`` explicitly pops the var on
+collection to keep the no-op default for the test suite.
 
 The recorder is process-global, so the sink does not depend on the
 storage at construction time — the storage resolver is called on the
