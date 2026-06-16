@@ -1,4 +1,4 @@
-"""Tests for the ``/api/get_memory_hygiene`` endpoint."""
+"""Tests for the ``/api/get_memory_review`` endpoint."""
 
 from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
@@ -6,8 +6,8 @@ from unittest.mock import MagicMock, patch
 from fastapi.testclient import TestClient
 
 from reflexio.models.api_schema.retriever_schema import (
-    GetMemoryHygieneResponse,
-    MemoryHygieneCandidate,
+    GetMemoryReviewResponse,
+    MemoryReviewCandidate,
 )
 from reflexio.server.api import create_app
 
@@ -33,8 +33,8 @@ def _make_candidate(
     score: int = 75,
     injection_count: int = 0,
     citation_count: int = 0,
-) -> MemoryHygieneCandidate:
-    return MemoryHygieneCandidate(
+) -> MemoryReviewCandidate:
+    return MemoryReviewCandidate(
         entity_type="playbook",
         entity_id=entity_id,
         title="rule-42",
@@ -53,7 +53,7 @@ def _make_candidate(
 # ---------------------------------------------------------------------------
 
 
-def test_get_memory_hygiene_returns_candidates_list():
+def test_get_memory_review_returns_candidates_list():
     """Endpoint surfaces the lib method's candidates list as-is."""
     candidates = [
         _make_candidate(entity_id="42", signals=["stale"], score=80),
@@ -65,13 +65,13 @@ def test_get_memory_hygiene_returns_candidates_list():
             citation_count=1,
         ),
     ]
-    response = MagicMock(spec=GetMemoryHygieneResponse)
+    response = MagicMock(spec=GetMemoryReviewResponse)
     response.success = True
     response.candidates = candidates
     response.msg = "OK"
-    with _patch_lib_method("get_memory_hygiene", response):
+    with _patch_lib_method("get_memory_review", response):
         resp = _client().post(
-            "/api/get_memory_hygiene", json={"days_back": 60}
+            "/api/get_memory_review", json={"days_back": 60}
         )
     assert resp.status_code == 200
     body = resp.json()
@@ -82,15 +82,15 @@ def test_get_memory_hygiene_returns_candidates_list():
     assert body["candidates"][1]["signals"] == ["high_cost_low_cite"]
 
 
-def test_get_memory_hygiene_empty_list_is_ok():
+def test_get_memory_review_empty_list_is_ok():
     """An empty candidates list serialises as an empty array (not null)."""
-    response = MagicMock(spec=GetMemoryHygieneResponse)
+    response = MagicMock(spec=GetMemoryReviewResponse)
     response.success = True
     response.candidates = []
     response.msg = "OK"
-    with _patch_lib_method("get_memory_hygiene", response):
+    with _patch_lib_method("get_memory_review", response):
         resp = _client().post(
-            "/api/get_memory_hygiene", json={"days_back": 60}
+            "/api/get_memory_review", json={"days_back": 60}
         )
     assert resp.status_code == 200
     body = resp.json()
@@ -98,15 +98,15 @@ def test_get_memory_hygiene_empty_list_is_ok():
     assert body["candidates"] == []
 
 
-def test_get_memory_hygiene_failure_response():
+def test_get_memory_review_failure_response():
     """A failed lib call surfaces ``success=false`` with the error message."""
-    response = MagicMock(spec=GetMemoryHygieneResponse)
+    response = MagicMock(spec=GetMemoryReviewResponse)
     response.success = False
     response.candidates = []
     response.msg = "boom"
-    with _patch_lib_method("get_memory_hygiene", response):
+    with _patch_lib_method("get_memory_review", response):
         resp = _client().post(
-            "/api/get_memory_hygiene", json={"days_back": 60}
+            "/api/get_memory_review", json={"days_back": 60}
         )
     assert resp.status_code == 200
     body = resp.json()
@@ -120,52 +120,52 @@ def test_get_memory_hygiene_failure_response():
 # ---------------------------------------------------------------------------
 
 
-def test_get_memory_hygiene_rejects_zero_days_back():
+def test_get_memory_review_rejects_zero_days_back():
     """``days_back`` must be > 0 (Pydantic ``gt=0``)."""
-    resp = _client().post("/api/get_memory_hygiene", json={"days_back": 0})
+    resp = _client().post("/api/get_memory_review", json={"days_back": 0})
     assert resp.status_code == 422
 
 
-def test_get_memory_hygiene_rejects_negative_days_back():
+def test_get_memory_review_rejects_negative_days_back():
     """``days_back`` must be > 0."""
-    resp = _client().post("/api/get_memory_hygiene", json={"days_back": -1})
+    resp = _client().post("/api/get_memory_review", json={"days_back": -1})
     assert resp.status_code == 422
 
 
-def test_get_memory_hygiene_rejects_invalid_signal_filter():
+def test_get_memory_review_rejects_invalid_signal_filter():
     """``signal_filter`` must use the ``Literal`` enum values."""
     resp = _client().post(
-        "/api/get_memory_hygiene",
+        "/api/get_memory_review",
         json={"days_back": 60, "signal_filter": ["bogus_signal"]},
     )
     assert resp.status_code == 422
 
 
-def test_get_memory_hygiene_uses_default_days_back():
+def test_get_memory_review_uses_default_days_back():
     """Omitting ``days_back`` falls back to the schema default (60)."""
-    response = MagicMock(spec=GetMemoryHygieneResponse)
+    response = MagicMock(spec=GetMemoryReviewResponse)
     response.success = True
     response.candidates = []
     response.msg = "OK"
-    with _patch_lib_method("get_memory_hygiene", response) as mock_reflexio:
-        resp = _client().post("/api/get_memory_hygiene", json={})
+    with _patch_lib_method("get_memory_review", response) as mock_reflexio:
+        resp = _client().post("/api/get_memory_review", json={})
     assert resp.status_code == 200
-    call_arg = mock_reflexio.get_memory_hygiene.call_args.args[0]
+    call_arg = mock_reflexio.get_memory_review.call_args.args[0]
     assert call_arg.days_back == 60
     assert call_arg.signal_filter is None
 
 
-def test_get_memory_hygiene_forwards_signal_filter():
+def test_get_memory_review_forwards_signal_filter():
     """``signal_filter`` is forwarded to the lib method."""
-    response = MagicMock(spec=GetMemoryHygieneResponse)
+    response = MagicMock(spec=GetMemoryReviewResponse)
     response.success = True
     response.candidates = []
     response.msg = "OK"
-    with _patch_lib_method("get_memory_hygiene", response) as mock_reflexio:
+    with _patch_lib_method("get_memory_review", response) as mock_reflexio:
         resp = _client().post(
-            "/api/get_memory_hygiene",
+            "/api/get_memory_review",
             json={"days_back": 60, "signal_filter": ["stale"]},
         )
     assert resp.status_code == 200
-    call_arg = mock_reflexio.get_memory_hygiene.call_args.args[0]
+    call_arg = mock_reflexio.get_memory_review.call_args.args[0]
     assert call_arg.signal_filter == ["stale"]

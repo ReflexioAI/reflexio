@@ -228,11 +228,11 @@ def _backend_supports_usage_events(storage) -> bool:
     )
 
 
-def _backend_supports_memory_hygiene(storage) -> bool:
-    """True when the storage backend implements ``get_memory_hygiene_candidates``."""
+def _backend_supports_memory_review(storage) -> bool:
+    """True when the storage backend implements ``get_memory_review_candidates``."""
     return (
-        storage.__class__.get_memory_hygiene_candidates
-        is not ExtrasMixin.get_memory_hygiene_candidates
+        storage.__class__.get_memory_review_candidates
+        is not ExtrasMixin.get_memory_review_candidates
     )
 
 
@@ -375,26 +375,26 @@ class TestUsageEvents:
 
 
 # ---------------------------------------------------------------------------
-# TestMemoryHygieneCandidates
+# TestMemoryReviewCandidates
 # ---------------------------------------------------------------------------
 
 
-class TestMemoryHygieneCandidates:
+class TestMemoryReviewCandidates:
     def test_empty_when_no_playbooks(self, storage):
-        if not _backend_supports_memory_hygiene(storage):
-            pytest.skip("Backend does not implement get_memory_hygiene_candidates")
-        assert storage.get_memory_hygiene_candidates(days_back=60) == []
+        if not _backend_supports_memory_review(storage):
+            pytest.skip("Backend does not implement get_memory_review_candidates")
+        assert storage.get_memory_review_candidates(days_back=60) == []
 
     def test_empty_for_zero_days_back(self, storage):
-        if not _backend_supports_memory_hygiene(storage):
-            pytest.skip("Backend does not implement get_memory_hygiene_candidates")
+        if not _backend_supports_memory_review(storage):
+            pytest.skip("Backend does not implement get_memory_review_candidates")
         # Defensive guard: zero/negative days_back returns [].
-        assert storage.get_memory_hygiene_candidates(days_back=0) == []
-        assert storage.get_memory_hygiene_candidates(days_back=-1) == []
+        assert storage.get_memory_review_candidates(days_back=0) == []
+        assert storage.get_memory_review_candidates(days_back=-1) == []
 
     def test_stale_signal_for_unused_playbook(self, storage):
-        if not _backend_supports_memory_hygiene(storage):
-            pytest.skip("Backend does not implement get_memory_hygiene_candidates")
+        if not _backend_supports_memory_review(storage):
+            pytest.skip("Backend does not implement get_memory_review_candidates")
         # Insert a playbook with no injection events in the window and
         # a creation timestamp older than the window. Use a direct SQL
         # insert to control the timestamp.
@@ -408,7 +408,7 @@ class TestMemoryHygieneCandidates:
                 (old_iso,),
             )
             storage.conn.commit()
-        candidates = storage.get_memory_hygiene_candidates(days_back=60)
+        candidates = storage.get_memory_review_candidates(days_back=60)
         # The 2020 row is outside the 60-day window; the staleness
         # signal is computed from current_time - created_at >= days_back.
         stale = [c for c in candidates if "stale" in c.signals]
@@ -419,8 +419,8 @@ class TestMemoryHygieneCandidates:
         assert stale[0].citation_count == 0
 
     def test_no_stale_signal_for_fresh_playbook(self, storage):
-        if not _backend_supports_memory_hygiene(storage):
-            pytest.skip("Backend does not implement get_memory_hygiene_candidates")
+        if not _backend_supports_memory_review(storage):
+            pytest.skip("Backend does not implement get_memory_review_candidates")
         # A playbook created NOW (within the look-back window) is NOT
         # stale, even with zero injection events.
         with storage._lock:
@@ -432,12 +432,12 @@ class TestMemoryHygieneCandidates:
                            strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), NULL)"""
             )
             storage.conn.commit()
-        candidates = storage.get_memory_hygiene_candidates(days_back=60)
+        candidates = storage.get_memory_review_candidates(days_back=60)
         assert candidates == []
 
     def test_high_cost_low_cite_signal(self, storage):
-        if not _backend_supports_memory_hygiene(storage):
-            pytest.skip("Backend does not implement get_memory_hygiene_candidates")
+        if not _backend_supports_memory_review(storage):
+            pytest.skip("Backend does not implement get_memory_review_candidates")
         # Set up: playbook 42 was injected 5 times (low cite rate) and
         # cited 1 time. Should be flagged.
         with storage._lock:
@@ -473,7 +473,7 @@ class TestMemoryHygieneCandidates:
                 ]),),
             )
             storage.conn.commit()
-        candidates = storage.get_memory_hygiene_candidates(days_back=60)
+        candidates = storage.get_memory_review_candidates(days_back=60)
         high_cost = [c for c in candidates if "high_cost_low_cite" in c.signals]
         assert len(high_cost) == 1
         assert high_cost[0].entity_id == str(pb_id)
@@ -481,8 +481,8 @@ class TestMemoryHygieneCandidates:
         assert high_cost[0].citation_count == 1
 
     def test_no_high_cost_signal_when_well_cited(self, storage):
-        if not _backend_supports_memory_hygiene(storage):
-            pytest.skip("Backend does not implement get_memory_hygiene_candidates")
+        if not _backend_supports_memory_review(storage):
+            pytest.skip("Backend does not implement get_memory_review_candidates")
         # Same injection volume but cited as often as injected — should
         # NOT be flagged as high_cost_low_cite.
         import json as _json
@@ -520,6 +520,6 @@ class TestMemoryHygieneCandidates:
                     ),
                 )
             storage.conn.commit()
-        candidates = storage.get_memory_hygiene_candidates(days_back=60)
+        candidates = storage.get_memory_review_candidates(days_back=60)
         high_cost = [c for c in candidates if "high_cost_low_cite" in c.signals]
         assert high_cost == []

@@ -54,8 +54,8 @@ from reflexio.models.api_schema.retriever_schema import (
     GetInjectionStatsResponse,
     GetInteractionsRequest,
     GetInteractionsViewResponse,
-    GetMemoryHygieneRequest,
-    GetMemoryHygieneResponse,
+    GetMemoryReviewRequest,
+    GetMemoryReviewResponse,
     GetPlaybookApplicationStatsRequest,
     GetPlaybookApplicationStatsResponse,
     GetProfileStatisticsResponse,
@@ -2002,15 +2002,15 @@ def get_injection_stats(
 
 
 @core_router.post(
-    "/api/get_memory_hygiene",
-    response_model=GetMemoryHygieneResponse,
+    "/api/get_memory_review",
+    response_model=GetMemoryReviewResponse,
     response_model_exclude_none=True,
 )
-def get_memory_hygiene(
-    request: GetMemoryHygieneRequest,
+def get_memory_review(
+    request: GetMemoryReviewRequest,
     org_id: str = Depends(default_get_org_id),
-) -> GetMemoryHygieneResponse:
-    """Get memory hygiene candidates — stale, duplicate, low-cite, superseded.
+) -> GetMemoryReviewResponse:
+    """Get memory review candidates — stale, duplicate, low-cite, superseded.
 
     Returns one row per flagged user_playbook with the detected
     ``signals`` (``stale``, ``high_cost_low_cite``, ``supersedeable``;
@@ -2019,16 +2019,16 @@ def get_memory_hygiene(
     (existing) to give the dashboard a complete hygiene view.
 
     Args:
-        request (GetMemoryHygieneRequest): Request containing
+        request (GetMemoryReviewRequest): Request containing
             ``days_back`` and optional ``signal_filter``.
         org_id (str): Organization ID.
 
     Returns:
-        GetMemoryHygieneResponse: Response containing the candidates
+        GetMemoryReviewResponse: Response containing the candidates
             list, sorted by ``(signals, -score)``.
     """
     reflexio = get_reflexio(org_id=org_id)
-    return reflexio.get_memory_hygiene(request)
+    return reflexio.get_memory_review(request)
 
 
 # ============================================================================

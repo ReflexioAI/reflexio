@@ -13,7 +13,7 @@ from reflexio.models.api_schema.domain import (
 )
 from reflexio.models.api_schema.retriever_schema import (
     InjectionStat,
-    MemoryHygieneCandidate,
+    MemoryReviewCandidate,
     PlaybookApplicationStat,
 )
 
@@ -163,10 +163,10 @@ class ExtrasMixin:
         del days_back
         return []
 
-    def get_memory_hygiene_candidates(
+    def get_memory_review_candidates(
         self, days_back: int = 60
-    ) -> list["MemoryHygieneCandidate"]:
-        """Surface entities flagged for memory hygiene.
+    ) -> list["MemoryReviewCandidate"]:
+        """Surface entities flagged for memory review.
 
         Channel-agnostic: the result list is the same shape regardless
         of which channel adapter (claude-smart, Codex, custom) drove
@@ -188,7 +188,7 @@ class ExtrasMixin:
             days_back (int): Look-back window in days. Must be positive.
 
         Returns:
-            list[MemoryHygieneCandidate]: Sorted by ``(signals, -score)``.
+            list[MemoryReviewCandidate]: Sorted by ``(signals, -score)``.
                 Empty when the backend has no implementation.
         """
         del days_back

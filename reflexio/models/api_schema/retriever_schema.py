@@ -433,8 +433,8 @@ class UpdateUserPlaybookRequest(BaseModel):
     """Generic update for a user playbook. All fields except ID are optional.
 
     Two new optional fields: ``status`` lets a client archive
-    candidates surfaced by the lib's ``get_memory_hygiene`` (or
-    ``GET /api/get_memory_hygiene``); ``playbook_metadata`` lets a
+    candidates surfaced by the lib's ``get_memory_review`` (or
+    ``GET /api/get_memory_review``); ``playbook_metadata`` lets a
     client stamp a ``{"superseded_by": <id>}`` reference on a
     playbook that has been replaced by a newer one. Both are
     backwards-compatible — older clients that omit them get the
@@ -646,8 +646,8 @@ class GetInjectionStatsResponse(BaseModel):
     msg: str | None = None
 
 
-class MemoryHygieneCandidate(BaseModel):
-    """A user-playbook/agent-playbook/profile flagged for memory hygiene.
+class MemoryReviewCandidate(BaseModel):
+    """A user-playbook/agent-playbook/profile flagged for memory review.
 
     Surfaces entities that are stale, duplicated, low-utility, or
     superseded. One row per ``(entity_type, entity_id)``; ``signals``
@@ -689,8 +689,8 @@ class MemoryHygieneCandidate(BaseModel):
     last_modified_at: int | None = None
 
 
-class GetMemoryHygieneRequest(BaseModel):
-    """Request for a memory hygiene candidate list.
+class GetMemoryReviewRequest(BaseModel):
+    """Request for a memory review candidate list.
 
     Args:
         days_back (int): Look-back window in days. Defaults to 60; must be
@@ -707,12 +707,12 @@ class GetMemoryHygieneRequest(BaseModel):
     ] | None = None
 
 
-class GetMemoryHygieneResponse(BaseModel):
-    """Response containing a memory hygiene candidate list.
+class GetMemoryReviewResponse(BaseModel):
+    """Response containing a memory review candidate list.
 
     Args:
         success (bool): Whether the call succeeded.
-        candidates (list[MemoryHygieneCandidate]): One row per flagged
+        candidates (list[MemoryReviewCandidate]): One row per flagged
             entity, sorted by ``(signals, score)``. Empty when
             storage is not configured.
         msg (str | None): Optional error message when ``success`` is
@@ -720,7 +720,7 @@ class GetMemoryHygieneResponse(BaseModel):
     """
 
     success: bool
-    candidates: list[MemoryHygieneCandidate] = Field(default_factory=list)
+    candidates: list[MemoryReviewCandidate] = Field(default_factory=list)
     msg: str | None = None
 
 

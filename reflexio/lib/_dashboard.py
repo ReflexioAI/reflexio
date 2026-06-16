@@ -24,8 +24,8 @@ from reflexio.models.api_schema.retriever_schema import (
     GetDashboardStatsResponse,
     GetInjectionStatsRequest,
     GetInjectionStatsResponse,
-    GetMemoryHygieneRequest,
-    GetMemoryHygieneResponse,
+    GetMemoryReviewRequest,
+    GetMemoryReviewResponse,
     GetPlaybookApplicationStatsRequest,
     GetPlaybookApplicationStatsResponse,
     PeriodStats,
@@ -201,9 +201,9 @@ class DashboardMixin(ReflexioBase):
                 msg=f"Failed to get injection stats: {str(e)}",
             )
 
-    def get_memory_hygiene(
-        self, request: GetMemoryHygieneRequest | dict
-    ) -> GetMemoryHygieneResponse:
+    def get_memory_review(
+        self, request: GetMemoryReviewRequest | dict
+    ) -> GetMemoryReviewResponse:
         """Surface stale / duplicate / low-cite / supersedeable memories.
 
         Pairs with :meth:`get_injection_stats` and
@@ -212,22 +212,22 @@ class DashboardMixin(ReflexioBase):
         response?", and "what should be cleaned up?".
 
         Args:
-            request (Union[GetMemoryHygieneRequest, dict]): Request
+            request (Union[GetMemoryReviewRequest, dict]): Request
                 containing ``days_back`` and optional ``signal_filter``.
 
         Returns:
-            GetMemoryHygieneResponse: Response containing the
+            GetMemoryReviewResponse: Response containing the
                 candidates list. Empty ``candidates`` when the storage
                 is not configured.
         """
         if not self._is_storage_configured():
-            return GetMemoryHygieneResponse(
+            return GetMemoryReviewResponse(
                 success=True, candidates=[], msg=STORAGE_NOT_CONFIGURED_MSG
             )
         try:
             if isinstance(request, dict):
-                request = GetMemoryHygieneRequest(**request)
-            candidates = self._get_storage().get_memory_hygiene_candidates(
+                request = GetMemoryReviewRequest(**request)
+            candidates = self._get_storage().get_memory_review_candidates(
                 days_back=request.days_back
             )
             if request.signal_filter:
@@ -237,16 +237,16 @@ class DashboardMixin(ReflexioBase):
                     for c in candidates
                     if any(s in filter_set for s in c.signals)
                 ]
-            return GetMemoryHygieneResponse(
+            return GetMemoryReviewResponse(
                 success=True,
                 candidates=candidates,
-                msg="Retrieved memory hygiene candidates successfully",
+                msg="Retrieved memory review successfully",
             )
         except Exception as e:
-            return GetMemoryHygieneResponse(
+            return GetMemoryReviewResponse(
                 success=False,
                 candidates=[],
-                msg=f"Failed to get memory hygiene: {str(e)}",
+                msg=f"Failed to get memory review: {str(e)}",
             )
 
     # ==============================

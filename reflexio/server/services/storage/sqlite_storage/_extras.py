@@ -11,7 +11,7 @@ from reflexio.models.api_schema.braintrust_schema import (
 )
 from reflexio.models.api_schema.retriever_schema import (
     InjectionStat,
-    MemoryHygieneCandidate,
+    MemoryReviewCandidate,
     PlaybookApplicationStat,
 )
 from reflexio.models.api_schema.service_schemas import (
@@ -488,10 +488,10 @@ class ExtrasMixin:
         return stats
 
     @SQLiteStorageBase.handle_exceptions
-    def get_memory_hygiene_candidates(
+    def get_memory_review_candidates(
         self, days_back: int = 60
-    ) -> list[MemoryHygieneCandidate]:
-        """Surface user_playbooks flagged for memory hygiene.
+    ) -> list[MemoryReviewCandidate]:
+        """Surface user_playbooks flagged for memory review.
 
         Implements three of the four signals in v1; the ``duplicate``
         signal is reserved for a follow-up because cosine-on-content is
@@ -511,7 +511,7 @@ class ExtrasMixin:
             days_back (int): Look-back window in days. Must be > 0.
 
         Returns:
-            list[MemoryHygieneCandidate]: Sorted by
+            list[MemoryReviewCandidate]: Sorted by
             ``(signals[0], -score)``. Empty when no candidates.
         """
         if days_back <= 0:
@@ -574,7 +574,7 @@ class ExtrasMixin:
                     superseded_ids.add(eid)
 
         # Compose candidates.
-        candidates: list[MemoryHygieneCandidate] = []
+        candidates: list[MemoryReviewCandidate] = []
         for row in playbook_rows:
             eid = str(row["user_playbook_id"])
             created_at_epoch = _iso_to_epoch(row["created_at"]) or 0
@@ -615,7 +615,7 @@ class ExtrasMixin:
                 (row["content"] or "")[:80] + ("..." if len(row["content"] or "") > 80 else "")
             )
             candidates.append(
-                MemoryHygieneCandidate(
+                MemoryReviewCandidate(
                     entity_type="playbook",
                     entity_id=eid,
                     title=title,

@@ -1,7 +1,7 @@
 """Unit tests for ConfigMixin and DashboardMixin.
 
 Tests get_config, set_config for ConfigMixin and
-get_dashboard_stats, get_injection_stats, get_memory_hygiene
+get_dashboard_stats, get_injection_stats, get_memory_review
 for DashboardMixin with mocked storage.
 """
 
@@ -12,9 +12,9 @@ from reflexio.lib._dashboard import DashboardMixin
 from reflexio.models.api_schema.retriever_schema import (
     GetDashboardStatsRequest,
     GetInjectionStatsRequest,
-    GetMemoryHygieneRequest,
+    GetMemoryReviewRequest,
     InjectionStat,
-    MemoryHygieneCandidate,
+    MemoryReviewCandidate,
 )
 from reflexio.models.config_schema import Config
 
@@ -400,15 +400,15 @@ class TestGetInjectionStats:
 
 
 # ---------------------------------------------------------------------------
-# get_memory_hygiene
+# get_memory_review
 # ---------------------------------------------------------------------------
 
 
-class TestGetMemoryHygiene:
+class TestGetMemoryReview:
     def test_returns_candidates(self):
         """Returns hygiene candidates from storage."""
         mixin = _make_dashboard_mixin()
-        candidate = MemoryHygieneCandidate(
+        candidate = MemoryReviewCandidate(
             entity_type="playbook",
             entity_id="42",
             title="stale rule",
@@ -417,12 +417,12 @@ class TestGetMemoryHygiene:
             injection_count=0,
             citation_count=0,
         )
-        _get_dashboard_storage(mixin).get_memory_hygiene_candidates.return_value = [
+        _get_dashboard_storage(mixin).get_memory_review_candidates.return_value = [
             candidate
         ]
 
-        request = GetMemoryHygieneRequest(days_back=60)
-        response = mixin.get_memory_hygiene(request)
+        request = GetMemoryReviewRequest(days_back=60)
+        response = mixin.get_memory_review(request)
 
         assert response.success is True
         assert len(response.candidates) == 1
@@ -433,8 +433,8 @@ class TestGetMemoryHygiene:
         """Returns empty list when storage is not configured."""
         mixin = _make_dashboard_mixin(storage_configured=False)
 
-        request = GetMemoryHygieneRequest(days_back=60)
-        response = mixin.get_memory_hygiene(request)
+        request = GetMemoryReviewRequest(days_back=60)
+        response = mixin.get_memory_review(request)
 
         assert response.success is True
         assert response.candidates == []
@@ -445,20 +445,20 @@ class TestGetMemoryHygiene:
         mixin = _make_dashboard_mixin()
         _get_dashboard_storage(
             mixin
-        ).get_memory_hygiene_candidates.return_value = []
+        ).get_memory_review_candidates.return_value = []
 
-        response = mixin.get_memory_hygiene({"days_back": 30})
+        response = mixin.get_memory_review({"days_back": 30})
 
         assert response.success is True
         _get_dashboard_storage(
             mixin
-        ).get_memory_hygiene_candidates.assert_called_once_with(days_back=30)
+        ).get_memory_review_candidates.assert_called_once_with(days_back=30)
 
     def test_signal_filter_narrows_candidates(self):
         """signal_filter keeps only candidates with at least one matching signal."""
         mixin = _make_dashboard_mixin()
         candidates = [
-            MemoryHygieneCandidate(
+            MemoryReviewCandidate(
                 entity_type="playbook",
                 entity_id="1",
                 title="stale",
@@ -467,7 +467,7 @@ class TestGetMemoryHygiene:
                 injection_count=0,
                 citation_count=0,
             ),
-            MemoryHygieneCandidate(
+            MemoryReviewCandidate(
                 entity_type="playbook",
                 entity_id="2",
                 title="low cite",
@@ -476,7 +476,7 @@ class TestGetMemoryHygiene:
                 injection_count=10,
                 citation_count=1,
             ),
-            MemoryHygieneCandidate(
+            MemoryReviewCandidate(
                 entity_type="playbook",
                 entity_id="3",
                 title="stale and low cite",
@@ -488,10 +488,10 @@ class TestGetMemoryHygiene:
         ]
         _get_dashboard_storage(
             mixin
-        ).get_memory_hygiene_candidates.return_value = candidates
+        ).get_memory_review_candidates.return_value = candidates
 
-        request = GetMemoryHygieneRequest(days_back=60, signal_filter=["stale"])
-        response = mixin.get_memory_hygiene(request)
+        request = GetMemoryReviewRequest(days_back=60, signal_filter=["stale"])
+        response = mixin.get_memory_review(request)
 
         ids = {c.entity_id for c in response.candidates}
         assert ids == {"1", "3"}
@@ -501,8 +501,8 @@ class TestGetMemoryHygiene:
         mixin = _make_dashboard_mixin()
         _get_dashboard_storage(
             mixin
-        ).get_memory_hygiene_candidates.return_value = [
-            MemoryHygieneCandidate(
+        ).get_memory_review_candidates.return_value = [
+            MemoryReviewCandidate(
                 entity_type="playbook",
                 entity_id="1",
                 title="x",
@@ -513,8 +513,8 @@ class TestGetMemoryHygiene:
             )
         ]
 
-        request = GetMemoryHygieneRequest(days_back=60)
-        response = mixin.get_memory_hygiene(request)
+        request = GetMemoryReviewRequest(days_back=60)
+        response = mixin.get_memory_review(request)
 
         assert len(response.candidates) == 1
 
@@ -523,10 +523,10 @@ class TestGetMemoryHygiene:
         mixin = _make_dashboard_mixin()
         _get_dashboard_storage(
             mixin
-        ).get_memory_hygiene_candidates.side_effect = RuntimeError("db error")
+        ).get_memory_review_candidates.side_effect = RuntimeError("db error")
 
-        request = GetMemoryHygieneRequest(days_back=60)
-        response = mixin.get_memory_hygiene(request)
+        request = GetMemoryReviewRequest(days_back=60)
+        response = mixin.get_memory_review(request)
 
         assert response.success is False
         assert "db error" in (response.msg or "")
@@ -536,11 +536,11 @@ class TestGetMemoryHygiene:
         mixin = _make_dashboard_mixin()
         _get_dashboard_storage(
             mixin
-        ).get_memory_hygiene_candidates.return_value = []
+        ).get_memory_review_candidates.return_value = []
 
-        request = GetMemoryHygieneRequest()
-        mixin.get_memory_hygiene(request)
+        request = GetMemoryReviewRequest()
+        mixin.get_memory_review(request)
 
         _get_dashboard_storage(
             mixin
-        ).get_memory_hygiene_candidates.assert_called_once_with(days_back=60)
+        ).get_memory_review_candidates.assert_called_once_with(days_back=60)
