@@ -8,7 +8,7 @@ Description: Playbook extraction, aggregation, and consolidation pipeline
 - **Service Orchestrator**: `playbook_generation_service.py` - Manages playbook extraction lifecycle (regular, rerun, manual modes)
 - **Playbook Extractor**: `playbook_extractor.py` - Extracts user playbooks from interactions via LLM
 - **Playbook Aggregator**: `playbook_aggregator.py` - Clusters similar user playbooks and generates aggregated insights
-- **Playbook Consolidator**: `playbook_consolidator.py` - Reconciles newly extracted playbooks against existing storage via LLM. Decides per pair to merge as duplicates, prefer the new entry, prefer the existing entry, differentiate (split with refined triggers), or keep both as independent
+- **Playbook Consolidator**: `playbook_consolidator.py` - Reconciles newly extracted playbooks against existing storage via hybrid search + LLM. Decisions are `unify`, `reject_new`, `differentiate`, or `independent`.
 
 ## Supporting Files
 
@@ -56,13 +56,12 @@ Triggered manually via `/api/run_playbook_aggregation`. Clusters user playbooks 
 
 ### Playbook Consolidation (`playbook_consolidator.py`)
 
-Consolidates newly extracted playbooks against existing playbooks in the database via LLM semantic matching. For each NEW vs EXISTING pair the LLM returns one of five decision kinds, and the consolidator applies the chosen kind:
+Consolidates newly extracted playbooks against existing playbooks in the database. It first retrieves likely matches with hybrid search (embedding + text), then asks the LLM for one of four decision kinds:
 
-- `duplicate` — merge multiple rows into one, archiving members and emitting one merged row.
-- `prefer_new` — archive the existing row and insert the new candidate unchanged.
-- `prefer_existing` — drop the new candidate; the existing row wins.
-- `differentiate` — archive the existing row and emit two refined rows (one per side) with sharpened triggers.
-- `independent` — both rows are kept; the new candidate is inserted alongside the existing row.
+- `unify` — combine duplicate/overlapping entries into one row and archive referenced existing rows.
+- `reject_new` — drop the new candidate because an existing row already covers it.
+- `differentiate` — archive the existing row and emit two refined rows with sharpened triggers.
+- `independent` — keep the new candidate as a separate row.
 
 A safety fallback inserts any new candidate that no decision consumed, so extracted data is never silently dropped on a malformed LLM response.
 

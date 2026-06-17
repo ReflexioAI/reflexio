@@ -14,12 +14,18 @@ File-based versioned prompt templates for LLM operations.
 ```
 prompt_bank/
 ├── README.md
+├── memory_reflection/
+│   └── v1.7.0.prompt.md      ← active: true
 ├── playbook_aggregation/
-│   ├── v1.0.0.prompt.md
-│   ├── v1.1.0.prompt.md
-│   └── v2.1.0.prompt.md      ← active: true in frontmatter
+│   └── v2.3.0.prompt.md      ← active: true
+├── playbook_consolidation/
+│   └── v2.3.3.prompt.md      ← active: true
+├── playbook_extraction_context/
+│   └── v4.3.0.prompt.md      ← active: true
+├── playbook_extraction_main/
+│   └── v1.3.0.prompt.md      ← active: true
 ├── query_reformulation/
-│   └── v1.0.0.prompt.md      ← active: true (only version)
+│   └── v1.0.0.prompt.md      ← active: true
 └── ...
 ```
 
