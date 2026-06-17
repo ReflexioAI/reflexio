@@ -39,6 +39,7 @@ from reflexio.models.api_schema.domain.entities import (
 )
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.services.operation_state_utils import OperationStateManager
+from reflexio.server.services.playbook.playbook_edit_apply import apply_playbook_edit
 from reflexio.server.services.reflection.reflection_extractor import (
     ReflectionExtractor,
 )
@@ -579,11 +580,13 @@ class ReflectionService:
                 (cited.content or "")[:120].replace('"', "'"),
                 (decision.new_rationale or "")[:120].replace('"', "'"),
             )
-        storage.save_user_playbooks([new_playbook])
         try:
-            archived = storage.archive_user_playbook_by_id(
-                user_id=owning_user_id,
-                user_playbook_id=cited.user_playbook_id,
+            archived = apply_playbook_edit(
+                storage,
+                incumbent_id=cited.user_playbook_id,
+                new_playbook=new_playbook,
+                source=new_playbook.source or "reflection",
+                expect_current=False,
             )
         except Exception as exc:  # noqa: BLE001
             with sentry_tags(
@@ -603,7 +606,7 @@ class ReflectionService:
                     new_playbook.user_playbook_id,
                 )
             return True
-        if not archived:
+        if archived < 0:
             with sentry_tags(
                 subsystem="reflection",
                 op="archive_after_insert_noop",
