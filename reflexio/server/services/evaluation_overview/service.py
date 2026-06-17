@@ -1,13 +1,16 @@
 """Aggregator that composes hero, tiles, rule attribution, and distribution.
 
-The service does three reads (results, citations, playbook stats)
-and returns a GetEvaluationOverviewResponse. It's invoked from the FastAPI
-route handler; the storage is the same BaseStorage the rest of the server
-uses, so the same instance is reused via request_context.
+The service bulk-loads the requested evaluation window plus related source,
+citation, Braintrust, and optional shadow verdict rows, then returns a
+GetEvaluationOverviewResponse. It's invoked from the FastAPI route handler; the
+storage is the same BaseStorage the rest of the server uses, so the same
+instance is reused via request_context.
 """
 
 from __future__ import annotations
 
+import logging
+import time
 from collections import defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -16,7 +19,6 @@ from datetime import UTC, datetime
 from reflexio.models.api_schema.braintrust_schema import ImportedScore
 from reflexio.models.api_schema.domain.entities import (
     AgentSuccessEvaluationResult,
-    Request,
 )
 from reflexio.models.api_schema.eval_overview_schema import (
     BraintrustTileRow,
@@ -53,6 +55,7 @@ from reflexio.server.services.evaluation_overview.shadow_aggregation import (
 _DAY_SECONDS = 24 * 60 * 60
 _WEEK_SECONDS = 7 * 24 * 60 * 60
 _TOP_N_RULES = 5
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass
@@ -84,46 +87,92 @@ class EvaluationOverviewService:
             so every tile would display "no baseline" regardless of how much
             data the org has.
         """
-        all_results = self.storage.get_agent_success_evaluation_results(  # type: ignore[attr-defined]
-            agent_version=None, limit=10_000
-        )
-        results = [
-            r for r in all_results if request.from_ts <= r.created_at <= request.to_ts
-        ]
-
-        # Tile + distribution baselines are always last-7d-vs-prior-7d, anchored
-        # to ``request.to_ts`` (which is "now" from the frontend's perspective).
+        # Tile + distribution baselines are always last-7d-vs-prior-7d,
+        # anchored to ``request.to_ts`` (which is "now" from the frontend's
+        # perspective).
         cur_7d_from = max(request.from_ts, request.to_ts - _WEEK_SECONDS)
         prev_to = cur_7d_from
         prev_from = max(0, prev_to - _WEEK_SECONDS)
+        load_from = min(request.from_ts, prev_from)
+
+        start = time.perf_counter()
+        all_results = self.storage.get_agent_success_evaluation_results_in_window(  # type: ignore[attr-defined]
+            from_ts=load_from,
+            to_ts=request.to_ts,
+            agent_version=None,
+        )
+        self._log_phase("eval_results", start, rows=len(all_results))
+
+        results = [
+            r for r in all_results if request.from_ts <= r.created_at <= request.to_ts
+        ]
         results_current_7d = [
             r for r in all_results if cur_7d_from <= r.created_at <= request.to_ts
         ]
         results_prev_7d = [
             r for r in all_results if prev_from <= r.created_at < prev_to
         ]
-        session_sources = self._build_first_request_sources(
-            [
-                r.session_id
-                for r in (*results, *results_current_7d, *results_prev_7d)
-                if r.session_id
-            ]
-        )
 
         earliest_eval_ts = min((r.created_at for r in all_results), default=None)
+        result_session_ids = list(
+            dict.fromkeys(r.session_id for r in results if r.session_id)
+        )
+        if request.source_sets:
+            source_session_ids = list(
+                dict.fromkeys(
+                    r.session_id
+                    for r in (*results, *results_current_7d, *results_prev_7d)
+                    if r.session_id
+                )
+            )
+        else:
+            source_session_ids = result_session_ids
+        start = time.perf_counter()
+        session_sources = self._build_first_request_sources(source_session_ids)
+        self._log_phase(
+            "session_sources",
+            start,
+            sessions=len(set(source_session_ids)),
+            rows=len(session_sources),
+        )
+
+        start = time.perf_counter()
+        citations_by_session, rule_titles = self._load_citations(result_session_ids)
+        self._log_phase(
+            "citations",
+            start,
+            sessions=len(set(result_session_ids)),
+            rows=sum(len(v) for v in citations_by_session.values()),
+        )
+
         hero = self._build_hero(request, results, earliest_eval_ts)
         tiles = self._build_tiles(results_current_7d, results_prev_7d)
-        attribution = self._build_attribution(results)
+        attribution = self._build_attribution(
+            results, citations_by_session, rule_titles
+        )
         distribution = self._build_distribution(results_current_7d, results_prev_7d)
-        braintrust_tiles = self._build_braintrust_tiles(
+        start = time.perf_counter()
+        current_scores, prior_scores = self._load_braintrust_scores(
             cur_7d_from, request.to_ts, prev_from, prev_to
         )
-        # F1: per-turn shadow win-rate trend. Filters verdicts to the org's
-        # pinned judge prompt version so a future rubric bump doesn't
-        # silently mix epochs into the headline.
-        shadow_win_rate_trend = self._build_shadow_win_rate_trend(
-            request.from_ts, request.to_ts
+        self._log_phase(
+            "braintrust",
+            start,
+            current_rows=len(current_scores),
+            prior_rows=len(prior_scores),
         )
+        braintrust_tiles = self._build_braintrust_tiles_from_scores(
+            current_scores, prior_scores
+        )
+        start = time.perf_counter()
+        shadow_win_rate_trend = (
+            self._build_shadow_win_rate_trend(request.from_ts, request.to_ts)
+            if request.include_shadow
+            else ShadowWinRateTrend(
+                judge_prompt_version=self.config.shadow_comparison_judge_prompt_version
+            )
+        )
+        self._log_phase("shadow", start, enabled=request.include_shadow)
         source_set_comparison = self._build_source_set_comparison(
             source_sets=request.source_sets,
             results=results,
@@ -131,10 +180,10 @@ class EvaluationOverviewService:
             previous=results_prev_7d,
             session_sources=session_sources,
             bucket=request.bucket,
-            current_from=cur_7d_from,
-            current_to=request.to_ts,
-            previous_from=prev_from,
-            previous_to=prev_to,
+            citations_by_session=citations_by_session,
+            rule_titles=rule_titles,
+            current_scores=current_scores,
+            prior_scores=prior_scores,
         )
 
         return GetEvaluationOverviewResponse(
@@ -211,12 +260,12 @@ class EvaluationOverviewService:
         )
 
     def _build_attribution(
-        self, results: list[AgentSuccessEvaluationResult]
+        self,
+        results: list[AgentSuccessEvaluationResult],
+        citations_by_session: dict[str, list[tuple[str, str]]],
+        rule_titles: dict[tuple[str, str], str],
     ) -> list[RuleAttributionRow]:
         is_success_by_session = {r.session_id: r.is_success for r in results}
-        citations_by_session, rule_titles = self._load_citations(
-            list(is_success_by_session.keys())
-        )
         rows = compute_net_sessions(
             citations_by_session=citations_by_session,
             is_success_by_session=is_success_by_session,
@@ -246,49 +295,41 @@ class EvaluationOverviewService:
         implemented `get_interactions_by_session`).
         """
         citations_by_session: dict[str, list[tuple[str, str]]] = defaultdict(list)
-        for sid in session_ids:
-            interactions = self.storage.get_interactions_by_session(sid)  # type: ignore[attr-defined]
-            for interaction in interactions:
-                for cite in getattr(interaction, "citations", []) or []:
-                    # Citations may arrive as Pydantic Citation objects (from
-                    # the normal storage path) or as plain dicts (e.g. when
-                    # tests stub the storage). Handle both shapes.
-                    if isinstance(cite, dict):
-                        kind = cite.get("kind")
-                        rid = cite.get("real_id")
-                    else:
-                        kind = getattr(cite, "kind", None)
-                        rid = getattr(cite, "real_id", None)
-                    if kind and rid:
-                        citations_by_session[sid].append((kind, str(rid)))
-        # Titles via existing playbook_application_stats lookup
-        stats = self.storage.get_playbook_application_stats(days_back=30)  # type: ignore[attr-defined]
-        rule_titles = {(s.kind, s.real_id): s.title for s in stats}
+        rule_titles: dict[tuple[str, str], str] = {}
+        for citation in self.storage.get_citations_by_session_ids(session_ids):  # type: ignore[attr-defined]
+            key = (citation.kind, citation.real_id)
+            citations_by_session[citation.session_id].append(key)
+            if citation.title and key not in rule_titles:
+                rule_titles[key] = citation.title
         return citations_by_session, rule_titles
 
-    def _build_braintrust_tiles(
+    def _load_braintrust_scores(
         self,
         from_ts: int,
         to_ts: int,
         prev_from: int,
         prev_to: int,
-        session_ids: set[str] | None = None,
-    ) -> list[BraintrustTileRow]:
-        """Aggregate imported_score rows per scorer_name for current + prior windows.
-
-        Returns [] when the org has no Braintrust connection (default no-op
-        storage returns []). The frontend treats an empty list as "not
-        connected" and hides the Braintrust strip entirely.
-        """
+    ) -> tuple[list[ImportedScore], list[ImportedScore]]:
         org_id = self._org_id()
         if not org_id:
-            return []
+            return [], []
         current = self.storage.get_imported_scores(org_id, from_ts, to_ts)  # type: ignore[attr-defined]
+        if not current:
+            return [], []
+        prior = self.storage.get_imported_scores(org_id, prev_from, prev_to)  # type: ignore[attr-defined]
+        return current, prior
+
+    def _build_braintrust_tiles_from_scores(
+        self,
+        current: list[ImportedScore],
+        prior: list[ImportedScore],
+        session_ids: set[str] | None = None,
+    ) -> list[BraintrustTileRow]:
+        """Aggregate imported_score rows per scorer_name for current + prior windows."""
         if session_ids is not None:
             current = [s for s in current if s.session_id in session_ids]
         if not current:
             return []
-        prior = self.storage.get_imported_scores(org_id, prev_from, prev_to)  # type: ignore[attr-defined]
         if session_ids is not None:
             prior = [s for s in prior if s.session_id in session_ids]
         cur_agg = _aggregate_imported_scores(current)
@@ -319,10 +360,10 @@ class EvaluationOverviewService:
         previous: list[AgentSuccessEvaluationResult],
         session_sources: dict[str, str],
         bucket: BucketLiteral,
-        current_from: int,
-        current_to: int,
-        previous_from: int,
-        previous_to: int,
+        citations_by_session: dict[str, list[tuple[str, str]]],
+        rule_titles: dict[tuple[str, str], str],
+        current_scores: list[ImportedScore],
+        prior_scores: list[ImportedScore],
     ) -> SourceSetComparison:
         """Build request-source cohort metrics for the evaluation page."""
         available_sources = sorted(
@@ -368,12 +409,12 @@ class EvaluationOverviewService:
                     score_distribution=self._build_distribution(
                         set_current, set_previous
                     ),
-                    rule_attribution=self._build_attribution(set_results),
-                    braintrust_tiles=self._build_braintrust_tiles(
-                        current_from,
-                        current_to,
-                        previous_from,
-                        previous_to,
+                    rule_attribution=self._build_attribution(
+                        set_results, citations_by_session, rule_titles
+                    ),
+                    braintrust_tiles=self._build_braintrust_tiles_from_scores(
+                        current_scores,
+                        prior_scores,
                         session_ids=session_ids,
                     ),
                 )
@@ -427,45 +468,10 @@ class EvaluationOverviewService:
             verdicts, judge_prompt_version=pinned_version
         )
 
-    def _build_first_request_sources(
-        self, session_ids: Iterable[str]
-    ) -> dict[str, str]:
+    def _build_first_request_sources(self, session_ids: list[str]) -> dict[str, str]:
         """Map each session to its earliest request's source."""
-        sources: dict[str, str] = {}
-        for sid in set(session_ids):
-            reqs = self._get_session_requests(sid)
-            if reqs:
-                first = min(reqs, key=lambda r: r.created_at)
-                sources[sid] = first.source or ""
-            else:
-                sources[sid] = ""
-        return sources
-
-    def _get_session_requests(self, session_id: str) -> list[Request]:
-        """Return every request in ``session_id`` regardless of user.
-
-        Uses ``BaseStorage.get_sessions(session_id=...)`` because the
-        per-session, user-id-required ``get_requests_by_session`` doesn't
-        fit our caller (eval results don't carry ``user_id``). All locally
-        testable backends ignore the ``user_id`` filter when it's ``None``,
-        and ``top_k`` is raised well above realistic per-session counts so
-        we don't truncate.
-
-        Args:
-            session_id (str): The session whose requests to fetch.
-
-        Returns:
-            list[Request]: All requests in the session, in storage order.
-        """
-        grouped = self.storage.get_sessions(  # type: ignore[attr-defined]
-            session_id=session_id, top_k=1000
-        )
-        return [
-            entry.request
-            for entries in grouped.values()
-            for entry in entries
-            if entry.request is not None
-        ]
+        first_requests = self.storage.get_first_requests_by_session_ids(session_ids)  # type: ignore[attr-defined]
+        return {sid: row.source or "" for sid, row in first_requests.items()}
 
     def _build_distribution(
         self,
@@ -482,6 +488,16 @@ class EvaluationOverviewService:
             current_bins=list(cur_bins),
             baseline_bins=list(prev_bins),
             labels=list(BUCKET_LABELS),
+        )
+
+    def _log_phase(self, phase: str, started_at: float, **metadata: object) -> None:
+        duration_ms = int((time.perf_counter() - started_at) * 1000)
+        fields = " ".join(f"{key}={value}" for key, value in metadata.items())
+        _LOGGER.info(
+            "evaluation_overview phase=%s duration_ms=%d %s",
+            phase,
+            duration_ms,
+            fields,
         )
 
 

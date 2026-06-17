@@ -8,6 +8,7 @@ from reflexio.models.api_schema.braintrust_schema import (
     BraintrustConnection,
     ImportedScore,
 )
+from reflexio.models.api_schema.internal_schema import SessionCitation
 from reflexio.models.api_schema.retriever_schema import PlaybookApplicationStat
 from reflexio.models.api_schema.service_schemas import (
     Interaction,
@@ -477,6 +478,49 @@ class ExtrasMixin:
             (session_id,),
         )
         return [_row_to_interaction(r) for r in rows]
+
+    @SQLiteStorageBase.handle_exceptions
+    def get_citations_by_session_ids(
+        self,
+        session_ids: list[str],
+    ) -> list[SessionCitation]:
+        if not session_ids:
+            return []
+        out: list[SessionCitation] = []
+        ids = sorted(set(session_ids))
+        chunk_size = 500
+        for i in range(0, len(ids), chunk_size):
+            chunk = ids[i : i + chunk_size]
+            ph = ",".join("?" for _ in chunk)
+            rows = self._fetchall(
+                f"""SELECT r.session_id, i.citations
+                    FROM requests r
+                    JOIN interactions i ON i.request_id = r.request_id
+                    WHERE r.session_id IN ({ph})
+                      AND i.citations IS NOT NULL
+                      AND i.citations != '[]'
+                    ORDER BY r.session_id ASC, i.created_at ASC""",  # noqa: S608
+                chunk,
+            )
+            for row in rows:
+                citations = _json_loads(row["citations"]) or []
+                if not isinstance(citations, list):
+                    continue
+                for citation in citations:
+                    if not isinstance(citation, dict):
+                        continue
+                    kind = citation.get("kind")
+                    real_id = citation.get("real_id")
+                    if kind and real_id:
+                        out.append(
+                            SessionCitation(
+                                session_id=row["session_id"],
+                                kind=str(kind),
+                                real_id=str(real_id),
+                                title=str(citation.get("title") or ""),
+                            )
+                        )
+        return out
 
     # ------------------------------------------------------------------
     # Braintrust connector storage (Plan C-backend + Plan C-overview)

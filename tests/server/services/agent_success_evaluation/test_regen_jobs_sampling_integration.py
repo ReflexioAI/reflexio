@@ -242,27 +242,46 @@ def test_run_regen_uses_first_request_source_for_sampling(
     assert job.sampled_count == len(calls)
 
 
-def test_run_regen_continues_when_one_session_storage_lookup_fails(
+def test_build_sample_candidates_uses_one_bulk_first_request_lookup(
     monkeypatch: pytest.MonkeyPatch, storage: SQLiteStorage
 ) -> None:
-    """A storage glitch on one session's source lookup must not abort
-    the whole job — the session is sampled with fallback source and the
+    ts = 1_700_000_000
+    for i in range(5):
+        _seed(storage, f"bulk-{i}", ts, "candidate")
+
+    real_get = storage.get_first_requests_by_session_ids
+    calls: list[list[str]] = []
+
+    def spy(session_ids: list[str]):
+        calls.append(session_ids)
+        return real_get(session_ids)
+
+    monkeypatch.setattr(storage, "get_first_requests_by_session_ids", spy)
+
+    descriptors = storage.get_session_ids_in_window(ts - 1, ts + 1)
+    candidates = regen_jobs._build_sample_candidates(storage, descriptors)  # noqa: SLF001
+
+    assert len(candidates) == 5
+    assert len(calls) == 1
+    assert sorted(calls[0]) == [f"bulk-{i}" for i in range(5)]
+
+
+def test_run_regen_continues_when_bulk_first_request_lookup_fails(
+    monkeypatch: pytest.MonkeyPatch, storage: SQLiteStorage
+) -> None:
+    """A storage glitch on bulk source lookup must not abort
+    the whole job — sessions are sampled with fallback source and the
     per-session loop reports its own failure (or success) for it.
     """
     ts = 1_700_000_000
     for i in range(5):
         _seed(storage, f"ok-{i}", ts, "candidate")
 
-    real_get = storage.get_requests_by_session
-    poison_session = "ok-2"
-
-    def flaky_get_requests_by_session(user_id: str, session_id: str) -> list[Request]:
-        if session_id == poison_session:
-            raise RuntimeError("simulated transient DB error")
-        return real_get(user_id, session_id)
+    def flaky_first_requests(session_ids: list[str]) -> dict:
+        raise RuntimeError("simulated transient DB error")
 
     monkeypatch.setattr(
-        storage, "get_requests_by_session", flaky_get_requests_by_session
+        storage, "get_first_requests_by_session_ids", flaky_first_requests
     )
 
     calls: list[str] = []

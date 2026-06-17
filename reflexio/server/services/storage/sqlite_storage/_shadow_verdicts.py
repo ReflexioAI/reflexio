@@ -176,6 +176,26 @@ class ShadowVerdictsMixin:
         return [_row_to_verdict(r) for r in rows]
 
     @SQLiteStorageBase.handle_exceptions
+    def get_recent_shadow_comparison_verdicts(
+        self,
+        from_ts: int,
+        to_ts: int,
+        judge_prompt_version: str,
+        limit: int,
+    ) -> list[ShadowComparisonVerdict]:
+        from_iso = _epoch_to_iso(max(0, min(from_ts, _MAX_SAFE_EPOCH_TS)))
+        to_iso = _epoch_to_iso(max(0, min(to_ts, _MAX_SAFE_EPOCH_TS)))
+        rows = self._fetchall(
+            """SELECT * FROM shadow_comparison_verdicts
+               WHERE created_at >= ? AND created_at <= ?
+                 AND judge_prompt_version = ?
+               ORDER BY created_at DESC
+               LIMIT ?""",
+            (from_iso, to_iso, judge_prompt_version, limit),
+        )
+        return [_row_to_verdict(r) for r in rows]
+
+    @SQLiteStorageBase.handle_exceptions
     def delete_shadow_comparison_verdicts_by_session(self, session_id: str) -> int:
         """
         Delete all verdicts for one session.

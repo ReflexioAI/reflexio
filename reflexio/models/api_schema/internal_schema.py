@@ -26,3 +26,21 @@ class SessionDescriptor(NamedTuple):
     session_id: str
     agent_version: str
     source: str
+
+
+class SessionFirstRequest(NamedTuple):
+    """Earliest request metadata for one session."""
+
+    session_id: str
+    user_id: str
+    source: str
+    created_at: int
+
+
+class SessionCitation(NamedTuple):
+    """One cited rule/profile occurrence, keyed by session."""
+
+    session_id: str
+    kind: str
+    real_id: str
+    title: str

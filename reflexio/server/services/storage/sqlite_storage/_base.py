@@ -1693,6 +1693,8 @@ CREATE TABLE IF NOT EXISTS requests (
 CREATE INDEX IF NOT EXISTS idx_requests_user_id ON requests(user_id);
 CREATE INDEX IF NOT EXISTS idx_requests_session_id ON requests(session_id);
 CREATE INDEX IF NOT EXISTS idx_requests_created_at ON requests(created_at);
+CREATE INDEX IF NOT EXISTS idx_requests_session_created_at_asc
+    ON requests(session_id, created_at ASC, request_id ASC);
 
 CREATE TABLE IF NOT EXISTS user_playbooks (
     user_playbook_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1756,6 +1758,12 @@ CREATE TABLE IF NOT EXISTS agent_success_evaluation_result (
 );
 CREATE INDEX IF NOT EXISTS idx_eval_agent_version ON agent_success_evaluation_result(agent_version);
 CREATE INDEX IF NOT EXISTS idx_eval_created_at ON agent_success_evaluation_result(created_at);
+CREATE INDEX IF NOT EXISTS idx_eval_created_at_desc
+    ON agent_success_evaluation_result(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_eval_agent_version_created_at_desc
+    ON agent_success_evaluation_result(agent_version, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_eval_identity_created_at_desc
+    ON agent_success_evaluation_result(session_id, evaluation_name, agent_version, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS profile_change_logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2011,5 +2019,7 @@ CREATE INDEX IF NOT EXISTS idx_shadow_verdicts_created_at
     ON shadow_comparison_verdicts (created_at);
 CREATE INDEX IF NOT EXISTS idx_shadow_verdicts_prompt_v
     ON shadow_comparison_verdicts (judge_prompt_version);
+CREATE INDEX IF NOT EXISTS idx_shadow_verdicts_prompt_created_at_desc
+    ON shadow_comparison_verdicts (judge_prompt_version, created_at DESC);
 
 """

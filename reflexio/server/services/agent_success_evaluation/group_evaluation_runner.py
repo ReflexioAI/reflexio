@@ -24,6 +24,7 @@ from reflexio.server.services.agent_success_evaluation.agent_success_evaluation_
 from reflexio.server.services.agent_success_evaluation.delayed_group_evaluator import (
     _EFFECTIVE_DELAY_SECONDS,
 )
+from reflexio.server.services.extractor_config_utils import get_extractor_name
 from reflexio.server.services.shadow_comparison.judge import ShadowComparisonJudge
 
 logger = logging.getLogger(__name__)
@@ -166,13 +167,12 @@ def run_group_evaluation(
     # afterwards cannot remove the new rows.
     old_result_ids: list[int] = []
     if force_regenerate:
-        # Eval rows per session are tiny (usually 1), so pulling a
-        # generous limit and filtering in-process is cheap and avoids adding
-        # a third query shape to the storage contract.
-        prior_rows = storage.get_agent_success_evaluation_results(  # type: ignore[reportOptionalMemberAccess]
-            limit=10000, agent_version=agent_version
+        config = request_context.configurator.get_config()
+        old_result_ids = storage.get_agent_success_evaluation_result_ids(  # type: ignore[reportOptionalMemberAccess]
+            session_id=session_id,
+            evaluation_name=get_extractor_name(config),
+            agent_version=agent_version,
         )
-        old_result_ids = [r.result_id for r in prior_rows if r.session_id == session_id]
 
     logger.info(
         "Running group evaluation for session=%s with %d requests and %d interactions"

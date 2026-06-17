@@ -634,6 +634,42 @@ class PlaybookMixin:
         """
         raise NotImplementedError
 
+    def get_agent_success_evaluation_results_in_window(
+        self,
+        from_ts: int,
+        to_ts: int,
+        agent_version: str | None = None,
+        limit: int | None = None,
+    ) -> list[AgentSuccessEvaluationResult]:
+        """Return eval results in ``[from_ts, to_ts]``.
+
+        Default implementation filters the existing latest-results method.
+        SQL backends should override so callers do not depend on an arbitrary
+        latest-row cap.
+        """
+        rows = self.get_agent_success_evaluation_results(
+            limit=limit or 10_000,
+            agent_version=agent_version,
+        )
+        return [r for r in rows if from_ts <= r.created_at <= to_ts]
+
+    def get_agent_success_evaluation_result_ids(
+        self,
+        session_id: str,
+        evaluation_name: str,
+        agent_version: str,
+    ) -> list[int]:
+        """Return result ids for one eval identity tuple."""
+        rows = self.get_agent_success_evaluation_results(
+            limit=10_000,
+            agent_version=agent_version,
+        )
+        return [
+            r.result_id
+            for r in rows
+            if r.session_id == session_id and r.evaluation_name == evaluation_name
+        ]
+
     @abstractmethod
     def delete_all_agent_success_evaluation_results(self) -> None:
         """Delete all agent success evaluation results from storage."""

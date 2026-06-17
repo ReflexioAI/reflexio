@@ -1328,6 +1328,44 @@ class PlaybookMixin:
         return [_row_to_eval_result(r) for r in rows]
 
     @SQLiteStorageBase.handle_exceptions
+    def get_agent_success_evaluation_results_in_window(
+        self,
+        from_ts: int,
+        to_ts: int,
+        agent_version: str | None = None,
+        limit: int | None = None,
+    ) -> list[AgentSuccessEvaluationResult]:
+        sql = """SELECT * FROM agent_success_evaluation_result
+                 WHERE created_at >= ? AND created_at <= ?"""
+        params: list[Any] = [_epoch_to_iso(from_ts), _epoch_to_iso(to_ts)]
+        if agent_version is not None:
+            sql += " AND agent_version = ?"
+            params.append(agent_version)
+        sql += " ORDER BY created_at DESC"
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(limit)
+        rows = self._fetchall(sql, params)
+        return [_row_to_eval_result(r) for r in rows]
+
+    @SQLiteStorageBase.handle_exceptions
+    def get_agent_success_evaluation_result_ids(
+        self,
+        session_id: str,
+        evaluation_name: str,
+        agent_version: str,
+    ) -> list[int]:
+        rows = self._fetchall(
+            """SELECT result_id FROM agent_success_evaluation_result
+               WHERE session_id = ?
+                 AND evaluation_name = ?
+                 AND agent_version = ?
+               ORDER BY created_at DESC""",
+            (session_id, evaluation_name, agent_version),
+        )
+        return [int(r["result_id"]) for r in rows]
+
+    @SQLiteStorageBase.handle_exceptions
     def delete_all_agent_success_evaluation_results(self) -> None:
         self._execute("DELETE FROM agent_success_evaluation_result")
 

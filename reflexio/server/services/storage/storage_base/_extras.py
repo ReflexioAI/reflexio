@@ -9,6 +9,7 @@ from reflexio.models.api_schema.domain import (
     PlaybookAggregationChangeLog,
     ProfileChangeLog,
 )
+from reflexio.models.api_schema.internal_schema import SessionCitation
 from reflexio.models.api_schema.retriever_schema import PlaybookApplicationStat
 
 
@@ -170,6 +171,39 @@ class ExtrasMixin:
         Default implementation returns []; concrete backends should override.
         """
         return []
+
+    def get_citations_by_session_ids(
+        self,
+        session_ids: list[str],
+    ) -> list[SessionCitation]:
+        """Return rule/profile citations for the requested sessions.
+
+        Default implementation uses ``get_interactions_by_session`` so legacy
+        backends keep working. SQL backends should override with a bulk
+        request/interactions join.
+        """
+        out: list[SessionCitation] = []
+        for session_id in set(session_ids):
+            for interaction in self.get_interactions_by_session(session_id):
+                for cite in getattr(interaction, "citations", []) or []:
+                    if isinstance(cite, dict):
+                        kind = cite.get("kind")
+                        real_id = cite.get("real_id")
+                        title = cite.get("title") or ""
+                    else:
+                        kind = getattr(cite, "kind", None)
+                        real_id = getattr(cite, "real_id", None)
+                        title = getattr(cite, "title", "") or ""
+                    if kind and real_id:
+                        out.append(
+                            SessionCitation(
+                                session_id=session_id,
+                                kind=str(kind),
+                                real_id=str(real_id),
+                                title=str(title),
+                            )
+                        )
+        return out
 
     # ==============================
     # Braintrust connector (default no-ops; backends override)

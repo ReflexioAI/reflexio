@@ -4,6 +4,7 @@ from reflexio.models.api_schema.domain import Request
 from reflexio.models.api_schema.internal_schema import (
     RequestInteractionDataModel,
     SessionDescriptor,
+    SessionFirstRequest,
 )
 
 
@@ -152,3 +153,28 @@ class RequestMixin:
             list[SessionDescriptor]: Deduped descriptors ordered by session_id.
         """
         raise NotImplementedError
+
+    def get_first_requests_by_session_ids(
+        self, session_ids: list[str]
+    ) -> dict[str, SessionFirstRequest]:
+        """Return earliest-request metadata for each requested session.
+
+        Default implementation preserves the historical storage contract by
+        calling ``get_sessions`` per session. SQL backends should override with
+        a set-based query.
+        """
+        out: dict[str, SessionFirstRequest] = {}
+        for session_id in set(session_ids):
+            grouped = self.get_sessions(session_id=session_id, top_k=1000)
+            rows = grouped.get(session_id) or []
+            requests = [r.request for r in rows if r.request is not None]
+            if not requests:
+                continue
+            first = min(requests, key=lambda r: r.created_at)
+            out[session_id] = SessionFirstRequest(
+                session_id=session_id,
+                user_id=first.user_id,
+                source=first.source or "",
+                created_at=first.created_at,
+            )
+        return out

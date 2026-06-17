@@ -128,6 +128,35 @@ def test_get_in_window_orders_ascending_by_created_at(
     assert [r.interaction_id for r in result] == ["cv-i-early", "cv-i-late"]
 
 
+def test_get_recent_verdicts_orders_descending_and_limits(
+    storage: BaseStorage,
+) -> None:
+    base_ts = int(datetime.now(UTC).timestamp())
+    for offset in range(5):
+        storage.save_shadow_comparison_verdict(
+            _make_verdict(
+                interaction_id=f"cv-i-{offset}",
+                created_at=datetime.fromtimestamp(base_ts + offset, tz=UTC),
+            )
+        )
+    storage.save_shadow_comparison_verdict(
+        _make_verdict(
+            interaction_id="cv-i-other-prompt",
+            judge_prompt_version="v2.0.0",
+            created_at=datetime.fromtimestamp(base_ts + 10, tz=UTC),
+        )
+    )
+
+    result = storage.get_recent_shadow_comparison_verdicts(
+        from_ts=base_ts - 1,
+        to_ts=base_ts + 20,
+        judge_prompt_version="v1.0.0",
+        limit=3,
+    )
+
+    assert [r.interaction_id for r in result] == ["cv-i-4", "cv-i-3", "cv-i-2"]
+
+
 def test_delete_by_session_returns_count(storage: BaseStorage) -> None:
     base_ts = datetime.now(UTC)
     storage.save_shadow_comparison_verdict(

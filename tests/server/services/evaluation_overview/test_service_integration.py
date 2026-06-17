@@ -7,7 +7,12 @@ from unittest.mock import MagicMock
 
 from reflexio.models.api_schema.domain.entities import AgentSuccessEvaluationResult
 from reflexio.models.api_schema.eval_overview_schema import (
+    EvaluationSourceSetRequest,
     GetEvaluationOverviewRequest,
+)
+from reflexio.models.api_schema.internal_schema import (
+    SessionCitation,
+    SessionFirstRequest,
 )
 from reflexio.models.config_schema import Config, StorageConfigSQLite
 from reflexio.server.services.evaluation_overview.service import (
@@ -34,15 +39,35 @@ def _eval_result(
     )
 
 
-def test_service_returns_full_response_with_shadow_enabled_and_data() -> None:
+def _storage_with_results(
+    results: list[AgentSuccessEvaluationResult],
+) -> MagicMock:
     storage = MagicMock()
-    storage.get_agent_success_evaluation_results.return_value = [
-        _eval_result(result_id=1, session_id="s1", is_success=True, corrections=0),
-        _eval_result(result_id=2, session_id="s2", is_success=True, corrections=1),
-        _eval_result(result_id=3, session_id="s3", is_success=False, corrections=3),
-    ]
-    storage.get_playbook_application_stats.return_value = []
-    storage.get_interactions_by_session.return_value = []
+    storage.org_id = ""
+    storage.get_agent_success_evaluation_results_in_window.return_value = results
+    storage.get_first_requests_by_session_ids.return_value = {
+        r.session_id: SessionFirstRequest(
+            session_id=r.session_id,
+            user_id="u1",
+            source="api",
+            created_at=r.created_at,
+        )
+        for r in results
+    }
+    storage.get_citations_by_session_ids.return_value = []
+    storage.get_imported_scores.return_value = []
+    storage.get_shadow_comparison_verdicts.return_value = []
+    return storage
+
+
+def test_service_returns_full_response_with_shadow_enabled_and_data() -> None:
+    storage = _storage_with_results(
+        [
+            _eval_result(result_id=1, session_id="s1", is_success=True, corrections=0),
+            _eval_result(result_id=2, session_id="s2", is_success=True, corrections=1),
+            _eval_result(result_id=3, session_id="s3", is_success=False, corrections=3),
+        ]
+    )
     config = Config(storage_config=StorageConfigSQLite(), shadow_mode_enabled=True)
 
     svc = EvaluationOverviewService(storage=storage, config=config)
@@ -61,13 +86,12 @@ def test_service_hero_shadow_fields_always_null_after_direct_grade_removal() -> 
     See docs/superpowers/specs/2026-05-27-shadow-mode-validity-and-alternatives.md
     for the rationale (multi-turn trajectory contamination + applicability gap).
     """
-    storage = MagicMock()
-    storage.get_agent_success_evaluation_results.return_value = [
-        _eval_result(result_id=1, session_id="s1", is_success=True),
-        _eval_result(result_id=2, session_id="s2", is_success=False),
-    ]
-    storage.get_playbook_application_stats.return_value = []
-    storage.get_interactions_by_session.return_value = []
+    storage = _storage_with_results(
+        [
+            _eval_result(result_id=1, session_id="s1", is_success=True),
+            _eval_result(result_id=2, session_id="s2", is_success=False),
+        ]
+    )
     config = Config(storage_config=StorageConfigSQLite())
 
     svc = EvaluationOverviewService(storage=storage, config=config)
@@ -81,10 +105,7 @@ def test_service_hero_shadow_fields_always_null_after_direct_grade_removal() -> 
 
 
 def test_service_returns_empty_state_when_no_results() -> None:
-    storage = MagicMock()
-    storage.get_agent_success_evaluation_results.return_value = []
-    storage.get_playbook_application_stats.return_value = []
-    storage.get_interactions_by_session.return_value = []
+    storage = _storage_with_results([])
     config = Config(storage_config=StorageConfigSQLite(), shadow_mode_enabled=False)
 
     svc = EvaluationOverviewService(storage=storage, config=config)
@@ -97,19 +118,16 @@ def test_service_returns_empty_state_when_no_results() -> None:
 
 def test_service_reports_single_recent_success_as_100_percent() -> None:
     now = int(time.time())
-    storage = MagicMock()
-    storage.get_agent_success_evaluation_results.return_value = [
-        _eval_result(
-            result_id=1,
-            session_id="recent-success",
-            is_success=True,
-            created_at=now - 60,
-        ),
-    ]
-    storage.get_playbook_application_stats.return_value = []
-    storage.get_interactions_by_session.return_value = []
-    storage.get_imported_scores.return_value = []
-    storage.get_sessions.return_value = {}
+    storage = _storage_with_results(
+        [
+            _eval_result(
+                result_id=1,
+                session_id="recent-success",
+                is_success=True,
+                created_at=now - 60,
+            ),
+        ]
+    )
     config = Config(storage_config=StorageConfigSQLite())
 
     svc = EvaluationOverviewService(storage=storage, config=config)
@@ -124,22 +142,19 @@ def test_service_reports_single_recent_success_as_100_percent() -> None:
 def test_service_uses_first_ever_eval_for_hero_age() -> None:
     """A narrow window should not make a mature org look newly onboarded."""
     now = int(time.time())
-    storage = MagicMock()
-    storage.get_agent_success_evaluation_results.return_value = [
-        _eval_result(
-            result_id=1,
-            session_id="old",
-            is_success=True,
-            created_at=now - 10 * 24 * 60 * 60,
-        ),
-        _eval_result(
-            result_id=2, session_id="current", is_success=True, created_at=now
-        ),
-    ]
-    storage.get_playbook_application_stats.return_value = []
-    storage.get_interactions_by_session.return_value = []
-    storage.get_imported_scores.return_value = []
-    storage.get_sessions.return_value = {}
+    storage = _storage_with_results(
+        [
+            _eval_result(
+                result_id=1,
+                session_id="old",
+                is_success=True,
+                created_at=now - 10 * 24 * 60 * 60,
+            ),
+            _eval_result(
+                result_id=2, session_id="current", is_success=True, created_at=now
+            ),
+        ]
+    )
     config = Config(storage_config=StorageConfigSQLite())
 
     svc = EvaluationOverviewService(storage=storage, config=config)
@@ -150,26 +165,23 @@ def test_service_uses_first_ever_eval_for_hero_age() -> None:
 
 def test_service_honors_day_bucket_for_hero_trend() -> None:
     day = 24 * 60 * 60
-    storage = MagicMock()
-    storage.get_agent_success_evaluation_results.return_value = [
-        _eval_result(result_id=1, session_id="s1", is_success=True, created_at=day),
-        _eval_result(
-            result_id=2,
-            session_id="s2",
-            is_success=False,
-            created_at=day + 3600,
-        ),
-        _eval_result(
-            result_id=3,
-            session_id="s3",
-            is_success=True,
-            created_at=2 * day,
-        ),
-    ]
-    storage.get_playbook_application_stats.return_value = []
-    storage.get_interactions_by_session.return_value = []
-    storage.get_imported_scores.return_value = []
-    storage.get_sessions.return_value = {}
+    storage = _storage_with_results(
+        [
+            _eval_result(result_id=1, session_id="s1", is_success=True, created_at=day),
+            _eval_result(
+                result_id=2,
+                session_id="s2",
+                is_success=False,
+                created_at=day + 3600,
+            ),
+            _eval_result(
+                result_id=3,
+                session_id="s3",
+                is_success=True,
+                created_at=2 * day,
+            ),
+        ]
+    )
     config = Config(storage_config=StorageConfigSQLite())
 
     svc = EvaluationOverviewService(storage=storage, config=config)
@@ -179,3 +191,189 @@ def test_service_honors_day_bucket_for_hero_trend() -> None:
 
     assert [bucket.ts for bucket in response.hero.buckets] == [day, 2 * day]
     assert [bucket.regular_n for bucket in response.hero.buckets] == [2, 1]
+
+
+def test_service_uses_bulk_storage_methods_without_per_session_reads() -> None:
+    storage = _storage_with_results(
+        [
+            _eval_result(result_id=1, session_id="s1", is_success=True),
+            _eval_result(result_id=2, session_id="s2", is_success=False),
+        ]
+    )
+    storage.get_citations_by_session_ids.return_value = [
+        SessionCitation(
+            session_id="s1",
+            kind="playbook",
+            real_id="42",
+            title="Keep answers short",
+        )
+    ]
+    config = Config(storage_config=StorageConfigSQLite())
+
+    svc = EvaluationOverviewService(storage=storage, config=config)
+    response = svc.run(GetEvaluationOverviewRequest(from_ts=0, to_ts=int(time.time())))
+
+    assert response.rule_attribution[0].rule_id == "42"
+    storage.get_agent_success_evaluation_results.assert_not_called()
+    storage.get_sessions.assert_not_called()
+    storage.get_interactions_by_session.assert_not_called()
+    storage.get_playbook_application_stats.assert_not_called()
+    storage.get_first_requests_by_session_ids.assert_called_once()
+    storage.get_citations_by_session_ids.assert_called_once()
+
+
+def test_service_limits_source_lookup_to_window_when_no_source_sets() -> None:
+    now = int(time.time())
+    day = 24 * 60 * 60
+    storage = _storage_with_results(
+        [
+            _eval_result(
+                result_id=1,
+                session_id="current",
+                is_success=True,
+                created_at=now,
+            ),
+            _eval_result(
+                result_id=2,
+                session_id="previous",
+                is_success=False,
+                created_at=now - 10 * day,
+            ),
+        ]
+    )
+    storage.get_first_requests_by_session_ids.return_value = {
+        "current": SessionFirstRequest(
+            session_id="current",
+            user_id="u1",
+            source="current-source",
+            created_at=now,
+        ),
+        "previous": SessionFirstRequest(
+            session_id="previous",
+            user_id="u1",
+            source="previous-source",
+            created_at=now - 10 * day,
+        ),
+    }
+    config = Config(storage_config=StorageConfigSQLite())
+
+    svc = EvaluationOverviewService(storage=storage, config=config)
+    response = svc.run(
+        GetEvaluationOverviewRequest(
+            from_ts=now - 60,
+            to_ts=now,
+            include_shadow=False,
+        )
+    )
+
+    assert response.source_set_comparison.available_sources == ["current-source"]
+    storage.get_first_requests_by_session_ids.assert_called_once_with(["current"])
+
+
+def test_service_loads_baseline_sources_when_source_sets_requested() -> None:
+    now = int(time.time())
+    day = 24 * 60 * 60
+    storage = _storage_with_results(
+        [
+            _eval_result(
+                result_id=1,
+                session_id="current",
+                is_success=True,
+                created_at=now,
+            ),
+            _eval_result(
+                result_id=2,
+                session_id="previous",
+                is_success=False,
+                created_at=now - 10 * day,
+            ),
+        ]
+    )
+    storage.get_first_requests_by_session_ids.return_value = {
+        "current": SessionFirstRequest(
+            session_id="current",
+            user_id="u1",
+            source="candidate",
+            created_at=now,
+        ),
+        "previous": SessionFirstRequest(
+            session_id="previous",
+            user_id="u1",
+            source="candidate",
+            created_at=now - 10 * day,
+        ),
+    }
+    config = Config(storage_config=StorageConfigSQLite())
+
+    svc = EvaluationOverviewService(storage=storage, config=config)
+    response = svc.run(
+        GetEvaluationOverviewRequest(
+            from_ts=now - 7 * day,
+            to_ts=now,
+            include_shadow=False,
+            source_sets=[
+                EvaluationSourceSetRequest(label="Candidate", sources=["candidate"])
+            ],
+        )
+    )
+
+    assert (
+        response.source_set_comparison.sets[0].context_tiles.success.delta_pp == 100.0
+    )
+    storage.get_first_requests_by_session_ids.assert_called_once_with(
+        ["current", "previous"]
+    )
+
+
+def test_service_skips_shadow_storage_when_shadow_excluded() -> None:
+    storage = _storage_with_results(
+        [_eval_result(result_id=1, session_id="s1", is_success=True)]
+    )
+    config = Config(storage_config=StorageConfigSQLite())
+
+    svc = EvaluationOverviewService(storage=storage, config=config)
+    response = svc.run(
+        GetEvaluationOverviewRequest(
+            from_ts=0,
+            to_ts=int(time.time()),
+            include_shadow=False,
+        )
+    )
+
+    assert response.shadow_win_rate_trend.window_total.n == 0
+    storage.get_shadow_comparison_verdicts.assert_not_called()
+
+
+def test_service_handles_5k_sessions_with_bulk_call_shape() -> None:
+    now = int(time.time())
+    results = [
+        _eval_result(
+            result_id=i + 1,
+            session_id=f"s{i}",
+            is_success=(i % 2 == 0),
+            corrections=i % 6,
+            created_at=now - (i % 3600),
+        )
+        for i in range(5000)
+    ]
+    storage = _storage_with_results(results)
+    config = Config(storage_config=StorageConfigSQLite())
+
+    svc = EvaluationOverviewService(storage=storage, config=config)
+    started = time.perf_counter()
+    response = svc.run(
+        GetEvaluationOverviewRequest(
+            from_ts=now - 7200,
+            to_ts=now,
+            include_shadow=False,
+        )
+    )
+    elapsed = time.perf_counter() - started
+
+    assert response.hero.regular_success_rate_pp == 50.0
+    assert elapsed < 2.0
+    storage.get_agent_success_evaluation_results_in_window.assert_called_once()
+    storage.get_first_requests_by_session_ids.assert_called_once()
+    storage.get_citations_by_session_ids.assert_called_once()
+    storage.get_sessions.assert_not_called()
+    storage.get_interactions_by_session.assert_not_called()

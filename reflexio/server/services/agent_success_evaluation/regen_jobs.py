@@ -170,72 +170,16 @@ class RegenJobRegistry:
 REGEN_JOBS = RegenJobRegistry()
 
 
-def _load_first_request(
-    storage: BaseStorage,
-    user_id: str,
-    session_id: str,
-    cache: dict[str, tuple[int, str]],
-) -> tuple[int, str]:
-    """Return the (created_at, source) of a session's earliest request, memoized.
-
-    The regen worker can see multiple SessionDescriptors for the same
-    session_id (one per distinct agent_version/source tuple). This
-    helper guarantees each session_id triggers at most one storage call.
-
-    Args:
-        storage (BaseStorage): Storage backend bound to the request_context.
-        user_id (str): Owner of the session's requests.
-        session_id (str): Session whose first-request data to return.
-        cache (dict[str, tuple[int, str]]): Memoization dict keyed by
-            session_id; updated in place.
-
-    Returns:
-        tuple[int, str]: ``(first_created_at, first_source)``. Falls back
-        to ``(0, "")`` when the session has no requests (the
-        descriptor is still kept so the regen worker can attempt
-        evaluation; the sampler simply treats it as the epoch-zero day
-        bucket and the empty-source stratum).
-    """
-    cached = cache.get(session_id)
-    if cached is not None:
-        return cached
-    try:
-        requests = storage.get_requests_by_session(user_id, session_id)
-    except Exception as e:  # noqa: BLE001 — per-session resilience boundary
-        logger.warning(
-            "Failed to fetch requests for session %s during F3 sampler candidate "
-            "discovery (%s); falling back to (created_at=0, source=''). The "
-            "session will be retried in the per-session loop below.",
-            session_id,
-            e,
-        )
-        cache[session_id] = (0, "")
-        return cache[session_id]
-    if not requests:
-        logger.warning(
-            "Session %s has no requests in storage despite being returned by "
-            "get_session_ids_in_window (possible race or contract violation); "
-            "falling back to (created_at=0, source='').",
-            session_id,
-        )
-        cache[session_id] = (0, "")
-        return cache[session_id]
-    first = min(requests, key=lambda r: r.created_at)
-    cache[session_id] = (first.created_at, first.source or "")
-    return cache[session_id]
-
-
 def _build_sample_candidates(
     storage: BaseStorage,
     descriptors: list[SessionDescriptor],
 ) -> list[SampleCandidate]:
     """Convert raw SessionDescriptors into SampleCandidates.
 
-    Reads the first-request data for each distinct session_id at most
-    once via ``_load_first_request``'s cache, then assembles one
-    ``SampleCandidate`` per descriptor. ``created_at`` is sourced from
-    the first request's timestamp so the day-bucket stratum aligns with
-    the session's wall clock (not the regen window's edges).
+    Reads first-request data for all distinct session_ids in one storage call,
+    then assembles one ``SampleCandidate`` per descriptor. ``created_at`` is
+    sourced from the first request's timestamp so the day-bucket stratum aligns
+    with the session's wall clock (not the regen window's edges).
 
     Args:
         storage (BaseStorage): Storage backend used to load per-session data.
@@ -246,20 +190,34 @@ def _build_sample_candidates(
         list[SampleCandidate]: One candidate per descriptor, ready for the
         pure ``sample_candidates`` function.
     """
-    cache: dict[str, tuple[int, str]] = {}
+    session_ids = sorted({sd.session_id for sd in descriptors})
+    try:
+        first_requests = storage.get_first_requests_by_session_ids(session_ids)
+    except Exception as e:  # noqa: BLE001 — discovery should not abort the whole job
+        logger.warning(
+            "Failed to bulk fetch first requests during F3 sampler candidate "
+            "discovery (%s); falling back to epoch-zero source buckets.",
+            e,
+        )
+        first_requests = {}
+
     candidates: list[SampleCandidate] = []
     for sd in descriptors:
-        created_at, first_source = _load_first_request(
-            storage, sd.user_id, sd.session_id, cache
-        )
+        first = first_requests.get(sd.session_id)
+        if first is None:
+            logger.warning(
+                "Session %s has no first request in storage despite being returned by "
+                "get_session_ids_in_window; falling back to (created_at=0, source='').",
+                sd.session_id,
+            )
         candidates.append(
             SampleCandidate(
                 session_id=sd.session_id,
                 user_id=sd.user_id,
                 agent_version=sd.agent_version,
                 source=sd.source,
-                created_at=created_at,
-                first_request_source=first_source,
+                created_at=first.created_at if first else 0,
+                first_request_source=(first.source or "") if first else "",
             )
         )
     return candidates

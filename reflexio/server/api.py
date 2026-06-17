@@ -2257,10 +2257,8 @@ def _read_grade_on_demand_cache(
 def _resolve_session_user_id(storage: Any, session_id: str) -> str | None:
     """Look up the user_id that owns a session_id without requiring it as input.
 
-    Uses ``get_sessions(session_id=...)`` because it's the only storage
-    method on ``BaseStorage`` that accepts session_id alone — every other
-    request-fetcher requires a user_id paired with it. Returns None when
-    the session has no requests, signalling NO_REQUESTS to the caller.
+    Uses the first-request bulk helper even for this single-session path so the
+    lookup can use the same indexed query shape as evaluation overview.
 
     Args:
         storage: The request's storage backend.
@@ -2270,12 +2268,11 @@ def _resolve_session_user_id(storage: Any, session_id: str) -> str | None:
         str | None: The user_id of the earliest request in the session,
         or None when no requests exist.
     """
-    sessions = storage.get_sessions(session_id=session_id, top_k=100)
-    rows = sessions.get(session_id) or []
-    if not rows:
+    first_requests = storage.get_first_requests_by_session_ids([session_id])
+    first = first_requests.get(session_id)
+    if first is None:
         return None
-    earliest = min(rows, key=lambda r: r.request.created_at)
-    return earliest.request.user_id
+    return first.user_id
 
 
 def _find_fresh_result_id(
@@ -2288,9 +2285,8 @@ def _find_fresh_result_id(
 ) -> int | None:
     """Locate the result_id written by the most-recent grade for this session.
 
-    The runner writes rows but doesn't return the id. Reading back through
-    ``get_agent_success_evaluation_results`` matches the pattern used by
-    the regen worker's prior-row capture (group_evaluation_runner step 5).
+    The runner writes rows but doesn't return the id. Use the targeted result-id
+    lookup so this path does not scan broad evaluation windows.
 
     Args:
         storage: The request's storage backend.
@@ -2303,20 +2299,15 @@ def _find_fresh_result_id(
         int | None: result_id of the latest matching row, or None if the
         runner wrote nothing.
     """
-    rows = storage.get_agent_success_evaluation_results(
-        limit=1000, agent_version=agent_version
+    result_ids = storage.get_agent_success_evaluation_result_ids(
+        session_id=session_id,
+        evaluation_name=evaluation_name,
+        agent_version=agent_version,
     )
-    matched = [
-        r
-        for r in rows
-        if r.session_id == session_id
-        and r.evaluation_name == evaluation_name
-        and r.result_id not in previous_result_ids
-    ]
-    if not matched:
+    fresh_result_ids = [rid for rid in result_ids if rid not in previous_result_ids]
+    if not fresh_result_ids:
         return None
-    latest = max(matched, key=lambda r: r.created_at)
-    return latest.result_id
+    return max(fresh_result_ids)
 
 
 @core_router.post(
@@ -2387,13 +2378,13 @@ def grade_on_demand(
             skipped_reason="NO_REQUESTS",
         )
 
-    previous_result_ids = {
-        r.result_id
-        for r in storage.get_agent_success_evaluation_results(
-            limit=1000, agent_version=payload.agent_version
+    previous_result_ids = set(
+        storage.get_agent_success_evaluation_result_ids(
+            session_id=payload.session_id,
+            evaluation_name=evaluation_name,
+            agent_version=payload.agent_version,
         )
-        if r.session_id == payload.session_id and r.evaluation_name == evaluation_name
-    }
+    )
 
     # Two operation_state rows are intentionally written for this session:
     #   1) `grade_on_demand::{org_id}::{session_id}::{agent_version}::{evaluation_name}`
@@ -2470,8 +2461,8 @@ def get_recent_shadow_comparisons(
     Filters to the org's currently pinned
     ``Config.shadow_comparison_judge_prompt_version`` so verdicts produced
     under an older rubric do not mix into the drawer or the Top 10
-    disagreements widget. Storage returns verdicts in ascending ``created_at``
-    order; we reverse to "newest first" and cap at ``limit``.
+    disagreements widget. Storage returns verdicts newest-first and caps the
+    read at ``limit``.
 
     Args:
         limit (int): Max verdicts to return. Clamped to ``[1, 100]``.
@@ -2503,10 +2494,11 @@ def get_recent_shadow_comparisons(
 
     now = int(datetime.now(UTC).timestamp())
     try:
-        verdicts = storage.get_shadow_comparison_verdicts(
+        verdicts = storage.get_recent_shadow_comparison_verdicts(
             from_ts=now - _RECENT_SHADOW_COMPARISONS_LOOKBACK_SECONDS,
             to_ts=now,
             judge_prompt_version=pinned_version,
+            limit=clamped_limit,
         )
     except NotImplementedError:
         # Backends that don't support shadow verdicts (e.g., Disk) should
@@ -2514,9 +2506,7 @@ def get_recent_shadow_comparisons(
         # "no data yet" in the UI.
         return GetRecentShadowComparisonsResponse(verdicts=[])
 
-    # Storage contract returns ascending — flip to "newest first" and cap.
-    newest_first = list(reversed(verdicts))[:clamped_limit]
-    return GetRecentShadowComparisonsResponse(verdicts=newest_first)
+    return GetRecentShadowComparisonsResponse(verdicts=verdicts)
 
 
 @core_router.post(

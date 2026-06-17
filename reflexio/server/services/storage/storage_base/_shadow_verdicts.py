@@ -108,6 +108,21 @@ class ShadowVerdictsMixin:
             f"{type(self).__name__} does not support shadow_comparison_verdicts"
         )
 
+    def get_recent_shadow_comparison_verdicts(
+        self,
+        from_ts: int,
+        to_ts: int,
+        judge_prompt_version: str,
+        limit: int,
+    ) -> list[ShadowComparisonVerdict]:
+        """Fetch newest verdicts in descending ``created_at`` order."""
+        verdicts = self.get_shadow_comparison_verdicts(
+            from_ts=from_ts,
+            to_ts=to_ts,
+            judge_prompt_version=judge_prompt_version,
+        )
+        return list(reversed(verdicts))[:limit]
+
     def delete_shadow_comparison_verdicts_by_session(self, session_id: str) -> int:
         """Remove all verdicts for one session.
 

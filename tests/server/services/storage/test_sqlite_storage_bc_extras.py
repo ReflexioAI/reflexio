@@ -21,6 +21,7 @@ from reflexio.models.api_schema.braintrust_schema import (
     BraintrustConnection,
     ImportedScore,
 )
+from reflexio.models.api_schema.domain.entities import Citation
 from reflexio.models.api_schema.service_schemas import (
     Interaction,
     Request,
@@ -51,6 +52,7 @@ def _add_request_with_interactions(
     request_id: str | None = None,
     shadow_content_for_assistant: str = "",
     created_at: int | None = None,
+    assistant_citations: list[Citation] | None = None,
 ) -> str:
     """Create a request + 2 interactions (1 user, 1 assistant); return request_id."""
     request_id = request_id or f"req_{uuid.uuid4().hex[:8]}"
@@ -84,6 +86,7 @@ def _add_request_with_interactions(
                 content="hi back",
                 shadow_content=shadow_content_for_assistant,
                 created_at=ts + 1,
+                citations=assistant_citations or [],
             ),
         ],
     )
@@ -166,6 +169,57 @@ def test_get_interactions_by_session_unknown_session_returns_empty(
     storage: SQLiteStorage,
 ) -> None:
     assert storage.get_interactions_by_session("never_existed") == []
+
+
+def test_get_citations_by_session_ids_extracts_cited_rows(
+    storage: SQLiteStorage,
+) -> None:
+    _add_request_with_interactions(
+        storage,
+        session_id="s1",
+        request_id="req_s1",
+        assistant_citations=[
+            Citation(kind="playbook", real_id="42", title="Keep it short"),
+            Citation(kind="profile", real_id="p9", title="Prefers email"),
+        ],
+    )
+    _add_request_with_interactions(
+        storage,
+        session_id="s2",
+        request_id="req_s2",
+        assistant_citations=[
+            Citation(kind="playbook", real_id="42", title="Keep it short"),
+            Citation(kind="playbook", real_id="42", title="Keep it short"),
+        ],
+    )
+    _add_request_with_interactions(storage, session_id="empty", request_id="req_empty")
+    null_request_id = _add_request_with_interactions(
+        storage,
+        session_id="nullish",
+        request_id="req_nullish",
+        assistant_citations=[Citation(kind="playbook", real_id="99")],
+    )
+    storage.conn.execute(
+        "UPDATE interactions SET citations = NULL WHERE request_id = ? AND role = ?",
+        (null_request_id, "Assistant"),
+    )
+
+    out = storage.get_citations_by_session_ids(
+        ["s1", "s2", "empty", "nullish", "missing"]
+    )
+
+    by_session = {}
+    for citation in out:
+        by_session.setdefault(citation.session_id, []).append(citation)
+    assert set(by_session) == {"s1", "s2"}
+    assert [(c.kind, c.real_id, c.title) for c in by_session["s1"]] == [
+        ("playbook", "42", "Keep it short"),
+        ("profile", "p9", "Prefers email"),
+    ]
+    assert [(c.kind, c.real_id) for c in by_session["s2"]] == [
+        ("playbook", "42"),
+        ("playbook", "42"),
+    ]
 
 
 # ---------------------------------------------------------------------------
