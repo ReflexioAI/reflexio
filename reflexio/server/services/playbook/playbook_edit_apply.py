@@ -39,6 +39,13 @@ def apply_playbook_edit(
     Returns:
         The ``user_playbook_id`` of the newly inserted playbook, or ``-1`` if
         ``expect_current`` is ``True`` and the incumbent was no longer CURRENT.
+
+    Note:
+        With ``expect_current=False`` the new playbook is inserted unconditionally
+        *before* archiving; if ``archive_user_playbook_by_id`` returns False
+        (incumbent missing or already archived), the inserted row remains CURRENT
+        (an orphan) and the function returns -1. Callers must pass a ``new_playbook``
+        with a non-None ``user_id`` (archive guards on ``user_id``).
     """
     new_playbook.source = source
     storage.save_user_playbooks([new_playbook])
