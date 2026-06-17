@@ -118,6 +118,7 @@ __all__ = [
     "ShareLink",
     "AdminInvalidateCacheRequest",
     "AdminInvalidateCacheResponse",
+    "PlaybookRetrievalLog",
 ]
 
 # ===============================
@@ -383,6 +384,32 @@ class AgentSuccessEvaluationResult(BaseModel):
     user_turns_to_resolution: int | None = None
     is_escalated: bool = False
     embedding: EmbeddingVector = []
+
+
+class PlaybookRetrievalLog(BaseModel):
+    """A log entry recording which playbooks were shown to a user during a request.
+
+    Used by the offline playbook tuner to correlate retrieval decisions with
+    downstream outcomes. ``retrieval_log_id`` is assigned by the storage layer;
+    ``shown_playbook_ids`` carries agent-playbook ids only (scores deferred to v2).
+
+    Attributes:
+        retrieval_log_id (int): Primary key assigned by storage (0 = not yet persisted).
+        request_id (str): The request during which playbooks were retrieved.
+        session_id (str): The session that owns the request.
+        user_id (str): The user the request belongs to.
+        shown_playbook_ids (list[int]): Ordered list of agent_playbook_id values shown.
+        agent_version (str | None): Agent version string at retrieval time, if available.
+        created_at (int): Unix epoch seconds at log creation time (0 = unset).
+    """
+
+    retrieval_log_id: int = 0
+    request_id: str
+    session_id: str
+    user_id: str
+    shown_playbook_ids: list[int] = []  # ids only (v1); scores deferred to v2 (M1)
+    agent_version: str | None = None
+    created_at: int = 0
 
 
 class ShareLink(BaseModel):
