@@ -11,13 +11,17 @@ from unittest.mock import patch
 import pytest
 from pydantic import ValidationError
 
-from reflexio.models.api_schema.internal_schema import SessionDescriptor
+from reflexio.models.api_schema.internal_schema import (
+    RequestInteractionDataModel,
+    SessionDescriptor,
+)
 from reflexio.models.api_schema.service_schemas import (
     AgentSuccessEvaluationResult,
     Request,
 )
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 from reflexio.server.services.storage.storage_base import BaseStorage
+from reflexio.server.services.storage.storage_base._requests import RequestMixin
 
 pytestmark = pytest.mark.integration
 
@@ -257,6 +261,59 @@ def test_first_requests_by_session_ids_returns_earliest_request(
     assert out["s1"].created_at == 1000
     assert out["s2"].user_id == "u2"
     assert out["s2"].source == "only"
+
+
+def test_base_first_request_fallback_paginates_all_session_rows() -> None:
+    class PaginatedSessionStorage:
+        def __init__(self) -> None:
+            self.calls: list[tuple[int | None, int]] = []
+            self.requests = [
+                Request(
+                    request_id=f"req-{i}",
+                    user_id="u1",
+                    created_at=1_700_000_000 + i,
+                    source=f"source-{i}",
+                    agent_version="v1",
+                    session_id="big-session",
+                )
+                for i in range(1001)
+            ]
+
+        def get_sessions(
+            self,
+            user_id: str | None = None,
+            request_id: str | None = None,
+            session_id: str | None = None,
+            start_time: int | None = None,
+            end_time: int | None = None,
+            top_k: int | None = 30,
+            offset: int = 0,
+        ) -> dict[str, list[RequestInteractionDataModel]]:
+            del user_id, request_id, start_time, end_time
+            self.calls.append((top_k, offset))
+            matching = [r for r in self.requests if r.session_id == session_id]
+            rows = sorted(matching, key=lambda r: r.created_at, reverse=True)
+            page = rows[offset : offset + (top_k or 0)]
+            return {
+                session_id or "": [
+                    RequestInteractionDataModel(
+                        session_id=r.session_id,
+                        request=r,
+                        interactions=[],
+                    )
+                    for r in page
+                ]
+            }
+
+    storage = PaginatedSessionStorage()
+
+    out = RequestMixin.get_first_requests_by_session_ids(
+        cast(Any, storage), ["big-session"]
+    )
+
+    assert out["big-session"].created_at == 1_700_000_000
+    assert out["big-session"].source == "source-0"
+    assert storage.calls == [(1000, 0), (1000, 1000)]
 
 
 def test_eval_result_window_read_filters_in_storage_contract(

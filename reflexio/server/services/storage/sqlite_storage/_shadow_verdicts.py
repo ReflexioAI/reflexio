@@ -185,13 +185,14 @@ class ShadowVerdictsMixin:
     ) -> list[ShadowComparisonVerdict]:
         from_iso = _epoch_to_iso(max(0, min(from_ts, _MAX_SAFE_EPOCH_TS)))
         to_iso = _epoch_to_iso(max(0, min(to_ts, _MAX_SAFE_EPOCH_TS)))
+        safe_limit = max(0, limit)
         rows = self._fetchall(
             """SELECT * FROM shadow_comparison_verdicts
                WHERE created_at >= ? AND created_at <= ?
                  AND judge_prompt_version = ?
                ORDER BY created_at DESC
                LIMIT ?""",
-            (from_iso, to_iso, judge_prompt_version, limit),
+            (from_iso, to_iso, judge_prompt_version, safe_limit),
         )
         return [_row_to_verdict(r) for r in rows]
 

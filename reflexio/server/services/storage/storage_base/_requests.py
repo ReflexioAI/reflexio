@@ -165,9 +165,20 @@ class RequestMixin:
         """
         out: dict[str, SessionFirstRequest] = {}
         for session_id in set(session_ids):
-            grouped = self.get_sessions(session_id=session_id, top_k=1000)
-            rows = grouped.get(session_id) or []
-            requests = [r.request for r in rows if r.request is not None]
+            requests = []
+            page_size = 1000
+            offset = 0
+            while True:
+                grouped = self.get_sessions(
+                    session_id=session_id,
+                    top_k=page_size,
+                    offset=offset,
+                )
+                rows = grouped.get(session_id) or []
+                requests.extend(r.request for r in rows if r.request is not None)
+                if len(rows) < page_size:
+                    break
+                offset += page_size
             if not requests:
                 continue
             first = min(requests, key=lambda r: r.created_at)

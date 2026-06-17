@@ -157,6 +157,27 @@ def test_get_recent_verdicts_orders_descending_and_limits(
     assert [r.interaction_id for r in result] == ["cv-i-4", "cv-i-3", "cv-i-2"]
 
 
+def test_get_recent_verdicts_negative_limit_returns_empty(
+    storage: BaseStorage,
+) -> None:
+    base_ts = int(datetime.now(UTC).timestamp())
+    storage.save_shadow_comparison_verdict(
+        _make_verdict(
+            interaction_id="cv-i-negative-limit",
+            created_at=datetime.fromtimestamp(base_ts, tz=UTC),
+        )
+    )
+
+    result = storage.get_recent_shadow_comparison_verdicts(
+        from_ts=base_ts - 1,
+        to_ts=base_ts + 1,
+        judge_prompt_version="v1.0.0",
+        limit=-1,
+    )
+
+    assert result == []
+
+
 def test_delete_by_session_returns_count(storage: BaseStorage) -> None:
     base_ts = datetime.now(UTC)
     storage.save_shadow_comparison_verdict(
