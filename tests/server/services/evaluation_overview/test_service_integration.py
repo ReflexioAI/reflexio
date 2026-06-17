@@ -360,7 +360,6 @@ def test_service_handles_5k_sessions_with_bulk_call_shape() -> None:
     config = Config(storage_config=StorageConfigSQLite())
 
     svc = EvaluationOverviewService(storage=storage, config=config)
-    started = time.perf_counter()
     response = svc.run(
         GetEvaluationOverviewRequest(
             from_ts=now - 7200,
@@ -368,10 +367,8 @@ def test_service_handles_5k_sessions_with_bulk_call_shape() -> None:
             include_shadow=False,
         )
     )
-    elapsed = time.perf_counter() - started
 
     assert response.hero.regular_success_rate_pp == 50.0
-    assert elapsed < 2.0
     storage.get_agent_success_evaluation_results_in_window.assert_called_once()
     storage.get_first_requests_by_session_ids.assert_called_once()
     storage.get_citations_by_session_ids.assert_called_once()

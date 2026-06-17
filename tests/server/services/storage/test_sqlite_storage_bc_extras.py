@@ -203,9 +203,19 @@ def test_get_citations_by_session_ids_extracts_cited_rows(
         "UPDATE interactions SET citations = NULL WHERE request_id = ? AND role = ?",
         (null_request_id, "Assistant"),
     )
+    blank_request_id = _add_request_with_interactions(
+        storage,
+        session_id="blank",
+        request_id="req_blank",
+        assistant_citations=[Citation(kind="playbook", real_id="100")],
+    )
+    storage.conn.execute(
+        "UPDATE interactions SET citations = '' WHERE request_id = ? AND role = ?",
+        (blank_request_id, "Assistant"),
+    )
 
     out = storage.get_citations_by_session_ids(
-        ["s1", "s2", "empty", "nullish", "missing"]
+        ["s1", "s2", "empty", "nullish", "blank", "missing"]
     )
 
     by_session = {}

@@ -24,6 +24,9 @@ from reflexio.models.api_schema.eval_overview_schema import (
 )
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 from reflexio.server.services.storage.storage_base import BaseStorage
+from reflexio.server.services.storage.storage_base._shadow_verdicts import (
+    ShadowVerdictsMixin,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -176,6 +179,33 @@ def test_get_recent_verdicts_negative_limit_returns_empty(
     )
 
     assert result == []
+
+
+def test_base_recent_verdicts_nonpositive_limit_skips_window_read() -> None:
+    class GuardedShadowStorage(ShadowVerdictsMixin):
+        def get_shadow_comparison_verdicts(
+            self,
+            from_ts: int,
+            to_ts: int,
+            judge_prompt_version: str,
+        ) -> list[ShadowComparisonVerdict]:
+            del from_ts, to_ts, judge_prompt_version
+            raise AssertionError("limit guard should avoid full window read")
+
+    storage = GuardedShadowStorage()
+
+    assert storage.get_recent_shadow_comparison_verdicts(
+        from_ts=0,
+        to_ts=1,
+        judge_prompt_version="v1.0.0",
+        limit=0,
+    ) == []
+    assert storage.get_recent_shadow_comparison_verdicts(
+        from_ts=0,
+        to_ts=1,
+        judge_prompt_version="v1.0.0",
+        limit=-1,
+    ) == []
 
 
 def test_delete_by_session_returns_count(storage: BaseStorage) -> None:

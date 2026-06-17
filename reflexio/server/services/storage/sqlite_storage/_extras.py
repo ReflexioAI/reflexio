@@ -498,6 +498,7 @@ class ExtrasMixin:
                     JOIN interactions i ON i.request_id = r.request_id
                     WHERE r.session_id IN ({ph})
                       AND i.citations IS NOT NULL
+                      AND i.citations != ''
                       AND i.citations != '[]'
                     ORDER BY r.session_id ASC, i.created_at ASC""",  # noqa: S608
                 chunk,

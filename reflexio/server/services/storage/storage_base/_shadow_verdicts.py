@@ -116,6 +116,8 @@ class ShadowVerdictsMixin:
         limit: int,
     ) -> list[ShadowComparisonVerdict]:
         """Fetch newest verdicts in descending ``created_at`` order."""
+        if limit <= 0:
+            return []
         verdicts = self.get_shadow_comparison_verdicts(
             from_ts=from_ts,
             to_ts=to_ts,
