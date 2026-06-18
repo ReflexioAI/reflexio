@@ -46,6 +46,7 @@ def _build_registry() -> dict[str, ModelRegistryEntry]:
         ProfileUpdateOutput,
         StructuredProfilesOutput,
     )
+    from reflexio.server.services.tagging.tagging_service import TagsOutput
 
     return {
         "playbook_extraction": ModelRegistryEntry(
@@ -107,6 +108,10 @@ def _build_registry() -> dict[str, ModelRegistryEntry]:
                 "is_success": True,
                 "is_escalated": False,
             },
+        ),
+        "tagging": ModelRegistryEntry(
+            model_class=TagsOutput,
+            minimal_valid={"tags": ["example_tag"]},
         ),
         # F1 cleanup: ``agent_success_evaluation_comparison`` was removed along
         # with the session-level shadow comparison branch. Per-turn shadow

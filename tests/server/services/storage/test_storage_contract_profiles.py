@@ -59,6 +59,20 @@ class TestProfileCRUD:
         assert result[0].content == "likes sushi"
         assert result[0].profile_id == "p1"
 
+    def test_update_user_profile_tags_round_trip(self, storage: BaseStorage) -> None:
+        storage.add_user_profile("u1", [_make_profile("u1", "p1", "likes sushi")])
+        assert storage.get_user_profile("u1")[0].tags == []
+
+        storage.update_user_profile_tags("u1", "p1", ["food", "japanese"])
+
+        result = storage.get_user_profile("u1")
+        assert result[0].tags == ["food", "japanese"]
+        # Tags-only update must not disturb content.
+        assert result[0].content == "likes sushi"
+
+        storage.update_user_profile_tags("u1", "p1", [])
+        assert storage.get_user_profile("u1")[0].tags == []
+
     def test_get_nonexistent_user_returns_empty(self, storage: BaseStorage) -> None:
         assert storage.get_user_profile("nonexistent") == []
 

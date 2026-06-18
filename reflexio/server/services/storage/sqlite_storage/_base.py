@@ -379,6 +379,7 @@ def _row_to_profile(row: sqlite3.Row) -> UserProfile:
         source_span=d.get("source_span"),
         notes=d.get("notes"),
         reader_angle=d.get("reader_angle"),
+        tags=_json_loads(d.get("tags")) or [],
     )
 
 
@@ -451,6 +452,7 @@ def _row_to_user_playbook(
         status=Status(d["status"]) if d.get("status") else None,
         source=d.get("source"),
         source_interaction_ids=_json_loads(d.get("source_interaction_ids")) or [],
+        tags=_json_loads(d.get("tags")) or [],
         embedding=embedding,
         expanded_terms=d.get("expanded_terms"),
         source_span=d.get("source_span"),
@@ -476,6 +478,7 @@ def _row_to_agent_playbook(row: sqlite3.Row) -> AgentPlaybook:
         if d.get("playbook_status")
         else PlaybookStatus.PENDING,
         playbook_metadata=d.get("playbook_metadata") or "",
+        tags=_json_loads(d.get("tags")) or [],
         embedding=[],
         status=Status(d["status"]) if d.get("status") else None,
         expanded_terms=d.get("expanded_terms"),
@@ -659,6 +662,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         self._migrate_agent_runs_schema()
         self._migrate_pending_tool_calls_schema()
         self._migrate_expanded_terms()
+        self._migrate_tags()
         self._migrate_agentic_signals()
         self._migrate_agent_playbook_source_windows()
         self._migrate_request_evaluation_only()
@@ -1104,6 +1108,18 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             if "expanded_terms" not in cols:
                 self.conn.execute(f"ALTER TABLE {table} ADD COLUMN expanded_terms TEXT")
                 logger.info("Added expanded_terms column to %s", table)
+        self.conn.commit()
+
+    def _migrate_tags(self) -> None:
+        """Add tags column if missing."""
+        for table in ("profiles", "user_playbooks", "agent_playbooks"):
+            cols = {
+                row["name"]
+                for row in self.conn.execute(f"PRAGMA table_info({table})").fetchall()
+            }
+            if "tags" not in cols:
+                self.conn.execute(f"ALTER TABLE {table} ADD COLUMN tags TEXT")
+                logger.info("Added tags column to %s", table)
         self.conn.commit()
 
     def _migrate_agent_runs_schema(self) -> None:
@@ -1653,6 +1669,7 @@ CREATE TABLE IF NOT EXISTS profiles (
     status TEXT,
     extractor_names TEXT,
     expanded_terms TEXT,
+    tags TEXT,
     source_span TEXT,
     notes TEXT,
     reader_angle TEXT,
@@ -1712,6 +1729,7 @@ CREATE TABLE IF NOT EXISTS user_playbooks (
     source TEXT,
     embedding TEXT,
     expanded_terms TEXT,
+    tags TEXT,
     source_span TEXT,
     notes TEXT,
     reader_angle TEXT
@@ -1734,6 +1752,7 @@ CREATE TABLE IF NOT EXISTS agent_playbooks (
     playbook_metadata TEXT NOT NULL DEFAULT '',
     embedding TEXT,
     expanded_terms TEXT,
+    tags TEXT,
     status TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_agent_playbooks_playbook_name ON agent_playbooks(playbook_name);

@@ -348,11 +348,6 @@ class ProfileExtractor:
                 self.config.context_prompt.strip() if self.config.context_prompt else ""
             ),
             extraction_definition_prompt=self.config.extraction_definition_prompt.strip(),
-            metadata_definition_prompt=(
-                self.config.metadata_definition_prompt.strip()
-                if self.config.metadata_definition_prompt
-                else None
-            ),
             existing_profiles=existing_profiles,
         )
 
@@ -461,9 +456,5 @@ class ProfileExtractor:
             "content": " ".join(summary_parts),
             "time_to_live": "one_month",
         }
-
-        # If metadata definition exists, add mock metadata
-        if self.config.metadata_definition_prompt:
-            mock_profile["metadata"] = "mock_metadata_value"
 
         return [mock_profile]

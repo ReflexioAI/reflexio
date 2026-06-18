@@ -354,6 +354,7 @@ class PlaybookMixin:
         rationale: str | None = None,
         blocking_issue: BlockingIssue | None = None,
         playbook_status: PlaybookStatus | None = None,
+        tags: list[str] | None = None,
     ) -> None:
         """Update editable fields of an agent playbook. Only non-None fields are updated.
 
@@ -365,6 +366,7 @@ class PlaybookMixin:
             rationale (str, optional): New rationale text
             blocking_issue (BlockingIssue, optional): New blocking issue
             playbook_status (PlaybookStatus, optional): New playbook status
+            tags (list[str], optional): Replacement tags
 
         Raises:
             ValueError: If agent playbook with the given ID is not found
@@ -380,6 +382,7 @@ class PlaybookMixin:
         trigger: str | None = None,
         rationale: str | None = None,
         blocking_issue: BlockingIssue | None = None,
+        tags: list[str] | None = None,
     ) -> None:
         """Update editable fields of a user playbook. Only non-None fields are updated.
 
@@ -390,6 +393,7 @@ class PlaybookMixin:
             trigger (str, optional): New trigger text
             rationale (str, optional): New rationale text
             blocking_issue (BlockingIssue, optional): New blocking issue
+            tags (list[str], optional): Replacement tags
 
         Raises:
             ValueError: If user playbook with the given ID is not found

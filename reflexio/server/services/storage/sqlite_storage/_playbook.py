@@ -125,8 +125,8 @@ class PlaybookMixin:
                         content, trigger, rationale, blocking_issue,
                         source_interaction_ids,
                         status, source, embedding, expanded_terms,
-                        source_span, notes, reader_angle)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        source_span, notes, reader_angle, tags)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         up.user_id,
                         up.playbook_name,
@@ -147,6 +147,7 @@ class PlaybookMixin:
                         up.source_span,
                         up.notes,
                         up.reader_angle,
+                        _json_dumps(up.tags or None),
                     ),
                 )
                 upid = cur.lastrowid or 0
@@ -590,8 +591,8 @@ class PlaybookMixin:
                        (playbook_name, created_at, agent_version, content,
                         trigger, rationale, blocking_issue,
                         playbook_status, playbook_metadata, embedding,
-                        expanded_terms, status)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        expanded_terms, tags, status)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         ap.playbook_name,
                         created_at_iso,
@@ -608,6 +609,7 @@ class PlaybookMixin:
                         ap.playbook_metadata,
                         _json_dumps(ap.embedding),
                         ap.expanded_terms,
+                        _json_dumps(ap.tags or None),
                         ap.status.value if ap.status else None,
                     ),
                 )
@@ -756,6 +758,7 @@ class PlaybookMixin:
         rationale: str | None = None,
         blocking_issue: BlockingIssue | None = None,
         playbook_status: PlaybookStatus | None = None,
+        tags: list[str] | None = None,
     ) -> None:
         row = self._fetchone(
             "SELECT agent_playbook_id FROM agent_playbooks WHERE agent_playbook_id = ?",
@@ -783,6 +786,9 @@ class PlaybookMixin:
         if playbook_status is not None:
             updates.append("playbook_status = ?")
             params.append(playbook_status.value)
+        if tags is not None:
+            updates.append("tags = ?")
+            params.append(_json_dumps(tags or None))
         if updates:
             params.append(agent_playbook_id)
             self._execute(
@@ -799,6 +805,7 @@ class PlaybookMixin:
         trigger: str | None = None,
         rationale: str | None = None,
         blocking_issue: BlockingIssue | None = None,
+        tags: list[str] | None = None,
     ) -> None:
         row = self._fetchone(
             "SELECT user_playbook_id FROM user_playbooks WHERE user_playbook_id = ?",
@@ -823,6 +830,9 @@ class PlaybookMixin:
         if blocking_issue is not None:
             updates.append("blocking_issue = ?")
             params.append(json.dumps(blocking_issue.model_dump()))
+        if tags is not None:
+            updates.append("tags = ?")
+            params.append(_json_dumps(tags or None))
         if updates:
             params.append(user_playbook_id)
             self._execute(

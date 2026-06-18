@@ -83,7 +83,6 @@ def test_construct_profile_extraction_messages_with_sessions():
         agent_context_prompt="Test agent context",
         context_prompt="Test context",
         extraction_definition_prompt="food preferences",
-        metadata_definition_prompt="cuisine type",
     )
 
     # Validate that messages were created
@@ -152,7 +151,6 @@ def test_construct_profile_extraction_messages_with_empty_sessions():
         agent_context_prompt="Test agent context",
         context_prompt="Test context",
         extraction_definition_prompt="food preferences",
-        metadata_definition_prompt="cuisine type",
     )
 
     # Should still create messages (system message + user message with prompt)

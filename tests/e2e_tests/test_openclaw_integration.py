@@ -141,7 +141,7 @@ def _make_reflexio_with_profile(
                 extraction_definition_prompt=(
                     "coding language preferences, tool preferences, workflow preferences"
                 ),
-                metadata_definition_prompt="choice of ['preference', 'workflow']",
+                tagging_definition_prompt="choice of ['preference', 'workflow']",
             )
         ],
     )

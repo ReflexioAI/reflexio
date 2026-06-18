@@ -60,7 +60,7 @@ def test_set_config_end_to_end(
             extraction_definition_prompt="""
             Test profile content definition.
             """,
-            metadata_definition_prompt="""
+            tagging_definition_prompt="""
             Test metadata definition.
             """,
         ),
@@ -105,7 +105,7 @@ def test_set_config_end_to_end(
             "extractor_name": "dict_test_extractor",
             "context_prompt": "Updated test configuration from dict.",
             "extraction_definition_prompt": "Updated profile content from dict.",
-            "metadata_definition_prompt": "Updated metadata from dict.",
+            "tagging_definition_prompt": "Updated metadata from dict.",
         },
         "user_playbook_extractor_config": {
             "extractor_name": "dict_test_playbook",
@@ -187,7 +187,7 @@ def test_get_config_end_to_end(
             extractor_name="get_config_test_extractor",
             context_prompt="Get config test: Extract key information.",
             extraction_definition_prompt="Get config test profile content.",
-            metadata_definition_prompt="Get config test metadata.",
+            tagging_definition_prompt="Get config test metadata.",
         ),
         user_playbook_extractor_config=PlaybookConfig(
             extractor_name="get_config_test_playbook",

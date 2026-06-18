@@ -79,6 +79,13 @@ class ProfileMixin:
         raise NotImplementedError
 
     @abstractmethod
+    def update_user_profile_tags(
+        self, user_id: str, profile_id: str, tags: list[str]
+    ) -> None:
+        """Replace only the tags of a profile, leaving content and embedding untouched."""
+        raise NotImplementedError
+
+    @abstractmethod
     def delete_all_interactions_for_user(self, user_id: str) -> None:
         raise NotImplementedError
 

@@ -49,6 +49,7 @@ from reflexio.server.services.storage.retention import (
     delete_count_for_retention,
     get_row_retention_limits,
 )
+from reflexio.server.services.tagging.tagging_scheduler import schedule_tagging
 from reflexio.server.tracing import sentry_tags
 from reflexio.server.usage_metrics import record_usage_event
 
@@ -378,6 +379,17 @@ class GenerationService:
                         result.warnings.append(msg)
             finally:
                 executor.shutdown(wait=False, cancel_futures=True)
+
+            # Tagging runs an LLM call per newly generated entity, so defer it off
+            # the publish path. The scheduler debounces bursts and is idempotent
+            # (already-tagged entities are skipped).
+            schedule_tagging(
+                org_id=self.org_id,
+                user_id=user_id,
+                agent_version=agent_version,
+                request_context=self.request_context,
+                llm_client=self.client,
+            )
 
             # Schedule delayed group evaluation for the required session.
             self._schedule_group_evaluation_if_needed(

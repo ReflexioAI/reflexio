@@ -415,7 +415,7 @@ class ProfileExtractorConfig(_ExtractorWindowOverrideCompatMixin, BaseModel):
     extractor_name: NonEmptyStr | None = None
     extraction_definition_prompt: SanitizedNonEmptyStr
     context_prompt: str | None = None
-    metadata_definition_prompt: str | None = None
+    tagging_definition_prompt: str | None = None
     should_extract_profile_prompt_override: str | None = None
     request_sources_enabled: list[str] | None = (
         None  # default enabled for all sources, if set, only extract profiles from the enabled request sources
@@ -466,7 +466,7 @@ class UserPlaybookExtractorConfig(_ExtractorWindowOverrideCompatMixin, BaseModel
     extractor_name: NonEmptyStr | None = None
     extraction_definition_prompt: SanitizedNonEmptyStr
     context_prompt: str | None = None
-    metadata_definition_prompt: str | None = None
+    tagging_definition_prompt: str | None = None
     aggregation_config: PlaybookAggregatorConfig | None = None
     deduplication_config: DeduplicationConfig | None = None
     request_sources_enabled: list[str] | None = (

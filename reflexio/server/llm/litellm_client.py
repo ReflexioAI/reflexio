@@ -349,6 +349,21 @@ class _CompletionResponseSnapshot:
 class _CompletionErrorSnapshot:
     type_name: str
     message: str
+    model: str | None = None
+    llm_provider: str | None = None
+
+
+def _snapshot_completion_error(
+    exc: BaseException, params: dict[str, Any]
+) -> _CompletionErrorSnapshot:
+    model = getattr(exc, "model", None) or params.get("model")
+    llm_provider = getattr(exc, "llm_provider", None)
+    return _CompletionErrorSnapshot(
+        type_name=type(exc).__name__,
+        message=str(exc),
+        model=str(model) if model else None,
+        llm_provider=str(llm_provider) if llm_provider else None,
+    )
 
 
 def _ensure_picklable(value: Any) -> Any:
@@ -421,14 +436,7 @@ def _litellm_completion_worker(
             ("ok", _picklable_completion_result(litellm.completion(**params)))
         )
     except BaseException as exc:
-        try:
-            pickle.dumps(exc)
-        except Exception:
-            result_queue.put(
-                ("error", _CompletionErrorSnapshot(type(exc).__name__, str(exc)))
-            )
-        else:
-            result_queue.put(("error", exc))
+        result_queue.put(("error", _snapshot_completion_error(exc, params)))
 
 
 class LiteLLMClient:
@@ -1156,11 +1164,15 @@ class LiteLLMClient:
 
             if status == "ok":
                 return payload
-            if isinstance(payload, _CompletionErrorSnapshot):
-                raise LiteLLMClientError(
-                    f"litellm.completion raised {payload.type_name}: {payload.message}"
-                )
-            raise payload
+            # The worker always reports errors as a picklable snapshot.
+            context_parts = [f"model={payload.model}"]
+            if payload.llm_provider:
+                context_parts.append(f"provider={payload.llm_provider}")
+            raise LiteLLMClientError(
+                "litellm.completion failed in isolated worker: "
+                f"{payload.type_name}: {payload.message} "
+                f"({', '.join(context_parts)})"
+            )
         finally:
             result_queue.close()
             result_queue.join_thread()

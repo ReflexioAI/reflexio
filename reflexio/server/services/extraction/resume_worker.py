@@ -61,6 +61,7 @@ from reflexio.server.services.storage.storage_base import (
     PendingToolCallRecord,
     PendingToolCallStatus,
 )
+from reflexio.server.services.tagging.tagging_scheduler import schedule_tagging
 from reflexio.server.site_var.site_var_manager import SiteVarManager
 from reflexio.server.tracing import sentry_tags
 
@@ -272,6 +273,7 @@ class ExtractionResumeWorker:
         try:
             self.storage.update_agent_run_status(run.id, AgentRunStatus.FINALIZING)
             self._finalize_items(run, items)
+            self._schedule_finalized_tagging(run)
             self.storage.consume_run_tool_dependencies(run.id)
             finalized_status = (
                 AgentRunStatus.FINALIZED_PENDING_TOOL
@@ -315,6 +317,7 @@ class ExtractionResumeWorker:
         try:
             items, pending_tool_call_ids = self._items_from_committed_output(run)
             self._finalize_items(run, items)
+            self._schedule_finalized_tagging(run)
             self.storage.consume_run_tool_dependencies(run.id)
             finalized_status = (
                 AgentRunStatus.FINALIZED_PENDING_TOOL
@@ -460,11 +463,6 @@ class ExtractionResumeWorker:
                 else ""
             ),
             extraction_definition_prompt=extractor_config.extraction_definition_prompt.strip(),
-            metadata_definition_prompt=(
-                extractor_config.metadata_definition_prompt.strip()
-                if extractor_config.metadata_definition_prompt
-                else None
-            ),
             existing_profiles=context_profiles,
         )
         result = self._resume_agent(
@@ -776,4 +774,22 @@ class ExtractionResumeWorker:
             return
         raise ResumeWorkerError(
             f"Unsupported extractor kind {run.binding.extractor_kind!r}"
+        )
+
+    def _schedule_finalized_tagging(self, run: AgentRunRecord) -> None:
+        user_id = run.binding.user_id
+        if not user_id:
+            return
+        if run.binding.extractor_kind not in ("profile", "playbook"):
+            return
+
+        # Defer tagging off this worker's drain loop. The pass is idempotent
+        # (skips already-tagged entities), so running both profile and playbook
+        # tagging is safe regardless of this run's extractor kind.
+        schedule_tagging(
+            org_id=self.request_context.org_id,
+            user_id=user_id,
+            agent_version=run.binding.agent_version or "",
+            request_context=self.request_context,
+            llm_client=self.client,
         )

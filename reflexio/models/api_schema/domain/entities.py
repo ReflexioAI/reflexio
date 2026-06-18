@@ -221,6 +221,7 @@ class UserProfile(BaseModel):
         None  # Retained provenance data column (merged on dedup); new profiles write None.
     )
     expanded_terms: str | None = None
+    tags: list[str] = Field(default_factory=list)
     embedding: EmbeddingVector = []
     source_span: str | None = None
     notes: str | None = None
@@ -245,6 +246,7 @@ class UserPlaybook(BaseModel):
     source: str | None = None  # source of the interaction that generated this playbook
     source_interaction_ids: list[int] = Field(default_factory=list)
     expanded_terms: str | None = None
+    tags: list[str] = Field(default_factory=list)
     embedding: EmbeddingVector = []
     source_span: str | None = None
     notes: str | None = None
@@ -273,6 +275,7 @@ class AgentPlaybook(BaseModel):
     playbook_status: PlaybookStatus = PlaybookStatus.PENDING
     playbook_metadata: str = ""
     expanded_terms: str | None = None
+    tags: list[str] = Field(default_factory=list)
     embedding: EmbeddingVector = []
     status: Status | None = (
         None  # used for tracking intermediate states during playbook aggregation. Status.ARCHIVED for playbooks during aggregation process, None for current playbooks

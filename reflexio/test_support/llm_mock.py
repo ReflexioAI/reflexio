@@ -69,6 +69,8 @@ def _create_mock_completion(
         # intrinsic to the schema, not stylistic, so it survives prompt
         # rewrites better than matching on a tagline like "policy mining".
         content = json.dumps(registry["playbook_extraction"].minimal_valid)
+    elif '"tags"' in prompt_content:
+        content = json.dumps(registry["tagging"].minimal_valid)
     elif parse_structured_output:
         content = json.dumps(registry["profile_extraction"].minimal_valid)
     else:

@@ -74,7 +74,6 @@ class ProfileAddItem(BaseModel):
     Attributes:
         content (str): The profile content based on content definition
         time_to_live (str): Time to live for the profile - one of: 'one_day', 'one_week', 'one_month', 'one_quarter', 'one_year', 'infinity'
-        metadata (str, optional): Metadata extracted for the profile based on metadata definition
     """
 
     content: str = Field(description="Profile content based on content definition")
@@ -82,10 +81,6 @@ class ProfileAddItem(BaseModel):
         "one_day", "one_week", "one_month", "one_quarter", "one_year", "infinity"
     ] = Field(
         description="Time to live for the profile - determines when the profile expires"
-    )
-    metadata: str | None = Field(
-        default=None,
-        description="Metadata extracted for the profile based on metadata definition",
     )
     source_span: str | None = Field(
         default=None,
@@ -120,7 +115,7 @@ class ProfileUpdateOutput(BaseModel):
 
     add: list[ProfileAddItem] | None = Field(
         default=None,
-        description="List of new profiles to be added with their content, time to live, and optional metadata",
+        description="List of new profiles to be added with their content and time to live",
     )
     delete: list[str] | None = Field(
         default=None,
@@ -144,12 +139,12 @@ class StructuredProfilesOutput(BaseModel):
     Only extracts profiles — no delete/mention operations.
 
     Attributes:
-        profiles (list[ProfileAddItem], optional): List of extracted profiles with content, time_to_live, and optional metadata
+        profiles (list[ProfileAddItem], optional): List of extracted profiles with content and time_to_live
     """
 
     profiles: list[ProfileAddItem] | None = Field(
         default=None,
-        description="List of extracted profiles with content, time_to_live, and optional metadata",
+        description="List of extracted profiles with content and time_to_live",
     )
 
     model_config = ConfigDict(
@@ -225,7 +220,6 @@ def construct_profile_extraction_messages_from_sessions(
     agent_context_prompt: str,
     context_prompt: str,
     extraction_definition_prompt: str,
-    metadata_definition_prompt: str | None = None,
 ) -> list[dict]:
     """
     Construct LLM messages for profile extraction from sessions.
@@ -241,7 +235,6 @@ def construct_profile_extraction_messages_from_sessions(
         agent_context_prompt: Context about the agent for system message
         context_prompt: Additional context for system message
         extraction_definition_prompt: Definition of what profiles should contain
-        metadata_definition_prompt: Optional definition for profile metadata
 
     Returns:
         list[dict]: List of messages ready for profile extraction
@@ -259,7 +252,6 @@ def construct_profile_extraction_messages_from_sessions(
             "agent_context_prompt": agent_context_prompt,
             "context_prompt": context_prompt,
             "extraction_definition_prompt": extraction_definition_prompt,
-            "metadata_definition_prompt": metadata_definition_prompt,
         },
     )
 

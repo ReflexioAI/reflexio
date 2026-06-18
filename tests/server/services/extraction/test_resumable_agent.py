@@ -83,7 +83,7 @@ def test_profile_instruction_prompt_is_resumable_by_default():
             "agent_context_prompt": "agent context",
             "context_prompt": "",
             "extraction_definition_prompt": "user facts",
-            "metadata_definition_prompt": None,
+            "tagging_definition_prompt": None,
         },
     )
 
@@ -147,12 +147,11 @@ def test_resumable_agent_finishes_profile_output(
     assert stored.max_steps_remaining == 7
     assert stored.committed_output == {
         "profiles": [
-            {
-                "content": "User prefers AWS ECS deployments.",
-                "time_to_live": "infinity",
-                "metadata": None,
-                "source_span": None,
-                "notes": None,
+                    {
+                        "content": "User prefers AWS ECS deployments.",
+                        "time_to_live": "infinity",
+                        "source_span": None,
+                        "notes": None,
                 "reader_angle": None,
             }
         ]

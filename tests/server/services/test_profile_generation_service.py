@@ -117,7 +117,7 @@ def test_refresh_profiles_for_user(mock_chat_completion):
             should_extract_profile_prompt_override="test",
             context_prompt="test",
             extraction_definition_prompt="test",
-            metadata_definition_prompt="test",
+            tagging_definition_prompt="test",
         )
         profile_generation_service.configurator.set_config_by_name(
             "profile_extractor_config", profile_extractor_config
@@ -191,7 +191,7 @@ def test_test_refresh_profiles_for_user_with_image_encoding(mock_chat_completion
             should_extract_profile_prompt_override="test",
             context_prompt="test",
             extraction_definition_prompt="test",
-            metadata_definition_prompt="test",
+            tagging_definition_prompt="test",
         )
         profile_generation_service.configurator.set_config_by_name(
             "profile_extractor_config", profile_extractor_config
@@ -280,7 +280,7 @@ def test_profile_extraction_message_construction():
                 should_extract_profile_prompt_override="test",
                 context_prompt="test context",
                 extraction_definition_prompt="food preferences",
-                metadata_definition_prompt="cuisine type",
+                tagging_definition_prompt="cuisine type",
             )
             profile_generation_service.configurator.set_config_by_name(
                 "profile_extractor_config", profile_extractor_config
@@ -447,7 +447,7 @@ def test_refresh_profiles_with_output_pending_status(mock_chat_completion):
             should_extract_profile_prompt_override="test",
             context_prompt="test",
             extraction_definition_prompt="test",
-            metadata_definition_prompt="test",
+            tagging_definition_prompt="test",
         )
         profile_generation_service.configurator.set_config_by_name(
             "profile_extractor_config", profile_extractor_config
@@ -591,7 +591,7 @@ def test_run_manual_regular_no_window_size(mock_chat_completion):
             should_extract_profile_prompt_override="test",
             context_prompt="test",
             extraction_definition_prompt="test",
-            metadata_definition_prompt="test",
+            tagging_definition_prompt="test",
         )
         profile_generation_service.configurator.set_config_by_name(
             "profile_extractor_config", profile_extractor_config
@@ -649,7 +649,7 @@ def test_run_manual_regular_no_interactions(mock_chat_completion):
             should_extract_profile_prompt_override="test",
             context_prompt="test",
             extraction_definition_prompt="test",
-            metadata_definition_prompt="test",
+            tagging_definition_prompt="test",
         )
         profile_generation_service.configurator.set_config_by_name(
             "profile_extractor_config", profile_extractor_config
@@ -690,7 +690,7 @@ def test_run_manual_regular_with_interactions(mock_chat_completion):
             should_extract_profile_prompt_override="test",
             context_prompt="test",
             extraction_definition_prompt="test",
-            metadata_definition_prompt="test",
+            tagging_definition_prompt="test",
         )
         profile_generation_service.configurator.set_config_by_name(
             "profile_extractor_config", profile_extractor_config
@@ -766,7 +766,7 @@ def test_run_manual_regular_with_source_filter(mock_chat_completion):
             should_extract_profile_prompt_override="test",
             context_prompt="test",
             extraction_definition_prompt="test",
-            metadata_definition_prompt="test",
+            tagging_definition_prompt="test",
         )
         profile_generation_service.configurator.set_config_by_name(
             "profile_extractor_config", profile_extractor_config

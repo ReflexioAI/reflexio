@@ -112,8 +112,8 @@ class ProfileMixin:
                     generated_from_request_id, profile_time_to_live,
                     expiration_timestamp, custom_features, embedding, source,
                     status, extractor_names, expanded_terms,
-                    source_span, notes, reader_angle, created_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    source_span, notes, reader_angle, tags, created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     profile.profile_id,
                     profile.user_id,
@@ -131,6 +131,7 @@ class ProfileMixin:
                     profile.source_span,
                     profile.notes,
                     profile.reader_angle,
+                    _json_dumps(profile.tags or None),
                     _iso_now(),
                 ),
             )
@@ -172,7 +173,7 @@ class ProfileMixin:
                generated_from_request_id=?, profile_time_to_live=?,
                expiration_timestamp=?, custom_features=?, embedding=?,
                source=?, status=?, extractor_names=?, expanded_terms=?,
-               source_span=?, notes=?, reader_angle=?
+               source_span=?, notes=?, reader_angle=?, tags=?
                WHERE profile_id=?""",
             (
                 new_profile.content,
@@ -189,6 +190,7 @@ class ProfileMixin:
                 new_profile.source_span,
                 new_profile.notes,
                 new_profile.reader_angle,
+                _json_dumps(new_profile.tags or None),
                 profile_id,
             ),
         )
@@ -203,6 +205,15 @@ class ProfileMixin:
         )
         if rowid_row and embedding:
             self._vec_upsert("profiles_vec", rowid_row["rowid"], embedding)
+
+    @SQLiteStorageBase.handle_exceptions
+    def update_user_profile_tags(
+        self, user_id: str, profile_id: str, tags: list[str]
+    ) -> None:
+        self._execute(
+            "UPDATE profiles SET tags=? WHERE user_id=? AND profile_id=?",
+            (_json_dumps(tags or None), user_id, profile_id),
+        )
 
     @SQLiteStorageBase.handle_exceptions
     def delete_user_profile(self, request: DeleteUserProfileRequest) -> None:

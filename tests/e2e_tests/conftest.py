@@ -79,7 +79,7 @@ def reflexio_instance(
         storage_config=sqlite_storage_config,
         agent_context_prompt="this is a sales agent",
         # Single configured profile extractor (the list-valued field is retired and
-        # the Config constructor would ignore it, dropping metadata_definition_prompt
+        # the Config constructor would ignore it, dropping tagging_definition_prompt
         # and with it the mock's custom_features["metadata"]).
         profile_extractor_config=ProfileExtractorConfig(
             extractor_name="test_profile_extractor",
@@ -89,7 +89,7 @@ Conversation between sales agent and user, extract any information from the inte
             extraction_definition_prompt="""
 name, age, intent of the conversations
 """,
-            metadata_definition_prompt="""
+            tagging_definition_prompt="""
 choice of ['basic_info', 'conversation_intent']
 """,
         ),
@@ -140,7 +140,7 @@ Conversation between sales agent and user, extract any information from the inte
             extraction_definition_prompt="""
 name, age, intent of the conversations
 """,
-            metadata_definition_prompt="""
+            tagging_definition_prompt="""
 choice of ['basic_info', 'conversation_intent']
 """,
         ),
@@ -174,7 +174,7 @@ dietary habits and preferences (e.g., "vegetarian", "loves beef"),
 location and living situation (e.g., "lives in Austin"),
 hobbies and interests, work style, health conditions
 """,
-            metadata_definition_prompt="""
+            tagging_definition_prompt="""
 choice of ['diet', 'location', 'hobby', 'work', 'health']
 """,
         ),
@@ -458,7 +458,7 @@ Conversation between sales agent and user, extract any information from the inte
             extraction_definition_prompt="""
 name, age, intent of the conversations
 """,
-            metadata_definition_prompt="""
+            tagging_definition_prompt="""
 choice of ['basic_info', 'conversation_intent']
 """,
             allow_manual_trigger=True,  # Required for manual generation
@@ -531,19 +531,19 @@ def reflexio_instance_multiple_profile_extractors(
                 extractor_name="extractor_basic_info",
                 context_prompt="Extract basic information about the user.",
                 extraction_definition_prompt="name, company, role",
-                metadata_definition_prompt="choice of ['basic_info']",
+                tagging_definition_prompt="choice of ['basic_info']",
             ),
             ProfileExtractorConfig(
                 extractor_name="extractor_preferences",
                 context_prompt="Extract user preferences from the conversation.",
                 extraction_definition_prompt="communication style, preferred contact method",
-                metadata_definition_prompt="choice of ['preferences']",
+                tagging_definition_prompt="choice of ['preferences']",
             ),
             ProfileExtractorConfig(
                 extractor_name="extractor_intent",
                 context_prompt="Extract user intent from the conversation.",
                 extraction_definition_prompt="conversation goal, buying intent",
-                metadata_definition_prompt="choice of ['intent']",
+                tagging_definition_prompt="choice of ['intent']",
             ),
         ],
     )

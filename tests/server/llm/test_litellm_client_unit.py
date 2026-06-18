@@ -8,6 +8,7 @@ prompt caching. All LiteLLM SDK calls are mocked -- no real API requests are mad
 import base64
 import json
 import logging
+import multiprocessing
 import struct
 import tempfile
 import time
@@ -18,6 +19,7 @@ from unittest.mock import MagicMock, patch
 
 import litellm
 import pytest
+from litellm.exceptions import APIConnectionError
 from pydantic import BaseModel, Field
 
 from reflexio.models.config_schema import (
@@ -43,8 +45,10 @@ from reflexio.server.llm.litellm_client import (
     LiteLLMConfig,
     LLMHardTimeoutError,
     StructuredOutputParseError,
+    _CompletionErrorSnapshot,
     _get_embedding_encoding,
     _get_embedding_limit,
+    _litellm_completion_worker,
     _truncate_for_embedding,
     create_litellm_client,
 )
@@ -1288,7 +1292,7 @@ class TestExtractJsonFromString:
         assert result == '{"answer": 42, "why": "{kept}"}'
 
     def test_json_array_ignores_stray_brackets_in_text(self, client):
-        content = "Candidates [not json] then [{\"answer\": 42}] trailing [x]"
+        content = 'Candidates [not json] then [{"answer": 42}] trailing [x]'
         result = client._extract_json_from_string(content)
         assert result == '[{"answer": 42}]'
 
@@ -2253,6 +2257,34 @@ class TestLitellmIntegration:
         # Two subprocess spawn/kill cycles (initial attempt + one hard-timeout
         # retry) — still far below the 1s the blocked call would take.
         assert time.perf_counter() - start < 1.0
+
+    def test_worker_snapshots_litellm_api_connection_error(self, monkeypatch):
+        """LiteLLM exceptions can dump but fail to load across process queues."""
+
+        def _raise_connection_error(**_params):
+            raise APIConnectionError(
+                "connection failed",
+                llm_provider="openai",
+                model="gpt-5-mini",
+            )
+
+        monkeypatch.setattr("litellm.completion", _raise_connection_error)
+        process_context = multiprocessing.get_context()
+        result_queue = process_context.Queue(maxsize=1)
+
+        try:
+            _litellm_completion_worker({"model": "gpt-5-mini"}, result_queue)
+            status, payload = result_queue.get(timeout=1.0)
+        finally:
+            result_queue.close()
+            result_queue.join_thread()
+
+        assert status == "error"
+        assert isinstance(payload, _CompletionErrorSnapshot)
+        assert payload.type_name == "APIConnectionError"
+        assert "connection failed" in payload.message
+        assert payload.model == "gpt-5-mini"
+        assert payload.llm_provider == "openai"
 
     def test_hard_timeout_retried_once_then_succeeds(self, monkeypatch):
         """A transient hard timeout is retried exactly once at the client level

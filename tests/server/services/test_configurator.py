@@ -67,7 +67,7 @@ def test_set_and_get_config_by_name(configurator):
                 should_extract_profile_prompt_override="test",
                 context_prompt="test",
                 extraction_definition_prompt="test",
-                metadata_definition_prompt="test",
+                tagging_definition_prompt="test",
             ),
         ),
     ]

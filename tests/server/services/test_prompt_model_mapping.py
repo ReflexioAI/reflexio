@@ -44,6 +44,7 @@ PROMPT_VERSION_MAP: dict[str, tuple[str, str | None]] = {
     "profile_should_generate": ("v1.0.0", "boolean_evaluation"),
     "profile_should_generate_override": ("v1.0.0", "boolean_evaluation"),
     "profile_deduplication": ("v1.0.0", "profile_deduplication"),
+    "tagging": ("v1.0.0", "tagging"),
     "agent_success_evaluation": ("v1.0.0", "agent_success_evaluation"),
     # F1 cleanup: the session-level shadow comparison branch was retracted.
     # The prompt directories remain on disk (marked active: false in their
