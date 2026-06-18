@@ -1,0 +1,5 @@
+{
+    "search_mode": "hybrid",
+    "vector_weight": 1.0,
+    "fts_weight": 1.0
+}
