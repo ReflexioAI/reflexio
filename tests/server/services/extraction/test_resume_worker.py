@@ -262,6 +262,31 @@ def test_resume_worker_retries_finalization_without_rerunning_agent(
     assert storage.list_run_tool_dependencies("run_1")[0].consumed_at is not None
 
 
+def test_resume_worker_tagging_schedule_failure_is_best_effort(
+    request_context,
+):
+    run = AgentRunRecord(
+        id="run_tagging",
+        binding=AgentBinding(
+            org_id="org_1",
+            extractor_kind="profile",
+            user_id="user_1",
+            request_id="request_1",
+            agent_version="v1",
+            source="api",
+        ),
+        status=AgentRunStatus.FINALIZED_PENDING_TOOL,
+        generation_request_snapshot={"request_id": "request_1"},
+    )
+    worker = ExtractionResumeWorker(request_context=request_context)
+
+    with patch(
+        "reflexio.server.services.extraction.resume_worker.schedule_tagging",
+        side_effect=RuntimeError("scheduler unavailable"),
+    ):
+        worker._schedule_finalized_tagging(run)
+
+
 def test_resume_worker_fails_run_when_step_budget_exhausted(
     monkeypatch,
     request_context,

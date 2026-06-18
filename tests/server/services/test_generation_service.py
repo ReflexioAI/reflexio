@@ -107,6 +107,41 @@ def test_publish_request_honors_caller_request_id(mock_llm_responses):
         assert stored_request.request_id == request_id
 
 
+def test_publish_request_tagging_schedule_failure_is_best_effort(mock_llm_responses):
+    user_id = "test_user_id"
+    org_id = "test_org"
+    request_id = "tagging-schedule-failure"
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        llm_config = LiteLLMConfig(model="gpt-4o-mini")
+        llm_client = LiteLLMClient(llm_config)
+        generation_service = GenerationService(
+            llm_client=llm_client,
+            request_context=RequestContext(org_id=org_id, storage_base_dir=temp_dir),
+        )
+
+        interaction = InteractionData(
+            content="test interaction",
+            created_at=int(datetime.datetime.now(UTC).timestamp()),
+        )
+        request = PublishUserInteractionRequest(
+            request_id=request_id,
+            user_id=user_id,
+            interaction_data_list=[interaction],
+            session_id="test_session_id",
+        )
+
+        with patch(
+            "reflexio.server.services.generation_service.schedule_tagging",
+            side_effect=RuntimeError("scheduler unavailable"),
+        ):
+            result = generation_service.run(request)
+
+        assert result.request_id == request_id
+        assert generation_service.storage is not None
+        assert generation_service.storage.get_request(request_id) is not None
+
+
 def test_publish_request_rejects_empty_caller_request_id():
     interaction = InteractionData(
         content="test interaction",

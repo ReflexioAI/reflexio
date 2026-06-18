@@ -786,10 +786,17 @@ class ExtractionResumeWorker:
         # Defer tagging off this worker's drain loop. The pass is idempotent
         # (skips already-tagged entities), so running both profile and playbook
         # tagging is safe regardless of this run's extractor kind.
-        schedule_tagging(
-            org_id=self.request_context.org_id,
-            user_id=user_id,
-            agent_version=run.binding.agent_version or "",
-            request_context=self.request_context,
-            llm_client=self.client,
-        )
+        try:
+            schedule_tagging(
+                org_id=self.request_context.org_id,
+                user_id=user_id,
+                agent_version=run.binding.agent_version or "",
+                request_context=self.request_context,
+                llm_client=self.client,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to schedule tagging for finalized %s run %s",
+                run.binding.extractor_kind,
+                run.id,
+            )

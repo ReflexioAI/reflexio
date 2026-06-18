@@ -383,13 +383,19 @@ class GenerationService:
             # Tagging runs an LLM call per newly generated entity, so defer it off
             # the publish path. The scheduler debounces bursts and is idempotent
             # (already-tagged entities are skipped).
-            schedule_tagging(
-                org_id=self.org_id,
-                user_id=user_id,
-                agent_version=agent_version,
-                request_context=self.request_context,
-                llm_client=self.client,
-            )
+            try:
+                schedule_tagging(
+                    org_id=self.org_id,
+                    user_id=user_id,
+                    agent_version=agent_version,
+                    request_context=self.request_context,
+                    llm_client=self.client,
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to schedule tagging for publish request %s",
+                    request_id,
+                )
 
             # Schedule delayed group evaluation for the required session.
             self._schedule_group_evaluation_if_needed(
