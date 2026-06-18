@@ -351,9 +351,24 @@ def _iso_to_epoch(iso_str: str | None) -> int:
         return _epoch_now()
 
 
+# Bounds that ``datetime.fromtimestamp(tz=UTC)`` can represent (year 1..9999).
+# Callers pass sentinel "open" bounds — e.g. ``to_ts=10**12`` for "no upper
+# limit" or ``0`` for "from the beginning" — which would otherwise overflow
+# ``datetime.fromtimestamp`` with a ``ValueError``. Clamping to these bounds
+# yields the same query semantics (the ISO string still sorts before/after every
+# stored row) with a valid value.
+_MAX_SAFE_EPOCH_TS = 253_402_300_799  # 9999-12-31T23:59:59Z
+_MIN_SAFE_EPOCH_TS = 0  # 1970-01-01T00:00:00Z
+
+
 def _epoch_to_iso(ts: int) -> str:
-    """Convert a Unix timestamp to ISO 8601 string."""
-    return datetime.fromtimestamp(ts, tz=UTC).isoformat()
+    """Convert a Unix timestamp (seconds) to an ISO 8601 string.
+
+    Out-of-range sentinel bounds are clamped to the representable range so that
+    callers passing "open" window bounds never trigger a ``ValueError``.
+    """
+    clamped = max(_MIN_SAFE_EPOCH_TS, min(ts, _MAX_SAFE_EPOCH_TS))
+    return datetime.fromtimestamp(clamped, tz=UTC).isoformat()
 
 
 # ---------------------------------------------------------------------------

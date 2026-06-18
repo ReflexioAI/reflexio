@@ -129,6 +129,12 @@ def _make_storage(
         _make_interaction("req_1", "user_a")
     ]
     storage.get_agent_success_evaluation_results.return_value = prior_results or []
+    # The runner captures prior result ids via the targeted, indexed lookup
+    # get_agent_success_evaluation_result_ids (added in the evaluation-overview
+    # read optimization) — seed it with the ids of the supplied prior rows.
+    storage.get_agent_success_evaluation_result_ids.return_value = [
+        r.result_id for r in (prior_results or [])
+    ]
     storage.delete_agent_success_evaluation_results_by_ids.return_value = len(
         prior_results or []
     )
@@ -452,10 +458,17 @@ def test_regenerate_happy_path_with_real_sqlite_storage(tmp_path) -> None:
                 ]
             )
 
-        with patch(
-            "reflexio.server.services.agent_success_evaluation"
-            ".group_evaluation_runner.AgentSuccessEvaluationService"
-        ) as service_cls:
+        with (
+            patch(
+                "reflexio.server.services.agent_success_evaluation"
+                ".group_evaluation_runner.AgentSuccessEvaluationService"
+            ) as service_cls,
+            patch(
+                "reflexio.server.services.agent_success_evaluation"
+                ".group_evaluation_runner.get_extractor_name",
+                return_value="overall_success",
+            ),
+        ):
             service = MagicMock()
             service.run.side_effect = fake_run
             service.has_run_failures.return_value = False
@@ -546,10 +559,17 @@ def test_regenerate_failure_preserves_old_rows_with_real_sqlite_storage(
         request_context.storage = storage
         llm_client = MagicMock()
 
-        with patch(
-            "reflexio.server.services.agent_success_evaluation"
-            ".group_evaluation_runner.AgentSuccessEvaluationService"
-        ) as service_cls:
+        with (
+            patch(
+                "reflexio.server.services.agent_success_evaluation"
+                ".group_evaluation_runner.AgentSuccessEvaluationService"
+            ) as service_cls,
+            patch(
+                "reflexio.server.services.agent_success_evaluation"
+                ".group_evaluation_runner.get_extractor_name",
+                return_value="overall_success",
+            ),
+        ):
             service = MagicMock()
             # Simulate the LLM failure path. Service .run() is a no-op (no save).
             service.has_run_failures.return_value = True
