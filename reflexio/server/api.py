@@ -2,11 +2,13 @@ import asyncio
 import inspect
 import logging
 import os
+import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from typing import Any
 
+from anyio.to_thread import current_default_thread_limiter
 from fastapi import (
     APIRouter,
     BackgroundTasks,
@@ -493,12 +495,27 @@ class CorrelationIdMiddleware(BaseHTTPMiddleware):
     ) -> Response:
         cid = generate_correlation_id()
         correlation_id_var.set(cid)
+        try:
+            stats = current_default_thread_limiter().statistics()
+            request.state.tp_borrowed = stats.borrowed_tokens
+            request.state.tp_total = stats.total_tokens
+            request.state.tp_waiting = stats.tasks_waiting
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Failed to snapshot threadpool limiter stats: %s", exc)
+            request.state.tp_borrowed = None
+            request.state.tp_total = None
+            request.state.tp_waiting = None
         response = await call_next(request)
         response.headers["X-Correlation-ID"] = cid
         return response
 
 
 core_router = APIRouter()
+
+
+def _stamp_search_dependencies_done(request: Request) -> None:
+    """Stamp when dependency resolution reaches its final search dependency."""
+    request.state.search_deps_done_monotonic = time.monotonic()
 
 
 def _meter_applied_learnings(
@@ -950,9 +967,11 @@ def search_agent_playbooks_endpoint(
 def unified_search_endpoint(
     request: Request,
     payload: UnifiedSearchRequest,
+    background_tasks: BackgroundTasks,
     org_id: str = Depends(default_get_org_id),
     caller_type: str = Depends(default_get_caller_type),
     _gate: None = Depends(default_billing_gate("application")),  # noqa: B008
+    _deps_done: None = Depends(_stamp_search_dependencies_done),
 ) -> UnifiedSearchViewResponse:
     """Search across all entity types (profiles, agent playbooks, user playbooks).
 
@@ -969,12 +988,22 @@ def unified_search_endpoint(
     Returns:
         UnifiedSearchViewResponse: Combined search results
     """
+    deps_done = getattr(request.state, "search_deps_done_monotonic", None)
+    deps_to_body_ms = (
+        int((time.monotonic() - deps_done) * 1000) if deps_done is not None else None
+    )
     with profile_step(
         "search.endpoint",
         enabled=bool(payload.enable_reformulation),
         has_conversation_history=bool(payload.conversation_history),
         search_mode=payload.search_mode,
-    ):
+    ) as endpoint_span:
+        endpoint_span.set_data("deps_to_body_ms", deps_to_body_ms)
+        endpoint_span.set_data(
+            "tp_borrowed", getattr(request.state, "tp_borrowed", None)
+        )
+        endpoint_span.set_data("tp_total", getattr(request.state, "tp_total", None))
+        endpoint_span.set_data("tp_waiting", getattr(request.state, "tp_waiting", None))
 
         def run_search() -> Any:
             with profile_step("search.reflexio_cache"):
@@ -997,16 +1026,16 @@ def unified_search_endpoint(
                 agent_trace=response.agent_trace,
                 rehydrated_text=response.rehydrated_text,
             )
-        with profile_step("search.meter_applied_learnings"):
-            _meter_applied_learnings(
-                org_id=org_id,
-                caller_type=caller_type,
-                surfaced_count=len(resp.profiles)
-                + len(resp.agent_playbooks)
-                + len(resp.user_playbooks),
-                request_id=getattr(payload, "request_id", None),
-                session_id=getattr(payload, "session_id", None),
-            )
+        background_tasks.add_task(
+            _meter_applied_learnings,
+            org_id=org_id,
+            caller_type=caller_type,
+            surfaced_count=len(resp.profiles)
+            + len(resp.agent_playbooks)
+            + len(resp.user_playbooks),
+            request_id=getattr(payload, "request_id", None),
+            session_id=getattr(payload, "session_id", None),
+        )
     return resp
 
 

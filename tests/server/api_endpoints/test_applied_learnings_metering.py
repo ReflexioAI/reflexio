@@ -17,6 +17,7 @@ from reflexio.models.api_schema.ui.entities import (
     UserPlaybookView,
 )
 from reflexio.server.api import create_app
+from reflexio.server.tracing import configure_tracer
 from reflexio.server.usage_metrics import UsageEvent, configure_usage_event_recorder
 
 
@@ -86,6 +87,38 @@ def _capture() -> list[UsageEvent]:
     return events
 
 
+class _RecordingSpan:
+    def __init__(self, name: str, data: dict[str, object]) -> None:
+        self.name = name
+        self.data = data
+
+    def set_data(self, key: str, value: object) -> None:
+        self.data[key] = value
+
+
+class _SpanContext:
+    def __init__(
+        self, spans: list[_RecordingSpan], name: str, data: dict[str, object]
+    ) -> None:
+        self._spans = spans
+        self._span = _RecordingSpan(name, data)
+
+    def __enter__(self) -> _RecordingSpan:
+        self._spans.append(self._span)
+        return self._span
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+
+class _RecordingTracer:
+    def __init__(self) -> None:
+        self.spans: list[_RecordingSpan] = []
+
+    def span(self, name: str, **data: object) -> _SpanContext:
+        return _SpanContext(self.spans, name, dict(data))
+
+
 def test_production_agent_search_meters_surfaced_count() -> None:
     """A production-agent call with results emits one learning_applied event."""
     events = _capture()
@@ -135,6 +168,27 @@ def test_empty_result_meters_nothing() -> None:
         configure_usage_event_recorder(None)
 
     assert [e for e in events if e.event_name == "learning_applied"] == []
+
+
+def test_unified_search_records_threadpool_diagnostics_on_endpoint_span() -> None:
+    """The search span carries deps-to-body and threadpool snapshot diagnostics."""
+    tracer = _RecordingTracer()
+    configure_tracer(tracer)
+    try:
+        with _patch_unified_search([], [], []):
+            resp = _client("dashboard").post(
+                "/api/search", json={"query": "x", "user_id": "u1"}
+            )
+        assert resp.status_code == 200
+    finally:
+        configure_tracer(None)
+
+    search_spans = [span for span in tracer.spans if span.name == "search.endpoint"]
+    assert search_spans
+    data = search_spans[-1].data
+    assert "deps_to_body_ms" in data
+    assert isinstance(data["deps_to_body_ms"], int)
+    assert {"tp_borrowed", "tp_total", "tp_waiting"} <= data.keys()
 
 
 def test_get_billing_gate_override_seam() -> None:
