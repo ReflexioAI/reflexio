@@ -11,7 +11,7 @@ Description: Global configuration manager for site-wide variables and per-org fe
 
 ## Purpose
 
-1. **Global settings** - Model names, embedding models
+1. **Global settings** - Model names, embedding models, and retrieval defaults
 2. **Feature flags** - Per-org feature gating (global enable or per-org allowlist)
 3. **Dual storage** - File-based with optional Redis caching
 4. **Auto-fallback** - Redis → File system graceful degradation
@@ -62,6 +62,7 @@ site_var/
 └── site_var_sources/
     ├── app_config.json        # JSON → parsed dict
     ├── model_config.json
+    ├── search_settings.json   # Default retrieval mode and hybrid search weights
     └── feature_flags.json     # Feature flag config (per-flag enable + org allowlist)
 ```
 
