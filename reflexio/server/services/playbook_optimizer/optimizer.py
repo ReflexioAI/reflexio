@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+from pathlib import Path
 from typing import Any, Literal, cast
 
 from pydantic import BaseModel
@@ -331,6 +333,13 @@ class PlaybookOptimizer:
                 backoff_base_s=config.webhook_backoff_base_seconds,
             )
         if config.assistant_script_path:
+            if not _is_executable_file(config.assistant_script_path):
+                logger.warning(
+                    "Skipping playbook optimization: assistant_script_path is not "
+                    "an executable file path=%s",
+                    config.assistant_script_path,
+                )
+                return None
             return LocalScriptAssistant(
                 script_path=config.assistant_script_path,
                 script_args=config.assistant_script_args,
@@ -625,6 +634,11 @@ def _split_metadata(
             window.user_playbook_id for window in validation_windows
         ],
     }
+
+
+def _is_executable_file(path: str) -> bool:
+    candidate = Path(path)
+    return candidate.is_file() and os.access(candidate, os.X_OK)
 
 
 def _result_metadata(result: Any, split_metadata: dict[str, Any]) -> dict[str, Any]:

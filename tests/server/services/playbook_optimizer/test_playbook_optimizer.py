@@ -498,6 +498,25 @@ def test_optimizer_selects_local_script_assistant(tmp_path):
     assert assistant.command == [sys.executable, "assistant.py"]
 
 
+def test_optimizer_skips_missing_local_script_assistant(tmp_path):
+    storage = _sqlite_storage(tmp_path)
+    config = PlaybookOptimizerConfig(
+        enabled=True,
+        assistant_script_path=str(tmp_path / "missing-assistant"),
+    )
+    optimizer = _optimizer_for_test(
+        storage,
+        Config(
+            storage_config=StorageConfigSQLite(db_path=str(tmp_path / "reflexio.db")),
+            playbook_optimizer_config=config,
+        ),
+    )
+
+    assistant = optimizer._create_assistant(config)
+
+    assert assistant is None
+
+
 def test_optimizer_splits_train_and_validation_windows(tmp_path):
     storage = _sqlite_storage(tmp_path)
     optimizer = _optimizer_for_test(
