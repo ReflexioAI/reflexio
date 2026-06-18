@@ -131,7 +131,7 @@ class ProfileMixin:
                     profile.source_span,
                     profile.notes,
                     profile.reader_angle,
-                    _json_dumps(profile.tags or None),
+                    _json_dumps(profile.tags),
                     _iso_now(),
                 ),
             )
@@ -190,7 +190,7 @@ class ProfileMixin:
                 new_profile.source_span,
                 new_profile.notes,
                 new_profile.reader_angle,
-                _json_dumps(new_profile.tags or None),
+                _json_dumps(new_profile.tags),
                 profile_id,
             ),
         )
@@ -212,7 +212,7 @@ class ProfileMixin:
     ) -> None:
         self._execute(
             "UPDATE profiles SET tags=? WHERE user_id=? AND profile_id=?",
-            (_json_dumps(tags or None), user_id, profile_id),
+            (_json_dumps(tags), user_id, profile_id),
         )
 
     @SQLiteStorageBase.handle_exceptions

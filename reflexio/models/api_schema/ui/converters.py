@@ -78,7 +78,7 @@ def to_profile_view(profile: UserProfile) -> ProfileView:
         status=profile.status,
         extractor_names=profile.extractor_names,
         source_span=profile.source_span,
-        tags=profile.tags,
+        tags=profile.tags or [],
     )
 
 
@@ -105,7 +105,7 @@ def to_user_playbook_view(rf: UserPlaybook) -> UserPlaybookView:
         source=rf.source,
         source_interaction_ids=rf.source_interaction_ids,
         source_span=rf.source_span,
-        tags=rf.tags,
+        tags=rf.tags or [],
     )
 
 
@@ -129,7 +129,7 @@ def to_agent_playbook_view(fb: AgentPlaybook) -> AgentPlaybookView:
         playbook_status=fb.playbook_status,
         playbook_metadata=fb.playbook_metadata,
         status=fb.status,
-        tags=fb.tags,
+        tags=fb.tags or [],
     )
 
 

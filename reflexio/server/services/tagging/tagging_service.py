@@ -82,7 +82,9 @@ class TaggingService:
         )
 
         if tag_profiles and profile_prompt:
-            self._tag_profiles(user_id=user_id, tagging_definition_prompt=profile_prompt)
+            self._tag_profiles(
+                user_id=user_id, tagging_definition_prompt=profile_prompt
+            )
         if tag_playbooks and user_playbook_prompt:
             self._tag_user_playbooks(
                 user_id=user_id,
@@ -97,8 +99,8 @@ class TaggingService:
     def _tag_profiles(self, *, user_id: str, tagging_definition_prompt: str) -> None:
         profiles = self.storage.get_user_profile(user_id)  # type: ignore[union-attr]
         for profile in profiles:
-            if profile.tags:
-                continue  # already tagged — only tag newly generated profiles
+            if profile.tags is not None:
+                continue  # already tagged (incl. empty result) — tag each entity once
             tags = self._generate_tags(
                 tagging_definition_prompt=tagging_definition_prompt,
                 content=self._profile_content(profile),
@@ -121,8 +123,8 @@ class TaggingService:
             status_filter=[None],
         )
         for playbook in playbooks:
-            if playbook.tags:
-                continue  # already tagged — only tag newly generated playbooks
+            if playbook.tags is not None:
+                continue  # already tagged (incl. empty result) — tag each entity once
             tags = self._generate_tags(
                 tagging_definition_prompt=tagging_definition_prompt,
                 content=self._playbook_content(playbook),
@@ -144,8 +146,8 @@ class TaggingService:
             status_filter=[None],
         )
         for playbook in playbooks:
-            if playbook.tags:
-                continue  # already tagged — only tag newly generated playbooks
+            if playbook.tags is not None:
+                continue  # already tagged (incl. empty result) — tag each entity once
             tags = self._generate_tags(
                 tagging_definition_prompt=tagging_definition_prompt,
                 content=self._playbook_content(playbook),
@@ -155,7 +157,9 @@ class TaggingService:
                 tags=tags,
             )
 
-    def _generate_tags(self, *, tagging_definition_prompt: str, content: str) -> list[str]:
+    def _generate_tags(
+        self, *, tagging_definition_prompt: str, content: str
+    ) -> list[str]:
         if os.getenv("MOCK_LLM_RESPONSE", "").lower() == "true":
             return ["example_tag"]
 
@@ -175,7 +179,9 @@ class TaggingService:
         )
         log_model_response(logger, "Tagging response", response)
         if not isinstance(response, TagsOutput):
-            logger.warning("Unexpected response type from tagging LLM: %s", type(response))
+            logger.warning(
+                "Unexpected response type from tagging LLM: %s", type(response)
+            )
             return []
         return [tag.strip() for tag in response.tags if tag.strip()]
 

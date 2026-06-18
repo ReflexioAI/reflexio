@@ -61,7 +61,7 @@ class TestProfileCRUD:
 
     def test_update_user_profile_tags_round_trip(self, storage: BaseStorage) -> None:
         storage.add_user_profile("u1", [_make_profile("u1", "p1", "likes sushi")])
-        assert storage.get_user_profile("u1")[0].tags == []
+        assert storage.get_user_profile("u1")[0].tags is None  # untagged until tagged
 
         storage.update_user_profile_tags("u1", "p1", ["food", "japanese"])
 

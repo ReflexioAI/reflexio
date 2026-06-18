@@ -70,7 +70,7 @@ class TestUserPlaybookCRUD:
     def test_update_user_playbook_tags_round_trip(self, storage):
         storage.save_user_playbooks([_make_user_playbook(1, "u1", "fb", "v1")])
         saved = storage.get_user_playbooks(user_id="u1", status_filter=[None])
-        assert saved[0].tags == []
+        assert saved[0].tags is None  # untagged until the tagging pass runs
 
         storage.update_user_playbook(saved[0].user_playbook_id, tags=["safety", "ux"])
 
@@ -79,9 +79,9 @@ class TestUserPlaybookCRUD:
         assert result[0].content == saved[0].content
 
         storage.update_user_playbook(saved[0].user_playbook_id, tags=[])
-        assert storage.get_user_playbooks(user_id="u1", status_filter=[None])[
-            0
-        ].tags == []
+        assert (
+            storage.get_user_playbooks(user_id="u1", status_filter=[None])[0].tags == []
+        )
 
     def test_count_user_playbooks(self, storage):
         rfs = [
@@ -320,7 +320,7 @@ class TestAgentPlaybookCRUD:
     def test_update_agent_playbook_tags_round_trip(self, storage):
         storage.save_agent_playbooks([_make_agent_playbook(1, "fb", "v1")])
         saved = storage.get_agent_playbooks(playbook_name="fb")
-        assert saved[0].tags == []
+        assert saved[0].tags is None  # untagged until the tagging pass runs
 
         storage.update_agent_playbook(saved[0].agent_playbook_id, tags=["a", "b"])
 

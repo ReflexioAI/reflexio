@@ -147,7 +147,7 @@ class PlaybookMixin:
                         up.source_span,
                         up.notes,
                         up.reader_angle,
-                        _json_dumps(up.tags or None),
+                        _json_dumps(up.tags),
                     ),
                 )
                 upid = cur.lastrowid or 0
@@ -609,7 +609,7 @@ class PlaybookMixin:
                         ap.playbook_metadata,
                         _json_dumps(ap.embedding),
                         ap.expanded_terms,
-                        _json_dumps(ap.tags or None),
+                        _json_dumps(ap.tags),
                         ap.status.value if ap.status else None,
                     ),
                 )
@@ -788,7 +788,7 @@ class PlaybookMixin:
             params.append(playbook_status.value)
         if tags is not None:
             updates.append("tags = ?")
-            params.append(_json_dumps(tags or None))
+            params.append(_json_dumps(tags))
         if updates:
             params.append(agent_playbook_id)
             self._execute(
@@ -832,7 +832,7 @@ class PlaybookMixin:
             params.append(json.dumps(blocking_issue.model_dump()))
         if tags is not None:
             updates.append("tags = ?")
-            params.append(_json_dumps(tags or None))
+            params.append(_json_dumps(tags))
         if updates:
             params.append(user_playbook_id)
             self._execute(

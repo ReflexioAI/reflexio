@@ -379,7 +379,7 @@ def _row_to_profile(row: sqlite3.Row) -> UserProfile:
         source_span=d.get("source_span"),
         notes=d.get("notes"),
         reader_angle=d.get("reader_angle"),
-        tags=_json_loads(d.get("tags")) or [],
+        tags=_json_loads(d.get("tags")),
     )
 
 
@@ -452,7 +452,7 @@ def _row_to_user_playbook(
         status=Status(d["status"]) if d.get("status") else None,
         source=d.get("source"),
         source_interaction_ids=_json_loads(d.get("source_interaction_ids")) or [],
-        tags=_json_loads(d.get("tags")) or [],
+        tags=_json_loads(d.get("tags")),
         embedding=embedding,
         expanded_terms=d.get("expanded_terms"),
         source_span=d.get("source_span"),
@@ -478,7 +478,7 @@ def _row_to_agent_playbook(row: sqlite3.Row) -> AgentPlaybook:
         if d.get("playbook_status")
         else PlaybookStatus.PENDING,
         playbook_metadata=d.get("playbook_metadata") or "",
-        tags=_json_loads(d.get("tags")) or [],
+        tags=_json_loads(d.get("tags")),
         embedding=[],
         status=Status(d["status"]) if d.get("status") else None,
         expanded_terms=d.get("expanded_terms"),

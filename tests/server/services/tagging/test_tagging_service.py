@@ -230,10 +230,11 @@ def test_tagging_service_skips_already_tagged_entities(monkeypatch: Any) -> None
         lambda *_: {},
     )
     storage = FakeStorage()
-    # Pre-tag every entity so the service should treat them as already processed.
-    storage.profiles[0].tags = ["existing"]
+    # An empty list means tagging already ran and matched nothing — a final state.
+    # The service must NOT re-tag these (only tags is None means "never tagged").
+    storage.profiles[0].tags = []
     storage.user_playbooks[0].tags = ["existing"]
-    storage.agent_playbooks[0].tags = ["existing"]
+    storage.agent_playbooks[0].tags = []
     context = FakeRequestContext(make_config(), storage)
     client = FakeLLMClient([])
 
