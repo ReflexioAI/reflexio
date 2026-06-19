@@ -2317,9 +2317,7 @@ class TestLitellmIntegration:
         """
         monkeypatch.setenv("REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS", "5")
         client = LiteLLMClient(
-            LiteLLMConfig(
-                model="minimax/MiniMax-M3", fallback_models=["gpt-5-mini"]
-            )
+            LiteLLMConfig(model="minimax/MiniMax-M3", fallback_models=["gpt-5-mini"])
         )
         captured: dict[str, Any] = {}
 
@@ -2339,6 +2337,61 @@ class TestLitellmIntegration:
         assert captured["num_retries"] == 0
         assert captured["fallbacks"] == ["gpt-5-mini"]
         assert captured["hard_timeout"] == pytest.approx(2 * 120 + 5)
+
+    @pytest.mark.parametrize(
+        "fallback_models, expected_rungs",
+        [([], 1), (["a"], 2), (["a", "b"], 3)],
+    )
+    def test_hard_timeout_scales_with_rung_count(
+        self, monkeypatch, fallback_models, expected_rungs
+    ):
+        """hard_timeout == (1 + len(fallbacks)) * per_attempt + ONE grace.
+
+        Pinning n=0/1/2 catches the ``1 + len(...)`` off-by-one and that grace is
+        added once (not per rung) — at n=1 alone, several wrong formulas collapse
+        to the same number, so a single case proves nothing.
+        """
+        monkeypatch.setenv("REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS", "5")
+        client = LiteLLMClient(
+            LiteLLMConfig(model="x", timeout=30, fallback_models=fallback_models)
+        )
+        captured: dict[str, Any] = {}
+
+        def _capture(params, hard_timeout):
+            captured["hard_timeout"] = hard_timeout
+            return _make_completion_response("ok")
+
+        monkeypatch.setattr(client, "_completion_with_hard_timeout", _capture)
+        client.generate_chat_response(self._messages())
+
+        assert captured["hard_timeout"] == pytest.approx(expected_rungs * 30 + 5)
+
+    def test_fallback_response_returned_when_primary_fails(self, monkeypatch):
+        """End-to-end: when the primary fails and a fallback is configured, the
+        fallback's response is what _make_request returns.
+
+        The fake stands in for litellm's native fallback dispatch (which our code
+        ENABLES by forwarding ``fallbacks`` and ``num_retries=0``): it serves the
+        fallback whenever the primary is invoked with a non-empty ``fallbacks``
+        list, and otherwise fails. If a regression dropped the ``fallbacks``
+        kwarg, the fake would raise instead and this test would fail — so it
+        guards the headline "fallback is reachable" behavior, not just plumbing
+        values.
+        """
+        client = LiteLLMClient(
+            LiteLLMConfig(model="minimax/MiniMax-M3", fallback_models=["gpt-5-mini"])
+        )
+
+        def _fake(**params):
+            if params["model"] == "minimax/MiniMax-M3" and params.get("fallbacks"):
+                return _make_completion_response("from-fallback")
+            raise APIConnectionError(
+                "primary down", llm_provider="minimax", model=params["model"]
+            )
+
+        monkeypatch.setattr("litellm.completion", _fake)
+        result = client.generate_chat_response(self._messages())
+        assert result == "from-fallback"
 
     def test_invalid_hard_timeout_grace_env_falls_back(self, monkeypatch, caplog):
         monkeypatch.setenv("REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS", "not-a-float")

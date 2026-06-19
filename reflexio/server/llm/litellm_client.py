@@ -232,14 +232,17 @@ class LiteLLMConfig:
         temperature: Temperature for response generation (0.0 to 2.0).
         max_tokens: Maximum tokens to generate.
         timeout: Request timeout in seconds.
-        max_retries: Maximum retry attempts on the primary model. Passed
-            directly to litellm's num_retries. Default 3.
+        max_retries: Maximum same-model retry attempts. Used by the embedding
+            path (litellm's num_retries) and clamped in _build_completion_params.
+            NOT used on the chat-completion path — that forces num_retries=0 so a
+            hung primary can't be retried before the fallback (PYTHON-FASTAPI-62).
+            Default 3.
         retry_delay: Currently unused — LiteLLM owns retry backoff. Kept for
             backward compatibility; remove in a follow-up sweep.
         top_p: Top-p sampling parameter.
         api_key_config: Optional API key configuration from Config (overrides env vars).
-        fallback_models: Models LiteLLM tries in order after the primary
-            exhausts num_retries. Passed directly to litellm's fallbacks param.
+        fallback_models: Models LiteLLM tries in order after the primary's single
+            attempt. Passed directly to litellm's fallbacks param.
             Default is an empty list (no fallback) so local reflexio and the
             claude-smart integration are never silently routed to an unintended
             provider. Production opts in via the env var
@@ -1125,6 +1128,14 @@ class LiteLLMClient:
         except Exception:
             return None
 
+    def _coerce_timeout_seconds(self, params: dict[str, Any]) -> float:
+        """Coerce ``params['timeout']`` to a float, falling back to the config
+        default when it is missing or non-numeric."""
+        try:
+            return float(params.get("timeout", self.config.timeout))
+        except (TypeError, ValueError):
+            return float(self.config.timeout)
+
     def _completion_with_hard_timeout(
         self, params: dict[str, Any], hard_timeout: float
     ) -> Any:
@@ -1142,10 +1153,11 @@ class LiteLLMClient:
         reaches a fallback (the root cause of Sentry PYTHON-FASTAPI-62).
         """
         provider_timeout = params.get("timeout", self.config.timeout)
-        try:
-            timeout_seconds = float(provider_timeout)
-        except (TypeError, ValueError):
-            timeout_seconds = float(self.config.timeout)
+        # timeout_seconds + grace_seconds below only classify test doubles in
+        # _should_process_isolate_completion (real litellm vs a monkeypatched
+        # closure) — they do NOT size the kill bound, which is the caller's
+        # ladder-wide ``hard_timeout``.
+        timeout_seconds = self._coerce_timeout_seconds(params)
         grace_seconds = self._hard_timeout_grace_seconds()
         hard_timeout = max(0.001, hard_timeout)
 
@@ -1320,14 +1332,15 @@ class LiteLLMClient:
         self, messages: list[dict[str, Any]], **kwargs: Any
     ) -> str | BaseModel | ToolCallingChatResponse:
         """
-        Make a request to the LLM, delegating retries and fallback to litellm.
+        Make a request to the LLM, delegating cross-model fallback to litellm.
 
-        Retry and fallback semantics are handed to ``litellm.completion`` via
-        the native ``num_retries`` and ``fallbacks`` kwargs. Per the documented
-        flow at https://docs.litellm.ai/docs/router_architecture, the primary
-        model is tried ``num_retries+1`` times, then each fallback gets a single
-        attempt. The one piece we still own at the client level is a single
-        retry for ``StructuredOutputParseError``: LiteLLM cannot detect a
+        Fallback is handed to ``litellm.completion`` via the native ``fallbacks``
+        kwarg, but ``num_retries`` is forced to 0: same-model retry of a *hung*
+        primary is what made the fallback unreachable and produced the 490s in
+        Sentry PYTHON-FASTAPI-62 (see the body comment). So the primary is tried
+        once, then each fallback once. The subprocess hard timeout is sized to
+        cover that whole ladder. The one retry we still own at the client level
+        is a single ``StructuredOutputParseError`` retry: LiteLLM cannot detect a
         post-hoc Pydantic re-validation failure because it sees a successful
         HTTP response.
 
@@ -1360,15 +1373,21 @@ class LiteLLMClient:
         if fallbacks:
             params["fallbacks"] = fallbacks
 
-        # Size the hard (wall-clock) timeout to cover the WHOLE ladder. Each of
-        # the ``1 + len(fallbacks)`` rungs gets up to ``params["timeout"]`` seconds
-        # (litellm copies it unchanged), so the subprocess must be allowed to run
-        # that long, plus one grace buffer, before being killed — otherwise it is
-        # killed before litellm can reach a fallback.
-        try:
-            per_attempt_timeout = float(params.get("timeout", self.config.timeout))
-        except (TypeError, ValueError):
-            per_attempt_timeout = float(self.config.timeout)
+        # Size the hard (wall-clock) timeout to cover the WHOLE ladder. litellm
+        # copies this single ``params["timeout"]`` into EVERY rung (primary + each
+        # fallback), so every rung shares the primary's per-attempt budget and the
+        # subprocess must be allowed to run ``(1 + len(fallbacks))`` of them plus
+        # one grace buffer before being killed — otherwise it is killed before
+        # litellm can reach a fallback.
+        #
+        # ASYMMETRIC-FLOOR FOOTGUN: because every rung shares one timeout, a
+        # fallback whose _MODEL_TIMEOUT_FLOOR_SECONDS floor is HIGHER than the
+        # primary's would run — and be killed — at the primary's shorter timeout,
+        # reintroducing the "fallback killed early" failure this fix removes. The
+        # floor table is single-valued today (MiniMax-M3 == the 120 default), so
+        # this is latent; revisit the sizing (e.g. max floor across rungs, passed
+        # as ``params["timeout"]``) before adding an asymmetric floor entry.
+        per_attempt_timeout = self._coerce_timeout_seconds(params)
         hard_timeout = (
             1 + len(fallbacks)
         ) * per_attempt_timeout + self._hard_timeout_grace_seconds()
@@ -1428,6 +1447,13 @@ class LiteLLMClient:
                 # mitigation. (A hard timeout is NOT retried here: same-model
                 # retry of a hang is what produced the 490s in PYTHON-FASTAPI-62;
                 # the fallback ladder inside _call_and_parse handles it instead.)
+                #
+                # This second pass re-walks the full ladder, so the worst-case
+                # wall clock is ~2x the ladder bound. That ceiling is only reached
+                # if a model returns a malformed-but-successful 200 AND runs near
+                # the timeout on BOTH passes — a hang (the common case) raises
+                # LLMHardTimeoutError, which is not caught here and exits after a
+                # single ladder.
                 self.logger.warning(
                     "event=llm_parse_retry model=%s — primary returned malformed structured output, retrying once",
                     params.get("model"),
