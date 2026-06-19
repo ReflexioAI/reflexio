@@ -1,0 +1,58 @@
+from __future__ import annotations
+
+from reflexio.models.api_schema.domain.entities import RecordRef
+
+_GETTER = {
+    "user_playbook": lambda s, i: s.get_user_playbook_by_id(int(i), include_tombstones=True),
+    "agent_playbook": lambda s, i: s.get_agent_playbook_by_id(int(i), include_tombstones=True),
+    "profile": lambda s, i: s.get_profile_by_id(str(i), include_tombstones=True),
+}
+_MAX_HOPS = 8  # Phase A: chains are 1-hop; cap guards malformed pointers
+
+
+def resolve_current(storage, entity_type: str, id) -> RecordRef | None:
+    """Follow merged_into/superseded_by pointers to the live survivor.
+
+    Args:
+        storage: Any storage backend exposing get_*_by_id with include_tombstones.
+        entity_type: One of "user_playbook", "agent_playbook", "profile".
+        id: The primary key of the record to resolve (int for playbooks, str for profiles).
+
+    Returns:
+        RecordRef pointing to the live survivor (is_purged=True if its body is blank),
+        or None if the record doesn't exist, there's a cycle, or the chain exceeds _MAX_HOPS.
+    """
+    get = _GETTER[entity_type]
+    visited: set[str] = set()
+    cur = get(storage, id)
+    if cur is None:
+        return None
+    while True:
+        cur_id = str(_pk(cur, entity_type))
+        if cur_id in visited or len(visited) >= _MAX_HOPS:
+            return None  # cycle or runaway chain
+        visited.add(cur_id)
+        nxt = cur.merged_into if cur.merged_into is not None else cur.superseded_by
+        if nxt is None:
+            return RecordRef(id=cur_id, is_purged=(not cur.content))
+        nxt_row = get(storage, nxt)
+        if nxt_row is None:
+            return RecordRef(id=cur_id, is_purged=(not cur.content))  # dangling pointer — stop here
+        cur = nxt_row
+
+
+def _pk(row, entity_type: str):
+    """Extract the primary key from a row based on its entity type.
+
+    Args:
+        row: The entity row object.
+        entity_type: One of "user_playbook", "agent_playbook", "profile".
+
+    Returns:
+        The primary key value.
+    """
+    return {
+        "user_playbook": row.user_playbook_id,
+        "agent_playbook": getattr(row, "agent_playbook_id", None),
+        "profile": getattr(row, "profile_id", None),
+    }[entity_type]
