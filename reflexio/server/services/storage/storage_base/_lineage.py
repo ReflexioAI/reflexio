@@ -1,6 +1,6 @@
 from abc import abstractmethod
 
-from reflexio.models.api_schema.domain.entities import LineageEvent
+from reflexio.models.api_schema.domain.entities import LineageContext, LineageEvent
 
 
 class LineageEventMixin:
@@ -41,5 +41,60 @@ class LineageEventMixin:
 
         Returns:
             list[LineageEvent]: Matching events ordered by ``event_id`` ascending.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def merge_records(
+        self,
+        *,
+        entity_type: str,
+        survivor_id: str,
+        source_ids: list[str],
+        context: LineageContext,
+    ) -> None:
+        """Soft-delete each source into the survivor in one atomic transaction.
+
+        Sets ``status=MERGED`` and ``merged_into=survivor_id`` on each source
+        whose status is not already a tombstone (MERGED or SUPERSEDED). Appends
+        a single ``merge`` lineage event keyed on ``survivor_id``. Idempotent —
+        re-running on already-tombstoned sources is a no-op.
+
+        Args:
+            entity_type (str): One of ``"user_playbook"``, ``"agent_playbook"``,
+                or ``"profile"``.
+            survivor_id (str): The id of the record that survives the merge.
+            source_ids (list[str]): Ids of records to tombstone as merged.
+            context (LineageContext): Caller-supplied intent (actor, reason, etc.).
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def supersede_record(
+        self,
+        *,
+        entity_type: str,
+        incumbent_id: str,
+        successor_id: str,
+        context: LineageContext,
+    ) -> bool:
+        """Atomically replace the incumbent with the successor if incumbent is CURRENT.
+
+        Sets ``status=SUPERSEDED`` and ``superseded_by=successor_id`` on the
+        incumbent **only** when its ``status IS NULL`` (CURRENT). Appends a
+        ``revise`` lineage event keyed on ``successor_id`` when the guard
+        succeeds. Returns ``False`` without mutating anything when the incumbent
+        is not CURRENT (its status is already set).
+
+        Args:
+            entity_type (str): One of ``"user_playbook"``, ``"agent_playbook"``,
+                or ``"profile"``.
+            incumbent_id (str): The id of the record to supersede.
+            successor_id (str): The id of the record that replaces the incumbent.
+            context (LineageContext): Caller-supplied intent (actor, reason, etc.).
+
+        Returns:
+            bool: ``True`` if the incumbent was CURRENT and was superseded;
+                ``False`` if the incumbent was not CURRENT and no mutation occurred.
         """
         raise NotImplementedError

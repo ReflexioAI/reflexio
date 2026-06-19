@@ -4,7 +4,52 @@ import threading
 import time
 from typing import Any
 
-from reflexio.models.api_schema.domain.entities import LineageEvent
+from reflexio.models.api_schema.domain.entities import LineageContext, LineageEvent
+from reflexio.models.api_schema.domain.enums import Status
+
+# Tombstone statuses — rows with these statuses are skipped by merge_records guard.
+_TOMBSTONE = (Status.MERGED.value, Status.SUPERSEDED.value)
+
+# Mapping from entity_type string to (table_name, primary_key_column).
+_TABLE: dict[str, tuple[str, str]] = {
+    "user_playbook": ("user_playbooks", "user_playbook_id"),
+    "agent_playbook": ("agent_playbooks", "agent_playbook_id"),
+    "profile": ("profiles", "profile_id"),
+}
+
+
+def _append_event_stmt(
+    conn: sqlite3.Connection,
+    *,
+    org_id: str,
+    entity_type: str,
+    entity_id: str,
+    op: str,
+    prov: str,
+    source_ids: list[str],
+    actor: str,
+    request_id: str,
+    reason: str,
+) -> None:
+    """Insert a lineage event row; silently no-ops on (entity_id, op, request_id) duplicate."""
+    conn.execute(
+        "INSERT OR IGNORE INTO lineage_event "
+        "(org_id, entity_type, entity_id, op, prov_relation, source_ids, "
+        "actor, request_id, reason, created_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (
+            org_id,
+            entity_type,
+            entity_id,
+            op,
+            prov,
+            json.dumps(source_ids),
+            actor,
+            request_id,
+            reason,
+            int(time.time()),
+        ),
+    )
 
 
 class SQLiteLineageMixin:
@@ -13,6 +58,7 @@ class SQLiteLineageMixin:
     # Type hints for instance attributes provided by SQLiteStorageBase via MRO.
     conn: sqlite3.Connection
     _lock: threading.RLock
+    org_id: str
 
     def append_lineage_event(self, event: LineageEvent) -> int:
         """Append an event; idempotent on (entity_id, op, request_id). Return the row id.
@@ -107,3 +153,98 @@ class SQLiteLineageMixin:
             )
             for r in rows
         ]
+
+    def merge_records(
+        self,
+        *,
+        entity_type: str,
+        survivor_id: str,
+        source_ids: list[str],
+        context: LineageContext,
+    ) -> None:
+        """Soft-delete each source into the survivor in one atomic transaction.
+
+        Sets ``status=MERGED`` and ``merged_into=survivor_id`` on each source
+        whose status is not already a tombstone. Appends a single ``merge``
+        lineage event keyed on ``survivor_id``. Idempotent — re-running on
+        already-tombstoned sources is a no-op.
+
+        Args:
+            entity_type (str): One of ``"user_playbook"``, ``"agent_playbook"``,
+                or ``"profile"``.
+            survivor_id (str): The id of the record that survives the merge.
+            source_ids (list[str]): Ids of records to tombstone as merged.
+            context (LineageContext): Caller-supplied intent (actor, reason, etc.).
+        """
+        table, pk = _TABLE[entity_type]
+        with self._lock:
+            for sid in source_ids:
+                self.conn.execute(
+                    f"UPDATE {table} SET status=?, merged_into=? "  # noqa: S608
+                    f"WHERE {pk}=? AND (status IS NULL OR status NOT IN (?, ?))",
+                    (Status.MERGED.value, survivor_id, sid, *_TOMBSTONE),
+                )
+            _append_event_stmt(
+                self.conn,
+                org_id=self.org_id,
+                entity_type=entity_type,
+                entity_id=survivor_id,
+                op="merge",
+                prov="wasDerivedFrom",
+                source_ids=source_ids,
+                actor=context.actor,
+                request_id=context.request_id or "",
+                reason=context.reason,
+            )
+            self.conn.commit()
+
+    def supersede_record(
+        self,
+        *,
+        entity_type: str,
+        incumbent_id: str,
+        successor_id: str,
+        context: LineageContext,
+    ) -> bool:
+        """Atomically replace the incumbent with the successor if incumbent is CURRENT.
+
+        Sets ``status=SUPERSEDED`` and ``superseded_by=successor_id`` on the
+        incumbent **only** when its ``status IS NULL`` (CURRENT). Appends a
+        ``revise`` lineage event when the guard succeeds. Returns ``False``
+        without mutating anything when the incumbent is not CURRENT.
+
+        Args:
+            entity_type (str): One of ``"user_playbook"``, ``"agent_playbook"``,
+                or ``"profile"``.
+            incumbent_id (str): The id of the record to supersede.
+            successor_id (str): The id of the record that replaces the incumbent.
+            context (LineageContext): Caller-supplied intent (actor, reason, etc.).
+
+        Returns:
+            bool: ``True`` if the incumbent was CURRENT and was superseded;
+                ``False`` if the incumbent was not CURRENT and no mutation occurred.
+        """
+        table, pk = _TABLE[entity_type]
+        with self._lock:
+            cur = self.conn.execute(
+                f"UPDATE {table} SET status=?, superseded_by=? "  # noqa: S608
+                f"WHERE {pk}=? AND status IS NULL",
+                (Status.SUPERSEDED.value, successor_id, incumbent_id),
+            )
+            if cur.rowcount == 0:
+                self.conn.commit()
+                return False
+            _append_event_stmt(
+                self.conn,
+                org_id=self.org_id,
+                entity_type=entity_type,
+                entity_id=successor_id,
+                op="revise",
+                prov="wasRevisionOf",
+                source_ids=[incumbent_id],
+                actor=context.actor,
+                request_id=context.request_id or "",
+                reason=context.reason,
+            )
+            self.conn.commit()
+            return True
