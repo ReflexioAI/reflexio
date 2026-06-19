@@ -168,8 +168,14 @@ class ExtrasMixin:
             "SELECT last_modified_timestamp FROM profiles WHERE last_modified_timestamp >= ? AND last_modified_timestamp <= ? ORDER BY last_modified_timestamp",
             (current_start, current_time),
         )
-        playbooks_ts = self._fetchall(
-            "SELECT created_at FROM user_playbooks WHERE created_at >= ? AND created_at <= ? ORDER BY created_at",
+        # Playbooks span two tables; mirror the total_playbooks count above
+        # (user_playbooks + agent_playbooks) so the chart matches the stat card.
+        user_playbooks_ts = self._fetchall(
+            "SELECT created_at FROM user_playbooks WHERE created_at >= ? AND created_at <= ?",
+            (current_start_iso, current_time_iso),
+        )
+        agent_playbooks_ts = self._fetchall(
+            "SELECT created_at FROM agent_playbooks WHERE created_at >= ? AND created_at <= ?",
             (current_start_iso, current_time_iso),
         )
         evals_ts = self._fetchall(
@@ -188,10 +194,13 @@ class ExtrasMixin:
                 {"timestamp": r["last_modified_timestamp"], "value": 1}
                 for r in profiles_ts
             ],
-            "playbooks_time_series": [
-                {"timestamp": _iso_to_epoch(r["created_at"]), "value": 1}
-                for r in playbooks_ts
-            ],
+            "playbooks_time_series": sorted(
+                [
+                    {"timestamp": _iso_to_epoch(r["created_at"]), "value": 1}
+                    for r in (*user_playbooks_ts, *agent_playbooks_ts)
+                ],
+                key=lambda x: x["timestamp"],
+            ),
             "evaluations_time_series": [
                 {
                     "timestamp": _iso_to_epoch(r["created_at"]),

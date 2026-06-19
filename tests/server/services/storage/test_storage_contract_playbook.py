@@ -1,5 +1,7 @@
 """Contract tests for AgentPlaybookMixin — run against every local storage backend."""
 
+import time
+
 import pytest
 
 from reflexio.models.api_schema.domain.enums import Status
@@ -350,3 +352,47 @@ class TestAgentPlaybookCRUD:
 
         storage.delete_all_agent_playbooks()
         assert storage.get_agent_playbooks() == []
+
+
+class TestDashboardPlaybooksTimeSeries:
+    """The dashboard playbooks chart must count both playbook tables."""
+
+    def test_playbooks_time_series_includes_agent_playbooks(self, storage):
+        # total_playbooks counts user_playbooks + agent_playbooks, so the time
+        # series that feeds the chart must include both — otherwise the chart
+        # undercounts versus the stat card. Use a current-time created_at so the
+        # rows fall inside the dashboard look-back window.
+        now = int(time.time())
+        storage.save_user_playbooks(
+            [
+                UserPlaybook(
+                    user_playbook_id=1,
+                    user_id="u1",
+                    playbook_name="fb",
+                    agent_version="v1",
+                    request_id="req-1",
+                    content="user pb",
+                    created_at=now,
+                    source="test",
+                    source_interaction_ids=[],
+                )
+            ]
+        )
+        storage.save_agent_playbooks(
+            [
+                AgentPlaybook(
+                    agent_playbook_id=1,
+                    playbook_name="fb",
+                    agent_version="v1",
+                    content="agent pb",
+                    created_at=now,
+                )
+            ]
+        )
+
+        stats = storage.get_dashboard_stats(days_back=30)
+
+        assert stats["current_period"]["total_playbooks"] == 2
+        # The series must contain BOTH playbooks (regression: it previously
+        # queried only user_playbooks and would have length 1 here).
+        assert len(stats["playbooks_time_series"]) == 2
