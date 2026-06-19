@@ -78,10 +78,12 @@ def test_publish_interaction_end_to_end(
     final_profiles = reflexio_instance.request_context.storage.get_all_profiles()
     assert len(final_profiles) > 0
     assert final_profiles[0].content.strip() != ""
-    assert (
-        final_profiles[0].custom_features is not None
-        and final_profiles[0].custom_features.get("metadata") is not None
-    )
+    # The extractor enriches each profile with structured-evidence fields
+    # (source_span / notes / reader_angle) carried in custom_features. The
+    # legacy ``metadata`` key was retired alongside the list-valued tagging
+    # extractor, so assert the profile carries non-empty custom_features rather
+    # than pinning to a key the current schema no longer emits.
+    assert final_profiles[0].custom_features
 
     # Verify profile change logs were created
     final_change_logs = (
