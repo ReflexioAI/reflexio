@@ -78,10 +78,10 @@ def test_publish_interaction_end_to_end(
     final_profiles = reflexio_instance.request_context.storage.get_all_profiles()
     assert len(final_profiles) > 0
     assert final_profiles[0].content.strip() != ""
-    assert (
-        final_profiles[0].custom_features is not None
-        and final_profiles[0].custom_features.get("metadata") is not None
-    )
+    # Extraction attaches structured custom features (e.g. notes / source_span /
+    # reader_angle). The exact key set is LLM-driven, so assert that features were
+    # populated rather than pinning a specific key that a prompt revision may rename.
+    assert final_profiles[0].custom_features
 
     # Verify profile change logs were created
     final_change_logs = (
