@@ -128,8 +128,9 @@ class ProfileMixin:
                     generated_from_request_id, profile_time_to_live,
                     expiration_timestamp, custom_features, embedding, source,
                     status, extractor_names, expanded_terms,
-                    source_span, notes, reader_angle, tags, created_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    source_span, notes, reader_angle, tags, created_at,
+                    merged_into, superseded_by)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     profile.profile_id,
                     profile.user_id,
@@ -149,6 +150,8 @@ class ProfileMixin:
                     profile.reader_angle,
                     _json_dumps(profile.tags),
                     _iso_now(),
+                    profile.merged_into,
+                    profile.superseded_by,
                 ),
             )
             fts_parts = [profile.content or ""]

@@ -395,6 +395,8 @@ def _row_to_profile(row: sqlite3.Row) -> UserProfile:
         notes=d.get("notes"),
         reader_angle=d.get("reader_angle"),
         tags=_json_loads(d.get("tags")),
+        merged_into=d.get("merged_into"),
+        superseded_by=d.get("superseded_by"),
     )
 
 
@@ -473,6 +475,8 @@ def _row_to_user_playbook(
         source_span=d.get("source_span"),
         notes=d.get("notes"),
         reader_angle=d.get("reader_angle"),
+        merged_into=d.get("merged_into"),
+        superseded_by=d.get("superseded_by"),
     )
 
 
@@ -497,6 +501,8 @@ def _row_to_agent_playbook(row: sqlite3.Row) -> AgentPlaybook:
         embedding=[],
         status=Status(d["status"]) if d.get("status") else None,
         expanded_terms=d.get("expanded_terms"),
+        merged_into=d.get("merged_into"),
+        superseded_by=d.get("superseded_by"),
     )
 
 
@@ -684,6 +690,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         self._migrate_request_session_id_required()
         self._migrate_shadow_comparison_verdicts()
         self._migrate_user_playbook_polarity()
+        self._migrate_lineage()
         init_stall_state_table(self.conn)
         return True
 
@@ -1206,6 +1213,27 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             logger.info("Dropped legacy polarity column from user_playbooks")
         self.conn.commit()
 
+    def _migrate_lineage(self) -> None:
+        """Add merged_into/superseded_by forward-pointer columns if missing.
+
+        Backfill-safe: columns are nullable with no default. INTEGER for playbook
+        tables (int foreign-key pointers), TEXT for profiles (str profile_id pointers).
+        """
+        int_tables = {"user_playbooks": "INTEGER", "agent_playbooks": "INTEGER"}
+        str_tables = {"profiles": "TEXT"}
+        for table, coltype in {**int_tables, **str_tables}.items():
+            cols = {
+                row["name"]
+                for row in self.conn.execute(f"PRAGMA table_info({table})").fetchall()
+            }
+            for col in ("merged_into", "superseded_by"):
+                if col not in cols:
+                    self.conn.execute(
+                        f"ALTER TABLE {table} ADD COLUMN {col} {coltype}"  # noqa: S608
+                    )
+                    logger.info("Added %s column to %s", col, table)
+        self.conn.commit()
+
     def _migrate_agent_playbook_source_windows(self) -> None:
         """Add source window snapshots to existing agent source mappings."""
         cols = {
@@ -1688,6 +1716,8 @@ CREATE TABLE IF NOT EXISTS profiles (
     source_span TEXT,
     notes TEXT,
     reader_angle TEXT,
+    merged_into TEXT,
+    superseded_by TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 CREATE INDEX IF NOT EXISTS idx_profiles_user_id ON profiles(user_id);
@@ -1747,7 +1777,9 @@ CREATE TABLE IF NOT EXISTS user_playbooks (
     tags TEXT,
     source_span TEXT,
     notes TEXT,
-    reader_angle TEXT
+    reader_angle TEXT,
+    merged_into INTEGER,
+    superseded_by INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_user_playbooks_playbook_name ON user_playbooks(playbook_name);
 CREATE INDEX IF NOT EXISTS idx_user_playbooks_agent_version ON user_playbooks(agent_version);
@@ -1768,7 +1800,9 @@ CREATE TABLE IF NOT EXISTS agent_playbooks (
     embedding TEXT,
     expanded_terms TEXT,
     tags TEXT,
-    status TEXT
+    status TEXT,
+    merged_into INTEGER,
+    superseded_by INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_agent_playbooks_playbook_name ON agent_playbooks(playbook_name);
 CREATE INDEX IF NOT EXISTS idx_agent_playbooks_agent_version ON agent_playbooks(agent_version);

@@ -135,8 +135,9 @@ class PlaybookMixin:
                         content, trigger, rationale, blocking_issue,
                         source_interaction_ids,
                         status, source, embedding, expanded_terms,
-                        source_span, notes, reader_angle, tags)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        source_span, notes, reader_angle, tags,
+                        merged_into, superseded_by)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         up.user_id,
                         up.playbook_name,
@@ -158,6 +159,8 @@ class PlaybookMixin:
                         up.notes,
                         up.reader_angle,
                         _json_dumps(up.tags),
+                        up.merged_into,
+                        up.superseded_by,
                     ),
                 )
                 upid = cur.lastrowid or 0
@@ -610,8 +613,9 @@ class PlaybookMixin:
                        (playbook_name, created_at, agent_version, content,
                         trigger, rationale, blocking_issue,
                         playbook_status, playbook_metadata, embedding,
-                        expanded_terms, tags, status)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        expanded_terms, tags, status,
+                        merged_into, superseded_by)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         ap.playbook_name,
                         created_at_iso,
@@ -630,6 +634,8 @@ class PlaybookMixin:
                         ap.expanded_terms,
                         _json_dumps(ap.tags),
                         ap.status.value if ap.status else None,
+                        ap.merged_into,
+                        ap.superseded_by,
                     ),
                 )
                 ap.agent_playbook_id = cur.lastrowid or 0
