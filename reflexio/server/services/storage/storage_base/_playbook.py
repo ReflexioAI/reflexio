@@ -42,6 +42,7 @@ class PlaybookMixin:
         start_time: int | None = None,
         end_time: int | None = None,
         include_embedding: bool = False,
+        tags: list[str] | None = None,
     ) -> list[UserPlaybook]:
         """Get user playbooks from storage.
 
@@ -56,6 +57,7 @@ class PlaybookMixin:
             start_time (int, optional): Unix timestamp. Only return playbooks created at or after this time.
             end_time (int, optional): Unix timestamp. Only return playbooks created at or before this time.
             include_embedding (bool): If True, fetch and parse embedding vectors. Defaults to False.
+            tags (list[str], optional): Match playbooks having any of these tags.
 
         Returns:
             list[UserPlaybook]: List of user playbook objects
@@ -282,6 +284,7 @@ class PlaybookMixin:
         agent_version: str | None = None,
         status_filter: list[Status | None] | None = None,
         playbook_status_filter: list[PlaybookStatus] | None = None,
+        tags: list[str] | None = None,
     ) -> list[AgentPlaybook]:
         """Get agent playbooks from storage.
 
@@ -292,6 +295,7 @@ class PlaybookMixin:
             status_filter (list[Optional[Status]], optional): List of Status values to filter by. None in the list means CURRENT status.
             playbook_status_filter (Optional[list[PlaybookStatus]]): List of PlaybookStatus values to filter by.
                 If None, returns all playbook statuses.
+            tags (list[str], optional): Match playbooks having any of these tags.
 
         Returns:
             list[AgentPlaybook]: List of agent playbook objects

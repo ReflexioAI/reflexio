@@ -39,6 +39,16 @@ from ._base import (
 )
 
 
+def _build_tags_sql(alias: str, tags: list[str] | None) -> tuple[str, list[Any]]:
+    if not tags:
+        return "", []
+    placeholders = ",".join("?" for _ in tags)
+    return (
+        f"EXISTS (SELECT 1 FROM json_each({alias}.tags) WHERE value IN ({placeholders}))",
+        list(tags),
+    )
+
+
 class ProfileMixin:
     """Mixin providing profile and interaction CRUD + search."""
 
@@ -84,13 +94,19 @@ class ProfileMixin:
         self,
         user_id: str,
         status_filter: list[Status | None] | None = None,
+        tags: list[str] | None = None,
     ) -> list[UserProfile]:
         if status_filter is None:
             status_filter = [None]
         current_ts = _epoch_now()
         frag, params = _build_status_sql(status_filter)
-        sql = f"SELECT * FROM profiles WHERE user_id = ? AND expiration_timestamp >= ? AND {frag}"
+        conditions = ["user_id = ?", "expiration_timestamp >= ?", frag]
         all_params: list[Any] = [user_id, current_ts, *params]
+        tag_frag, tag_params = _build_tags_sql("profiles", tags)
+        if tag_frag:
+            conditions.append(tag_frag)
+            all_params.extend(tag_params)
+        sql = f"SELECT * FROM profiles WHERE {' AND '.join(conditions)}"
         return [_row_to_profile(r) for r in self._fetchall(sql, all_params)]
 
     @SQLiteStorageBase.handle_exceptions
@@ -668,6 +684,10 @@ class ProfileMixin:
             frag, sparams = _build_status_sql(status_filter)
             conditions.append(frag)
             params.extend(sparams)
+        tag_frag, tag_params = _build_tags_sql("p", req.tags)
+        if tag_frag:
+            conditions.append(tag_frag)
+            params.extend(tag_params)
 
         where_clause = " AND ".join(conditions)
         overfetch = match_count * 5 if mode != SearchMode.FTS else match_count

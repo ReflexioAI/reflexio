@@ -401,7 +401,7 @@ class ProfilesMixin(ReflexioBase):
                 status_filter = [None]  # Default to current profiles
 
         profiles = self._get_storage().get_user_profile(
-            request.user_id, status_filter=status_filter
+            request.user_id, status_filter=status_filter, tags=request.tags
         )
         profiles = sorted(
             profiles, key=lambda x: x.last_modified_timestamp, reverse=True

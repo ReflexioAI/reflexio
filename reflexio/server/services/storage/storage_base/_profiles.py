@@ -34,6 +34,7 @@ class ProfileMixin:
         self,
         user_id: str,
         status_filter: list[Status | None] | None = None,
+        tags: list[str] | None = None,
     ) -> list[UserProfile]:
         raise NotImplementedError
 

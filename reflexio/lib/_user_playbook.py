@@ -57,6 +57,7 @@ class UserPlaybookMixin(ReflexioBase):
                 playbook_name=request.playbook_name,
                 agent_version=request.agent_version,
                 status_filter=request.status_filter,
+                tags=request.tags,
             )
             return GetUserPlaybooksResponse(
                 success=True,

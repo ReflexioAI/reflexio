@@ -193,6 +193,7 @@ class AgentPlaybookMixin(ReflexioBase):
                 playbook_status_filter=[request.playbook_status_filter]
                 if request.playbook_status_filter
                 else None,
+                tags=request.tags,
             )
             return GetAgentPlaybooksResponse(
                 success=True,

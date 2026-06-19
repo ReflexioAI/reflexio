@@ -77,6 +77,16 @@ def _row_to_playbook_optimization_evaluation(
     )
 
 
+def _build_tags_sql(alias: str, tags: list[str] | None) -> tuple[str, list[Any]]:
+    if not tags:
+        return "", []
+    placeholders = ",".join("?" for _ in tags)
+    return (
+        f"EXISTS (SELECT 1 FROM json_each({alias}.tags) WHERE value IN ({placeholders}))",
+        list(tags),
+    )
+
+
 class PlaybookMixin:
     """Mixin providing user playbook, agent playbook, and evaluation CRUD + search."""
 
@@ -176,6 +186,7 @@ class PlaybookMixin:
         start_time: int | None = None,
         end_time: int | None = None,
         include_embedding: bool = False,
+        tags: list[str] | None = None,
     ) -> list[UserPlaybook]:
         sql = "SELECT * FROM user_playbooks WHERE 1=1"
         params: list[Any] = []
@@ -199,6 +210,10 @@ class PlaybookMixin:
             frag, sparams = _build_status_sql(status_filter)
             sql += f" AND {frag}"
             params.extend(sparams)
+        tag_frag, tag_params = _build_tags_sql("user_playbooks", tags)
+        if tag_frag:
+            sql += f" AND {tag_frag}"
+            params.extend(tag_params)
 
         sql += " ORDER BY created_at DESC LIMIT ?"
         params.append(limit)
@@ -471,6 +486,10 @@ class PlaybookMixin:
             frag, sparams = _build_status_sql(status_filter)
             conditions.append(frag)
             params.extend(sparams)
+        tag_frag, tag_params = _build_tags_sql("up", request.tags)
+        if tag_frag:
+            conditions.append(tag_frag)
+            params.extend(tag_params)
 
         where_extra = (" AND " + " AND ".join(conditions)) if conditions else ""
         overfetch = match_count * 5 if mode != SearchMode.FTS else match_count
@@ -639,6 +658,7 @@ class PlaybookMixin:
         agent_version: str | None = None,
         status_filter: list[Status | None] | None = None,
         playbook_status_filter: list[PlaybookStatus] | None = None,
+        tags: list[str] | None = None,
     ) -> list[AgentPlaybook]:
         sql = "SELECT * FROM agent_playbooks WHERE 1=1"
         params: list[Any] = []
@@ -662,6 +682,10 @@ class PlaybookMixin:
             ph = ",".join("?" for _ in playbook_status_filter)
             sql += f" AND playbook_status IN ({ph})"
             params.extend(ps.value for ps in playbook_status_filter)
+        tag_frag, tag_params = _build_tags_sql("agent_playbooks", tags)
+        if tag_frag:
+            sql += f" AND {tag_frag}"
+            params.extend(tag_params)
 
         sql += " ORDER BY created_at DESC LIMIT ?"
         params.append(limit)
@@ -1219,6 +1243,10 @@ class PlaybookMixin:
             frag, sparams = _build_status_sql(status_filter)
             conditions.append(frag)
             params.extend(sparams)
+        tag_frag, tag_params = _build_tags_sql("ap", request.tags)
+        if tag_frag:
+            conditions.append(tag_frag)
+            params.extend(tag_params)
 
         where_extra = (" AND " + " AND ".join(conditions)) if conditions else ""
         overfetch = match_count * 5 if mode != SearchMode.FTS else match_count
