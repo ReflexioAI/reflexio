@@ -157,15 +157,22 @@ def delete(
     ],
     profile_id: Annotated[
         str,
-        typer.Option("--profile-id", help="Specific profile ID to delete"),
+        typer.Option(
+            "--profile-id",
+            help="Specific profile ID to delete (required; use 'delete-all' for bulk)",
+        ),
     ] = "",
 ) -> None:
-    """Delete a user profile.
+    """Delete a specific user profile.
+
+    A ``--profile-id`` is required: the server rejects an empty profile id
+    with "Profile id or search query is required". To remove every profile
+    for an org, use ``reflexio user-profiles delete-all`` instead.
 
     Args:
         ctx: Typer context with CliState in ctx.obj
         user_id: User ID owning the profile
-        profile_id: Specific profile ID to delete (empty string for all user profiles)
+        profile_id: Specific profile ID to delete
     """
     client = get_client(ctx)
     resp = client.delete_profile(
@@ -178,10 +185,8 @@ def delete(
     if json_mode:
         render(resp, json_mode=True)
     else:
-        label = (
-            f"profile {profile_id}" if profile_id else f"profiles for user {user_id}"
-        )
-        print_info(f"Deleted {label}")
+        raise_if_failed(resp, default="Failed to delete user profile")
+        print_info(f"Deleted profile {profile_id} for user {user_id}")
 
 
 @app.command(name="delete-all")

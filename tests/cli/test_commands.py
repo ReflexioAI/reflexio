@@ -168,6 +168,38 @@ class TestProfilesAdd:
         assert result.exit_code != 0
 
 
+class TestProfilesDelete:
+    """Tests for 'user-profiles delete'."""
+
+    def test_delete_profile_success(self, runner, app, mock_client) -> None:
+        mock_client.delete_profile.return_value = MagicMock(success=True, message="")
+        result = runner.invoke(
+            app,
+            ["user-profiles", "delete", "--user-id", "alice", "--profile-id", "p1"],
+        )
+        assert result.exit_code == 0, result.output
+        assert "Deleted profile p1" in result.output
+
+    def test_delete_profile_failure_does_not_report_success(
+        self, runner, app, mock_client
+    ) -> None:
+        """A ``success=False`` envelope must surface as a CLI error, not a fake
+        'Deleted' confirmation.
+
+        Regression guard: the server rejects an empty ``profile_id`` with
+        "Profile id or search query is required", but the CLI previously
+        printed "Deleted profiles for user <id>" unconditionally, masking the
+        no-op.
+        """
+        mock_client.delete_profile.return_value = MagicMock(
+            success=False, message="Profile id or search query is required"
+        )
+        result = runner.invoke(app, ["user-profiles", "delete", "--user-id", "alice"])
+        assert result.exit_code != 0, result.output
+        assert "Deleted" not in result.output
+        assert "Profile id or search query is required" in result.output
+
+
 class TestProfilesRegenerate:
     """Tests for the renamed 'user-profiles regenerate' command."""
 
@@ -461,7 +493,7 @@ class TestPublishUserIdResolution:
             "interactions": [
                 {"role": "user", "content": "hi"},
                 {"role": "assistant", "content": "hello"},
-            ]
+            ],
         }
         if include_user_id:
             payload["user_id"] = extras.pop("payload_user_id", "payload-user")
