@@ -16,6 +16,7 @@ from reflexio.models.api_schema.domain import (
     PlaybookStatus,
     UserPlaybook,
 )
+from reflexio.models.api_schema.domain.entities import LineageContext
 from reflexio.models.config_schema import PlaybookOptimizerConfig
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient
@@ -441,49 +442,34 @@ class PlaybookOptimizer:
                 or current.playbook_status != PlaybookStatus.PENDING
             ):
                 return None
-            self.storage.archive_agent_playbooks_by_ids([target.target_id])
-            successor = incumbent.model_copy(
-                update={
-                    "agent_playbook_id": 0,
-                    "content": best_content,
-                    "status": None,
-                    "playbook_status": PlaybookStatus.PENDING,
-                    "playbook_metadata": _append_optimizer_metadata(
-                        incumbent.playbook_metadata, target.target_id
-                    ),
-                }
+            metadata = _append_optimizer_metadata(
+                incumbent.playbook_metadata, target.target_id
             )
-            saved = self.storage.save_agent_playbooks([successor])
-            if saved and saved[0].agent_playbook_id:
+            successor_id = _supersede_agent_playbook(
+                self.storage,
+                incumbent,
+                best_content,
+                "playbook_optimizer",
+                playbook_metadata=metadata,
+            )
+            if successor_id is not None:
                 self.storage.set_source_windows_for_agent_playbook(
-                    saved[0].agent_playbook_id, source_windows
+                    successor_id, source_windows
                 )
-                return saved[0].agent_playbook_id
-            return None
+            return successor_id
         current_user = self.storage.get_user_playbook_by_id(target.target_id)
         if current_user is None or current_user.status is not None:
             return None
         if current_user.user_id is None:
-            return None
-        archived = self.storage.archive_user_playbook_by_id(
-            current_user.user_id, current_user.user_playbook_id
-        )
-        if not archived:
             return None
         # The optimizer can legitimately flip framing (positive guidance ->
         # negative anti-pattern or vice versa). Orientation lives entirely in
         # the rule wording, so writing ``best_content`` is sufficient — there
         # is no derived polarity label or separate polarity field to keep in
         # sync.
-        successor_user = current_user.model_copy(
-            update={
-                "user_playbook_id": 0,
-                "content": best_content,
-                "status": None,
-            }
+        return _supersede_user_playbook(
+            self.storage, current_user, best_content, "playbook_optimizer"
         )
-        self.storage.save_user_playbooks([successor_user])
-        return successor_user.user_playbook_id or None
 
 
 def _agent_like_playbook(playbook: UserPlaybook) -> AgentPlaybook:
@@ -513,6 +499,103 @@ def _append_optimizer_metadata(existing: str, predecessor_id: int) -> str:
     if not existing:
         return suffix
     return f"{existing}; {suffix}"
+
+
+def _supersede_user_playbook(
+    storage: Any,
+    incumbent: UserPlaybook,
+    best_content: str,
+    source: str,
+) -> int | None:
+    """Insert a user-playbook successor then atomically supersede the incumbent.
+
+    Returns the new ``user_playbook_id`` on success, or ``None`` when the
+    incumbent is no longer CURRENT (lost race / already superseded).
+
+    Args:
+        storage: A storage instance implementing ``save_user_playbooks``,
+            ``supersede_record``, and ``delete_user_playbooks_by_ids``.
+        incumbent: The current user playbook to replace.
+        best_content: Content for the successor playbook.
+        source: Provenance label written to the lineage event actor field.
+
+    Returns:
+        int | None: ``user_playbook_id`` of the successor, or ``None`` if the
+            incumbent was not CURRENT.
+    """
+    successor = incumbent.model_copy(
+        update={"user_playbook_id": 0, "content": best_content, "status": None}
+    )
+    storage.save_user_playbooks([successor])
+    ctx = LineageContext(
+        op_kind="revise",
+        actor=source,
+        request_id=incumbent.request_id,
+    )
+    ok = storage.supersede_record(
+        entity_type="user_playbook",
+        incumbent_id=str(incumbent.user_playbook_id),
+        successor_id=str(successor.user_playbook_id),
+        context=ctx,
+    )
+    if not ok:
+        storage.delete_user_playbooks_by_ids([successor.user_playbook_id])
+        return None
+    return successor.user_playbook_id
+
+
+def _supersede_agent_playbook(
+    storage: Any,
+    incumbent: AgentPlaybook,
+    best_content: str,
+    source: str,
+    playbook_metadata: str = "",
+) -> int | None:
+    """Insert an agent-playbook successor then atomically supersede the incumbent.
+
+    Returns the new ``agent_playbook_id`` on success, or ``None`` when the
+    incumbent is no longer CURRENT.
+
+    Args:
+        storage: A storage instance implementing ``save_agent_playbooks``,
+            ``supersede_record``, and ``delete_agent_playbooks_by_ids``.
+        incumbent: The current agent playbook to replace.
+        best_content: Content for the successor playbook.
+        source: Provenance label written to the lineage event actor field.
+        playbook_metadata: Optional metadata string for the successor row.
+
+    Returns:
+        int | None: ``agent_playbook_id`` of the successor, or ``None`` if the
+            incumbent was not CURRENT.
+    """
+    successor = incumbent.model_copy(
+        update={
+            "agent_playbook_id": 0,
+            "content": best_content,
+            "status": None,
+            "playbook_status": PlaybookStatus.PENDING,
+            "playbook_metadata": playbook_metadata,
+        }
+    )
+    saved = storage.save_agent_playbooks([successor])
+    if not saved or not saved[0].agent_playbook_id:
+        return None
+    successor_id = saved[0].agent_playbook_id
+    ctx = LineageContext(
+        op_kind="revise",
+        actor=source,
+        request_id=None,
+    )
+    ok = storage.supersede_record(
+        entity_type="agent_playbook",
+        incumbent_id=str(incumbent.agent_playbook_id),
+        successor_id=str(successor_id),
+        context=ctx,
+    )
+    if not ok:
+        storage.delete_agent_playbooks_by_ids([successor_id])
+        return None
+    return successor_id
 
 
 class _GEPAStorageCallback:
