@@ -26,6 +26,7 @@ from reflexio.models.config_schema import SearchMode, SearchOptions
 
 from ._base import (
     SQLiteStorageBase,
+    _TOMBSTONE_STATUS_VALUES,
     _build_status_sql,
     _effective_search_mode,
     _epoch_to_iso,
@@ -213,6 +214,10 @@ class PlaybookMixin:
             frag, sparams = _build_status_sql(status_filter)
             sql += f" AND {frag}"
             params.extend(sparams)
+        else:
+            # Default: exclude tombstone statuses (MERGED/SUPERSEDED)
+            sql += " AND (status IS NULL OR status NOT IN (?, ?))"
+            params.extend(_TOMBSTONE_STATUS_VALUES)
         tag_frag, tag_params = _build_tags_sql("user_playbooks", tags)
         if tag_frag:
             sql += f" AND {tag_frag}"
@@ -253,6 +258,10 @@ class PlaybookMixin:
             frag, sparams = _build_status_sql(status_filter)
             sql += f" AND {frag}"
             params.extend(sparams)
+        else:
+            # Default: exclude tombstone statuses (MERGED/SUPERSEDED)
+            sql += " AND (status IS NULL OR status NOT IN (?, ?))"
+            params.extend(_TOMBSTONE_STATUS_VALUES)
 
         row = self._fetchone(sql, params)
         return row["cnt"] if row else 0
@@ -557,11 +566,15 @@ class PlaybookMixin:
         return [_row_to_user_playbook(r) for r in rows]
 
     @SQLiteStorageBase.handle_exceptions
-    def get_user_playbook_by_id(self, user_playbook_id: int) -> UserPlaybook | None:
-        row = self._fetchone(
-            "SELECT * FROM user_playbooks WHERE user_playbook_id = ?",
-            (user_playbook_id,),
-        )
+    def get_user_playbook_by_id(
+        self, user_playbook_id: int, *, include_tombstones: bool = False
+    ) -> UserPlaybook | None:
+        sql = "SELECT * FROM user_playbooks WHERE user_playbook_id = ?"
+        if not include_tombstones:
+            sql += " AND (status IS NULL OR status NOT IN (?, ?))"
+            row = self._fetchone(sql, (user_playbook_id, *_TOMBSTONE_STATUS_VALUES))
+        else:
+            row = self._fetchone(sql, (user_playbook_id,))
         return _row_to_user_playbook(row) if row else None
 
     @SQLiteStorageBase.handle_exceptions
@@ -699,11 +712,15 @@ class PlaybookMixin:
         return [_row_to_agent_playbook(r) for r in rows]
 
     @SQLiteStorageBase.handle_exceptions
-    def get_agent_playbook_by_id(self, agent_playbook_id: int) -> AgentPlaybook | None:
-        row = self._fetchone(
-            "SELECT * FROM agent_playbooks WHERE agent_playbook_id = ?",
-            (agent_playbook_id,),
-        )
+    def get_agent_playbook_by_id(
+        self, agent_playbook_id: int, *, include_tombstones: bool = False
+    ) -> AgentPlaybook | None:
+        sql = "SELECT * FROM agent_playbooks WHERE agent_playbook_id = ?"
+        if not include_tombstones:
+            sql += " AND (status IS NULL OR status NOT IN (?, ?))"
+            row = self._fetchone(sql, (agent_playbook_id, *_TOMBSTONE_STATUS_VALUES))
+        else:
+            row = self._fetchone(sql, (agent_playbook_id,))
         return _row_to_agent_playbook(row) if row else None
 
     @SQLiteStorageBase.handle_exceptions

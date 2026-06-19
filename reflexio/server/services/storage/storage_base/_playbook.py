@@ -208,8 +208,19 @@ class PlaybookMixin:
         raise NotImplementedError
 
     @abstractmethod
-    def get_user_playbook_by_id(self, user_playbook_id: int) -> UserPlaybook | None:
-        """Fetch one user playbook by id, regardless of owner."""
+    def get_user_playbook_by_id(
+        self, user_playbook_id: int, *, include_tombstones: bool = False
+    ) -> UserPlaybook | None:
+        """Fetch one user playbook by primary key.
+
+        Args:
+            user_playbook_id: The user_playbook_id to look up.
+            include_tombstones: When False (default), MERGED/SUPERSEDED rows
+                return None. Set to True for lineage resolution (resolve_current).
+
+        Returns:
+            The UserPlaybook if found and not filtered, otherwise None.
+        """
         raise NotImplementedError
 
     @abstractmethod
@@ -303,8 +314,19 @@ class PlaybookMixin:
         raise NotImplementedError
 
     @abstractmethod
-    def get_agent_playbook_by_id(self, agent_playbook_id: int) -> AgentPlaybook | None:
-        """Fetch one agent playbook by id."""
+    def get_agent_playbook_by_id(
+        self, agent_playbook_id: int, *, include_tombstones: bool = False
+    ) -> AgentPlaybook | None:
+        """Fetch one agent playbook by primary key.
+
+        Args:
+            agent_playbook_id: The agent_playbook_id to look up.
+            include_tombstones: When False (default), MERGED/SUPERSEDED rows
+                return None. Set to True for lineage resolution (resolve_current).
+
+        Returns:
+            The AgentPlaybook if found and not filtered, otherwise None.
+        """
         raise NotImplementedError
 
     @abstractmethod

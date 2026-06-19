@@ -187,6 +187,22 @@ class ProfileMixin:
         raise NotImplementedError
 
     @abstractmethod
+    def get_profile_by_id(
+        self, profile_id: str, *, include_tombstones: bool = False
+    ) -> UserProfile | None:
+        """Fetch a single profile by primary key.
+
+        Args:
+            profile_id: The profile's primary key.
+            include_tombstones: When False (default), MERGED/SUPERSEDED profiles
+                return None. Set to True for lineage resolution (resolve_current).
+
+        Returns:
+            The UserProfile if found and not filtered, otherwise None.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     def archive_profile_by_id(self, user_id: str, profile_id: str) -> bool:
         """Atomically archive a single profile by id, only if currently CURRENT.
 

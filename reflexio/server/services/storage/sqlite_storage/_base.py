@@ -285,6 +285,13 @@ def _true_rrf_merge(
     return [row for row, _ in scored[:match_count]]
 
 
+# Tombstone statuses: rows with these values are excluded from default reads.
+# Tasks 5/9/10 create tombstones; this constant ensures they stay hidden unless
+# explicitly requested via include_tombstones=True on by-id getters, or an
+# explicit status_filter on list/count methods.
+_TOMBSTONE_STATUS_VALUES = (Status.MERGED.value, Status.SUPERSEDED.value)
+
+
 def _status_value(status: Status | None) -> str | None:
     """Convert a Status enum (or None) to its DB string value."""
     if status is None:

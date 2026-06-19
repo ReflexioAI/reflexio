@@ -25,6 +25,7 @@ from reflexio.server.llm.providers.embedding_service_provider import (
 
 from ._base import (
     SQLiteStorageBase,
+    _TOMBSTONE_STATUS_VALUES,
     _build_status_sql,
     _effective_search_mode,
     _epoch_now,
@@ -323,6 +324,28 @@ class ProfileMixin:
         )
         params: list[Any] = [user_id, *profile_ids, current_ts, *sparams]
         return [_row_to_profile(r) for r in self._fetchall(sql, params)]
+
+    @SQLiteStorageBase.handle_exceptions
+    def get_profile_by_id(
+        self, profile_id: str, *, include_tombstones: bool = False
+    ) -> UserProfile | None:
+        """Fetch a single profile by primary key.
+
+        Args:
+            profile_id: The profile's primary key.
+            include_tombstones: When False (default), MERGED/SUPERSEDED profiles
+                return None. Set to True for lineage resolution (resolve_current).
+
+        Returns:
+            The UserProfile if found and not filtered, otherwise None.
+        """
+        sql = "SELECT * FROM profiles WHERE profile_id = ?"
+        if not include_tombstones:
+            sql += " AND (status IS NULL OR status NOT IN (?, ?))"
+            row = self._fetchone(sql, (profile_id, *_TOMBSTONE_STATUS_VALUES))
+        else:
+            row = self._fetchone(sql, (profile_id,))
+        return _row_to_profile(row) if row else None
 
     @SQLiteStorageBase.handle_exceptions
     def archive_profile_by_id(self, user_id: str, profile_id: str) -> bool:
