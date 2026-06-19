@@ -39,6 +39,7 @@ from ._base import (
     _true_rrf_merge,
     _vector_rank_rows,
 )
+from ._lineage import _append_event_stmt
 
 
 def _row_to_playbook_optimization_candidate(
@@ -94,6 +95,7 @@ class PlaybookMixin:
     # Type hints for instance attributes/methods provided by SQLiteStorageBase via MRO
     _lock: Any
     conn: sqlite3.Connection
+    org_id: str
     _execute: Any
     _fetchone: Any
     _fetchall: Any
@@ -322,6 +324,19 @@ class PlaybookMixin:
             return 0
         ph = ",".join("?" for _ in user_playbook_ids)
         with self._lock:
+            for upid in user_playbook_ids:
+                _append_event_stmt(
+                    self.conn,
+                    org_id=self.org_id,
+                    entity_type="user_playbook",
+                    entity_id=str(upid),
+                    op="hard_delete",
+                    prov="wasInvalidatedBy",
+                    source_ids=[],
+                    actor="system",
+                    request_id="",
+                    reason="erasure",
+                )
             self.conn.execute(
                 f"DELETE FROM user_playbooks_fts WHERE rowid IN ({ph})",
                 user_playbook_ids,
