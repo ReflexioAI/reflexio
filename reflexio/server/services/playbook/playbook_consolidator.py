@@ -514,7 +514,7 @@ class PlaybookConsolidator(BaseDeduplicator):
         request_id: str,
         agent_version: str,
         user_id: str | None = None,
-    ) -> tuple[list[UserPlaybook], list[int]]:
+    ) -> tuple[list[UserPlaybook], list[int], list[tuple[int, list[int]]]]:
         """
         Consolidate user playbook entries across extractors and against existing entries in DB.
 
@@ -525,7 +525,18 @@ class PlaybookConsolidator(BaseDeduplicator):
             user_id: Optional user ID to scope the existing entry search
 
         Returns:
-            Tuple of (consolidated entries, list of existing entry IDs to delete after save)
+            Tuple of ``(consolidated entries, existing ids to delete after save,
+            merge_groups)``. ``merge_groups`` is a list of
+            ``(survivor_index, source_existing_ids)`` where ``survivor_index``
+            indexes into the returned entries list and identifies the row that
+            supersedes the given existing source ids (one entry per ``unify``
+            decision that archives at least one existing row). Callers persist
+            the entries first (assigning survivor ids), then route each merge
+            group through ``storage.merge_records`` so each source becomes a
+            MERGED tombstone pointing at its survivor. The "existing ids to
+            delete" set still includes ALL archived ids (merge sources +
+            non-merge archives such as ``differentiate``'s split source); the
+            caller subtracts the merge-covered ids to find pure-delete leftovers.
         """
         # Check if mock mode is enabled
         if os.getenv("MOCK_LLM_RESPONSE", "").lower() == "true":
@@ -534,7 +545,7 @@ class PlaybookConsolidator(BaseDeduplicator):
             for result in results:
                 if isinstance(result, list):
                     all_playbooks.extend(result)
-            return all_playbooks, []
+            return all_playbooks, [], []
 
         # Flatten all new entries
         new_playbooks: list[UserPlaybook] = []
@@ -543,7 +554,7 @@ class PlaybookConsolidator(BaseDeduplicator):
                 new_playbooks.extend(result)
 
         if not new_playbooks:
-            return [], []
+            return [], [], []
 
         # Retrieve existing entries via hybrid search
         existing_playbooks = self._retrieve_existing_playbooks(
@@ -566,13 +577,13 @@ class PlaybookConsolidator(BaseDeduplicator):
                 error_type=type(e).__name__,
             ):
                 logger.exception("Failed to identify duplicates")
-            return new_playbooks, []
+            return new_playbooks, [], []
 
         if not dedup_output.decisions:
             logger.info(
                 "No consolidation decisions returned for request %s", request_id
             )
-            return new_playbooks, []
+            return new_playbooks, [], []
 
         logger.info(
             "Received %d consolidation decisions for request %s",
@@ -600,7 +611,7 @@ class PlaybookConsolidator(BaseDeduplicator):
         dedup_output: PlaybookConsolidationOutput,
         request_id: str,
         agent_version: str,  # noqa: ARG002
-    ) -> tuple[list[UserPlaybook], list[int]]:
+    ) -> tuple[list[UserPlaybook], list[int], list[tuple[int, list[int]]]]:
         """
         Build the deduplicated entry list from LLM decisions.
 
@@ -617,7 +628,16 @@ class PlaybookConsolidator(BaseDeduplicator):
             agent_version: Agent version (currently unused, kept for symmetry).
 
         Returns:
-            Tuple of (entries ready to save, existing entry IDs to delete).
+            Tuple of ``(entries ready to save, existing entry IDs to delete,
+            merge_groups)``. ``merge_groups`` carries one
+            ``(survivor_index, source_existing_ids)`` per ``unify`` decision
+            that archives >= 1 existing row, where ``survivor_index`` indexes
+            into the returned entries list (the unified survivor row) and the
+            second element is the existing ids that decision supersedes. Only
+            ``unify`` produces merge groups — it collapses N existing rows into
+            one survivor. ``differentiate`` archives its split source but emits
+            two rows (no single survivor), so its archived id appears in the
+            delete set but NOT in any merge group.
         """
         candidates_by_id = {
             f"NEW-{idx}": playbook for idx, playbook in enumerate(new_playbooks)
@@ -637,10 +657,11 @@ class PlaybookConsolidator(BaseDeduplicator):
         seen_archive: set[int] = set()
         new_rows: list[UserPlaybook] = []
         handled_new_ids: set[str] = set()
+        merge_groups: list[tuple[int, list[int]]] = []
 
         for decision in dedup_output.decisions:
             try:
-                rows, marked_new_ids = self._apply_one(
+                rows, marked_new_ids, merge_source_ids = self._apply_one(
                     decision=decision,
                     candidates_by_id=candidates_by_id,
                     existing_by_id=existing_by_id,
@@ -670,6 +691,11 @@ class PlaybookConsolidator(BaseDeduplicator):
                         existing_id_str,
                     )
                 continue
+            # Record the merge group BEFORE extending: the unified survivor is
+            # the first (and only) row a ``unify`` decision emits, so its index
+            # in the final list is the current length of ``new_rows``.
+            if merge_source_ids:
+                merge_groups.append((len(new_rows), merge_source_ids))
             new_rows.extend(rows)
             handled_new_ids.update(marked_new_ids)
             self._bump_counter(result_counters, decision.kind)
@@ -697,7 +723,7 @@ class PlaybookConsolidator(BaseDeduplicator):
             result_counters.failed_count,
         )
 
-        return new_rows, archive_ids
+        return new_rows, archive_ids, merge_groups
 
     def _apply_one(
         self,
@@ -709,7 +735,7 @@ class PlaybookConsolidator(BaseDeduplicator):
         archive_ids: list[int],
         seen_archive: set[int],
         request_id: str,
-    ) -> tuple[list[UserPlaybook], list[str]]:
+    ) -> tuple[list[UserPlaybook], list[str], list[int]]:
         """Dispatch a single decision to its kind-specific apply method.
 
         Args:
@@ -725,9 +751,14 @@ class PlaybookConsolidator(BaseDeduplicator):
             request_id: Request ID stamped onto newly-built rows.
 
         Returns:
-            Tuple of ``(rows_to_insert, handled_new_ids)`` where the second
-            element is the set of ``"NEW-N"`` candidate ids consumed by this
-            decision (used to suppress the safety fallback).
+            Tuple of ``(rows_to_insert, handled_new_ids, merge_source_ids)``.
+            ``handled_new_ids`` is the set of ``"NEW-N"`` candidate ids consumed
+            by this decision (used to suppress the safety fallback).
+            ``merge_source_ids`` is non-empty ONLY for a ``unify`` decision that
+            collapses >= 1 existing row into its single survivor (the first row
+            in ``rows_to_insert``); for all other kinds it is ``[]`` because they
+            either archive nothing or split into multiple rows with no single
+            survivor.
         """
         if isinstance(decision, UnifyDecision):
             return self._apply_unify(
@@ -767,7 +798,7 @@ class PlaybookConsolidator(BaseDeduplicator):
         archive_ids: list[int],
         seen_archive: set[int],
         request_id: str,
-    ) -> tuple[list[UserPlaybook], list[str]]:
+    ) -> tuple[list[UserPlaybook], list[str], list[int]]:
         """Collapse / compose NEW (+ 0..N EXISTING) into one row.
 
         Looks up each ``archive_existing_ids`` entry by position
@@ -789,7 +820,11 @@ class PlaybookConsolidator(BaseDeduplicator):
             request_id: Request ID stamped on the unified row.
 
         Returns:
-            Tuple of ([unified_row], [consumed NEW-N ids]).
+            Tuple of ``([unified_row], [consumed NEW-N ids], merge_source_ids)``
+            where ``merge_source_ids`` are the existing ids collapsed into the
+            unified survivor (the returned row). The survivor identity is not
+            known until the caller persists the row and reads its assigned id,
+            so the merge is materialized by the caller, not here.
 
         Raises:
             KeyError: If ``decision.new_id`` does not resolve to a known
@@ -810,11 +845,14 @@ class PlaybookConsolidator(BaseDeduplicator):
                 )
             existing_members.append(existing)
 
+        merge_source_ids: list[int] = []
         for existing in existing_members:
             pid = existing.user_playbook_id
             if pid and pid not in seen_archive:
                 seen_archive.add(pid)
                 archive_ids.append(pid)
+            if pid:
+                merge_source_ids.append(pid)
 
         budget = self._dedup_config.max_unified_content_chars
         content_len = len(decision.content)
@@ -845,7 +883,7 @@ class PlaybookConsolidator(BaseDeduplicator):
             source=candidate.source,
             source_interaction_ids=combined_source_ids,
         )
-        return [unified_row], [decision.new_id]
+        return [unified_row], [decision.new_id], merge_source_ids
 
     def _apply_reject_new(
         self,
@@ -853,7 +891,7 @@ class PlaybookConsolidator(BaseDeduplicator):
         *,
         existing_by_id: dict[int, UserPlaybook],
         existing_by_position: dict[str, UserPlaybook],
-    ) -> tuple[list[UserPlaybook], list[str]]:
+    ) -> tuple[list[UserPlaybook], list[str], list[int]]:
         """No-op apply: the existing row wins and the new candidate is dropped.
 
         Resolve the integer against the rendered ``EXISTING-N`` position first,
@@ -870,8 +908,10 @@ class PlaybookConsolidator(BaseDeduplicator):
             existing_by_position: Mapping ``"EXISTING-M"`` -> existing playbook.
 
         Returns:
-            Tuple of ([], [consumed NEW-N id]) when the existing id resolves,
-            or ``([], [])`` when the existing id is unknown.
+            Tuple of ``([], [consumed NEW-N id], [])`` when the existing id
+            resolves, or ``([], [], [])`` when the existing id is unknown.
+            Never produces a merge group — the existing row is kept as-is (no
+            archive, no survivor).
         """
         existing = self._resolve_existing_reference(
             decision.superseded_by_existing_id,
@@ -884,13 +924,13 @@ class PlaybookConsolidator(BaseDeduplicator):
                 decision.new_id,
                 decision.superseded_by_existing_id,
             )
-            return [], []
+            return [], [], []
         logger.info(
             "event=consolidation_reject_new new_id=%s existing_id=%d",
             decision.new_id,
             decision.superseded_by_existing_id,
         )
-        return [], [decision.new_id]
+        return [], [decision.new_id], []
 
     def _apply_differentiate(
         self,
@@ -902,7 +942,7 @@ class PlaybookConsolidator(BaseDeduplicator):
         archive_ids: list[int],
         seen_archive: set[int],
         request_id: str,
-    ) -> tuple[list[UserPlaybook], list[str]]:
+    ) -> tuple[list[UserPlaybook], list[str], list[int]]:
         """Archive the existing row and emit two refined rows in its place.
 
         Builds one ``UserPlaybook`` from the candidate's content/polarity with
@@ -920,7 +960,10 @@ class PlaybookConsolidator(BaseDeduplicator):
             request_id: Request ID stamped on both new rows.
 
         Returns:
-            Tuple of ([refined_new_row, refined_existing_row], [NEW-N id]).
+            Tuple of ``([refined_new_row, refined_existing_row], [NEW-N id],
+            [])``. ``differentiate`` is a SPLIT, not a merge: the existing row
+            is archived but maps to no single survivor, so it produces NO merge
+            group (its archived id is a pure-delete leftover for the caller).
         """
         candidate = candidates_by_id.get(decision.new_id)
         if candidate is None:
@@ -960,14 +1003,14 @@ class PlaybookConsolidator(BaseDeduplicator):
                 "source_interaction_ids": list(existing.source_interaction_ids),
             }
         )
-        return [refined_candidate, refined_existing], [decision.new_id]
+        return [refined_candidate, refined_existing], [decision.new_id], []
 
     def _apply_independent(
         self,
         decision: IndependentDecision,
         *,
         candidates_by_id: dict[str, UserPlaybook],
-    ) -> tuple[list[UserPlaybook], list[str]]:
+    ) -> tuple[list[UserPlaybook], list[str], list[int]]:
         """Insert the new candidate unchanged; no archive.
 
         Args:
@@ -975,12 +1018,13 @@ class PlaybookConsolidator(BaseDeduplicator):
             candidates_by_id: Mapping ``"NEW-N"`` -> candidate playbook.
 
         Returns:
-            Tuple of ([candidate row], [consumed NEW-N id]).
+            Tuple of ``([candidate row], [consumed NEW-N id], [])`` — no archive,
+            so never a merge group.
         """
         candidate = candidates_by_id.get(decision.new_id)
         if candidate is None:
             raise KeyError(f"independent references unknown NEW id: {decision.new_id}")
-        return [candidate], [decision.new_id]
+        return [candidate], [decision.new_id], []
 
     @staticmethod
     def _merge_source_ids(playbooks: list[UserPlaybook]) -> list[int]:

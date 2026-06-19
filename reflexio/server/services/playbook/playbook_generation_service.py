@@ -268,6 +268,7 @@ class PlaybookGenerationService(
 
         # Deduplicate against existing entries in DB when deduplicator is enabled
         existing_ids_to_delete: list[int] = []
+        merge_groups: list[tuple[int, list[int]]] = []
         from reflexio.server.site_var.feature_flags import is_deduplicator_enabled
 
         if is_deduplicator_enabled(self.org_id):
@@ -285,7 +286,11 @@ class PlaybookGenerationService(
                 llm_client=self.client,
                 dedup_config=dedup_config,
             )
-            deduplicated_playbooks, existing_ids_to_delete = consolidator.deduplicate(
+            (
+                deduplicated_playbooks,
+                existing_ids_to_delete,
+                merge_groups,
+            ) = consolidator.deduplicate(
                 [all_playbooks],
                 self.service_config.request_id,  # type: ignore[reportOptionalMemberAccess]
                 self.service_config.agent_version,  # type: ignore[reportOptionalMemberAccess]
@@ -317,21 +322,9 @@ class PlaybookGenerationService(
             try:
                 self.storage.save_user_playbooks(all_playbooks)  # type: ignore[reportOptionalMemberAccess]
                 self._enqueue_user_playbook_optimization(all_playbooks)
-
-                # Delete superseded existing entries only after save succeeds
-                if existing_ids_to_delete:
-                    try:
-                        deleted_count = self.storage.delete_user_playbooks_by_ids(  # type: ignore[reportOptionalMemberAccess]
-                            existing_ids_to_delete
-                        )
-                        logger.info(
-                            "Deleted %d superseded existing entries", deleted_count
-                        )
-                    except Exception as e:
-                        logger.error(
-                            "Failed to delete superseded existing entries: %s",
-                            str(e),
-                        )
+                self._apply_consolidation_lineage(
+                    all_playbooks, merge_groups, existing_ids_to_delete
+                )
             except Exception as e:
                 logger.error(
                     "Failed to save %s results for request id: %s due to %s, exception type: %s",
@@ -345,6 +338,62 @@ class PlaybookGenerationService(
             if not self.output_pending_status and not self.skip_aggregation:
                 logger.info("Trigger playbook aggregation")
                 self._trigger_playbook_aggregation()
+
+    def _apply_consolidation_lineage(
+        self,
+        saved_playbooks: list[UserPlaybook],
+        merge_groups: list[tuple[int, list[int]]],
+        existing_ids_to_delete: list[int],
+    ) -> None:
+        """Materialize consolidation merges as lineage tombstones; hard-delete leftovers.
+
+        Runs AFTER ``save_user_playbooks`` has assigned survivor ids. For each
+        ``unify`` merge group, routes the sources atomically through
+        ``storage.merge_records`` so each becomes a MERGED tombstone pointing at
+        its survivor with a ``merge`` lineage event (``resolve_current`` then
+        follows the pointer). Any archived id NOT covered by a merge group
+        (e.g. a ``differentiate`` split source, which has no single survivor) is
+        a pure delete and is hard-removed via ``delete_user_playbooks_by_ids`` —
+        the legacy behaviour, preserved for correctness until Task 11 makes that
+        path emit a ``hard_delete`` event.
+
+        Args:
+            saved_playbooks: The just-persisted entries (survivor ids assigned).
+            merge_groups: ``(survivor_index, source_existing_ids)`` per merge.
+            existing_ids_to_delete: ALL archived ids (merge sources + leftovers).
+        """
+        from reflexio.models.api_schema.domain.entities import LineageContext
+
+        merged_source_ids: set[int] = set()
+        for survivor_idx, source_ids in merge_groups:
+            survivor_id = saved_playbooks[survivor_idx].user_playbook_id
+            merged_source_ids.update(source_ids)
+            self.storage.merge_records(  # type: ignore[reportOptionalMemberAccess]
+                entity_type="user_playbook",
+                survivor_id=str(survivor_id),
+                source_ids=[str(s) for s in source_ids],
+                context=LineageContext(
+                    op_kind="merge",
+                    actor="consolidator",
+                    source_ids=[str(s) for s in source_ids],
+                    reason="dedup-merge",
+                    request_id=self.service_config.request_id,  # type: ignore[reportOptionalMemberAccess]
+                ),
+            )
+
+        # Leftover archives not covered by any merge group (e.g. differentiate
+        # split sources) are pure deletes — hard-remove them.
+        leftover_ids = [
+            pid for pid in existing_ids_to_delete if pid not in merged_source_ids
+        ]
+        if leftover_ids:
+            try:
+                deleted_count = self.storage.delete_user_playbooks_by_ids(  # type: ignore[reportOptionalMemberAccess]
+                    leftover_ids
+                )
+                logger.info("Deleted %d superseded existing entries", deleted_count)
+            except Exception as e:
+                logger.error("Failed to delete superseded existing entries: %s", str(e))
 
     def _enqueue_user_playbook_optimization(
         self, saved_playbooks: list[UserPlaybook]

@@ -257,11 +257,12 @@ def _drive_consolidator(
         ),
         patch.dict("os.environ", {"MOCK_LLM_RESPONSE": "false"}),
     ):
-        return consolidator.deduplicate(
+        rows, archive_ids, _merge_groups = consolidator.deduplicate(
             results=[candidates],
             request_id=request_id,
             agent_version="v1",
         )
+    return rows, archive_ids
 
 
 def _apply_to_storage(

@@ -202,6 +202,12 @@ def _run_consolidator(
 ) -> tuple[list[UserPlaybook], list[int]]:
     """Drive ``deduplicate`` with a scripted LLM response and pre-fetched existing rows.
 
+    ``deduplicate`` returns a 3-tuple ``(rows, archive_ids, merge_groups)``; the
+    apply-path tests in this file assert only on ``(rows, archive_ids)``, so the
+    merge-group element is dropped here. Merge-group routing through
+    ``merge_records`` is covered by
+    ``test_consolidation_lineage_integration.py``.
+
     Patches ``_retrieve_existing_playbooks`` so the LLM-mock decisions can
     reference EXISTING-N ids by position without depending on the search
     backend's ranking.
@@ -228,11 +234,12 @@ def _run_consolidator(
         ),
         patch.dict("os.environ", {"MOCK_LLM_RESPONSE": "false"}),
     ):
-        return consolidator.deduplicate(
+        rows, archive_ids, _merge_groups = consolidator.deduplicate(
             results=[candidates],
             request_id=request_id,
             agent_version="v0",
         )
+    return rows, archive_ids
 
 
 def _apply_to_storage(

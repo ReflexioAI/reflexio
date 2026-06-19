@@ -292,7 +292,7 @@ class TestDeduplicate:
         fb2 = _make_user_playbook(1)
 
         with patch.dict("os.environ", {"MOCK_LLM_RESPONSE": "true"}):
-            result, delete_ids = mock_consolidator.deduplicate(
+            result, delete_ids, _ = mock_consolidator.deduplicate(
                 results=[[fb1], [fb2]], request_id="req1", agent_version="v1"
             )
 
@@ -302,7 +302,7 @@ class TestDeduplicate:
     def test_empty_results(self, mock_consolidator):
         """Test deduplication with no playbooks."""
         with patch.dict("os.environ", {"MOCK_LLM_RESPONSE": "false"}):
-            result, delete_ids = mock_consolidator.deduplicate(
+            result, delete_ids, _ = mock_consolidator.deduplicate(
                 results=[[]], request_id="req1", agent_version="v1"
             )
 
@@ -320,7 +320,7 @@ class TestDeduplicate:
         )
 
         with patch.dict("os.environ", {"MOCK_LLM_RESPONSE": "false"}):
-            result, delete_ids = mock_consolidator.deduplicate(
+            result, delete_ids, _ = mock_consolidator.deduplicate(
                 results=[[fb]], request_id="req1", agent_version="v1"
             )
 
@@ -360,7 +360,7 @@ class TestBuildDeduplicatedResults:
             ],
         )
 
-        result, delete_ids = mock_consolidator._build_deduplicated_results(
+        result, delete_ids, _ = mock_consolidator._build_deduplicated_results(
             new_playbooks=new_playbooks,
             existing_playbooks=existing_playbooks,
             dedup_output=dedup_output,
@@ -404,7 +404,7 @@ class TestBuildDeduplicatedResults:
             ],
         )
 
-        result, delete_ids = mock_consolidator._build_deduplicated_results(
+        result, delete_ids, _ = mock_consolidator._build_deduplicated_results(
             new_playbooks=new_playbooks,
             existing_playbooks=existing_playbooks,
             dedup_output=dedup_output,
@@ -441,7 +441,7 @@ class TestBuildDeduplicatedResults:
             ],
         )
 
-        result, delete_ids = mock_consolidator._build_deduplicated_results(
+        result, delete_ids, _ = mock_consolidator._build_deduplicated_results(
             new_playbooks=new_playbooks,
             existing_playbooks=[],
             dedup_output=dedup_output,
@@ -472,7 +472,7 @@ class TestBuildDeduplicatedResults:
         )
 
         with caplog.at_level("WARNING"):
-            result, _ = mock_consolidator._build_deduplicated_results(
+            result, _, _ = mock_consolidator._build_deduplicated_results(
                 new_playbooks=new_playbooks,
                 existing_playbooks=[],
                 dedup_output=dedup_output,
@@ -535,7 +535,7 @@ class TestBuildDeduplicatedResults:
             ],
         )
 
-        result, _ = mock_consolidator._build_deduplicated_results(
+        result, _, _ = mock_consolidator._build_deduplicated_results(
             new_playbooks=new_playbooks,
             existing_playbooks=[],
             dedup_output=dedup_output,
@@ -556,7 +556,7 @@ class TestBuildDeduplicatedResults:
             ],
         )
 
-        result, delete_ids = mock_consolidator._build_deduplicated_results(
+        result, delete_ids, _ = mock_consolidator._build_deduplicated_results(
             new_playbooks=new_playbooks,
             existing_playbooks=existing_playbooks,
             dedup_output=dedup_output,
@@ -586,7 +586,7 @@ class TestBuildDeduplicatedResults:
             ],
         )
 
-        result, delete_ids = mock_consolidator._build_deduplicated_results(
+        result, delete_ids, _ = mock_consolidator._build_deduplicated_results(
             new_playbooks=new_playbooks,
             existing_playbooks=existing_playbooks,
             dedup_output=dedup_output,
@@ -613,7 +613,7 @@ class TestBuildDeduplicatedResults:
             ],
         )
 
-        result, delete_ids = mock_consolidator._build_deduplicated_results(
+        result, delete_ids, _ = mock_consolidator._build_deduplicated_results(
             new_playbooks=new_playbooks,
             existing_playbooks=existing_playbooks,
             dedup_output=dedup_output,
@@ -648,7 +648,7 @@ class TestBuildDeduplicatedResults:
             ],
         )
 
-        result, delete_ids = mock_consolidator._build_deduplicated_results(
+        result, delete_ids, _ = mock_consolidator._build_deduplicated_results(
             new_playbooks=new_playbooks,
             existing_playbooks=existing_playbooks,
             dedup_output=dedup_output,
@@ -690,7 +690,7 @@ class TestBuildDeduplicatedResults:
             decisions=[IndependentDecision(new_id="NEW-0")],
         )
 
-        result, _ = mock_consolidator._build_deduplicated_results(
+        result, _, _ = mock_consolidator._build_deduplicated_results(
             new_playbooks=new_playbooks,
             existing_playbooks=[],
             dedup_output=dedup_output,
@@ -739,7 +739,7 @@ class TestDeduplicateHappyPath:
         )
 
         with patch.dict("os.environ", {"MOCK_LLM_RESPONSE": "false"}):
-            result, delete_ids = mock_consolidator.deduplicate(
+            result, delete_ids, _ = mock_consolidator.deduplicate(
                 results=[[fb0], [fb1]], request_id="req_test", agent_version="v1"
             )
 
@@ -776,7 +776,7 @@ class TestDeduplicateHappyPath:
         )
 
         with patch.dict("os.environ", {"MOCK_LLM_RESPONSE": "false"}):
-            result, delete_ids = mock_consolidator.deduplicate(
+            result, delete_ids, _ = mock_consolidator.deduplicate(
                 results=[[fb0], [fb1], [fb2]], request_id="req_test", agent_version="v1"
             )
 
@@ -817,7 +817,7 @@ class TestDeduplicateHappyPath:
         )
 
         with patch.dict("os.environ", {"MOCK_LLM_RESPONSE": "false"}):
-            result, delete_ids = mock_consolidator.deduplicate(
+            result, delete_ids, _ = mock_consolidator.deduplicate(
                 results=[[fb0]], request_id="req_test", agent_version="v1"
             )
 
@@ -849,7 +849,7 @@ class TestBuildDeduplicatedResultsEdgeCases:
             decisions=[_unify("NEW-0", archive_existing_ids=[99])],
         )
 
-        result, delete_ids = mock_consolidator._build_deduplicated_results(
+        result, delete_ids, _ = mock_consolidator._build_deduplicated_results(
             new_playbooks=new_playbooks,
             existing_playbooks=[],
             dedup_output=dedup_output,
@@ -876,7 +876,7 @@ class TestBuildDeduplicatedResultsEdgeCases:
             decisions=[_unify("NEW-0", archive_existing_ids=[0], content="merged")],
         )
 
-        result, delete_ids = mock_consolidator._build_deduplicated_results(
+        result, delete_ids, _ = mock_consolidator._build_deduplicated_results(
             new_playbooks=new_playbooks,
             existing_playbooks=existing_playbooks,
             dedup_output=dedup_output,
@@ -906,7 +906,7 @@ class TestBuildDeduplicatedResultsEdgeCases:
             decisions=[_unify("NEW-0", archive_existing_ids=[0], content="merged")],
         )
 
-        result, _ = mock_consolidator._build_deduplicated_results(
+        result, _, _ = mock_consolidator._build_deduplicated_results(
             new_playbooks=new_playbooks,
             existing_playbooks=existing_playbooks,
             dedup_output=dedup_output,
@@ -931,7 +931,7 @@ class TestBuildDeduplicatedResultsEdgeCases:
             decisions=[IndependentDecision(new_id="NEW-1")],
         )
 
-        result, _ = mock_consolidator._build_deduplicated_results(
+        result, _, _ = mock_consolidator._build_deduplicated_results(
             new_playbooks=new_playbooks,
             existing_playbooks=[],
             dedup_output=dedup_output,
@@ -959,7 +959,7 @@ class TestBuildDeduplicatedResultsEdgeCases:
             decisions=[IndependentDecision(new_id="NEW-99")],
         )
 
-        result, delete_ids = mock_consolidator._build_deduplicated_results(
+        result, delete_ids, _ = mock_consolidator._build_deduplicated_results(
             new_playbooks=new_playbooks,
             existing_playbooks=[],
             dedup_output=dedup_output,
@@ -1024,7 +1024,7 @@ class TestMockModeCheck:
         fb = _make_user_playbook(0)
 
         with patch.dict("os.environ", {"MOCK_LLM_RESPONSE": "true"}):
-            result, delete_ids = mock_consolidator.deduplicate(
+            result, delete_ids, _ = mock_consolidator.deduplicate(
                 results=[[fb]], request_id="req1", agent_version="v1"
             )
 
@@ -1036,7 +1036,7 @@ class TestMockModeCheck:
         fb = _make_user_playbook(0)
 
         with patch.dict("os.environ", {"MOCK_LLM_RESPONSE": "True"}):
-            result, delete_ids = mock_consolidator.deduplicate(
+            result, delete_ids, _ = mock_consolidator.deduplicate(
                 results=[[fb]], request_id="req1", agent_version="v1"
             )
 
@@ -1055,7 +1055,7 @@ class TestMockModeCheck:
 
         fb = _make_user_playbook(0)
         with patch.dict("os.environ", {"MOCK_LLM_RESPONSE": "false"}):
-            result, _ = mock_consolidator.deduplicate(
+            result, _, _ = mock_consolidator.deduplicate(
                 results=[[fb]], request_id="req1", agent_version="v1"
             )
 
