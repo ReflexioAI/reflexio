@@ -149,7 +149,9 @@ def _call_cli(*, prompt: str, model: str | None, timeout_s: int) -> str:
         raise OpenClawCLIError(f"openclaw timed out after {timeout_s}s") from exc
 
     if proc.returncode != 0:
-        raise OpenClawCLIError(proc.stderr.strip() or f"openclaw exit {proc.returncode}")
+        raise OpenClawCLIError(
+            proc.stderr.strip() or f"openclaw exit {proc.returncode}"
+        )
 
     try:
         payload = json.loads(proc.stdout)
@@ -202,7 +204,9 @@ class OpenClawLLM(CustomLLM):
         raw_timeout = os.environ.get(ENV_TIMEOUT)
         try:
             timeout_s = (
-                int(raw_timeout) if raw_timeout is not None else _DEFAULT_TIMEOUT_SECONDS
+                int(raw_timeout)
+                if raw_timeout is not None
+                else _DEFAULT_TIMEOUT_SECONDS
             )
         except ValueError:
             _LOGGER.warning(
@@ -240,9 +244,7 @@ def _messages_to_prompt(messages: list[dict[str, Any]]) -> str:
         role = m.get("role", "user")
         content = m.get("content", "")
         if isinstance(content, list):
-            content = "".join(
-                c.get("text", "") for c in content if isinstance(c, dict)
-            )
+            content = "".join(c.get("text", "") for c in content if isinstance(c, dict))
         parts.append(f"{role}: {content}")
     return "\n\n".join(parts)
 
