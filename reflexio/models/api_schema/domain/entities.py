@@ -119,6 +119,9 @@ __all__ = [
     "AdminInvalidateCacheRequest",
     "AdminInvalidateCacheResponse",
     "PlaybookRetrievalLog",
+    "LineageEvent",
+    "LineageContext",
+    "RecordRef",
 ]
 
 # ===============================
@@ -227,6 +230,8 @@ class UserProfile(BaseModel):
     source_span: str | None = None
     notes: str | None = None
     reader_angle: str | None = None
+    merged_into: str | None = None
+    superseded_by: str | None = None
 
 
 # user playbook for agents
@@ -252,6 +257,8 @@ class UserPlaybook(BaseModel):
     source_span: str | None = None
     notes: str | None = None
     reader_angle: str | None = None
+    merged_into: int | None = None
+    superseded_by: int | None = None
 
 
 class ProfileChangeLog(BaseModel):
@@ -281,6 +288,8 @@ class AgentPlaybook(BaseModel):
     status: Status | None = (
         None  # used for tracking intermediate states during playbook aggregation. Status.ARCHIVED for playbooks during aggregation process, None for current playbooks
     )
+    merged_into: int | None = None
+    superseded_by: int | None = None
 
 
 class PlaybookOptimizationJob(BaseModel):
@@ -410,6 +419,56 @@ class PlaybookRetrievalLog(BaseModel):
     shown_playbook_ids: list[int] = []  # ids only (v1); scores deferred to v2 (M1)
     agent_version: str | None = None
     created_at: int = 0
+
+
+class LineageEvent(BaseModel):
+    """Append-only, content-free provenance record. NEVER carries content/PII.
+
+    Attributes:
+        event_id (int): PK assigned by storage (0 = not yet persisted).
+        org_id (str): Owning org (tenant) — required for RLS / isolation.
+        entity_type (str): One of "profile" | "user_playbook" | "agent_playbook".
+        entity_id (str): The affected record's id, stringified (profile_id is str).
+        op (str): create|revise|merge|aggregate|archive|soft_delete|hard_delete|purge|status_change.
+        prov_relation (str): W3C PROV relation (see spec §14).
+        source_ids (list[str]): Records merged/superseded into entity_id.
+        actor (str): Who/what triggered it (consolidator|reflection|offline_optimizer|...).
+        request_id (str): Triggering request — part of the idempotency key.
+        reason (str): Free-text rationale (no PII).
+        created_at (int): Unix epoch seconds (0 = unset; storage stamps it).
+    """
+
+    event_id: int = 0
+    org_id: str
+    entity_type: str
+    entity_id: str
+    op: str
+    prov_relation: str = ""
+    source_ids: list[str] = []
+    actor: str = ""
+    request_id: str = ""
+    reason: str = ""
+    created_at: int = 0
+
+
+class LineageContext(BaseModel):
+    """Caller-supplied intent the storage layer can't infer.
+
+    Required for merge/supersede/aggregate; optional for create/revise/archive.
+    """
+
+    op_kind: str
+    actor: str = ""
+    source_ids: list[str] = []
+    reason: str = ""
+    request_id: str | None = None
+
+
+class RecordRef(BaseModel):
+    """Result of resolve_current — the live survivor's id and whether its body was purged."""
+
+    id: str
+    is_purged: bool = False
 
 
 class ShareLink(BaseModel):

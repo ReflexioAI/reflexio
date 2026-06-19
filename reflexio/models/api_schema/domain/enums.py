@@ -42,6 +42,8 @@ class Status(str, Enum):  # noqa: UP042 - CURRENT=None is not compatible with St
     ARCHIVE_IN_PROGRESS = (
         "archive_in_progress"  # temporary status during downgrade operation
     )
+    MERGED = "merged"  # tombstone: consolidated into a survivor (merged_into set)
+    SUPERSEDED = "superseded"  # tombstone: replaced by a new version (superseded_by set)
 
 
 class OperationStatus(StrEnum):
