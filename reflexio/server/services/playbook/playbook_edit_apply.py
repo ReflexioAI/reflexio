@@ -1,13 +1,12 @@
-"""Shared archive+insert primitive for applying a playbook edit.
+"""Shared atomic supersede primitive for applying a playbook edit.
 
 Extracted from ReflectionService._replace_playbook so the offline tuner and
-the online reflection path share one lifecycle (insert-then-archive, optimistic
-concurrency).
+the online reflection path share one lifecycle (insert-then-supersede, no orphan).
 """
 
 from typing import TYPE_CHECKING
 
-from reflexio.models.api_schema.domain.entities import UserPlaybook
+from reflexio.models.api_schema.domain.entities import LineageContext, UserPlaybook
 
 if TYPE_CHECKING:
     from reflexio.server.services.storage.storage_base import BaseStorage
@@ -21,44 +20,46 @@ def apply_playbook_edit(
     source: str,
     expect_current: bool = True,
 ) -> int:
-    """Insert a replacement playbook then archive the incumbent.
+    """Insert a replacement playbook then atomically supersede the incumbent.
+
+    Uses ``storage.supersede_record`` (atomic conditional CAS) so a lost race
+    never leaves an orphan CURRENT row:
+
+    - Insert the new playbook as CURRENT.
+    - Call ``supersede_record(incumbent_id → new_id)``, which only succeeds when
+      the incumbent is still CURRENT (``status IS NULL``).
+    - If ``supersede_record`` returns ``False`` (incumbent already gone), delete
+      the just-inserted successor and return ``-1``.
 
     Args:
         storage: A BaseStorage instance providing ``save_user_playbooks``,
-            ``get_user_playbook_by_id``, and ``archive_user_playbook_by_id``.
+            ``supersede_record``, and ``delete_user_playbooks_by_ids``.
         incumbent_id: ``user_playbook_id`` of the playbook being replaced.
         new_playbook: The replacement playbook (inserted as CURRENT, i.e.
             ``status=None``).
-        source: Provenance label stored on the new playbook row.
-        expect_current: When ``True`` (default), check that the incumbent is
-            still CURRENT before archiving; if it has already been archived by
-            a concurrent writer, skip the archive and return ``-1``.  Pass
-            ``False`` to always archive regardless (reflection's existing
-            behaviour).
+        source: Provenance label stored on the new playbook row and in the
+            lineage event actor field.
+        expect_current: Retained for caller compatibility; the atomic
+            ``supersede_record`` guard makes this always-correct regardless of
+            its value — the parameter is effectively ignored.
 
     Returns:
         The ``user_playbook_id`` of the newly inserted playbook, or ``-1`` if
-        ``expect_current`` is ``True`` and the incumbent was no longer CURRENT.
-
-    Note:
-        With ``expect_current=False`` the new playbook is inserted unconditionally
-        *before* archiving; if ``archive_user_playbook_by_id`` returns False
-        (incumbent missing or already archived), the inserted row remains CURRENT
-        (an orphan) and the function returns -1. Callers must pass a ``new_playbook``
-        with a non-None ``user_id`` (archive guards on ``user_id``).
+        the incumbent was not CURRENT (no mutation; no orphan left behind).
     """
     new_playbook.source = source
     storage.save_user_playbooks([new_playbook])
     new_id: int = new_playbook.user_playbook_id
 
-    if expect_current:
-        incumbent = storage.get_user_playbook_by_id(incumbent_id)
-        if incumbent is None or incumbent.status is not None:
-            return -1
-
-    user_id = new_playbook.user_id or ""
-    archived = storage.archive_user_playbook_by_id(
-        user_id=user_id,
-        user_playbook_id=incumbent_id,
+    ctx = LineageContext(op_kind="revise", actor=source, request_id=new_playbook.request_id)
+    superseded = storage.supersede_record(
+        entity_type="user_playbook",
+        incumbent_id=str(incumbent_id),
+        successor_id=str(new_id),
+        context=ctx,
     )
-    return new_id if archived else -1
+    if not superseded:
+        # lost the race: delete the just-inserted successor so no orphan CURRENT row remains
+        storage.delete_user_playbooks_by_ids([new_id])
+        return -1
+    return new_id

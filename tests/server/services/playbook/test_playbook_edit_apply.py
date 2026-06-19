@@ -104,8 +104,12 @@ def test_apply_expect_current_false_archives():
         assert old_id not in current_ids
 
 
-def test_apply_expect_current_false_returns_minus1_when_archive_fails():
-    """With expect_current=False, if archive fails the new playbook remains CURRENT (orphan)."""
+def test_apply_expect_current_false_returns_minus1_and_no_orphan():
+    """When incumbent is already archived, supersede_record returns False.
+
+    The new code deletes the just-inserted successor so no orphan CURRENT row
+    remains — the -1 return value indicates the lost race, not an orphan.
+    """
     from reflexio.server.services.playbook.playbook_edit_apply import (
         apply_playbook_edit,
     )
@@ -118,7 +122,7 @@ def test_apply_expect_current_false_returns_minus1_when_archive_fails():
             old_id = old.user_playbook_id
             assert old_id > 0
 
-            # Archive first, so archive_user_playbook_by_id will fail on second call
+            # Archive first so supersede_record will return False
             s.archive_user_playbook_by_id(user_id="u1", user_playbook_id=old_id)
 
             new = _playbook(content="new")
@@ -129,12 +133,10 @@ def test_apply_expect_current_false_returns_minus1_when_archive_fails():
                 source="offline_optimizer",
                 expect_current=False,
             )
-        # Archive fails, new playbook inserted but remains CURRENT (orphan)
+        # supersede_record returned False → -1, successor cleaned up (no orphan)
         assert new_id == -1
 
-        # Verify new playbook was inserted and is CURRENT (orphan)
+        # No orphan: the inserted successor was deleted
         all_pbs = s.get_user_playbooks(user_id="u1")
         current_ids = {p.user_playbook_id for p in all_pbs if p.status is None}
-        # The new playbook ID would be old_id + 1 (or next available)
-        # Just verify there's at least one CURRENT playbook (the orphan)
-        assert len(current_ids) > 0
+        assert len(current_ids) == 0

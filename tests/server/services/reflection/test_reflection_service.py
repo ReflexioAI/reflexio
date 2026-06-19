@@ -369,14 +369,14 @@ class TestReplacePlaybook:
         assert result.revised_count == 1
 
         current = storage.get_user_playbooks(user_id="u1", status_filter=[None])
-        archived = storage.get_user_playbooks(
-            user_id="u1", status_filter=[Status.ARCHIVED]
+        superseded = storage.get_user_playbooks(
+            user_id="u1", status_filter=[Status.SUPERSEDED]
         )
         assert len(current) == 1
-        assert len(archived) == 1
+        assert len(superseded) == 1
         assert current[0].user_playbook_id != 1
         assert current[0].content == "new rule"
-        # Trigger falls back to archived row's value; rationale is the supplied one.
+        # Trigger falls back to superseded row's value; rationale is the supplied one.
         assert current[0].trigger == "when X"
         assert current[0].rationale == "rewritten because Y was wrong"
         assert current[0].user_id == "u1"
@@ -686,7 +686,7 @@ class TestArchiveAfterInsertFailure:
         with (
             patch.object(
                 storage,
-                "archive_user_playbook_by_id",
+                "supersede_record",
                 side_effect=RuntimeError("disk full"),
             ),
             caplog.at_level(
@@ -698,7 +698,7 @@ class TestArchiveAfterInsertFailure:
         assert result.ran is True
         assert result.revised_count == 1
 
-        # Both rows still current — transient duplicate.
+        # Both rows still current — transient duplicate (supersede raised before cleanup).
         current = storage.get_user_playbooks(user_id="u1", status_filter=[None])
         assert len(current) == 2
         assert {p.content for p in current} == {"old rule", "new rule"}
@@ -762,14 +762,14 @@ class TestLLMReportedFlip:
         assert not hasattr(result, "flipped_count")
 
         current = storage.get_user_playbooks(user_id="u1", status_filter=[None])
-        archived = storage.get_user_playbooks(
-            user_id="u1", status_filter=[Status.ARCHIVED]
+        superseded = storage.get_user_playbooks(
+            user_id="u1", status_filter=[Status.SUPERSEDED]
         )
         assert len(current) == 1
-        assert len(archived) == 1
+        assert len(superseded) == 1
         assert current[0].content == "Avoid X when Y."
         assert current[0].rationale == "user pushed back when X was recommended"
-        assert archived[0].user_playbook_id == 1
+        assert superseded[0].user_playbook_id == 1
 
     def test_content_revision_without_rationale_counts_as_failed(
         self, request_context, service, llm_client
@@ -924,11 +924,11 @@ class TestPerPassCap:
         assert result.ran is True
         assert result.revised_count == 2
         assert result.capped_count == 1
-        # Exactly two archives happened.
-        archived = storage.get_user_playbooks(
-            user_id="u1", status_filter=[Status.ARCHIVED]
+        # Exactly two supersedes happened.
+        superseded = storage.get_user_playbooks(
+            user_id="u1", status_filter=[Status.SUPERSEDED]
         )
-        assert len(archived) == 2
+        assert len(superseded) == 2
 
     def test_no_change_decisions_do_not_count_against_cap(
         self, request_context, service, llm_client
