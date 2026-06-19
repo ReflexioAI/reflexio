@@ -23,6 +23,7 @@ from ._agent_run import (
 )
 from ._base import BaseStorageCore, matches_status_filter
 from ._extras import ExtrasMixin
+from ._lineage import LineageEventMixin
 from ._operations import OperationMixin
 from ._playbook import PlaybookMixin
 from ._profiles import ProfileMixin
@@ -39,6 +40,7 @@ class BaseStorage(
     RequestMixin,
     PlaybookMixin,
     RetrievalLogMixin,
+    LineageEventMixin,
     OperationMixin,
     ExtrasMixin,
     ShareLinkMixin,
@@ -129,6 +131,7 @@ class BaseStorage(
 __all__ = [
     "AgentBinding",
     "AgentRunMixin",
+    "LineageEventMixin",
     "AgentRunRecord",
     "AgentRunStatus",
     "BaseStorage",

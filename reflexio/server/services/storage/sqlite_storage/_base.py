@@ -698,6 +698,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         self._migrate_shadow_comparison_verdicts()
         self._migrate_user_playbook_polarity()
         self._migrate_lineage()
+        self._migrate_lineage_event_table()
         init_stall_state_table(self.conn)
         return True
 
@@ -1240,6 +1241,29 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                     )
                     logger.info("Added %s column to %s", col, table)
         self.conn.commit()
+
+    def _migrate_lineage_event_table(self) -> None:
+        """Create the lineage_event table + index for existing databases (idempotent)."""
+        with self._lock:
+            self.conn.executescript("""
+                CREATE TABLE IF NOT EXISTS lineage_event (
+                    event_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+                    org_id        TEXT NOT NULL,
+                    entity_type   TEXT NOT NULL,
+                    entity_id     TEXT NOT NULL,
+                    op            TEXT NOT NULL,
+                    prov_relation TEXT NOT NULL DEFAULT '',
+                    source_ids    TEXT NOT NULL DEFAULT '[]',
+                    actor         TEXT NOT NULL DEFAULT '',
+                    request_id    TEXT NOT NULL DEFAULT '',
+                    reason        TEXT NOT NULL DEFAULT '',
+                    created_at    INTEGER NOT NULL,
+                    UNIQUE (entity_id, op, request_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_lineage_entity
+                    ON lineage_event (entity_type, entity_id);
+            """)
+            self.conn.commit()
 
     def _migrate_agent_playbook_source_windows(self) -> None:
         """Add source window snapshots to existing agent source mappings."""
@@ -2096,5 +2120,25 @@ CREATE INDEX IF NOT EXISTS idx_shadow_verdicts_prompt_v
     ON shadow_comparison_verdicts (judge_prompt_version);
 CREATE INDEX IF NOT EXISTS idx_shadow_verdicts_prompt_created_at_desc
     ON shadow_comparison_verdicts (judge_prompt_version, created_at DESC);
+
+-- ============================================================================
+-- Append-only, content-free lineage event log
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS lineage_event (
+    event_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    org_id        TEXT NOT NULL,
+    entity_type   TEXT NOT NULL,
+    entity_id     TEXT NOT NULL,
+    op            TEXT NOT NULL,
+    prov_relation TEXT NOT NULL DEFAULT '',
+    source_ids    TEXT NOT NULL DEFAULT '[]',
+    actor         TEXT NOT NULL DEFAULT '',
+    request_id    TEXT NOT NULL DEFAULT '',
+    reason        TEXT NOT NULL DEFAULT '',
+    created_at    INTEGER NOT NULL,
+    UNIQUE (entity_id, op, request_id)
+);
+CREATE INDEX IF NOT EXISTS idx_lineage_entity ON lineage_event (entity_type, entity_id);
 
 """
