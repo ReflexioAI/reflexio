@@ -1554,14 +1554,16 @@ class TestBuildCompletionParams:
         assert "top_p" not in call_kwargs
 
     @patch("reflexio.server.llm.litellm_client.litellm.completion")
-    def test_model_timeout_floor_raises_default(self, mock_completion):
-        """MiniMax-M3 has a 240s floor; the default 120s config is raised to it."""
+    def test_minimax_m3_floor_is_120(self, mock_completion):
+        """MiniMax-M3's floor was lowered from 240s to the 120s default
+        (Sentry PYTHON-FASTAPI-62) so a hung primary is abandoned sooner and the
+        fallback is reached faster."""
         mock_completion.return_value = _make_completion_response("ok")
         client = LiteLLMClient(LiteLLMConfig(model="minimax/MiniMax-M3"))
 
         client.generate_response("hi")
 
-        assert mock_completion.call_args.kwargs["timeout"] == 240
+        assert mock_completion.call_args.kwargs["timeout"] == 120
 
     @patch("reflexio.server.llm.litellm_client.litellm.completion")
     def test_model_timeout_floor_does_not_lower_higher_config(self, mock_completion):
@@ -1930,32 +1932,30 @@ class TestCreateLiteLLMClient:
 class TestMaxRetriesClamping:
     """max_retries clamping in _build_completion_params.
 
-    Retry orchestration itself is delegated to litellm; we only sanity-check
-    that the value forwarded into ``num_retries`` is at least 1 even when the
-    config holds a degenerate value.
+    The completion path now forces ``num_retries=0`` on litellm (the fallback
+    list, not same-model retry, is the resilience mechanism — see
+    PYTHON-FASTAPI-62), so the clamped value is no longer forwarded. We assert
+    the clamp on the value ``_build_completion_params`` returns, which the
+    per-call ``max_retries`` override API still validates.
     """
 
-    @patch("reflexio.server.llm.litellm_client.litellm.completion")
-    def test_max_retries_zero_treated_as_one(self, mock_completion):
-        """max_retries=0 should be clamped to at least 1."""
-        mock_completion.return_value = _make_completion_response("ok")
-        config = LiteLLMConfig(model="gpt-4o", max_retries=0)
-        client = LiteLLMClient(config)
+    def test_max_retries_zero_treated_as_one(self):
+        """max_retries=0 should be clamped to at least 1 in the returned value."""
+        client = LiteLLMClient(LiteLLMConfig(model="gpt-4o", max_retries=0))
 
-        result = client._make_request([{"role": "user", "content": "hi"}])
-        assert result == "ok"
-        assert mock_completion.call_args.kwargs["num_retries"] == 1
+        _, _, _, max_retries, _ = client._build_completion_params(
+            [{"role": "user", "content": "hi"}]
+        )
+        assert max_retries == 1
 
-    @patch("reflexio.server.llm.litellm_client.litellm.completion")
-    def test_negative_max_retries_treated_as_one(self, mock_completion):
+    def test_negative_max_retries_treated_as_one(self):
         """Negative max_retries should be clamped to at least 1."""
-        mock_completion.return_value = _make_completion_response("ok")
-        config = LiteLLMConfig(model="gpt-4o", max_retries=-1)
-        client = LiteLLMClient(config)
+        client = LiteLLMClient(LiteLLMConfig(model="gpt-4o", max_retries=-1))
 
-        result = client._make_request([{"role": "user", "content": "hi"}])
-        assert result == "ok"
-        assert mock_completion.call_args.kwargs["num_retries"] == 1
+        _, _, _, max_retries, _ = client._build_completion_params(
+            [{"role": "user", "content": "hi"}]
+        )
+        assert max_retries == 1
 
 
 class TestTokenUsageLoggingEdgeCases:
@@ -2138,7 +2138,11 @@ class TestLitellmIntegration:
     def _messages() -> list[dict[str, Any]]:
         return [{"role": "user", "content": "hi"}]
 
-    def test_passes_num_retries_from_config(self, monkeypatch):
+    def test_completion_forces_num_retries_zero(self, monkeypatch):
+        """The completion path disables litellm same-model retries regardless of
+        config: retrying a *hung* primary num_retries+1 times is what made the
+        fallback unreachable and produced the 490s in PYTHON-FASTAPI-62. The
+        fallback list is the resilience mechanism instead."""
         client = LiteLLMClient(LiteLLMConfig(model="x", max_retries=3))
         captured: dict[str, Any] = {}
 
@@ -2148,7 +2152,7 @@ class TestLitellmIntegration:
 
         monkeypatch.setattr("litellm.completion", _fake)
         client.generate_chat_response(self._messages())
-        assert captured.get("num_retries") == 3
+        assert captured.get("num_retries") == 0
 
     def test_passes_fallbacks_from_config(self, monkeypatch):
         # Config-explicit fallback (opt-in at construction)
@@ -2207,7 +2211,9 @@ class TestLitellmIntegration:
         client.generate_chat_response(
             self._messages(), max_retries=7, fallback_models=["gpt-5.4-mini"]
         )
-        assert captured.get("num_retries") == 7
+        # The per-call fallback override wins; num_retries is forced to 0 on the
+        # completion path regardless of the max_retries override.
+        assert captured.get("num_retries") == 0
         assert captured.get("fallbacks") == ["gpt-5.4-mini"]
 
     def test_fallback_self_reference_deduped(self, monkeypatch):
@@ -2254,8 +2260,8 @@ class TestLitellmIntegration:
         start = time.perf_counter()
         with pytest.raises(LiteLLMClientError, match="hard timeout"):
             client.generate_chat_response(self._messages())
-        # Two subprocess spawn/kill cycles (initial attempt + one hard-timeout
-        # retry) — still far below the 1s the blocked call would take.
+        # A single subprocess spawn/kill cycle (the blind same-model hard-timeout
+        # retry was removed) — still far below the 1s the blocked call would take.
         assert time.perf_counter() - start < 1.0
 
     def test_worker_snapshots_litellm_api_connection_error(self, monkeypatch):
@@ -2286,32 +2292,15 @@ class TestLitellmIntegration:
         assert payload.model == "gpt-5-mini"
         assert payload.llm_provider == "openai"
 
-    def test_hard_timeout_retried_once_then_succeeds(self, monkeypatch):
-        """A transient hard timeout is retried exactly once at the client level
-        (litellm's num_retries dies with the killed subprocess, so it can never
-        cover this case)."""
+    def test_hard_timeout_not_retried_at_client_level(self, monkeypatch):
+        """A hard timeout is NOT retried at the client level. Same-model retry of
+        a hang is exactly what produced the 490s in PYTHON-FASTAPI-62; the
+        fallback ladder inside the litellm call is the resilience path instead.
+        The timeout surfaces as LiteLLMClientError after a single attempt."""
         client = LiteLLMClient(LiteLLMConfig(model="x"))
         attempts: list[int] = []
 
-        def _flaky(params):
-            attempts.append(1)
-            if len(attempts) == 1:
-                raise LLMHardTimeoutError("LLM request exceeded hard timeout")
-            return _make_completion_response("recovered")
-
-        monkeypatch.setattr(client, "_completion_with_hard_timeout", _flaky)
-
-        result = client.generate_chat_response(self._messages())
-
-        assert result == "recovered"
-        assert len(attempts) == 2
-
-    def test_hard_timeout_not_retried_more_than_once(self, monkeypatch):
-        """A second consecutive hard timeout propagates as LiteLLMClientError."""
-        client = LiteLLMClient(LiteLLMConfig(model="x"))
-        attempts: list[int] = []
-
-        def _always_timeout(params):
+        def _always_timeout(params, hard_timeout):
             attempts.append(1)
             raise LLMHardTimeoutError("LLM request exceeded hard timeout")
 
@@ -2319,7 +2308,37 @@ class TestLitellmIntegration:
 
         with pytest.raises(LiteLLMClientError, match="hard timeout"):
             client.generate_chat_response(self._messages())
-        assert len(attempts) == 2
+        assert len(attempts) == 1
+
+    def test_hard_timeout_sized_to_full_ladder(self, monkeypatch):
+        """The fix: the hard timeout passed to the subprocess covers the WHOLE
+        ladder (one slice per model), num_retries is 0, and the fallback list is
+        forwarded — together these make the fallback reachable on a hung primary.
+        """
+        monkeypatch.setenv("REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS", "5")
+        client = LiteLLMClient(
+            LiteLLMConfig(
+                model="minimax/MiniMax-M3", fallback_models=["gpt-5-mini"]
+            )
+        )
+        captured: dict[str, Any] = {}
+
+        def _capture(params, hard_timeout):
+            captured["hard_timeout"] = hard_timeout
+            captured["timeout"] = params.get("timeout")
+            captured["num_retries"] = params.get("num_retries")
+            captured["fallbacks"] = params.get("fallbacks")
+            return _make_completion_response("ok")
+
+        monkeypatch.setattr(client, "_completion_with_hard_timeout", _capture)
+        client.generate_chat_response(self._messages())
+
+        # MiniMax-M3 floor is 120s; litellm copies that timeout to each rung, so
+        # two rungs (primary + one fallback) → 2 * 120 + 5 grace.
+        assert captured["timeout"] == 120
+        assert captured["num_retries"] == 0
+        assert captured["fallbacks"] == ["gpt-5-mini"]
+        assert captured["hard_timeout"] == pytest.approx(2 * 120 + 5)
 
     def test_invalid_hard_timeout_grace_env_falls_back(self, monkeypatch, caplog):
         monkeypatch.setenv("REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS", "not-a-float")

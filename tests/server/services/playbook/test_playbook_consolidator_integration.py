@@ -952,14 +952,15 @@ def _build_real_client_consolidator(
 
 
 class TestConsolidatorNativeFallbackEndToEnd:
-    """End-to-end: ``_consolidation_decisions`` forwards retry + fallback into ``litellm.completion``.
+    """End-to-end: ``_consolidation_decisions`` forwards the fallback list into ``litellm.completion``.
 
     The consolidator was the original production incident site (structured
-    output parse path on top of native retry + fallback), so this is the
-    highest-fidelity exercise of the Task 1-4 plumbing. Pinning both the
-    "env var on => fallback configured" and "env var unset => no fallback"
-    branches at this level prevents regressions where the plumbing works in
-    isolation but breaks once a structured-output wrapper sits on top.
+    output parse path on top of native fallback; same-model retry of a hung
+    primary is disabled — PYTHON-FASTAPI-62), so this is the highest-fidelity
+    exercise of the plumbing. Pinning both the "env var on => fallback
+    configured" and "env var unset => no fallback" branches at this level
+    prevents regressions where the plumbing works in isolation but breaks once
+    a structured-output wrapper sits on top.
     """
 
     def test_consolidator_calls_litellm_with_fallback_configured(
@@ -968,8 +969,9 @@ class TestConsolidatorNativeFallbackEndToEnd:
         """Production-style: ``REFLEXIO_LLM_FALLBACK_MODELS`` set globally.
 
         Asserts the consolidator's call into ``litellm.completion`` carries
-        ``num_retries=3`` (the default ``LiteLLMConfig.max_retries``) and
-        ``fallbacks=["gpt-5.4-mini"]`` end-to-end — proving Task 1-3's native
+        ``num_retries=0`` (forced on the completion path so a hung primary
+        can't be same-model-retried before the fallback — PYTHON-FASTAPI-62)
+        and ``fallbacks=["gpt-5.4-mini"]`` end-to-end — proving native fallback
         delegation survives the structured-output parse wrapper.
         """
         monkeypatch.setenv("REFLEXIO_LLM_FALLBACK_MODELS", "gpt-5.4-mini")
@@ -999,8 +1001,10 @@ class TestConsolidatorNativeFallbackEndToEnd:
         assert isinstance(result, PlaybookConsolidationOutput)
         assert result.decisions == []
 
-        # Linchpin: native delegation forwarded both knobs to litellm.
-        assert captured.get("num_retries") == 3
+        # Linchpin: fallbacks forwarded; num_retries forced to 0 so a hung
+        # primary can't be same-model-retried before reaching the fallback
+        # (PYTHON-FASTAPI-62).
+        assert captured.get("num_retries") == 0
         assert captured.get("fallbacks") == ["gpt-5.4-mini"]
 
     def test_consolidator_uses_no_fallback_when_env_unset(
@@ -1034,7 +1038,7 @@ class TestConsolidatorNativeFallbackEndToEnd:
 
         assert isinstance(result, PlaybookConsolidationOutput)
         assert result.decisions == []
-        # ``num_retries`` still flows (default 3); only ``fallbacks`` must be
-        # absent so litellm has no fallback chain to traverse.
-        assert captured.get("num_retries") == 3
+        # ``num_retries`` is forced to 0 on the completion path; ``fallbacks``
+        # must be absent so litellm has no fallback chain to traverse.
+        assert captured.get("num_retries") == 0
         assert "fallbacks" not in captured
