@@ -72,9 +72,13 @@ function findExecutable(name) {
 }
 
 function resolveOpenClawBin() {
+  // Absolutize the result: this value is written to ~/.reflexio/.env and later
+  // read by backend subprocesses that may run from a different cwd, so a
+  // relative OPENCLAW_BIN or relative PATH entry must not leak through.
   const configured = process.env.OPENCLAW_BIN;
-  if (configured && existsSync(configured)) return configured;
-  return findExecutable("openclaw");
+  if (configured && existsSync(configured)) return resolve(configured);
+  const found = findExecutable("openclaw");
+  return found ? resolve(found) : found;
 }
 
 function shellQuote(value) {

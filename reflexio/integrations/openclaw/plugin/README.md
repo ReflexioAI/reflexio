@@ -34,5 +34,5 @@ openclaw-smart uninstall --purge
 ```
 
 `install` registers `reflexio-openclaw-smart` with OpenClaw, enables typed hook
-access, writes `OPENCLAW_BIN` to `~/.reflexio/.env`, warms Python dependencies,
-and verifies the plugin is loaded.
+access, writes `OPENCLAW_BIN` and `OPENCLAW_SMART_USE_LOCAL_CLI=1` to
+`~/.reflexio/.env`, warms Python dependencies, and verifies the plugin is loaded.

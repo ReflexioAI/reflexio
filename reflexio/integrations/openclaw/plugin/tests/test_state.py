@@ -144,6 +144,21 @@ def test_unpublished_slice_ignores_malformed_watermark_and_tool_input():
     ]
 
 
+def test_unpublished_slice_ignores_out_of_range_watermark():
+    # A marker larger than the records seen before it (e.g. a corrupt/tampered
+    # buffer) must be ignored, not applied — otherwise the ``idx < published``
+    # gate would skip every later turn and silently drop unpublished records.
+    records = [
+        {"published_up_to": 99},
+        {"role": "Assistant", "content": "Hello."},
+    ]
+
+    watermark, turns = state.unpublished_slice(records)
+
+    assert watermark == 0
+    assert turns == [{"role": "Assistant", "content": "Hello."}]
+
+
 def test_append_injected_writes_registry():
     state.append_injected(
         "s4",

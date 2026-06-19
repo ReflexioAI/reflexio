@@ -274,7 +274,11 @@ def unpublished_slice(
     for idx, rec in enumerate(records):
         if "published_up_to" in rec:
             marker = rec.get("published_up_to")
-            if isinstance(marker, int) and marker >= 0:
+            # Clamp to the number of records seen before this marker (``idx``).
+            # An over-range marker (e.g. from a tampered/corrupt buffer) would
+            # otherwise skip every subsequent turn via the ``idx < published``
+            # gate below, silently dropping valid unpublished records.
+            if isinstance(marker, int) and 0 <= marker <= idx:
                 published = marker
             pending_tools = []
             turns = []
