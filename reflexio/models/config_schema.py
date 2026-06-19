@@ -757,6 +757,8 @@ def _default_user_playbook_extractor_config() -> UserPlaybookExtractorConfig:
 
 
 class Config(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     # define where user configuration is stored at
     storage_config: StorageConfig
     storage_config_test: StorageConfigTest | None = StorageConfigTest.UNKNOWN

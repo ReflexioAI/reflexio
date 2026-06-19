@@ -1550,7 +1550,7 @@ def run_playbook_aggregation(
 @limiter.limit("10/minute")
 def set_config(
     request: Request,
-    config: dict[str, Any],
+    config: Config,
     org_id: str = Depends(default_get_org_id),
 ) -> SetConfigResponse:
     """Set configuration for the organization.

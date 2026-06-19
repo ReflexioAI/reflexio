@@ -203,6 +203,26 @@ class TestUpdateUserProfileRoute:
         assert response.status_code == 422
 
 
+class TestSetConfigRoute:
+    """Tests for POST /api/set_config (full replacement semantics)."""
+
+    def test_unknown_field_returns_422_before_set_config(
+        self, client, patched_reflexio, mock_reflexio
+    ):
+        response = client.post(
+            "/api/set_config",
+            json={
+                "storage_config": {
+                    "db_path": str(Path(tempfile.gettempdir()) / "set-config.db")
+                },
+                "agent_sucess_config": None,
+            },
+        )
+
+        assert response.status_code == 422, response.text
+        mock_reflexio.set_config.assert_not_called()
+
+
 class TestUpdateConfigRoute:
     """Tests for POST /api/update_config (PATCH-style partial update).
 
@@ -255,16 +275,10 @@ class TestUpdateConfigRoute:
         # Cache invalidated on success.
         mock_invalidate.assert_called_once_with(org_id="test-org")
 
-    def test_unknown_field_does_not_leak_to_set_config(
+    def test_unknown_field_returns_422_before_set_config(
         self, client, patched_reflexio, mock_reflexio
     ):
-        """Unknown top-level keys never reach reflexio.set_config.
-
-        ``Config`` doesn't enable strict ``extra='forbid'`` validation,
-        so Pydantic silently drops unknown fields rather than raising —
-        but the merged ``Config`` instance handed to ``set_config`` must
-        not carry the bogus attribute either way.
-        """
+        """Unknown top-level keys never reach reflexio.set_config."""
         existing = self._existing_config()
         self._wire_mock(mock_reflexio, existing)
 
@@ -273,18 +287,8 @@ class TestUpdateConfigRoute:
             json={"definitely_not_a_field": 42},
         )
 
-        # If the model later switches to extra='forbid', this becomes
-        # a 4xx (FastAPI rejects in request validation) and we'd still
-        # want to assert set_config was not called. Pin to client-error
-        # codes specifically so a 5xx regression here trips the test
-        # instead of silently passing the >= 400 check.
-        if response.status_code == 200:
-            merged = mock_reflexio.set_config.call_args.args[0]
-            assert isinstance(merged, Config)
-            assert not hasattr(merged, "definitely_not_a_field")
-        else:
-            assert response.status_code in {400, 422}
-            mock_reflexio.set_config.assert_not_called()
+        assert response.status_code == 422, response.text
+        mock_reflexio.set_config.assert_not_called()
 
     def test_replaces_nested_object_wholesale(
         self, client, patched_reflexio, mock_reflexio

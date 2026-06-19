@@ -1304,7 +1304,7 @@ class ReflexioClient:
 
         Args:
             partial: Top-level fields to overlay on the existing config.
-                Unknown keys are dropped server-side by Pydantic.
+                Unknown keys are rejected server-side.
 
         Returns:
             dict: ``{"success": bool, "msg": str}`` from the server.
