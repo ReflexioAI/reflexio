@@ -126,3 +126,20 @@ class LineageEventMixin:
             ValueError: If ``entity_type`` is not a recognized entity type.
         """
         raise NotImplementedError
+
+    def list_org_ids(self) -> list[str]:
+        """Return every distinct org_id known to this storage instance.
+
+        Used by :class:`LineageGCScheduler` to enumerate all tenants so GC
+        runs for every org, not just the bootstrap org.
+
+        Returns:
+            list[str]: Distinct org ids, order unspecified.
+
+        Raises:
+            NotImplementedError: If the backend has not yet implemented this
+                method (enterprise backends owe this in B2 Task 6).
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement list_org_ids"
+        )

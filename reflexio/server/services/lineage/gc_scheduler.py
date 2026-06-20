@@ -70,7 +70,13 @@ class LineageGCScheduler:
         if storage is not None:
             try:
                 org_ids = storage.list_org_ids()
-            except (NotImplementedError, AttributeError):
+            except NotImplementedError:
+                logger.warning(
+                    "event=lineage_gc_list_org_ids_not_implemented "
+                    "backend=%s bootstrap_org_id=%s — GC will only process bootstrap org",
+                    type(storage).__name__,
+                    bootstrap_ctx.org_id,
+                )
                 org_ids = []
         if bootstrap_ctx.org_id not in org_ids:
             org_ids = [bootstrap_ctx.org_id, *org_ids]
@@ -85,6 +91,8 @@ class LineageGCScheduler:
             org_ids (list[str]): Org IDs to process in this tick.
         """
         for org_id in org_ids:
+            if self._stop_event.is_set():
+                break
             try:
                 ctx = self.request_context_factory(org_id)
                 cfg = ctx.configurator.get_config()

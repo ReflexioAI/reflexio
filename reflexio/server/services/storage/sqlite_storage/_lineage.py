@@ -331,6 +331,17 @@ class SQLiteLineageMixin:
         """
         return False
 
+    def list_org_ids(self) -> list[str]:
+        """Return the single org_id for this SQLite storage instance.
+
+        SQLite storage is single-tenant: each instance is scoped to exactly one
+        org. Returns ``[self.org_id]``.
+
+        Returns:
+            list[str]: A one-element list containing this instance's org_id.
+        """
+        return [self.org_id]
+
     def gc_expired_tombstones(
         self, *, entity_type: str, older_than_epoch: int, limit: int = 1000
     ) -> int:

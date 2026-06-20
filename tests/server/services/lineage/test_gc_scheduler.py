@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from reflexio.models.config_schema import LineageGCConfig
 from reflexio.server.services.lineage import gc_scheduler
@@ -39,12 +42,14 @@ def _make_ctx(org_id: str, *, lineage_gc: LineageGCConfig, storage=None):
     )
 
 
+def _default_factory(org_id: str):
+    return _make_ctx(org_id, lineage_gc=LineageGCConfig(enabled=True))
+
+
 def _scheduler(*, bootstrap_org_id: str = "org_bootstrap", factory=None):
     """Return a LineageGCScheduler backed by ``factory`` (not started)."""
     if factory is None:
-        factory = lambda org_id: _make_ctx(
-            org_id, lineage_gc=LineageGCConfig(enabled=True)
-        )  # noqa: E731
+        factory = _default_factory
     return LineageGCScheduler(
         request_context_factory=factory,
         bootstrap_org_id=bootstrap_org_id,
@@ -153,6 +158,14 @@ def test_gc_tick_fires_high_volume_anomaly():
 def test_gc_tick_no_high_volume_anomaly_below_threshold():
     # Exactly at threshold — should NOT fire
     per_entity = _HIGH_VOLUME_THRESHOLD // len(_ENTITY_TYPES)
+    # Precondition: total must genuinely be below the threshold for this test
+    # to be meaningful. Integer-division truncation could silently trip this.
+    total = per_entity * len(_ENTITY_TYPES)
+    assert total < _HIGH_VOLUME_THRESHOLD, (
+        f"Test setup error: per_entity={per_entity} yields total={total} "
+        f">= _HIGH_VOLUME_THRESHOLD={_HIGH_VOLUME_THRESHOLD}; adjust the calculation"
+    )
+
     cfg = LineageGCConfig(enabled=True, tombstone_grace_window_days=10)
     storage = _make_storage(gc_return=per_entity)
     ctx = _make_ctx("org_small", lineage_gc=cfg, storage=storage)
@@ -191,3 +204,71 @@ def test_maybe_start_lineage_gc_returns_none_on_factory_error():
 
     result = maybe_start_lineage_gc(bad_factory, bootstrap_org_id="org_1")
     assert result is None
+
+
+# ---------------------------------------------------------------------------
+# list_org_ids — degraded-mode fallback is visible (not silent)
+# ---------------------------------------------------------------------------
+
+
+def test_discover_org_ids_not_implemented_warns_and_falls_back_to_bootstrap(
+    caplog,
+):
+    """When list_org_ids raises NotImplementedError the bootstrap org is still
+    processed and a warning is logged (degraded mode is VISIBLE)."""
+    storage = MagicMock()
+    storage.list_org_ids.side_effect = NotImplementedError("not impl")
+    cfg = LineageGCConfig(enabled=True, tombstone_grace_window_days=7)
+    bootstrap_ctx = _make_ctx("org_bootstrap", lineage_gc=cfg, storage=storage)
+
+    sched = _scheduler(bootstrap_org_id="org_bootstrap")
+
+    with caplog.at_level(
+        logging.WARNING, logger="reflexio.server.services.lineage.gc_scheduler"
+    ):
+        org_ids = sched._discover_org_ids(bootstrap_ctx)
+
+    assert org_ids == ["org_bootstrap"]
+    assert any(
+        "lineage_gc_list_org_ids_not_implemented" in record.message
+        for record in caplog.records
+    ), "Expected a warning with event=lineage_gc_list_org_ids_not_implemented"
+
+
+# ---------------------------------------------------------------------------
+# list_org_ids — SQLite single-tenant implementation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_sqlite_list_org_ids_returns_own_org(tmp_path):
+    """SQLiteStorage.list_org_ids() returns [self.org_id] for a fresh DB."""
+    from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
+
+    db_path = str(tmp_path / "test.db")
+    storage = SQLiteStorage(org_id="test_org_abc", db_path=db_path)
+    assert storage.list_org_ids() == ["test_org_abc"]
+
+
+# ---------------------------------------------------------------------------
+# mid-tick stop check — _gc_tick honours _stop_event between orgs
+# ---------------------------------------------------------------------------
+
+
+def test_gc_tick_stops_mid_tick_when_stop_event_set():
+    """_gc_tick must break out of the per-org loop when _stop_event fires."""
+    calls: list[str] = []
+    cfg = LineageGCConfig(enabled=True, tombstone_grace_window_days=7)
+
+    def factory(org_id: str):
+        calls.append(org_id)
+        return _make_ctx(org_id, lineage_gc=cfg)
+
+    sched = _scheduler(factory=factory)
+    # Set stop after the scheduler is created but before the tick runs.
+    sched._stop_event.set()
+
+    sched._gc_tick(["org_a", "org_b", "org_c"])
+
+    # With the stop event already set, the very first iteration should break.
+    assert calls == [], f"Expected no orgs processed after stop, got {calls}"
