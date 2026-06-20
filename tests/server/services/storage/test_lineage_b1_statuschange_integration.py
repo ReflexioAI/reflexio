@@ -13,7 +13,11 @@ from datetime import UTC, datetime
 
 import pytest
 
-from reflexio.models.api_schema.domain.entities import AgentPlaybook, UserPlaybook, UserProfile
+from reflexio.models.api_schema.domain.entities import (
+    AgentPlaybook,
+    UserPlaybook,
+    UserProfile,
+)
 from reflexio.models.api_schema.domain.enums import ProfileTimeToLive, Status
 from reflexio.models.api_schema.service_schemas import PlaybookStatus
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
@@ -27,7 +31,9 @@ def _store(tmp_path):
     return s
 
 
-def _make_profile(user_id: str = "u1", profile_id: str = "p1", content: str = "c") -> UserProfile:
+def _make_profile(
+    user_id: str = "u1", profile_id: str = "p1", content: str = "c"
+) -> UserProfile:
     return UserProfile(
         user_id=user_id,
         profile_id=profile_id,
@@ -57,8 +63,10 @@ def test_archive_agent_playbooks_by_ids_emits_status_change(tmp_path):
     saved = s.save_agent_playbooks([ap])
     apid = saved[0].agent_playbook_id
     s.archive_agent_playbooks_by_ids([apid])
-    events = s.get_lineage_events(entity_id=str(apid))
-    assert any(e.op == "status_change" for e in events)
+    events = [
+        e for e in s.get_lineage_events(entity_id=str(apid)) if e.op == "status_change"
+    ]
+    assert len(events) == 1
 
 
 def test_archive_agent_playbooks_by_ids_emits_one_event_per_id(tmp_path):
@@ -71,8 +79,14 @@ def test_archive_agent_playbooks_by_ids_emits_one_event_per_id(tmp_path):
     id2 = saved2[0].agent_playbook_id
     s.archive_agent_playbooks_by_ids([id1, id2])
     for apid in [id1, id2]:
-        events = [e for e in s.get_lineage_events(entity_id=str(apid)) if e.op == "status_change"]
-        assert len(events) == 1, f"expected 1 status_change for {apid}, got {len(events)}"
+        events = [
+            e
+            for e in s.get_lineage_events(entity_id=str(apid))
+            if e.op == "status_change"
+        ]
+        assert len(events) == 1, (
+            f"expected 1 status_change for {apid}, got {len(events)}"
+        )
 
 
 def test_archive_agent_playbooks_by_ids_skips_approved(tmp_path):
@@ -87,7 +101,9 @@ def test_archive_agent_playbooks_by_ids_skips_approved(tmp_path):
     saved = s.save_agent_playbooks([ap])
     apid = saved[0].agent_playbook_id
     s.archive_agent_playbooks_by_ids([apid])
-    events = [e for e in s.get_lineage_events(entity_id=str(apid)) if e.op == "status_change"]
+    events = [
+        e for e in s.get_lineage_events(entity_id=str(apid)) if e.op == "status_change"
+    ]
     assert len(events) == 0, "APPROVED playbooks must not emit status_change on archive"
 
 
@@ -97,9 +113,48 @@ def test_archive_agent_playbooks_by_ids_reason_contains_transition(tmp_path):
     saved = s.save_agent_playbooks([ap])
     apid = saved[0].agent_playbook_id
     s.archive_agent_playbooks_by_ids([apid])
-    events = [e for e in s.get_lineage_events(entity_id=str(apid)) if e.op == "status_change"]
+    events = [
+        e for e in s.get_lineage_events(entity_id=str(apid)) if e.op == "status_change"
+    ]
     assert events, "expected a status_change event"
     assert "archived" in events[0].reason
+
+
+def test_archive_agent_playbooks_by_ids_per_row_reason(tmp_path):
+    """Reason must reflect actual prior status: pending->archived or None->archived."""
+    s = _store(tmp_path)
+    # NULL-status playbook
+    ap_null = _make_agent_playbook(playbook_name="null_pb")
+    saved_null = s.save_agent_playbooks([ap_null])
+    id_null = saved_null[0].agent_playbook_id
+
+    # pending-status playbook (status column, not playbook_status)
+    ap_pending = AgentPlaybook(
+        playbook_name="pending_pb",
+        agent_version="v1",
+        content="c",
+        status=Status.PENDING,
+    )
+    saved_pending = s.save_agent_playbooks([ap_pending])
+    id_pending = saved_pending[0].agent_playbook_id
+
+    s.archive_agent_playbooks_by_ids([id_null, id_pending])
+
+    evts_null = [
+        e
+        for e in s.get_lineage_events(entity_id=str(id_null))
+        if e.op == "status_change"
+    ]
+    assert len(evts_null) == 1
+    assert evts_null[0].reason == "None->archived"
+
+    evts_pending = [
+        e
+        for e in s.get_lineage_events(entity_id=str(id_pending))
+        if e.op == "status_change"
+    ]
+    assert len(evts_pending) == 1
+    assert evts_pending[0].reason == "pending->archived"
 
 
 # --------------------------------------------------------------------------
@@ -113,8 +168,10 @@ def test_archive_agent_playbooks_by_playbook_name_emits_status_change(tmp_path):
     saved = s.save_agent_playbooks([ap])
     apid = saved[0].agent_playbook_id
     s.archive_agent_playbooks_by_playbook_name("mybook")
-    events = s.get_lineage_events(entity_id=str(apid))
-    assert any(e.op == "status_change" for e in events)
+    events = [
+        e for e in s.get_lineage_events(entity_id=str(apid)) if e.op == "status_change"
+    ]
+    assert len(events) == 1
 
 
 def test_archive_agent_playbooks_by_playbook_name_emits_one_event_per_id(tmp_path):
@@ -127,8 +184,67 @@ def test_archive_agent_playbooks_by_playbook_name_emits_one_event_per_id(tmp_pat
     id2 = saved2[0].agent_playbook_id
     s.archive_agent_playbooks_by_playbook_name("shared_name")
     for apid in [id1, id2]:
-        events = [e for e in s.get_lineage_events(entity_id=str(apid)) if e.op == "status_change"]
-        assert len(events) == 1, f"expected 1 status_change for {apid}, got {len(events)}"
+        events = [
+            e
+            for e in s.get_lineage_events(entity_id=str(apid))
+            if e.op == "status_change"
+        ]
+        assert len(events) == 1, (
+            f"expected 1 status_change for {apid}, got {len(events)}"
+        )
+
+
+def test_archive_agent_playbooks_by_playbook_name_skips_approved(tmp_path):
+    """APPROVED playbooks must not be archived via by-name method — zero status_change events."""
+    s = _store(tmp_path)
+    ap = AgentPlaybook(
+        playbook_name="approved_pb",
+        agent_version="v1",
+        content="c",
+        playbook_status=PlaybookStatus.APPROVED,
+    )
+    saved = s.save_agent_playbooks([ap])
+    apid = saved[0].agent_playbook_id
+    s.archive_agent_playbooks_by_playbook_name("approved_pb")
+    events = [
+        e for e in s.get_lineage_events(entity_id=str(apid)) if e.op == "status_change"
+    ]
+    assert len(events) == 0, "APPROVED playbooks must not emit status_change on archive"
+
+
+def test_archive_agent_playbooks_by_playbook_name_per_row_reason(tmp_path):
+    """Reason must reflect actual prior status per row."""
+    s = _store(tmp_path)
+    ap_null = _make_agent_playbook(playbook_name="reason_book")
+    saved_null = s.save_agent_playbooks([ap_null])
+    id_null = saved_null[0].agent_playbook_id
+
+    ap_pending = AgentPlaybook(
+        playbook_name="reason_book",
+        agent_version="v2",
+        content="c",
+        status=Status.PENDING,
+    )
+    saved_pending = s.save_agent_playbooks([ap_pending])
+    id_pending = saved_pending[0].agent_playbook_id
+
+    s.archive_agent_playbooks_by_playbook_name("reason_book")
+
+    evts_null = [
+        e
+        for e in s.get_lineage_events(entity_id=str(id_null))
+        if e.op == "status_change"
+    ]
+    assert len(evts_null) == 1
+    assert evts_null[0].reason == "None->archived"
+
+    evts_pending = [
+        e
+        for e in s.get_lineage_events(entity_id=str(id_pending))
+        if e.op == "status_change"
+    ]
+    assert len(evts_pending) == 1
+    assert evts_pending[0].reason == "pending->archived"
 
 
 # --------------------------------------------------------------------------
@@ -147,8 +263,12 @@ def test_update_all_user_playbooks_status_emits_status_change(tmp_path):
     )
     s.save_user_playbooks([pb])
     s.update_all_user_playbooks_status(old_status=Status.PENDING, new_status=None)
-    events = s.get_lineage_events(entity_id=str(pb.user_playbook_id))
-    assert any(e.op == "status_change" for e in events)
+    events = [
+        e
+        for e in s.get_lineage_events(entity_id=str(pb.user_playbook_id))
+        if e.op == "status_change"
+    ]
+    assert len(events) == 1
 
 
 def test_update_all_user_playbooks_status_emits_one_per_id(tmp_path):
@@ -175,7 +295,9 @@ def test_update_all_user_playbooks_status_emits_one_per_id(tmp_path):
             for e in s.get_lineage_events(entity_id=str(pb.user_playbook_id))
             if e.op == "status_change"
         ]
-        assert len(evts) == 1, f"expected 1 status_change for {pb.user_playbook_id}, got {len(evts)}"
+        assert len(evts) == 1, (
+            f"expected 1 status_change for {pb.user_playbook_id}, got {len(evts)}"
+        )
 
 
 def test_update_all_user_playbooks_status_reason_contains_transition(tmp_path):
@@ -229,7 +351,9 @@ def test_update_all_profiles_status_emits_one_per_id(tmp_path):
     s.add_user_profile("u1", [p1, p2])
     s.update_all_profiles_status(old_status=None, new_status=Status.ARCHIVED)
     for pid in ["psc2", "psc3"]:
-        evts = [e for e in s.get_lineage_events(entity_id=pid) if e.op == "status_change"]
+        evts = [
+            e for e in s.get_lineage_events(entity_id=pid) if e.op == "status_change"
+        ]
         assert len(evts) == 1, f"expected 1 status_change for {pid}, got {len(evts)}"
 
 
@@ -239,9 +363,13 @@ def test_update_all_profiles_status_with_user_id_filter(tmp_path):
     p_u2 = _make_profile(user_id="ub", profile_id="pub")
     s.add_user_profile("ua", [p_u1])
     s.add_user_profile("ub", [p_u2])
-    s.update_all_profiles_status(old_status=None, new_status=Status.ARCHIVED, user_ids=["ua"])
+    s.update_all_profiles_status(
+        old_status=None, new_status=Status.ARCHIVED, user_ids=["ua"]
+    )
     assert any(e.op == "status_change" for e in s.get_lineage_events(entity_id="pua"))
-    assert not any(e.op == "status_change" for e in s.get_lineage_events(entity_id="pub"))
+    assert not any(
+        e.op == "status_change" for e in s.get_lineage_events(entity_id="pub")
+    )
 
 
 # --------------------------------------------------------------------------
@@ -268,7 +396,9 @@ def test_archive_profile_by_id_already_archived_no_event(tmp_path):
     # Guard in method: status IS NULL required — so this returns False and emits nothing.
     result = s.archive_profile_by_id("u1", "arc_p2")
     assert result is False
-    events = [e for e in s.get_lineage_events(entity_id="arc_p2") if e.op == "status_change"]
+    events = [
+        e for e in s.get_lineage_events(entity_id="arc_p2") if e.op == "status_change"
+    ]
     assert len(events) == 0
 
 
@@ -277,6 +407,8 @@ def test_archive_profile_by_id_reason_contains_transition(tmp_path):
     profile = _make_profile(user_id="u1", profile_id="arc_p3")
     s.add_user_profile("u1", [profile])
     s.archive_profile_by_id("u1", "arc_p3")
-    evts = [e for e in s.get_lineage_events(entity_id="arc_p3") if e.op == "status_change"]
+    evts = [
+        e for e in s.get_lineage_events(entity_id="arc_p3") if e.op == "status_change"
+    ]
     assert evts
     assert "archived" in evts[0].reason.lower()

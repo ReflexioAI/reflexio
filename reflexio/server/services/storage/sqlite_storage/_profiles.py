@@ -472,7 +472,7 @@ class ProfileMixin:
                     request_id=uuid.uuid4().hex,
                     reason="None->archived",
                 )
-            self.conn.commit()
+                self.conn.commit()
         return cur.rowcount > 0
 
     @SQLiteStorageBase.handle_exceptions

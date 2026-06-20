@@ -1091,32 +1091,34 @@ class PlaybookMixin:
     def archive_agent_playbooks_by_playbook_name(
         self, playbook_name: str, agent_version: str | None = None
     ) -> None:
-        select_sql = "SELECT agent_playbook_id FROM agent_playbooks WHERE playbook_name = ? AND playbook_status != ?"
-        update_sql = "UPDATE agent_playbooks SET status = 'archived' WHERE playbook_name = ? AND playbook_status != ?"
+        where = "playbook_name = ? AND playbook_status != ?"
         params: list[Any] = [playbook_name, PlaybookStatus.APPROVED.value]
         if agent_version is not None:
-            select_sql += " AND agent_version = ?"
-            update_sql += " AND agent_version = ?"
+            where += " AND agent_version = ?"
             params.append(agent_version)
         batch_request_id = uuid.uuid4().hex
         with self._lock:
-            affected = [
-                r["agent_playbook_id"]
-                for r in self.conn.execute(select_sql, params).fetchall()
-            ]
-            self.conn.execute(update_sql, params)
-            for apid in affected:
+            affected = self.conn.execute(
+                f"SELECT agent_playbook_id, status FROM agent_playbooks WHERE {where}",
+                params,
+            ).fetchall()
+            self.conn.execute(
+                f"UPDATE agent_playbooks SET status = 'archived' WHERE {where}",
+                params,
+            )
+            for row in affected:
+                prior = row["status"] or "None"
                 _append_event_stmt(
                     self.conn,
                     org_id=self.org_id,
                     entity_type="agent_playbook",
-                    entity_id=str(apid),
+                    entity_id=str(row["agent_playbook_id"]),
                     op="status_change",
                     prov="wasInvalidatedBy",
                     source_ids=[],
                     actor="api",
                     request_id=batch_request_id,
-                    reason="None->archived",
+                    reason=f"{prior}->archived",
                 )
             self.conn.commit()
 
@@ -1127,31 +1129,29 @@ class PlaybookMixin:
         ph = ",".join("?" for _ in agent_playbook_ids)
         batch_request_id = uuid.uuid4().hex
         with self._lock:
-            affected = [
-                r["agent_playbook_id"]
-                for r in self.conn.execute(
-                    f"SELECT agent_playbook_id FROM agent_playbooks"
-                    f" WHERE agent_playbook_id IN ({ph}) AND playbook_status != ?",
-                    [*agent_playbook_ids, PlaybookStatus.APPROVED.value],
-                ).fetchall()
-            ]
+            affected = self.conn.execute(
+                f"SELECT agent_playbook_id, status FROM agent_playbooks"
+                f" WHERE agent_playbook_id IN ({ph}) AND playbook_status != ?",
+                [*agent_playbook_ids, PlaybookStatus.APPROVED.value],
+            ).fetchall()
             self.conn.execute(
                 f"UPDATE agent_playbooks SET status = 'archived'"
                 f" WHERE agent_playbook_id IN ({ph}) AND playbook_status != ?",
                 [*agent_playbook_ids, PlaybookStatus.APPROVED.value],
             )
-            for apid in affected:
+            for row in affected:
+                prior = row["status"] or "None"
                 _append_event_stmt(
                     self.conn,
                     org_id=self.org_id,
                     entity_type="agent_playbook",
-                    entity_id=str(apid),
+                    entity_id=str(row["agent_playbook_id"]),
                     op="status_change",
                     prov="wasInvalidatedBy",
                     source_ids=[],
                     actor="api",
                     request_id=batch_request_id,
-                    reason="None->archived",
+                    reason=f"{prior}->archived",
                 )
             self.conn.commit()
 
