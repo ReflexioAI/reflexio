@@ -1,0 +1,255 @@
+"""Integration tests: hard_delete lineage events on all remaining physical-delete methods.
+
+Phase A already covered delete_user_playbooks_by_ids / delete_agent_playbooks_by_ids.
+This file covers the net-new methods added in Phase B1 / Task 2:
+  - Single-row: delete_user_playbook, delete_agent_playbook, delete_user_profile
+  - Bulk by-ids: delete_profiles_by_ids (+ emit_hard_delete=False skip)
+  - Bulk GDPR/org-wipe: delete_all_profiles_for_user, delete_all_profiles,
+      delete_all_user_playbooks, delete_all_agent_playbooks,
+      delete_all_user_playbooks_by_playbook_name, delete_all_agent_playbooks_by_playbook_name,
+      delete_archived_agent_playbooks_by_playbook_name, delete_all_profiles_by_status
+  - Carve-out: delete_all_user_playbooks_by_status(PENDING) emits NO events
+"""
+
+from datetime import UTC, datetime
+
+import pytest
+
+from reflexio.models.api_schema.domain.entities import (
+    AgentPlaybook,
+    UserPlaybook,
+    UserProfile,
+)
+from reflexio.models.api_schema.domain.enums import ProfileTimeToLive, Status
+from reflexio.models.api_schema.service_schemas import DeleteUserProfileRequest
+from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
+
+pytestmark = pytest.mark.integration
+
+
+def _store(tmp_path):
+    s = SQLiteStorage(org_id="org-1", db_path=str(tmp_path / "t.db"))
+    s.migrate()
+    return s
+
+
+def _make_profile(
+    user_id: str = "u1", profile_id: str = "p1", content: str = "c"
+) -> UserProfile:
+    return UserProfile(
+        user_id=user_id,
+        profile_id=profile_id,
+        content=content,
+        last_modified_timestamp=int(datetime.now(UTC).timestamp()),
+        generated_from_request_id=f"req_{profile_id}",
+        profile_time_to_live=ProfileTimeToLive.INFINITY,
+    )
+
+
+def _make_agent_playbook(
+    playbook_name: str = "pb", agent_version: str = "v1"
+) -> AgentPlaybook:
+    return AgentPlaybook(
+        playbook_name=playbook_name, agent_version=agent_version, content="c"
+    )
+
+
+# --------------------------------------------------------------------------
+# Single-row deletes
+# --------------------------------------------------------------------------
+
+
+def test_delete_user_playbook_emits_hard_delete(tmp_path):
+    s = _store(tmp_path)
+    pb = UserPlaybook(user_id="u", agent_version="v", request_id="r", content="c")
+    s.save_user_playbooks([pb])
+    s.delete_user_playbook(pb.user_playbook_id)
+    assert (
+        s.get_user_playbook_by_id(pb.user_playbook_id, include_tombstones=True) is None
+    )
+    assert any(
+        e.op == "hard_delete"
+        for e in s.get_lineage_events(entity_id=str(pb.user_playbook_id))
+    )
+
+
+def test_delete_agent_playbook_emits_hard_delete(tmp_path):
+    s = _store(tmp_path)
+    ap = _make_agent_playbook()
+    saved = s.save_agent_playbooks([ap])
+    apid = saved[0].agent_playbook_id
+    s.delete_agent_playbook(apid)
+    assert s.get_agent_playbook_by_id(apid, include_tombstones=True) is None
+    assert any(e.op == "hard_delete" for e in s.get_lineage_events(entity_id=str(apid)))
+
+
+def test_delete_user_profile_emits_hard_delete(tmp_path):
+    s = _store(tmp_path)
+    profile = _make_profile(user_id="u1", profile_id="pr1")
+    s.add_user_profile("u1", [profile])
+    s.delete_user_profile(DeleteUserProfileRequest(user_id="u1", profile_id="pr1"))
+    assert any(e.op == "hard_delete" for e in s.get_lineage_events(entity_id="pr1"))
+
+
+# --------------------------------------------------------------------------
+# Bulk by-ids: delete_profiles_by_ids
+# --------------------------------------------------------------------------
+
+
+def test_delete_profiles_by_ids_emits_hard_delete(tmp_path):
+    s = _store(tmp_path)
+    profile = _make_profile(user_id="u1", profile_id="pr2")
+    s.add_user_profile("u1", [profile])
+    s.delete_profiles_by_ids(["pr2"])
+    assert any(e.op == "hard_delete" for e in s.get_lineage_events(entity_id="pr2"))
+
+
+def test_delete_profiles_by_ids_multiple_emits_one_event_per_id(tmp_path):
+    s = _store(tmp_path)
+    p1 = _make_profile(user_id="u1", profile_id="pa")
+    p2 = _make_profile(user_id="u1", profile_id="pb")
+    s.add_user_profile("u1", [p1, p2])
+    s.delete_profiles_by_ids(["pa", "pb"])
+    events_a = [
+        e for e in s.get_lineage_events(entity_id="pa") if e.op == "hard_delete"
+    ]
+    events_b = [
+        e for e in s.get_lineage_events(entity_id="pb") if e.op == "hard_delete"
+    ]
+    assert len(events_a) == 1
+    assert len(events_b) == 1
+
+
+def test_delete_profiles_by_ids_emit_false_skips_event(tmp_path):
+    s = _store(tmp_path)
+    profile = _make_profile(user_id="u1", profile_id="pr3")
+    s.add_user_profile("u1", [profile])
+    s.delete_profiles_by_ids(["pr3"], emit_hard_delete=False)
+    assert not any(e.op == "hard_delete" for e in s.get_lineage_events(entity_id="pr3"))
+
+
+# --------------------------------------------------------------------------
+# Bulk GDPR/org-wipe paths
+# --------------------------------------------------------------------------
+
+
+def test_delete_all_profiles_for_user_emits_hard_delete_per_id(tmp_path):
+    s = _store(tmp_path)
+    p1 = _make_profile(user_id="u2", profile_id="u2p1")
+    p2 = _make_profile(user_id="u2", profile_id="u2p2")
+    s.add_user_profile("u2", [p1, p2])
+    s.delete_all_profiles_for_user("u2")
+    for pid in ["u2p1", "u2p2"]:
+        assert any(
+            e.op == "hard_delete" for e in s.get_lineage_events(entity_id=pid)
+        ), f"no hard_delete for {pid}"
+
+
+def test_delete_all_profiles_emits_hard_delete_per_id(tmp_path):
+    s = _store(tmp_path)
+    p1 = _make_profile(user_id="u1", profile_id="all1")
+    p2 = _make_profile(user_id="u2", profile_id="all2")
+    s.add_user_profile("u1", [p1])
+    s.add_user_profile("u2", [p2])
+    s.delete_all_profiles()
+    for pid in ["all1", "all2"]:
+        assert any(
+            e.op == "hard_delete" for e in s.get_lineage_events(entity_id=pid)
+        ), f"no hard_delete for {pid}"
+
+
+def test_delete_all_profiles_by_status_emits_hard_delete_per_id(tmp_path):
+    s = _store(tmp_path)
+    p1 = _make_profile(user_id="u1", profile_id="arc1")
+    p1.status = Status.ARCHIVED
+    s.add_user_profile("u1", [p1])
+    s.delete_all_profiles_by_status(Status.ARCHIVED)
+    assert any(e.op == "hard_delete" for e in s.get_lineage_events(entity_id="arc1"))
+
+
+def test_delete_all_user_playbooks_emits_hard_delete_per_id(tmp_path):
+    s = _store(tmp_path)
+    pb1 = UserPlaybook(user_id="u", agent_version="v", request_id="r1", content="c")
+    pb2 = UserPlaybook(user_id="u", agent_version="v", request_id="r2", content="d")
+    s.save_user_playbooks([pb1, pb2])
+    s.delete_all_user_playbooks()
+    for pbid in [pb1.user_playbook_id, pb2.user_playbook_id]:
+        assert any(
+            e.op == "hard_delete" for e in s.get_lineage_events(entity_id=str(pbid))
+        ), f"no hard_delete for {pbid}"
+
+
+def test_delete_all_agent_playbooks_emits_hard_delete_per_id(tmp_path):
+    s = _store(tmp_path)
+    ap1 = _make_agent_playbook(playbook_name="ap1")
+    ap2 = _make_agent_playbook(playbook_name="ap2")
+    saved1 = s.save_agent_playbooks([ap1])
+    saved2 = s.save_agent_playbooks([ap2])
+    apid1 = saved1[0].agent_playbook_id
+    apid2 = saved2[0].agent_playbook_id
+    s.delete_all_agent_playbooks()
+    for apid in [apid1, apid2]:
+        assert any(
+            e.op == "hard_delete" for e in s.get_lineage_events(entity_id=str(apid))
+        ), f"no hard_delete for {apid}"
+
+
+def test_delete_all_user_playbooks_by_playbook_name_emits_hard_delete(tmp_path):
+    s = _store(tmp_path)
+    pb = UserPlaybook(
+        user_id="u",
+        agent_version="v",
+        request_id="r",
+        content="c",
+        playbook_name="mybook",
+    )
+    s.save_user_playbooks([pb])
+    s.delete_all_user_playbooks_by_playbook_name("mybook")
+    assert any(
+        e.op == "hard_delete"
+        for e in s.get_lineage_events(entity_id=str(pb.user_playbook_id))
+    )
+
+
+def test_delete_all_agent_playbooks_by_playbook_name_emits_hard_delete(tmp_path):
+    s = _store(tmp_path)
+    ap = _make_agent_playbook(playbook_name="agentbook")
+    saved = s.save_agent_playbooks([ap])
+    apid = saved[0].agent_playbook_id
+    s.delete_all_agent_playbooks_by_playbook_name("agentbook")
+    assert any(e.op == "hard_delete" for e in s.get_lineage_events(entity_id=str(apid)))
+
+
+def test_delete_archived_agent_playbooks_by_playbook_name_emits_hard_delete(tmp_path):
+    s = _store(tmp_path)
+    ap = AgentPlaybook(
+        playbook_name="archbook",
+        agent_version="v1",
+        content="c",
+        status=Status.ARCHIVED,
+    )
+    saved = s.save_agent_playbooks([ap])
+    apid = saved[0].agent_playbook_id
+    s.delete_archived_agent_playbooks_by_playbook_name("archbook")
+    assert any(e.op == "hard_delete" for e in s.get_lineage_events(entity_id=str(apid)))
+
+
+# --------------------------------------------------------------------------
+# Carve-out: PENDING purge emits NO events
+# --------------------------------------------------------------------------
+
+
+def test_delete_all_user_playbooks_by_status_pending_no_events(tmp_path):
+    s = _store(tmp_path)
+    pb = UserPlaybook(
+        user_id="u",
+        agent_version="v",
+        request_id="r",
+        content="c",
+        status=Status.PENDING,
+    )
+    s.save_user_playbooks([pb])
+    s.delete_all_user_playbooks_by_status(Status.PENDING)
+    # PENDING purge must NOT emit hard_delete events (ephemeral scratch carve-out)
+    events = s.get_lineage_events(entity_id=str(pb.user_playbook_id))
+    assert not any(e.op == "hard_delete" for e in events)

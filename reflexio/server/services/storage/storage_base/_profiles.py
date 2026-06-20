@@ -244,11 +244,17 @@ class ProfileMixin:
         raise NotImplementedError
 
     @abstractmethod
-    def delete_profiles_by_ids(self, profile_ids: list[str]) -> int:
+    def delete_profiles_by_ids(
+        self, profile_ids: list[str], *, emit_hard_delete: bool = True
+    ) -> int:
         """Delete profiles by their IDs.
 
         Args:
             profile_ids (list[str]): List of profile IDs to delete
+            emit_hard_delete (bool): When True (default), emit a ``hard_delete``
+                lineage event for each id before removing the row.  Pass ``False``
+                from rollback callers that cleaned up a never-CURRENT successor to
+                avoid poisoning the audit log with phantom erasures.
 
         Returns:
             int: Number of profiles deleted
