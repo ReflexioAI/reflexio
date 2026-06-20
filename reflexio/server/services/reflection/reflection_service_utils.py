@@ -29,6 +29,9 @@ class ReflectionServiceRequest(BaseModel):
 
     Args:
         user_id (str): User to scope the bookmark and window to.
+        request_id (str): The publish pass's own request id; used as the
+            lineage event ``request_id`` on revise events so B3
+            reconstruction can link revisions back to the triggering pass.
         agent_version (str): Agent version of the current publish; copied
             into replacement playbooks.
         source (str | None): Optional source filter for the window.
@@ -37,6 +40,7 @@ class ReflectionServiceRequest(BaseModel):
     """
 
     user_id: str
+    request_id: str = ""
     agent_version: str = ""
     source: str | None = None
 

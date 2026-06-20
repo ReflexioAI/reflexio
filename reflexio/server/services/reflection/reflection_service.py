@@ -444,7 +444,7 @@ class ReflectionService:
 
     def _replace_profile(
         self,
-        _request: ReflectionServiceRequest,
+        request: ReflectionServiceRequest,
         decision: ReflectionDecision,
         cited: UserProfile,
     ) -> bool:
@@ -489,7 +489,7 @@ class ReflectionService:
         ctx = LineageContext(
             op_kind="revise",
             actor="reflection",
-            request_id=new_profile.generated_from_request_id,
+            request_id=request.request_id,
         )
         try:
             superseded = storage.supersede_record(
@@ -501,7 +501,7 @@ class ReflectionService:
         except Exception as exc:  # noqa: BLE001
             with sentry_tags(
                 subsystem="reflection",
-                op="archive_after_insert",
+                op="supersede_after_insert",
                 kind="profile",
                 org_id=self.request_context.org_id,
                 user_id=cited.user_id,

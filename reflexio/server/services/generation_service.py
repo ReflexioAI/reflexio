@@ -299,7 +299,10 @@ class GenerationService:
             # profile/playbook context. Wrapped in a broad except so a
             # reflection bug never breaks the publish.
             self._maybe_run_reflection(
-                user_id=user_id, agent_version=agent_version, source=source
+                user_id=user_id,
+                request_id=request_id,
+                agent_version=agent_version,
+                source=source,
             )
 
             # Create generation services and requests
@@ -543,7 +546,7 @@ class GenerationService:
         )
 
     def _maybe_run_reflection(
-        self, *, user_id: str, agent_version: str, source: str | None
+        self, *, user_id: str, request_id: str, agent_version: str, source: str | None
     ) -> None:
         """Best-effort reflection pass before extraction.
 
@@ -558,6 +561,7 @@ class GenerationService:
             service.run(
                 ReflectionServiceRequest(
                     user_id=user_id,
+                    request_id=request_id,
                     agent_version=agent_version,
                     source=source,
                 )
