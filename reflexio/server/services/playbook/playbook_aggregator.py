@@ -4,12 +4,14 @@ import hashlib
 import logging
 import os
 import time
+import uuid
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     import numpy as np
 
+from reflexio.models.api_schema.domain.entities import LineageEvent
 from reflexio.models.api_schema.service_schemas import (
     AgentPlaybook,
     AgentPlaybookSnapshot,
@@ -36,6 +38,7 @@ from reflexio.server.services.playbook.playbook_service_utils import (
     ensure_playbook_content,
 )
 from reflexio.server.services.service_utils import log_model_response
+from reflexio.server.tracing import capture_anomaly
 from reflexio.server.usage_metrics import record_usage_event
 
 logger = logging.getLogger(__name__)
@@ -572,6 +575,8 @@ class PlaybookAggregator:
             dict: Aggregation stats with keys: clusters_found, user_playbooks_processed, playbooks_generated, skipped (optional)
         """
         aggregation_start = time.perf_counter()
+        # Stable id for this aggregation run — groups all lineage events produced below.
+        _run_id = str(uuid.uuid4())
         _empty_stats = {
             "clusters_found": 0,
             "user_playbooks_processed": 0,
@@ -875,6 +880,40 @@ class PlaybookAggregator:
                             )
                         ],
                     )
+                    # Emit set-level aggregate lineage event (W3C PROV wasDerivedFrom, M:N).
+                    # Best-effort (PB-7): save_agent_playbooks already committed; a transient
+                    # append failure must NOT abort the run. Gap is acceptable for B1 since
+                    # the legacy change log remains the source of record until B3.
+                    member_ids = [
+                        str(fb.user_playbook_id)
+                        for fb in cluster_playbooks
+                        if fb.user_playbook_id
+                    ]
+                    try:
+                        self.storage.append_lineage_event(  # type: ignore[reportOptionalMemberAccess]
+                            LineageEvent(
+                                org_id=self.request_context.org_id,
+                                entity_type="agent_playbook",
+                                entity_id=str(saved_fb.agent_playbook_id),
+                                op="aggregate",
+                                prov_relation="wasDerivedFrom",
+                                source_ids=member_ids,
+                                actor="aggregator",
+                                request_id=_run_id,
+                                reason="user->agent aggregation",
+                            )
+                        )
+                    except Exception:  # noqa: BLE001
+                        logger.warning(
+                            "aggregate lineage event failed for agent_playbook %s",
+                            saved_fb.agent_playbook_id,
+                            exc_info=True,
+                        )
+                        capture_anomaly(
+                            "lineage.aggregate.append_failed",
+                            entity_id=str(saved_fb.agent_playbook_id),
+                            org_id=self.request_context.org_id,
+                        )
 
             # Store fingerprints in operation state
             mgr.update_cluster_fingerprints(
