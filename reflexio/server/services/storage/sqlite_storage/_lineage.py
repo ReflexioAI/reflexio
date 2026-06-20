@@ -2,21 +2,39 @@ import json
 import sqlite3
 import threading
 import time
+import uuid
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 from reflexio.models.api_schema.domain.entities import LineageContext, LineageEvent
 from reflexio.models.api_schema.domain.enums import Status
+from reflexio.server.tracing import capture_anomaly
 
 EntityType = Literal["user_playbook", "agent_playbook", "profile"]
 
 # Tombstone statuses — rows with these statuses are skipped by merge_records guard.
 _TOMBSTONE = (Status.MERGED.value, Status.SUPERSEDED.value)
 
+# GC-eligible statuses — rows with these statuses may be hard-deleted by TTL GC.
+# Deliberately broader than _TOMBSTONE: includes ARCHIVED. Do NOT reuse _TOMBSTONE.
+_GC_ELIGIBLE_STATUSES: frozenset[str] = frozenset(
+    {Status.MERGED.value, Status.SUPERSEDED.value, Status.ARCHIVED.value}
+)
+
 # Mapping from entity_type string to (table_name, primary_key_column).
 _TABLE: dict[str, tuple[str, str]] = {
     "user_playbook": ("user_playbooks", "user_playbook_id"),
     "agent_playbook": ("agent_playbooks", "agent_playbook_id"),
     "profile": ("profiles", "profile_id"),
+}
+
+# Per-entity GC metadata: (table, pk_col, age_col, age_is_text).
+# age_is_text=True  → TEXT ISO-8601 column; compare cutoff as ISO string.
+# age_is_text=False → INTEGER epoch column; compare cutoff as int directly.
+_GC_ENTITY_META: dict[str, tuple[str, str, str, bool]] = {
+    "user_playbook": ("user_playbooks", "user_playbook_id", "created_at", True),
+    "agent_playbook": ("agent_playbooks", "agent_playbook_id", "created_at", True),
+    "profile": ("profiles", "profile_id", "last_modified_timestamp", False),
 }
 
 
@@ -290,3 +308,153 @@ class SQLiteLineageMixin:
             )
             self.conn.commit()
             return True
+
+    def _is_on_legal_hold(
+        self,
+        org_id: str,  # noqa: ARG002
+        entity_type: str,  # noqa: ARG002
+        entity_id: str,  # noqa: ARG002
+    ) -> bool:
+        """Return True if this entity is under a legal hold and must not be GC'd.
+
+        Deferred seam — always returns False until a hold store exists.
+
+        Args:
+            org_id (str): The organisation that owns the entity.
+            entity_type (str): One of ``"user_playbook"``, ``"agent_playbook"``,
+                or ``"profile"``.
+            entity_id (str): The entity's primary key as a string.
+
+        Returns:
+            bool: False (no hold store implemented yet).
+        """
+        return False
+
+    def gc_expired_tombstones(
+        self, *, entity_type: str, older_than_epoch: int, limit: int = 1000
+    ) -> int:
+        """Hard-delete tombstone rows that are older than the given epoch cutoff.
+
+        Emits one ``hard_delete`` lineage event per deleted row, atomically, before
+        the DELETE commits. Rows on legal hold are skipped without emitting an event.
+
+        Args:
+            entity_type (str): One of ``"user_playbook"``, ``"agent_playbook"``,
+                or ``"profile"``.
+            older_than_epoch (int): Unix timestamp cutoff (exclusive). Rows whose
+                age column is strictly less than this value are eligible.
+            limit (int): Maximum rows to delete per call. Defaults to 1000.
+
+        Returns:
+            int: The number of rows physically deleted.
+
+        Raises:
+            ValueError: If ``entity_type`` is not a recognised entity type.
+        """
+        meta = _GC_ENTITY_META.get(entity_type)
+        if meta is None:
+            raise ValueError(f"unknown entity_type: {entity_type!r}")
+        table, pk, age_col, age_is_text = meta
+
+        eligible_ph = ",".join("?" * len(_GC_ELIGIBLE_STATUSES))
+        eligible_vals = list(_GC_ELIGIBLE_STATUSES)
+
+        if age_is_text:
+            # Convert int epoch to the same ISO-8601 format stored in the column
+            # so the lexicographic comparison is chronologically correct.
+            cutoff_iso = datetime.fromtimestamp(older_than_epoch, tz=UTC).strftime(
+                "%Y-%m-%dT%H:%M:%S.000Z"
+            )
+            select_sql = (
+                f"SELECT {pk} FROM {table} "  # noqa: S608
+                f"WHERE status IN ({eligible_ph}) AND {age_col} < ? LIMIT ?"
+            )
+            select_params: list[Any] = [*eligible_vals, cutoff_iso, limit]
+        else:
+            select_sql = (
+                f"SELECT {pk} FROM {table} "  # noqa: S608
+                f"WHERE status IN ({eligible_ph}) AND {age_col} < ? LIMIT ?"
+            )
+            select_params = [*eligible_vals, older_than_epoch, limit]
+
+        with self._lock:
+            rows = self.conn.execute(select_sql, select_params).fetchall()
+            if not rows:
+                return 0
+
+            candidate_ids: list[str] = [str(r[0]) for r in rows]
+            ids_to_delete: list[str] = []
+            for eid in candidate_ids:
+                if self._is_on_legal_hold(self.org_id, entity_type, eid):
+                    capture_anomaly(
+                        "lineage.gc.legal_hold_skip",
+                        level="info",
+                        org_id=self.org_id,
+                        entity_type=entity_type,
+                        entity_id=eid,
+                    )
+                    continue
+                ids_to_delete.append(eid)
+
+            if not ids_to_delete:
+                return 0
+
+            batch_request_id = uuid.uuid4().hex
+            ph = ",".join("?" * len(ids_to_delete))
+
+            # Emit hard_delete events BEFORE the DELETE, in the same transaction.
+            for eid in ids_to_delete:
+                _append_event_stmt(
+                    self.conn,
+                    org_id=self.org_id,
+                    entity_type=entity_type,
+                    entity_id=eid,
+                    op="hard_delete",
+                    prov="wasInvalidatedBy",
+                    source_ids=[],
+                    actor="system",
+                    request_id=batch_request_id,
+                    reason="ttl-gc",
+                )
+
+            # Inline FTS/vec cleanup — raw DELETE to preserve atomicity.
+            # Do NOT call self._fts_delete/_vec_delete: they self-commit.
+            if entity_type in ("user_playbook", "agent_playbook"):
+                kind = "user" if entity_type == "user_playbook" else "agent"
+                int_ids = [int(eid) for eid in ids_to_delete]
+                int_ph = ",".join("?" * len(int_ids))
+                self.conn.execute(
+                    f"DELETE FROM {kind}_playbooks_fts WHERE rowid IN ({int_ph})",
+                    int_ids,
+                )
+                if self._has_sqlite_vec:  # type: ignore[attr-defined]
+                    self.conn.execute(
+                        f"DELETE FROM {kind}_playbooks_vec WHERE rowid IN ({int_ph})",
+                        int_ids,
+                    )
+            else:
+                # profiles: FTS keyed on TEXT profile_id; vec keyed on implicit rowid.
+                self.conn.execute(
+                    f"DELETE FROM profiles_fts WHERE profile_id IN ({ph})",
+                    ids_to_delete,
+                )
+                if self._has_sqlite_vec:  # type: ignore[attr-defined]
+                    rowid_rows = self.conn.execute(
+                        f"SELECT rowid FROM profiles WHERE profile_id IN ({ph})",  # noqa: S608
+                        ids_to_delete,
+                    ).fetchall()
+                    if rowid_rows:
+                        rowids = [r[0] for r in rowid_rows]
+                        rowid_ph = ",".join("?" * len(rowids))
+                        self.conn.execute(
+                            f"DELETE FROM profiles_vec WHERE rowid IN ({rowid_ph})",
+                            rowids,
+                        )
+
+            cur = self.conn.execute(
+                f"DELETE FROM {table} WHERE {pk} IN ({ph})",  # noqa: S608
+                ids_to_delete,
+            )
+            self.conn.commit()
+
+        return cur.rowcount
