@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING
 from reflexio.models.api_schema.domain.entities import (
     Citation,
     Interaction,
+    LineageContext,
     UserPlaybook,
     UserProfile,
 )
@@ -443,19 +444,22 @@ class ReflectionService:
 
     def _replace_profile(
         self,
-        request: ReflectionServiceRequest,
+        _request: ReflectionServiceRequest,
         decision: ReflectionDecision,
         cited: UserProfile,
     ) -> bool:
-        """Insert the replacement profile, then archive the cited row.
+        """Insert the replacement profile, then supersede the cited row.
 
         Insert-first ordering means that if ``add_user_profile`` raises,
         the cited row stays current and the per-decision exception
         handler reports ``failed_count``. Only after the new row is
-        durable do we flip the cited row to ARCHIVED — and if *that*
-        fails we log at ERROR rather than silently dropping the user's
-        data, leaving a transient duplicate that downstream dedup can
-        clean up.
+        durable do we atomically supersede the cited row via
+        ``supersede_record``, which sets ``status=SUPERSEDED`` with a
+        ``superseded_by`` pointer and appends a ``revise`` lineage event.
+        If the CAS guard fails (incumbent no longer CURRENT), the
+        just-inserted successor is deleted (not audited) so no orphan row
+        remains. If ``supersede_record`` raises, log at ERROR and accept a
+        transient duplicate rather than silently dropping user data.
         """
         storage = self.request_context.storage
         if storage is None:
@@ -482,9 +486,17 @@ class ReflectionService:
             new_content=new_profile.content,
         )
         storage.add_user_profile(cited.user_id, [new_profile])
+        ctx = LineageContext(
+            op_kind="revise",
+            actor="reflection",
+            request_id=new_profile.generated_from_request_id,
+        )
         try:
-            archived = storage.archive_profile_by_id(
-                user_id=request.user_id, profile_id=cited.profile_id
+            superseded = storage.supersede_record(
+                entity_type="profile",
+                incumbent_id=str(cited.profile_id),
+                successor_id=str(new_profile.profile_id),
+                context=ctx,
             )
         except Exception as exc:  # noqa: BLE001
             with sentry_tags(
@@ -504,7 +516,12 @@ class ReflectionService:
                     new_profile.profile_id,
                 )
             return True
-        if not archived:
+        if not superseded:
+            # lost the CAS race: incumbent was no longer CURRENT — drop the
+            # just-added successor (never live) without emitting an audit event.
+            storage.delete_profiles_by_ids(
+                [new_profile.profile_id], emit_hard_delete=False
+            )
             with sentry_tags(
                 subsystem="reflection",
                 op="archive_after_insert_noop",
