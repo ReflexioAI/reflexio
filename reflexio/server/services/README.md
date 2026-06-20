@@ -38,6 +38,7 @@ Description: Core business-logic layer — LLM orchestration, extraction, evalua
 | `evaluation_overview/` | Dashboard rollups: `service.py`, `hero_state.py`, `distribution.py`, `rule_attribution.py`, `shadow_aggregation.py`, `eval_sampler.py`. |
 | `playbook_optimizer/` | Scenario-based playbook optimization: `optimizer.py`, `scheduler.py`, `rollout.py`, `judge.py`, `scenario_resolver.py`, `gepa_adapter.py`, `assistant_webhook.py`. |
 | `braintrust/` | Braintrust export/sync: `service.py`, `client.py`, `_cron.py`, `_encryption.py`. |
+| `lineage/` | Current-record resolution and tombstone GC: `resolve.py`, `gc_scheduler.py`. |
 | `pre_retrieval/` | `QueryReformulator` (`_query_reformulator.py`) + `_document_expander.py` — query rewrite & doc expansion for recall. |
 | `unified_search_service.py` | `run_unified_search()` — two-phase parallel search across profiles / agent playbooks / user playbooks. |
 | `retrieval/` | `relevance_floor.py` — result relevance thresholding. |
@@ -46,7 +47,7 @@ Description: Core business-logic layer — LLM orchestration, extraction, evalua
 
 | Path | Purpose |
 |------|---------|
-| `storage/` | `storage_base/` (`BaseStorage` split by domain) + `sqlite_storage/` + `retention*.py`. Access via `request_context.storage` only. |
+| `storage/` | `storage_base/` (`BaseStorage` split by domain, including `_lineage.py`) + `sqlite_storage/` (including lineage/tombstones) + `retention*.py`. Access via `request_context.storage` only. |
 | `configurator/` | `DefaultConfigurator` — loads YAML config and creates the storage backend. |
 
 ## Key Rules

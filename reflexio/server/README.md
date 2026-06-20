@@ -19,6 +19,7 @@ Description: FastAPI backend server that processes user interactions to generate
   - [Reflection and Async Extraction](#reflection-and-async-extraction)
   - [Shadow Comparison and Evaluation Overview](#shadow-comparison-and-evaluation-overview)
   - [Playbook Optimizer and Braintrust](#playbook-optimizer-and-braintrust)
+  - [Lineage](#lineage)
   - [Query Reformulator](#query-reformulator)
   - [Unified Search Service](#unified-search-service)
   - [Storage](#storage)
@@ -186,6 +187,7 @@ python -m reflexio.server.scripts.manage_invitation_codes list --show-used
 - **Async clarification**: `extraction/` and `reflection/` manage resumable agent runs, pending tool calls, prior-answer search, and long-horizon reflection updates.
 - **Search preparation**: `pre_retrieval/` and `unified_search_service.py` handle query reformulation, document expansion, embeddings, and cross-entity search orchestration.
 - **Optimization/integrations**: `playbook_optimizer/` and `braintrust/` run candidate playbook optimization, rollout support, and Braintrust export/sync.
+- **Lineage**: `lineage/` resolves active records across superseded chains and schedules tombstone garbage collection for profile/playbook storage.
 - **Persistence/config**: `storage/`, `configurator/`, and `operation_state_utils.py` provide storage abstractions, config loading, locks, bookmarks, progress, and cancellation.
 
 ### Orchestrator
@@ -435,6 +437,17 @@ Key files:
 
 **Pattern**: These are evaluation/optimization integrations around the core playbook pipeline. Keep production extraction changes in `services/playbook/`; use optimizer/Braintrust modules for experiments, rollouts, and external eval sync.
 
+### Lineage
+
+**Directory**: `services/lineage/`
+
+| File | Purpose |
+|------|---------|
+| `resolve.py` | Helpers for resolving current records across supersede chains and status transitions. |
+| `gc_scheduler.py` | Tombstone garbage-collection scheduler for lineage-aware storage cleanup. |
+
+**Pattern**: profile/playbook update paths preserve lineage metadata in storage; service code asks lineage helpers to find current records rather than walking superseded chains ad hoc.
+
 ### Query Reformulator
 
 **File**: `services/pre_retrieval/_query_reformulator.py` - `QueryReformulator`
@@ -464,8 +477,8 @@ Pre-computed embeddings passed to storage methods via `query_embedding` paramete
 
 | File | Purpose |
 |------|---------|
-| `storage_base/` | BaseStorage interface split by domain (`_profiles.py`, `_playbook.py`, `_requests.py`, `_operations.py`, `_agent_run.py`, `_shadow_verdicts.py`, `_stall_state.py`, `_share_links.py`) |
-| `sqlite_storage/` | SQLite-backed implementation split across the same domains |
+| `storage_base/` | BaseStorage interface split by domain (`_profiles.py`, `_playbook.py`, `_requests.py`, `_operations.py`, `_agent_run.py`, `_lineage.py`, `_shadow_verdicts.py`, `_stall_state.py`, `_share_links.py`) |
+| `sqlite_storage/` | SQLite-backed implementation split across the same domains, including lineage/tombstone support in `_lineage.py` |
 | `retention.py`, `retention_mixin.py` | Data retention and cleanup helpers |
 | `constants.py`, `error.py` | Storage constants and shared errors |
 

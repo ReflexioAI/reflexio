@@ -140,6 +140,7 @@ client (Python SDK)
   - `evaluation_overview/` - Evaluation-page aggregates and hero metrics
   - `playbook_optimizer/` - Scenario-based playbook optimization experiments
   - `braintrust/` - Braintrust eval export/sync support
+  - `lineage/` - Resolve current records and schedule tombstone garbage collection for superseded profile/playbook rows
   - `storage/` - Abstract layer (SQLite prod, LocalJSON test)
   - `pre_retrieval/` - Query rewriting and document expansion helpers
   - `configurator/` - YAML config loader
