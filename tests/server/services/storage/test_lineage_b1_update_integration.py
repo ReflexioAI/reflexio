@@ -2,6 +2,8 @@
 
 Phase B1 — Task 1: verifies that each update_* method emits exactly one
 lineage event (op=revise when content changes, op=status_change otherwise).
+
+Also covers Task 9 (structured status fields on in-place update_* status_change path).
 """
 
 from pathlib import Path
@@ -13,7 +15,7 @@ from reflexio.models.api_schema.domain.entities import (
     UserPlaybook,
     UserProfile,
 )
-from reflexio.models.api_schema.domain.enums import PlaybookStatus
+from reflexio.models.api_schema.domain.enums import PlaybookStatus, Status
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 
 pytestmark = pytest.mark.integration
@@ -174,3 +176,92 @@ def test_archive_agent_playbooks_by_playbook_name_already_archived_no_event(tmp_
     s.archive_agent_playbooks_by_playbook_name("arch-pb")
     second = s.get_lineage_events(entity_id=str(apid), entity_type="agent_playbook")
     assert [e.op for e in second] == ["status_change"]
+
+
+# ---------------------------------------------------------------------------
+# Structured status fields: update_agent_playbook playbook_status path
+# ---------------------------------------------------------------------------
+
+
+def test_update_agent_playbook_playbook_status_populates_structured_fields(tmp_path):
+    """update_agent_playbook(playbook_status=X) emits status_change with structured fields populated."""
+    s = _store(tmp_path)
+    # Default playbook_status on save is 'pending'
+    ap = AgentPlaybook(agent_version="v", content="c")
+    saved = s.save_agent_playbooks([ap])
+    apid = saved[0].agent_playbook_id
+    s.update_agent_playbook(apid, playbook_status=PlaybookStatus.APPROVED)
+    ev = s.get_lineage_events(entity_id=str(apid), entity_type="agent_playbook")
+    sc = [e for e in ev if e.op == "status_change"]
+    assert len(sc) == 1
+    assert sc[0].to_status == "approved"
+    assert sc[0].from_status == "pending"
+    assert sc[0].status_namespace == "playbook_status"
+
+
+def test_update_agent_playbook_metadata_only_leaves_structured_fields_null(tmp_path):
+    """update_agent_playbook(playbook_name=...) (no status, no content) emits status_change with all 3 fields NULL."""
+    s = _store(tmp_path)
+    ap = AgentPlaybook(agent_version="v", content="c")
+    saved = s.save_agent_playbooks([ap])
+    apid = saved[0].agent_playbook_id
+    s.update_agent_playbook(apid, playbook_name="renamed")
+    ev = s.get_lineage_events(entity_id=str(apid), entity_type="agent_playbook")
+    sc = [e for e in ev if e.op == "status_change"]
+    assert len(sc) == 1
+    assert sc[0].from_status is None
+    assert sc[0].to_status is None
+    assert sc[0].status_namespace is None
+
+
+# ---------------------------------------------------------------------------
+# Structured status fields: update_user_playbook lifecycle status path
+# ---------------------------------------------------------------------------
+
+
+def test_update_user_playbook_status_populates_structured_fields(tmp_path):
+    """update_user_playbook(status=X) emits status_change with structured fields populated."""
+    s = _store(tmp_path)
+    pb = UserPlaybook(user_id="u", agent_version="v", request_id="r", content="c")
+    s.save_user_playbooks([pb])
+    s.update_user_playbook(pb.user_playbook_id, status=Status.ARCHIVED)
+    ev = s.get_lineage_events(entity_id=str(pb.user_playbook_id))
+    sc = [e for e in ev if e.op == "status_change"]
+    assert len(sc) == 1
+    assert sc[0].to_status == "archived"
+    assert sc[0].from_status is None  # prior status was NULL
+    assert sc[0].status_namespace == "lifecycle_status"
+
+
+def test_update_user_playbook_status_with_prior_pending_populates_from_status(tmp_path):
+    """update_user_playbook(status=X) with a prior non-NULL status records the real from_status."""
+    s = _store(tmp_path)
+    pb = UserPlaybook(
+        user_id="u",
+        agent_version="v",
+        request_id="r",
+        content="c",
+        status=Status.PENDING,
+    )
+    s.save_user_playbooks([pb])
+    s.update_user_playbook(pb.user_playbook_id, status=Status.ARCHIVED)
+    ev = s.get_lineage_events(entity_id=str(pb.user_playbook_id))
+    sc = [e for e in ev if e.op == "status_change"]
+    assert len(sc) == 1
+    assert sc[0].from_status == "pending"
+    assert sc[0].to_status == "archived"
+    assert sc[0].status_namespace == "lifecycle_status"
+
+
+def test_update_user_playbook_metadata_only_leaves_structured_fields_null(tmp_path):
+    """update_user_playbook(playbook_name=...) (no status, no content) emits status_change with all 3 fields NULL."""
+    s = _store(tmp_path)
+    pb = UserPlaybook(user_id="u", agent_version="v", request_id="r", content="c")
+    s.save_user_playbooks([pb])
+    s.update_user_playbook(pb.user_playbook_id, playbook_name="renamed")
+    ev = s.get_lineage_events(entity_id=str(pb.user_playbook_id))
+    sc = [e for e in ev if e.op == "status_change"]
+    assert len(sc) == 1
+    assert sc[0].from_status is None
+    assert sc[0].to_status is None
+    assert sc[0].status_namespace is None

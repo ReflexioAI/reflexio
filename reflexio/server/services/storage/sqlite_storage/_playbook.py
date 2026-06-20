@@ -986,12 +986,6 @@ class PlaybookMixin:
         playbook_status: PlaybookStatus | None = None,
         tags: list[str] | None = None,
     ) -> None:
-        row = self._fetchone(
-            "SELECT agent_playbook_id FROM agent_playbooks WHERE agent_playbook_id = ?",
-            (agent_playbook_id,),
-        )
-        if not row:
-            raise ValueError(f"Agent playbook with ID {agent_playbook_id} not found")
         updates: list[str] = []
         params: list[Any] = []
         if playbook_name is not None:
@@ -1020,11 +1014,30 @@ class PlaybookMixin:
             op = "revise" if content is not None else "status_change"
             prov = "wasRevisionOf" if op == "revise" else "wasInvalidatedBy"
             with self._lock:
+                prior_row = self.conn.execute(
+                    "SELECT playbook_status FROM agent_playbooks WHERE agent_playbook_id = ?",
+                    (agent_playbook_id,),
+                ).fetchone()
+                if not prior_row:
+                    raise ValueError(
+                        f"Agent playbook with ID {agent_playbook_id} not found"
+                    )
+                prior_playbook_status = prior_row["playbook_status"]
                 cur = self.conn.execute(
                     f"UPDATE agent_playbooks SET {', '.join(updates)} WHERE agent_playbook_id = ?",
                     tuple(params),
                 )
                 if cur.rowcount > 0:
+                    # Populate structured status fields only when playbook_status is
+                    # among the updated fields and the op is status_change (not revise).
+                    if op == "status_change" and playbook_status is not None:
+                        from_status = prior_playbook_status
+                        to_status = playbook_status.value
+                        status_namespace: str | None = "playbook_status"
+                    else:
+                        from_status = None
+                        to_status = None
+                        status_namespace = None
                     _append_event_stmt(
                         self.conn,
                         org_id=self.org_id,
@@ -1036,6 +1049,9 @@ class PlaybookMixin:
                         actor="api",
                         request_id=uuid.uuid4().hex,
                         reason="in-place update",
+                        from_status=from_status,
+                        to_status=to_status,
+                        status_namespace=status_namespace,
                     )
                 self.conn.commit()
 
@@ -1049,13 +1065,8 @@ class PlaybookMixin:
         rationale: str | None = None,
         blocking_issue: BlockingIssue | None = None,
         tags: list[str] | None = None,
+        status: Status | None = None,
     ) -> None:
-        row = self._fetchone(
-            "SELECT user_playbook_id FROM user_playbooks WHERE user_playbook_id = ?",
-            (user_playbook_id,),
-        )
-        if not row:
-            raise ValueError(f"User playbook with ID {user_playbook_id} not found")
         updates: list[str] = []
         params: list[Any] = []
         if playbook_name is not None:
@@ -1076,16 +1087,38 @@ class PlaybookMixin:
         if tags is not None:
             updates.append("tags = ?")
             params.append(_json_dumps(tags))
+        if status is not None:
+            updates.append("status = ?")
+            params.append(status.value)
         if updates:
             params.append(user_playbook_id)
             op = "revise" if content is not None else "status_change"
             prov = "wasRevisionOf" if op == "revise" else "wasInvalidatedBy"
             with self._lock:
+                prior_row = self.conn.execute(
+                    "SELECT status FROM user_playbooks WHERE user_playbook_id = ?",
+                    (user_playbook_id,),
+                ).fetchone()
+                if not prior_row:
+                    raise ValueError(
+                        f"User playbook with ID {user_playbook_id} not found"
+                    )
+                prior_status = prior_row["status"]
                 cur = self.conn.execute(
                     f"UPDATE user_playbooks SET {', '.join(updates)} WHERE user_playbook_id = ?",
                     tuple(params),
                 )
                 if cur.rowcount > 0:
+                    # Populate structured status fields only when the lifecycle status
+                    # field is among the updated fields and the op is status_change.
+                    if op == "status_change" and status is not None:
+                        from_status = prior_status
+                        to_status = status.value
+                        status_namespace: str | None = "lifecycle_status"
+                    else:
+                        from_status = None
+                        to_status = None
+                        status_namespace = None
                     _append_event_stmt(
                         self.conn,
                         org_id=self.org_id,
@@ -1097,6 +1130,9 @@ class PlaybookMixin:
                         actor="api",
                         request_id=uuid.uuid4().hex,
                         reason="in-place update",
+                        from_status=from_status,
+                        to_status=to_status,
+                        status_namespace=status_namespace,
                     )
                 self.conn.commit()
 
