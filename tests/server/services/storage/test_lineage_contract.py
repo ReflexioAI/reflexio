@@ -8,9 +8,11 @@ are added in Task 12 when their gated suite is built.
 import pytest
 
 from reflexio.models.api_schema.domain.entities import (
+    AgentPlaybook,
     LineageContext,
     LineageEvent,
     UserPlaybook,
+    UserProfile,
 )
 from reflexio.models.api_schema.domain.enums import Status
 
@@ -133,3 +135,104 @@ def test_merge_multi_source_skips_already_tombstoned(storage) -> None:
     events = storage.get_lineage_events(entity_id=str(survivor.user_playbook_id))
     merge_events = [e for e in events if e.op == "merge"]
     assert len(merge_events) == 1
+
+
+# ---------------------------------------------------------------------------
+# B1 contract cases: update / hard_delete / archive / idempotency
+# ---------------------------------------------------------------------------
+
+
+def test_update_content_emits_revise(storage) -> None:
+    """In-place update with content change emits exactly one op='revise' event."""
+    pb = UserPlaybook(agent_version="v", request_id="r-update-revise", content="old")
+    storage.save_user_playbooks([pb])
+
+    storage.update_user_playbook(pb.user_playbook_id, content="new")
+
+    events = storage.get_lineage_events(
+        entity_type="user_playbook", entity_id=str(pb.user_playbook_id)
+    )
+    revise_events = [e for e in events if e.op == "revise"]
+    assert len(revise_events) == 1
+
+
+def test_update_metadata_only_emits_status_change(storage) -> None:
+    """In-place update without content (metadata-only) emits exactly one op='status_change' event."""
+    pb = UserPlaybook(agent_version="v", request_id="r-update-meta", content="c")
+    storage.save_user_playbooks([pb])
+
+    storage.update_user_playbook(pb.user_playbook_id, playbook_name="new-name")
+
+    events = storage.get_lineage_events(
+        entity_type="user_playbook", entity_id=str(pb.user_playbook_id)
+    )
+    status_change_events = [e for e in events if e.op == "status_change"]
+    assert len(status_change_events) == 1
+    # Must not emit a revise event for a metadata-only update.
+    assert not any(e.op == "revise" for e in events)
+
+
+def test_delete_user_playbook_emits_hard_delete(storage) -> None:
+    """Physical delete of a user_playbook emits op='hard_delete' before deletion."""
+    pb = UserPlaybook(agent_version="v", request_id="r-delete-up", content="c")
+    storage.save_user_playbooks([pb])
+    entity_id = str(pb.user_playbook_id)
+
+    storage.delete_user_playbook(pb.user_playbook_id)
+
+    events = storage.get_lineage_events(
+        entity_type="user_playbook", entity_id=entity_id
+    )
+    assert any(e.op == "hard_delete" for e in events)
+
+
+def test_delete_profiles_by_ids_emits_hard_delete(storage) -> None:
+    """Physical delete of a profile via delete_profiles_by_ids emits op='hard_delete'."""
+    profile = UserProfile(
+        profile_id="prof-hd-1",
+        user_id="u",
+        content="some content",
+        last_modified_timestamp=1,
+        generated_from_request_id="r-prof-delete",
+    )
+    storage.add_user_profile("u", [profile])
+
+    storage.delete_profiles_by_ids([profile.profile_id])
+
+    events = storage.get_lineage_events(
+        entity_type="profile", entity_id=profile.profile_id
+    )
+    assert any(e.op == "hard_delete" for e in events)
+
+
+def test_archive_agent_playbooks_by_ids_emits_status_change(storage) -> None:
+    """archive_agent_playbooks_by_ids emits op='status_change' for each archived playbook."""
+    ap = AgentPlaybook(agent_version="v", content="some content")
+    storage.save_agent_playbooks([ap])
+    entity_id = str(ap.agent_playbook_id)
+
+    storage.archive_agent_playbooks_by_ids([ap.agent_playbook_id])
+
+    events = storage.get_lineage_events(
+        entity_type="agent_playbook", entity_id=entity_id
+    )
+    assert any(e.op == "status_change" for e in events)
+
+
+def test_append_lineage_event_idempotent_exact_key(storage) -> None:
+    """Duplicate append_lineage_event calls with the same 5-col key yield exactly one row."""
+    event = LineageEvent(
+        org_id=storage.org_id,
+        entity_type="user_playbook",
+        entity_id="idem-2",
+        op="revise",
+        request_id="r-idem-exact",
+    )
+    first = storage.append_lineage_event(event)
+    second = storage.append_lineage_event(event)
+
+    assert first == second
+    events = storage.get_lineage_events(
+        entity_type="user_playbook", entity_id="idem-2"
+    )
+    assert len(events) == 1
