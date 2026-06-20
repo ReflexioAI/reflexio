@@ -2,6 +2,7 @@
 
 import logging
 import sqlite3
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
@@ -38,6 +39,7 @@ from ._base import (
     _true_rrf_merge,
     _vector_rank_rows,
 )
+from ._lineage import _append_event_stmt
 
 
 def _build_tags_sql(alias: str, tags: list[str] | None) -> tuple[str, list[Any]]:
@@ -173,58 +175,77 @@ class ProfileMixin:
     def update_user_profile_by_id(
         self, user_id: str, profile_id: str, new_profile: UserProfile
     ) -> None:
+        """Replace a profile's content in-place and emit a revise lineage event.
+
+        Each call generates a fresh request_id so every edit is a distinct audit
+        event (not collapsed by the idempotency key).  The UPDATE, lineage event,
+        FTS sync, and vec sync are all executed inside a single lock acquisition;
+        self._lock is an RLock so the inner _fts_upsert_profile/_vec_upsert calls
+        that re-acquire it are safe.
+        """
         current_ts = _epoch_now()
         row = self._fetchone(
             "SELECT profile_id FROM profiles WHERE user_id = ? AND profile_id = ? AND expiration_timestamp >= ?",
             (user_id, profile_id, current_ts),
         )
         if not row:
-            import logging
-
-            logger = logging.getLogger(__name__)
             logger.warning("User profile not found for user id: %s", user_id)
             return
         embedding = self._get_embedding(
             "\n".join([new_profile.content, str(new_profile.custom_features)])
         )
         new_profile.embedding = embedding
-        self._execute(
-            """UPDATE profiles SET content=?, last_modified_timestamp=?,
-               generated_from_request_id=?, profile_time_to_live=?,
-               expiration_timestamp=?, custom_features=?, embedding=?,
-               source=?, status=?, extractor_names=?, expanded_terms=?,
-               source_span=?, notes=?, reader_angle=?, tags=?
-               WHERE profile_id=?""",
-            (
-                new_profile.content,
-                new_profile.last_modified_timestamp,
-                new_profile.generated_from_request_id,
-                new_profile.profile_time_to_live.value,
-                new_profile.expiration_timestamp,
-                _json_dumps(new_profile.custom_features),
-                _json_dumps(new_profile.embedding),
-                new_profile.source,
-                new_profile.status.value if new_profile.status else None,
-                _json_dumps(new_profile.extractor_names),
-                new_profile.expanded_terms,
-                new_profile.source_span,
-                new_profile.notes,
-                new_profile.reader_angle,
-                _json_dumps(new_profile.tags),
-                profile_id,
-            ),
-        )
-        fts_parts = [new_profile.content or ""]
-        if new_profile.custom_features:
-            fts_parts.extend(str(v) for v in new_profile.custom_features.values() if v)
-        if new_profile.expanded_terms:
-            fts_parts.append(new_profile.expanded_terms)
-        self._fts_upsert_profile(profile_id, " ".join(fts_parts))
-        rowid_row = self._fetchone(
-            "SELECT rowid FROM profiles WHERE profile_id = ?", (profile_id,)
-        )
-        if rowid_row and embedding:
-            self._vec_upsert("profiles_vec", rowid_row["rowid"], embedding)
+        with self._lock:
+            self.conn.execute(
+                """UPDATE profiles SET content=?, last_modified_timestamp=?,
+                   generated_from_request_id=?, profile_time_to_live=?,
+                   expiration_timestamp=?, custom_features=?, embedding=?,
+                   source=?, status=?, extractor_names=?, expanded_terms=?,
+                   source_span=?, notes=?, reader_angle=?, tags=?
+                   WHERE profile_id=?""",
+                (
+                    new_profile.content,
+                    new_profile.last_modified_timestamp,
+                    new_profile.generated_from_request_id,
+                    new_profile.profile_time_to_live.value,
+                    new_profile.expiration_timestamp,
+                    _json_dumps(new_profile.custom_features),
+                    _json_dumps(new_profile.embedding),
+                    new_profile.source,
+                    new_profile.status.value if new_profile.status else None,
+                    _json_dumps(new_profile.extractor_names),
+                    new_profile.expanded_terms,
+                    new_profile.source_span,
+                    new_profile.notes,
+                    new_profile.reader_angle,
+                    _json_dumps(new_profile.tags),
+                    profile_id,
+                ),
+            )
+            _append_event_stmt(
+                self.conn,
+                org_id=self.org_id,
+                entity_type="profile",
+                entity_id=str(profile_id),
+                op="revise",
+                prov="wasRevisionOf",
+                source_ids=[],
+                actor="api",
+                request_id=uuid.uuid4().hex,
+                reason="in-place update",
+            )
+            self.conn.commit()
+            fts_parts = [new_profile.content or ""]
+            if new_profile.custom_features:
+                fts_parts.extend(str(v) for v in new_profile.custom_features.values() if v)
+            if new_profile.expanded_terms:
+                fts_parts.append(new_profile.expanded_terms)
+            self._fts_upsert_profile(profile_id, " ".join(fts_parts))
+            rowid_row = self._fetchone(
+                "SELECT rowid FROM profiles WHERE profile_id = ?", (profile_id,)
+            )
+            if rowid_row and embedding:
+                self._vec_upsert("profiles_vec", rowid_row["rowid"], embedding)
 
     @SQLiteStorageBase.handle_exceptions
     def update_user_profile_tags(

@@ -2,6 +2,7 @@
 
 import json
 import sqlite3
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
@@ -823,16 +824,35 @@ class PlaybookMixin:
     def update_agent_playbook_status(
         self, agent_playbook_id: int, playbook_status: PlaybookStatus
     ) -> None:
+        """Update an agent playbook's status and emit a status_change lineage event.
+
+        Each call generates a fresh request_id so every status change is recorded as
+        a distinct audit event (not collapsed by the idempotency key).
+        """
         row = self._fetchone(
             "SELECT agent_playbook_id FROM agent_playbooks WHERE agent_playbook_id = ?",
             (agent_playbook_id,),
         )
         if not row:
             raise ValueError(f"Agent playbook with ID {agent_playbook_id} not found")
-        self._execute(
-            "UPDATE agent_playbooks SET playbook_status = ? WHERE agent_playbook_id = ?",
-            (playbook_status.value, agent_playbook_id),
-        )
+        with self._lock:
+            self.conn.execute(
+                "UPDATE agent_playbooks SET playbook_status = ? WHERE agent_playbook_id = ?",
+                (playbook_status.value, agent_playbook_id),
+            )
+            _append_event_stmt(
+                self.conn,
+                org_id=self.org_id,
+                entity_type="agent_playbook",
+                entity_id=str(agent_playbook_id),
+                op="status_change",
+                prov="wasInvalidatedBy",
+                source_ids=[],
+                actor="api",
+                request_id=uuid.uuid4().hex,
+                reason="in-place update",
+            )
+            self.conn.commit()
 
     @SQLiteStorageBase.handle_exceptions
     def update_agent_playbook(
@@ -877,10 +897,26 @@ class PlaybookMixin:
             params.append(_json_dumps(tags))
         if updates:
             params.append(agent_playbook_id)
-            self._execute(
-                f"UPDATE agent_playbooks SET {', '.join(updates)} WHERE agent_playbook_id = ?",
-                tuple(params),
-            )
+            op = "revise" if content is not None else "status_change"
+            prov = "wasRevisionOf" if op == "revise" else "wasInvalidatedBy"
+            with self._lock:
+                self.conn.execute(
+                    f"UPDATE agent_playbooks SET {', '.join(updates)} WHERE agent_playbook_id = ?",
+                    tuple(params),
+                )
+                _append_event_stmt(
+                    self.conn,
+                    org_id=self.org_id,
+                    entity_type="agent_playbook",
+                    entity_id=str(agent_playbook_id),
+                    op=op,
+                    prov=prov,
+                    source_ids=[],
+                    actor="api",
+                    request_id=uuid.uuid4().hex,
+                    reason="in-place update",
+                )
+                self.conn.commit()
 
     @SQLiteStorageBase.handle_exceptions
     def update_user_playbook(
@@ -921,10 +957,26 @@ class PlaybookMixin:
             params.append(_json_dumps(tags))
         if updates:
             params.append(user_playbook_id)
-            self._execute(
-                f"UPDATE user_playbooks SET {', '.join(updates)} WHERE user_playbook_id = ?",
-                tuple(params),
-            )
+            op = "revise" if content is not None else "status_change"
+            prov = "wasRevisionOf" if op == "revise" else "wasInvalidatedBy"
+            with self._lock:
+                self.conn.execute(
+                    f"UPDATE user_playbooks SET {', '.join(updates)} WHERE user_playbook_id = ?",
+                    tuple(params),
+                )
+                _append_event_stmt(
+                    self.conn,
+                    org_id=self.org_id,
+                    entity_type="user_playbook",
+                    entity_id=str(user_playbook_id),
+                    op=op,
+                    prov=prov,
+                    source_ids=[],
+                    actor="api",
+                    request_id=uuid.uuid4().hex,
+                    reason="in-place update",
+                )
+                self.conn.commit()
 
     @SQLiteStorageBase.handle_exceptions
     def archive_agent_playbooks_by_playbook_name(
