@@ -106,7 +106,7 @@ class PlaybookAggregator:
         # Count user playbooks with ID greater than last processed using efficient count query
         # Only count current user playbooks (status=None), not archived or pending ones.
         # Singleton aggregation operates on the user's whole playbook set — no name filter.
-        new_count = self.storage.count_user_playbooks(  # type: ignore[reportOptionalMemberAccess]
+        new_count = self.storage.count_user_playbooks(  # pyright: ignore[reportOptionalMemberAccess]
             min_user_playbook_id=last_processed_id,
             agent_version=self.agent_version,
             status_filter=[None],

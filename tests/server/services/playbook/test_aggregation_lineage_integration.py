@@ -9,6 +9,10 @@ Asserts:
 - prov_relation="wasDerivedFrom",
 - source_ids contains str(UP-a.user_playbook_id) and str(UP-b.user_playbook_id).
 
+Also includes a PB-7 best-effort regression test verifying that a transient
+``append_lineage_event`` failure does NOT abort the aggregation run and that
+``capture_anomaly`` is called with "lineage.aggregate.append_failed".
+
 Mirrors the real-SQLite + mocked-cluster fixture style of
 ``test_consolidation_lineage_integration.py``.
 """
@@ -188,3 +192,71 @@ def test_aggregation_emits_aggregate_lineage_event(
     assert evt.actor == "aggregator"
     assert evt.org_id == org_id
     assert evt.request_id != "", "request_id must be non-empty"
+
+
+def test_aggregate_lineage_append_failure_is_best_effort(
+    sqlite_storage: SQLiteStorage,
+    request_context: RequestContext,
+    aggregator: PlaybookAggregator,
+    worker_id: str,
+):
+    """PB-7: a transient append_lineage_event failure must NOT abort aggregation.
+
+    Pins the safety property: the try/except around ``storage.append_lineage_event``
+    swallows the exception, saves the agent playbook(s) anyway, and calls
+    ``capture_anomaly("lineage.aggregate.append_failed", ...)``.
+    """
+    org_id = request_context.org_id
+
+    up_a = _seed_user_playbook(sqlite_storage, uid=10, org_id=org_id)
+    up_b = _seed_user_playbook(sqlite_storage, uid=11, org_id=org_id)
+    cluster_playbooks = [up_a, up_b]
+
+    unsaved_ap = AgentPlaybook(
+        agent_playbook_id=0,
+        playbook_name="default",
+        agent_version="v0",
+        content="Best-effort AP.",
+        playbook_status=PlaybookStatus.PENDING,
+    )
+
+    def _raise_on_append(event):  # noqa: ANN001
+        raise RuntimeError("transient lineage failure")
+
+    with (
+        patch.object(
+            PlaybookAggregator,
+            "get_clusters",
+            return_value={0: cluster_playbooks},
+        ),
+        patch.object(
+            PlaybookAggregator,
+            "_generate_playbooks_with_source_clusters",
+            return_value=[(unsaved_ap, cluster_playbooks)],
+        ),
+        patch.object(
+            sqlite_storage, "append_lineage_event", side_effect=_raise_on_append
+        ),
+        patch(
+            "reflexio.server.services.playbook.playbook_aggregator.capture_anomaly"
+        ) as mock_capture,
+    ):
+        # (a) run must complete without raising
+        result = aggregator.run(
+            PlaybookAggregatorRequest(agent_version="v0", rerun=True)
+        )
+
+    # (a) no exception propagated — result is the stats dict
+    assert isinstance(result, dict), f"Expected dict, got: {result!r}"
+    assert "playbooks_generated" in result
+
+    # (b) the agent playbook was still saved despite the lineage failure
+    saved_aps = sqlite_storage.get_agent_playbooks()
+    assert saved_aps, "Agent playbook must be saved even when lineage append fails"
+
+    # (c) capture_anomaly was called with the correct anomaly key
+    assert mock_capture.called, (
+        "capture_anomaly must be called on lineage append failure"
+    )
+    anomaly_keys = [c.args[0] for c in mock_capture.call_args_list]
+    assert "lineage.aggregate.append_failed" in anomaly_keys, anomaly_keys
