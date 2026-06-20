@@ -1175,12 +1175,12 @@ def test_rerun_profile_generation_with_extractor_names_filter(
     sample_interaction_requests: list[InteractionData],
     cleanup_multiple_profile_extractors: Callable[[], None],
 ):
-    """Test rerun profile generation with extractor_names filtering.
+    """Test rerun profile generation with an extractor_names filter.
 
-    This test verifies:
-    1. extractor_names filter correctly limits which extractors run during rerun
-    2. Only profiles from specified extractors are generated
-    3. Other extractors are skipped
+    Extraction is singleton (one profile extractor per org); the rerun
+    ``extractor_names`` filter is now a no-op and the singleton extractor always
+    runs. This test verifies the rerun succeeds and, when profiles are generated,
+    they are returned.
     """
     user_id = "test_user_extractor_names_filter"
 
@@ -1228,11 +1228,10 @@ def test_rerun_profile_generation_with_single_extractor(
     sample_interaction_requests: list[InteractionData],
     cleanup_multiple_profile_extractors: Callable[[], None],
 ):
-    """Test rerun profile generation with single extractor specified.
+    """Test rerun profile generation with a single extractor_names value.
 
-    This test verifies:
-    1. A single extractor can be specified
-    2. Only that extractor runs
+    Extraction is singleton; the ``extractor_names`` filter is a no-op and the
+    singleton extractor runs. This test verifies the rerun succeeds.
     """
     user_id = "test_user_single_extractor"
 
@@ -1270,11 +1269,15 @@ def test_rerun_profile_generation_with_nonexistent_extractor_name(
     sample_interaction_requests: list[InteractionData],
     cleanup_multiple_profile_extractors: Callable[[], None],
 ):
-    """Test rerun profile generation with non-existent extractor name.
+    """Test rerun profile generation with a non-existent extractor name.
 
-    This test verifies:
-    1. Specifying non-existent extractor name doesn't cause errors
-    2. No profiles are generated when no extractors match
+    Extraction is singleton; the ``extractor_names`` filter is a no-op, so a
+    non-existent name does not cause an error — the singleton extractor still
+    runs. This test verifies the rerun does not error.
+
+    Note: pre-singleton, a non-matching extractor_names value would skip all
+    extractors (no profiles generated). That filtering no longer exists, so the
+    rerun simply succeeds.
     """
     user_id = "test_user_nonexistent_extractor"
 
@@ -1291,7 +1294,7 @@ def test_rerun_profile_generation_with_nonexistent_extractor_name(
     )
     assert publish_response.success is True
 
-    # Step 2: Rerun with non-existent extractor name
+    # Step 2: Rerun with non-existent extractor name (filter is a no-op)
     rerun_request = RerunProfileGenerationRequest(
         user_id=user_id,
         extractor_names=["nonexistent_extractor"],
@@ -1302,8 +1305,8 @@ def test_rerun_profile_generation_with_nonexistent_extractor_name(
             rerun_request
         )
     )
-    # Should fail because no matching interactions/extractors
-    assert rerun_response.success is False or rerun_response.profiles_generated == 0
+    # The filter is ignored under the singleton model; the rerun should not error.
+    assert rerun_response.success is True, f"Rerun failed: {rerun_response.msg}"
 
 
 # ---------------------------------------------------------------------------

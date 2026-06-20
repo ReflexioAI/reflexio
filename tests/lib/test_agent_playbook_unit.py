@@ -443,6 +443,7 @@ class TestGetAgentPlaybooksError:
             agent_version=None,
             status_filter=None,
             playbook_status_filter=[PlaybookStatus.APPROVED],
+            tags=None,
         )
 
 

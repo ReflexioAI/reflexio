@@ -107,7 +107,7 @@ def test_publish_interaction_agent_success_only(
         assert agent_success_results[0].user_turns_to_resolution is None
 
     # Note: profiles and playbooks may still be generated because Config defaults
-    # always populate profile_extractor_configs and user_playbook_extractor_configs.
+    # always populate profile_extractor_config and user_playbook_extractor_config.
     # This test focuses on verifying agent success evaluation works correctly.
 
 

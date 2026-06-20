@@ -75,13 +75,11 @@ if __name__ == "__main__":
         storage_config=agentic_mem.request_context.configurator.config.storage_config,
         storage_config_test=StorageConfigTest.SUCCEEDED,
         agent_context_prompt="this is a sales call between two people",
-        profile_extractor_configs=[
-            ProfileExtractorConfig(
-                extraction_definition_prompt="name of the person, intent of the conversation, and the topic of the conversation",
-                context_prompt="this is a sales call between two people",
-            )
-        ],
-        user_playbook_extractor_configs=None,
+        profile_extractor_config=ProfileExtractorConfig(
+            extraction_definition_prompt="name of the person, intent of the conversation, and the topic of the conversation",
+            context_prompt="this is a sales call between two people",
+        ),
+        user_playbook_extractor_config=None,
     )
     agentic_mem.request_context.configurator.set_config(config)
     print(

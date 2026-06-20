@@ -74,7 +74,7 @@ def test_publish_interaction_playbook_only(
     assert all(p.playbook_name == SINGLETON_USER_PLAYBOOK_NAME for p in user_playbooks)
 
     # No agent success evaluation results — this fixture does not configure
-    # agent_success_configs, and group evaluation is never triggered in this flow.
+    # agent_success_config, and group evaluation is never triggered in this flow.
     agent_success_results = reflexio_instance_playbook_only.request_context.storage.get_agent_success_evaluation_results(
         agent_version=agent_version
     )
@@ -928,12 +928,15 @@ def test_playbook_source_filtering_with_matching_source(
     sample_interaction_requests: list[InteractionData],
     cleanup_playbook_source_filtering: Callable[[], None],
 ):
-    """Test that playbook extractors only run when source matches request_sources_enabled.
+    """Test that the single playbook extractor runs when source matches request_sources_enabled.
+
+    The fixture has one extractor with request_sources_enabled=["api"]. The
+    multi-distinct-extractor routing model was retired, so generated playbooks
+    are stored under the singleton playbook name.
 
     This test verifies:
-    1. When source="api", only api_playbook and all_sources_playbook extractors run
-    2. When source="webhook", only webhook_playbook and all_sources_playbook extractors run
-    3. Playbooks have the correct source field set
+    1. When source="api" (matching), the extractor runs and generates a playbook
+    2. The generated playbook has the correct source field set
     """
     user_id = "test_user_source_filter"
     agent_version = "test_agent_source"
@@ -951,35 +954,18 @@ def test_playbook_source_filtering_with_matching_source(
     )
     assert response_api.success is True
 
-    # Verify playbooks were generated for "api" source
-    # Expected: api_playbook (matches "api") and all_sources_playbook (no filter) extractors run
-    # Note: These may get deduplicated if they produce semantically identical playbooks
-    # Should NOT have: webhook_playbook (only for "webhook")
-    api_user_playbooks = storage.get_user_playbooks(playbook_name="api_playbook")
-    webhook_user_playbooks = storage.get_user_playbooks(
-        playbook_name="webhook_playbook"
+    # The extractor's request_sources_enabled=["api"] matches, so it runs.
+    # Generated playbooks are stored under the singleton playbook name.
+    user_playbooks = storage.get_user_playbooks(
+        playbook_name=SINGLETON_USER_PLAYBOOK_NAME
     )
-    all_sources_user_playbooks = storage.get_user_playbooks(
-        playbook_name="all_sources_playbook"
-    )
-
-    # At least one playbook should exist from api_playbook or all_sources_playbook
-    # (they may get deduplicated into a single playbook with the first extractor's name)
-    total_user_playbooks = len(api_user_playbooks) + len(all_sources_user_playbooks)
-    assert total_user_playbooks > 0, (
-        "At least one playbook should be generated from api_playbook or all_sources_playbook extractors"
+    assert len(user_playbooks) > 0, (
+        "Playbook should be generated when the source matches request_sources_enabled"
     )
 
     # Verify source field is set correctly for all playbooks
-    for playbook in api_user_playbooks:
-        assert playbook.source == "api", "api_playbook should have source='api'"
-    for playbook in all_sources_user_playbooks:
-        assert playbook.source == "api", "all_sources_playbook should have source='api'"
-
-    # webhook_playbook should NOT have been generated (source "api" doesn't match "webhook")
-    assert len(webhook_user_playbooks) == 0, (
-        "webhook_playbook should NOT be generated for source='api'"
-    )
+    for playbook in user_playbooks:
+        assert playbook.source == "api", "playbook should have source='api'"
 
 
 @skip_in_precommit
@@ -989,17 +975,17 @@ def test_playbook_source_filtering_with_non_matching_source(
     sample_interaction_requests: list[InteractionData],
     cleanup_playbook_source_filtering: Callable[[], None],
 ):
-    """Test that playbook extractors do not run when source doesn't match request_sources_enabled.
+    """Test that the single playbook extractor is skipped when source doesn't match.
 
-    This test verifies:
-    1. When source="other", only all_sources_playbook extractor runs
-    2. api_playbook and webhook_playbook do not run for non-matching source
+    The fixture has one extractor with request_sources_enabled=["api"]. This test
+    verifies that for source="other" (not in the enabled list) the extractor is
+    skipped and no playbook is generated.
     """
     user_id = "test_user_source_filter_other"
     agent_version = "test_agent_source_other"
     storage = reflexio_instance_playbook_source_filtering.request_context.storage
 
-    # Publish interactions with source="other" (not in any request_sources_enabled list)
+    # Publish interactions with source="other" (not in request_sources_enabled)
     response = reflexio_instance_playbook_source_filtering.publish_interaction(
         {
             "user_id": user_id,
@@ -1011,33 +997,14 @@ def test_playbook_source_filtering_with_non_matching_source(
     )
     assert response.success is True
 
-    # Verify only all_sources_playbook was generated
-    api_user_playbooks = storage.get_user_playbooks(playbook_name="api_playbook")
-    webhook_user_playbooks = storage.get_user_playbooks(
-        playbook_name="webhook_playbook"
+    # The extractor is gated to "api"; "other" does not match, so it is skipped
+    # and no playbook is generated.
+    user_playbooks = storage.get_user_playbooks(
+        playbook_name=SINGLETON_USER_PLAYBOOK_NAME
     )
-    all_sources_user_playbooks = storage.get_user_playbooks(
-        playbook_name="all_sources_playbook"
+    assert len(user_playbooks) == 0, (
+        "Playbook should NOT be generated when source does not match request_sources_enabled"
     )
-
-    # api_playbook should NOT have been generated (source "other" doesn't match "api")
-    assert len(api_user_playbooks) == 0, (
-        "api_playbook should NOT be generated for source='other'"
-    )
-
-    # webhook_playbook should NOT have been generated (source "other" doesn't match "webhook")
-    assert len(webhook_user_playbooks) == 0, (
-        "webhook_playbook should NOT be generated for source='other'"
-    )
-
-    # all_sources_playbook should have been generated (no source filter)
-    assert len(all_sources_user_playbooks) > 0, (
-        "all_sources_playbook should be generated for any source"
-    )
-    for playbook in all_sources_user_playbooks:
-        assert playbook.source == "other", (
-            "all_sources_playbook should have source='other'"
-        )
 
 
 @skip_in_precommit
@@ -1047,11 +1014,11 @@ def test_playbook_source_filtering_webhook_source(
     sample_interaction_requests: list[InteractionData],
     cleanup_playbook_source_filtering: Callable[[], None],
 ):
-    """Test that webhook_playbook extractor runs only for webhook source.
+    """Test that the single playbook extractor is skipped for a non-matching webhook source.
 
-    This test verifies:
-    1. When source="webhook", webhook_playbook and all_sources_playbook extractors run
-    2. api_playbook does not run for webhook source
+    The fixture has one extractor with request_sources_enabled=["api"]. This test
+    verifies that for source="webhook" (not in the enabled list) the extractor is
+    skipped and no playbook is generated.
     """
     user_id = "test_user_source_filter_webhook"
     agent_version = "test_agent_source_webhook"
@@ -1069,38 +1036,14 @@ def test_playbook_source_filtering_webhook_source(
     )
     assert response.success is True
 
-    # Verify playbooks were generated correctly
-    # Note: webhook_playbook and all_sources_playbook may get deduplicated if they
-    # produce semantically identical playbooks
-    api_user_playbooks = storage.get_user_playbooks(playbook_name="api_playbook")
-    webhook_user_playbooks = storage.get_user_playbooks(
-        playbook_name="webhook_playbook"
+    # The extractor is gated to "api"; "webhook" does not match, so it is skipped
+    # and no playbook is generated.
+    user_playbooks = storage.get_user_playbooks(
+        playbook_name=SINGLETON_USER_PLAYBOOK_NAME
     )
-    all_sources_user_playbooks = storage.get_user_playbooks(
-        playbook_name="all_sources_playbook"
+    assert len(user_playbooks) == 0, (
+        "Playbook should NOT be generated when source does not match request_sources_enabled"
     )
-
-    # api_playbook should NOT have been generated (source "webhook" doesn't match "api")
-    assert len(api_user_playbooks) == 0, (
-        "api_playbook should NOT be generated for source='webhook'"
-    )
-
-    # At least one playbook should exist from webhook_playbook or all_sources_playbook
-    # (they may get deduplicated into a single playbook with the first extractor's name)
-    total_user_playbooks = len(webhook_user_playbooks) + len(all_sources_user_playbooks)
-    assert total_user_playbooks > 0, (
-        "At least one playbook should be generated from webhook_playbook or all_sources_playbook extractors"
-    )
-
-    # Verify source field is set correctly for all playbooks
-    for playbook in webhook_user_playbooks:
-        assert playbook.source == "webhook", (
-            "webhook_playbook should have source='webhook'"
-        )
-    for playbook in all_sources_user_playbooks:
-        assert playbook.source == "webhook", (
-            "all_sources_playbook should have source='webhook'"
-        )
 
 
 @skip_in_precommit
@@ -1388,10 +1331,9 @@ def test_rerun_playbook_generation_with_source_filter(
 ):
     """Test rerun playbook generation with source filtering.
 
-    This test verifies:
-    1. Rerun with source filter correctly filters interactions by source
-    2. Only extractors matching the source run
-    3. Generated playbooks have correct source field
+    Extraction is singleton (one playbook extractor per org). This test
+    verifies that a rerun with a source filter correctly filters interactions
+    by source and that generated playbooks carry the correct source field.
     """
     import os
 
@@ -1437,10 +1379,9 @@ def test_rerun_playbook_generation_with_source_filter(
         )
         assert response_webhook.success is True
 
-        # Step 3: Delete user playbooks created by this test's extractors to start fresh for rerun test
-        config = reflexio_instance_multiple_playbook_extractors.request_context.configurator.get_config()
-        for fc in config.user_playbook_extractor_configs:
-            storage.delete_all_user_playbooks_by_playbook_name(fc.extractor_name)
+        # Step 3: Delete user playbooks created by this test to start fresh for rerun test.
+        # Generated playbooks are stored under the singleton playbook name.
+        storage.delete_all_user_playbooks_by_playbook_name(SINGLETON_USER_PLAYBOOK_NAME)
 
         # Step 4: Rerun with source="api" filter
         rerun_response = (
@@ -1490,12 +1431,12 @@ def test_rerun_playbook_generation_multiple_extractors_all_sources(
     sample_interaction_requests: list[InteractionData],
     cleanup_multiple_playbook_extractors: Callable[[], None],
 ):
-    """Test rerun playbook generation with multiple extractors collecting from all sources.
+    """Test rerun playbook generation across sources with the single extractor.
 
-    This test verifies:
-    1. When source=None in rerun, ALL extractors run
-    2. Each extractor collects data based on its own request_sources_enabled
-    3. Multiple playbook names are generated
+    Extraction is singleton (one playbook extractor per org, no source filter
+    here), so a source=None rerun runs that extractor over all collected
+    sources and generates playbooks under the singleton name. This test
+    verifies the rerun succeeds and produces playbooks.
     """
     import os
 
@@ -1536,7 +1477,7 @@ def test_rerun_playbook_generation_multiple_extractors_all_sources(
             }
         )
 
-        # Other source (only general_playbook should pick this up)
+        # Other source (the single extractor has no source filter, so it runs)
         reflexio_instance_multiple_playbook_extractors.publish_interaction(
             {
                 "user_id": user_id,
@@ -1552,10 +1493,9 @@ def test_rerun_playbook_generation_multiple_extractors_all_sources(
             }
         )
 
-        # Step 2: Delete user playbooks created by this test's extractors
-        config = reflexio_instance_multiple_playbook_extractors.request_context.configurator.get_config()
-        for fc in config.user_playbook_extractor_configs:
-            storage.delete_all_user_playbooks_by_playbook_name(fc.extractor_name)
+        # Step 2: Delete user playbooks created by this test.
+        # Generated playbooks are stored under the singleton playbook name.
+        storage.delete_all_user_playbooks_by_playbook_name(SINGLETON_USER_PLAYBOOK_NAME)
 
         # Step 3: Rerun WITHOUT source filter (all extractors run)
         rerun_response = (
@@ -1591,11 +1531,13 @@ def test_rerun_playbook_generation_with_extractor_names_filter(
     sample_interaction_requests: list[InteractionData],
     cleanup_multiple_playbook_extractors: Callable[[], None],
 ):
-    """Test rerun playbook generation with extractor_names filter.
+    """Test rerun playbook generation with the playbook_name filter.
 
-    This test verifies:
-    1. extractor_names filter correctly limits which extractors run during rerun
-    2. Only specified extractors generate playbooks
+    Extraction is singleton (one playbook extractor per org); the rerun
+    ``playbook_name`` filter is now a no-op and generated playbooks are stored
+    under the singleton playbook name. This test verifies:
+    1. The initial publish creates a playbook under the singleton name
+    2. Rerun succeeds and any generated playbooks carry the singleton name
     """
     import os
     import uuid
@@ -1611,7 +1553,7 @@ def test_rerun_playbook_generation_with_extractor_names_filter(
     try:
         os.environ["MOCK_LLM_RESPONSE"] = "true"
 
-        # Step 1: Publish interactions - this creates CURRENT (status=None) playbooks for BOTH extractors
+        # Step 1: Publish interactions - this creates CURRENT (status=None) playbooks
         reflexio_instance_multiple_playbook_extractors.publish_interaction(
             {
                 "user_id": user_id,
@@ -1622,49 +1564,43 @@ def test_rerun_playbook_generation_with_extractor_names_filter(
             }
         )
 
-        # Verify initial publish created playbooks for both extractors
+        # Verify initial publish created a playbook under the singleton name
         initial_playbooks = storage.get_user_playbooks(
             agent_version=agent_version,
             user_id=user_id,
         )
         initial_playbook_names = {f.playbook_name for f in initial_playbooks}
-        assert "api_only_playbook" in initial_playbook_names, (
-            "Initial publish should create api_only_playbook"
-        )
-        assert "general_playbook" in initial_playbook_names, (
-            "Initial publish should create general_playbook"
+        assert SINGLETON_USER_PLAYBOOK_NAME in initial_playbook_names, (
+            "Initial publish should create a playbook under the singleton name"
         )
 
         # Step 2: Delete playbooks for our unique agent_version to allow rerun to regenerate
         for playbook in initial_playbooks:
             storage.delete_user_playbook(playbook.user_playbook_id)
 
-        # Step 3: Rerun with playbook_name filter - only run general_playbook
-        # This should create PENDING playbooks ONLY for general_playbook extractor
+        # Step 3: Rerun with playbook_name filter (no-op under the singleton model)
         rerun_response = (
             reflexio_instance_multiple_playbook_extractors.rerun_playbook_generation(
                 RerunPlaybookGenerationRequest(
                     agent_version=agent_version,
-                    playbook_name="general_playbook",  # Only run this extractor
+                    playbook_name=SINGLETON_USER_PLAYBOOK_NAME,
                 )
             )
         )
         assert rerun_response.success is True, (
-            f"Rerun with extractor_names failed: {rerun_response.msg}"
+            f"Rerun with playbook_name failed: {rerun_response.msg}"
         )
 
-        # Step 4: Verify only general_playbook was generated
-        # Query playbooks for our unique agent_version and user_id
+        # Step 4: Any generated playbooks carry the singleton name
         rerun_playbooks = storage.get_user_playbooks(
             agent_version=agent_version,
             user_id=user_id,
             status_filter=[Status.PENDING],
         )
 
-        # If playbooks were generated, they should only be from general_playbook
         for playbook in rerun_playbooks:
-            assert playbook.playbook_name == "general_playbook", (
-                f"Expected only general_playbook extractor to run, but found {playbook.playbook_name}"
+            assert playbook.playbook_name == SINGLETON_USER_PLAYBOOK_NAME, (
+                f"Expected the singleton playbook name, but found {playbook.playbook_name}"
             )
 
     finally:

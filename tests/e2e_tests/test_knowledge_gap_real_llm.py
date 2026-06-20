@@ -5,7 +5,7 @@ Run with:
     RUN_LOW_PRIORITY=1 uv run pytest tests/e2e_tests/test_knowledge_gap_real_llm.py -v -o 'addopts=' -s
 
 This test calls a real LLM using the default agent_context_prompt and
-user_playbook_extractor_configs to verify that when an agent fabricates
+user_playbook_extractor_config to verify that when an agent fabricates
 answers instead of admitting it can't check, the extracted playbook:
 1. Identifies the knowledge gap honestly
 2. Does NOT hallucinate a specific fix the agent can't actually do
@@ -32,7 +32,7 @@ def test_knowledge_gap_extraction_real_llm(
 ):
     """Publish a conversation where the agent guesses instead of admitting ignorance.
 
-    Uses the default agent_context_prompt and user_playbook_extractor_configs.
+    Uses the default agent_context_prompt and user_playbook_extractor_config.
     Verify the extracted playbook captures the knowledge gap honestly.
     """
     interactions = [

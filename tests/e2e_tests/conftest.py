@@ -105,12 +105,10 @@ if user mentions "I don't like the way you talked to me", summarize conversation
                 min_cluster_size=3,
             ),
         ),
-        agent_success_configs=[
-            AgentSuccessConfig(
-                evaluation_name="test_agent_success",
-                success_definition_prompt="sales agent is responding to user apporperately",
-            )
-        ],
+        agent_success_config=AgentSuccessConfig(
+            evaluation_name="test_agent_success",
+            success_definition_prompt="sales agent is responding to user apporperately",
+        ),
         tool_can_use=[
             ToolUseConfig(
                 tool_name="search",
@@ -253,12 +251,10 @@ def reflexio_instance_agent_success_only(
     config = Config(
         storage_config=sqlite_storage_config,
         agent_context_prompt="this is a sales agent",
-        agent_success_configs=[
-            AgentSuccessConfig(
-                evaluation_name="test_agent_success",
-                success_definition_prompt="sales agent is responding to user apporperately",
-            )
-        ],
+        agent_success_config=AgentSuccessConfig(
+            evaluation_name="test_agent_success",
+            success_definition_prompt="sales agent is responding to user apporperately",
+        ),
         tool_can_use=[
             ToolUseConfig(
                 tool_name="search",
@@ -318,11 +314,6 @@ def _get_playbook_names(instance: Reflexio) -> list[str]:
             names.add(playbook_config.extractor_name)
         return list(names)
 
-    legacy_configs = getattr(config, "user_playbook_extractor_configs", None)
-    if legacy_configs:
-        names = {SINGLETON_USER_PLAYBOOK_NAME}
-        names.update(fc.extractor_name for fc in legacy_configs if fc.extractor_name)
-        return list(names)
     return [SINGLETON_USER_PLAYBOOK_NAME]
 
 
@@ -397,32 +388,17 @@ def reflexio_instance_playbook_source_filtering(
     config = Config(
         storage_config=sqlite_storage_config,
         agent_context_prompt="this is a sales agent",
-        user_playbook_extractor_configs=[
-            # AgentPlaybook config only enabled for "api" source
-            PlaybookConfig(
-                extractor_name="api_playbook",
-                extraction_definition_prompt="""
+        # Single playbook extractor, only enabled for the "api" source. The
+        # multi-extractor model was retired; one extractor's
+        # request_sources_enabled filter is still honored, so this exercises
+        # source gating (runs for "api", skipped for everything else).
+        user_playbook_extractor_config=PlaybookConfig(
+            extractor_name="filtered_playbook",
+            extraction_definition_prompt="""
 playbook should be something user told you to do differently in the next session.
 """,
-                request_sources_enabled=["api"],
-            ),
-            # AgentPlaybook config only enabled for "webhook" source
-            PlaybookConfig(
-                extractor_name="webhook_playbook",
-                extraction_definition_prompt="""
-playbook should be something user told you to do differently in the next session.
-""",
-                request_sources_enabled=["webhook"],
-            ),
-            # AgentPlaybook config enabled for all sources (no filter)
-            PlaybookConfig(
-                extractor_name="all_sources_playbook",
-                extraction_definition_prompt="""
-playbook should be something user told you to do differently in the next session.
-""",
-                request_sources_enabled=None,
-            ),
-        ],
+            request_sources_enabled=["api"],
+        ),
     )
     configurator = DefaultConfigurator(org_id=test_org_id, config=config)
     return Reflexio(org_id=test_org_id, configurator=configurator)
@@ -444,7 +420,7 @@ def reflexio_instance_manual_profile(
 
     This config has:
     - window_size set (required for manual generation)
-    - allow_manual_trigger=True on the extractor
+    - manual_trigger=True on the extractor
     """
     config = Config(
         storage_config=sqlite_storage_config,
@@ -461,7 +437,7 @@ name, age, intent of the conversations
             tagging_definition_prompt="""
 choice of ['basic_info', 'conversation_intent']
 """,
-            allow_manual_trigger=True,  # Required for manual generation
+            manual_trigger=True,  # Required for manual generation
         ),
     )
     configurator = DefaultConfigurator(org_id=test_org_id, config=config)
@@ -484,7 +460,7 @@ def reflexio_instance_manual_playbook(
 
     This config has:
     - window_size set (required for manual generation)
-    - allow_manual_trigger=True on the extractor
+    - manual_trigger=True on the extractor
     """
     config = Config(
         storage_config=sqlite_storage_config,
@@ -496,7 +472,7 @@ def reflexio_instance_manual_playbook(
 playbook should be something user told you to do differently in the next session. something sales rep did that makes user not satisfied.
 playbook content is what agent should do differently in the next session based on the conversation history and be actionable as much as possible.
 """,
-            allow_manual_trigger=True,  # Required for manual generation
+            manual_trigger=True,  # Required for manual generation
         ),
     )
     configurator = DefaultConfigurator(org_id=test_org_id, config=config)
@@ -515,37 +491,23 @@ def cleanup_manual_playbook(reflexio_instance_manual_playbook):
 def reflexio_instance_multiple_profile_extractors(
     sqlite_storage_config: StorageConfigSQLite, test_org_id: str
 ) -> Reflexio:
-    """Create an Reflexio instance with multiple profile extractors.
+    """Create an Reflexio instance with a single profile extractor.
 
-    This config has multiple extractors for testing extractor_names filtering:
-    - extractor_basic_info: Extracts basic info
-    - extractor_preferences: Extracts preferences
-    - extractor_intent: Extracts conversation intent
+    The multi-extractor model was retired (extraction is singleton, one profile
+    extractor per org). The rerun ``extractor_names`` filter is now a no-op, so
+    these tests exercise the single-extractor rerun path: extractions are stored
+    under the singleton profile name regardless of the configured extractor_name.
     """
     config = Config(
         storage_config=sqlite_storage_config,
         agent_context_prompt="this is a sales agent",
         window_size=20,
-        profile_extractor_configs=[
-            ProfileExtractorConfig(
-                extractor_name="extractor_basic_info",
-                context_prompt="Extract basic information about the user.",
-                extraction_definition_prompt="name, company, role",
-                tagging_definition_prompt="choice of ['basic_info']",
-            ),
-            ProfileExtractorConfig(
-                extractor_name="extractor_preferences",
-                context_prompt="Extract user preferences from the conversation.",
-                extraction_definition_prompt="communication style, preferred contact method",
-                tagging_definition_prompt="choice of ['preferences']",
-            ),
-            ProfileExtractorConfig(
-                extractor_name="extractor_intent",
-                context_prompt="Extract user intent from the conversation.",
-                extraction_definition_prompt="conversation goal, buying intent",
-                tagging_definition_prompt="choice of ['intent']",
-            ),
-        ],
+        profile_extractor_config=ProfileExtractorConfig(
+            extractor_name="extractor_basic_info",
+            context_prompt="Extract basic information about the user.",
+            extraction_definition_prompt="name, company, role",
+            tagging_definition_prompt="choice of ['basic_info']",
+        ),
     )
     configurator = DefaultConfigurator(org_id=test_org_id, config=config)
     return Reflexio(org_id=test_org_id, configurator=configurator)
@@ -565,34 +527,23 @@ def cleanup_multiple_profile_extractors(
 def reflexio_instance_multiple_playbook_extractors(
     sqlite_storage_config: StorageConfigSQLite, test_org_id: str
 ) -> Reflexio:
-    """Create an Reflexio instance with multiple playbook extractors.
+    """Create an Reflexio instance with a single playbook extractor.
 
-    This config has multiple extractors with different source filters:
-    - api_only_playbook: Only runs for 'api' source
-    - webhook_only_playbook: Only runs for 'webhook' source
-    - general_playbook: Runs for all sources
+    The multi-extractor model was retired (extraction is singleton, one playbook
+    extractor per org). The rerun ``playbook_name`` filter is now a no-op, so
+    these tests exercise the single-extractor rerun path: generated playbooks are
+    stored under the singleton playbook name regardless of the configured
+    extractor_name, and the extractor runs for all sources.
     """
     config = Config(
         storage_config=sqlite_storage_config,
         agent_context_prompt="this is a sales agent",
         window_size=20,
-        user_playbook_extractor_configs=[
-            PlaybookConfig(
-                extractor_name="api_only_playbook",
-                extraction_definition_prompt="Extract playbook from API interactions.",
-                request_sources_enabled=["api"],
-            ),
-            PlaybookConfig(
-                extractor_name="webhook_only_playbook",
-                extraction_definition_prompt="Extract playbook from webhook interactions.",
-                request_sources_enabled=["webhook"],
-            ),
-            PlaybookConfig(
-                extractor_name="general_playbook",
-                extraction_definition_prompt="Extract general playbook from all sources.",
-                request_sources_enabled=None,  # All sources
-            ),
-        ],
+        user_playbook_extractor_config=PlaybookConfig(
+            extractor_name="general_playbook",
+            extraction_definition_prompt="Extract general playbook from all sources.",
+            request_sources_enabled=None,  # All sources
+        ),
     )
     configurator = DefaultConfigurator(org_id=test_org_id, config=config)
     return Reflexio(org_id=test_org_id, configurator=configurator)

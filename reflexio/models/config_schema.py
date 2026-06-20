@@ -95,7 +95,13 @@ def _migrate_dict(data: Any, mapping: dict[str, str]) -> Any:
     if isinstance(data, dict):
         data = dict(data)
         for old, new in mapping.items():
-            if old in data and new not in data:
+            if old not in data:
+                continue
+            # New name wins when both are present; always drop the old key so it
+            # doesn't survive into validation and trip ``extra="forbid"``.
+            if new in data:
+                data.pop(old)
+            else:
                 data[new] = data.pop(old)
     return data
 

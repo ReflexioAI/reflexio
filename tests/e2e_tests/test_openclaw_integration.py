@@ -134,16 +134,14 @@ def _make_reflexio_with_profile(
     config = Config(
         storage_config=storage_config,
         agent_context_prompt="AI coding assistant that learns about the user",
-        profile_extractor_configs=[
-            ProfileExtractorConfig(
-                extractor_name="openclaw_profile",
-                context_prompt="Extract user preferences and work habits from the conversation.",
-                extraction_definition_prompt=(
-                    "coding language preferences, tool preferences, workflow preferences"
-                ),
-                tagging_definition_prompt="choice of ['preference', 'workflow']",
-            )
-        ],
+        profile_extractor_config=ProfileExtractorConfig(
+            extractor_name="openclaw_profile",
+            context_prompt="Extract user preferences and work habits from the conversation.",
+            extraction_definition_prompt=(
+                "coding language preferences, tool preferences, workflow preferences"
+            ),
+            tagging_definition_prompt="choice of ['preference', 'workflow']",
+        ),
     )
     configurator = DefaultConfigurator(org_id=org_id, config=config)
     return Reflexio(org_id=org_id, configurator=configurator)
