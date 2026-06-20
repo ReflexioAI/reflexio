@@ -664,6 +664,27 @@ class PlaybookOptimizerConfig(BaseModel):
         return self
 
 
+class LineageGCConfig(BaseModel):
+    """Configuration for the tombstone garbage-collection job (off by default).
+
+    The GC hard-deletes lineage tombstone rows whose ``deleted_at`` timestamp
+    is older than ``tombstone_grace_window_days``.  It is opt-in and MUST NOT
+    be enabled until:
+
+    - The offline-tuner retention window is pinned (PB-9) so the GC cannot
+      delete tombstones that the tuner still needs for replay.
+    - The B2↔B3 timing contract is satisfied (PB-5) so the grace window is a
+      verified safe value, not the provisional default.
+
+    ``tombstone_grace_window_days`` is a provisional default — do not treat 90
+    days as a vetted value until PB-5 and PB-9 are closed.
+    """
+
+    enabled: bool = False
+    tombstone_grace_window_days: int = 90
+    poll_interval_seconds: int = 86400
+
+
 @dataclass(frozen=True)
 class EffectivePendingToolCallConfig:
     """Resolved pending-tool-call settings after applying tool overrides."""
@@ -801,6 +822,8 @@ class Config(BaseModel):
     playbook_optimizer_config: PlaybookOptimizerConfig = Field(
         default_factory=PlaybookOptimizerConfig
     )
+    # Tombstone GC job gate (opt-in, off by default — see LineageGCConfig)
+    lineage_gc: LineageGCConfig = Field(default_factory=LineageGCConfig)
     # Optional non-blocking async information tools for classic extraction.
     pending_tool_call_config: PendingToolCallConfig = Field(
         default_factory=PendingToolCallConfig
@@ -858,6 +881,7 @@ class Config(BaseModel):
                 "stride_size",
                 "reflection_config",
                 "playbook_optimizer_config",
+                "lineage_gc",
                 "pending_tool_call_config",
                 "retrieval_floor",
             ):
