@@ -43,6 +43,29 @@ from ._base import (
 from ._lineage import _append_event_stmt
 
 
+def _emit_hard_delete_playbook(
+    conn: sqlite3.Connection,
+    *,
+    org_id: str,
+    entity_type: str,
+    entity_id: str,
+    request_id: str,
+) -> None:
+    """Emit a single hard_delete lineage event for a playbook entity."""
+    _append_event_stmt(
+        conn,
+        org_id=org_id,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        op="hard_delete",
+        prov="wasInvalidatedBy",
+        source_ids=[],
+        actor="api",
+        request_id=request_id,
+        reason="erasure",
+    )
+
+
 def _row_to_playbook_optimization_candidate(
     row: sqlite3.Row,
 ) -> PlaybookOptimizationCandidate:
@@ -282,24 +305,21 @@ class PlaybookMixin:
 
     @SQLiteStorageBase.handle_exceptions
     def delete_all_user_playbooks(self) -> None:
-        ids = [
-            r["user_playbook_id"]
-            for r in self._fetchall("SELECT user_playbook_id FROM user_playbooks")
-        ]
         batch_request_id = uuid.uuid4().hex
         with self._lock:
+            ids = [
+                r["user_playbook_id"]
+                for r in self.conn.execute(
+                    "SELECT user_playbook_id FROM user_playbooks"
+                ).fetchall()
+            ]
             for upid in ids:
-                _append_event_stmt(
+                _emit_hard_delete_playbook(
                     self.conn,
                     org_id=self.org_id,
                     entity_type="user_playbook",
                     entity_id=str(upid),
-                    op="hard_delete",
-                    prov="wasInvalidatedBy",
-                    source_ids=[],
-                    actor="api",
                     request_id=batch_request_id,
-                    reason="erasure",
                 )
             self.conn.execute("DELETE FROM user_playbooks_fts")
             self.conn.execute("DELETE FROM user_playbooks")
@@ -307,19 +327,13 @@ class PlaybookMixin:
 
     @SQLiteStorageBase.handle_exceptions
     def delete_user_playbook(self, user_playbook_id: int) -> None:
-        batch_request_id = uuid.uuid4().hex
         with self._lock:
-            _append_event_stmt(
+            _emit_hard_delete_playbook(
                 self.conn,
                 org_id=self.org_id,
                 entity_type="user_playbook",
                 entity_id=str(user_playbook_id),
-                op="hard_delete",
-                prov="wasInvalidatedBy",
-                source_ids=[],
-                actor="api",
-                request_id=batch_request_id,
-                reason="erasure",
+                request_id=uuid.uuid4().hex,
             )
             self._fts_delete("user_playbooks_fts", user_playbook_id)
             self._vec_delete("user_playbooks_vec", user_playbook_id)
@@ -338,24 +352,21 @@ class PlaybookMixin:
         if agent_version is not None:
             sql += " AND agent_version = ?"
             params.append(agent_version)
-        ids = [r["user_playbook_id"] for r in self._fetchall(sql, params)]
-        if not ids:
-            return
-        ph = ",".join("?" for _ in ids)
         batch_request_id = uuid.uuid4().hex
         with self._lock:
+            ids = [
+                r["user_playbook_id"] for r in self.conn.execute(sql, params).fetchall()
+            ]
+            if not ids:
+                return
+            ph = ",".join("?" for _ in ids)
             for upid in ids:
-                _append_event_stmt(
+                _emit_hard_delete_playbook(
                     self.conn,
                     org_id=self.org_id,
                     entity_type="user_playbook",
                     entity_id=str(upid),
-                    op="hard_delete",
-                    prov="wasInvalidatedBy",
-                    source_ids=[],
-                    actor="api",
                     request_id=batch_request_id,
-                    reason="erasure",
                 )
             self.conn.execute(
                 f"DELETE FROM user_playbooks_fts WHERE rowid IN ({ph})", ids
@@ -372,20 +383,16 @@ class PlaybookMixin:
         if not user_playbook_ids:
             return 0
         ph = ",".join("?" for _ in user_playbook_ids)
+        batch_request_id = uuid.uuid4().hex
         with self._lock:
             if emit_hard_delete:
                 for upid in user_playbook_ids:
-                    _append_event_stmt(
+                    _emit_hard_delete_playbook(
                         self.conn,
                         org_id=self.org_id,
                         entity_type="user_playbook",
                         entity_id=str(upid),
-                        op="hard_delete",
-                        prov="wasInvalidatedBy",
-                        source_ids=[],
-                        actor="system",
-                        request_id="",
-                        reason="erasure",
+                        request_id=batch_request_id,
                     )
             self.conn.execute(
                 f"DELETE FROM user_playbooks_fts WHERE rowid IN ({ph})",
@@ -794,24 +801,21 @@ class PlaybookMixin:
 
     @SQLiteStorageBase.handle_exceptions
     def delete_all_agent_playbooks(self) -> None:
-        ids = [
-            r["agent_playbook_id"]
-            for r in self._fetchall("SELECT agent_playbook_id FROM agent_playbooks")
-        ]
         batch_request_id = uuid.uuid4().hex
         with self._lock:
+            ids = [
+                r["agent_playbook_id"]
+                for r in self.conn.execute(
+                    "SELECT agent_playbook_id FROM agent_playbooks"
+                ).fetchall()
+            ]
             for apid in ids:
-                _append_event_stmt(
+                _emit_hard_delete_playbook(
                     self.conn,
                     org_id=self.org_id,
                     entity_type="agent_playbook",
                     entity_id=str(apid),
-                    op="hard_delete",
-                    prov="wasInvalidatedBy",
-                    source_ids=[],
-                    actor="api",
                     request_id=batch_request_id,
-                    reason="erasure",
                 )
             self.conn.execute("DELETE FROM agent_playbooks_fts")
             self.conn.execute("DELETE FROM agent_playbooks")
@@ -819,19 +823,13 @@ class PlaybookMixin:
 
     @SQLiteStorageBase.handle_exceptions
     def delete_agent_playbook(self, agent_playbook_id: int) -> None:
-        batch_request_id = uuid.uuid4().hex
         with self._lock:
-            _append_event_stmt(
+            _emit_hard_delete_playbook(
                 self.conn,
                 org_id=self.org_id,
                 entity_type="agent_playbook",
                 entity_id=str(agent_playbook_id),
-                op="hard_delete",
-                prov="wasInvalidatedBy",
-                source_ids=[],
-                actor="api",
-                request_id=batch_request_id,
-                reason="erasure",
+                request_id=uuid.uuid4().hex,
             )
             self._fts_delete("agent_playbooks_fts", agent_playbook_id)
             self._vec_delete("agent_playbooks_vec", agent_playbook_id)
@@ -850,24 +848,22 @@ class PlaybookMixin:
         if agent_version is not None:
             sql += " AND agent_version = ?"
             params.append(agent_version)
-        ids = [r["agent_playbook_id"] for r in self._fetchall(sql, params)]
-        if not ids:
-            return
-        ph = ",".join("?" for _ in ids)
         batch_request_id = uuid.uuid4().hex
         with self._lock:
+            ids = [
+                r["agent_playbook_id"]
+                for r in self.conn.execute(sql, params).fetchall()
+            ]
+            if not ids:
+                return
+            ph = ",".join("?" for _ in ids)
             for apid in ids:
-                _append_event_stmt(
+                _emit_hard_delete_playbook(
                     self.conn,
                     org_id=self.org_id,
                     entity_type="agent_playbook",
                     entity_id=str(apid),
-                    op="hard_delete",
-                    prov="wasInvalidatedBy",
-                    source_ids=[],
-                    actor="api",
                     request_id=batch_request_id,
-                    reason="erasure",
                 )
             self.conn.execute(
                 f"DELETE FROM agent_playbooks_fts WHERE rowid IN ({ph})", ids
@@ -884,20 +880,16 @@ class PlaybookMixin:
         if not agent_playbook_ids:
             return
         ph = ",".join("?" for _ in agent_playbook_ids)
+        batch_request_id = uuid.uuid4().hex
         with self._lock:
             if emit_hard_delete:
                 for apid in agent_playbook_ids:
-                    _append_event_stmt(
+                    _emit_hard_delete_playbook(
                         self.conn,
                         org_id=self.org_id,
                         entity_type="agent_playbook",
                         entity_id=str(apid),
-                        op="hard_delete",
-                        prov="wasInvalidatedBy",
-                        source_ids=[],
-                        actor="system",
-                        request_id="",
-                        reason="erasure",
+                        request_id=batch_request_id,
                     )
             self.conn.execute(
                 f"DELETE FROM agent_playbooks_fts WHERE rowid IN ({ph})",
@@ -1377,24 +1369,22 @@ class PlaybookMixin:
         if agent_version is not None:
             sql += " AND agent_version = ?"
             params.append(agent_version)
-        ids = [r["agent_playbook_id"] for r in self._fetchall(sql, params)]
-        if not ids:
-            return
-        ph = ",".join("?" for _ in ids)
         batch_request_id = uuid.uuid4().hex
         with self._lock:
+            ids = [
+                r["agent_playbook_id"]
+                for r in self.conn.execute(sql, params).fetchall()
+            ]
+            if not ids:
+                return
+            ph = ",".join("?" for _ in ids)
             for apid in ids:
-                _append_event_stmt(
+                _emit_hard_delete_playbook(
                     self.conn,
                     org_id=self.org_id,
                     entity_type="agent_playbook",
                     entity_id=str(apid),
-                    op="hard_delete",
-                    prov="wasInvalidatedBy",
-                    source_ids=[],
-                    actor="api",
                     request_id=batch_request_id,
-                    reason="erasure",
                 )
             self.conn.execute(
                 f"DELETE FROM agent_playbooks_fts WHERE rowid IN ({ph})", ids

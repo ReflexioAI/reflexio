@@ -161,10 +161,19 @@ def test_delete_all_profiles_emits_hard_delete_per_id(tmp_path):
 def test_delete_all_profiles_by_status_emits_hard_delete_per_id(tmp_path):
     s = _store(tmp_path)
     p1 = _make_profile(user_id="u1", profile_id="arc1")
+    p2 = _make_profile(user_id="u1", profile_id="arc2")
     p1.status = Status.ARCHIVED
-    s.add_user_profile("u1", [p1])
+    p2.status = Status.ARCHIVED
+    s.add_user_profile("u1", [p1, p2])
     s.delete_all_profiles_by_status(Status.ARCHIVED)
-    assert any(e.op == "hard_delete" for e in s.get_lineage_events(entity_id="arc1"))
+    events_1 = [
+        e for e in s.get_lineage_events(entity_id="arc1") if e.op == "hard_delete"
+    ]
+    events_2 = [
+        e for e in s.get_lineage_events(entity_id="arc2") if e.op == "hard_delete"
+    ]
+    assert len(events_1) == 1
+    assert len(events_2) == 1
 
 
 def test_delete_all_user_playbooks_emits_hard_delete_per_id(tmp_path):

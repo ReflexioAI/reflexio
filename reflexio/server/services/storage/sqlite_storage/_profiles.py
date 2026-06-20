@@ -42,6 +42,28 @@ from ._base import (
 from ._lineage import _append_event_stmt
 
 
+def _emit_hard_delete_profile(
+    conn: sqlite3.Connection,
+    *,
+    org_id: str,
+    entity_id: str,
+    request_id: str,
+) -> None:
+    """Emit a single hard_delete lineage event for a profile entity."""
+    _append_event_stmt(
+        conn,
+        org_id=org_id,
+        entity_type="profile",
+        entity_id=entity_id,
+        op="hard_delete",
+        prov="wasInvalidatedBy",
+        source_ids=[],
+        actor="api",
+        request_id=request_id,
+        reason="erasure",
+    )
+
+
 def _build_tags_sql(alias: str, tags: list[str] | None) -> tuple[str, list[Any]]:
     if not tags:
         return "", []
@@ -58,6 +80,7 @@ class ProfileMixin:
     # Type hints for instance attributes/methods provided by SQLiteStorageBase via MRO
     _lock: Any
     conn: sqlite3.Connection
+    org_id: str
     _execute: Any
     _fetchone: Any
     _fetchall: Any
@@ -264,19 +287,12 @@ class ProfileMixin:
             "SELECT rowid FROM profiles WHERE profile_id = ?",
             (request.profile_id,),
         )
-        batch_request_id = uuid.uuid4().hex
         with self._lock:
-            _append_event_stmt(
+            _emit_hard_delete_profile(
                 self.conn,
                 org_id=self.org_id,
-                entity_type="profile",
                 entity_id=str(request.profile_id),
-                op="hard_delete",
-                prov="wasInvalidatedBy",
-                source_ids=[],
-                actor="api",
-                request_id=batch_request_id,
-                reason="erasure",
+                request_id=uuid.uuid4().hex,
             )
             self._fts_delete_profile(request.profile_id)
             if rowid_row:
@@ -289,28 +305,22 @@ class ProfileMixin:
 
     @SQLiteStorageBase.handle_exceptions
     def delete_all_profiles_for_user(self, user_id: str) -> None:
-        pids = [
-            r["profile_id"]
-            for r in self._fetchall(
-                "SELECT profile_id FROM profiles WHERE user_id = ?", (user_id,)
-            )
-        ]
-        if not pids:
-            return
         batch_request_id = uuid.uuid4().hex
         with self._lock:
+            pids = [
+                r["profile_id"]
+                for r in self.conn.execute(
+                    "SELECT profile_id FROM profiles WHERE user_id = ?", (user_id,)
+                ).fetchall()
+            ]
+            if not pids:
+                return
             for pid in pids:
-                _append_event_stmt(
+                _emit_hard_delete_profile(
                     self.conn,
                     org_id=self.org_id,
-                    entity_type="profile",
                     entity_id=str(pid),
-                    op="hard_delete",
-                    prov="wasInvalidatedBy",
-                    source_ids=[],
-                    actor="api",
                     request_id=batch_request_id,
-                    reason="erasure",
                 )
                 self._fts_delete_profile(pid)
             self.conn.execute("DELETE FROM profiles WHERE user_id = ?", (user_id,))
@@ -318,23 +328,18 @@ class ProfileMixin:
 
     @SQLiteStorageBase.handle_exceptions
     def delete_all_profiles(self) -> None:
-        pids = [
-            r["profile_id"] for r in self._fetchall("SELECT profile_id FROM profiles")
-        ]
         batch_request_id = uuid.uuid4().hex
         with self._lock:
+            pids = [
+                r["profile_id"]
+                for r in self.conn.execute("SELECT profile_id FROM profiles").fetchall()
+            ]
             for pid in pids:
-                _append_event_stmt(
+                _emit_hard_delete_profile(
                     self.conn,
                     org_id=self.org_id,
-                    entity_type="profile",
                     entity_id=str(pid),
-                    op="hard_delete",
-                    prov="wasInvalidatedBy",
-                    source_ids=[],
-                    actor="api",
                     request_id=batch_request_id,
-                    reason="erasure",
                 )
             self.conn.execute("DELETE FROM profiles_fts")
             self.conn.execute("DELETE FROM profiles")
@@ -430,28 +435,22 @@ class ProfileMixin:
 
     @SQLiteStorageBase.handle_exceptions
     def delete_all_profiles_by_status(self, status: Status) -> int:
-        pids = [
-            r["profile_id"]
-            for r in self._fetchall(
-                "SELECT profile_id FROM profiles WHERE status = ?", (status.value,)
-            )
-        ]
-        if not pids:
-            return 0
         batch_request_id = uuid.uuid4().hex
         with self._lock:
+            pids = [
+                r["profile_id"]
+                for r in self.conn.execute(
+                    "SELECT profile_id FROM profiles WHERE status = ?", (status.value,)
+                ).fetchall()
+            ]
+            if not pids:
+                return 0
             for pid in pids:
-                _append_event_stmt(
+                _emit_hard_delete_profile(
                     self.conn,
                     org_id=self.org_id,
-                    entity_type="profile",
                     entity_id=str(pid),
-                    op="hard_delete",
-                    prov="wasInvalidatedBy",
-                    source_ids=[],
-                    actor="api",
                     request_id=batch_request_id,
-                    reason="erasure",
                 )
                 self._fts_delete_profile(pid)
             ph = ",".join("?" for _ in pids)
@@ -485,17 +484,11 @@ class ProfileMixin:
         with self._lock:
             if emit_hard_delete:
                 for pid in profile_ids:
-                    _append_event_stmt(
+                    _emit_hard_delete_profile(
                         self.conn,
                         org_id=self.org_id,
-                        entity_type="profile",
                         entity_id=str(pid),
-                        op="hard_delete",
-                        prov="wasInvalidatedBy",
-                        source_ids=[],
-                        actor="api",
                         request_id=batch_request_id,
-                        reason="erasure",
                     )
             for pid in profile_ids:
                 self._fts_delete_profile(pid)
