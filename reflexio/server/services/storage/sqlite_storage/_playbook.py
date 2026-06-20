@@ -447,6 +447,8 @@ class PlaybookMixin:
                 f"UPDATE user_playbooks SET status = ? WHERE {where}",
                 [new_val] + select_params + extra_params,
             )
+            from_val = old_status.value if old_status else None
+            to_val = new_status.value if new_status else None
             for upid in affected:
                 _append_event_stmt(
                     self.conn,
@@ -459,6 +461,9 @@ class PlaybookMixin:
                     actor="api",
                     request_id=batch_request_id,
                     reason=reason,
+                    from_status=from_val,
+                    to_status=to_val,
+                    status_namespace="lifecycle_status",
                 )
             self.conn.commit()
         return cur.rowcount
@@ -945,7 +950,8 @@ class PlaybookMixin:
                 raise ValueError(
                     f"Agent playbook with ID {agent_playbook_id} not found"
                 )
-            old_status = row["playbook_status"] or "None"
+            prior_playbook_status = row["playbook_status"]
+            old_status = prior_playbook_status or "None"
             cur = self.conn.execute(
                 "UPDATE agent_playbooks SET playbook_status = ? WHERE agent_playbook_id = ?",
                 (playbook_status.value, agent_playbook_id),
@@ -962,6 +968,9 @@ class PlaybookMixin:
                     actor="api",
                     request_id=uuid.uuid4().hex,
                     reason=f"{old_status}->{playbook_status.value}",
+                    from_status=prior_playbook_status,
+                    to_status=playbook_status.value,
+                    status_namespace="playbook_status",
                 )
             self.conn.commit()
 
@@ -1126,6 +1135,9 @@ class PlaybookMixin:
                     actor="api",
                     request_id=batch_request_id,
                     reason=f"{prior}->archived",
+                    from_status=row["status"],
+                    to_status="archived",
+                    status_namespace="lifecycle_status",
                 )
             self.conn.commit()
 
@@ -1161,6 +1173,9 @@ class PlaybookMixin:
                     actor="api",
                     request_id=batch_request_id,
                     reason=f"{prior}->archived",
+                    from_status=row["status"],
+                    to_status="archived",
+                    status_namespace="lifecycle_status",
                 )
             self.conn.commit()
 

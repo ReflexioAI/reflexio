@@ -449,6 +449,9 @@ class LineageEvent(BaseModel):
     request_id: str = ""
     reason: str = ""
     created_at: int = 0
+    from_status: str | None = None
+    to_status: str | None = None
+    status_namespace: str | None = None
 
 
 class LineageContext(BaseModel):

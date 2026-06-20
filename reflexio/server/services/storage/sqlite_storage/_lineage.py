@@ -41,6 +41,9 @@ def _append_event_stmt(
     request_id: str,
     reason: str,
     created_at: int | None = None,
+    from_status: str | None = None,
+    to_status: str | None = None,
+    status_namespace: str | None = None,
 ) -> sqlite3.Cursor:
     """Insert a lineage event row; no-ops on (org_id, entity_type, entity_id, op, request_id) duplicate.
 
@@ -49,8 +52,9 @@ def _append_event_stmt(
     return conn.execute(
         "INSERT OR IGNORE INTO lineage_event "
         "(org_id, entity_type, entity_id, op, prov_relation, source_ids, "
-        "actor, request_id, reason, created_at) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?)",
+        "actor, request_id, reason, created_at, "
+        "from_status, to_status, status_namespace) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (
             org_id,
             entity_type,
@@ -62,6 +66,9 @@ def _append_event_stmt(
             request_id,
             reason,
             created_at if created_at is not None else int(time.time()),
+            from_status,
+            to_status,
+            status_namespace,
         ),
     )
 
@@ -100,6 +107,9 @@ class SQLiteLineageMixin:
                 request_id=event.request_id,
                 reason=event.reason,
                 created_at=created,
+                from_status=event.from_status,
+                to_status=event.to_status,
+                status_namespace=event.status_namespace,
             )
             if (
                 cur.rowcount == 0
@@ -168,6 +178,9 @@ class SQLiteLineageMixin:
                 request_id=r["request_id"],
                 reason=r["reason"],
                 created_at=r["created_at"],
+                from_status=r["from_status"],
+                to_status=r["to_status"],
+                status_namespace=r["status_namespace"],
             )
             for r in rows
         ]

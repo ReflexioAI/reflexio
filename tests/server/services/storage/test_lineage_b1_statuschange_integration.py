@@ -448,3 +448,148 @@ def test_update_agent_playbook_status_reason_is_transition(tmp_path):
     # Should be something like "pending->approved" or "None->approved"
     assert "approved" in evts[0].reason.lower()
     assert "->" in evts[0].reason
+
+
+# --------------------------------------------------------------------------
+# Structured status fields: from_status / to_status / status_namespace
+# --------------------------------------------------------------------------
+
+
+def test_archive_agent_playbooks_by_ids_structured_fields_null_prior(tmp_path):
+    """NULL-status agent_playbook archive yields from_status=None, to_status='archived', ns='lifecycle_status'."""
+    s = _store(tmp_path)
+    ap = _make_agent_playbook()
+    saved = s.save_agent_playbooks([ap])
+    apid = saved[0].agent_playbook_id
+    s.archive_agent_playbooks_by_ids([apid])
+    evts = [
+        e for e in s.get_lineage_events(entity_id=str(apid)) if e.op == "status_change"
+    ]
+    assert len(evts) == 1
+    assert evts[0].from_status is None
+    assert evts[0].to_status == "archived"
+    assert evts[0].status_namespace == "lifecycle_status"
+
+
+def test_archive_agent_playbooks_by_ids_structured_fields_pending_prior(tmp_path):
+    """PENDING-status agent_playbook archive yields from_status='pending', to_status='archived'."""
+    s = _store(tmp_path)
+    ap = AgentPlaybook(
+        playbook_name="pb_pending",
+        agent_version="v1",
+        content="c",
+        status=Status.PENDING,
+    )
+    saved = s.save_agent_playbooks([ap])
+    apid = saved[0].agent_playbook_id
+    s.archive_agent_playbooks_by_ids([apid])
+    evts = [
+        e for e in s.get_lineage_events(entity_id=str(apid)) if e.op == "status_change"
+    ]
+    assert len(evts) == 1
+    assert evts[0].from_status == "pending"
+    assert evts[0].to_status == "archived"
+    assert evts[0].status_namespace == "lifecycle_status"
+
+
+def test_archive_agent_playbooks_by_playbook_name_structured_fields(tmp_path):
+    """archive_agent_playbooks_by_playbook_name carries structured status fields."""
+    s = _store(tmp_path)
+    ap = _make_agent_playbook(playbook_name="struct_book")
+    saved = s.save_agent_playbooks([ap])
+    apid = saved[0].agent_playbook_id
+    s.archive_agent_playbooks_by_playbook_name("struct_book")
+    evts = [
+        e for e in s.get_lineage_events(entity_id=str(apid)) if e.op == "status_change"
+    ]
+    assert len(evts) == 1
+    assert evts[0].from_status is None
+    assert evts[0].to_status == "archived"
+    assert evts[0].status_namespace == "lifecycle_status"
+
+
+def test_update_all_user_playbooks_status_structured_fields(tmp_path):
+    """update_all_user_playbooks_status carries from_status/to_status/status_namespace."""
+    s = _store(tmp_path)
+    pb = UserPlaybook(
+        user_id="u",
+        agent_version="v",
+        request_id="r",
+        content="c",
+        status=Status.PENDING,
+    )
+    s.save_user_playbooks([pb])
+    s.update_all_user_playbooks_status(old_status=Status.PENDING, new_status=None)
+    evts = [
+        e
+        for e in s.get_lineage_events(entity_id=str(pb.user_playbook_id))
+        if e.op == "status_change"
+    ]
+    assert len(evts) == 1
+    assert evts[0].from_status == "pending"
+    assert evts[0].to_status is None
+    assert evts[0].status_namespace == "lifecycle_status"
+
+
+def test_update_all_user_playbooks_status_null_prior_structured_fields(tmp_path):
+    """update_all_user_playbooks_status with NULL->ARCHIVED carries from_status=None."""
+    s = _store(tmp_path)
+    pb = UserPlaybook(user_id="u", agent_version="v", request_id="r", content="c")
+    s.save_user_playbooks([pb])
+    s.update_all_user_playbooks_status(old_status=None, new_status=Status.ARCHIVED)
+    evts = [
+        e
+        for e in s.get_lineage_events(entity_id=str(pb.user_playbook_id))
+        if e.op == "status_change"
+    ]
+    assert len(evts) == 1
+    assert evts[0].from_status is None
+    assert evts[0].to_status == "archived"
+    assert evts[0].status_namespace == "lifecycle_status"
+
+
+def test_update_all_profiles_status_structured_fields(tmp_path):
+    """update_all_profiles_status carries from_status/to_status/status_namespace."""
+    s = _store(tmp_path)
+    profile = _make_profile(user_id="u1", profile_id="struct_p1")
+    s.add_user_profile("u1", [profile])
+    s.update_all_profiles_status(old_status=None, new_status=Status.ARCHIVED)
+    evts = [
+        e for e in s.get_lineage_events(entity_id="struct_p1") if e.op == "status_change"
+    ]
+    assert len(evts) == 1
+    assert evts[0].from_status is None
+    assert evts[0].to_status == "archived"
+    assert evts[0].status_namespace == "lifecycle_status"
+
+
+def test_archive_profile_by_id_structured_fields(tmp_path):
+    """archive_profile_by_id always has NULL prior (guard is status IS NULL)."""
+    s = _store(tmp_path)
+    profile = _make_profile(user_id="u1", profile_id="struct_p2")
+    s.add_user_profile("u1", [profile])
+    s.archive_profile_by_id("u1", "struct_p2")
+    evts = [
+        e for e in s.get_lineage_events(entity_id="struct_p2") if e.op == "status_change"
+    ]
+    assert len(evts) == 1
+    assert evts[0].from_status is None
+    assert evts[0].to_status == "archived"
+    assert evts[0].status_namespace == "lifecycle_status"
+
+
+def test_update_agent_playbook_status_structured_fields_pending_to_approved(tmp_path):
+    """update_agent_playbook_status: pending->approved yields structured fields with playbook_status ns."""
+    s = _store(tmp_path)
+    ap = _make_agent_playbook()
+    saved = s.save_agent_playbooks([ap])
+    apid = saved[0].agent_playbook_id
+    # Default playbook_status is 'pending'
+    s.update_agent_playbook_status(apid, PlaybookStatus.APPROVED)
+    evts = [
+        e for e in s.get_lineage_events(entity_id=str(apid)) if e.op == "status_change"
+    ]
+    assert len(evts) == 1
+    assert evts[0].from_status == "pending"
+    assert evts[0].to_status == "approved"
+    assert evts[0].status_namespace == "playbook_status"

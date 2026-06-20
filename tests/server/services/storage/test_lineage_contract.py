@@ -236,3 +236,52 @@ def test_append_lineage_event_idempotent_exact_key(storage) -> None:
         entity_type="user_playbook", entity_id="idem-2"
     )
     assert len(events) == 1
+
+
+def test_status_change_event_carries_structured_fields(storage) -> None:
+    """status_change via archive_agent_playbooks_by_ids carries from_status/to_status/status_namespace."""
+    ap = AgentPlaybook(agent_version="v", content="c for structured")
+    storage.save_agent_playbooks([ap])
+    entity_id = str(ap.agent_playbook_id)
+
+    storage.archive_agent_playbooks_by_ids([ap.agent_playbook_id])
+
+    events = storage.get_lineage_events(
+        entity_type="agent_playbook", entity_id=entity_id
+    )
+    sc_events = [e for e in events if e.op == "status_change"]
+    assert len(sc_events) == 1
+    evt = sc_events[0]
+    assert evt.from_status is None
+    assert evt.to_status == "archived"
+    assert evt.status_namespace == "lifecycle_status"
+
+
+def test_status_change_null_prior_stores_real_null(storage) -> None:
+    """from_status must be real NULL (None), not the string 'None', when prior status is absent."""
+    ap = AgentPlaybook(agent_version="v", content="c for null-prior")
+    storage.save_agent_playbooks([ap])
+    storage.archive_agent_playbooks_by_ids([ap.agent_playbook_id])
+
+    events = storage.get_lineage_events(
+        entity_type="agent_playbook", entity_id=str(ap.agent_playbook_id)
+    )
+    sc = next(e for e in events if e.op == "status_change")
+    # Must be Python None, not the string "None"
+    assert sc.from_status is None
+    assert sc.from_status != "None"
+
+
+def test_non_status_change_events_have_null_structured_fields(storage) -> None:
+    """merge/revise/hard_delete events must NOT carry status namespace fields."""
+    pb = UserPlaybook(agent_version="v", request_id="r-non-sc", content="c")
+    storage.save_user_playbooks([pb])
+    storage.delete_user_playbook(pb.user_playbook_id)
+
+    events = storage.get_lineage_events(
+        entity_type="user_playbook", entity_id=str(pb.user_playbook_id)
+    )
+    hd = next(e for e in events if e.op == "hard_delete")
+    assert hd.from_status is None
+    assert hd.to_status is None
+    assert hd.status_namespace is None

@@ -1247,22 +1247,34 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         with self._lock:
             self.conn.executescript("""
                 CREATE TABLE IF NOT EXISTS lineage_event (
-                    event_id      INTEGER PRIMARY KEY AUTOINCREMENT,
-                    org_id        TEXT NOT NULL,
-                    entity_type   TEXT NOT NULL,
-                    entity_id     TEXT NOT NULL,
-                    op            TEXT NOT NULL,
-                    prov_relation TEXT NOT NULL DEFAULT '',
-                    source_ids    TEXT NOT NULL DEFAULT '[]',
-                    actor         TEXT NOT NULL DEFAULT '',
-                    request_id    TEXT NOT NULL DEFAULT '',
-                    reason        TEXT NOT NULL DEFAULT '',
-                    created_at    INTEGER NOT NULL,
+                    event_id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                    org_id           TEXT NOT NULL,
+                    entity_type      TEXT NOT NULL,
+                    entity_id        TEXT NOT NULL,
+                    op               TEXT NOT NULL,
+                    prov_relation    TEXT NOT NULL DEFAULT '',
+                    source_ids       TEXT NOT NULL DEFAULT '[]',
+                    actor            TEXT NOT NULL DEFAULT '',
+                    request_id       TEXT NOT NULL DEFAULT '',
+                    reason           TEXT NOT NULL DEFAULT '',
+                    created_at       INTEGER NOT NULL,
                     UNIQUE (org_id, entity_type, entity_id, op, request_id)
                 );
                 CREATE INDEX IF NOT EXISTS idx_lineage_entity
                     ON lineage_event (entity_type, entity_id);
             """)
+            existing_cols = {
+                row["name"]
+                for row in self.conn.execute(
+                    "PRAGMA table_info(lineage_event)"
+                ).fetchall()
+            }
+            for col in ("from_status", "to_status", "status_namespace"):
+                if col not in existing_cols:
+                    self.conn.execute(
+                        f"ALTER TABLE lineage_event ADD COLUMN {col} TEXT"  # noqa: S608
+                    )
+                    logger.info("Added %s column to lineage_event", col)
             self.conn.commit()
 
     def _migrate_agent_playbook_source_windows(self) -> None:
@@ -2126,17 +2138,20 @@ CREATE INDEX IF NOT EXISTS idx_shadow_verdicts_prompt_created_at_desc
 -- ============================================================================
 
 CREATE TABLE IF NOT EXISTS lineage_event (
-    event_id      INTEGER PRIMARY KEY AUTOINCREMENT,
-    org_id        TEXT NOT NULL,
-    entity_type   TEXT NOT NULL,
-    entity_id     TEXT NOT NULL,
-    op            TEXT NOT NULL,
-    prov_relation TEXT NOT NULL DEFAULT '',
-    source_ids    TEXT NOT NULL DEFAULT '[]',
-    actor         TEXT NOT NULL DEFAULT '',
-    request_id    TEXT NOT NULL DEFAULT '',
-    reason        TEXT NOT NULL DEFAULT '',
-    created_at    INTEGER NOT NULL,
+    event_id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    org_id           TEXT NOT NULL,
+    entity_type      TEXT NOT NULL,
+    entity_id        TEXT NOT NULL,
+    op               TEXT NOT NULL,
+    prov_relation    TEXT NOT NULL DEFAULT '',
+    source_ids       TEXT NOT NULL DEFAULT '[]',
+    actor            TEXT NOT NULL DEFAULT '',
+    request_id       TEXT NOT NULL DEFAULT '',
+    reason           TEXT NOT NULL DEFAULT '',
+    created_at       INTEGER NOT NULL,
+    from_status      TEXT,
+    to_status        TEXT,
+    status_namespace TEXT,
     UNIQUE (org_id, entity_type, entity_id, op, request_id)
 );
 CREATE INDEX IF NOT EXISTS idx_lineage_entity ON lineage_event (entity_type, entity_id);

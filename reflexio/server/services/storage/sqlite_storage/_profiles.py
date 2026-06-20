@@ -395,6 +395,8 @@ class ProfileMixin:
                 f"UPDATE profiles SET status = ?, last_modified_timestamp = ? WHERE {where}",
                 [new_val, now_ts] + select_params + extra_params,
             )
+            from_val = old_status.value if old_status else None
+            to_val = new_status.value if new_status else None
             for pid in affected:
                 _append_event_stmt(
                     self.conn,
@@ -407,6 +409,9 @@ class ProfileMixin:
                     actor="api",
                     request_id=batch_request_id,
                     reason=reason,
+                    from_status=from_val,
+                    to_status=to_val,
+                    status_namespace="lifecycle_status",
                 )
             self.conn.commit()
         return cur.rowcount
@@ -475,6 +480,9 @@ class ProfileMixin:
                     actor="api",
                     request_id=uuid.uuid4().hex,
                     reason="None->archived",
+                    from_status=None,
+                    to_status="archived",
+                    status_namespace="lifecycle_status",
                 )
             self.conn.commit()
         return cur.rowcount > 0
