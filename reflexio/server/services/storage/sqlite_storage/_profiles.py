@@ -94,6 +94,7 @@ class ProfileMixin:
     _fts_delete_profile: Any
     _vec_upsert: Any
     _vec_delete: Any
+    _delete_profile_search_rows: Any
     _has_sqlite_vec: bool
     llm_client: Any
     embedding_model_name: str
@@ -220,7 +221,7 @@ class ProfileMixin:
         )
         new_profile.embedding = embedding
         with self._lock:
-            self.conn.execute(
+            cur = self.conn.execute(
                 """UPDATE profiles SET content=?, last_modified_timestamp=?,
                    generated_from_request_id=?, profile_time_to_live=?,
                    expiration_timestamp=?, custom_features=?, embedding=?,
@@ -246,18 +247,19 @@ class ProfileMixin:
                     profile_id,
                 ),
             )
-            _append_event_stmt(
-                self.conn,
-                org_id=self.org_id,
-                entity_type="profile",
-                entity_id=str(profile_id),
-                op="revise",
-                prov="wasRevisionOf",
-                source_ids=[],
-                actor="api",
-                request_id=uuid.uuid4().hex,
-                reason="in-place update",
-            )
+            if cur.rowcount > 0:
+                _append_event_stmt(
+                    self.conn,
+                    org_id=self.org_id,
+                    entity_type="profile",
+                    entity_id=str(profile_id),
+                    op="revise",
+                    prov="wasRevisionOf",
+                    source_ids=[],
+                    actor="api",
+                    request_id=uuid.uuid4().hex,
+                    reason="in-place update",
+                )
             self.conn.commit()
             fts_parts = [new_profile.content or ""]
             if new_profile.custom_features:
@@ -317,8 +319,7 @@ class ProfileMixin:
             ]
             if not pids:
                 return
-            for pid in pids:
-                self._fts_delete_profile(pid)
+            self._delete_profile_search_rows(pids)
             self.conn.execute("DELETE FROM profiles WHERE user_id = ?", (user_id,))
             for pid in pids:
                 _emit_hard_delete_profile(
@@ -490,8 +491,7 @@ class ProfileMixin:
             ]
             if not pids:
                 return 0
-            for pid in pids:
-                self._fts_delete_profile(pid)
+            self._delete_profile_search_rows(pids)
             ph = ",".join("?" for _ in pids)
             cur = self.conn.execute(
                 f"DELETE FROM profiles WHERE profile_id IN ({ph})", pids
@@ -528,13 +528,21 @@ class ProfileMixin:
         ph = ",".join("?" for _ in profile_ids)
         batch_request_id = uuid.uuid4().hex
         with self._lock:
-            for pid in profile_ids:
-                self._fts_delete_profile(pid)
+            existing = [
+                r["profile_id"]
+                for r in self.conn.execute(
+                    f"SELECT profile_id FROM profiles WHERE profile_id IN ({ph})",
+                    profile_ids,
+                ).fetchall()
+            ]
+            if not existing:
+                return 0
+            self._delete_profile_search_rows(existing)
             cur = self.conn.execute(
                 f"DELETE FROM profiles WHERE profile_id IN ({ph})", profile_ids
             )
             if emit_hard_delete:
-                for pid in profile_ids:
+                for pid in existing:
                     _emit_hard_delete_profile(
                         self.conn,
                         org_id=self.org_id,

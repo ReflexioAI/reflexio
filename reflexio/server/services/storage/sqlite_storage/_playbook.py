@@ -131,6 +131,7 @@ class PlaybookMixin:
     _fts_delete: Any
     _vec_upsert: Any
     _vec_delete: Any
+    _delete_playbook_search_rows: Any
     _has_sqlite_vec: bool
 
     # ------------------------------------------------------------------
@@ -322,7 +323,7 @@ class PlaybookMixin:
                     entity_id=str(upid),
                     request_id=batch_request_id,
                 )
-            self.conn.execute("DELETE FROM user_playbooks_fts")
+            self._delete_playbook_search_rows("user", ids)
             self.conn.execute("DELETE FROM user_playbooks")
             self.conn.commit()
 
@@ -370,9 +371,7 @@ class PlaybookMixin:
                     entity_id=str(upid),
                     request_id=batch_request_id,
                 )
-            self.conn.execute(
-                f"DELETE FROM user_playbooks_fts WHERE rowid IN ({ph})", ids
-            )
+            self._delete_playbook_search_rows("user", ids)
             self.conn.execute(
                 f"DELETE FROM user_playbooks WHERE user_playbook_id IN ({ph})", ids
             )
@@ -397,10 +396,7 @@ class PlaybookMixin:
                         request_id=batch_request_id,
                         actor="system",
                     )
-            self.conn.execute(
-                f"DELETE FROM user_playbooks_fts WHERE rowid IN ({ph})",
-                user_playbook_ids,
-            )
+            self._delete_playbook_search_rows("user", user_playbook_ids)
             cur = self.conn.execute(
                 f"DELETE FROM user_playbooks WHERE user_playbook_id IN ({ph})",
                 user_playbook_ids,
@@ -488,7 +484,7 @@ class PlaybookMixin:
             where += " AND playbook_name = ?"
             params.append(playbook_name)
 
-        # Clean up FTS
+        # Clean up FTS + vec
         ids = [
             r["user_playbook_id"]
             for r in self._fetchall(
@@ -496,11 +492,8 @@ class PlaybookMixin:
             )
         ]
         if ids:
-            ph = ",".join("?" for _ in ids)
             with self._lock:
-                self.conn.execute(
-                    f"DELETE FROM user_playbooks_fts WHERE rowid IN ({ph})", ids
-                )
+                self._delete_playbook_search_rows("user", ids)
                 self.conn.commit()
 
         cur = self._execute(f"DELETE FROM user_playbooks WHERE {where}", params)
@@ -853,7 +846,7 @@ class PlaybookMixin:
                     entity_id=str(apid),
                     request_id=batch_request_id,
                 )
-            self.conn.execute("DELETE FROM agent_playbooks_fts")
+            self._delete_playbook_search_rows("agent", ids)
             self.conn.execute("DELETE FROM agent_playbooks")
             self.conn.commit()
 
@@ -902,9 +895,7 @@ class PlaybookMixin:
                     entity_id=str(apid),
                     request_id=batch_request_id,
                 )
-            self.conn.execute(
-                f"DELETE FROM agent_playbooks_fts WHERE rowid IN ({ph})", ids
-            )
+            self._delete_playbook_search_rows("agent", ids)
             self.conn.execute(
                 f"DELETE FROM agent_playbooks WHERE agent_playbook_id IN ({ph})", ids
             )
@@ -929,10 +920,7 @@ class PlaybookMixin:
                         request_id=batch_request_id,
                         actor="system",
                     )
-            self.conn.execute(
-                f"DELETE FROM agent_playbooks_fts WHERE rowid IN ({ph})",
-                agent_playbook_ids,
-            )
+            self._delete_playbook_search_rows("agent", agent_playbook_ids)
             self.conn.execute(
                 f"DELETE FROM agent_playbooks WHERE agent_playbook_id IN ({ph})",
                 agent_playbook_ids,
@@ -1023,22 +1011,23 @@ class PlaybookMixin:
             op = "revise" if content is not None else "status_change"
             prov = "wasRevisionOf" if op == "revise" else "wasInvalidatedBy"
             with self._lock:
-                self.conn.execute(
+                cur = self.conn.execute(
                     f"UPDATE agent_playbooks SET {', '.join(updates)} WHERE agent_playbook_id = ?",
                     tuple(params),
                 )
-                _append_event_stmt(
-                    self.conn,
-                    org_id=self.org_id,
-                    entity_type="agent_playbook",
-                    entity_id=str(agent_playbook_id),
-                    op=op,
-                    prov=prov,
-                    source_ids=[],
-                    actor="api",
-                    request_id=uuid.uuid4().hex,
-                    reason="in-place update",
-                )
+                if cur.rowcount > 0:
+                    _append_event_stmt(
+                        self.conn,
+                        org_id=self.org_id,
+                        entity_type="agent_playbook",
+                        entity_id=str(agent_playbook_id),
+                        op=op,
+                        prov=prov,
+                        source_ids=[],
+                        actor="api",
+                        request_id=uuid.uuid4().hex,
+                        reason="in-place update",
+                    )
                 self.conn.commit()
 
     @SQLiteStorageBase.handle_exceptions
@@ -1083,29 +1072,33 @@ class PlaybookMixin:
             op = "revise" if content is not None else "status_change"
             prov = "wasRevisionOf" if op == "revise" else "wasInvalidatedBy"
             with self._lock:
-                self.conn.execute(
+                cur = self.conn.execute(
                     f"UPDATE user_playbooks SET {', '.join(updates)} WHERE user_playbook_id = ?",
                     tuple(params),
                 )
-                _append_event_stmt(
-                    self.conn,
-                    org_id=self.org_id,
-                    entity_type="user_playbook",
-                    entity_id=str(user_playbook_id),
-                    op=op,
-                    prov=prov,
-                    source_ids=[],
-                    actor="api",
-                    request_id=uuid.uuid4().hex,
-                    reason="in-place update",
-                )
+                if cur.rowcount > 0:
+                    _append_event_stmt(
+                        self.conn,
+                        org_id=self.org_id,
+                        entity_type="user_playbook",
+                        entity_id=str(user_playbook_id),
+                        op=op,
+                        prov=prov,
+                        source_ids=[],
+                        actor="api",
+                        request_id=uuid.uuid4().hex,
+                        reason="in-place update",
+                    )
                 self.conn.commit()
 
     @SQLiteStorageBase.handle_exceptions
     def archive_agent_playbooks_by_playbook_name(
         self, playbook_name: str, agent_version: str | None = None
     ) -> None:
-        where = "playbook_name = ? AND playbook_status != ?"
+        where = (
+            "playbook_name = ? AND playbook_status != ?"
+            " AND (status IS NULL OR status != 'archived')"
+        )
         params: list[Any] = [playbook_name, PlaybookStatus.APPROVED.value]
         if agent_version is not None:
             where += " AND agent_version = ?"
@@ -1145,12 +1138,14 @@ class PlaybookMixin:
         with self._lock:
             affected = self.conn.execute(
                 f"SELECT agent_playbook_id, status FROM agent_playbooks"
-                f" WHERE agent_playbook_id IN ({ph}) AND playbook_status != ?",
+                f" WHERE agent_playbook_id IN ({ph}) AND playbook_status != ?"
+                f" AND (status IS NULL OR status != 'archived')",
                 [*agent_playbook_ids, PlaybookStatus.APPROVED.value],
             ).fetchall()
             self.conn.execute(
                 f"UPDATE agent_playbooks SET status = 'archived'"
-                f" WHERE agent_playbook_id IN ({ph}) AND playbook_status != ?",
+                f" WHERE agent_playbook_id IN ({ph}) AND playbook_status != ?"
+                f" AND (status IS NULL OR status != 'archived')",
                 [*agent_playbook_ids, PlaybookStatus.APPROVED.value],
             )
             for row in affected:
@@ -1475,9 +1470,7 @@ class PlaybookMixin:
                     entity_id=str(apid),
                     request_id=batch_request_id,
                 )
-            self.conn.execute(
-                f"DELETE FROM agent_playbooks_fts WHERE rowid IN ({ph})", ids
-            )
+            self._delete_playbook_search_rows("agent", ids)
             self.conn.execute(
                 f"DELETE FROM agent_playbooks WHERE agent_playbook_id IN ({ph})", ids
             )

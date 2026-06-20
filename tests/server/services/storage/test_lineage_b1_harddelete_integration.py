@@ -361,3 +361,89 @@ def test_delete_profiles_by_ids_actor_is_system(tmp_path):
     ]
     assert len(events) == 1
     assert events[0].actor == "system"
+
+
+# --------------------------------------------------------------------------
+# Nonexistent-id bulk deletes emit NO event (filter-to-existing guard)
+# --------------------------------------------------------------------------
+
+
+def test_delete_profiles_by_ids_nonexistent_no_event_and_returns_zero(tmp_path):
+    s = _store(tmp_path)
+    deleted = s.delete_profiles_by_ids(["ghost-1", "ghost-2"])
+    assert deleted == 0
+    assert not any(
+        e.op == "hard_delete" for e in s.get_lineage_events(entity_id="ghost-1")
+    )
+    assert not any(
+        e.op == "hard_delete" for e in s.get_lineage_events(entity_id="ghost-2")
+    )
+
+
+def test_delete_profiles_by_ids_partial_only_emits_for_existing(tmp_path):
+    s = _store(tmp_path)
+    profile = _make_profile(user_id="u1", profile_id="real-1")
+    s.add_user_profile("u1", [profile])
+    deleted = s.delete_profiles_by_ids(["real-1", "ghost-3"])
+    assert deleted == 1
+    real_events = [
+        e for e in s.get_lineage_events(entity_id="real-1") if e.op == "hard_delete"
+    ]
+    assert len(real_events) == 1
+    assert not any(
+        e.op == "hard_delete" for e in s.get_lineage_events(entity_id="ghost-3")
+    )
+
+
+# --------------------------------------------------------------------------
+# Bulk deletes clean up the vec table (when sqlite-vec is loaded)
+# --------------------------------------------------------------------------
+
+
+def _vec_rowids(s, table: str) -> set[int]:
+    return {
+        row["rowid"]
+        for row in s.conn.execute(f"SELECT rowid FROM {table}").fetchall()  # noqa: S608
+    }
+
+
+def test_delete_profiles_by_ids_cleans_vec(tmp_path):
+    s = _store(tmp_path)
+    if not s._has_sqlite_vec:
+        pytest.skip("sqlite-vec extension not loaded")
+    profile = _make_profile(user_id="u1", profile_id="vec-pr1")
+    s.add_user_profile("u1", [profile])
+    rowid_row = s.conn.execute(
+        "SELECT rowid FROM profiles WHERE profile_id = ?", ("vec-pr1",)
+    ).fetchone()
+    # Seed a vec row keyed on the profile's implicit sqlite rowid.
+    s._vec_upsert("profiles_vec", rowid_row["rowid"], [0.1] * s.embedding_dimensions)
+    assert rowid_row["rowid"] in _vec_rowids(s, "profiles_vec")
+    s.delete_profiles_by_ids(["vec-pr1"])
+    assert rowid_row["rowid"] not in _vec_rowids(s, "profiles_vec")
+
+
+def test_delete_all_user_playbooks_cleans_vec(tmp_path):
+    s = _store(tmp_path)
+    if not s._has_sqlite_vec:
+        pytest.skip("sqlite-vec extension not loaded")
+    pb = UserPlaybook(user_id="u", agent_version="v", request_id="r", content="c")
+    s.save_user_playbooks([pb])
+    s._vec_upsert(
+        "user_playbooks_vec", pb.user_playbook_id, [0.2] * s.embedding_dimensions
+    )
+    assert pb.user_playbook_id in _vec_rowids(s, "user_playbooks_vec")
+    s.delete_all_user_playbooks()
+    assert pb.user_playbook_id not in _vec_rowids(s, "user_playbooks_vec")
+
+
+def test_delete_agent_playbooks_by_ids_cleans_vec(tmp_path):
+    s = _store(tmp_path)
+    if not s._has_sqlite_vec:
+        pytest.skip("sqlite-vec extension not loaded")
+    saved = s.save_agent_playbooks([_make_agent_playbook()])
+    apid = saved[0].agent_playbook_id
+    s._vec_upsert("agent_playbooks_vec", apid, [0.3] * s.embedding_dimensions)
+    assert apid in _vec_rowids(s, "agent_playbooks_vec")
+    s.delete_agent_playbooks_by_ids([apid])
+    assert apid not in _vec_rowids(s, "agent_playbooks_vec")

@@ -4,6 +4,8 @@ Phase B1 — Task 1: verifies that each update_* method emits exactly one
 lineage event (op=revise when content changes, op=status_change otherwise).
 """
 
+from pathlib import Path
+
 import pytest
 
 from reflexio.models.api_schema.domain.entities import (
@@ -17,7 +19,7 @@ from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 pytestmark = pytest.mark.integration
 
 
-def _store(tmp_path: pytest.TempPathFactory) -> SQLiteStorage:
+def _store(tmp_path: Path) -> SQLiteStorage:
     s = SQLiteStorage(org_id="org-1", db_path=str(tmp_path / "t.db"))
     s.migrate()
     return s
@@ -123,3 +125,52 @@ def test_update_user_profile_emits_revise(tmp_path):
     fetched = s.get_profile_by_id(str(profile.profile_id))
     assert fetched is not None
     assert fetched.content == "updated content"
+
+
+def test_update_user_profile_nonexistent_emits_no_event(tmp_path):
+    """Updating a profile that no longer exists must emit no revise event."""
+    s = _store(tmp_path)
+    ghost = UserProfile(
+        profile_id="ghost-prof",
+        user_id="u",
+        content="content",
+        last_modified_timestamp=0,
+        generated_from_request_id="r",
+    )
+    # Never persisted — the pre-check returns early, but assert the contract.
+    s.update_user_profile_by_id("u", "ghost-prof", ghost)
+    ev = s.get_lineage_events(entity_id="ghost-prof", entity_type="profile")
+    assert not any(e.op == "revise" for e in ev)
+
+
+# ---------------------------------------------------------------------------
+# archive_agent_playbooks_* — re-archiving an archived row emits no event
+# ---------------------------------------------------------------------------
+
+
+def test_archive_agent_playbooks_by_ids_already_archived_no_event(tmp_path):
+    s = _store(tmp_path)
+    ap = AgentPlaybook(agent_version="v", content="c")
+    saved = s.save_agent_playbooks([ap])
+    apid = saved[0].agent_playbook_id
+    # First archive emits one status_change event.
+    s.archive_agent_playbooks_by_ids([apid])
+    first = s.get_lineage_events(entity_id=str(apid), entity_type="agent_playbook")
+    assert [e.op for e in first] == ["status_change"]
+    # Re-archiving the already-archived row must emit no further event.
+    s.archive_agent_playbooks_by_ids([apid])
+    second = s.get_lineage_events(entity_id=str(apid), entity_type="agent_playbook")
+    assert [e.op for e in second] == ["status_change"]
+
+
+def test_archive_agent_playbooks_by_playbook_name_already_archived_no_event(tmp_path):
+    s = _store(tmp_path)
+    ap = AgentPlaybook(playbook_name="arch-pb", agent_version="v", content="c")
+    saved = s.save_agent_playbooks([ap])
+    apid = saved[0].agent_playbook_id
+    s.archive_agent_playbooks_by_playbook_name("arch-pb")
+    first = s.get_lineage_events(entity_id=str(apid), entity_type="agent_playbook")
+    assert [e.op for e in first] == ["status_change"]
+    s.archive_agent_playbooks_by_playbook_name("arch-pb")
+    second = s.get_lineage_events(entity_id=str(apid), entity_type="agent_playbook")
+    assert [e.op for e in second] == ["status_change"]
