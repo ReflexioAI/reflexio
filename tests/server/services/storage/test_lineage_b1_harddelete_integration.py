@@ -22,6 +22,7 @@ from reflexio.models.api_schema.domain.entities import (
 )
 from reflexio.models.api_schema.domain.enums import ProfileTimeToLive, Status
 from reflexio.models.api_schema.service_schemas import DeleteUserProfileRequest
+from reflexio.server.services.storage.error import StorageError
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 
 pytestmark = pytest.mark.integration
@@ -262,3 +263,101 @@ def test_delete_all_user_playbooks_by_status_pending_no_events(tmp_path):
     # PENDING purge must NOT emit hard_delete events (ephemeral scratch carve-out)
     events = s.get_lineage_events(entity_id=str(pb.user_playbook_id))
     assert not any(e.op == "hard_delete" for e in events)
+
+
+# --------------------------------------------------------------------------
+# F002 negative: deleting nonexistent id emits NO hard_delete event
+# --------------------------------------------------------------------------
+
+
+def test_delete_user_playbook_nonexistent_no_event(tmp_path):
+    s = _store(tmp_path)
+    s.delete_user_playbook(99999)
+    events = s.get_lineage_events(entity_id="99999")
+    assert not any(e.op == "hard_delete" for e in events)
+
+
+def test_delete_agent_playbook_nonexistent_no_event(tmp_path):
+    s = _store(tmp_path)
+    s.delete_agent_playbook(99999)
+    events = s.get_lineage_events(entity_id="99999")
+    assert not any(e.op == "hard_delete" for e in events)
+
+
+def test_delete_user_profile_cross_user_no_event_and_no_delete(tmp_path):
+    """delete_user_profile for a profile_id owned by a DIFFERENT user emits NO event."""
+    s = _store(tmp_path)
+    # Insert profile owned by user "owner"
+    profile = _make_profile(user_id="owner", profile_id="cross-pr1")
+    s.add_user_profile("owner", [profile])
+    # Attempt delete as a different user
+    s.delete_user_profile(
+        DeleteUserProfileRequest(user_id="attacker", profile_id="cross-pr1")
+    )
+    # Profile must still exist
+    assert s.get_profile_by_id("cross-pr1") is not None
+    # No hard_delete event must have been emitted
+    assert not any(
+        e.op == "hard_delete" for e in s.get_lineage_events(entity_id="cross-pr1")
+    )
+
+
+# --------------------------------------------------------------------------
+# F008: delete_all_user_playbooks_by_status raises on non-PENDING status
+# --------------------------------------------------------------------------
+
+
+def test_delete_all_user_playbooks_by_status_archived_raises(tmp_path):
+    s = _store(tmp_path)
+    with pytest.raises(StorageError, match="PENDING"):
+        s.delete_all_user_playbooks_by_status(Status.ARCHIVED)
+
+
+def test_delete_all_user_playbooks_by_status_merged_raises(tmp_path):
+    s = _store(tmp_path)
+    with pytest.raises(StorageError, match="PENDING"):
+        s.delete_all_user_playbooks_by_status(Status.MERGED)
+
+
+# --------------------------------------------------------------------------
+# F012: by-ids delete methods emit actor="system"
+# --------------------------------------------------------------------------
+
+
+def test_delete_user_playbooks_by_ids_actor_is_system(tmp_path):
+    s = _store(tmp_path)
+    pb = UserPlaybook(user_id="u", agent_version="v", request_id="r", content="c")
+    s.save_user_playbooks([pb])
+    s.delete_user_playbooks_by_ids([pb.user_playbook_id])
+    events = [
+        e
+        for e in s.get_lineage_events(entity_id=str(pb.user_playbook_id))
+        if e.op == "hard_delete"
+    ]
+    assert len(events) == 1
+    assert events[0].actor == "system"
+
+
+def test_delete_agent_playbooks_by_ids_actor_is_system(tmp_path):
+    s = _store(tmp_path)
+    ap = _make_agent_playbook()
+    saved = s.save_agent_playbooks([ap])
+    apid = saved[0].agent_playbook_id
+    s.delete_agent_playbooks_by_ids([apid])
+    events = [
+        e for e in s.get_lineage_events(entity_id=str(apid)) if e.op == "hard_delete"
+    ]
+    assert len(events) == 1
+    assert events[0].actor == "system"
+
+
+def test_delete_profiles_by_ids_actor_is_system(tmp_path):
+    s = _store(tmp_path)
+    profile = _make_profile(user_id="u1", profile_id="sys-pr1")
+    s.add_user_profile("u1", [profile])
+    s.delete_profiles_by_ids(["sys-pr1"])
+    events = [
+        e for e in s.get_lineage_events(entity_id="sys-pr1") if e.op == "hard_delete"
+    ]
+    assert len(events) == 1
+    assert events[0].actor == "system"

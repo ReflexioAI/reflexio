@@ -20,6 +20,7 @@ from reflexio.models.api_schema.domain.entities import (
 )
 from reflexio.models.api_schema.domain.enums import ProfileTimeToLive, Status
 from reflexio.models.api_schema.service_schemas import PlaybookStatus
+from reflexio.server.services.storage.error import StorageError
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 
 pytestmark = pytest.mark.integration
@@ -412,3 +413,38 @@ def test_archive_profile_by_id_reason_contains_transition(tmp_path):
     ]
     assert evts
     assert "archived" in evts[0].reason.lower()
+
+
+# --------------------------------------------------------------------------
+# F003 negative: update_agent_playbook_status on nonexistent id emits NO event
+# --------------------------------------------------------------------------
+
+
+def test_update_agent_playbook_status_nonexistent_raises_no_event(tmp_path):
+    """A nonexistent agent_playbook_id must raise ValueError and emit no status_change."""
+    s = _store(tmp_path)
+    with pytest.raises(StorageError):
+        s.update_agent_playbook_status(99999, PlaybookStatus.APPROVED)
+    events = s.get_lineage_events(entity_id="99999")
+    assert not any(e.op == "status_change" for e in events)
+
+
+# --------------------------------------------------------------------------
+# F017: update_agent_playbook_status reason records actual transition
+# --------------------------------------------------------------------------
+
+
+def test_update_agent_playbook_status_reason_is_transition(tmp_path):
+    """reason field must record old->new playbook_status, not a generic string."""
+    s = _store(tmp_path)
+    ap = _make_agent_playbook()
+    saved = s.save_agent_playbooks([ap])
+    apid = saved[0].agent_playbook_id
+    s.update_agent_playbook_status(apid, PlaybookStatus.APPROVED)
+    evts = [
+        e for e in s.get_lineage_events(entity_id=str(apid)) if e.op == "status_change"
+    ]
+    assert evts
+    # Should be something like "pending->approved" or "None->approved"
+    assert "approved" in evts[0].reason.lower()
+    assert "->" in evts[0].reason

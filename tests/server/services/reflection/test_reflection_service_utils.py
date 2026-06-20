@@ -53,3 +53,23 @@ def test_reflection_result_no_replaced_count_field():
     # The old replaced_count field was renamed/folded into revised_count.
     fields = ReflectionResult.model_fields
     assert "replaced_count" not in fields
+
+
+def test_reflection_service_request_default_request_id_is_unique():
+    """Two requests constructed without an explicit request_id must differ.
+
+    The 5-col idempotency key for lineage events is (org, profile, op, request_id,
+    ...). A fixed empty-string default meant two reflection passes on the same
+    profile with no explicit request_id produced the SAME key, silently dropping
+    the second revise event via INSERT OR IGNORE. The default_factory ensures each
+    construction yields a distinct hex string.
+    """
+    from reflexio.server.services.reflection.reflection_service_utils import (
+        ReflectionServiceRequest,
+    )
+
+    r1 = ReflectionServiceRequest(user_id="u1")
+    r2 = ReflectionServiceRequest(user_id="u1")
+    assert r1.request_id != ""
+    assert r2.request_id != ""
+    assert r1.request_id != r2.request_id

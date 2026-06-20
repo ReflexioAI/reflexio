@@ -11,6 +11,7 @@ in light of how they were applied across the window.
 
 from __future__ import annotations
 
+import uuid
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -32,6 +33,8 @@ class ReflectionServiceRequest(BaseModel):
         request_id (str): The publish pass's own request id; used as the
             lineage event ``request_id`` on revise events so B3
             reconstruction can link revisions back to the triggering pass.
+            Defaults to a fresh UUID hex so two passes on the same profile
+            with no explicit request_id produce distinct lineage events.
         agent_version (str): Agent version of the current publish; copied
             into replacement playbooks.
         source (str | None): Optional source filter for the window.
@@ -40,7 +43,7 @@ class ReflectionServiceRequest(BaseModel):
     """
 
     user_id: str
-    request_id: str = ""
+    request_id: str = Field(default_factory=lambda: uuid.uuid4().hex)
     agent_version: str = ""
     source: str | None = None
 

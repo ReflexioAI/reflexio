@@ -5,9 +5,14 @@ lineage event (op=revise when content changes, op=status_change otherwise).
 """
 
 import pytest
-from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
-from reflexio.models.api_schema.domain.entities import AgentPlaybook, UserPlaybook, UserProfile
+
+from reflexio.models.api_schema.domain.entities import (
+    AgentPlaybook,
+    UserPlaybook,
+    UserProfile,
+)
 from reflexio.models.api_schema.domain.enums import PlaybookStatus
+from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 
 pytestmark = pytest.mark.integration
 
@@ -63,7 +68,9 @@ def test_update_agent_playbook_content_emits_revise(tmp_path):
     ap = AgentPlaybook(agent_version="v", content="old")
     saved = s.save_agent_playbooks([ap])
     s.update_agent_playbook(saved[0].agent_playbook_id, content="new")
-    ev = s.get_lineage_events(entity_id=str(saved[0].agent_playbook_id), entity_type="agent_playbook")
+    ev = s.get_lineage_events(
+        entity_id=str(saved[0].agent_playbook_id), entity_type="agent_playbook"
+    )
     assert [e.op for e in ev] == ["revise"]
 
 
@@ -72,7 +79,9 @@ def test_update_agent_playbook_metadata_only_emits_status_change(tmp_path):
     ap = AgentPlaybook(agent_version="v", content="c")
     saved = s.save_agent_playbooks([ap])
     s.update_agent_playbook(saved[0].agent_playbook_id, playbook_name="renamed")
-    ev = s.get_lineage_events(entity_id=str(saved[0].agent_playbook_id), entity_type="agent_playbook")
+    ev = s.get_lineage_events(
+        entity_id=str(saved[0].agent_playbook_id), entity_type="agent_playbook"
+    )
     assert [e.op for e in ev] == ["status_change"]
 
 
@@ -86,7 +95,9 @@ def test_update_agent_playbook_status_always_emits_status_change(tmp_path):
     ap = AgentPlaybook(agent_version="v", content="c")
     saved = s.save_agent_playbooks([ap])
     s.update_agent_playbook_status(saved[0].agent_playbook_id, PlaybookStatus.APPROVED)
-    ev = s.get_lineage_events(entity_id=str(saved[0].agent_playbook_id), entity_type="agent_playbook")
+    ev = s.get_lineage_events(
+        entity_id=str(saved[0].agent_playbook_id), entity_type="agent_playbook"
+    )
     assert [e.op for e in ev] == ["status_change"]
 
 

@@ -890,7 +890,7 @@ class PlaybookAggregator:
                         if fb.user_playbook_id
                     ]
                     try:
-                        self.storage.append_lineage_event(  # type: ignore[reportOptionalMemberAccess]
+                        self.storage.append_lineage_event(  # pyright: ignore[reportOptionalMemberAccess]
                             LineageEvent(
                                 org_id=self.request_context.org_id,
                                 entity_type="agent_playbook",

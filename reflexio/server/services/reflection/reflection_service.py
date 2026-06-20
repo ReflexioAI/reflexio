@@ -457,9 +457,10 @@ class ReflectionService:
         ``supersede_record``, which sets ``status=SUPERSEDED`` with a
         ``superseded_by`` pointer and appends a ``revise`` lineage event.
         If the CAS guard fails (incumbent no longer CURRENT), the
-        just-inserted successor is deleted (not audited) so no orphan row
-        remains. If ``supersede_record`` raises, log at ERROR and accept a
-        transient duplicate rather than silently dropping user data.
+        just-inserted successor is deleted (not audited); if that delete
+        itself raises the exception propagates to the caller. If
+        ``supersede_record`` raises, log at ERROR and accept a transient
+        duplicate rather than silently dropping user data.
         """
         storage = self.request_context.storage
         if storage is None:

@@ -48,6 +48,7 @@ def _emit_hard_delete_profile(
     org_id: str,
     entity_id: str,
     request_id: str,
+    actor: str = "api",
 ) -> None:
     """Emit a single hard_delete lineage event for a profile entity."""
     _append_event_stmt(
@@ -58,7 +59,7 @@ def _emit_hard_delete_profile(
         op="hard_delete",
         prov="wasInvalidatedBy",
         source_ids=[],
-        actor="api",
+        actor=actor,
         request_id=request_id,
         reason="erasure",
     )
@@ -283,24 +284,25 @@ class ProfileMixin:
 
     @SQLiteStorageBase.handle_exceptions
     def delete_user_profile(self, request: DeleteUserProfileRequest) -> None:
-        rowid_row = self._fetchone(
-            "SELECT rowid FROM profiles WHERE profile_id = ?",
-            (request.profile_id,),
-        )
         with self._lock:
-            _emit_hard_delete_profile(
-                self.conn,
-                org_id=self.org_id,
-                entity_id=str(request.profile_id),
-                request_id=uuid.uuid4().hex,
-            )
+            rowid_row = self.conn.execute(
+                "SELECT rowid FROM profiles WHERE user_id = ? AND profile_id = ?",
+                (request.user_id, request.profile_id),
+            ).fetchone()
             self._fts_delete_profile(request.profile_id)
             if rowid_row:
                 self._vec_delete("profiles_vec", rowid_row["rowid"])
-            self.conn.execute(
+            cur = self.conn.execute(
                 "DELETE FROM profiles WHERE user_id = ? AND profile_id = ?",
                 (request.user_id, request.profile_id),
             )
+            if cur.rowcount > 0:
+                _emit_hard_delete_profile(
+                    self.conn,
+                    org_id=self.org_id,
+                    entity_id=str(request.profile_id),
+                    request_id=uuid.uuid4().hex,
+                )
             self.conn.commit()
 
     @SQLiteStorageBase.handle_exceptions
@@ -316,14 +318,15 @@ class ProfileMixin:
             if not pids:
                 return
             for pid in pids:
+                self._fts_delete_profile(pid)
+            self.conn.execute("DELETE FROM profiles WHERE user_id = ?", (user_id,))
+            for pid in pids:
                 _emit_hard_delete_profile(
                     self.conn,
                     org_id=self.org_id,
                     entity_id=str(pid),
                     request_id=batch_request_id,
                 )
-                self._fts_delete_profile(pid)
-            self.conn.execute("DELETE FROM profiles WHERE user_id = ?", (user_id,))
             self.conn.commit()
 
     @SQLiteStorageBase.handle_exceptions
@@ -472,7 +475,7 @@ class ProfileMixin:
                     request_id=uuid.uuid4().hex,
                     reason="None->archived",
                 )
-                self.conn.commit()
+            self.conn.commit()
         return cur.rowcount > 0
 
     @SQLiteStorageBase.handle_exceptions
@@ -488,17 +491,18 @@ class ProfileMixin:
             if not pids:
                 return 0
             for pid in pids:
+                self._fts_delete_profile(pid)
+            ph = ",".join("?" for _ in pids)
+            cur = self.conn.execute(
+                f"DELETE FROM profiles WHERE profile_id IN ({ph})", pids
+            )
+            for pid in pids:
                 _emit_hard_delete_profile(
                     self.conn,
                     org_id=self.org_id,
                     entity_id=str(pid),
                     request_id=batch_request_id,
                 )
-                self._fts_delete_profile(pid)
-            ph = ",".join("?" for _ in pids)
-            cur = self.conn.execute(
-                f"DELETE FROM profiles WHERE profile_id IN ({ph})", pids
-            )
             self.conn.commit()
         return cur.rowcount
 
@@ -524,6 +528,11 @@ class ProfileMixin:
         ph = ",".join("?" for _ in profile_ids)
         batch_request_id = uuid.uuid4().hex
         with self._lock:
+            for pid in profile_ids:
+                self._fts_delete_profile(pid)
+            cur = self.conn.execute(
+                f"DELETE FROM profiles WHERE profile_id IN ({ph})", profile_ids
+            )
             if emit_hard_delete:
                 for pid in profile_ids:
                     _emit_hard_delete_profile(
@@ -531,12 +540,8 @@ class ProfileMixin:
                         org_id=self.org_id,
                         entity_id=str(pid),
                         request_id=batch_request_id,
+                        actor="system",
                     )
-            for pid in profile_ids:
-                self._fts_delete_profile(pid)
-            cur = self.conn.execute(
-                f"DELETE FROM profiles WHERE profile_id IN ({ph})", profile_ids
-            )
             self.conn.commit()
         return cur.rowcount
 

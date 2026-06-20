@@ -242,3 +242,92 @@ class TestReflectionProfileSupersede:
         assert current[0].profile_id == "p1"
         events = storage.get_lineage_events(entity_type="profile", entity_id="p1")
         assert events == []
+
+    def test_two_passes_no_explicit_request_id_produce_distinct_revise_events(
+        self, request_context, llm_client
+    ):
+        """Two reflection passes with no explicit request_id produce two distinct revise events.
+
+        Before F006 fix: request_id defaulted to "", so both passes produced the same
+        5-col idempotency key (org, profile, "revise", "") and the second event was
+        silently dropped by INSERT OR IGNORE.  After the fix: each ReflectionServiceRequest
+        constructed without a request_id gets a fresh uuid4().hex, so both events persist.
+        """
+        # Use post_horizon_size=0 to disable the horizon filter so both passes can
+        # proceed regardless of how many follow-up interactions exist.
+        _set_config(request_context, reflection_config={"post_horizon_size": 0})
+        storage = request_context.storage
+
+        # --- Pass 1: revise p1 → successor p2 ---
+        _seed_profile(storage, "u1", "p1", content="original content")
+        cite1 = Citation(kind="profile", real_id="p1")
+        _seed_request_with_interactions(
+            storage,
+            "u1",
+            "r1",
+            [
+                _make_interaction("u1", "r1", "User", "hi"),
+                _make_interaction("u1", "r1", "Assistant", "hello", citations=[cite1]),
+            ],
+        )
+        llm_client.generate_chat_response.return_value = ReflectionOutput(
+            decisions=[
+                ReflectionDecision(
+                    target_kind="profile",
+                    target_id="p1",
+                    new_content="revised content pass-1",
+                    reason="pass 1 revision",
+                )
+            ]
+        )
+        svc1 = ReflectionService(request_context=request_context, llm_client=llm_client)
+        result1 = svc1.run(ReflectionServiceRequest(user_id="u1"))
+        assert result1.revised_count == 1
+
+        # Fetch the successor profile written by pass 1.
+        current_after_1 = storage.get_user_profile("u1", status_filter=[None])
+        assert len(current_after_1) == 1
+        p2_id = current_after_1[0].profile_id
+        assert p2_id != "p1"
+
+        # --- Pass 2: revise p2 → successor p3 (stride gate reset by new interactions) ---
+        cite2 = Citation(kind="profile", real_id=p2_id)
+        _seed_request_with_interactions(
+            storage,
+            "u1",
+            "r2",
+            [
+                _make_interaction("u1", "r2", "User", "more input"),
+                _make_interaction("u1", "r2", "Assistant", "got it", citations=[cite2]),
+            ],
+        )
+        llm_client.generate_chat_response.return_value = ReflectionOutput(
+            decisions=[
+                ReflectionDecision(
+                    target_kind="profile",
+                    target_id=p2_id,
+                    new_content="revised content pass-2",
+                    reason="pass 2 revision",
+                )
+            ]
+        )
+        svc2 = ReflectionService(request_context=request_context, llm_client=llm_client)
+        result2 = svc2.run(ReflectionServiceRequest(user_id="u1"))
+        assert result2.revised_count == 1
+
+        current_after_2 = storage.get_user_profile("u1", status_filter=[None])
+        assert len(current_after_2) == 1
+        p3_id = current_after_2[0].profile_id
+        assert p3_id != p2_id
+
+        # Both successors must have exactly one revise event and the two
+        # request_ids must be distinct (no collapsed idempotency key).
+        events_p2 = storage.get_lineage_events(entity_type="profile", entity_id=p2_id)
+        events_p3 = storage.get_lineage_events(entity_type="profile", entity_id=p3_id)
+        revise_p2 = [e for e in events_p2 if e.op == "revise"]
+        revise_p3 = [e for e in events_p3 if e.op == "revise"]
+        assert len(revise_p2) == 1, "pass-1 revise event must be present"
+        assert len(revise_p3) == 1, "pass-2 revise event must be present"
+        assert revise_p2[0].request_id != revise_p3[0].request_id, (
+            "two passes with no explicit request_id must produce distinct lineage request_ids"
+        )
