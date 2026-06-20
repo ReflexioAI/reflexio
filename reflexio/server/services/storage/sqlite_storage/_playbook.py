@@ -414,26 +414,54 @@ class PlaybookMixin:
         playbook_name: str | None = None,
     ) -> int:
         new_val = new_status.value if new_status else None
-        params: list[Any] = [new_val]
+        old_val_str = old_status.value if old_status else "None"
+        new_val_str = new_status.value if new_status else "None"
+        reason = f"{old_val_str}->{new_val_str}"
 
         if old_status is None or (
             hasattr(old_status, "value") and old_status.value is None
         ):
             where = "status IS NULL"
+            select_params: list[Any] = []
         else:
             where = "status = ?"
-            params.append(old_status.value)
+            select_params = [old_status.value]
 
+        extra_params: list[Any] = []
         if agent_version is not None:
             where += " AND agent_version = ?"
-            params.append(agent_version)
+            extra_params.append(agent_version)
         if playbook_name is not None:
             where += " AND playbook_name = ?"
-            params.append(playbook_name)
+            extra_params.append(playbook_name)
 
-        cur = self._execute(
-            f"UPDATE user_playbooks SET status = ? WHERE {where}", params
-        )
+        batch_request_id = uuid.uuid4().hex
+        with self._lock:
+            affected = [
+                r["user_playbook_id"]
+                for r in self.conn.execute(
+                    f"SELECT user_playbook_id FROM user_playbooks WHERE {where}",
+                    select_params + extra_params,
+                ).fetchall()
+            ]
+            cur = self.conn.execute(
+                f"UPDATE user_playbooks SET status = ? WHERE {where}",
+                [new_val] + select_params + extra_params,
+            )
+            for upid in affected:
+                _append_event_stmt(
+                    self.conn,
+                    org_id=self.org_id,
+                    entity_type="user_playbook",
+                    entity_id=str(upid),
+                    op="status_change",
+                    prov="wasInvalidatedBy",
+                    source_ids=[],
+                    actor="api",
+                    request_id=batch_request_id,
+                    reason=reason,
+                )
+            self.conn.commit()
         return cur.rowcount
 
     @SQLiteStorageBase.handle_exceptions
@@ -1063,22 +1091,69 @@ class PlaybookMixin:
     def archive_agent_playbooks_by_playbook_name(
         self, playbook_name: str, agent_version: str | None = None
     ) -> None:
-        sql = "UPDATE agent_playbooks SET status = 'archived' WHERE playbook_name = ? AND playbook_status != ?"
+        select_sql = "SELECT agent_playbook_id FROM agent_playbooks WHERE playbook_name = ? AND playbook_status != ?"
+        update_sql = "UPDATE agent_playbooks SET status = 'archived' WHERE playbook_name = ? AND playbook_status != ?"
         params: list[Any] = [playbook_name, PlaybookStatus.APPROVED.value]
         if agent_version is not None:
-            sql += " AND agent_version = ?"
+            select_sql += " AND agent_version = ?"
+            update_sql += " AND agent_version = ?"
             params.append(agent_version)
-        self._execute(sql, params)
+        batch_request_id = uuid.uuid4().hex
+        with self._lock:
+            affected = [
+                r["agent_playbook_id"]
+                for r in self.conn.execute(select_sql, params).fetchall()
+            ]
+            self.conn.execute(update_sql, params)
+            for apid in affected:
+                _append_event_stmt(
+                    self.conn,
+                    org_id=self.org_id,
+                    entity_type="agent_playbook",
+                    entity_id=str(apid),
+                    op="status_change",
+                    prov="wasInvalidatedBy",
+                    source_ids=[],
+                    actor="api",
+                    request_id=batch_request_id,
+                    reason="None->archived",
+                )
+            self.conn.commit()
 
     @SQLiteStorageBase.handle_exceptions
     def archive_agent_playbooks_by_ids(self, agent_playbook_ids: list[int]) -> None:
         if not agent_playbook_ids:
             return
         ph = ",".join("?" for _ in agent_playbook_ids)
-        self._execute(
-            f"UPDATE agent_playbooks SET status = 'archived' WHERE agent_playbook_id IN ({ph}) AND playbook_status != ?",
-            [*agent_playbook_ids, PlaybookStatus.APPROVED.value],
-        )
+        batch_request_id = uuid.uuid4().hex
+        with self._lock:
+            affected = [
+                r["agent_playbook_id"]
+                for r in self.conn.execute(
+                    f"SELECT agent_playbook_id FROM agent_playbooks"
+                    f" WHERE agent_playbook_id IN ({ph}) AND playbook_status != ?",
+                    [*agent_playbook_ids, PlaybookStatus.APPROVED.value],
+                ).fetchall()
+            ]
+            self.conn.execute(
+                f"UPDATE agent_playbooks SET status = 'archived'"
+                f" WHERE agent_playbook_id IN ({ph}) AND playbook_status != ?",
+                [*agent_playbook_ids, PlaybookStatus.APPROVED.value],
+            )
+            for apid in affected:
+                _append_event_stmt(
+                    self.conn,
+                    org_id=self.org_id,
+                    entity_type="agent_playbook",
+                    entity_id=str(apid),
+                    op="status_change",
+                    prov="wasInvalidatedBy",
+                    source_ids=[],
+                    actor="api",
+                    request_id=batch_request_id,
+                    reason="None->archived",
+                )
+            self.conn.commit()
 
     @SQLiteStorageBase.handle_exceptions
     def restore_archived_agent_playbooks_by_playbook_name(

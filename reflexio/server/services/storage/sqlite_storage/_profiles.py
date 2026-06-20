@@ -359,25 +359,52 @@ class ProfileMixin:
     ) -> int:
         new_val = new_status.value if new_status else None
         now_ts = _epoch_now()
-        params: list[Any] = [new_val, now_ts]
+        old_val_str = old_status.value if old_status else "None"
+        new_val_str = new_status.value if new_status else "None"
+        reason = f"{old_val_str}->{new_val_str}"
 
         if old_status is None or (
             hasattr(old_status, "value") and old_status.value is None
         ):
             where = "status IS NULL"
+            select_params: list[Any] = []
         else:
             where = "status = ?"
-            params.append(old_status.value)
+            select_params = [old_status.value]
 
+        extra_params: list[Any] = []
         if user_ids is not None:
             placeholders = ",".join("?" for _ in user_ids)
             where += f" AND user_id IN ({placeholders})"
-            params.extend(user_ids)
+            extra_params.extend(user_ids)
 
-        cur = self._execute(
-            f"UPDATE profiles SET status = ?, last_modified_timestamp = ? WHERE {where}",
-            params,
-        )
+        batch_request_id = uuid.uuid4().hex
+        with self._lock:
+            affected = [
+                r["profile_id"]
+                for r in self.conn.execute(
+                    f"SELECT profile_id FROM profiles WHERE {where}",
+                    select_params + extra_params,
+                ).fetchall()
+            ]
+            cur = self.conn.execute(
+                f"UPDATE profiles SET status = ?, last_modified_timestamp = ? WHERE {where}",
+                [new_val, now_ts] + select_params + extra_params,
+            )
+            for pid in affected:
+                _append_event_stmt(
+                    self.conn,
+                    org_id=self.org_id,
+                    entity_type="profile",
+                    entity_id=str(pid),
+                    op="status_change",
+                    prov="wasInvalidatedBy",
+                    source_ids=[],
+                    actor="api",
+                    request_id=batch_request_id,
+                    reason=reason,
+                )
+            self.conn.commit()
         return cur.rowcount
 
     @SQLiteStorageBase.handle_exceptions
@@ -426,11 +453,26 @@ class ProfileMixin:
 
     @SQLiteStorageBase.handle_exceptions
     def archive_profile_by_id(self, user_id: str, profile_id: str) -> bool:
-        cur = self._execute(
-            "UPDATE profiles SET status = ?, last_modified_timestamp = ? "
-            "WHERE profile_id = ? AND user_id = ? AND status IS NULL",
-            (Status.ARCHIVED.value, _epoch_now(), profile_id, user_id),
-        )
+        with self._lock:
+            cur = self.conn.execute(
+                "UPDATE profiles SET status = ?, last_modified_timestamp = ? "
+                "WHERE profile_id = ? AND user_id = ? AND status IS NULL",
+                (Status.ARCHIVED.value, _epoch_now(), profile_id, user_id),
+            )
+            if cur.rowcount > 0:
+                _append_event_stmt(
+                    self.conn,
+                    org_id=self.org_id,
+                    entity_type="profile",
+                    entity_id=str(profile_id),
+                    op="status_change",
+                    prov="wasInvalidatedBy",
+                    source_ids=[],
+                    actor="api",
+                    request_id=uuid.uuid4().hex,
+                    reason="None->archived",
+                )
+            self.conn.commit()
         return cur.rowcount > 0
 
     @SQLiteStorageBase.handle_exceptions
