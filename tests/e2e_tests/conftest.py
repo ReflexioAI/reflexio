@@ -105,12 +105,10 @@ if user mentions "I don't like the way you talked to me", summarize conversation
                 min_cluster_size=3,
             ),
         ),
-        agent_success_configs=[
-            AgentSuccessConfig(
-                evaluation_name="test_agent_success",
-                success_definition_prompt="sales agent is responding to user apporperately",
-            )
-        ],
+        agent_success_config=AgentSuccessConfig(
+            evaluation_name="test_agent_success",
+            success_definition_prompt="sales agent is responding to user apporperately",
+        ),
         tool_can_use=[
             ToolUseConfig(
                 tool_name="search",
@@ -253,12 +251,10 @@ def reflexio_instance_agent_success_only(
     config = Config(
         storage_config=sqlite_storage_config,
         agent_context_prompt="this is a sales agent",
-        agent_success_configs=[
-            AgentSuccessConfig(
-                evaluation_name="test_agent_success",
-                success_definition_prompt="sales agent is responding to user apporperately",
-            )
-        ],
+        agent_success_config=AgentSuccessConfig(
+            evaluation_name="test_agent_success",
+            success_definition_prompt="sales agent is responding to user apporperately",
+        ),
         tool_can_use=[
             ToolUseConfig(
                 tool_name="search",
