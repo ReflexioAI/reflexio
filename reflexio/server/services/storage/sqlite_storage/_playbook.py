@@ -1065,7 +1065,6 @@ class PlaybookMixin:
         rationale: str | None = None,
         blocking_issue: BlockingIssue | None = None,
         tags: list[str] | None = None,
-        status: Status | None = None,
     ) -> None:
         updates: list[str] = []
         params: list[Any] = []
@@ -1087,38 +1086,16 @@ class PlaybookMixin:
         if tags is not None:
             updates.append("tags = ?")
             params.append(_json_dumps(tags))
-        if status is not None:
-            updates.append("status = ?")
-            params.append(status.value)
         if updates:
             params.append(user_playbook_id)
             op = "revise" if content is not None else "status_change"
             prov = "wasRevisionOf" if op == "revise" else "wasInvalidatedBy"
             with self._lock:
-                prior_row = self.conn.execute(
-                    "SELECT status FROM user_playbooks WHERE user_playbook_id = ?",
-                    (user_playbook_id,),
-                ).fetchone()
-                if not prior_row:
-                    raise ValueError(
-                        f"User playbook with ID {user_playbook_id} not found"
-                    )
-                prior_status = prior_row["status"]
                 cur = self.conn.execute(
                     f"UPDATE user_playbooks SET {', '.join(updates)} WHERE user_playbook_id = ?",
                     tuple(params),
                 )
                 if cur.rowcount > 0:
-                    # Populate structured status fields only when the lifecycle status
-                    # field is among the updated fields and the op is status_change.
-                    if op == "status_change" and status is not None:
-                        from_status = prior_status
-                        to_status = status.value
-                        status_namespace: str | None = "lifecycle_status"
-                    else:
-                        from_status = None
-                        to_status = None
-                        status_namespace = None
                     _append_event_stmt(
                         self.conn,
                         org_id=self.org_id,
@@ -1130,9 +1107,9 @@ class PlaybookMixin:
                         actor="api",
                         request_id=uuid.uuid4().hex,
                         reason="in-place update",
-                        from_status=from_status,
-                        to_status=to_status,
-                        status_namespace=status_namespace,
+                        from_status=None,
+                        to_status=None,
+                        status_namespace=None,
                     )
                 self.conn.commit()
 
