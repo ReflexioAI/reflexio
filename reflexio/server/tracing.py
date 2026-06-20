@@ -156,3 +156,33 @@ def sentry_tags(**tags: Any) -> Iterator[None]:
             scope_cm.__exit__(None, None, None)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Failed to close Sentry scope: %s", exc)
+
+
+def capture_anomaly(message: str, *, level: str = "warning", **tags: Any) -> None:
+    """Report a non-fatal anomaly to Sentry, if the SDK is installed.
+
+    For silent-but-noteworthy conditions that return rather than raise — e.g.
+    lineage resolution hitting a cycle or the hop cap, or a best-effort
+    provenance append failing. No-op when ``sentry-sdk`` is absent (the OS
+    package does not depend on it; enterprise deployments pull it in). Never
+    raises — instrumentation must not turn a degraded-but-working path into a
+    failure.
+
+    Args:
+        message: short, low-cardinality description of the anomaly (the Sentry
+            issue title), e.g. ``"lineage.resolve_current.cycle"``.
+        level: Sentry severity ("warning", "error", ...). Defaults to "warning".
+        **tags: contextual tag name → value pairs (None values are skipped).
+    """
+    try:
+        import sentry_sdk  # type: ignore[import-not-found]
+    except ImportError:
+        return
+    try:
+        with sentry_sdk.new_scope() as scope:
+            for key, value in tags.items():
+                if value is not None:
+                    scope.set_tag(key, str(value))
+            sentry_sdk.capture_message(message, level=level)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to capture Sentry anomaly %r: %s", message, exc)
