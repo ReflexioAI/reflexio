@@ -25,8 +25,8 @@ from reflexio.models.api_schema.service_schemas import (
 from reflexio.models.config_schema import SearchMode, SearchOptions
 
 from ._base import (
-    SQLiteStorageBase,
     _TOMBSTONE_STATUS_VALUES,
+    SQLiteStorageBase,
     _build_status_sql,
     _effective_search_mode,
     _epoch_to_iso,
@@ -273,8 +273,9 @@ class PlaybookMixin:
         row = self._fetchone(
             """SELECT COUNT(*) as cnt FROM user_playbooks up
                JOIN requests r ON up.request_id = r.request_id
-               WHERE r.session_id = ?""",
-            (session_id,),
+               WHERE r.session_id = ?
+                 AND (up.status IS NULL OR up.status NOT IN (?, ?))""",
+            (session_id, *_TOMBSTONE_STATUS_VALUES),
         )
         return row["cnt"] if row else 0
 
@@ -319,24 +320,27 @@ class PlaybookMixin:
         self._execute(del_sql, del_params)
 
     @SQLiteStorageBase.handle_exceptions
-    def delete_user_playbooks_by_ids(self, user_playbook_ids: list[int]) -> int:
+    def delete_user_playbooks_by_ids(
+        self, user_playbook_ids: list[int], *, emit_hard_delete: bool = True
+    ) -> int:
         if not user_playbook_ids:
             return 0
         ph = ",".join("?" for _ in user_playbook_ids)
         with self._lock:
-            for upid in user_playbook_ids:
-                _append_event_stmt(
-                    self.conn,
-                    org_id=self.org_id,
-                    entity_type="user_playbook",
-                    entity_id=str(upid),
-                    op="hard_delete",
-                    prov="wasInvalidatedBy",
-                    source_ids=[],
-                    actor="system",
-                    request_id="",
-                    reason="erasure",
-                )
+            if emit_hard_delete:
+                for upid in user_playbook_ids:
+                    _append_event_stmt(
+                        self.conn,
+                        org_id=self.org_id,
+                        entity_type="user_playbook",
+                        entity_id=str(upid),
+                        op="hard_delete",
+                        prov="wasInvalidatedBy",
+                        source_ids=[],
+                        actor="system",
+                        request_id="",
+                        reason="erasure",
+                    )
             self.conn.execute(
                 f"DELETE FROM user_playbooks_fts WHERE rowid IN ({ph})",
                 user_playbook_ids,
@@ -513,6 +517,10 @@ class PlaybookMixin:
             frag, sparams = _build_status_sql(status_filter)
             conditions.append(frag)
             params.extend(sparams)
+        else:
+            # Default: exclude tombstone statuses (MERGED/SUPERSEDED)
+            conditions.append("(up.status IS NULL OR up.status NOT IN (?, ?))")
+            params.extend(_TOMBSTONE_STATUS_VALUES)
         tag_frag, tag_params = _build_tags_sql("up", request.tags)
         if tag_frag:
             conditions.append(tag_frag)
@@ -780,11 +788,27 @@ class PlaybookMixin:
         self._execute(del_sql, del_params)
 
     @SQLiteStorageBase.handle_exceptions
-    def delete_agent_playbooks_by_ids(self, agent_playbook_ids: list[int]) -> None:
+    def delete_agent_playbooks_by_ids(
+        self, agent_playbook_ids: list[int], *, emit_hard_delete: bool = True
+    ) -> None:
         if not agent_playbook_ids:
             return
         ph = ",".join("?" for _ in agent_playbook_ids)
         with self._lock:
+            if emit_hard_delete:
+                for apid in agent_playbook_ids:
+                    _append_event_stmt(
+                        self.conn,
+                        org_id=self.org_id,
+                        entity_type="agent_playbook",
+                        entity_id=str(apid),
+                        op="hard_delete",
+                        prov="wasInvalidatedBy",
+                        source_ids=[],
+                        actor="system",
+                        request_id="",
+                        reason="erasure",
+                    )
             self.conn.execute(
                 f"DELETE FROM agent_playbooks_fts WHERE rowid IN ({ph})",
                 agent_playbook_ids,

@@ -2,10 +2,12 @@ import json
 import sqlite3
 import threading
 import time
-from typing import Any
+from typing import Any, Literal
 
 from reflexio.models.api_schema.domain.entities import LineageContext, LineageEvent
 from reflexio.models.api_schema.domain.enums import Status
+
+EntityType = Literal["user_playbook", "agent_playbook", "profile"]
 
 # Tombstone statuses — rows with these statuses are skipped by merge_records guard.
 _TOMBSTONE = (Status.MERGED.value, Status.SUPERSEDED.value)
@@ -16,6 +18,14 @@ _TABLE: dict[str, tuple[str, str]] = {
     "agent_playbook": ("agent_playbooks", "agent_playbook_id"),
     "profile": ("profiles", "profile_id"),
 }
+
+
+def _resolve_table(entity_type: str) -> tuple[str, str]:
+    """Map an entity_type to its (table, primary_key), raising on bad input."""
+    table = _TABLE.get(entity_type)
+    if table is None:
+        raise ValueError(f"unknown entity_type: {entity_type!r}")
+    return table
 
 
 def _append_event_stmt(
@@ -30,9 +40,13 @@ def _append_event_stmt(
     actor: str,
     request_id: str,
     reason: str,
-) -> None:
-    """Insert a lineage event row; silently no-ops on (entity_id, op, request_id) duplicate."""
-    conn.execute(
+    created_at: int | None = None,
+) -> sqlite3.Cursor:
+    """Insert a lineage event row; no-ops on (org_id, entity_id, op, request_id) duplicate.
+
+    Returns the cursor so callers can inspect ``rowcount``/``lastrowid``.
+    """
+    return conn.execute(
         "INSERT OR IGNORE INTO lineage_event "
         "(org_id, entity_type, entity_id, op, prov_relation, source_ids, "
         "actor, request_id, reason, created_at) "
@@ -47,7 +61,7 @@ def _append_event_stmt(
             actor,
             request_id,
             reason,
-            int(time.time()),
+            created_at if created_at is not None else int(time.time()),
         ),
     )
 
@@ -61,42 +75,37 @@ class SQLiteLineageMixin:
     org_id: str
 
     def append_lineage_event(self, event: LineageEvent) -> int:
-        """Append an event; idempotent on (entity_id, op, request_id). Return the row id.
+        """Append an event; idempotent on (org_id, entity_id, op, request_id).
 
         Args:
             event (LineageEvent): The fully-formed event to persist. ``event_id``
                 may be 0; the storage layer assigns a real id on insert. On a
-                duplicate ``(entity_id, op, request_id)`` the existing row is
-                returned unchanged.
+                duplicate ``(org_id, entity_id, op, request_id)`` the existing row
+                is returned unchanged.
 
         Returns:
             int: The assigned or existing ``event_id``.
         """
         created = event.created_at or int(time.time())
         with self._lock:
-            cur = self.conn.execute(
-                "INSERT OR IGNORE INTO lineage_event "
-                "(org_id, entity_type, entity_id, op, prov_relation, source_ids, "
-                "actor, request_id, reason, created_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?)",
-                (
-                    event.org_id,
-                    event.entity_type,
-                    event.entity_id,
-                    event.op,
-                    event.prov_relation,
-                    json.dumps(event.source_ids),
-                    event.actor,
-                    event.request_id,
-                    event.reason,
-                    created,
-                ),
+            cur = _append_event_stmt(
+                self.conn,
+                org_id=event.org_id,
+                entity_type=event.entity_type,
+                entity_id=event.entity_id,
+                op=event.op,
+                prov=event.prov_relation,
+                source_ids=event.source_ids,
+                actor=event.actor,
+                request_id=event.request_id,
+                reason=event.reason,
+                created_at=created,
             )
-            if cur.rowcount == 0:  # duplicate (entity_id, op, request_id)
+            if cur.rowcount == 0:  # duplicate (org_id, entity_id, op, request_id)
                 row = self.conn.execute(
                     "SELECT event_id FROM lineage_event "
-                    "WHERE entity_id=? AND op=? AND request_id=?",
-                    (event.entity_id, event.op, event.request_id),
+                    "WHERE org_id=? AND entity_id=? AND op=? AND request_id=?",
+                    (event.org_id, event.entity_id, event.op, event.request_id),
                 ).fetchone()
                 eid = row[0] if row else None
                 self.conn.commit()
@@ -157,7 +166,7 @@ class SQLiteLineageMixin:
     def merge_records(
         self,
         *,
-        entity_type: str,
+        entity_type: EntityType,
         survivor_id: str,
         source_ids: list[str],
         context: LineageContext,
@@ -175,8 +184,11 @@ class SQLiteLineageMixin:
             survivor_id (str): The id of the record that survives the merge.
             source_ids (list[str]): Ids of records to tombstone as merged.
             context (LineageContext): Caller-supplied intent (actor, reason, etc.).
+
+        Raises:
+            ValueError: If ``entity_type`` is not a recognized entity type.
         """
-        table, pk = _TABLE[entity_type]
+        table, pk = _resolve_table(entity_type)
         with self._lock:
             for sid in source_ids:
                 self.conn.execute(
@@ -201,7 +213,7 @@ class SQLiteLineageMixin:
     def supersede_record(
         self,
         *,
-        entity_type: str,
+        entity_type: EntityType,
         incumbent_id: str,
         successor_id: str,
         context: LineageContext,
@@ -223,8 +235,11 @@ class SQLiteLineageMixin:
         Returns:
             bool: ``True`` if the incumbent was CURRENT and was superseded;
                 ``False`` if the incumbent was not CURRENT and no mutation occurred.
+
+        Raises:
+            ValueError: If ``entity_type`` is not a recognized entity type.
         """
-        table, pk = _TABLE[entity_type]
+        table, pk = _resolve_table(entity_type)
         with self._lock:
             cur = self.conn.execute(
                 f"UPDATE {table} SET status=?, superseded_by=? "  # noqa: S608

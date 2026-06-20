@@ -1,6 +1,9 @@
 from abc import abstractmethod
+from typing import Literal
 
 from reflexio.models.api_schema.domain.entities import LineageContext, LineageEvent
+
+EntityType = Literal["user_playbook", "agent_playbook", "profile"]
 
 
 class LineageEventMixin:
@@ -8,13 +11,13 @@ class LineageEventMixin:
 
     @abstractmethod
     def append_lineage_event(self, event: LineageEvent) -> int:
-        """Append an event; idempotent on (entity_id, op, request_id). Return the row id.
+        """Append an event; idempotent on (org_id, entity_id, op, request_id).
 
         Args:
             event (LineageEvent): The fully-formed event to persist. ``event_id``
                 may be 0; the storage layer assigns a real id on insert. On a
-                duplicate ``(entity_id, op, request_id)`` the existing row is
-                returned unchanged.
+                duplicate ``(org_id, entity_id, op, request_id)`` the existing row
+                is returned unchanged.
 
         Returns:
             int: The assigned or existing ``event_id``.
@@ -48,7 +51,7 @@ class LineageEventMixin:
     def merge_records(
         self,
         *,
-        entity_type: str,
+        entity_type: EntityType,
         survivor_id: str,
         source_ids: list[str],
         context: LineageContext,
@@ -73,7 +76,7 @@ class LineageEventMixin:
     def supersede_record(
         self,
         *,
-        entity_type: str,
+        entity_type: EntityType,
         incumbent_id: str,
         successor_id: str,
         context: LineageContext,

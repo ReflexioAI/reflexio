@@ -539,7 +539,10 @@ def _supersede_user_playbook(
         context=ctx,
     )
     if not ok:
-        storage.delete_user_playbooks_by_ids([successor.user_playbook_id])
+        # Lost CAS: remove the never-live successor without auditing it as erasure.
+        storage.delete_user_playbooks_by_ids(
+            [successor.user_playbook_id], emit_hard_delete=False
+        )
         return None
     return successor.user_playbook_id
 
@@ -593,7 +596,8 @@ def _supersede_agent_playbook(
         context=ctx,
     )
     if not ok:
-        storage.delete_agent_playbooks_by_ids([successor_id])
+        # Lost CAS: remove the never-live successor without auditing it as erasure.
+        storage.delete_agent_playbooks_by_ids([successor_id], emit_hard_delete=False)
         return None
     return successor_id
 

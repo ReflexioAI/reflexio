@@ -168,11 +168,17 @@ class PlaybookMixin:
         raise NotImplementedError
 
     @abstractmethod
-    def delete_user_playbooks_by_ids(self, user_playbook_ids: list[int]) -> int:
+    def delete_user_playbooks_by_ids(
+        self, user_playbook_ids: list[int], *, emit_hard_delete: bool = True
+    ) -> int:
         """Delete user playbooks by their IDs.
 
         Args:
             user_playbook_ids: List of user_playbook_id values to delete
+            emit_hard_delete: When True (default), append a ``hard_delete``
+                lineage event per id (genuine erasure). Set False for rollback
+                cleanup of a never-live row (e.g. a lost supersede CAS), so no
+                spurious audit event is recorded.
 
         Returns:
             int: Number of user playbooks deleted
@@ -587,12 +593,18 @@ class PlaybookMixin:
         raise NotImplementedError
 
     @abstractmethod
-    def delete_agent_playbooks_by_ids(self, agent_playbook_ids: list[int]) -> None:
+    def delete_agent_playbooks_by_ids(
+        self, agent_playbook_ids: list[int], *, emit_hard_delete: bool = True
+    ) -> None:
         """Permanently delete agent playbooks by their IDs.
         No-op if agent_playbook_ids is empty.
 
         Args:
             agent_playbook_ids (list[int]): List of agent playbook IDs to delete
+            emit_hard_delete: When True (default), append a ``hard_delete``
+                lineage event per id (genuine erasure). Set False for rollback
+                cleanup of a never-live row (e.g. a lost supersede CAS), so no
+                spurious audit event is recorded.
         """
         raise NotImplementedError
 

@@ -18,7 +18,6 @@ def apply_playbook_edit(
     incumbent_id: int,
     new_playbook: UserPlaybook,
     source: str,
-    expect_current: bool = True,
 ) -> int:
     """Insert a replacement playbook then atomically supersede the incumbent.
 
@@ -39,9 +38,6 @@ def apply_playbook_edit(
             ``status=None``).
         source: Provenance label stored on the new playbook row and in the
             lineage event actor field.
-        expect_current: Retained for caller compatibility; the atomic
-            ``supersede_record`` guard makes this always-correct regardless of
-            its value — the parameter is effectively ignored.
 
     Returns:
         The ``user_playbook_id`` of the newly inserted playbook, or ``-1`` if
@@ -51,7 +47,9 @@ def apply_playbook_edit(
     storage.save_user_playbooks([new_playbook])
     new_id: int = new_playbook.user_playbook_id
 
-    ctx = LineageContext(op_kind="revise", actor=source, request_id=new_playbook.request_id)
+    ctx = LineageContext(
+        op_kind="revise", actor=source, request_id=new_playbook.request_id
+    )
     superseded = storage.supersede_record(
         entity_type="user_playbook",
         incumbent_id=str(incumbent_id),
@@ -59,7 +57,8 @@ def apply_playbook_edit(
         context=ctx,
     )
     if not superseded:
-        # lost the race: delete the just-inserted successor so no orphan CURRENT row remains
-        storage.delete_user_playbooks_by_ids([new_id])
+        # lost the race: delete the just-inserted successor so no orphan CURRENT row
+        # remains. It was never live, so this is a rollback — not an audited erasure.
+        storage.delete_user_playbooks_by_ids([new_id], emit_hard_delete=False)
         return -1
     return new_id

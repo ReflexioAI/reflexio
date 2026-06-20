@@ -1,6 +1,7 @@
 """Integration tests for Task 3: tombstone status filtering in SQLite storage."""
 
 import pytest
+
 from reflexio.models.api_schema.service_schemas import Status, UserPlaybook
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 
@@ -54,10 +55,52 @@ def test_superseded_tombstone_also_excluded_by_default(tmp_path):
     assert s.count_user_playbooks(user_id="u2") == 0
 
 
+def test_get_agent_playbook_by_id_excludes_tombstone_by_default(tmp_path):
+    """F006: get_agent_playbook_by_id hides MERGED agent playbooks unless include_tombstones=True."""
+    from reflexio.models.api_schema.domain import AgentPlaybook, PlaybookStatus
+
+    s = SQLiteStorage(org_id="test-org", db_path=str(tmp_path / "t.db"))
+    s.migrate()
+    [cur] = s.save_agent_playbooks(
+        [
+            AgentPlaybook(
+                playbook_name="support",
+                agent_version="v1",
+                content="current",
+                playbook_status=PlaybookStatus.PENDING,
+            )
+        ]
+    )
+    [tomb] = s.save_agent_playbooks(
+        [
+            AgentPlaybook(
+                playbook_name="support",
+                agent_version="v1",
+                content="old",
+                playbook_status=PlaybookStatus.PENDING,
+                status=Status.MERGED,
+                merged_into=cur.agent_playbook_id,
+            )
+        ]
+    )
+
+    # Default: tombstone hidden, current visible.
+    assert s.get_agent_playbook_by_id(tomb.agent_playbook_id) is None
+    assert s.get_agent_playbook_by_id(cur.agent_playbook_id) is not None
+
+    # With flag: tombstone returned.
+    got = s.get_agent_playbook_by_id(tomb.agent_playbook_id, include_tombstones=True)
+    assert got is not None and got.status is Status.MERGED
+
+
 def test_get_profile_by_id_excludes_tombstone_by_default(tmp_path):
     """get_profile_by_id should hide MERGED profiles unless include_tombstones=True."""
-    from reflexio.models.api_schema.service_schemas import UserProfile, ProfileTimeToLive
     import time
+
+    from reflexio.models.api_schema.service_schemas import (
+        ProfileTimeToLive,
+        UserProfile,
+    )
 
     s = SQLiteStorage(org_id="test-org", db_path=str(tmp_path / "t.db"))
     s.migrate()

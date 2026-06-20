@@ -1,16 +1,24 @@
 from __future__ import annotations
 
+from typing import Any, Literal
+
 from reflexio.models.api_schema.domain.entities import RecordRef
 
+EntityType = Literal["user_playbook", "agent_playbook", "profile"]
+
 _GETTER = {
-    "user_playbook": lambda s, i: s.get_user_playbook_by_id(int(i), include_tombstones=True),
-    "agent_playbook": lambda s, i: s.get_agent_playbook_by_id(int(i), include_tombstones=True),
+    "user_playbook": lambda s, i: s.get_user_playbook_by_id(
+        int(i), include_tombstones=True
+    ),
+    "agent_playbook": lambda s, i: s.get_agent_playbook_by_id(
+        int(i), include_tombstones=True
+    ),
     "profile": lambda s, i: s.get_profile_by_id(str(i), include_tombstones=True),
 }
 _MAX_HOPS = 8  # Phase A: chains are 1-hop; cap guards malformed pointers
 
 
-def resolve_current(storage, entity_type: str, id) -> RecordRef | None:
+def resolve_current(storage: Any, entity_type: EntityType, id: Any) -> RecordRef | None:
     """Follow merged_into/superseded_by pointers to the live survivor.
 
     Args:
@@ -21,8 +29,13 @@ def resolve_current(storage, entity_type: str, id) -> RecordRef | None:
     Returns:
         RecordRef pointing to the live survivor (is_purged=True if its body is blank),
         or None if the record doesn't exist, there's a cycle, or the chain exceeds _MAX_HOPS.
+
+    Raises:
+        ValueError: If ``entity_type`` is not a recognized entity type.
     """
-    get = _GETTER[entity_type]
+    get = _GETTER.get(entity_type)
+    if get is None:
+        raise ValueError(f"unknown entity_type: {entity_type!r}")
     visited: set[str] = set()
     cur = get(storage, id)
     if cur is None:
@@ -37,11 +50,13 @@ def resolve_current(storage, entity_type: str, id) -> RecordRef | None:
             return RecordRef(id=cur_id, is_purged=(not cur.content))
         nxt_row = get(storage, nxt)
         if nxt_row is None:
-            return RecordRef(id=cur_id, is_purged=(not cur.content))  # dangling pointer — stop here
+            return RecordRef(
+                id=cur_id, is_purged=(not cur.content)
+            )  # dangling pointer — stop here
         cur = nxt_row
 
 
-def _pk(row, entity_type: str):
+def _pk(row: Any, entity_type: EntityType) -> Any:
     """Extract the primary key from a row based on its entity type.
 
     Args:
@@ -50,9 +65,15 @@ def _pk(row, entity_type: str):
 
     Returns:
         The primary key value.
+
+    Raises:
+        ValueError: If ``entity_type`` is not a recognized entity type.
     """
-    return {
-        "user_playbook": row.user_playbook_id,
-        "agent_playbook": getattr(row, "agent_playbook_id", None),
-        "profile": getattr(row, "profile_id", None),
-    }[entity_type]
+    pk = {
+        "user_playbook": "user_playbook_id",
+        "agent_playbook": "agent_playbook_id",
+        "profile": "profile_id",
+    }.get(entity_type)
+    if pk is None:
+        raise ValueError(f"unknown entity_type: {entity_type!r}")
+    return getattr(row, pk)

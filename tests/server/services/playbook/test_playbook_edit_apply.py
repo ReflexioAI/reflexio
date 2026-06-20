@@ -93,7 +93,6 @@ def test_apply_expect_current_false_archives():
                 incumbent_id=old_id,
                 new_playbook=new,
                 source="offline_optimizer",
-                expect_current=False,
             )
         assert new_id > 0
 
@@ -131,7 +130,6 @@ def test_apply_expect_current_false_returns_minus1_and_no_orphan():
                 incumbent_id=old_id,
                 new_playbook=new,
                 source="offline_optimizer",
-                expect_current=False,
             )
         # supersede_record returned False → -1, successor cleaned up (no orphan)
         assert new_id == -1
