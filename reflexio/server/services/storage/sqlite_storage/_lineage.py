@@ -3,12 +3,13 @@ import sqlite3
 import threading
 import time
 import uuid
-from datetime import UTC, datetime
 from typing import Any, Literal
 
 from reflexio.models.api_schema.domain.entities import LineageContext, LineageEvent
 from reflexio.models.api_schema.domain.enums import Status
 from reflexio.server.tracing import capture_anomaly
+
+from ._base import _epoch_to_iso
 
 EntityType = Literal["user_playbook", "agent_playbook", "profile"]
 
@@ -360,11 +361,10 @@ class SQLiteLineageMixin:
         eligible_vals = list(_GC_ELIGIBLE_STATUSES)
 
         if age_is_text:
-            # Convert int epoch to the same ISO-8601 format stored in the column
-            # so the lexicographic comparison is chronologically correct.
-            cutoff_iso = datetime.fromtimestamp(older_than_epoch, tz=UTC).strftime(
-                "%Y-%m-%dT%H:%M:%S.000Z"
-            )
+            # Use the same helper the writer uses so the cutoff string is
+            # byte-for-byte format-consistent with stored values.  This keeps
+            # the ``<`` comparison truly exclusive (strict) at the boundary.
+            cutoff_iso = _epoch_to_iso(older_than_epoch)
             select_sql = (
                 f"SELECT {pk} FROM {table} "  # noqa: S608
                 f"WHERE status IN ({eligible_ph}) AND {age_col} < ? LIMIT ?"

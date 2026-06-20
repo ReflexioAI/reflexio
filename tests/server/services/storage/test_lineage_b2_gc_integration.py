@@ -18,6 +18,7 @@ from reflexio.models.api_schema.domain.entities import UserPlaybook
 from reflexio.models.api_schema.domain.enums import ProfileTimeToLive, Status
 from reflexio.models.api_schema.service_schemas import AgentPlaybook, UserProfile
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
+from reflexio.server.services.storage.sqlite_storage._base import _epoch_to_iso
 
 pytestmark = pytest.mark.integration
 
@@ -125,8 +126,8 @@ def test_gc_deletes_aged_merged_tombstone(tmp_path):
         s, "user_playbooks", "user_playbook_id", pid, Status.MERGED.value
     )
 
-    # Age the row to well before the cutoff
-    old_iso = "2020-01-01T00:00:00.000Z"
+    # Age the row to well before the cutoff — use production format (+00:00, no fractional seconds)
+    old_iso = _epoch_to_iso(int(datetime(2020, 1, 1, tzinfo=UTC).timestamp()))
     _set_playbook_created_at(s, "user_playbooks", "user_playbook_id", pid, old_iso)
 
     cutoff = int(datetime(2021, 1, 1, tzinfo=UTC).timestamp())
@@ -168,7 +169,11 @@ def test_gc_skips_fresh_tombstone_and_current(tmp_path):
     s.save_user_playbooks([pb_current])
     pid_current = pb_current.user_playbook_id
     _set_playbook_created_at(
-        s, "user_playbooks", "user_playbook_id", pid_current, "2019-01-01T00:00:00.000Z"
+        s,
+        "user_playbooks",
+        "user_playbook_id",
+        pid_current,
+        _epoch_to_iso(int(datetime(2019, 1, 1, tzinfo=UTC).timestamp())),
     )
     # status is NULL (CURRENT) — must NOT be deleted even if old
 
@@ -208,7 +213,11 @@ def test_gc_deletes_aged_archived_tombstone(tmp_path):
         s, "agent_playbooks", "agent_playbook_id", apid, Status.ARCHIVED.value
     )
     _set_playbook_created_at(
-        s, "agent_playbooks", "agent_playbook_id", apid, "2019-06-01T00:00:00.000Z"
+        s,
+        "agent_playbooks",
+        "agent_playbook_id",
+        apid,
+        _epoch_to_iso(int(datetime(2019, 6, 1, tzinfo=UTC).timestamp())),
     )
 
     cutoff = int(datetime(2020, 1, 1, tzinfo=UTC).timestamp())
@@ -247,10 +256,18 @@ def test_gc_straddle_playbook_text_iso_and_profile_int_epoch(tmp_path):
         s, "user_playbooks", "user_playbook_id", new_id, Status.MERGED.value
     )
     _set_playbook_created_at(
-        s, "user_playbooks", "user_playbook_id", old_id, "2018-01-01T00:00:00.000Z"
+        s,
+        "user_playbooks",
+        "user_playbook_id",
+        old_id,
+        _epoch_to_iso(int(datetime(2018, 1, 1, tzinfo=UTC).timestamp())),
     )
     _set_playbook_created_at(
-        s, "user_playbooks", "user_playbook_id", new_id, "2025-01-01T00:00:00.000Z"
+        s,
+        "user_playbooks",
+        "user_playbook_id",
+        new_id,
+        _epoch_to_iso(int(datetime(2025, 1, 1, tzinfo=UTC).timestamp())),
     )
 
     cutoff_pb = int(datetime(2020, 1, 1, tzinfo=UTC).timestamp())
@@ -323,7 +340,11 @@ def test_gc_legal_hold_skips_held_row(tmp_path, monkeypatch):
             s, "user_playbooks", "user_playbook_id", pid, Status.MERGED.value
         )
         _set_playbook_created_at(
-            s, "user_playbooks", "user_playbook_id", pid, "2019-01-01T00:00:00.000Z"
+            s,
+            "user_playbooks",
+            "user_playbook_id",
+            pid,
+            _epoch_to_iso(int(datetime(2019, 1, 1, tzinfo=UTC).timestamp())),
         )
 
     # Monkeypatch: only held_id is on legal hold
@@ -372,7 +393,11 @@ def test_gc_idempotent(tmp_path):
         s, "user_playbooks", "user_playbook_id", pid, Status.MERGED.value
     )
     _set_playbook_created_at(
-        s, "user_playbooks", "user_playbook_id", pid, "2018-01-01T00:00:00.000Z"
+        s,
+        "user_playbooks",
+        "user_playbook_id",
+        pid,
+        _epoch_to_iso(int(datetime(2018, 1, 1, tzinfo=UTC).timestamp())),
     )
 
     cutoff = int(datetime(2021, 1, 1, tzinfo=UTC).timestamp())
@@ -413,3 +438,98 @@ def test_gc_empty_table_returns_zero(tmp_path):
     cutoff = int(datetime(2030, 1, 1, tzinfo=UTC).timestamp())
     result = s.gc_expired_tombstones(entity_type="profile", older_than_epoch=cutoff)
     assert result == 0
+
+
+# ---------------------------------------------------------------------------
+# Boundary exclusivity: cutoff is EXCLUSIVE (strictly-less-than)
+# ---------------------------------------------------------------------------
+
+
+def test_gc_boundary_playbook_at_cutoff_not_deleted(tmp_path):
+    """A playbook whose created_at == older_than_epoch must NOT be deleted.
+
+    The contract is strictly-less-than.  The cutoff string is formatted by
+    _epoch_to_iso, matching the production write path exactly, so the
+    lexicographic ``<`` comparison is byte-for-byte consistent.
+    """
+    s = _store(tmp_path)
+    cutoff_epoch = int(datetime(2022, 6, 15, 12, 0, 0, tzinfo=UTC).timestamp())
+
+    # Row at EXACTLY the cutoff second — must survive GC.
+    pb_at = _make_user_playbook(content="at-boundary")
+    s.save_user_playbooks([pb_at])
+    pid_at = pb_at.user_playbook_id
+    _set_playbook_status(
+        s, "user_playbooks", "user_playbook_id", pid_at, Status.MERGED.value
+    )
+    _set_playbook_created_at(
+        s, "user_playbooks", "user_playbook_id", pid_at, _epoch_to_iso(cutoff_epoch)
+    )
+
+    # Row one second BEFORE the cutoff — must be deleted.
+    pb_before = _make_user_playbook(content="before-boundary")
+    s.save_user_playbooks([pb_before])
+    pid_before = pb_before.user_playbook_id
+    _set_playbook_status(
+        s, "user_playbooks", "user_playbook_id", pid_before, Status.MERGED.value
+    )
+    _set_playbook_created_at(
+        s,
+        "user_playbooks",
+        "user_playbook_id",
+        pid_before,
+        _epoch_to_iso(cutoff_epoch - 1),
+    )
+
+    deleted = s.gc_expired_tombstones(
+        entity_type="user_playbook", older_than_epoch=cutoff_epoch
+    )
+
+    assert deleted == 1
+    # Row at boundary survives.
+    assert (
+        s.conn.execute(
+            "SELECT 1 FROM user_playbooks WHERE user_playbook_id = ?", (pid_at,)
+        ).fetchone()
+        is not None
+    ), "Row at exact cutoff epoch must NOT be deleted (exclusive boundary)"
+    # Row before boundary is gone.
+    assert (
+        s.conn.execute(
+            "SELECT 1 FROM user_playbooks WHERE user_playbook_id = ?", (pid_before,)
+        ).fetchone()
+        is None
+    ), "Row one second before cutoff must be deleted"
+
+
+def test_gc_boundary_profile_at_cutoff_not_deleted(tmp_path):
+    """Profile (INTEGER age column) boundary: row at cutoff survives, row before doesn't."""
+    s = _store(tmp_path)
+    cutoff_epoch = int(datetime(2022, 6, 15, 12, 0, 0, tzinfo=UTC).timestamp())
+
+    p_at = _make_profile(profile_id="at-boundary", ts=cutoff_epoch)
+    p_before = _make_profile(profile_id="before-boundary", ts=cutoff_epoch - 1)
+    s.add_user_profile("u1", [p_at])
+    s.add_user_profile("u1", [p_before])
+    _set_profile_status(s, "at-boundary", Status.MERGED.value)
+    _set_profile_status(s, "before-boundary", Status.MERGED.value)
+    _set_profile_last_modified(s, "at-boundary", cutoff_epoch)
+    _set_profile_last_modified(s, "before-boundary", cutoff_epoch - 1)
+
+    deleted = s.gc_expired_tombstones(
+        entity_type="profile", older_than_epoch=cutoff_epoch
+    )
+
+    assert deleted == 1
+    assert (
+        s.conn.execute(
+            "SELECT 1 FROM profiles WHERE profile_id = ?", ("at-boundary",)
+        ).fetchone()
+        is not None
+    ), "Profile at exact cutoff epoch must NOT be deleted (exclusive boundary)"
+    assert (
+        s.conn.execute(
+            "SELECT 1 FROM profiles WHERE profile_id = ?", ("before-boundary",)
+        ).fetchone()
+        is None
+    ), "Profile one second before cutoff must be deleted"
