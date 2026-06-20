@@ -131,9 +131,7 @@ class TestReflectionProfileSupersede:
 
     @pytest.fixture
     def service(self, request_context, llm_client):
-        return ReflectionService(
-            request_context=request_context, llm_client=llm_client
-        )
+        return ReflectionService(request_context=request_context, llm_client=llm_client)
 
     def test_cited_profile_becomes_superseded_with_pointer_and_revise_event(
         self, request_context, service, llm_client
@@ -169,7 +167,9 @@ class TestReflectionProfileSupersede:
             ]
         )
 
-        result = service.run(ReflectionServiceRequest(user_id="u1"))
+        result = service.run(
+            ReflectionServiceRequest(user_id="u1", request_id="req-reflect-1")
+        )
         assert result.ran is True
         assert result.revised_count == 1
 
@@ -196,6 +196,9 @@ class TestReflectionProfileSupersede:
         revise_evt = revise_events[0]
         assert revise_evt.actor == "reflection"
         assert "p1" in revise_evt.source_ids
+        # Pin that the reflection pass's request_id flows end-to-end into the revise event
+        # (relied on by B3's request-id reconstruction).
+        assert revise_evt.request_id == "req-reflect-1"
 
         # Old profile must NOT appear as ARCHIVED (no bleed from old code path).
         archived = storage.get_user_profile("u1", status_filter=[Status.ARCHIVED])
