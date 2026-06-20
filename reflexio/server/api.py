@@ -2943,6 +2943,9 @@ def create_app(
     from reflexio.server.services.extraction.resume_scheduler import (
         maybe_start_resume_scheduler,
     )
+    from reflexio.server.services.lineage.gc_scheduler import (
+        maybe_start_lineage_gc,
+    )
 
     def _lifespan_org_id() -> str:
         if get_org_id is None:
@@ -2962,6 +2965,7 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
         scheduler = None
+        gc_scheduler = None
         if mount_data_plane:
             validate_llm_availability()
             from reflexio.server.llm.rerank import prewarm as _prewarm_cross_encoder
@@ -2975,11 +2979,17 @@ def create_app(
                 lambda org_id: RequestContext(org_id=org_id),
                 bootstrap_org_id=_lifespan_org_id(),
             )
+            gc_scheduler = maybe_start_lineage_gc(
+                lambda org_id: RequestContext(org_id=org_id),
+                bootstrap_org_id=_lifespan_org_id(),
+            )
         try:
             yield
         finally:
             if scheduler is not None:
                 scheduler.stop()
+            if gc_scheduler is not None:
+                gc_scheduler.stop()
 
     app = FastAPI(docs_url="/docs", lifespan=lifespan)
 
