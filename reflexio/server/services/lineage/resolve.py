@@ -19,13 +19,15 @@ _GETTER = {
 _MAX_HOPS = 8  # Phase A: chains are 1-hop; cap guards malformed pointers
 
 
-def resolve_current(storage: Any, entity_type: EntityType, id: Any) -> RecordRef | None:
+def resolve_current(
+    storage: Any, entity_type: EntityType, record_id: Any
+) -> RecordRef | None:
     """Follow merged_into/superseded_by pointers to the live survivor.
 
     Args:
         storage: Any storage backend exposing get_*_by_id with include_tombstones.
         entity_type: One of "user_playbook", "agent_playbook", "profile".
-        id: The primary key of the record to resolve (int for playbooks, str for profiles).
+        record_id: The primary key of the record to resolve (int for playbooks, str for profiles).
 
     Returns:
         RecordRef pointing to the live survivor (is_purged=True if its body is blank),
@@ -38,7 +40,7 @@ def resolve_current(storage: Any, entity_type: EntityType, id: Any) -> RecordRef
     if get is None:
         raise ValueError(f"unknown entity_type: {entity_type!r}")
     visited: set[str] = set()
-    cur = get(storage, id)
+    cur = get(storage, record_id)
     if cur is None:
         return None
     while True:
@@ -51,7 +53,7 @@ def resolve_current(storage: Any, entity_type: EntityType, id: Any) -> RecordRef
             capture_anomaly(
                 f"lineage.resolve_current.{reason}",
                 entity_type=entity_type,
-                entity_id=str(id),
+                entity_id=str(record_id),
                 hops=len(visited),
             )
             return None  # cycle or runaway chain

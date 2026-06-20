@@ -1258,7 +1258,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                     request_id    TEXT NOT NULL DEFAULT '',
                     reason        TEXT NOT NULL DEFAULT '',
                     created_at    INTEGER NOT NULL,
-                    UNIQUE (org_id, entity_id, op, request_id)
+                    UNIQUE (org_id, entity_type, entity_id, op, request_id)
                 );
                 CREATE INDEX IF NOT EXISTS idx_lineage_entity
                     ON lineage_event (entity_type, entity_id);
@@ -2137,7 +2137,7 @@ CREATE TABLE IF NOT EXISTS lineage_event (
     request_id    TEXT NOT NULL DEFAULT '',
     reason        TEXT NOT NULL DEFAULT '',
     created_at    INTEGER NOT NULL,
-    UNIQUE (org_id, entity_id, op, request_id)
+    UNIQUE (org_id, entity_type, entity_id, op, request_id)
 );
 CREATE INDEX IF NOT EXISTS idx_lineage_entity ON lineage_event (entity_type, entity_id);
 

@@ -42,7 +42,7 @@ def _append_event_stmt(
     reason: str,
     created_at: int | None = None,
 ) -> sqlite3.Cursor:
-    """Insert a lineage event row; no-ops on (org_id, entity_id, op, request_id) duplicate.
+    """Insert a lineage event row; no-ops on (org_id, entity_type, entity_id, op, request_id) duplicate.
 
     Returns the cursor so callers can inspect ``rowcount``/``lastrowid``.
     """
@@ -75,13 +75,13 @@ class SQLiteLineageMixin:
     org_id: str
 
     def append_lineage_event(self, event: LineageEvent) -> int:
-        """Append an event; idempotent on (org_id, entity_id, op, request_id).
+        """Append an event; idempotent on (org_id, entity_type, entity_id, op, request_id).
 
         Args:
             event (LineageEvent): The fully-formed event to persist. ``event_id``
                 may be 0; the storage layer assigns a real id on insert. On a
-                duplicate ``(org_id, entity_id, op, request_id)`` the existing row
-                is returned unchanged.
+                duplicate ``(org_id, entity_type, entity_id, op, request_id)`` the
+                existing row is returned unchanged.
 
         Returns:
             int: The assigned or existing ``event_id``.
@@ -101,11 +101,19 @@ class SQLiteLineageMixin:
                 reason=event.reason,
                 created_at=created,
             )
-            if cur.rowcount == 0:  # duplicate (org_id, entity_id, op, request_id)
+            if (
+                cur.rowcount == 0
+            ):  # duplicate (org_id, entity_type, entity_id, op, request_id)
                 row = self.conn.execute(
-                    "SELECT event_id FROM lineage_event "
-                    "WHERE org_id=? AND entity_id=? AND op=? AND request_id=?",
-                    (event.org_id, event.entity_id, event.op, event.request_id),
+                    "SELECT event_id FROM lineage_event WHERE org_id=? AND entity_type=? "
+                    "AND entity_id=? AND op=? AND request_id=?",
+                    (
+                        event.org_id,
+                        event.entity_type,
+                        event.entity_id,
+                        event.op,
+                        event.request_id,
+                    ),
                 ).fetchone()
                 eid = row[0] if row else None
                 self.conn.commit()
@@ -142,10 +150,11 @@ class SQLiteLineageMixin:
                 clauses.append(f"{col}=?")
                 params.append(val)
         where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
-        rows = self.conn.execute(
-            f"SELECT * FROM lineage_event{where} ORDER BY event_id",  # noqa: S608
-            params,
-        ).fetchall()
+        with self._lock:
+            rows = self.conn.execute(
+                f"SELECT * FROM lineage_event{where} ORDER BY event_id",  # noqa: S608
+                params,
+            ).fetchall()
         return [
             LineageEvent(
                 event_id=r["event_id"],
@@ -191,10 +200,15 @@ class SQLiteLineageMixin:
         table, pk = _resolve_table(entity_type)
         with self._lock:
             for sid in source_ids:
+                if sid == survivor_id:
+                    # Never tombstone the survivor itself, even if it is
+                    # accidentally listed among the source ids.
+                    continue
                 self.conn.execute(
                     f"UPDATE {table} SET status=?, merged_into=? "  # noqa: S608
-                    f"WHERE {pk}=? AND (status IS NULL OR status NOT IN (?, ?))",
-                    (Status.MERGED.value, survivor_id, sid, *_TOMBSTONE),
+                    f"WHERE {pk}=? AND {pk}!=? "
+                    f"AND (status IS NULL OR status NOT IN (?, ?))",
+                    (Status.MERGED.value, survivor_id, sid, survivor_id, *_TOMBSTONE),
                 )
             _append_event_stmt(
                 self.conn,

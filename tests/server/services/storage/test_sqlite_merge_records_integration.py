@@ -1,13 +1,15 @@
 import pytest
-from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
-from reflexio.models.api_schema.domain.entities import UserPlaybook, LineageContext
+
+from reflexio.models.api_schema.domain.entities import LineageContext, UserPlaybook
 from reflexio.models.api_schema.domain.enums import Status
+from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 
 pytestmark = pytest.mark.integration
 
 
 def test_merge_records_tombstones_sources_sets_pointer_and_logs(tmp_path):
-    s = SQLiteStorage(org_id="org-1", db_path=str(tmp_path / "t.db")); s.migrate()
+    s = SQLiteStorage(org_id="org-1", db_path=str(tmp_path / "t.db"))
+    s.migrate()
     survivor = UserPlaybook(user_id="u1", agent_version="v1", request_id="r1", content="merged")
     src = UserPlaybook(user_id="u1", agent_version="v1", request_id="r1", content="old")
     s.save_user_playbooks([survivor, src])
@@ -24,7 +26,8 @@ def test_merge_records_tombstones_sources_sets_pointer_and_logs(tmp_path):
 
 
 def test_supersede_returns_false_when_incumbent_not_current(tmp_path):
-    s = SQLiteStorage(org_id="org-1", db_path=str(tmp_path / "t.db")); s.migrate()
+    s = SQLiteStorage(org_id="org-1", db_path=str(tmp_path / "t.db"))
+    s.migrate()
     inc = UserPlaybook(user_id="u1", agent_version="v1", request_id="r1", content="v1",
                        status=Status.ARCHIVED)
     succ = UserPlaybook(user_id="u1", agent_version="v1", request_id="r1", content="v2")
