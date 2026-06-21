@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     import numpy as np
 
+from reflexio.lib._agent_playbook import _PREFIX as _AGGREGATE_PREFIX
 from reflexio.models.api_schema.domain.entities import LineageEvent
 from reflexio.models.api_schema.service_schemas import (
     AgentPlaybook,
@@ -901,7 +902,7 @@ class PlaybookAggregator:
                                 source_ids=member_ids,
                                 actor="aggregator",
                                 request_id=_run_id,
-                                reason=f"aggregate:{'full_archive' if full_archive else 'incremental'}",
+                                reason=f"{_AGGREGATE_PREFIX}{'full_archive' if full_archive else 'incremental'}",
                             )
                         )
                     except Exception:  # noqa: BLE001
@@ -957,10 +958,7 @@ class PlaybookAggregator:
             if full_archive:
                 for name in full_archive_playbook_names:
                     if soft:
-                        if not _run_id:
-                            raise ValueError(
-                                "_run_id must be non-empty for supersede call"
-                            )
+                        # _run_id is always non-empty (uuid4); supersede methods validate request_id themselves.
                         self.storage.supersede_agent_playbooks_by_playbook_name(  # type: ignore[reportOptionalMemberAccess]
                             name, agent_version=self.agent_version, request_id=_run_id
                         )
@@ -970,8 +968,7 @@ class PlaybookAggregator:
                         )
             elif archived_playbook_ids:
                 if soft:
-                    if not _run_id:
-                        raise ValueError("_run_id must be non-empty for supersede call")
+                    # _run_id is always non-empty (uuid4); supersede methods validate request_id themselves.
                     self.storage.supersede_agent_playbooks_by_ids(  # type: ignore[reportOptionalMemberAccess]
                         archived_playbook_ids, request_id=_run_id
                     )

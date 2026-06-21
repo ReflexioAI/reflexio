@@ -10,6 +10,7 @@ from reflexio.models.api_schema.service_schemas import (
     AgentPlaybookSourceWindow,
     UserPlaybook,
 )
+from reflexio.server.services.storage.error import StorageError
 
 pytestmark = pytest.mark.integration
 
@@ -429,3 +430,195 @@ class TestDashboardPlaybooksTimeSeries:
         # The series must contain BOTH playbooks (regression: it previously
         # queried only user_playbooks and would have length 1 here).
         assert len(stats["playbooks_time_series"]) == 2
+
+
+# ---------------------------------------------------------------------------
+# TestSupersedeAgentPlaybooks
+# ---------------------------------------------------------------------------
+
+
+class TestSupersedeAgentPlaybooks:
+    """Contract tests for supersede_agent_playbooks_by_ids and supersede_agent_playbooks_by_playbook_name."""
+
+    # --- supersede_by_ids ---
+
+    def test_by_ids_supersedes_eligible_row(self, storage) -> None:
+        """Non-APPROVED, non-tombstoned row flips to SUPERSEDED and emits one status_change event."""
+        ap = _make_agent_playbook(1, "pb", "v1")
+        storage.save_agent_playbooks([ap])
+        saved = storage.get_agent_playbooks(playbook_name="pb")
+        ap_id = saved[0].agent_playbook_id
+
+        count = storage.supersede_agent_playbooks_by_ids(
+            [ap_id], request_id="req-sup-1"
+        )
+
+        assert count == 1
+        # Row survives as tombstone
+        row = storage.get_agent_playbook_by_id(ap_id, include_tombstones=True)
+        assert row is not None
+        # Not visible in default reads
+        assert storage.get_agent_playbook_by_id(ap_id) is None
+        # Exactly one status_change(to_status='superseded') event
+        events = storage.get_lineage_events(
+            entity_type="agent_playbook", entity_id=str(ap_id)
+        )
+        sc = [
+            e for e in events if e.op == "status_change" and e.to_status == "superseded"
+        ]
+        assert len(sc) == 1
+        assert sc[0].request_id == "req-sup-1"
+
+    def test_by_ids_skips_approved(self, storage) -> None:
+        """APPROVED playbooks are excluded from supersede; count==0, row untouched."""
+        from reflexio.models.api_schema.service_schemas import PlaybookStatus
+
+        ap = AgentPlaybook(
+            agent_playbook_id=1,
+            playbook_name="pb",
+            agent_version="v1",
+            content="content-approved",
+            created_at=1_700_000_001,
+            playbook_status=PlaybookStatus.APPROVED,
+        )
+        storage.save_agent_playbooks([ap])
+        saved = storage.get_agent_playbooks(playbook_name="pb")
+        ap_id = saved[0].agent_playbook_id
+
+        count = storage.supersede_agent_playbooks_by_ids(
+            [ap_id], request_id="req-sup-ap"
+        )
+
+        assert count == 0
+        row = storage.get_agent_playbook_by_id(ap_id)
+        assert row is not None
+
+    def test_by_ids_skips_already_tombstoned(self, storage) -> None:
+        """Already-SUPERSEDED rows are no-ops; count==0, no new event emitted."""
+        ap = _make_agent_playbook(2, "pb", "v1")
+        storage.save_agent_playbooks([ap])
+        saved = storage.get_agent_playbooks(playbook_name="pb")
+        ap_id = saved[0].agent_playbook_id
+
+        storage.supersede_agent_playbooks_by_ids([ap_id], request_id="req-sup-first")
+        events_before = storage.get_lineage_events(
+            entity_type="agent_playbook", entity_id=str(ap_id)
+        )
+        sc_before = [
+            e
+            for e in events_before
+            if e.op == "status_change" and e.to_status == "superseded"
+        ]
+
+        count2 = storage.supersede_agent_playbooks_by_ids(
+            [ap_id], request_id="req-sup-second"
+        )
+
+        assert count2 == 0
+        events_after = storage.get_lineage_events(
+            entity_type="agent_playbook", entity_id=str(ap_id)
+        )
+        sc_after = [
+            e
+            for e in events_after
+            if e.op == "status_change" and e.to_status == "superseded"
+        ]
+        # No new event added
+        assert len(sc_after) == len(sc_before)
+
+    def test_by_ids_count_matches_updated_rows(self, storage) -> None:
+        """Returned count equals the number of rows actually updated."""
+        ap1 = _make_agent_playbook(3, "pb", "v1")
+        ap2 = _make_agent_playbook(4, "pb", "v1")
+        storage.save_agent_playbooks([ap1, ap2])
+        saved = storage.get_agent_playbooks(playbook_name="pb")
+        ids = [s.agent_playbook_id for s in saved]
+
+        count = storage.supersede_agent_playbooks_by_ids(
+            ids, request_id="req-sup-count"
+        )
+
+        assert count == 2
+
+    def test_by_ids_empty_request_id_raises(self, storage) -> None:
+        """Empty request_id raises StorageError."""
+        ap = _make_agent_playbook(5, "pb", "v1")
+        storage.save_agent_playbooks([ap])
+        saved = storage.get_agent_playbooks(playbook_name="pb")
+        ap_id = saved[0].agent_playbook_id
+
+        with pytest.raises(StorageError):
+            storage.supersede_agent_playbooks_by_ids([ap_id], request_id="")
+
+    # --- supersede_by_playbook_name ---
+
+    def test_by_name_supersedes_archived_row(self, storage) -> None:
+        """Archived row matching playbook_name flips to SUPERSEDED and emits status_change event."""
+        ap = _make_agent_playbook(6, "pb-name", "v1")
+        storage.save_agent_playbooks([ap])
+        saved = storage.get_agent_playbooks(playbook_name="pb-name")
+        ap_id = saved[0].agent_playbook_id
+        # Must archive first — supersede_by_name targets archived rows
+        storage.archive_agent_playbooks_by_ids([ap_id])
+
+        count = storage.supersede_agent_playbooks_by_playbook_name(
+            "pb-name", agent_version="v1", request_id="req-name-1"
+        )
+
+        assert count == 1
+        row = storage.get_agent_playbook_by_id(ap_id, include_tombstones=True)
+        assert row is not None
+        assert storage.get_agent_playbook_by_id(ap_id) is None
+        events = storage.get_lineage_events(
+            entity_type="agent_playbook", entity_id=str(ap_id)
+        )
+        sc = [
+            e for e in events if e.op == "status_change" and e.to_status == "superseded"
+        ]
+        assert len(sc) == 1
+        assert sc[0].request_id == "req-name-1"
+
+    def test_by_name_skips_approved(self, storage) -> None:
+        """APPROVED playbooks are not superseded by supersede_by_playbook_name."""
+        from reflexio.models.api_schema.service_schemas import PlaybookStatus
+
+        ap = AgentPlaybook(
+            agent_playbook_id=7,
+            playbook_name="pb-ap",
+            agent_version="v1",
+            content="content-ap",
+            created_at=1_700_000_007,
+            playbook_status=PlaybookStatus.APPROVED,
+        )
+        storage.save_agent_playbooks([ap])
+        saved = storage.get_agent_playbooks(playbook_name="pb-ap")
+        ap_id = saved[0].agent_playbook_id
+        storage.archive_agent_playbooks_by_ids([ap_id])
+
+        count = storage.supersede_agent_playbooks_by_playbook_name(
+            "pb-ap", agent_version="v1", request_id="req-name-ap"
+        )
+
+        assert count == 0
+
+    def test_by_name_count_matches_updated_rows(self, storage) -> None:
+        """Returned count equals number of archived rows actually superseded."""
+        ap1 = _make_agent_playbook(8, "pb-cnt", "v1")
+        ap2 = _make_agent_playbook(9, "pb-cnt", "v1")
+        storage.save_agent_playbooks([ap1, ap2])
+        saved = storage.get_agent_playbooks(playbook_name="pb-cnt")
+        ids = [s.agent_playbook_id for s in saved]
+        storage.archive_agent_playbooks_by_ids(ids)
+
+        count = storage.supersede_agent_playbooks_by_playbook_name(
+            "pb-cnt", agent_version="v1", request_id="req-name-cnt"
+        )
+
+        assert count == 2
+
+    def test_by_name_empty_request_id_raises(self, storage) -> None:
+        """Empty request_id raises StorageError."""
+        with pytest.raises(StorageError):
+            storage.supersede_agent_playbooks_by_playbook_name(
+                "any-name", agent_version=None, request_id=""
+            )

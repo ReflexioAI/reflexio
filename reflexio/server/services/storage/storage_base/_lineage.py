@@ -25,7 +25,6 @@ class LineageEventMixin:
         raise NotImplementedError
 
     @abstractmethod
-    # NOTE(B3b T3): the Supabase override must also add the request_id filter for contract parity.
     def get_lineage_events(
         self,
         *,
@@ -48,6 +47,10 @@ class LineageEventMixin:
 
         Returns:
             list[LineageEvent]: Matching events ordered by ``event_id`` ascending.
+
+        Note:
+            Enterprise/Supabase overrides must also apply the ``request_id`` filter
+            to maintain contract parity with the SQLite implementation (B3b T3).
         """
         raise NotImplementedError
 

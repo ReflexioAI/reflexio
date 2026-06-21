@@ -608,3 +608,136 @@ def test_run_mode_bogus_suffix_falls_back_to_incremental(tmp_path):
     assert result.change_logs[0].run_mode == "incremental", (
         "bogus suffix must fall back to 'incremental'"
     )
+
+
+# ---------------------------------------------------------------------------
+# Test 13: Multi-run grouping — core group-by-request_id invariant
+# ---------------------------------------------------------------------------
+
+
+def test_multi_run_grouping_distinct_request_ids(tmp_path):
+    """Two runs under distinct request_ids produce exactly 2 change_logs with no cross-contamination.
+
+    Run A: adds X, Y + supersedes Z.
+    Run B: adds P + supersedes Q.
+    Reconstruction must group each run's events separately.
+    """
+    s = _store(tmp_path)
+
+    # --- Seed playbooks ---
+    pb_z = _make_playbook(playbook_name="pb", agent_version="v1", content="Z old")
+    pb_q = _make_playbook(playbook_name="pb", agent_version="v1", content="Q old")
+    id_z = _add_playbook(s, pb_z)
+    id_q = _add_playbook(s, pb_q)
+    _set_superseded(s, id_z)
+    _set_superseded(s, id_q)
+
+    pb_x = _make_playbook(playbook_name="pb", agent_version="v1", content="X new")
+    pb_y = _make_playbook(playbook_name="pb", agent_version="v1", content="Y new")
+    pb_p = _make_playbook(playbook_name="pb", agent_version="v1", content="P new")
+    id_x = _add_playbook(s, pb_x)
+    id_y = _add_playbook(s, pb_y)
+    id_p = _add_playbook(s, pb_p)
+
+    req_a = "run-multi-A"
+    req_b = "run-multi-B"
+
+    # Run A events
+    _emit_aggregate_event(s, entity_id=str(id_x), request_id=req_a)
+    _emit_aggregate_event(s, entity_id=str(id_y), request_id=req_a)
+    _emit_status_change_superseded(s, entity_id=str(id_z), request_id=req_a)
+
+    # Run B events
+    _emit_aggregate_event(s, entity_id=str(id_p), request_id=req_b)
+    _emit_status_change_superseded(s, entity_id=str(id_q), request_id=req_b)
+
+    result = reconstruct_playbook_aggregation_change_log(s)
+    assert result.success
+    assert len(result.change_logs) == 2, (
+        f"Expected 2 change_logs (one per run), got {len(result.change_logs)}"
+    )
+
+    logs_by_req: dict[str, object] = {}
+    for log in result.change_logs:
+        added_contents = {snap.content for snap in log.added_agent_playbooks}
+        removed_contents = {snap.content for snap in log.removed_agent_playbooks}
+        if "X new" in added_contents or "Y new" in added_contents:
+            logs_by_req["A"] = (added_contents, removed_contents)
+        elif "P new" in added_contents:
+            logs_by_req["B"] = (added_contents, removed_contents)
+
+    assert "A" in logs_by_req, "Run A log missing"
+    assert "B" in logs_by_req, "Run B log missing"
+
+    added_a, removed_a = logs_by_req["A"]  # type: ignore[misc]
+    assert added_a == {"X new", "Y new"}, f"Run A added: {added_a}"
+    assert removed_a == {"Z old"}, f"Run A removed: {removed_a}"
+    # No cross-contamination from run B
+    assert "P new" not in added_a
+    assert "Q old" not in removed_a
+
+    added_b, removed_b = logs_by_req["B"]  # type: ignore[misc]
+    assert added_b == {"P new"}, f"Run B added: {added_b}"
+    assert removed_b == {"Q old"}, f"Run B removed: {removed_b}"
+    # No cross-contamination from run A
+    assert "X new" not in added_b
+    assert "Z old" not in removed_b
+
+
+# ---------------------------------------------------------------------------
+# Test 14: Non-matching status_change ops are NOT counted in removed
+# ---------------------------------------------------------------------------
+
+
+def test_archived_status_change_not_counted_in_removed(tmp_path):
+    """status_change with to_status='archived' is NOT counted as a removal signal.
+
+    Only status_change events with to_status='superseded' feed removed_agent_playbooks.
+    An 'archived' transition (e.g. from an archive_agent_playbooks_by_ids call)
+    must not appear in removed.
+    """
+    s = _store(tmp_path)
+
+    pb = _make_playbook(playbook_name="pb", agent_version="v1", content="archived-pb")
+    ap_id = _add_playbook(s, pb)
+
+    # Simulate the archive step that happens before supersede in the aggregation pipeline
+    s.archive_agent_playbooks_by_ids([ap_id])
+
+    # Add an aggregate event so this request_id produces a non-empty change_log
+    new_pb = _make_playbook(playbook_name="pb", agent_version="v1", content="new-pb")
+    new_id = _add_playbook(s, new_pb)
+
+    req_id = "run-archived-sc"
+    _emit_aggregate_event(s, entity_id=str(new_id), request_id=req_id)
+
+    # Emit a status_change event with to_status='archived' (NOT 'superseded')
+    # under the same request_id — this must not be treated as a removal signal.
+    s.append_lineage_event(
+        LineageEvent(
+            org_id=s.org_id,
+            entity_type="agent_playbook",
+            entity_id=str(ap_id),
+            op="status_change",
+            source_ids=[],
+            actor="aggregator",
+            request_id=req_id,
+            from_status=None,
+            to_status="archived",
+            status_namespace="lifecycle_status",
+        )
+    )
+
+    result = reconstruct_playbook_aggregation_change_log(s)
+    assert result.success
+    assert len(result.change_logs) == 1
+    log = result.change_logs[0]
+
+    # 'archived' status_change must NOT appear in removed_agent_playbooks
+    assert log.removed_agent_playbooks == [], (
+        f"archived status_change must not be counted as removal; "
+        f"got removed={[s.content for s in log.removed_agent_playbooks]}"
+    )
+    # The aggregate event still shows up as added
+    assert len(log.added_agent_playbooks) == 1
+    assert log.added_agent_playbooks[0].content == "new-pb"

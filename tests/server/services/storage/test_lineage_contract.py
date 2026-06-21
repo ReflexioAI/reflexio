@@ -33,9 +33,7 @@ def test_append_idempotent(storage) -> None:
     second = storage.append_lineage_event(event)
     assert first == second
     # F012: the duplicate must not create a second row.
-    events = storage.get_lineage_events(
-        entity_type="user_playbook", entity_id="X"
-    )
+    events = storage.get_lineage_events(entity_type="user_playbook", entity_id="X")
     assert len(events) == 1
 
 
@@ -232,9 +230,7 @@ def test_append_lineage_event_idempotent_exact_key(storage) -> None:
     second = storage.append_lineage_event(event)
 
     assert first == second
-    events = storage.get_lineage_events(
-        entity_type="user_playbook", entity_id="idem-2"
-    )
+    events = storage.get_lineage_events(entity_type="user_playbook", entity_id="idem-2")
     assert len(events) == 1
 
 
@@ -285,3 +281,61 @@ def test_non_status_change_events_have_null_structured_fields(storage) -> None:
     assert hd.from_status is None
     assert hd.to_status is None
     assert hd.status_namespace is None
+
+
+def test_get_lineage_events_request_id_filter(storage) -> None:
+    """get_lineage_events(request_id=R) returns only events tagged with R; None returns all."""
+    ap1 = AgentPlaybook(agent_version="v", content="c1")
+    ap2 = AgentPlaybook(agent_version="v", content="c2")
+    storage.save_agent_playbooks([ap1, ap2])
+
+    req_a = "req-filter-A"
+    req_b = "req-filter-B"
+
+    # Emit archive events to seed lineage entries; archive emits status_change
+    storage.archive_agent_playbooks_by_ids([ap1.agent_playbook_id])
+    # Re-fetch to get the event's request_id — use append_lineage_event directly for precision
+    from reflexio.models.api_schema.domain.entities import LineageEvent
+
+    storage.append_lineage_event(
+        LineageEvent(
+            org_id=storage.org_id,
+            entity_type="agent_playbook",
+            entity_id=str(ap1.agent_playbook_id),
+            op="aggregate",
+            source_ids=[],
+            request_id=req_a,
+        )
+    )
+    storage.append_lineage_event(
+        LineageEvent(
+            org_id=storage.org_id,
+            entity_type="agent_playbook",
+            entity_id=str(ap2.agent_playbook_id),
+            op="aggregate",
+            source_ids=[],
+            request_id=req_b,
+        )
+    )
+
+    # Filter to req_a: only events with request_id == req_a
+    events_a = storage.get_lineage_events(
+        entity_type="agent_playbook", request_id=req_a
+    )
+    assert all(e.request_id == req_a for e in events_a), (
+        f"Expected only {req_a!r} events, got {[e.request_id for e in events_a]}"
+    )
+    assert any(e.entity_id == str(ap1.agent_playbook_id) for e in events_a)
+
+    # Filter to req_b: only events with request_id == req_b
+    events_b = storage.get_lineage_events(
+        entity_type="agent_playbook", request_id=req_b
+    )
+    assert all(e.request_id == req_b for e in events_b)
+    assert any(e.entity_id == str(ap2.agent_playbook_id) for e in events_b)
+
+    # No request_id filter: returns events from both
+    events_all = storage.get_lineage_events(entity_type="agent_playbook")
+    req_ids_all = {e.request_id for e in events_all}
+    assert req_a in req_ids_all
+    assert req_b in req_ids_all

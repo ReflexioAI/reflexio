@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections import defaultdict
 from typing import Literal, cast
 
@@ -326,6 +327,10 @@ class AgentPlaybookMixin(ReflexioBase):
 # Standalone read-side reconstruction (Phase B3b Task 2)
 # ---------------------------------------------------------------------------
 
+logger = logging.getLogger(__name__)
+
+# Prefix for aggregate lineage event reasons — keep in sync with
+# _AGGREGATE_PREFIX in reflexio/server/services/playbook/playbook_aggregator.py
 _PREFIX = "aggregate:"
 
 
@@ -428,21 +433,30 @@ def reconstruct_playbook_aggregation_change_log(
     # together at the B3 retirement stage (when reconstruction may move onto the
     # request path), not divergently for one of the two now.
     for req in sorted_reqs:
-        added = [
-            agent_playbook_to_snapshot(pb)
-            for eid in added_by_req[req]
-            if (pb := storage.get_agent_playbook_by_id(int(eid))) is not None
-        ]
-        removed = [
-            agent_playbook_to_snapshot(pb)
-            for eid in removed_by_req[req]
-            if (
-                pb := storage.get_agent_playbook_by_id(
-                    int(eid), include_tombstones=True
+        added = []
+        for eid in added_by_req[req]:
+            try:
+                pb = storage.get_agent_playbook_by_id(int(eid))
+            except (ValueError, TypeError):
+                logger.warning(
+                    "reconstruct: malformed entity_id %r in added_by_req, skipping", eid
                 )
-            )
-            is not None
-        ]
+                continue
+            if pb is not None:
+                added.append(agent_playbook_to_snapshot(pb))
+
+        removed = []
+        for eid in removed_by_req[req]:
+            try:
+                pb = storage.get_agent_playbook_by_id(int(eid), include_tombstones=True)
+            except (ValueError, TypeError):
+                logger.warning(
+                    "reconstruct: malformed entity_id %r in removed_by_req, skipping",
+                    eid,
+                )
+                continue
+            if pb is not None:
+                removed.append(agent_playbook_to_snapshot(pb))
 
         if not added and not removed:
             continue

@@ -735,21 +735,13 @@ class TestAggregationSoftDeleteFlagOff:
 
 class TestEmptyRunIdRejected:
     def test_empty_run_id_raises_via_aggregator(self, temp_dir, worker_id) -> None:
-        """The ValueError guard in playbook_aggregator.py fires when _run_id is empty.
+        """StorageError propagates when _run_id is empty (validated at storage layer).
 
-        Exercises the production code path:
-            _run_id = str(uuid.uuid4())   # patched to return ""
-            ...
-            if full_archive:
-                for name in full_archive_playbook_names:
-                    if soft:
-                        if not _run_id:
-                            raise ValueError(...)
-
+        The aggregator no longer has its own guard for empty _run_id; instead,
+        supersede methods raise StorageError("request_id must be non-empty").
         The test patches uuid.uuid4 in the aggregator module so _run_id becomes "",
         sets flag ON (soft=True), uses rerun=True (full_archive=True guaranteed), and
-        confirms ValueError is raised from the actual production guard — not a re-raise
-        in the test body.
+        confirms StorageError propagates from the supersede call through the aggregator.
         """
         storage = _make_storage(temp_dir, worker_id, suffix="-empty-rid")
         ctx = _make_request_context(storage, temp_dir, worker_id, suffix="-empty-rid")
@@ -793,7 +785,7 @@ class TestEmptyRunIdRejected:
             patch(flag_path, return_value=True),
             # Patch uuid.uuid4 in the aggregator module so _run_id = str(mock) = "".
             patch(uuid_path, return_value=_EmptyStrUUID()),
-            pytest.raises(ValueError, match="_run_id must be non-empty"),
+            pytest.raises(StorageError, match="request_id must be non-empty"),
         ):
             aggregator = PlaybookAggregator(
                 llm_client=MagicMock(),
@@ -803,7 +795,7 @@ class TestEmptyRunIdRejected:
             aggregator.run(
                 PlaybookAggregatorRequest(
                     agent_version="v0",
-                    rerun=True,  # guarantees full_archive=True → guard fires
+                    rerun=True,  # guarantees full_archive=True → StorageError fires from supersede
                 )
             )
 
@@ -848,3 +840,39 @@ class TestSearchAgentPlaybooksTombstoneExclusion:
         assert ap.agent_playbook_id in result_ids, (
             "Live agent playbook must appear in search_agent_playbooks"
         )
+
+
+# ---------------------------------------------------------------------------
+# Part E: End-to-end from_status signal through full aggregator run
+# ---------------------------------------------------------------------------
+
+
+class TestAggregatorFromStatusSignal:
+    def test_aggregator_full_archive_status_change_carries_from_status_archived(
+        self, temp_dir, worker_id
+    ) -> None:
+        """Full-archive aggregator run: supersede events carry from_status='archived' and status_namespace='lifecycle_status'.
+
+        Verifies the end-to-end signal — not just at storage-unit level but through
+        the complete aggregator run: archive_agent_playbooks_by_ids followed by
+        supersede_agent_playbooks_by_playbook_name produces status_change events
+        with the correct structured fields.
+        """
+        storage, _ctx = _run_aggregator_with_supersede(
+            temp_dir, worker_id, full_archive=True, flag_on=True, suffix="-from-status"
+        )
+        events = storage.get_lineage_events(entity_type="agent_playbook")
+        sc_supersede = [
+            e for e in events if e.op == "status_change" and e.to_status == "superseded"
+        ]
+        assert sc_supersede, (
+            "Full-archive + flag ON must produce status_change->superseded events"
+        )
+        for evt in sc_supersede:
+            assert evt.from_status == "archived", (
+                f"Expected from_status='archived' (aggregator archives before superseding), "
+                f"got {evt.from_status!r} for entity {evt.entity_id}"
+            )
+            assert evt.status_namespace == "lifecycle_status", (
+                f"Expected status_namespace='lifecycle_status', got {evt.status_namespace!r}"
+            )
