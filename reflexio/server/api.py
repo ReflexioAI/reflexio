@@ -26,7 +26,6 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 from starlette.responses import Response
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from reflexio.lib._profiles import reconstruct_profile_change_log
 from reflexio.models.api_schema.braintrust_schema import (
     BraintrustStatusResponse,
     ConnectBraintrustRequest,
@@ -1044,11 +1043,7 @@ def unified_search_endpoint(
 def get_profile_change_log(
     org_id: str = Depends(default_get_org_id),
 ) -> ProfileChangeLogViewResponse:
-    storage = get_reflexio(org_id=org_id).request_context.storage
-    # storage is None when the request context is misconfigured or unauthenticated.
-    if storage is None:
-        return ProfileChangeLogViewResponse(success=True, profile_change_logs=[])
-    response = reconstruct_profile_change_log(storage)
+    response = get_reflexio(org_id=org_id).get_profile_change_logs()
     return ProfileChangeLogViewResponse(
         success=response.success,
         profile_change_logs=[

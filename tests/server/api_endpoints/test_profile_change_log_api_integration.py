@@ -1,14 +1,12 @@
-"""Integration test: GET /api/profile_change_log uses read-side reconstruction.
+"""Integration test: GET /api/profile_change_log serves the legacy get_profile_change_logs path.
 
-Phase B3 / Task 3: Verifies that the endpoint now calls
-``reconstruct_profile_change_log`` (read from lineage_event) instead of the
-legacy ``get_profile_change_logs`` (reads profile_change_logs table).
+The endpoint was reverted from reconstruction-backed (B3 Task 3) back to the
+legacy storage read, because the production write-side emits ``hard_delete``
+events with no linkage — not the ``revise``/``merge`` events the reconstruction
+expects — so reconstruction cannot reproduce the legacy log yet.
 
-The response shape must be byte-identical to the legacy path:
-  - success = True
-  - profile_change_logs: list of ProfileChangeLogView
-  - each entry has added_profiles / removed_profiles / mentioned_profiles=[]
-  - parseable by ProfileChangeLogViewResponse
+These tests assert that the endpoint reads from the legacy ``profile_change_logs``
+table (via storage.add_profile_change_log / get_profile_change_logs).
 """
 
 from __future__ import annotations
@@ -17,7 +15,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from reflexio.models.api_schema.domain.entities import LineageContext, UserProfile
+from reflexio.models.api_schema.domain.entities import ProfileChangeLog, UserProfile
 from reflexio.models.api_schema.domain.enums import ProfileTimeToLive
 from reflexio.models.api_schema.retriever_schema import ProfileChangeLogViewResponse
 from reflexio.server.cache.reflexio_cache import get_reflexio
@@ -25,11 +23,7 @@ from reflexio.server.cache.reflexio_cache import get_reflexio
 pytestmark = pytest.mark.integration
 
 
-def _make_profile(
-    user_id: str,
-    profile_id: str,
-    content: str,
-) -> UserProfile:
+def _make_profile(user_id: str, profile_id: str, content: str) -> UserProfile:
     return UserProfile(
         user_id=user_id,
         profile_id=profile_id,
@@ -40,35 +34,11 @@ def _make_profile(
     )
 
 
-def _seed_supersede(
-    storage,
-    *,
-    user_id: str,
-    old_id: str,
-    new_id: str,
-    request_id: str,
-    old_content: str = "old facts",
-    new_content: str = "new facts",
-) -> tuple[UserProfile, UserProfile]:
-    old = _make_profile(user_id=user_id, profile_id=old_id, content=old_content)
-    new = _make_profile(user_id=user_id, profile_id=new_id, content=new_content)
-    storage.add_user_profile(user_id, [old])
-    storage.add_user_profile(user_id, [new])
-    ctx = LineageContext(op_kind="revise", actor="reflection", request_id=request_id)
-    storage.supersede_record(
-        entity_type="profile",
-        incumbent_id=old_id,
-        successor_id=new_id,
-        context=ctx,
-    )
-    return old, new
+def test_endpoint_returns_legacy_change_log(client_with_org):
+    """GET /api/profile_change_log returns data from the legacy profile_change_logs table.
 
-
-def test_endpoint_returns_reconstructed_change_log(client_with_org):
-    """GET /api/profile_change_log returns reconstructed view from lineage_event.
-
-    Seeds a supersede into storage (writing only to lineage_event, NOT to
-    profile_change_logs), then asserts the endpoint returns:
+    Seeds a ProfileChangeLog entry directly via storage.add_profile_change_log,
+    then asserts the endpoint returns:
     - success=True
     - one change-log entry with the correct added/removed profiles
     - mentioned_profiles=[]
@@ -76,22 +46,29 @@ def test_endpoint_returns_reconstructed_change_log(client_with_org):
     """
     client, org_id = client_with_org
     storage = get_reflexio(org_id=org_id).request_context.storage
+    assert storage is not None, "storage must be configured in integration test fixture"
 
-    old_p, new_p = _seed_supersede(
-        storage,
-        user_id="u-endpoint-test",
-        old_id="p-old-1",
-        new_id="p-new-1",
-        request_id="req-endpoint-test",
-        old_content="stale profile text",
-        new_content="updated profile text",
+    old_p = _make_profile(
+        user_id="u-legacy-test", profile_id="p-old-1", content="stale profile text"
     )
+    new_p = _make_profile(
+        user_id="u-legacy-test", profile_id="p-new-1", content="updated profile text"
+    )
+
+    log_entry = ProfileChangeLog(
+        id=0,
+        user_id="u-legacy-test",
+        request_id="req-legacy-test",
+        added_profiles=[new_p],
+        removed_profiles=[old_p],
+        mentioned_profiles=[],
+    )
+    storage.add_profile_change_log(log_entry)
 
     resp = client.get("/api/profile_change_log")
     assert resp.status_code == 200, resp.text
 
     body = resp.json()
-    # Must parse cleanly — shape-identical to the legacy response.
     parsed = ProfileChangeLogViewResponse(**body)
     assert parsed.success is True
 
@@ -99,7 +76,7 @@ def test_endpoint_returns_reconstructed_change_log(client_with_org):
     assert len(logs) == 1
 
     row = logs[0]
-    assert row.request_id == "req-endpoint-test"
+    assert row.request_id == "req-legacy-test"
 
     assert len(row.added_profiles) == 1
     assert row.added_profiles[0].profile_id == "p-new-1"
@@ -109,7 +86,6 @@ def test_endpoint_returns_reconstructed_change_log(client_with_org):
     assert row.removed_profiles[0].profile_id == "p-old-1"
     assert row.removed_profiles[0].content == "stale profile text"
 
-    # mentioned_profiles is always [] in Stage-1 — same as legacy path.
     assert row.mentioned_profiles == []
 
 
