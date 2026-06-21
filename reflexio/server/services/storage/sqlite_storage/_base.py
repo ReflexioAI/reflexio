@@ -832,22 +832,35 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         self._delete_in_chunks("interactions", "request_id", request_ids)
 
     def _delete_interaction_search_rows(self, interaction_ids: list[int]) -> None:
+        """Remove fts + vec index rows for the given interaction IDs.
+
+        Non-committing: participates in the caller's transaction.  Only called
+        from inside the retention atomic block (_retention_perform_delete).
+        """
         if not interaction_ids:
             return
         self._delete_in_chunks("interactions_fts", "rowid", interaction_ids)
-        for interaction_id in interaction_ids:
-            self._vec_delete("interactions_vec", interaction_id)
+        if self._has_sqlite_vec:
+            self._delete_in_chunks("interactions_vec", "rowid", interaction_ids)
 
     def _delete_profile_search_rows(self, profile_ids: list[str]) -> None:
+        """Remove fts + vec index rows for the given profile IDs.
+
+        Non-committing: participates in the caller's transaction.  Only called
+        from inside the retention atomic block (_retention_perform_delete).
+        profiles_fts is keyed by profile_id (TEXT); profiles_vec by rowid (INT).
+        """
         if not profile_ids:
             return
-        rows = self._select_in_chunks(
-            "SELECT rowid, profile_id FROM profiles WHERE profile_id IN ({placeholders})",
-            profile_ids,
-        )
-        for row in rows:
-            self._fts_delete_profile(row["profile_id"])
-            self._vec_delete("profiles_vec", row["rowid"])
+        self._delete_in_chunks("profiles_fts", "profile_id", profile_ids)
+        if self._has_sqlite_vec:
+            rows = self._select_in_chunks(
+                "SELECT rowid FROM profiles WHERE profile_id IN ({placeholders})",
+                profile_ids,
+            )
+            rowids = [row["rowid"] for row in rows]
+            if rowids:
+                self._delete_in_chunks("profiles_vec", "rowid", rowids)
 
     def _delete_playbook_search_rows(self, kind: str, ids: list[int]) -> None:
         if not ids:
