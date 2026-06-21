@@ -879,6 +879,11 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 cleanup.  Pass ``commit=False`` from inside the retention atomic
                 block so the deletes participate in the single block-level commit
                 (``_retention_perform_delete``).
+
+        Note: callers may already hold ``self._lock`` when calling this (the
+        ``commit=False`` retention/atomic-delete call sites do). The internal
+        ``with self._lock:`` re-acquire is safe ONLY because ``self._lock`` is a
+        reentrant ``threading.RLock``; a non-reentrant lock would deadlock here.
         """
         if not ids:
             return
