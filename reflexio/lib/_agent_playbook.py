@@ -418,6 +418,15 @@ def reconstruct_playbook_aggregation_change_log(
     )[:limit]
 
     logs: list[PlaybookAggregationChangeLog] = []
+    # PERFORMANCE NOTE (M3): this resolves content with a per-entity
+    # ``get_agent_playbook_by_id`` call (N+1), matching the merged
+    # ``reconstruct_profile_change_log`` model. It is an OFF-hot-path
+    # reconstruction tool — the legacy ``PlaybookAggregationChangeLog`` still
+    # serves the live endpoint, so this only runs in parity tooling / scripts
+    # today. Deliberately NOT optimized here: a batch ``*_by_ids`` fetch should
+    # be introduced for BOTH the profile and aggregation reconstructions
+    # together at the B3 retirement stage (when reconstruction may move onto the
+    # request path), not divergently for one of the two now.
     for req in sorted_reqs:
         added = [
             agent_playbook_to_snapshot(pb)
