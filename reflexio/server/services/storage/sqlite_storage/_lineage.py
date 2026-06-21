@@ -10,7 +10,6 @@ from reflexio.models.api_schema.domain.enums import Status
 from reflexio.server.tracing import capture_anomaly
 
 from ._base import _epoch_now as _now
-from ._base import _epoch_to_iso
 
 EntityType = Literal["user_playbook", "agent_playbook", "profile"]
 
@@ -30,13 +29,14 @@ _TABLE: dict[str, tuple[str, str]] = {
     "profile": ("profiles", "profile_id"),
 }
 
-# Per-entity GC metadata: (table, pk_col, age_col, age_is_text).
-# age_is_text=True  → TEXT ISO-8601 column; compare cutoff as ISO string.
-# age_is_text=False → INTEGER epoch column; compare cutoff as int directly.
-_GC_ENTITY_META: dict[str, tuple[str, str, str, bool]] = {
-    "user_playbook": ("user_playbooks", "user_playbook_id", "created_at", True),
-    "agent_playbook": ("agent_playbooks", "agent_playbook_id", "created_at", True),
-    "profile": ("profiles", "profile_id", "last_modified_timestamp", False),
+# Per-entity GC metadata: (table, pk_col).
+# All entity types now age on the uniform INTEGER ``retired_at`` column (set by T1
+# at every tombstone write-path).  Pre-T1 rows have ``retired_at = NULL`` and are
+# never selected, which is correct — they have no retirement clock.
+_GC_ENTITY_META: dict[str, tuple[str, str]] = {
+    "user_playbook": ("user_playbooks", "user_playbook_id"),
+    "agent_playbook": ("agent_playbooks", "agent_playbook_id"),
+    "profile": ("profiles", "profile_id"),
 }
 
 
@@ -357,7 +357,11 @@ class SQLiteLineageMixin:
     def gc_expired_tombstones(
         self, *, entity_type: str, older_than_epoch: int, limit: int = 1000
     ) -> int:
-        """Hard-delete tombstone rows that are older than the given epoch cutoff.
+        """Hard-delete tombstone rows whose retirement instant is older than the cutoff.
+
+        Ages on the uniform INTEGER ``retired_at`` column set at every tombstone
+        write-path (T1).  Rows with ``retired_at = NULL`` (pre-T1 tombstones) are
+        never selected — they have no retirement clock and must be retained.
 
         Emits one ``hard_delete`` lineage event per deleted row, atomically, before
         the DELETE commits. Rows on legal hold are skipped without emitting an event.
@@ -366,7 +370,7 @@ class SQLiteLineageMixin:
             entity_type (str): One of ``"user_playbook"``, ``"agent_playbook"``,
                 or ``"profile"``.
             older_than_epoch (int): Unix timestamp cutoff (exclusive). Rows whose
-                age column is strictly less than this value are eligible.
+                ``retired_at`` is strictly less than this value are eligible.
             limit (int): Maximum rows to delete per call. Defaults to 1000.
 
         Returns:
@@ -380,27 +384,17 @@ class SQLiteLineageMixin:
         meta = _GC_ENTITY_META.get(entity_type)
         if meta is None:
             raise ValueError(f"unknown entity_type: {entity_type!r}")
-        table, pk, age_col, age_is_text = meta
+        table, pk = meta
 
         eligible_ph = ",".join("?" * len(_GC_ELIGIBLE_STATUSES))
         eligible_vals = list(_GC_ELIGIBLE_STATUSES)
 
-        if age_is_text:
-            # Use the same helper the writer uses so the cutoff string is
-            # byte-for-byte format-consistent with stored values.  This keeps
-            # the ``<`` comparison truly exclusive (strict) at the boundary.
-            cutoff_iso = _epoch_to_iso(older_than_epoch)
-            select_sql = (
-                f"SELECT {pk} FROM {table} "  # noqa: S608
-                f"WHERE status IN ({eligible_ph}) AND {age_col} < ? LIMIT ?"
-            )
-            select_params: list[Any] = [*eligible_vals, cutoff_iso, limit]
-        else:
-            select_sql = (
-                f"SELECT {pk} FROM {table} "  # noqa: S608
-                f"WHERE status IN ({eligible_ph}) AND {age_col} < ? LIMIT ?"
-            )
-            select_params = [*eligible_vals, older_than_epoch, limit]
+        select_sql = (
+            f"SELECT {pk} FROM {table} "  # noqa: S608
+            f"WHERE status IN ({eligible_ph}) "
+            f"AND retired_at IS NOT NULL AND retired_at < ? LIMIT ?"
+        )
+        select_params: list[Any] = [*eligible_vals, older_than_epoch, limit]
 
         with self._lock:
             rows = self.conn.execute(select_sql, select_params).fetchall()

@@ -1,24 +1,27 @@
 """Integration tests: gc_expired_tombstones + legal-hold stub (Lineage Phase B2).
 
 Tests cover:
-  (a) Aged tombstone (MERGED) past cutoff is GC'd: row deleted + hard_delete event.
-  (b) Fresh tombstone and CURRENT row are NOT deleted.
+  (a) Aged tombstone (MERGED) with retired_at past cutoff is GC'd: row deleted + hard_delete event.
+  (b) Fresh tombstone (recent retired_at) and CURRENT row are NOT deleted.
   (c) ARCHIVED aged tombstone IS GC'd (broader eligible set than _TOMBSTONE).
-  (d) PB-8 straddle: TEXT ISO created_at (playbooks) and INTEGER last_modified_timestamp
-      (profiles) both apply the cutoff correctly — only genuinely-older rows purged.
-  (e) Legal-hold: monkeypatched hold skips one row — no delete, no hard_delete event.
-  (f) Idempotent: second GC call on an already-empty set returns 0, adds no events.
+  (d) PB-8b regression: tombstone with OLD created_at but RECENT retired_at is NOT GC'd.
+      Proves the GC ages on retired_at, not created_at.
+  (e) retired_at = NULL tombstone (pre-T1 row) is NOT GC'd.
+  (f) Legal-hold: monkeypatched hold skips one row — no delete, no hard_delete event.
+  (g) Idempotent: second GC call on an already-empty set returns 0, adds no events.
+  (h) Atomic rollback: mid-operation failure leaves no partial state.
 """
 
 from datetime import UTC, datetime
+from unittest.mock import patch
 
 import pytest
 
+import reflexio.server.services.storage.sqlite_storage._lineage as _lineage_mod
 from reflexio.models.api_schema.domain.entities import UserPlaybook
 from reflexio.models.api_schema.domain.enums import ProfileTimeToLive, Status
 from reflexio.models.api_schema.service_schemas import AgentPlaybook, UserProfile
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
-from reflexio.server.services.storage.sqlite_storage._base import _epoch_to_iso
 
 pytestmark = pytest.mark.integration
 
@@ -87,21 +90,13 @@ def _set_profile_status(s: SQLiteStorage, profile_id: str, status: str) -> None:
     s.conn.commit()
 
 
-def _set_playbook_created_at(
-    s: SQLiteStorage, table: str, pk: str, pk_val: int, iso_ts: str
+def _set_retired_at(
+    s: SQLiteStorage, table: str, pk: str, pk_val: int | str, retired_at: int | None
 ) -> None:
-    """Force the created_at TEXT column on a playbook row for age comparisons."""
+    """Directly set retired_at on a row for test seeding."""
     s.conn.execute(
-        f"UPDATE {table} SET created_at = ? WHERE {pk} = ?",  # noqa: S608
-        (iso_ts, pk_val),
-    )
-    s.conn.commit()
-
-
-def _set_profile_last_modified(s: SQLiteStorage, profile_id: str, ts: int) -> None:
-    s.conn.execute(
-        "UPDATE profiles SET last_modified_timestamp = ? WHERE profile_id = ?",
-        (ts, profile_id),
+        f"UPDATE {table} SET retired_at = ? WHERE {pk} = ?",  # noqa: S608
+        (retired_at, pk_val),
     )
     s.conn.commit()
 
@@ -113,7 +108,7 @@ def _hard_delete_events(s: SQLiteStorage, entity_id: str) -> list:
 
 
 # ---------------------------------------------------------------------------
-# (a) Aged tombstone (MERGED) past cutoff is GC'd
+# (a) Aged tombstone (MERGED) with retired_at past cutoff is GC'd
 # ---------------------------------------------------------------------------
 
 
@@ -126,9 +121,9 @@ def test_gc_deletes_aged_merged_tombstone(tmp_path):
         s, "user_playbooks", "user_playbook_id", pid, Status.MERGED.value
     )
 
-    # Age the row to well before the cutoff — use production format (+00:00, no fractional seconds)
-    old_iso = _epoch_to_iso(int(datetime(2020, 1, 1, tzinfo=UTC).timestamp()))
-    _set_playbook_created_at(s, "user_playbooks", "user_playbook_id", pid, old_iso)
+    # Set retired_at to well before the cutoff
+    old_retired_at = int(datetime(2020, 1, 1, tzinfo=UTC).timestamp())
+    _set_retired_at(s, "user_playbooks", "user_playbook_id", pid, old_retired_at)
 
     cutoff = int(datetime(2021, 1, 1, tzinfo=UTC).timestamp())
     deleted = s.gc_expired_tombstones(
@@ -149,32 +144,32 @@ def test_gc_deletes_aged_merged_tombstone(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# (b) Fresh tombstone and CURRENT row are NOT deleted
+# (b) Fresh tombstone (recent retired_at) and CURRENT row are NOT deleted
 # ---------------------------------------------------------------------------
 
 
 def test_gc_skips_fresh_tombstone_and_current(tmp_path):
     s = _store(tmp_path)
-    # Fresh merged tombstone — created_at is right now
+    # Fresh merged tombstone — retired_at is right now (after any historical cutoff)
     pb_fresh = _make_user_playbook(content="fresh")
     s.save_user_playbooks([pb_fresh])
     pid_fresh = pb_fresh.user_playbook_id
     _set_playbook_status(
         s, "user_playbooks", "user_playbook_id", pid_fresh, Status.MERGED.value
     )
-    # Note: created_at is already current, so it's after any historical cutoff
-
-    # CURRENT row (no status)
-    pb_current = _make_user_playbook(content="current")
-    s.save_user_playbooks([pb_current])
-    pid_current = pb_current.user_playbook_id
-    _set_playbook_created_at(
+    # retired_at is current — after the historical cutoff
+    _set_retired_at(
         s,
         "user_playbooks",
         "user_playbook_id",
-        pid_current,
-        _epoch_to_iso(int(datetime(2019, 1, 1, tzinfo=UTC).timestamp())),
+        pid_fresh,
+        int(datetime(2025, 1, 1, tzinfo=UTC).timestamp()),
     )
+
+    # CURRENT row (no status, retired_at NULL)
+    pb_current = _make_user_playbook(content="current")
+    s.save_user_playbooks([pb_current])
+    pid_current = pb_current.user_playbook_id
     # status is NULL (CURRENT) — must NOT be deleted even if old
 
     cutoff = int(datetime(2021, 1, 1, tzinfo=UTC).timestamp())
@@ -212,12 +207,12 @@ def test_gc_deletes_aged_archived_tombstone(tmp_path):
     _set_playbook_status(
         s, "agent_playbooks", "agent_playbook_id", apid, Status.ARCHIVED.value
     )
-    _set_playbook_created_at(
+    _set_retired_at(
         s,
         "agent_playbooks",
         "agent_playbook_id",
         apid,
-        _epoch_to_iso(int(datetime(2019, 6, 1, tzinfo=UTC).timestamp())),
+        int(datetime(2019, 6, 1, tzinfo=UTC).timestamp()),
     )
 
     cutoff = int(datetime(2020, 1, 1, tzinfo=UTC).timestamp())
@@ -235,94 +230,113 @@ def test_gc_deletes_aged_archived_tombstone(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# (d) PB-8 straddle test: TEXT ISO vs INTEGER epoch type-correct comparison
+# (d) PB-8b regression: OLD created_at but RECENT retired_at → NOT GC'd
 # ---------------------------------------------------------------------------
 
 
-def test_gc_straddle_playbook_text_iso_and_profile_int_epoch(tmp_path):
+def test_gc_pb8b_old_created_at_recent_retired_at_not_gc_d(tmp_path):
+    """Tombstone with OLD created_at but RECENT retired_at must NOT be GC'd.
+
+    This is the PB-8b regression: proves the GC ages on retired_at (retirement
+    instant), not created_at or last_modified_timestamp.  Any row that was retired
+    recently must be preserved regardless of how old the underlying content is.
+    """
     s = _store(tmp_path)
 
-    # --- User playbooks: TEXT ISO created_at ---
-    pb_old = _make_user_playbook(content="old")
-    pb_new = _make_user_playbook(content="new")
-    s.save_user_playbooks([pb_old, pb_new])
-    old_id = pb_old.user_playbook_id
-    new_id = pb_new.user_playbook_id
-
+    # --- User playbook: OLD created_at, RECENT retired_at ---
+    pb = _make_user_playbook(content="old-content")
+    s.save_user_playbooks([pb])
+    pid = pb.user_playbook_id
     _set_playbook_status(
-        s, "user_playbooks", "user_playbook_id", old_id, Status.MERGED.value
-    )
-    _set_playbook_status(
-        s, "user_playbooks", "user_playbook_id", new_id, Status.MERGED.value
-    )
-    _set_playbook_created_at(
-        s,
-        "user_playbooks",
-        "user_playbook_id",
-        old_id,
-        _epoch_to_iso(int(datetime(2018, 1, 1, tzinfo=UTC).timestamp())),
-    )
-    _set_playbook_created_at(
-        s,
-        "user_playbooks",
-        "user_playbook_id",
-        new_id,
-        _epoch_to_iso(int(datetime(2025, 1, 1, tzinfo=UTC).timestamp())),
+        s, "user_playbooks", "user_playbook_id", pid, Status.MERGED.value
     )
 
-    cutoff_pb = int(datetime(2020, 1, 1, tzinfo=UTC).timestamp())
-    deleted_pb = s.gc_expired_tombstones(
-        entity_type="user_playbook", older_than_epoch=cutoff_pb
+    # Force created_at to 2018 (well before cutoff)
+    old_iso = "2018-01-01T00:00:00+00:00"
+    s.conn.execute(
+        "UPDATE user_playbooks SET created_at = ? WHERE user_playbook_id = ?",
+        (old_iso, pid),
     )
-    assert deleted_pb == 1
-    assert (
-        s.conn.execute(
-            "SELECT 1 FROM user_playbooks WHERE user_playbook_id = ?", (old_id,)
-        ).fetchone()
-        is None
+    # But retired_at is recent (2025 — well after cutoff)
+    recent_retired_at = int(datetime(2025, 1, 1, tzinfo=UTC).timestamp())
+    _set_retired_at(s, "user_playbooks", "user_playbook_id", pid, recent_retired_at)
+    s.conn.commit()
+
+    cutoff = int(datetime(2021, 1, 1, tzinfo=UTC).timestamp())
+    deleted = s.gc_expired_tombstones(
+        entity_type="user_playbook", older_than_epoch=cutoff
+    )
+
+    assert deleted == 0, (
+        "Tombstone with recent retired_at must NOT be GC'd even when created_at is ancient"
     )
     assert (
         s.conn.execute(
-            "SELECT 1 FROM user_playbooks WHERE user_playbook_id = ?", (new_id,)
+            "SELECT 1 FROM user_playbooks WHERE user_playbook_id = ?", (pid,)
         ).fetchone()
         is not None
     )
 
-    # --- Profiles: INTEGER last_modified_timestamp ---
+    # --- Profile: OLD last_modified_timestamp, RECENT retired_at ---
     old_ts = int(datetime(2018, 6, 1, tzinfo=UTC).timestamp())
-    new_ts = int(datetime(2025, 6, 1, tzinfo=UTC).timestamp())
-
-    p_old = _make_profile(profile_id="prof-old", ts=old_ts)
-    p_new = _make_profile(profile_id="prof-new", ts=new_ts)
-    s.add_user_profile("u1", [p_old])
-    s.add_user_profile("u1", [p_new])
-    _set_profile_status(s, "prof-old", Status.SUPERSEDED.value)
-    _set_profile_status(s, "prof-new", Status.SUPERSEDED.value)
-    # Ensure last_modified_timestamp is set to our desired values
-    _set_profile_last_modified(s, "prof-old", old_ts)
-    _set_profile_last_modified(s, "prof-new", new_ts)
-
-    cutoff_pr = int(datetime(2020, 1, 1, tzinfo=UTC).timestamp())
-    deleted_pr = s.gc_expired_tombstones(
-        entity_type="profile", older_than_epoch=cutoff_pr
+    p = _make_profile(profile_id="pb8b-profile", ts=old_ts)
+    s.add_user_profile("u1", [p])
+    _set_profile_status(s, "pb8b-profile", Status.SUPERSEDED.value)
+    # Ensure last_modified_timestamp is old
+    s.conn.execute(
+        "UPDATE profiles SET last_modified_timestamp = ? WHERE profile_id = ?",
+        (old_ts, "pb8b-profile"),
     )
-    assert deleted_pr == 1
+    # But retired_at is recent
+    _set_retired_at(s, "profiles", "profile_id", "pb8b-profile", recent_retired_at)
+    s.conn.commit()
+
+    deleted_p = s.gc_expired_tombstones(entity_type="profile", older_than_epoch=cutoff)
+
+    assert deleted_p == 0, (
+        "Profile with recent retired_at must NOT be GC'd even when last_modified_timestamp is ancient"
+    )
+
+
+# ---------------------------------------------------------------------------
+# (e) retired_at = NULL tombstone (pre-T1 row) is NOT GC'd
+# ---------------------------------------------------------------------------
+
+
+def test_gc_null_retired_at_not_gc_d(tmp_path):
+    """A tombstone with retired_at = NULL (pre-T1 row) must never be GC'd.
+
+    NULL means no retirement clock; the GC must treat it as 'not yet eligible'.
+    """
+    s = _store(tmp_path)
+
+    pb = _make_user_playbook(content="pre-t1")
+    s.save_user_playbooks([pb])
+    pid = pb.user_playbook_id
+    _set_playbook_status(
+        s, "user_playbooks", "user_playbook_id", pid, Status.MERGED.value
+    )
+
+    # Explicitly set retired_at = NULL (simulating a pre-T1 tombstone)
+    _set_retired_at(s, "user_playbooks", "user_playbook_id", pid, None)
+
+    # Use a far-future cutoff — would GC anything eligible
+    cutoff = int(datetime(2030, 1, 1, tzinfo=UTC).timestamp())
+    deleted = s.gc_expired_tombstones(
+        entity_type="user_playbook", older_than_epoch=cutoff
+    )
+
+    assert deleted == 0, "Pre-T1 tombstone (retired_at=NULL) must NOT be GC'd"
     assert (
         s.conn.execute(
-            "SELECT 1 FROM profiles WHERE profile_id = ?", ("prof-old",)
-        ).fetchone()
-        is None
-    )
-    assert (
-        s.conn.execute(
-            "SELECT 1 FROM profiles WHERE profile_id = ?", ("prof-new",)
+            "SELECT 1 FROM user_playbooks WHERE user_playbook_id = ?", (pid,)
         ).fetchone()
         is not None
     )
 
 
 # ---------------------------------------------------------------------------
-# (e) Legal-hold: held row skipped, no event, others still deleted
+# (f) Legal-hold: held row skipped, no event, others still deleted
 # ---------------------------------------------------------------------------
 
 
@@ -335,17 +349,12 @@ def test_gc_legal_hold_skips_held_row(tmp_path, monkeypatch):
     held_id = pb_held.user_playbook_id
     free_id = pb_free.user_playbook_id
 
+    old_retired_at = int(datetime(2019, 1, 1, tzinfo=UTC).timestamp())
     for pid in (held_id, free_id):
         _set_playbook_status(
             s, "user_playbooks", "user_playbook_id", pid, Status.MERGED.value
         )
-        _set_playbook_created_at(
-            s,
-            "user_playbooks",
-            "user_playbook_id",
-            pid,
-            _epoch_to_iso(int(datetime(2019, 1, 1, tzinfo=UTC).timestamp())),
-        )
+        _set_retired_at(s, "user_playbooks", "user_playbook_id", pid, old_retired_at)
 
     # Monkeypatch: only held_id is on legal hold
     def mock_hold(org_id: str, entity_type: str, entity_id: str) -> bool:
@@ -380,7 +389,7 @@ def test_gc_legal_hold_skips_held_row(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# (f) Idempotent: second GC call returns 0 and adds no new events
+# (g) Idempotent: second GC call returns 0 and adds no new events
 # ---------------------------------------------------------------------------
 
 
@@ -392,12 +401,12 @@ def test_gc_idempotent(tmp_path):
     _set_playbook_status(
         s, "user_playbooks", "user_playbook_id", pid, Status.MERGED.value
     )
-    _set_playbook_created_at(
+    _set_retired_at(
         s,
         "user_playbooks",
         "user_playbook_id",
         pid,
-        _epoch_to_iso(int(datetime(2018, 1, 1, tzinfo=UTC).timestamp())),
+        int(datetime(2018, 1, 1, tzinfo=UTC).timestamp()),
     )
 
     cutoff = int(datetime(2021, 1, 1, tzinfo=UTC).timestamp())
@@ -445,12 +454,10 @@ def test_gc_empty_table_returns_zero(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_gc_boundary_playbook_at_cutoff_not_deleted(tmp_path):
-    """A playbook whose created_at == older_than_epoch must NOT be deleted.
+def test_gc_boundary_at_cutoff_not_deleted(tmp_path):
+    """A tombstone whose retired_at == older_than_epoch must NOT be deleted.
 
-    The contract is strictly-less-than.  The cutoff string is formatted by
-    _epoch_to_iso, matching the production write path exactly, so the
-    lexicographic ``<`` comparison is byte-for-byte consistent.
+    The contract is strictly-less-than.
     """
     s = _store(tmp_path)
     cutoff_epoch = int(datetime(2022, 6, 15, 12, 0, 0, tzinfo=UTC).timestamp())
@@ -462,9 +469,7 @@ def test_gc_boundary_playbook_at_cutoff_not_deleted(tmp_path):
     _set_playbook_status(
         s, "user_playbooks", "user_playbook_id", pid_at, Status.MERGED.value
     )
-    _set_playbook_created_at(
-        s, "user_playbooks", "user_playbook_id", pid_at, _epoch_to_iso(cutoff_epoch)
-    )
+    _set_retired_at(s, "user_playbooks", "user_playbook_id", pid_at, cutoff_epoch)
 
     # Row one second BEFORE the cutoff — must be deleted.
     pb_before = _make_user_playbook(content="before-boundary")
@@ -473,12 +478,8 @@ def test_gc_boundary_playbook_at_cutoff_not_deleted(tmp_path):
     _set_playbook_status(
         s, "user_playbooks", "user_playbook_id", pid_before, Status.MERGED.value
     )
-    _set_playbook_created_at(
-        s,
-        "user_playbooks",
-        "user_playbook_id",
-        pid_before,
-        _epoch_to_iso(cutoff_epoch - 1),
+    _set_retired_at(
+        s, "user_playbooks", "user_playbook_id", pid_before, cutoff_epoch - 1
     )
 
     deleted = s.gc_expired_tombstones(
@@ -503,18 +504,18 @@ def test_gc_boundary_playbook_at_cutoff_not_deleted(tmp_path):
 
 
 def test_gc_boundary_profile_at_cutoff_not_deleted(tmp_path):
-    """Profile (INTEGER age column) boundary: row at cutoff survives, row before doesn't."""
+    """Profile boundary: retired_at at cutoff survives, before doesn't."""
     s = _store(tmp_path)
     cutoff_epoch = int(datetime(2022, 6, 15, 12, 0, 0, tzinfo=UTC).timestamp())
 
-    p_at = _make_profile(profile_id="at-boundary", ts=cutoff_epoch)
-    p_before = _make_profile(profile_id="before-boundary", ts=cutoff_epoch - 1)
+    p_at = _make_profile(profile_id="at-boundary", ts=_now_epoch())
+    p_before = _make_profile(profile_id="before-boundary", ts=_now_epoch())
     s.add_user_profile("u1", [p_at])
     s.add_user_profile("u1", [p_before])
     _set_profile_status(s, "at-boundary", Status.MERGED.value)
     _set_profile_status(s, "before-boundary", Status.MERGED.value)
-    _set_profile_last_modified(s, "at-boundary", cutoff_epoch)
-    _set_profile_last_modified(s, "before-boundary", cutoff_epoch - 1)
+    _set_retired_at(s, "profiles", "profile_id", "at-boundary", cutoff_epoch)
+    _set_retired_at(s, "profiles", "profile_id", "before-boundary", cutoff_epoch - 1)
 
     deleted = s.gc_expired_tombstones(
         entity_type="profile", older_than_epoch=cutoff_epoch
@@ -549,12 +550,12 @@ def test_gc_non_positive_limit_returns_zero(tmp_path, bad_limit: int):
     _set_playbook_status(
         s, "user_playbooks", "user_playbook_id", pid, Status.MERGED.value
     )
-    _set_playbook_created_at(
+    _set_retired_at(
         s,
         "user_playbooks",
         "user_playbook_id",
         pid,
-        _epoch_to_iso(int(datetime(2019, 1, 1, tzinfo=UTC).timestamp())),
+        int(datetime(2019, 1, 1, tzinfo=UTC).timestamp()),
     )
 
     cutoff = int(datetime(2021, 1, 1, tzinfo=UTC).timestamp())
@@ -586,16 +587,13 @@ def test_gc_rollback_on_mid_operation_failure(tmp_path):
     The ``except`` branch in ``gc_expired_tombstones`` must rollback so neither
     the partial event nor the row deletion persists.
     """
-    from unittest.mock import patch
-
-    import reflexio.server.services.storage.sqlite_storage._lineage as _lineage_mod
-
     s = _store(tmp_path)
 
     # Seed two tombstone rows so the loop calls _append_event_stmt twice.
     pb1 = _make_user_playbook(content="one")
     pb2 = _make_user_playbook(content="two")
     s.save_user_playbooks([pb1, pb2])
+    old_retired_at = int(datetime(2019, 1, 1, tzinfo=UTC).timestamp())
     for pb in (pb1, pb2):
         _set_playbook_status(
             s,
@@ -604,12 +602,8 @@ def test_gc_rollback_on_mid_operation_failure(tmp_path):
             pb.user_playbook_id,
             Status.MERGED.value,
         )
-        _set_playbook_created_at(
-            s,
-            "user_playbooks",
-            "user_playbook_id",
-            pb.user_playbook_id,
-            _epoch_to_iso(int(datetime(2019, 1, 1, tzinfo=UTC).timestamp())),
+        _set_retired_at(
+            s, "user_playbooks", "user_playbook_id", pb.user_playbook_id, old_retired_at
         )
 
     real_append = _lineage_mod._append_event_stmt

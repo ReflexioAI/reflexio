@@ -667,17 +667,30 @@ class PlaybookOptimizerConfig(BaseModel):
 class LineageGCConfig(BaseModel):
     """Configuration for the tombstone garbage-collection job (off by default).
 
-    The GC hard-deletes lineage tombstone rows whose ``deleted_at`` timestamp
-    is older than ``tombstone_grace_window_days``.  It is opt-in and MUST NOT
-    be enabled until:
+    Purpose
+    -------
+    Retains tombstone content for ``tombstone_grace_window_days`` days after the
+    row's *retirement instant* (``retired_at``) to support audit, replay of dedup
+    and aggregation runs, and rollback.  After the window expires the row is
+    hard-deleted and a ``hard_delete`` lineage event is recorded.
 
-    - The offline-tuner retention window is pinned (PB-9) so the GC cannot
-      delete tombstones that the tuner still needs for replay.
-    - The B2↔B3 timing contract is satisfied (PB-5) so the grace window is a
-      verified safe value, not the provisional default.
+    Age basis
+    ---------
+    The GC ages on ``retired_at`` — the INTEGER epoch set when a row is tombstoned
+    (merged, superseded, or archived).  Rows with ``retired_at = NULL`` (created
+    before the column was added) are never eligible; they have no retirement clock.
 
-    ``tombstone_grace_window_days`` is a provisional default — do not treat 90
-    days as a vetted value until PB-5 and PB-9 are closed.
+    Grace window
+    ------------
+    90 days is a defensible engineering default — cf. common 90-day soft-delete
+    retention policies and GDPR Art. 5(1)(e) storage-limitation.  The value is a
+    per-deployment policy knob; ratify with your DPO before enabling in production.
+
+    Tuner floor
+    -----------
+    When the offline tuner ships, raise the effective floor to
+    ``max(window, tuner.window_days + rollback_horizon)`` so the GC cannot delete
+    tombstones the tuner still needs for replay.
     """
 
     enabled: bool = False

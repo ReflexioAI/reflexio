@@ -6,16 +6,13 @@ in Task 6; they will skip here without DATA_* env vars.
 
 Seeding note
 ------------
-Playbook tables store ``created_at`` as a TEXT column set by the database at
-insert time.  There is no public API to override it, so aged-playbook seeding
-requires raw SQL (handled in the SQLite-only integration test,
-``test_lineage_b2_gc_integration.py``).
+GC now ages on ``retired_at`` (INTEGER epoch, set at every tombstone write-path).
+After calling ``merge_records`` (which sets ``retired_at = now``), tests that need
+an "aged" tombstone must back-date ``retired_at`` via a raw SQL helper.  The
+SQLite-backed ``storage`` fixture exposes ``storage.conn`` for this purpose.
 
-Profile tables store ``last_modified_timestamp`` as an INTEGER set by the
-caller.  Passing an old epoch at construction time is backend-agnostic, so
-the "aged tombstone deleted + hard_delete event" case is covered here using
-profiles.  The corresponding playbook age-straddle detail lives in the SQLite
-integration test.
+Profile tables are used for contract cases because ``merge_records`` works on all
+entity types and the ``retired_at`` column exists on all tombstone-bearing tables.
 """
 
 from datetime import UTC, datetime
@@ -28,15 +25,18 @@ from reflexio.models.api_schema.service_schemas import UserProfile
 
 pytestmark = pytest.mark.integration
 
-# A fixed epoch well in the past, used to seed "aged" profiles.
+# A fixed epoch well in the past, used to seed "aged" retired_at values.
 _EPOCH_2020 = int(datetime(2020, 1, 1, tzinfo=UTC).timestamp())
-# A cutoff after the old epoch — any profile with ts < this is eligible.
+# A cutoff after the old epoch — any tombstone retired_at < this is eligible.
 _CUTOFF_2021 = int(datetime(2021, 1, 1, tzinfo=UTC).timestamp())
-# A future epoch for "fresh" profiles — after any historical cutoff.
+# A future epoch for "fresh" retired_at values — after any historical cutoff.
 _EPOCH_FUTURE = int(datetime(2035, 1, 1, tzinfo=UTC).timestamp())
 
 
-def _make_profile(profile_id: str, ts: int) -> UserProfile:
+def _make_profile(profile_id: str, ts: int | None = None) -> UserProfile:
+    from datetime import UTC, datetime
+
+    ts = ts or int(datetime.now(UTC).timestamp())
     return UserProfile(
         user_id="u1",
         profile_id=profile_id,
@@ -63,21 +63,36 @@ def _merge_into_survivor(
     )
 
 
+def _backdate_retired_at(storage, profile_id: str, retired_at: int) -> None:
+    """Back-date retired_at on a profile row for test seeding.
+
+    merge_records sets retired_at = now; tests that need an "aged" tombstone must
+    call this after the merge.
+    """
+    storage.conn.execute(
+        "UPDATE profiles SET retired_at = ? WHERE profile_id = ?",
+        (retired_at, profile_id),
+    )
+    storage.conn.commit()
+
+
 # ---------------------------------------------------------------------------
-# Case 1: Aged tombstone (MERGED, old last_modified_timestamp) is hard-deleted
+# Case 1: Aged tombstone (MERGED, old retired_at) is hard-deleted
 # and a hard_delete lineage event is emitted.
 # ---------------------------------------------------------------------------
 
 
 def test_gc_deletes_aged_merged_profile_and_emits_hard_delete(storage) -> None:
-    """Aged MERGED profile past the cutoff is deleted; a hard_delete event is recorded."""
-    old_profile = _make_profile("gc-aged-src", ts=_EPOCH_2020)
-    survivor_profile = _make_profile("gc-aged-survivor", ts=_EPOCH_2020)
+    """Aged MERGED profile (retired_at past cutoff) is deleted; a hard_delete event is recorded."""
+    old_profile = _make_profile("gc-aged-src")
+    survivor_profile = _make_profile("gc-aged-survivor")
     storage.add_user_profile("u1", [old_profile])
     storage.add_user_profile("u1", [survivor_profile])
 
-    # Tombstone old_profile (MERGED) via public API; last_modified_timestamp stays 2020.
+    # Tombstone old_profile (MERGED) via public API; retired_at is set to now.
     _merge_into_survivor(storage, "gc-aged-src", "gc-aged-survivor")
+    # Back-date retired_at so it falls before the cutoff.
+    _backdate_retired_at(storage, "gc-aged-src", _EPOCH_2020)
 
     deleted = storage.gc_expired_tombstones(
         entity_type="profile", older_than_epoch=_CUTOFF_2021
@@ -100,8 +115,8 @@ def test_gc_deletes_aged_merged_profile_and_emits_hard_delete(storage) -> None:
 
 
 def test_gc_does_not_delete_current_row(storage) -> None:
-    """A CURRENT profile (status None) must never be deleted by gc_expired_tombstones."""
-    current = _make_profile("gc-current", ts=_EPOCH_2020)
+    """A CURRENT profile (status None, retired_at NULL) must never be deleted by gc_expired_tombstones."""
+    current = _make_profile("gc-current")
     storage.add_user_profile("u1", [current])
 
     # Cutoff is far in the future — would delete any tombstone — but status is NULL.
@@ -115,31 +130,29 @@ def test_gc_does_not_delete_current_row(storage) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Case 3: A fresh tombstone (created just now) is NOT deleted by a historical
-# cutoff.
+# Case 3: A fresh tombstone (recent retired_at) is NOT deleted by a historical cutoff.
 # ---------------------------------------------------------------------------
 
 
 def test_gc_does_not_delete_fresh_tombstone(storage) -> None:
-    """A just-created tombstone whose age column is after the cutoff must survive GC."""
-    # Create the profiles with a current (future-like) timestamp so the profile's
-    # age column is well after the historical cutoff.
-    fresh_src = _make_profile("gc-fresh-src", ts=_EPOCH_FUTURE)
-    fresh_survivor = _make_profile("gc-fresh-survivor", ts=_EPOCH_FUTURE)
+    """A tombstone whose retired_at is after the cutoff must survive GC."""
+    fresh_src = _make_profile("gc-fresh-src")
+    fresh_survivor = _make_profile("gc-fresh-survivor")
     storage.add_user_profile("u1", [fresh_src])
     storage.add_user_profile("u1", [fresh_survivor])
 
-    # Tombstone the source — last_modified_timestamp stays at _EPOCH_FUTURE.
+    # Tombstone the source — retired_at is set to now by merge_records.
     _merge_into_survivor(storage, "gc-fresh-src", "gc-fresh-survivor")
+    # Leave retired_at as-is (current timestamp, well after _CUTOFF_2021).
 
-    # Cutoff is 2021 — the tombstone's ts (2035) is after the cutoff; must NOT be GC'd.
+    # Cutoff is 2021 — the tombstone's retired_at (now) is after the cutoff; must NOT be GC'd.
     deleted = storage.gc_expired_tombstones(
         entity_type="profile", older_than_epoch=_CUTOFF_2021
     )
 
     assert deleted == 0
 
-    # The fresh tombstone must still be retrievable (include_tombstones API).
+    # The fresh tombstone must still be retrievable.
     events = storage.get_lineage_events(entity_type="profile", entity_id="gc-fresh-src")
     hd_events = [e for e in events if e.op == "hard_delete"]
     assert len(hd_events) == 0
@@ -152,11 +165,12 @@ def test_gc_does_not_delete_fresh_tombstone(storage) -> None:
 
 def test_gc_idempotent_returns_zero_on_second_call(storage) -> None:
     """After GC deletes a tombstone, a second identical call returns 0 with no new events."""
-    old_profile = _make_profile("gc-idem-src", ts=_EPOCH_2020)
-    survivor = _make_profile("gc-idem-survivor", ts=_EPOCH_2020)
+    old_profile = _make_profile("gc-idem-src")
+    survivor = _make_profile("gc-idem-survivor")
     storage.add_user_profile("u1", [old_profile])
     storage.add_user_profile("u1", [survivor])
     _merge_into_survivor(storage, "gc-idem-src", "gc-idem-survivor")
+    _backdate_retired_at(storage, "gc-idem-src", _EPOCH_2020)
 
     first = storage.gc_expired_tombstones(
         entity_type="profile", older_than_epoch=_CUTOFF_2021
