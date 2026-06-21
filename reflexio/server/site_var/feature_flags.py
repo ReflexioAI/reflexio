@@ -103,6 +103,43 @@ def is_deduplicator_enabled(org_id: str) -> bool:
     return is_feature_enabled(org_id, "deduplicator")
 
 
+def is_dedup_soft_delete_enabled(org_id: str) -> bool:
+    """
+    Check if deduplication soft-delete is enabled for a given organization.
+
+    This is a FAIL-CLOSED flag: if the key is absent from config, it returns
+    False. This is the opposite of is_feature_enabled (which is fail-open).
+    The difference is intentional — soft-delete must never activate for
+    unconfigured orgs, as tombstone growth without a GC pass would be
+    unbounded.
+
+    A feature is enabled if:
+    - The feature's "enabled" field is True (globally enabled), OR
+    - The org_id is in the feature's "enabled_org_ids" list.
+
+    If the feature key is absent from config, it defaults to disabled
+    (fail-CLOSED). This function does NOT delegate to is_feature_enabled.
+
+    Args:
+        org_id (str): The organization ID to check
+
+    Returns:
+        bool: True only if the feature is explicitly enabled for this org
+    """
+    config = _get_feature_flags_config()
+    feature_config = config.get("dedup_soft_delete")
+
+    if feature_config is None:
+        # Key absent — fail-CLOSED (unlike is_feature_enabled which is fail-open)
+        return False
+
+    if feature_config.get("enabled", False):
+        return True
+
+    enabled_org_ids = feature_config.get("enabled_org_ids", [])
+    return org_id in enabled_org_ids
+
+
 def is_resumable_extraction_agent_enabled(org_id: str) -> bool:
     """
     Convenience check for whether classic extraction should use the resumable agent.

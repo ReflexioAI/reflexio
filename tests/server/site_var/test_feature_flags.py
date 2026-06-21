@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 from reflexio.server.site_var.feature_flags import (
     get_all_feature_flags,
+    is_dedup_soft_delete_enabled,
     is_deduplicator_enabled,
     is_feature_enabled,
     is_resumable_extraction_agent_enabled,
@@ -168,6 +169,93 @@ class TestFeatureFlags(unittest.TestCase):
     def test_is_resumable_extraction_agent_disabled_for_other_orgs(self, _mock):
         """resumable extraction agent defaults to classic extraction for other orgs."""
         self.assertFalse(is_resumable_extraction_agent_enabled("org-123"))
+
+
+class TestDedupSoftDeleteFlag(unittest.TestCase):
+    """Tests for is_dedup_soft_delete_enabled — a FAIL-CLOSED flag.
+
+    Unlike is_feature_enabled (fail-open), a missing key must return False.
+    This is the safety invariant: unconfigured orgs must never get soft-delete
+    enabled accidentally (tombstone growth without B2 GC would be unbounded).
+    """
+
+    # F1 regression: the critical case — key absent → OFF
+    @patch(
+        "reflexio.server.site_var.feature_flags._get_feature_flags_config",
+        return_value={},
+    )
+    def test_unconfigured_org_returns_false(self, _mock):
+        """FAIL-CLOSED: key absent from config → False (not True like is_feature_enabled)."""
+        self.assertFalse(is_dedup_soft_delete_enabled("org-any"))
+
+    @patch(
+        "reflexio.server.site_var.feature_flags._get_feature_flags_config",
+        return_value=MOCK_CONFIG,  # MOCK_CONFIG has no dedup_soft_delete key
+    )
+    def test_key_missing_from_populated_config_returns_false(self, _mock):
+        """FAIL-CLOSED: key missing from a non-empty config still returns False."""
+        self.assertFalse(is_dedup_soft_delete_enabled("org-123"))
+
+    @patch(
+        "reflexio.server.site_var.feature_flags._get_feature_flags_config",
+        return_value={
+            "dedup_soft_delete": {"enabled": False, "enabled_org_ids": []},
+        },
+    )
+    def test_explicitly_disabled_returns_false(self, _mock):
+        """Explicitly disabled (enabled=False, no org list) → False."""
+        self.assertFalse(is_dedup_soft_delete_enabled("org-123"))
+
+    @patch(
+        "reflexio.server.site_var.feature_flags._get_feature_flags_config",
+        return_value={
+            "dedup_soft_delete": {"enabled": True, "enabled_org_ids": []},
+        },
+    )
+    def test_globally_enabled_returns_true(self, _mock):
+        """Globally enabled (enabled=True) → True for any org."""
+        self.assertTrue(is_dedup_soft_delete_enabled("org-any"))
+
+    @patch(
+        "reflexio.server.site_var.feature_flags._get_feature_flags_config",
+        return_value={
+            "dedup_soft_delete": {
+                "enabled": False,
+                "enabled_org_ids": ["org-pilot"],
+            },
+        },
+    )
+    def test_org_in_enabled_list_returns_true(self, _mock):
+        """Org in enabled_org_ids → True even when global enabled=False."""
+        self.assertTrue(is_dedup_soft_delete_enabled("org-pilot"))
+
+    @patch(
+        "reflexio.server.site_var.feature_flags._get_feature_flags_config",
+        return_value={
+            "dedup_soft_delete": {
+                "enabled": False,
+                "enabled_org_ids": ["org-pilot"],
+            },
+        },
+    )
+    def test_org_not_in_enabled_list_returns_false(self, _mock):
+        """Org NOT in enabled_org_ids with global disabled → False."""
+        self.assertFalse(is_dedup_soft_delete_enabled("org-other"))
+
+    # Contrast test: documents deliberate divergence from is_feature_enabled
+    @patch(
+        "reflexio.server.site_var.feature_flags._get_feature_flags_config",
+        return_value={},
+    )
+    def test_contrast_with_fail_open_helper(self, _mock):
+        """Contrast: is_feature_enabled returns True for unknown key; is_dedup_soft_delete_enabled returns False.
+
+        This documents the deliberate divergence — the two functions have
+        opposite defaults for unconfigured keys.
+        """
+        key = "dedup_soft_delete"
+        self.assertTrue(is_feature_enabled("org-any", key))
+        self.assertFalse(is_dedup_soft_delete_enabled("org-any"))
 
 
 if __name__ == "__main__":
