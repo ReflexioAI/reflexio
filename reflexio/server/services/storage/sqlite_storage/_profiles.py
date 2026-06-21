@@ -805,29 +805,34 @@ class ProfileMixin:
 
     @SQLiteStorageBase.handle_exceptions
     def delete_user_interaction(self, request: DeleteUserInteractionRequest) -> None:
-        self._fts_delete("interactions_fts", request.interaction_id)
-        self._execute(
-            "DELETE FROM interactions WHERE user_id = ? AND interaction_id = ?",
-            (request.user_id, request.interaction_id),
-        )
+        with self._lock:
+            self.conn.execute(
+                "DELETE FROM interactions_fts WHERE rowid = ?",
+                (request.interaction_id,),
+            )
+            self.conn.execute(
+                "DELETE FROM interactions WHERE user_id = ? AND interaction_id = ?",
+                (request.user_id, request.interaction_id),
+            )
+            self.conn.commit()
 
     @SQLiteStorageBase.handle_exceptions
     def delete_all_interactions_for_user(self, user_id: str) -> None:
-        # Delete FTS entries for this user's interactions
         ids = [
             r["interaction_id"]
             for r in self._fetchall(
                 "SELECT interaction_id FROM interactions WHERE user_id = ?", (user_id,)
             )
         ]
-        if ids:
-            placeholders = ",".join("?" for _ in ids)
-            with self._lock:
-                self.conn.execute(
-                    f"DELETE FROM interactions_fts WHERE rowid IN ({placeholders})", ids
-                )
-                self.conn.commit()
-        self._execute("DELETE FROM interactions WHERE user_id = ?", (user_id,))
+        if not ids:
+            return
+        placeholders = ",".join("?" for _ in ids)
+        with self._lock:
+            self.conn.execute(
+                f"DELETE FROM interactions_fts WHERE rowid IN ({placeholders})", ids
+            )
+            self.conn.execute("DELETE FROM interactions WHERE user_id = ?", (user_id,))
+            self.conn.commit()
 
     @SQLiteStorageBase.handle_exceptions
     def delete_all_interactions(self) -> None:
