@@ -149,8 +149,14 @@ def maybe_start_lineage_gc(
 ) -> LineageGCScheduler | None:
     """Start the GC scheduler only when the bootstrap-org config enables it.
 
-    Off by default — GC must not be enabled until the tuner retention window
-    (PB-9) and B2↔B3 timing contract (PB-5) are closed.
+    Off by default. The mechanism is resolved: GC ages tombstones by
+    ``retired_at`` (the retirement instant, PB-8b) and the window default is a
+    vetted 90 days (PB-9) — see
+    ``docs/superpowers/specs/2026-06-21-lineage-pb9-gc-retention-resolution.md``.
+    Per-org enablement is an explicit ops action, and remains gated on the
+    B2↔B3 timing contract (PB-5: window ≥ the reconstruction read-back horizon,
+    or B3 shipped) PLUS DPO/product sign-off on the PII-lifetime and
+    audit-depth implications flagged in that spec.
 
     Args:
         request_context_factory: Builds an org-scoped :class:`RequestContext`.
