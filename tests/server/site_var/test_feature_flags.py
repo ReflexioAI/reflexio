@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 from reflexio.server.site_var.feature_flags import (
     get_all_feature_flags,
+    is_aggregation_soft_delete_enabled,
     is_dedup_soft_delete_enabled,
     is_deduplicator_enabled,
     is_feature_enabled,
@@ -271,6 +272,111 @@ class TestDedupSoftDeleteFlag(unittest.TestCase):
         not raise TypeError.
         """
         self.assertFalse(is_dedup_soft_delete_enabled("org-pilot"))
+
+
+class TestAggregationSoftDeleteFlag(unittest.TestCase):
+    """Tests for is_aggregation_soft_delete_enabled — a FAIL-CLOSED flag.
+
+    Unlike is_feature_enabled (fail-open), a missing key must return False.
+    This is the safety invariant: unconfigured orgs must never get soft-delete
+    enabled accidentally. The flag gates soft-supersede (durable replacement of
+    hard-delete for playbook aggregation removal). It must only be turned ON for
+    an org once Phase B2 GC is enabled for that org — B2 GC is the only reclaimer
+    of the SUPERSEDED tombstones this will later create.
+    """
+
+    # F1 regression: the critical case — key absent → OFF
+    @patch(
+        "reflexio.server.site_var.feature_flags._get_feature_flags_config",
+        return_value={},
+    )
+    def test_unconfigured_org_returns_false(self, _mock):
+        """FAIL-CLOSED: key absent from config → False (not True like is_feature_enabled)."""
+        self.assertFalse(is_aggregation_soft_delete_enabled("org-any"))
+
+    @patch(
+        "reflexio.server.site_var.feature_flags._get_feature_flags_config",
+        return_value=MOCK_CONFIG,  # MOCK_CONFIG has no aggregation_soft_delete key
+    )
+    def test_key_missing_from_populated_config_returns_false(self, _mock):
+        """FAIL-CLOSED: key missing from a non-empty config still returns False."""
+        self.assertFalse(is_aggregation_soft_delete_enabled("org-123"))
+
+    @patch(
+        "reflexio.server.site_var.feature_flags._get_feature_flags_config",
+        return_value={
+            "aggregation_soft_delete": {"enabled": False, "enabled_org_ids": []},
+        },
+    )
+    def test_explicitly_disabled_returns_false(self, _mock):
+        """Explicitly disabled (enabled=False, no org list) → False."""
+        self.assertFalse(is_aggregation_soft_delete_enabled("org-123"))
+
+    @patch(
+        "reflexio.server.site_var.feature_flags._get_feature_flags_config",
+        return_value={
+            "aggregation_soft_delete": {"enabled": True, "enabled_org_ids": []},
+        },
+    )
+    def test_globally_enabled_returns_true(self, _mock):
+        """Globally enabled (enabled=True) → True for any org."""
+        self.assertTrue(is_aggregation_soft_delete_enabled("org-any"))
+
+    @patch(
+        "reflexio.server.site_var.feature_flags._get_feature_flags_config",
+        return_value={
+            "aggregation_soft_delete": {
+                "enabled": False,
+                "enabled_org_ids": ["org-pilot"],
+            },
+        },
+    )
+    def test_org_in_enabled_list_returns_true(self, _mock):
+        """Org in enabled_org_ids → True even when global enabled=False."""
+        self.assertTrue(is_aggregation_soft_delete_enabled("org-pilot"))
+
+    @patch(
+        "reflexio.server.site_var.feature_flags._get_feature_flags_config",
+        return_value={
+            "aggregation_soft_delete": {
+                "enabled": False,
+                "enabled_org_ids": ["org-pilot"],
+            },
+        },
+    )
+    def test_org_not_in_enabled_list_returns_false(self, _mock):
+        """Org NOT in enabled_org_ids with global disabled → False."""
+        self.assertFalse(is_aggregation_soft_delete_enabled("org-other"))
+
+    # Contrast test: documents deliberate divergence from is_feature_enabled
+    @patch(
+        "reflexio.server.site_var.feature_flags._get_feature_flags_config",
+        return_value={},
+    )
+    def test_contrast_with_fail_open_helper(self, _mock):
+        """Contrast: is_feature_enabled returns True for unknown key; is_aggregation_soft_delete_enabled returns False.
+
+        This documents the deliberate divergence — the two functions have
+        opposite defaults for unconfigured keys.
+        """
+        key = "aggregation_soft_delete"
+        self.assertTrue(is_feature_enabled("org-any", key))
+        self.assertFalse(is_aggregation_soft_delete_enabled("org-any"))
+
+    @patch(
+        "reflexio.server.site_var.feature_flags._get_feature_flags_config",
+        return_value={
+            "aggregation_soft_delete": {"enabled": False, "enabled_org_ids": None},
+        },
+    )
+    def test_explicit_null_enabled_org_ids_returns_false(self, _mock):
+        """Explicit null enabled_org_ids must not raise TypeError.
+
+        When ``enabled_org_ids`` is explicitly null (None) in config, the
+        membership check must treat it as an empty list and return False,
+        not raise TypeError.
+        """
+        self.assertFalse(is_aggregation_soft_delete_enabled("org-pilot"))
 
 
 class TestIsFeatureFlagsNullOrgIds(unittest.TestCase):
