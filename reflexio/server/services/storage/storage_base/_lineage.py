@@ -25,6 +25,7 @@ class LineageEventMixin:
         raise NotImplementedError
 
     @abstractmethod
+    # NOTE(B3b T3): the Supabase override must also add the request_id filter for contract parity.
     def get_lineage_events(
         self,
         *,

@@ -1,4 +1,7 @@
+from __future__ import annotations
+
 from collections import defaultdict
+from typing import Literal, cast
 
 from reflexio.lib._base import (
     STORAGE_NOT_CONFIGURED_MSG,
@@ -380,7 +383,7 @@ def reconstruct_playbook_aggregation_change_log(
 
     added_by_req: dict[str, list[str]] = defaultdict(list)
     removed_by_req: dict[str, list[str]] = defaultdict(list)
-    run_mode_by_req: dict[str, str] = {}
+    run_mode_by_req: dict[str, Literal["full_archive", "incremental"]] = {}
     sort_key: dict[str, tuple[int, int]] = {}
 
     for evt in all_events:
@@ -395,7 +398,13 @@ def reconstruct_playbook_aggregation_change_log(
             if req not in run_mode_by_req:
                 reason = evt.reason or ""
                 if reason.startswith(_PREFIX):
-                    run_mode_by_req[req] = reason[len(_PREFIX) :]
+                    suffix = reason[len(_PREFIX) :]
+                    run_mode_by_req[req] = cast(
+                        Literal["full_archive", "incremental"],
+                        suffix
+                        if suffix in ("full_archive", "incremental")
+                        else "incremental",
+                    )
                 else:
                     run_mode_by_req[req] = "incremental"
         elif evt.op == "status_change" and evt.to_status == Status.SUPERSEDED.value:
@@ -435,7 +444,7 @@ def reconstruct_playbook_aggregation_change_log(
             PlaybookAggregationChangeLog(
                 playbook_name=first.playbook_name,
                 agent_version=first.agent_version,
-                run_mode=run_mode_by_req.get(req, "incremental"),  # type: ignore[arg-type]
+                run_mode=run_mode_by_req.get(req, "incremental"),
                 added_agent_playbooks=added,
                 removed_agent_playbooks=removed,
                 updated_agent_playbooks=[],
