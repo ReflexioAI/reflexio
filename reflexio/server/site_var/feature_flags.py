@@ -103,15 +103,57 @@ def is_deduplicator_enabled(org_id: str) -> bool:
     return is_feature_enabled(org_id, "deduplicator")
 
 
+def _is_fail_closed_flag_enabled(org_id: str, feature_key: str) -> bool:
+    """
+    Shared fail-closed helper: returns False if key absent or config malformed.
+
+    Unlike is_feature_enabled (fail-open), this function returns False when the
+    feature key is absent or when its value is not a dict. This is the safety
+    invariant for soft-delete flags — unconfigured or malformed entries must
+    never accidentally activate tombstone-producing paths.
+
+    A feature is enabled if:
+    - The feature's "enabled" field is True (globally enabled), OR
+    - The org_id is in the feature's "enabled_org_ids" list.
+
+    Args:
+        org_id (str): The organization ID to check
+        feature_key (str): The feature flag key in the config dict
+
+    Returns:
+        bool: True only if the feature is explicitly enabled for this org
+    """
+    config = _get_feature_flags_config()
+    feature_config = config.get(feature_key)
+
+    if feature_config is None:
+        # Key absent — fail-CLOSED
+        return False
+
+    if not isinstance(feature_config, dict):
+        logger.warning(
+            "feature_flags[%s] is not a dict (got %s), defaulting to OFF",
+            feature_key,
+            type(feature_config).__name__,
+        )
+        return False
+
+    if feature_config.get("enabled", False):
+        return True
+
+    enabled_org_ids = feature_config.get("enabled_org_ids", []) or []
+    return org_id in enabled_org_ids
+
+
 def is_dedup_soft_delete_enabled(org_id: str) -> bool:
     """
     Check if deduplication soft-delete is enabled for a given organization.
 
-    This is a FAIL-CLOSED flag: if the key is absent from config, it returns
-    False. This is the opposite of is_feature_enabled (which is fail-open).
-    The difference is intentional — soft-delete must never activate for
-    unconfigured orgs, as tombstone growth without a GC pass would be
-    unbounded.
+    This is a FAIL-CLOSED flag: if the key is absent from config or the value
+    is not a dict, it returns False. This is the opposite of is_feature_enabled
+    (which is fail-open). The difference is intentional — soft-delete must never
+    activate for unconfigured orgs, as tombstone growth without a GC pass would
+    be unbounded.
 
     A feature is enabled if:
     - The feature's "enabled" field is True (globally enabled), OR
@@ -126,29 +168,18 @@ def is_dedup_soft_delete_enabled(org_id: str) -> bool:
     Returns:
         bool: True only if the feature is explicitly enabled for this org
     """
-    config = _get_feature_flags_config()
-    feature_config = config.get("dedup_soft_delete")
-
-    if feature_config is None:
-        # Key absent — fail-CLOSED (unlike is_feature_enabled which is fail-open)
-        return False
-
-    if feature_config.get("enabled", False):
-        return True
-
-    enabled_org_ids = feature_config.get("enabled_org_ids", []) or []
-    return org_id in enabled_org_ids
+    return _is_fail_closed_flag_enabled(org_id, "dedup_soft_delete")
 
 
 def is_aggregation_soft_delete_enabled(org_id: str) -> bool:
     """
     Check if aggregation soft-delete is enabled for a given organization.
 
-    This is a FAIL-CLOSED flag: if the key is absent from config, it returns
-    False. This is the opposite of is_feature_enabled (which is fail-open).
-    The difference is intentional — soft-delete must never activate for
-    unconfigured orgs, as tombstone growth without a GC pass would be
-    unbounded.
+    This is a FAIL-CLOSED flag: if the key is absent from config or the value
+    is not a dict, it returns False. This is the opposite of is_feature_enabled
+    (which is fail-open). The difference is intentional — soft-delete must never
+    activate for unconfigured orgs, as tombstone growth without a GC pass would
+    be unbounded.
 
     The flag gates soft-supersede (durable replacement of hard-delete for
     playbook aggregation removal). It must only be turned ON for an org once
@@ -168,18 +199,7 @@ def is_aggregation_soft_delete_enabled(org_id: str) -> bool:
     Returns:
         bool: True only if the feature is explicitly enabled for this org
     """
-    config = _get_feature_flags_config()
-    feature_config = config.get("aggregation_soft_delete")
-
-    if feature_config is None:
-        # Key absent — fail-CLOSED (unlike is_feature_enabled which is fail-open)
-        return False
-
-    if feature_config.get("enabled", False):
-        return True
-
-    enabled_org_ids = feature_config.get("enabled_org_ids", []) or []
-    return org_id in enabled_org_ids
+    return _is_fail_closed_flag_enabled(org_id, "aggregation_soft_delete")
 
 
 def is_resumable_extraction_agent_enabled(org_id: str) -> bool:

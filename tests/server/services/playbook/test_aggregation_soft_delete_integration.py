@@ -37,6 +37,7 @@ from reflexio.server.services.playbook.playbook_aggregator import PlaybookAggreg
 from reflexio.server.services.playbook.playbook_service_utils import (
     PlaybookAggregatorRequest,
 )
+from reflexio.server.services.storage.error import StorageError
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 
 pytestmark = pytest.mark.integration
@@ -235,6 +236,12 @@ class TestSupersedeAgentPlaybooksByIds:
         count = db.supersede_agent_playbooks_by_ids([], request_id="run_empty")
         assert count == 0
 
+    def test_empty_request_id_raises(self, db: SQLiteStorage) -> None:
+        """F3: empty request_id must raise at the storage layer (wrapped as StorageError)."""
+        ap = _seed_agent_playbook(db, content="to supersede")
+        with pytest.raises(StorageError, match="request_id must be non-empty"):
+            db.supersede_agent_playbooks_by_ids([ap.agent_playbook_id], request_id="")
+
     def test_archived_status_superseded(self, db: SQLiteStorage) -> None:
         """Rows with status='archived' (transient) CAN be superseded."""
         ap = _seed_agent_playbook(db)
@@ -307,6 +314,13 @@ class TestSupersedeAgentPlaybooksByPlaybookName:
             playbook_name="nonexistent", agent_version=None, request_id="run_none"
         )
         assert count == 0
+
+    def test_empty_request_id_raises(self, db: SQLiteStorage) -> None:
+        """F3: empty request_id must raise at the storage layer (wrapped as StorageError)."""
+        with pytest.raises(StorageError, match="request_id must be non-empty"):
+            db.supersede_agent_playbooks_by_playbook_name(
+                playbook_name="any", agent_version=None, request_id=""
+            )
 
 
 # ---------------------------------------------------------------------------

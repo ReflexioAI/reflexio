@@ -398,5 +398,46 @@ class TestIsFeatureFlagsNullOrgIds(unittest.TestCase):
         self.assertFalse(is_feature_enabled("org-any", "some_feature"))
 
 
+class TestFailClosedFlagMalformedConfig(unittest.TestCase):
+    """F2 regression: non-dict feature_config must return False (fail-closed), not AttributeError.
+
+    If the site var value is a scalar or list instead of a dict, calling
+    .get("enabled", ...) raises AttributeError. Both fail-closed flag functions
+    must guard against this by returning False with a warning log.
+    """
+
+    @patch(
+        "reflexio.server.site_var.feature_flags._get_feature_flags_config",
+        return_value={"dedup_soft_delete": "yes"},
+    )
+    def test_dedup_scalar_value_returns_false(self, _mock):
+        """dedup_soft_delete with scalar config value → False, no AttributeError."""
+        self.assertFalse(is_dedup_soft_delete_enabled("org-any"))
+
+    @patch(
+        "reflexio.server.site_var.feature_flags._get_feature_flags_config",
+        return_value={"dedup_soft_delete": ["org-pilot"]},
+    )
+    def test_dedup_list_value_returns_false(self, _mock):
+        """dedup_soft_delete with list config value → False, no AttributeError."""
+        self.assertFalse(is_dedup_soft_delete_enabled("org-any"))
+
+    @patch(
+        "reflexio.server.site_var.feature_flags._get_feature_flags_config",
+        return_value={"aggregation_soft_delete": True},
+    )
+    def test_aggregation_scalar_value_returns_false(self, _mock):
+        """aggregation_soft_delete with scalar config value → False, no AttributeError."""
+        self.assertFalse(is_aggregation_soft_delete_enabled("org-any"))
+
+    @patch(
+        "reflexio.server.site_var.feature_flags._get_feature_flags_config",
+        return_value={"aggregation_soft_delete": 42},
+    )
+    def test_aggregation_integer_value_returns_false(self, _mock):
+        """aggregation_soft_delete with integer config value → False, no AttributeError."""
+        self.assertFalse(is_aggregation_soft_delete_enabled("org-any"))
+
+
 if __name__ == "__main__":
     unittest.main()

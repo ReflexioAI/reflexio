@@ -68,6 +68,32 @@ def _emit_hard_delete_playbook(
     )
 
 
+def _emit_supersede_playbook(
+    conn: sqlite3.Connection,
+    *,
+    org_id: str,
+    entity_id: str,
+    old_status: str | None,
+    request_id: str,
+) -> None:
+    """Emit a single status_change->superseded lineage event for an agent playbook."""
+    _append_event_stmt(
+        conn,
+        org_id=org_id,
+        entity_type="agent_playbook",
+        entity_id=entity_id,
+        op="status_change",
+        prov="wasInvalidatedBy",
+        source_ids=[],
+        actor="aggregator",
+        request_id=request_id,
+        reason=f"{old_status or 'None'}->superseded",
+        from_status=old_status,
+        to_status=Status.SUPERSEDED.value,
+        status_namespace="lifecycle_status",
+    )
+
+
 def _row_to_playbook_optimization_candidate(
     row: sqlite3.Row,
 ) -> PlaybookOptimizationCandidate:
@@ -1227,6 +1253,8 @@ class PlaybookMixin:
         """
         if not agent_playbook_ids:
             return 0
+        if not request_id:
+            raise ValueError("request_id must be non-empty for supersede")
         updated = 0
         with self._lock:
             for apid in agent_playbook_ids:
@@ -1236,11 +1264,7 @@ class PlaybookMixin:
                 ).fetchone()
                 if row is None:
                     continue
-                old_status = (
-                    row["status"]
-                    if isinstance(row, dict) or hasattr(row, "keys")
-                    else row[0]
-                )
+                old_status = row["status"]
                 # NOTE (M3): The model supersede_profiles_by_ids adds an eligible-check
                 # `if old_status_val not in eligible: continue` before the UPDATE. For
                 # agent_playbooks the ineligible condition spans two columns (status in
@@ -1260,20 +1284,12 @@ class PlaybookMixin:
                     ),
                 )
                 if cur.rowcount > 0:
-                    _append_event_stmt(
+                    _emit_supersede_playbook(
                         self.conn,
                         org_id=self.org_id,
-                        entity_type="agent_playbook",
                         entity_id=str(apid),
-                        op="status_change",
-                        prov="wasInvalidatedBy",
-                        source_ids=[],
-                        actor="aggregator",
+                        old_status=old_status,
                         request_id=request_id,
-                        reason=f"{old_status or 'None'}->superseded",
-                        from_status=old_status,
-                        to_status=Status.SUPERSEDED.value,
-                        status_namespace="lifecycle_status",
                     )
                     updated += 1
             self.conn.commit()
@@ -1298,6 +1314,8 @@ class PlaybookMixin:
         Returns:
             int: Number of agent playbooks actually updated.
         """
+        if not request_id:
+            raise ValueError("request_id must be non-empty for supersede")
         sql = (
             "SELECT agent_playbook_id, status FROM agent_playbooks"
             " WHERE playbook_name = ? AND status = 'archived'"
@@ -1306,40 +1324,31 @@ class PlaybookMixin:
         if agent_version is not None:
             sql += " AND agent_version = ?"
             params.append(agent_version)
-        rows = self.conn.execute(sql, params).fetchall()
-        if not rows:
-            return 0
         updated = 0
         with self._lock:
+            rows = self.conn.execute(sql, params).fetchall()
+            if not rows:
+                return 0
             for row in rows:
-                apid = row["agent_playbook_id"] if hasattr(row, "keys") else row[0]
-                old_status = row["status"] if hasattr(row, "keys") else row[1]
+                apid = row["agent_playbook_id"]
+                old_status = row["status"]
                 cur = self.conn.execute(
                     "UPDATE agent_playbooks SET status = ?"
                     " WHERE agent_playbook_id = ? AND playbook_status != ?"
-                    " AND (status IS NULL OR status NOT IN (?, ?))",
+                    " AND status = 'archived'",
                     (
                         Status.SUPERSEDED.value,
                         apid,
                         PlaybookStatus.APPROVED.value,
-                        *_TOMBSTONE_STATUS_VALUES,
                     ),
                 )
                 if cur.rowcount > 0:
-                    _append_event_stmt(
+                    _emit_supersede_playbook(
                         self.conn,
                         org_id=self.org_id,
-                        entity_type="agent_playbook",
                         entity_id=str(apid),
-                        op="status_change",
-                        prov="wasInvalidatedBy",
-                        source_ids=[],
-                        actor="aggregator",
+                        old_status=old_status,
                         request_id=request_id,
-                        reason=f"{old_status or 'None'}->superseded",
-                        from_status=old_status,
-                        to_status=Status.SUPERSEDED.value,
-                        status_namespace="lifecycle_status",
                     )
                     updated += 1
             self.conn.commit()
