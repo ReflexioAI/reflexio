@@ -39,7 +39,7 @@ from ._base import (
     _true_rrf_merge,
     _vector_rank_rows,
 )
-from ._lineage import _append_event_stmt
+from ._lineage import _GC_ELIGIBLE_STATUSES, _append_event_stmt
 
 
 def _emit_hard_delete_profile(
@@ -401,13 +401,8 @@ class ProfileMixin:
             where += f" AND user_id IN ({placeholders})"
             extra_params.extend(user_ids)
 
-        # Set retired_at = now when transitioning to a tombstone status; clear to NULL otherwise.
-        _tombstone_vals = {
-            Status.MERGED.value,
-            Status.SUPERSEDED.value,
-            Status.ARCHIVED.value,
-        }
-        retired_at_val = now_ts if new_val in _tombstone_vals else None
+        # Set retired_at = now when transitioning to a GC-eligible status; clear to NULL otherwise.
+        retired_at_val = now_ts if new_val in _GC_ELIGIBLE_STATUSES else None
 
         batch_request_id = uuid.uuid4().hex
         with self._lock:

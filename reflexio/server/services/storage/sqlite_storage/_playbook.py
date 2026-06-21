@@ -42,7 +42,7 @@ from ._base import (
     _true_rrf_merge,
     _vector_rank_rows,
 )
-from ._lineage import _append_event_stmt
+from ._lineage import _GC_ELIGIBLE_STATUSES, _append_event_stmt
 
 
 def _emit_hard_delete_playbook(
@@ -469,13 +469,8 @@ class PlaybookMixin:
             where += " AND playbook_name = ?"
             extra_params.append(playbook_name)
 
-        # Set retired_at = now when transitioning to a tombstone status; clear to NULL otherwise.
-        _tombstone_vals = {
-            Status.MERGED.value,
-            Status.SUPERSEDED.value,
-            Status.ARCHIVED.value,
-        }
-        retired_at_val = now_ts if new_val in _tombstone_vals else None
+        # Set retired_at = now when transitioning to a GC-eligible status; clear to NULL otherwise.
+        retired_at_val = now_ts if new_val in _GC_ELIGIBLE_STATUSES else None
 
         batch_request_id = uuid.uuid4().hex
         with self._lock:
@@ -1270,6 +1265,7 @@ class PlaybookMixin:
             return 0
         if not request_id:
             raise ValueError("request_id must be non-empty for supersede")
+        now_ts = _epoch_now()
         updated = 0
         with self._lock:
             for apid in agent_playbook_ids:
@@ -1293,7 +1289,7 @@ class PlaybookMixin:
                     " AND (status IS NULL OR status NOT IN (?, ?))",
                     (
                         Status.SUPERSEDED.value,
-                        _epoch_now(),
+                        now_ts,
                         apid,
                         PlaybookStatus.APPROVED.value,
                         *_TOMBSTONE_STATUS_VALUES,
@@ -1345,6 +1341,7 @@ class PlaybookMixin:
             rows = self.conn.execute(sql, params).fetchall()
             if not rows:
                 return 0
+            now_ts = _epoch_now()
             for row in rows:
                 apid = row["agent_playbook_id"]
                 old_status = row["status"]
@@ -1354,7 +1351,7 @@ class PlaybookMixin:
                     " AND status = 'archived'",
                     (
                         Status.SUPERSEDED.value,
-                        _epoch_now(),
+                        now_ts,
                         apid,
                         PlaybookStatus.APPROVED.value,
                     ),
