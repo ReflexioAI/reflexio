@@ -261,6 +261,32 @@ class ProfileMixin:
         """
         raise NotImplementedError
 
+    @abstractmethod
+    def supersede_profiles_by_ids(
+        self,
+        user_id: str,
+        profile_ids: list[str],
+        request_id: str,
+    ) -> int:
+        """Soft-delete profiles by setting status to SUPERSEDED, emitting set-based lineage.
+
+        For each profile id that matches (user_id, current status=NULL), updates
+        status to SUPERSEDED and emits one ``status_change`` lineage event under the
+        shared ``request_id``.  Rows are NOT physically deleted — reads that exclude
+        tombstones will simply filter them out by status.
+
+        Args:
+            user_id (str): Owning user id. Predicate scoped to this user.
+            profile_ids (list[str]): Profile ids to supersede. Already-superseded or
+                non-existent ids are silently skipped.
+            request_id (str): Shared request id to stamp on all emitted events so the
+                entire dedup run is reconstructible from a single id.
+
+        Returns:
+            int: Number of profiles actually updated (0 if all already superseded/absent).
+        """
+        raise NotImplementedError
+
     # Search methods
     @abstractmethod
     def search_interaction(

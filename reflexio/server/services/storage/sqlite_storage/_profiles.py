@@ -488,6 +488,80 @@ class ProfileMixin:
         return cur.rowcount > 0
 
     @SQLiteStorageBase.handle_exceptions
+    def supersede_profiles_by_ids(
+        self,
+        user_id: str,
+        profile_ids: list[str],
+        request_id: str,
+    ) -> int:
+        """Soft-delete profiles by setting status to SUPERSEDED, emitting set-based lineage.
+
+        For each matching id (user_id scoped, currently CURRENT), updates status to
+        SUPERSEDED and emits one ``status_change`` event under the shared ``request_id``.
+        Atomic: one ``conn.commit()`` at the end, guarded on rowcount per id.
+        FTS/vec rows are NOT removed — reads exclude tombstones by status filter.
+
+        Args:
+            user_id (str): Owning user id.
+            profile_ids (list[str]): Profile ids to supersede.
+            request_id (str): Shared request id for all emitted lineage events.
+
+        Returns:
+            int: Number of profiles actually updated.
+        """
+        if not profile_ids:
+            return 0
+        now_ts = _epoch_now()
+        # Eligibility: CURRENT (NULL) or PENDING — the two live statuses dedup can target.
+        eligible = (None, Status.PENDING.value)
+        updated = 0
+        with self._lock:
+            for pid in profile_ids:
+                # Read current status for from_status derivation (user_id scoped)
+                row = self.conn.execute(
+                    "SELECT status FROM profiles WHERE profile_id = ? AND user_id = ?",
+                    (pid, user_id),
+                ).fetchone()
+                if row is None:
+                    continue
+                old_status_val = (
+                    row[0] if isinstance(row, (tuple, list)) else row["status"]
+                )
+                if old_status_val not in eligible:
+                    continue
+                cur = self.conn.execute(
+                    "UPDATE profiles SET status = ?, last_modified_timestamp = ? "
+                    "WHERE profile_id = ? AND user_id = ? "
+                    "AND (status IS NULL OR status = ?)",
+                    (
+                        Status.SUPERSEDED.value,
+                        now_ts,
+                        pid,
+                        user_id,
+                        Status.PENDING.value,
+                    ),
+                )
+                if cur.rowcount > 0:
+                    _append_event_stmt(
+                        self.conn,
+                        org_id=self.org_id,
+                        entity_type="profile",
+                        entity_id=str(pid),
+                        op="status_change",
+                        prov="wasInvalidatedBy",
+                        source_ids=[],
+                        actor="dedup",
+                        request_id=request_id,
+                        reason=f"{old_status_val}->superseded",
+                        from_status=old_status_val,
+                        to_status=Status.SUPERSEDED.value,
+                        status_namespace="lifecycle_status",
+                    )
+                    updated += 1
+            self.conn.commit()
+        return updated
+
+    @SQLiteStorageBase.handle_exceptions
     def delete_all_profiles_by_status(self, status: Status) -> int:
         batch_request_id = uuid.uuid4().hex
         with self._lock:

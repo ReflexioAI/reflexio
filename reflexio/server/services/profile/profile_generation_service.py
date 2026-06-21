@@ -206,31 +206,56 @@ class ProfileGenerationService(
                     )
                 return
 
-        # Delete superseded existing profiles
+        # Delete or soft-delete superseded existing profiles
         if existing_ids_to_delete:
-            for profile_id in existing_ids_to_delete:
+            from reflexio.server.site_var.feature_flags import (
+                is_dedup_soft_delete_enabled,
+            )
+
+            if is_dedup_soft_delete_enabled(self.org_id) and request_id:
                 try:
-                    self.storage.delete_user_profile(  # type: ignore[reportOptionalMemberAccess]
-                        DeleteUserProfileRequest(
-                            user_id=user_id,
-                            profile_id=profile_id,
-                        )
+                    self.storage.supersede_profiles_by_ids(  # type: ignore[reportOptionalMemberAccess]
+                        user_id=user_id,
+                        profile_ids=existing_ids_to_delete,
+                        request_id=request_id,
                     )
-                except Exception as e:  # noqa: PERF203
+                except Exception as e:
                     with sentry_tags(
                         subsystem="profile_generation",
-                        op="delete_superseded_profile",
+                        op="supersede_profiles",
                         org_id=self.org_id,
                         user_id=user_id,
                         request_id=request_id,
-                        profile_id=profile_id,
                         error_type=type(e).__name__,
                     ):
                         logger.exception(
-                            "Failed to delete superseded profile %s for user %s",
-                            profile_id,
+                            "Failed to soft-delete superseded profiles for user %s",
                             user_id,
                         )
+            else:
+                for profile_id in existing_ids_to_delete:
+                    try:
+                        self.storage.delete_user_profile(  # type: ignore[reportOptionalMemberAccess]
+                            DeleteUserProfileRequest(
+                                user_id=user_id,
+                                profile_id=profile_id,
+                            )
+                        )
+                    except Exception as e:  # noqa: PERF203
+                        with sentry_tags(
+                            subsystem="profile_generation",
+                            op="delete_superseded_profile",
+                            org_id=self.org_id,
+                            user_id=user_id,
+                            request_id=request_id,
+                            profile_id=profile_id,
+                            error_type=type(e).__name__,
+                        ):
+                            logger.exception(
+                                "Failed to delete superseded profile %s for user %s",
+                                profile_id,
+                                user_id,
+                            )
 
         # Create profile changelog post-deduplication
         if all_new_profiles or superseded_profiles:
