@@ -483,11 +483,10 @@ class PlaybookMixin:
         agent_version: str | None = None,
         playbook_name: str | None = None,
     ) -> int:
-        if status != Status.PENDING:
-            raise ValueError(
-                f"delete_all_user_playbooks_by_status only accepts Status.PENDING "
-                f"(got {status!r}); use archive or hard-delete methods for other statuses"
-            )
+        # Bulk delete-by-status emits no hard_delete lineage events (parity with
+        # the Supabase backend, which routes this through _hard_delete_and_log with
+        # emit_hard_delete=False). Accepts any status: the upgrade flow legitimately
+        # deletes old ARCHIVED playbooks via _delete_items_by_status(Status.ARCHIVED).
         where = "status = ?"
         params: list[Any] = [status.value]
         if agent_version is not None:

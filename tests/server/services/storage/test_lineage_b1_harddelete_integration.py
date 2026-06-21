@@ -22,7 +22,6 @@ from reflexio.models.api_schema.domain.entities import (
 )
 from reflexio.models.api_schema.domain.enums import ProfileTimeToLive, Status
 from reflexio.models.api_schema.service_schemas import DeleteUserProfileRequest
-from reflexio.server.services.storage.error import StorageError
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 
 pytestmark = pytest.mark.integration
@@ -303,20 +302,31 @@ def test_delete_user_profile_cross_user_no_event_and_no_delete(tmp_path):
 
 
 # --------------------------------------------------------------------------
-# F008: delete_all_user_playbooks_by_status raises on non-PENDING status
+# F008: delete_all_user_playbooks_by_status deletes any status, emits NO events
+# (parity with Supabase backend; the upgrade flow deletes old ARCHIVED entries)
 # --------------------------------------------------------------------------
 
 
-def test_delete_all_user_playbooks_by_status_archived_raises(tmp_path):
+@pytest.mark.parametrize("status", [Status.ARCHIVED, Status.MERGED])
+def test_delete_all_user_playbooks_by_status_non_pending_deletes_no_events(
+    tmp_path, status
+):
     s = _store(tmp_path)
-    with pytest.raises(StorageError, match="PENDING"):
-        s.delete_all_user_playbooks_by_status(Status.ARCHIVED)
-
-
-def test_delete_all_user_playbooks_by_status_merged_raises(tmp_path):
-    s = _store(tmp_path)
-    with pytest.raises(StorageError, match="PENDING"):
-        s.delete_all_user_playbooks_by_status(Status.MERGED)
+    pb = UserPlaybook(
+        user_id="u",
+        agent_version="v",
+        request_id="r",
+        content="c",
+        status=status,
+    )
+    s.save_user_playbooks([pb])
+    deleted = s.delete_all_user_playbooks_by_status(status)
+    # Row is physically deleted (the upgrade flow relies on this for old ARCHIVED).
+    assert deleted == 1
+    assert not s.get_user_playbooks(status_filter=[status])
+    # Bulk delete-by-status emits no hard_delete events (Supabase parity carve-out).
+    events = s.get_lineage_events(entity_id=str(pb.user_playbook_id))
+    assert not any(e.op == "hard_delete" for e in events)
 
 
 # --------------------------------------------------------------------------
