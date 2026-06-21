@@ -1,4 +1,5 @@
 from abc import abstractmethod
+from collections.abc import Sequence
 
 from reflexio.models.api_schema.common import BlockingIssue
 from reflexio.models.api_schema.domain import (
@@ -495,6 +496,13 @@ class PlaybookMixin:
         self, agent_playbook_id: int
     ) -> list[int]:
         """Return source user playbook ids for an agent playbook."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_source_user_playbook_ids_for_agent_playbooks(
+        self, agent_playbook_ids: Sequence[int]
+    ) -> dict[int, list[int]]:
+        """Return source user playbook ids keyed by agent playbook id."""
         raise NotImplementedError
 
     @abstractmethod

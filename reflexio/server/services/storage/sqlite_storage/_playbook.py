@@ -3,6 +3,7 @@
 import json
 import sqlite3
 import uuid
+from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
@@ -1241,6 +1242,32 @@ class PlaybookMixin:
             window.user_playbook_id
             for window in self.get_source_windows_for_agent_playbook(agent_playbook_id)
         ]
+
+    @SQLiteStorageBase.handle_exceptions
+    def get_source_user_playbook_ids_for_agent_playbooks(
+        self, agent_playbook_ids: Sequence[int]
+    ) -> dict[int, list[int]]:
+        if not agent_playbook_ids:
+            return {}
+        unique_ids = list(dict.fromkeys(int(apid) for apid in agent_playbook_ids))
+        ph = ",".join("?" for _ in unique_ids)
+        rows = self._fetchall(
+            f"""SELECT agent_playbook_id, user_playbook_id
+                FROM agent_playbook_source_user_playbooks
+                WHERE agent_playbook_id IN ({ph})
+                ORDER BY agent_playbook_id ASC, user_playbook_id ASC""",
+            unique_ids,
+        )
+        by_agent_id: dict[int, list[int]] = {apid: [] for apid in unique_ids}
+        seen_by_agent_id: dict[int, set[int]] = {apid: set() for apid in unique_ids}
+        for row in rows:
+            agent_playbook_id = int(row["agent_playbook_id"])
+            user_playbook_id = int(row["user_playbook_id"])
+            seen = seen_by_agent_id.setdefault(agent_playbook_id, set())
+            if user_playbook_id not in seen:
+                by_agent_id.setdefault(agent_playbook_id, []).append(user_playbook_id)
+                seen.add(user_playbook_id)
+        return by_agent_id
 
     @SQLiteStorageBase.handle_exceptions
     def set_source_windows_for_agent_playbook(

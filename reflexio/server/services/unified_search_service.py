@@ -17,7 +17,7 @@ from collections import OrderedDict
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from reflexio.models.api_schema.retriever_schema import (
     ConversationTurn,
@@ -50,6 +50,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 _DEFAULT_ENTITY_TYPES = frozenset({"profiles", "agent_playbooks", "user_playbooks"})
+_SOURCE_USER_PLAYBOOK_IDS_KEY = "_source_user_playbook_ids"
 # Statuses returned for agent_playbooks when the caller does not pass an
 # explicit ``agent_playbook_status_filter``. Excludes REJECTED so that a
 # rejection in the dashboard immediately suppresses the playbook from search
@@ -152,6 +153,12 @@ def run_unified_search(
             top_k=top_k,
             cfg=floor_cfg,
         )
+
+    user_playbooks = _suppress_source_user_playbooks(
+        storage=storage,
+        agent_playbooks=agent_playbooks or [],
+        user_playbooks=user_playbooks or [],
+    )
 
     return UnifiedSearchResponse(
         success=True,
@@ -474,6 +481,67 @@ def _apply_floors(
         top_k,
     )
     return floored_profiles, floored_agent, floored_user
+
+
+def _suppress_source_user_playbooks(
+    *,
+    storage: BaseStorage,
+    agent_playbooks: list[AgentPlaybook],
+    user_playbooks: list[UserPlaybook],
+) -> list[UserPlaybook]:
+    """Drop user playbooks already represented by returned agent playbooks."""
+    if not agent_playbooks or not user_playbooks:
+        return user_playbooks
+
+    source_user_playbook_ids: set[int] = set()
+    agent_ids_needing_lookup: list[int] = []
+    for playbook in agent_playbooks:
+        source_ids = getattr(playbook, _SOURCE_USER_PLAYBOOK_IDS_KEY, None)
+        if source_ids is None:
+            agent_playbook_id = int(getattr(playbook, "agent_playbook_id", 0) or 0)
+            if agent_playbook_id:
+                agent_ids_needing_lookup.append(agent_playbook_id)
+            continue
+        source_user_playbook_ids.update(int(source_id) for source_id in source_ids)
+
+    if agent_ids_needing_lookup:
+        lookup = getattr(
+            storage, "get_source_user_playbook_ids_for_agent_playbooks", None
+        )
+        if callable(lookup):
+            try:
+                source_ids_by_agent = cast(
+                    dict[int, list[int]], lookup(agent_ids_needing_lookup)
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to resolve source user playbooks for unified search suppression",
+                    exc_info=True,
+                )
+            else:
+                for source_ids in source_ids_by_agent.values():
+                    source_user_playbook_ids.update(
+                        int(source_id) for source_id in source_ids
+                    )
+
+    if not source_user_playbook_ids:
+        return user_playbooks
+
+    filtered = [
+        playbook
+        for playbook in user_playbooks
+        if int(getattr(playbook, "user_playbook_id", 0) or 0)
+        not in source_user_playbook_ids
+    ]
+    suppressed_count = len(user_playbooks) - len(filtered)
+    if suppressed_count:
+        with profile_step(
+            "search.suppress_source_user_playbooks",
+            suppressed_count=suppressed_count,
+            source_user_playbook_count=len(source_user_playbook_ids),
+        ):
+            pass
+    return filtered
 
 
 def _get_cached_query_embedding(

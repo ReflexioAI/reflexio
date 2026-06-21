@@ -302,6 +302,39 @@ class TestAgentPlaybookSourceWindows:
             )
         ]
 
+    def test_batch_source_user_playbook_ids_round_trip(self, storage):
+        storage.set_source_windows_for_agent_playbook(
+            10,
+            [
+                AgentPlaybookSourceWindow(
+                    user_playbook_id=2, source_interaction_ids=[20]
+                ),
+                AgentPlaybookSourceWindow(
+                    user_playbook_id=3, source_interaction_ids=[30]
+                ),
+            ],
+        )
+        storage.set_source_windows_for_agent_playbook(
+            11,
+            [
+                AgentPlaybookSourceWindow(
+                    user_playbook_id=3, source_interaction_ids=[31]
+                )
+            ],
+        )
+
+        # Duplicate ids in the request are deduped; an agent playbook with no
+        # source rows still appears with an empty list so callers get a
+        # complete map.
+        result = storage.get_source_user_playbook_ids_for_agent_playbooks(
+            [10, 11, 10, 12]
+        )
+
+        assert result == {10: [2, 3], 11: [3], 12: []}
+
+    def test_batch_source_user_playbook_ids_empty_input(self, storage):
+        assert storage.get_source_user_playbook_ids_for_agent_playbooks([]) == {}
+
 
 # ---------------------------------------------------------------------------
 # TestAgentPlaybookCRUD
