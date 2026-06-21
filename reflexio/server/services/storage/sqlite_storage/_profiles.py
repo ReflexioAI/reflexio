@@ -95,6 +95,7 @@ class ProfileMixin:
     _vec_upsert: Any
     _vec_delete: Any
     _delete_profile_search_rows: Any
+    _delete_in_chunks: Any
     _has_sqlite_vec: bool
     llm_client: Any
     embedding_model_name: str
@@ -295,6 +296,8 @@ class ProfileMixin:
                 "SELECT rowid FROM profiles WHERE user_id = ? AND profile_id = ?",
                 (request.user_id, request.profile_id),
             ).fetchone()
+            if rowid_row is None:
+                return
             self.conn.execute(
                 "DELETE FROM profiles_fts WHERE profile_id = ?",
                 (request.profile_id,),
@@ -330,15 +333,9 @@ class ProfileMixin:
                 return
             pids = [r["profile_id"] for r in rows]
             rowids = [r["rowid"] for r in rows]
-            ph = ",".join("?" for _ in pids)
-            self.conn.execute(
-                f"DELETE FROM profiles_fts WHERE profile_id IN ({ph})", pids
-            )
+            self._delete_in_chunks("profiles_fts", "profile_id", pids)
             if self._has_sqlite_vec and rowids:
-                rph = ",".join("?" for _ in rowids)
-                self.conn.execute(
-                    f"DELETE FROM profiles_vec WHERE rowid IN ({rph})", rowids
-                )
+                self._delete_in_chunks("profiles_vec", "rowid", rowids)
             self.conn.execute("DELETE FROM profiles WHERE user_id = ?", (user_id,))
             for pid in pids:
                 _emit_hard_delete_profile(
@@ -633,17 +630,13 @@ class ProfileMixin:
                 return 0
             pids = [r["profile_id"] for r in rows]
             rowids = [r["rowid"] for r in rows]
-            ph = ",".join("?" for _ in pids)
-            self.conn.execute(
-                f"DELETE FROM profiles_fts WHERE profile_id IN ({ph})", pids
-            )
+            self._delete_in_chunks("profiles_fts", "profile_id", pids)
             if self._has_sqlite_vec and rowids:
-                rph = ",".join("?" for _ in rowids)
-                self.conn.execute(
-                    f"DELETE FROM profiles_vec WHERE rowid IN ({rph})", rowids
-                )
+                self._delete_in_chunks("profiles_vec", "rowid", rowids)
+            ph = ",".join("?" for _ in pids)
             cur = self.conn.execute(
-                f"DELETE FROM profiles WHERE profile_id IN ({ph})", pids
+                f"DELETE FROM profiles WHERE profile_id IN ({ph})",
+                pids,  # noqa: S608
             )
             for pid in pids:
                 _emit_hard_delete_profile(
@@ -687,17 +680,12 @@ class ProfileMixin:
                 return 0
             existing = [r["profile_id"] for r in pre_rows]
             rowids = [r["rowid"] for r in pre_rows]
-            eph = ",".join("?" for _ in existing)
-            self.conn.execute(
-                f"DELETE FROM profiles_fts WHERE profile_id IN ({eph})", existing
-            )
+            self._delete_in_chunks("profiles_fts", "profile_id", existing)
             if self._has_sqlite_vec and rowids:
-                rph = ",".join("?" for _ in rowids)
-                self.conn.execute(
-                    f"DELETE FROM profiles_vec WHERE rowid IN ({rph})", rowids
-                )
+                self._delete_in_chunks("profiles_vec", "rowid", rowids)
             cur = self.conn.execute(
-                f"DELETE FROM profiles WHERE profile_id IN ({ph})", profile_ids
+                f"DELETE FROM profiles WHERE profile_id IN ({ph})",
+                profile_ids,  # noqa: S608
             )
             if emit_hard_delete:
                 for pid in existing:
@@ -834,6 +822,12 @@ class ProfileMixin:
     @SQLiteStorageBase.handle_exceptions
     def delete_user_interaction(self, request: DeleteUserInteractionRequest) -> None:
         with self._lock:
+            row = self.conn.execute(
+                "SELECT interaction_id FROM interactions WHERE user_id = ? AND interaction_id = ?",
+                (request.user_id, request.interaction_id),
+            ).fetchone()
+            if row is None:
+                return
             self.conn.execute(
                 "DELETE FROM interactions_fts WHERE rowid = ?",
                 (request.interaction_id,),
@@ -851,23 +845,16 @@ class ProfileMixin:
 
     @SQLiteStorageBase.handle_exceptions
     def delete_all_interactions_for_user(self, user_id: str) -> None:
-        ids = [
-            r["interaction_id"]
-            for r in self._fetchall(
-                "SELECT interaction_id FROM interactions WHERE user_id = ?", (user_id,)
-            )
-        ]
-        if not ids:
-            return
-        placeholders = ",".join("?" for _ in ids)
         with self._lock:
-            self.conn.execute(
-                f"DELETE FROM interactions_fts WHERE rowid IN ({placeholders})", ids
-            )
+            rows = self.conn.execute(
+                "SELECT interaction_id FROM interactions WHERE user_id = ?", (user_id,)
+            ).fetchall()
+            if not rows:
+                return
+            ids = [r["interaction_id"] for r in rows]
+            self._delete_in_chunks("interactions_fts", "rowid", ids)
             if self._has_sqlite_vec:
-                self.conn.execute(
-                    f"DELETE FROM interactions_vec WHERE rowid IN ({placeholders})", ids
-                )
+                self._delete_in_chunks("interactions_vec", "rowid", ids)
             self.conn.execute("DELETE FROM interactions WHERE user_id = ?", (user_id,))
             self.conn.commit()
 
@@ -889,26 +876,18 @@ class ProfileMixin:
     def delete_oldest_interactions(self, count: int) -> int:
         if count <= 0:
             return 0
-        rows = self._fetchall(
-            "SELECT interaction_id FROM interactions ORDER BY created_at ASC LIMIT ?",
-            (count,),
-        )
-        if not rows:
-            return 0
-        ids = [r["interaction_id"] for r in rows]
-        placeholders = ",".join("?" for _ in ids)
         with self._lock:
-            self.conn.execute(
-                f"DELETE FROM interactions_fts WHERE rowid IN ({placeholders})", ids
-            )
+            rows = self.conn.execute(
+                "SELECT interaction_id FROM interactions ORDER BY created_at ASC LIMIT ?",
+                (count,),
+            ).fetchall()
+            if not rows:
+                return 0
+            ids = [r["interaction_id"] for r in rows]
+            self._delete_in_chunks("interactions_fts", "rowid", ids)
             if self._has_sqlite_vec:
-                self.conn.execute(
-                    f"DELETE FROM interactions_vec WHERE rowid IN ({placeholders})", ids
-                )
-            self.conn.execute(
-                f"DELETE FROM interactions WHERE interaction_id IN ({placeholders})",
-                ids,
-            )
+                self._delete_in_chunks("interactions_vec", "rowid", ids)
+            self._delete_in_chunks("interactions", "interaction_id", ids)
             self.conn.commit()
         return len(ids)
 

@@ -296,3 +296,41 @@ class TestDeleteOldestInteractionsAtomicity:
         s = _store(tmp_path)
         deleted = s.delete_oldest_interactions(5)
         assert deleted == 0
+
+
+# ---------------------------------------------------------------------------
+# delete_user_interaction: cross-user sidecar protection (Fix A)
+# ---------------------------------------------------------------------------
+
+
+class TestDeleteUserInteractionCrossUser:
+    """Fix A: u1 deleting u2's interaction_id leaves u2's row+fts+vec intact."""
+
+    def test_cross_user_row_untouched(self, tmp_path) -> None:
+        s = _store(tmp_path)
+        s.add_user_interaction("u2", _make_interaction("u2", 80, "b", "r80"))
+        # u1 tries to delete u2's interaction_id
+        s.delete_user_interaction(
+            DeleteUserInteractionRequest(user_id="u1", interaction_id=80)
+        )
+        assert _interaction_row_count(s, 80) == 1
+
+    def test_cross_user_fts_untouched(self, tmp_path) -> None:
+        s = _store(tmp_path)
+        s.add_user_interaction("u2", _make_interaction("u2", 81, "b", "r81"))
+        assert _fts_count(s, 81) == 1
+        s.delete_user_interaction(
+            DeleteUserInteractionRequest(user_id="u1", interaction_id=81)
+        )
+        assert _fts_count(s, 81) == 1
+
+    def test_cross_user_vec_untouched(self, tmp_path) -> None:
+        s = _store(tmp_path)
+        s.add_user_interaction("u2", _make_interaction("u2", 82, "b", "r82"))
+        if not s._has_sqlite_vec:
+            pytest.skip("sqlite-vec not available")
+        assert _vec_count(s, 82) == 1
+        s.delete_user_interaction(
+            DeleteUserInteractionRequest(user_id="u1", interaction_id=82)
+        )
+        assert _vec_count(s, 82) == 1

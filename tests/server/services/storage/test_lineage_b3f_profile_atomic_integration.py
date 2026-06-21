@@ -306,3 +306,41 @@ class TestDeleteAllProfilesVecWipe:
         s.delete_all_profiles()
         assert s.count_all_profiles() == 0
         assert _fts_count(s, "e3") == 0
+
+
+# ---------------------------------------------------------------------------
+# delete_user_profile: cross-user sidecar protection (Fix A)
+# ---------------------------------------------------------------------------
+
+
+class TestDeleteUserProfileCrossUser:
+    """Fix A: u1 deleting u2's profile_id leaves u2's row+fts+vec intact."""
+
+    def test_cross_user_row_untouched(self, tmp_path) -> None:
+        s = _store(tmp_path)
+        s.add_user_profile("u2", [_make_profile("u2", "x1")])
+        s.delete_user_profile(DeleteUserProfileRequest(user_id="u1", profile_id="x1"))
+        assert s.get_profile_by_id("x1") is not None
+
+    def test_cross_user_fts_untouched(self, tmp_path) -> None:
+        s = _store(tmp_path)
+        s.add_user_profile("u2", [_make_profile("u2", "x2")])
+        assert _fts_count(s, "x2") == 1
+        s.delete_user_profile(DeleteUserProfileRequest(user_id="u1", profile_id="x2"))
+        assert _fts_count(s, "x2") == 1
+
+    def test_cross_user_vec_untouched(self, tmp_path) -> None:
+        s = _store(tmp_path)
+        if not s._has_sqlite_vec:
+            pytest.skip("sqlite-vec not loaded")
+        s.add_user_profile("u2", [_make_profile("u2", "x3")])
+        rowid_row = s.conn.execute(
+            "SELECT rowid FROM profiles WHERE profile_id = ?", ("x3",)
+        ).fetchone()
+        assert rowid_row is not None
+        rowid = rowid_row["rowid"]
+        # Verify vec row exists
+        assert rowid in _vec_rowids(s)
+        s.delete_user_profile(DeleteUserProfileRequest(user_id="u1", profile_id="x3"))
+        # u2's vec row must still be there
+        assert rowid in _vec_rowids(s)
