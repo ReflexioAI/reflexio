@@ -37,7 +37,9 @@ def test_update_user_playbook_content_emits_revise(tmp_path):
     pb = UserPlaybook(user_id="u", agent_version="v", request_id="r", content="old")
     s.save_user_playbooks([pb])
     s.update_user_playbook(pb.user_playbook_id, content="new guidance")
-    ev = s.get_lineage_events(entity_id=str(pb.user_playbook_id))
+    ev = s.get_lineage_events(
+        entity_id=str(pb.user_playbook_id), entity_type="user_playbook"
+    )
     assert [e.op for e in ev] == ["revise"]
     assert s.get_user_playbook_by_id(pb.user_playbook_id).content == "new guidance"
 
@@ -47,7 +49,9 @@ def test_update_user_playbook_metadata_only_emits_status_change(tmp_path):
     pb = UserPlaybook(user_id="u", agent_version="v", request_id="r", content="c")
     s.save_user_playbooks([pb])
     s.update_user_playbook(pb.user_playbook_id, playbook_name="renamed")  # no content
-    ev = s.get_lineage_events(entity_id=str(pb.user_playbook_id))
+    ev = s.get_lineage_events(
+        entity_id=str(pb.user_playbook_id), entity_type="user_playbook"
+    )
     assert [e.op for e in ev] == ["status_change"]
 
 
@@ -58,7 +62,9 @@ def test_update_user_playbook_multiple_edits_each_produce_event(tmp_path):
     s.save_user_playbooks([pb])
     s.update_user_playbook(pb.user_playbook_id, content="v2")
     s.update_user_playbook(pb.user_playbook_id, content="v3")
-    ev = s.get_lineage_events(entity_id=str(pb.user_playbook_id))
+    ev = s.get_lineage_events(
+        entity_id=str(pb.user_playbook_id), entity_type="user_playbook"
+    )
     assert [e.op for e in ev] == ["revise", "revise"]
 
 
@@ -220,7 +226,9 @@ def test_update_user_playbook_metadata_only_leaves_structured_fields_null(tmp_pa
     pb = UserPlaybook(user_id="u", agent_version="v", request_id="r", content="c")
     s.save_user_playbooks([pb])
     s.update_user_playbook(pb.user_playbook_id, playbook_name="renamed")
-    ev = s.get_lineage_events(entity_id=str(pb.user_playbook_id))
+    ev = s.get_lineage_events(
+        entity_id=str(pb.user_playbook_id), entity_type="user_playbook"
+    )
     sc = [e for e in ev if e.op == "status_change"]
     assert len(sc) == 1
     assert sc[0].from_status is None

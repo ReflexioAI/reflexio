@@ -395,6 +395,68 @@ def test_delete_profiles_by_ids_partial_only_emits_for_existing(tmp_path):
     )
 
 
+def test_delete_user_playbooks_by_ids_nonexistent_no_event(tmp_path):
+    """Calling delete_user_playbooks_by_ids with a non-existent id must not emit hard_delete."""
+    s = _store(tmp_path)
+    s.delete_user_playbooks_by_ids([99999])
+    assert not any(
+        e.op == "hard_delete"
+        for e in s.get_lineage_events(entity_id="99999", entity_type="user_playbook")
+    )
+
+
+def test_delete_user_playbooks_by_ids_partial_only_emits_for_existing(tmp_path):
+    """delete_user_playbooks_by_ids emits hard_delete only for ids that actually existed."""
+    s = _store(tmp_path)
+    pb = UserPlaybook(user_id="u", agent_version="v", request_id="r", content="c")
+    s.save_user_playbooks([pb])
+    real_id = pb.user_playbook_id
+    s.delete_user_playbooks_by_ids([real_id, 99999])
+    real_events = [
+        e
+        for e in s.get_lineage_events(
+            entity_id=str(real_id), entity_type="user_playbook"
+        )
+        if e.op == "hard_delete"
+    ]
+    assert len(real_events) == 1
+    assert not any(
+        e.op == "hard_delete"
+        for e in s.get_lineage_events(entity_id="99999", entity_type="user_playbook")
+    )
+
+
+def test_delete_agent_playbooks_by_ids_nonexistent_no_event(tmp_path):
+    """Calling delete_agent_playbooks_by_ids with a non-existent id must not emit hard_delete."""
+    s = _store(tmp_path)
+    s.delete_agent_playbooks_by_ids([99999])
+    assert not any(
+        e.op == "hard_delete"
+        for e in s.get_lineage_events(entity_id="99999", entity_type="agent_playbook")
+    )
+
+
+def test_delete_agent_playbooks_by_ids_partial_only_emits_for_existing(tmp_path):
+    """delete_agent_playbooks_by_ids emits hard_delete only for ids that actually existed."""
+    s = _store(tmp_path)
+    ap = _make_agent_playbook()
+    saved = s.save_agent_playbooks([ap])
+    real_id = saved[0].agent_playbook_id
+    s.delete_agent_playbooks_by_ids([real_id, 99999])
+    real_events = [
+        e
+        for e in s.get_lineage_events(
+            entity_id=str(real_id), entity_type="agent_playbook"
+        )
+        if e.op == "hard_delete"
+    ]
+    assert len(real_events) == 1
+    assert not any(
+        e.op == "hard_delete"
+        for e in s.get_lineage_events(entity_id="99999", entity_type="agent_playbook")
+    )
+
+
 # --------------------------------------------------------------------------
 # Bulk deletes clean up the vec table (when sqlite-vec is loaded)
 # --------------------------------------------------------------------------

@@ -316,6 +316,8 @@ class PlaybookMixin:
                     "SELECT user_playbook_id FROM user_playbooks"
                 ).fetchall()
             ]
+            self._delete_playbook_search_rows("user", ids)
+            self.conn.execute("DELETE FROM user_playbooks")
             for upid in ids:
                 _emit_hard_delete_playbook(
                     self.conn,
@@ -324,8 +326,6 @@ class PlaybookMixin:
                     entity_id=str(upid),
                     request_id=batch_request_id,
                 )
-            self._delete_playbook_search_rows("user", ids)
-            self.conn.execute("DELETE FROM user_playbooks")
             self.conn.commit()
 
     @SQLiteStorageBase.handle_exceptions
@@ -364,6 +364,10 @@ class PlaybookMixin:
             if not ids:
                 return
             ph = ",".join("?" for _ in ids)
+            self._delete_playbook_search_rows("user", ids)
+            self.conn.execute(
+                f"DELETE FROM user_playbooks WHERE user_playbook_id IN ({ph})", ids
+            )
             for upid in ids:
                 _emit_hard_delete_playbook(
                     self.conn,
@@ -372,10 +376,6 @@ class PlaybookMixin:
                     entity_id=str(upid),
                     request_id=batch_request_id,
                 )
-            self._delete_playbook_search_rows("user", ids)
-            self.conn.execute(
-                f"DELETE FROM user_playbooks WHERE user_playbook_id IN ({ph})", ids
-            )
             self.conn.commit()
 
     @SQLiteStorageBase.handle_exceptions
@@ -387,8 +387,20 @@ class PlaybookMixin:
         ph = ",".join("?" for _ in user_playbook_ids)
         batch_request_id = uuid.uuid4().hex
         with self._lock:
+            existing = [
+                r["user_playbook_id"]
+                for r in self.conn.execute(
+                    f"SELECT user_playbook_id FROM user_playbooks WHERE user_playbook_id IN ({ph})",
+                    user_playbook_ids,
+                ).fetchall()
+            ]
+            self._delete_playbook_search_rows("user", user_playbook_ids)
+            cur = self.conn.execute(
+                f"DELETE FROM user_playbooks WHERE user_playbook_id IN ({ph})",
+                user_playbook_ids,
+            )
             if emit_hard_delete:
-                for upid in user_playbook_ids:
+                for upid in existing:
                     _emit_hard_delete_playbook(
                         self.conn,
                         org_id=self.org_id,
@@ -397,11 +409,6 @@ class PlaybookMixin:
                         request_id=batch_request_id,
                         actor="system",
                     )
-            self._delete_playbook_search_rows("user", user_playbook_ids)
-            cur = self.conn.execute(
-                f"DELETE FROM user_playbooks WHERE user_playbook_id IN ({ph})",
-                user_playbook_ids,
-            )
             self.conn.commit()
         return cur.rowcount
 
@@ -893,6 +900,10 @@ class PlaybookMixin:
             if not ids:
                 return
             ph = ",".join("?" for _ in ids)
+            self._delete_playbook_search_rows("agent", ids)
+            self.conn.execute(
+                f"DELETE FROM agent_playbooks WHERE agent_playbook_id IN ({ph})", ids
+            )
             for apid in ids:
                 _emit_hard_delete_playbook(
                     self.conn,
@@ -901,10 +912,6 @@ class PlaybookMixin:
                     entity_id=str(apid),
                     request_id=batch_request_id,
                 )
-            self._delete_playbook_search_rows("agent", ids)
-            self.conn.execute(
-                f"DELETE FROM agent_playbooks WHERE agent_playbook_id IN ({ph})", ids
-            )
             self.conn.commit()
 
     @SQLiteStorageBase.handle_exceptions
@@ -916,8 +923,20 @@ class PlaybookMixin:
         ph = ",".join("?" for _ in agent_playbook_ids)
         batch_request_id = uuid.uuid4().hex
         with self._lock:
+            existing = [
+                r["agent_playbook_id"]
+                for r in self.conn.execute(
+                    f"SELECT agent_playbook_id FROM agent_playbooks WHERE agent_playbook_id IN ({ph})",
+                    agent_playbook_ids,
+                ).fetchall()
+            ]
+            self._delete_playbook_search_rows("agent", agent_playbook_ids)
+            self.conn.execute(
+                f"DELETE FROM agent_playbooks WHERE agent_playbook_id IN ({ph})",
+                agent_playbook_ids,
+            )
             if emit_hard_delete:
-                for apid in agent_playbook_ids:
+                for apid in existing:
                     _emit_hard_delete_playbook(
                         self.conn,
                         org_id=self.org_id,
@@ -926,11 +945,6 @@ class PlaybookMixin:
                         request_id=batch_request_id,
                         actor="system",
                     )
-            self._delete_playbook_search_rows("agent", agent_playbook_ids)
-            self.conn.execute(
-                f"DELETE FROM agent_playbooks WHERE agent_playbook_id IN ({ph})",
-                agent_playbook_ids,
-            )
             self.conn.commit()
 
     @SQLiteStorageBase.handle_exceptions
