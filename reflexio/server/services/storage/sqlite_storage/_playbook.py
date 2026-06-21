@@ -525,12 +525,17 @@ class PlaybookMixin:
             ids = [
                 r["user_playbook_id"]
                 for r in self.conn.execute(
-                    f"SELECT user_playbook_id FROM user_playbooks WHERE {where}", params
+                    f"SELECT user_playbook_id FROM user_playbooks WHERE {where}",
+                    params,  # noqa: S608
                 ).fetchall()
             ]
             if not ids:
                 return 0
-            cur = self.conn.execute(f"DELETE FROM user_playbooks WHERE {where}", params)
+            ph = ",".join("?" for _ in ids)
+            cur = self.conn.execute(
+                f"DELETE FROM user_playbooks WHERE user_playbook_id IN ({ph})",  # noqa: S608
+                ids,
+            )
             self._delete_playbook_search_rows("user", ids, commit=False)
             self.conn.commit()
         return cur.rowcount

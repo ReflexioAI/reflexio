@@ -737,9 +737,13 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         # Wrap dependency + target deletes in a single critical section so
         # concurrent writers see either both or neither.
         with self._lock:
-            self._retention_delete_dependencies(target, keys)
-            self._retention_delete_target_rows(target, keys)
-            self.conn.commit()
+            try:
+                self._retention_delete_dependencies(target, keys)
+                self._retention_delete_target_rows(target, keys)
+                self.conn.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
 
     def _retention_delete_dependencies(
         self, target: RetentionTarget, keys: list[tuple[Any, ...]]
