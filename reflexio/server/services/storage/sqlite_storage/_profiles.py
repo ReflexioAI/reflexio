@@ -286,12 +286,24 @@ class ProfileMixin:
 
     @SQLiteStorageBase.handle_exceptions
     def delete_user_profile(self, request: DeleteUserProfileRequest) -> None:
-        # Capture rowid before DELETE (needed for vec cleanup after commit).
+        # Atomic: fts + vec + row + lineage in ONE lock/commit to prevent rowid reuse
+        # race. profiles uses implicit (reusable) rowid keyed by TEXT PK — a cleanup
+        # running after commit could race with a concurrent INSERT reusing the freed
+        # rowid and delete the NEW profile's vec row. (#196)
         with self._lock:
             rowid_row = self.conn.execute(
                 "SELECT rowid FROM profiles WHERE user_id = ? AND profile_id = ?",
                 (request.user_id, request.profile_id),
             ).fetchone()
+            self.conn.execute(
+                "DELETE FROM profiles_fts WHERE profile_id = ?",
+                (request.profile_id,),
+            )
+            if self._has_sqlite_vec and rowid_row:
+                self.conn.execute(
+                    "DELETE FROM profiles_vec WHERE rowid = ?",
+                    (rowid_row["rowid"],),
+                )
             cur = self.conn.execute(
                 "DELETE FROM profiles WHERE user_id = ? AND profile_id = ?",
                 (request.user_id, request.profile_id),
@@ -304,23 +316,29 @@ class ProfileMixin:
                     request_id=uuid.uuid4().hex,
                 )
             self.conn.commit()
-        # Search cleanup runs after commit — index maintenance, not the audited fact.
-        self._fts_delete_profile(request.profile_id)
-        if rowid_row:
-            self._vec_delete("profiles_vec", rowid_row["rowid"])
 
     @SQLiteStorageBase.handle_exceptions
     def delete_all_profiles_for_user(self, user_id: str) -> None:
+        # Atomic: fts + vec + row + lineage in ONE lock/commit — rowid reuse race
+        # prevention (see delete_user_profile comment, #196).
         batch_request_id = uuid.uuid4().hex
         with self._lock:
-            # Capture rowids before DELETE (vec cleanup needs them after commit).
             rows = self.conn.execute(
                 "SELECT rowid, profile_id FROM profiles WHERE user_id = ?", (user_id,)
             ).fetchall()
             if not rows:
                 return
             pids = [r["profile_id"] for r in rows]
-            rowids = {r["profile_id"]: r["rowid"] for r in rows}
+            rowids = [r["rowid"] for r in rows]
+            ph = ",".join("?" for _ in pids)
+            self.conn.execute(
+                f"DELETE FROM profiles_fts WHERE profile_id IN ({ph})", pids
+            )
+            if self._has_sqlite_vec and rowids:
+                rph = ",".join("?" for _ in rowids)
+                self.conn.execute(
+                    f"DELETE FROM profiles_vec WHERE rowid IN ({rph})", rowids
+                )
             self.conn.execute("DELETE FROM profiles WHERE user_id = ?", (user_id,))
             for pid in pids:
                 _emit_hard_delete_profile(
@@ -330,13 +348,10 @@ class ProfileMixin:
                     request_id=batch_request_id,
                 )
             self.conn.commit()
-        # Search cleanup runs after commit — index maintenance, not the audited fact.
-        for pid in pids:
-            self._fts_delete_profile(pid)
-            self._vec_delete("profiles_vec", rowids[pid])
 
     @SQLiteStorageBase.handle_exceptions
     def delete_all_profiles(self) -> None:
+        # Also wipe profiles_vec (full-wipe variant of the rowid-race fix, #196).
         batch_request_id = uuid.uuid4().hex
         with self._lock:
             pids = [
@@ -351,6 +366,8 @@ class ProfileMixin:
                     request_id=batch_request_id,
                 )
             self.conn.execute("DELETE FROM profiles_fts")
+            if self._has_sqlite_vec:
+                self.conn.execute("DELETE FROM profiles_vec")
             self.conn.execute("DELETE FROM profiles")
             self.conn.commit()
 
@@ -604,9 +621,10 @@ class ProfileMixin:
 
     @SQLiteStorageBase.handle_exceptions
     def delete_all_profiles_by_status(self, status: Status) -> int:
+        # Atomic: fts + vec + row + lineage in ONE lock/commit — rowid reuse race
+        # prevention (see delete_user_profile comment, #196).
         batch_request_id = uuid.uuid4().hex
         with self._lock:
-            # Capture rowids before DELETE (vec cleanup needs them after commit).
             rows = self.conn.execute(
                 "SELECT rowid, profile_id FROM profiles WHERE status = ?",
                 (status.value,),
@@ -614,8 +632,16 @@ class ProfileMixin:
             if not rows:
                 return 0
             pids = [r["profile_id"] for r in rows]
-            rowids = {r["profile_id"]: r["rowid"] for r in rows}
+            rowids = [r["rowid"] for r in rows]
             ph = ",".join("?" for _ in pids)
+            self.conn.execute(
+                f"DELETE FROM profiles_fts WHERE profile_id IN ({ph})", pids
+            )
+            if self._has_sqlite_vec and rowids:
+                rph = ",".join("?" for _ in rowids)
+                self.conn.execute(
+                    f"DELETE FROM profiles_vec WHERE rowid IN ({rph})", rowids
+                )
             cur = self.conn.execute(
                 f"DELETE FROM profiles WHERE profile_id IN ({ph})", pids
             )
@@ -627,10 +653,6 @@ class ProfileMixin:
                     request_id=batch_request_id,
                 )
             self.conn.commit()
-        # Search cleanup runs after commit — index maintenance, not the audited fact.
-        for pid in pids:
-            self._fts_delete_profile(pid)
-            self._vec_delete("profiles_vec", rowids[pid])
         return cur.rowcount
 
     @SQLiteStorageBase.handle_exceptions
@@ -652,10 +674,11 @@ class ProfileMixin:
     ) -> int:
         if not profile_ids:
             return 0
+        # Atomic: fts + vec + row + lineage in ONE lock/commit — rowid reuse race
+        # prevention (see delete_user_profile comment, #196).
         ph = ",".join("?" for _ in profile_ids)
         batch_request_id = uuid.uuid4().hex
         with self._lock:
-            # Capture rowids before DELETE (vec cleanup needs them after commit).
             pre_rows = self.conn.execute(
                 f"SELECT rowid, profile_id FROM profiles WHERE profile_id IN ({ph})",
                 profile_ids,
@@ -663,7 +686,16 @@ class ProfileMixin:
             if not pre_rows:
                 return 0
             existing = [r["profile_id"] for r in pre_rows]
-            rowids = {r["profile_id"]: r["rowid"] for r in pre_rows}
+            rowids = [r["rowid"] for r in pre_rows]
+            eph = ",".join("?" for _ in existing)
+            self.conn.execute(
+                f"DELETE FROM profiles_fts WHERE profile_id IN ({eph})", existing
+            )
+            if self._has_sqlite_vec and rowids:
+                rph = ",".join("?" for _ in rowids)
+                self.conn.execute(
+                    f"DELETE FROM profiles_vec WHERE rowid IN ({rph})", rowids
+                )
             cur = self.conn.execute(
                 f"DELETE FROM profiles WHERE profile_id IN ({ph})", profile_ids
             )
@@ -677,10 +709,6 @@ class ProfileMixin:
                         actor="system",
                     )
             self.conn.commit()
-        # Search cleanup runs after commit — index maintenance, not the audited fact.
-        for pid in existing:
-            self._fts_delete_profile(pid)
-            self._vec_delete("profiles_vec", rowids[pid])
         return cur.rowcount
 
     # ------------------------------------------------------------------
