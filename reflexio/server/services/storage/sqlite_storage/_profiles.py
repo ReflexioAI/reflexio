@@ -286,14 +286,12 @@ class ProfileMixin:
 
     @SQLiteStorageBase.handle_exceptions
     def delete_user_profile(self, request: DeleteUserProfileRequest) -> None:
+        # Capture rowid before DELETE (needed for vec cleanup after commit).
         with self._lock:
             rowid_row = self.conn.execute(
                 "SELECT rowid FROM profiles WHERE user_id = ? AND profile_id = ?",
                 (request.user_id, request.profile_id),
             ).fetchone()
-            self._fts_delete_profile(request.profile_id)
-            if rowid_row:
-                self._vec_delete("profiles_vec", rowid_row["rowid"])
             cur = self.conn.execute(
                 "DELETE FROM profiles WHERE user_id = ? AND profile_id = ?",
                 (request.user_id, request.profile_id),
@@ -306,20 +304,23 @@ class ProfileMixin:
                     request_id=uuid.uuid4().hex,
                 )
             self.conn.commit()
+        # Search cleanup runs after commit — index maintenance, not the audited fact.
+        self._fts_delete_profile(request.profile_id)
+        if rowid_row:
+            self._vec_delete("profiles_vec", rowid_row["rowid"])
 
     @SQLiteStorageBase.handle_exceptions
     def delete_all_profiles_for_user(self, user_id: str) -> None:
         batch_request_id = uuid.uuid4().hex
         with self._lock:
-            pids = [
-                r["profile_id"]
-                for r in self.conn.execute(
-                    "SELECT profile_id FROM profiles WHERE user_id = ?", (user_id,)
-                ).fetchall()
-            ]
-            if not pids:
+            # Capture rowids before DELETE (vec cleanup needs them after commit).
+            rows = self.conn.execute(
+                "SELECT rowid, profile_id FROM profiles WHERE user_id = ?", (user_id,)
+            ).fetchall()
+            if not rows:
                 return
-            self._delete_profile_search_rows(pids)
+            pids = [r["profile_id"] for r in rows]
+            rowids = {r["profile_id"]: r["rowid"] for r in rows}
             self.conn.execute("DELETE FROM profiles WHERE user_id = ?", (user_id,))
             for pid in pids:
                 _emit_hard_delete_profile(
@@ -329,6 +330,10 @@ class ProfileMixin:
                     request_id=batch_request_id,
                 )
             self.conn.commit()
+        # Search cleanup runs after commit — index maintenance, not the audited fact.
+        for pid in pids:
+            self._fts_delete_profile(pid)
+            self._vec_delete("profiles_vec", rowids[pid])
 
     @SQLiteStorageBase.handle_exceptions
     def delete_all_profiles(self) -> None:
@@ -545,6 +550,8 @@ class ProfileMixin:
         """
         if not profile_ids:
             return 0
+        if not request_id:
+            raise ValueError("request_id must be non-empty for supersede")
         now_ts = _epoch_now()
         # Eligibility: CURRENT (NULL) or PENDING — the two live statuses dedup can target.
         eligible = (None, Status.PENDING.value)
@@ -599,15 +606,15 @@ class ProfileMixin:
     def delete_all_profiles_by_status(self, status: Status) -> int:
         batch_request_id = uuid.uuid4().hex
         with self._lock:
-            pids = [
-                r["profile_id"]
-                for r in self.conn.execute(
-                    "SELECT profile_id FROM profiles WHERE status = ?", (status.value,)
-                ).fetchall()
-            ]
-            if not pids:
+            # Capture rowids before DELETE (vec cleanup needs them after commit).
+            rows = self.conn.execute(
+                "SELECT rowid, profile_id FROM profiles WHERE status = ?",
+                (status.value,),
+            ).fetchall()
+            if not rows:
                 return 0
-            self._delete_profile_search_rows(pids)
+            pids = [r["profile_id"] for r in rows]
+            rowids = {r["profile_id"]: r["rowid"] for r in rows}
             ph = ",".join("?" for _ in pids)
             cur = self.conn.execute(
                 f"DELETE FROM profiles WHERE profile_id IN ({ph})", pids
@@ -620,6 +627,10 @@ class ProfileMixin:
                     request_id=batch_request_id,
                 )
             self.conn.commit()
+        # Search cleanup runs after commit — index maintenance, not the audited fact.
+        for pid in pids:
+            self._fts_delete_profile(pid)
+            self._vec_delete("profiles_vec", rowids[pid])
         return cur.rowcount
 
     @SQLiteStorageBase.handle_exceptions
@@ -644,16 +655,15 @@ class ProfileMixin:
         ph = ",".join("?" for _ in profile_ids)
         batch_request_id = uuid.uuid4().hex
         with self._lock:
-            existing = [
-                r["profile_id"]
-                for r in self.conn.execute(
-                    f"SELECT profile_id FROM profiles WHERE profile_id IN ({ph})",
-                    profile_ids,
-                ).fetchall()
-            ]
-            if not existing:
+            # Capture rowids before DELETE (vec cleanup needs them after commit).
+            pre_rows = self.conn.execute(
+                f"SELECT rowid, profile_id FROM profiles WHERE profile_id IN ({ph})",
+                profile_ids,
+            ).fetchall()
+            if not pre_rows:
                 return 0
-            self._delete_profile_search_rows(existing)
+            existing = [r["profile_id"] for r in pre_rows]
+            rowids = {r["profile_id"]: r["rowid"] for r in pre_rows}
             cur = self.conn.execute(
                 f"DELETE FROM profiles WHERE profile_id IN ({ph})", profile_ids
             )
@@ -667,6 +677,10 @@ class ProfileMixin:
                         actor="system",
                     )
             self.conn.commit()
+        # Search cleanup runs after commit — index maintenance, not the audited fact.
+        for pid in existing:
+            self._fts_delete_profile(pid)
+            self._vec_delete("profiles_vec", rowids[pid])
         return cur.rowcount
 
     # ------------------------------------------------------------------
