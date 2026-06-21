@@ -754,10 +754,14 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             self._delete_profile_search_rows([str(v) for v in ids])
         elif target_name == "user_playbooks":
             self._delete_source_windows_for_user_playbook_ids([int(v) for v in ids])
-            self._delete_playbook_search_rows("user", [int(v) for v in ids])
+            self._delete_playbook_search_rows(
+                "user", [int(v) for v in ids], commit=False
+            )
         elif target_name == "agent_playbooks":
             self._delete_source_windows_for_agent_playbook_ids([int(v) for v in ids])
-            self._delete_playbook_search_rows("agent", [int(v) for v in ids])
+            self._delete_playbook_search_rows(
+                "agent", [int(v) for v in ids], commit=False
+            )
         elif target_name == "playbook_optimization_jobs":
             self._delete_optimizer_rows_for_job_ids([int(v) for v in ids])
         elif target_name == "playbook_optimization_candidates":
@@ -862,12 +866,28 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             if rowids:
                 self._delete_in_chunks("profiles_vec", "rowid", rowids)
 
-    def _delete_playbook_search_rows(self, kind: str, ids: list[int]) -> None:
+    def _delete_playbook_search_rows(
+        self, kind: str, ids: list[int], *, commit: bool = True
+    ) -> None:
+        """Remove fts + vec index rows for the given playbook IDs.
+
+        Args:
+            kind: ``"user"`` or ``"agent"``.
+            ids: Playbook row IDs to remove from the search indexes.
+            commit: When ``True`` (default) commits after the deletes so the
+                after-commit callers in ``_playbook.py`` get a clean, durable
+                cleanup.  Pass ``commit=False`` from inside the retention atomic
+                block so the deletes participate in the single block-level commit
+                (``_retention_perform_delete``).
+        """
         if not ids:
             return
-        self._delete_in_chunks(f"{kind}_playbooks_fts", "rowid", ids)
-        for item_id in ids:
-            self._vec_delete(f"{kind}_playbooks_vec", item_id)
+        with self._lock:
+            self._delete_in_chunks(f"{kind}_playbooks_fts", "rowid", ids)
+            if self._has_sqlite_vec:
+                self._delete_in_chunks(f"{kind}_playbooks_vec", "rowid", ids)
+            if commit:
+                self.conn.commit()
 
     def _delete_source_windows_for_agent_playbook_ids(
         self, agent_playbook_ids: list[int]

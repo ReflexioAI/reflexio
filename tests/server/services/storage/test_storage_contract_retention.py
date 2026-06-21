@@ -5,10 +5,12 @@ from datetime import UTC, datetime
 import pytest
 
 from reflexio.models.api_schema.service_schemas import (
+    AgentPlaybook,
     Interaction,
     ProfileTimeToLive,
     Request,
     UserActionType,
+    UserPlaybook,
     UserProfile,
 )
 from reflexio.server.services.storage.storage_base import BaseStorage
@@ -189,3 +191,132 @@ def test_retention_request_cascade_cleans_interaction_fts(
         "SELECT rowid FROM interactions_fts WHERE rowid = 3"
     ).fetchall()
     assert len(fts_kept) == 1, "fts row for surviving interaction must remain"
+
+
+# ---------------------------------------------------------------------------
+# Playbook retention FTS + vec cleanup (B3h)
+# ---------------------------------------------------------------------------
+
+
+def _make_user_playbook(user_playbook_id: int) -> UserPlaybook:
+    return UserPlaybook(
+        user_playbook_id=user_playbook_id,
+        user_id="u1",
+        playbook_name="pb",
+        agent_version="v1",
+        request_id=f"req-{user_playbook_id}",
+        content=f"content-{user_playbook_id}",
+        created_at=user_playbook_id,
+        source="test",
+        source_interaction_ids=[],
+    )
+
+
+def _make_agent_playbook(agent_playbook_id: int) -> AgentPlaybook:
+    return AgentPlaybook(
+        agent_playbook_id=agent_playbook_id,
+        playbook_name="pb",
+        agent_version="v1",
+        content=f"content-{agent_playbook_id}",
+        created_at=agent_playbook_id,
+    )
+
+
+def test_retention_user_playbook_delete_cleans_fts(storage: BaseStorage) -> None:
+    """After retention-deleting user_playbooks, their fts rows must be gone."""
+    storage.save_user_playbooks(
+        [_make_user_playbook(1), _make_user_playbook(2), _make_user_playbook(3)]
+    )
+    conn = storage.conn  # type: ignore[attr-defined]
+
+    saved = conn.execute(
+        "SELECT user_playbook_id FROM user_playbooks ORDER BY user_playbook_id"
+    ).fetchall()
+    assert len(saved) == 3
+    saved_ids = [r["user_playbook_id"] for r in saved]
+
+    # Assign distinct created_at values so deletion order is deterministic.
+    for i, upid in enumerate(saved_ids, start=1):
+        conn.execute(
+            "UPDATE user_playbooks SET created_at = ? WHERE user_playbook_id = ?",
+            (i, upid),
+        )
+    conn.commit()
+
+    ph3 = ",".join("?" for _ in saved_ids)
+    fts_before = conn.execute(
+        f"SELECT rowid FROM user_playbooks_fts WHERE rowid IN ({ph3})",  # noqa: S608
+        saved_ids,
+    ).fetchall()
+    assert len(fts_before) == 3, "fts rows must exist before retention delete"
+
+    deleted = storage.delete_oldest_retention_target_rows("user_playbooks", 2)
+
+    assert deleted == 2
+
+    # The two oldest entries' fts rows must be gone.
+    oldest_ids = saved_ids[:2]
+    ph2 = ",".join("?" for _ in oldest_ids)
+    fts_after = conn.execute(
+        f"SELECT rowid FROM user_playbooks_fts WHERE rowid IN ({ph2})",  # noqa: S608
+        oldest_ids,
+    ).fetchall()
+    assert fts_after == [], "fts rows for retention-deleted user_playbooks must be gone"
+
+    # The surviving entry's fts row must remain.
+    kept_id = saved_ids[2]
+    fts_kept = conn.execute(
+        "SELECT rowid FROM user_playbooks_fts WHERE rowid = ?", (kept_id,)
+    ).fetchall()
+    assert len(fts_kept) == 1, "fts row for surviving user_playbook must remain"
+
+
+def test_retention_agent_playbook_delete_cleans_fts(storage: BaseStorage) -> None:
+    """After retention-deleting agent_playbooks, their fts rows must be gone."""
+    storage.save_agent_playbooks(
+        [_make_agent_playbook(1), _make_agent_playbook(2), _make_agent_playbook(3)]
+    )
+    conn = storage.conn  # type: ignore[attr-defined]
+
+    saved = conn.execute(
+        "SELECT agent_playbook_id FROM agent_playbooks ORDER BY agent_playbook_id"
+    ).fetchall()
+    assert len(saved) == 3
+    saved_ids = [r["agent_playbook_id"] for r in saved]
+
+    # Assign distinct created_at values so deletion order is deterministic.
+    for i, apid in enumerate(saved_ids, start=1):
+        conn.execute(
+            "UPDATE agent_playbooks SET created_at = ? WHERE agent_playbook_id = ?",
+            (i, apid),
+        )
+    conn.commit()
+
+    ph3 = ",".join("?" for _ in saved_ids)
+    fts_before = conn.execute(
+        f"SELECT rowid FROM agent_playbooks_fts WHERE rowid IN ({ph3})",  # noqa: S608
+        saved_ids,
+    ).fetchall()
+    assert len(fts_before) == 3, "fts rows must exist before retention delete"
+
+    deleted = storage.delete_oldest_retention_target_rows("agent_playbooks", 2)
+
+    assert deleted == 2
+
+    # The two oldest entries' fts rows must be gone.
+    oldest_ids = saved_ids[:2]
+    ph2 = ",".join("?" for _ in oldest_ids)
+    fts_after = conn.execute(
+        f"SELECT rowid FROM agent_playbooks_fts WHERE rowid IN ({ph2})",  # noqa: S608
+        oldest_ids,
+    ).fetchall()
+    assert fts_after == [], (
+        "fts rows for retention-deleted agent_playbooks must be gone"
+    )
+
+    # The surviving entry's fts row must remain.
+    kept_id = saved_ids[2]
+    fts_kept = conn.execute(
+        "SELECT rowid FROM agent_playbooks_fts WHERE rowid = ?", (kept_id,)
+    ).fetchall()
+    assert len(fts_kept) == 1, "fts row for surviving agent_playbook must remain"
