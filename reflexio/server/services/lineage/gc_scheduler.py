@@ -20,6 +20,7 @@ from reflexio.server.tracing import capture_anomaly
 logger = logging.getLogger(__name__)
 
 _DEFAULT_POLL_INTERVAL_SECONDS = 86400
+_MIN_POLL_SECONDS = 1
 
 # Window-misconfiguration tripwire: if a single tick deletes more than this
 # many tombstones for one org, something is likely wrong with the grace window.
@@ -138,7 +139,7 @@ class LineageGCScheduler:
                 self._gc_tick(org_ids)
             except Exception:
                 logger.exception("event=lineage_gc_scheduler_tick_failed")
-            self._stop_event.wait(poll_interval)
+            self._stop_event.wait(max(poll_interval, _MIN_POLL_SECONDS))
 
 
 def maybe_start_lineage_gc(

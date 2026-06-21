@@ -533,3 +533,116 @@ def test_gc_boundary_profile_at_cutoff_not_deleted(tmp_path):
         ).fetchone()
         is None
     ), "Profile one second before cutoff must be deleted"
+
+
+# ---------------------------------------------------------------------------
+# (g) limit guard: non-positive limit returns 0 without touching the DB
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("bad_limit", [0, -1, -100])
+def test_gc_non_positive_limit_returns_zero(tmp_path, bad_limit: int):
+    s = _store(tmp_path)
+    pb = _make_user_playbook()
+    s.save_user_playbooks([pb])
+    pid = pb.user_playbook_id
+    _set_playbook_status(
+        s, "user_playbooks", "user_playbook_id", pid, Status.MERGED.value
+    )
+    _set_playbook_created_at(
+        s,
+        "user_playbooks",
+        "user_playbook_id",
+        pid,
+        _epoch_to_iso(int(datetime(2019, 1, 1, tzinfo=UTC).timestamp())),
+    )
+
+    cutoff = int(datetime(2021, 1, 1, tzinfo=UTC).timestamp())
+    result = s.gc_expired_tombstones(
+        entity_type="user_playbook", older_than_epoch=cutoff, limit=bad_limit
+    )
+
+    assert result == 0
+    # Row must NOT have been deleted
+    assert (
+        s.conn.execute(
+            "SELECT 1 FROM user_playbooks WHERE user_playbook_id = ?", (pid,)
+        ).fetchone()
+        is not None
+    ), "Row must survive when limit <= 0"
+
+
+# ---------------------------------------------------------------------------
+# (h) Atomic rollback: mid-operation failure leaves no partial state
+# ---------------------------------------------------------------------------
+
+
+def test_gc_rollback_on_mid_operation_failure(tmp_path):
+    """A failure after emitting the hard_delete event but before DELETE must
+    roll back — no orphan event, no partial deletion.
+
+    We patch the module-level ``_append_event_stmt`` so it writes the first
+    event then raises, simulating a failure partway through the write block.
+    The ``except`` branch in ``gc_expired_tombstones`` must rollback so neither
+    the partial event nor the row deletion persists.
+    """
+    from unittest.mock import patch
+
+    import reflexio.server.services.storage.sqlite_storage._lineage as _lineage_mod
+
+    s = _store(tmp_path)
+
+    # Seed two tombstone rows so the loop calls _append_event_stmt twice.
+    pb1 = _make_user_playbook(content="one")
+    pb2 = _make_user_playbook(content="two")
+    s.save_user_playbooks([pb1, pb2])
+    for pb in (pb1, pb2):
+        _set_playbook_status(
+            s,
+            "user_playbooks",
+            "user_playbook_id",
+            pb.user_playbook_id,
+            Status.MERGED.value,
+        )
+        _set_playbook_created_at(
+            s,
+            "user_playbooks",
+            "user_playbook_id",
+            pb.user_playbook_id,
+            _epoch_to_iso(int(datetime(2019, 1, 1, tzinfo=UTC).timestamp())),
+        )
+
+    real_append = _lineage_mod._append_event_stmt
+    call_count = 0
+
+    def failing_append(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count >= 2:
+            raise RuntimeError("simulated mid-loop failure")
+        return real_append(*args, **kwargs)
+
+    cutoff = int(datetime(2021, 1, 1, tzinfo=UTC).timestamp())
+    with (
+        patch.object(_lineage_mod, "_append_event_stmt", side_effect=failing_append),
+        pytest.raises(RuntimeError, match="simulated mid-loop failure"),
+    ):
+        s.gc_expired_tombstones(entity_type="user_playbook", older_than_epoch=cutoff)
+
+    # Both rows must still exist — rollback prevented any partial deletion
+    for pb in (pb1, pb2):
+        assert (
+            s.conn.execute(
+                "SELECT 1 FROM user_playbooks WHERE user_playbook_id = ?",
+                (pb.user_playbook_id,),
+            ).fetchone()
+            is not None
+        ), f"Row {pb.user_playbook_id} must survive after rolled-back GC failure"
+
+    # No hard_delete events should have persisted (rolled back with the transaction)
+    for pb in (pb1, pb2):
+        events = _hard_delete_events(s, str(pb.user_playbook_id))
+        assert len(events) == 0, (
+            f"Expected 0 hard_delete events after rollback for {pb.user_playbook_id}, "
+            f"got {len(events)}"
+        )

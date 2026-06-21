@@ -1,5 +1,8 @@
 """Tests for ``LineageGCConfig`` (tombstone garbage-collection gate)."""
 
+import pytest
+from pydantic import ValidationError
+
 from reflexio.models.config_schema import (
     Config,
     LineageGCConfig,
@@ -39,3 +42,26 @@ def test_lineage_gc_null_falls_back_to_default():
     payload["lineage_gc"] = None
     cfg = Config.model_validate(payload)
     assert cfg.lineage_gc == LineageGCConfig()
+
+
+# ---------------------------------------------------------------------------
+# Bounds validation: negative/zero values must be rejected
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("days", [0, -1, -90])
+def test_lineage_gc_rejects_non_positive_grace_window(days: int):
+    with pytest.raises(ValidationError):
+        LineageGCConfig(tombstone_grace_window_days=days)
+
+
+@pytest.mark.parametrize("interval", [0, -1, -86400])
+def test_lineage_gc_rejects_non_positive_poll_interval(interval: int):
+    with pytest.raises(ValidationError):
+        LineageGCConfig(poll_interval_seconds=interval)
+
+
+def test_lineage_gc_accepts_minimum_valid_values():
+    cfg = LineageGCConfig(tombstone_grace_window_days=1, poll_interval_seconds=1)
+    assert cfg.tombstone_grace_window_days == 1
+    assert cfg.poll_interval_seconds == 1

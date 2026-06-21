@@ -681,8 +681,8 @@ class LineageGCConfig(BaseModel):
     """
 
     enabled: bool = False
-    tombstone_grace_window_days: int = 90
-    poll_interval_seconds: int = 86400
+    tombstone_grace_window_days: int = Field(default=90, gt=0)
+    poll_interval_seconds: int = Field(default=86400, gt=0)
 
 
 @dataclass(frozen=True)

@@ -363,6 +363,8 @@ class SQLiteLineageMixin:
         Raises:
             ValueError: If ``entity_type`` is not a recognised entity type.
         """
+        if limit <= 0:
+            return 0
         meta = _GC_ENTITY_META.get(entity_type)
         if meta is None:
             raise ValueError(f"unknown entity_type: {entity_type!r}")
@@ -413,59 +415,63 @@ class SQLiteLineageMixin:
             batch_request_id = uuid.uuid4().hex
             ph = ",".join("?" * len(ids_to_delete))
 
-            # Emit hard_delete events BEFORE the DELETE, in the same transaction.
-            for eid in ids_to_delete:
-                _append_event_stmt(
-                    self.conn,
-                    org_id=self.org_id,
-                    entity_type=entity_type,
-                    entity_id=eid,
-                    op="hard_delete",
-                    prov="wasInvalidatedBy",
-                    source_ids=[],
-                    actor="system",
-                    request_id=batch_request_id,
-                    reason="ttl-gc",
-                )
+            try:
+                # Emit hard_delete events BEFORE the DELETE, in the same transaction.
+                for eid in ids_to_delete:
+                    _append_event_stmt(
+                        self.conn,
+                        org_id=self.org_id,
+                        entity_type=entity_type,
+                        entity_id=eid,
+                        op="hard_delete",
+                        prov="wasInvalidatedBy",
+                        source_ids=[],
+                        actor="system",
+                        request_id=batch_request_id,
+                        reason="ttl-gc",
+                    )
 
-            # Inline FTS/vec cleanup — raw DELETE to preserve atomicity.
-            # Do NOT call self._fts_delete/_vec_delete: they self-commit.
-            if entity_type in ("user_playbook", "agent_playbook"):
-                kind = "user" if entity_type == "user_playbook" else "agent"
-                int_ids = [int(eid) for eid in ids_to_delete]
-                int_ph = ",".join("?" * len(int_ids))
-                self.conn.execute(
-                    f"DELETE FROM {kind}_playbooks_fts WHERE rowid IN ({int_ph})",
-                    int_ids,
-                )
-                if self._has_sqlite_vec:  # type: ignore[attr-defined]
+                # Inline FTS/vec cleanup — raw DELETE to preserve atomicity.
+                # Do NOT call self._fts_delete/_vec_delete: they self-commit.
+                if entity_type in ("user_playbook", "agent_playbook"):
+                    kind = "user" if entity_type == "user_playbook" else "agent"
+                    int_ids = [int(eid) for eid in ids_to_delete]
+                    int_ph = ",".join("?" * len(int_ids))
                     self.conn.execute(
-                        f"DELETE FROM {kind}_playbooks_vec WHERE rowid IN ({int_ph})",
+                        f"DELETE FROM {kind}_playbooks_fts WHERE rowid IN ({int_ph})",
                         int_ids,
                     )
-            else:
-                # profiles: FTS keyed on TEXT profile_id; vec keyed on implicit rowid.
-                self.conn.execute(
-                    f"DELETE FROM profiles_fts WHERE profile_id IN ({ph})",
+                    if self._has_sqlite_vec:  # type: ignore[attr-defined]
+                        self.conn.execute(
+                            f"DELETE FROM {kind}_playbooks_vec WHERE rowid IN ({int_ph})",
+                            int_ids,
+                        )
+                else:
+                    # profiles: FTS keyed on TEXT profile_id; vec keyed on implicit rowid.
+                    self.conn.execute(
+                        f"DELETE FROM profiles_fts WHERE profile_id IN ({ph})",
+                        ids_to_delete,
+                    )
+                    if self._has_sqlite_vec:  # type: ignore[attr-defined]
+                        rowid_rows = self.conn.execute(
+                            f"SELECT rowid FROM profiles WHERE profile_id IN ({ph})",  # noqa: S608
+                            ids_to_delete,
+                        ).fetchall()
+                        if rowid_rows:
+                            rowids = [r[0] for r in rowid_rows]
+                            rowid_ph = ",".join("?" * len(rowids))
+                            self.conn.execute(
+                                f"DELETE FROM profiles_vec WHERE rowid IN ({rowid_ph})",
+                                rowids,
+                            )
+
+                cur = self.conn.execute(
+                    f"DELETE FROM {table} WHERE {pk} IN ({ph})",  # noqa: S608
                     ids_to_delete,
                 )
-                if self._has_sqlite_vec:  # type: ignore[attr-defined]
-                    rowid_rows = self.conn.execute(
-                        f"SELECT rowid FROM profiles WHERE profile_id IN ({ph})",  # noqa: S608
-                        ids_to_delete,
-                    ).fetchall()
-                    if rowid_rows:
-                        rowids = [r[0] for r in rowid_rows]
-                        rowid_ph = ",".join("?" * len(rowids))
-                        self.conn.execute(
-                            f"DELETE FROM profiles_vec WHERE rowid IN ({rowid_ph})",
-                            rowids,
-                        )
-
-            cur = self.conn.execute(
-                f"DELETE FROM {table} WHERE {pk} IN ({ph})",  # noqa: S608
-                ids_to_delete,
-            )
-            self.conn.commit()
+                self.conn.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
 
         return cur.rowcount

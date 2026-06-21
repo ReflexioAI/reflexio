@@ -14,6 +14,7 @@ from reflexio.server.services.lineage import gc_scheduler
 from reflexio.server.services.lineage.gc_scheduler import (
     _ENTITY_TYPES,
     _HIGH_VOLUME_THRESHOLD,
+    _MIN_POLL_SECONDS,
     LineageGCScheduler,
     maybe_start_lineage_gc,
 )
@@ -272,3 +273,53 @@ def test_gc_tick_stops_mid_tick_when_stop_event_set():
 
     # With the stop event already set, the very first iteration should break.
     assert calls == [], f"Expected no orgs processed after stop, got {calls}"
+
+
+# ---------------------------------------------------------------------------
+# Poll interval clamp — non-positive values are floored to _MIN_POLL_SECONDS
+# ---------------------------------------------------------------------------
+
+
+def test_run_loop_clamps_non_positive_poll_interval():
+    """_run_loop must pass at least _MIN_POLL_SECONDS to _stop_event.wait.
+
+    Even though config validation now rejects non-positive values, the scheduler
+    defends itself at runtime: if a zero or negative interval somehow reaches
+    _run_loop, it is clamped to _MIN_POLL_SECONDS to prevent a hot-loop.
+    """
+    wait_calls: list[float] = []
+
+    # Patch _stop_event.wait to capture the timeout and then immediately stop
+    # the loop on the first call.
+    sched = _scheduler()
+
+    original_wait = sched._stop_event.wait
+
+    def capturing_wait(timeout: float) -> bool:
+        wait_calls.append(timeout)
+        sched._stop_event.set()  # stop after one iteration
+        return original_wait(0)  # return immediately
+
+    sched._stop_event.wait = capturing_wait  # type: ignore[method-assign]
+
+    # Directly monkey-patch _run_loop's poll_interval by making the config
+    # return 0 for poll_interval_seconds.
+    zero_cfg = SimpleNamespace(
+        lineage_gc=SimpleNamespace(
+            poll_interval_seconds=0,
+            tombstone_grace_window_days=90,
+        )
+    )
+    zero_ctx = SimpleNamespace(
+        org_id="org_bootstrap",
+        storage=MagicMock(),
+        configurator=SimpleNamespace(get_config=MagicMock(return_value=zero_cfg)),
+    )
+    sched.request_context_factory = lambda _: zero_ctx
+
+    sched._run_loop()
+
+    assert wait_calls, "wait was never called"
+    assert all(t >= _MIN_POLL_SECONDS for t in wait_calls), (
+        f"Non-positive poll interval was not clamped: got {wait_calls}"
+    )
