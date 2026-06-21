@@ -187,15 +187,31 @@ def print_startup_banner(
     ports: dict[str, int],
     *,
     supabase_port: int | None = 54321,
+    supabase_status: str = "ready",
+    failures: list[str] | None = None,
     log_file: str = DEV_LOG_FILE,
     config_paths: dict[str, str] | None = None,
 ) -> None:
     """Print a consolidated startup summary banner with service URLs.
 
+    Services that were *requested* but failed to reach a ready state are
+    rendered with a red "not ready" status (instead of being silently
+    omitted), so operators can tell at a glance that startup did not
+    fully succeed.
+
     Args:
-        ports: Mapping of service name to port number.
-        supabase_port: Supabase port, or None if not running.
-        log_file: Path to the log file.
+        ports: Mapping of service name to port number for services that
+            were started (backend/frontend/docs).
+        supabase_port: Supabase port to display, or None to omit the
+            Supabase line entirely (e.g. when --no-supabase was passed).
+        supabase_status: ``"ready"`` (green) or anything else (rendered
+            as red "not ready"). Only consulted when ``supabase_port``
+            is not None.
+        failures: Optional list of human-readable failure summary
+            lines. Rendered as a red "Failures" section above the logs
+            so the cause is visible without scrolling back through the
+            scrollback.
+        log_file: Path to the dev-server log file.
         config_paths: Optional mapping of config-label → path string (e.g.
             ``{"env": "~/.reflexio/.env", "config": "~/.reflexio/configs/config_default.json"}``).
             Renders as a "Config" section above the "Logs" line so operators
@@ -219,7 +235,11 @@ def print_startup_banner(
     if supabase_port is not None:
         url = f"http://localhost:{supabase_port}"
         label = colorize("  Supabase   ", "36")
-        status = colorize("ready", "32")
+        status = (
+            colorize("ready", "32")
+            if supabase_status == "ready"
+            else colorize("not ready", "31", bold=True)
+        )
         lines.append(f"{label}{url:<26}{status}")
 
     home = str(Path.home())
@@ -233,6 +253,11 @@ def print_startup_banner(
         lines.append(f"{'-' * width}")
         for label, path in config_paths.items():
             lines.append(f"  {label:<11}{_collapse_home(str(path))}")
+
+    if failures:
+        lines.append(f"{'-' * width}")
+        lines.append(colorize("  Failures", "31", bold=True))
+        lines.extend(colorize(f"  - {msg}", "31") for msg in failures)
 
     lines.append(f"{'-' * width}")
     # Logs section — surface both the general dev log and the LLM I/O log.
