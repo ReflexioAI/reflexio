@@ -597,7 +597,9 @@ def reconstruct_profile_change_log(
     if limit == 0:
         return ProfileChangeLogResponse(success=True, profile_change_logs=[])
 
-    all_events = storage.get_lineage_events(entity_type="profile")
+    all_events = storage.get_lineage_events(
+        entity_type="profile", org_id=storage.org_id
+    )
 
     # Keep only revise / merge ops — the ones that represent an add/remove.
     supersede_events = [e for e in all_events if e.op in _SUPERSEDE_OPS]

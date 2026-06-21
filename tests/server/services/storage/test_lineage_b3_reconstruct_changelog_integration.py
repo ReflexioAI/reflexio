@@ -337,6 +337,45 @@ def test_most_recent_first_ordering(tmp_path):
 
 
 # --------------------------------------------------------------------------
+# Cross-org isolation: org A must not see org B's events
+# --------------------------------------------------------------------------
+
+
+def test_cross_org_isolation(tmp_path):
+    """reconstruct_profile_change_log for org A must not return org B's events.
+
+    Two SQLiteStorage instances share the SAME SQLite file but carry different
+    org_ids.  After seeding a supersede under each org, the reconstruction for
+    org A must return exactly one row (its own), with no bleed from org B.
+    """
+    db_path = str(tmp_path / "shared.db")
+    s_a = SQLiteStorage(org_id="org-a", db_path=db_path)
+    s_a.migrate()
+    s_b = SQLiteStorage(org_id="org-b", db_path=db_path)
+    # s_b shares the already-migrated schema; no second migrate() needed.
+
+    # Seed one supersede under org A, one under org B.
+    _seed_supersede(
+        s_a, user_id="u1", old_id="pa-old", new_id="pa-new", request_id="req-a"
+    )
+    _seed_supersede(
+        s_b, user_id="u2", old_id="pb-old", new_id="pb-new", request_id="req-b"
+    )
+
+    result_a = reconstruct_profile_change_log(s_a)
+    assert result_a.success
+    # Org A sees only its own row.
+    assert len(result_a.profile_change_logs) == 1
+    assert result_a.profile_change_logs[0].request_id == "req-a"
+
+    result_b = reconstruct_profile_change_log(s_b)
+    assert result_b.success
+    # Org B sees only its own row.
+    assert len(result_b.profile_change_logs) == 1
+    assert result_b.profile_change_logs[0].request_id == "req-b"
+
+
+# --------------------------------------------------------------------------
 # Empty storage
 # --------------------------------------------------------------------------
 

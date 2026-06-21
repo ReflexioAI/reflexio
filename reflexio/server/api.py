@@ -1045,6 +1045,7 @@ def get_profile_change_log(
     org_id: str = Depends(default_get_org_id),
 ) -> ProfileChangeLogViewResponse:
     storage = get_reflexio(org_id=org_id).request_context.storage
+    # storage is None when the request context is misconfigured or unauthenticated.
     if storage is None:
         return ProfileChangeLogViewResponse(success=True, profile_change_logs=[])
     response = reconstruct_profile_change_log(storage)
