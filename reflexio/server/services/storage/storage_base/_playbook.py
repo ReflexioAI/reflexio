@@ -457,6 +457,47 @@ class PlaybookMixin:
         raise NotImplementedError
 
     @abstractmethod
+    def supersede_agent_playbooks_by_ids(
+        self, agent_playbook_ids: list[int], request_id: str
+    ) -> int:
+        """Soft-delete agent playbooks by setting status to SUPERSEDED, emitting set-based lineage.
+
+        For each eligible id (not APPROVED, not already tombstoned), updates status to
+        SUPERSEDED and emits one status_change event under the shared request_id.
+        Atomic: mutation and event in one commit, guarded on rowcount.
+        FTS/vec rows are NOT removed.
+
+        Args:
+            agent_playbook_ids (list[int]): Agent playbook ids to supersede.
+            request_id (str): Shared request id for all emitted lineage events.
+
+        Returns:
+            int: Number of agent playbooks actually updated.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def supersede_agent_playbooks_by_playbook_name(
+        self, playbook_name: str, agent_version: str | None, request_id: str
+    ) -> int:
+        """Soft-delete archived agent playbooks by name/version via SUPERSEDED status.
+
+        Selects rows with playbook_name matching and status='archived', then
+        soft-supersedes each one with a status_change lineage event under request_id.
+        Atomic: one commit at the end.
+        FTS/vec rows are NOT removed.
+
+        Args:
+            playbook_name (str): Playbook name to supersede.
+            agent_version (str | None): Agent version filter. None matches all versions.
+            request_id (str): Shared request id for all emitted lineage events.
+
+        Returns:
+            int: Number of agent playbooks actually updated.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     def restore_archived_agent_playbooks_by_playbook_name(
         self, playbook_name: str, agent_version: str | None = None
     ) -> None:

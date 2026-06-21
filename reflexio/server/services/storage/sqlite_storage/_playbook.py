@@ -1208,6 +1208,137 @@ class PlaybookMixin:
             self.conn.commit()
 
     @SQLiteStorageBase.handle_exceptions
+    def supersede_agent_playbooks_by_ids(
+        self, agent_playbook_ids: list[int], request_id: str
+    ) -> int:
+        """Soft-delete agent playbooks by setting status to SUPERSEDED, emitting set-based lineage.
+
+        For each eligible id (not APPROVED, not already tombstoned), updates status to
+        SUPERSEDED and emits one ``status_change`` event under the shared ``request_id``.
+        Atomic: one ``conn.commit()`` at the end, guarded on rowcount per id.
+        FTS/vec rows are NOT removed — reads exclude tombstones by status filter.
+
+        Args:
+            agent_playbook_ids (list[int]): Agent playbook ids to supersede.
+            request_id (str): Shared request id for all emitted lineage events.
+
+        Returns:
+            int: Number of agent playbooks actually updated.
+        """
+        if not agent_playbook_ids:
+            return 0
+        updated = 0
+        with self._lock:
+            for apid in agent_playbook_ids:
+                row = self.conn.execute(
+                    "SELECT status FROM agent_playbooks WHERE agent_playbook_id = ?",
+                    (apid,),
+                ).fetchone()
+                if row is None:
+                    continue
+                old_status = (
+                    row["status"]
+                    if isinstance(row, dict) or hasattr(row, "keys")
+                    else row[0]
+                )
+                cur = self.conn.execute(
+                    "UPDATE agent_playbooks SET status = ?"
+                    " WHERE agent_playbook_id = ? AND playbook_status != ?"
+                    " AND (status IS NULL OR status NOT IN (?, ?))",
+                    (
+                        Status.SUPERSEDED.value,
+                        apid,
+                        PlaybookStatus.APPROVED.value,
+                        *_TOMBSTONE_STATUS_VALUES,
+                    ),
+                )
+                if cur.rowcount > 0:
+                    _append_event_stmt(
+                        self.conn,
+                        org_id=self.org_id,
+                        entity_type="agent_playbook",
+                        entity_id=str(apid),
+                        op="status_change",
+                        prov="wasInvalidatedBy",
+                        source_ids=[],
+                        actor="aggregator",
+                        request_id=request_id,
+                        reason=f"{old_status or 'None'}->superseded",
+                        from_status=old_status,
+                        to_status=Status.SUPERSEDED.value,
+                        status_namespace="lifecycle_status",
+                    )
+                    updated += 1
+            self.conn.commit()
+        return updated
+
+    @SQLiteStorageBase.handle_exceptions
+    def supersede_agent_playbooks_by_playbook_name(
+        self, playbook_name: str, agent_version: str | None, request_id: str
+    ) -> int:
+        """Soft-delete archived agent playbooks by name/version via SUPERSEDED status.
+
+        Mirrors ``delete_archived_agent_playbooks_by_playbook_name`` but converts
+        the hard-delete to a soft-supersede with status_change lineage events.
+        Atomic: one ``conn.commit()`` at the end.
+        FTS/vec rows are NOT removed.
+
+        Args:
+            playbook_name (str): Playbook name to supersede.
+            agent_version (str | None): Agent version filter. None matches all versions.
+            request_id (str): Shared request id for all emitted lineage events.
+
+        Returns:
+            int: Number of agent playbooks actually updated.
+        """
+        sql = (
+            "SELECT agent_playbook_id, status FROM agent_playbooks"
+            " WHERE playbook_name = ? AND status = 'archived'"
+        )
+        params: list[Any] = [playbook_name]
+        if agent_version is not None:
+            sql += " AND agent_version = ?"
+            params.append(agent_version)
+        updated = 0
+        with self._lock:
+            rows = self.conn.execute(sql, params).fetchall()
+            if not rows:
+                return 0
+            for row in rows:
+                apid = row["agent_playbook_id"] if hasattr(row, "keys") else row[0]
+                old_status = row["status"] if hasattr(row, "keys") else row[1]
+                cur = self.conn.execute(
+                    "UPDATE agent_playbooks SET status = ?"
+                    " WHERE agent_playbook_id = ? AND playbook_status != ?"
+                    " AND (status IS NULL OR status NOT IN (?, ?))",
+                    (
+                        Status.SUPERSEDED.value,
+                        apid,
+                        PlaybookStatus.APPROVED.value,
+                        *_TOMBSTONE_STATUS_VALUES,
+                    ),
+                )
+                if cur.rowcount > 0:
+                    _append_event_stmt(
+                        self.conn,
+                        org_id=self.org_id,
+                        entity_type="agent_playbook",
+                        entity_id=str(apid),
+                        op="status_change",
+                        prov="wasInvalidatedBy",
+                        source_ids=[],
+                        actor="aggregator",
+                        request_id=request_id,
+                        reason=f"{old_status or 'None'}->superseded",
+                        from_status=old_status,
+                        to_status=Status.SUPERSEDED.value,
+                        status_namespace="lifecycle_status",
+                    )
+                    updated += 1
+            self.conn.commit()
+        return updated
+
+    @SQLiteStorageBase.handle_exceptions
     def restore_archived_agent_playbooks_by_playbook_name(
         self, playbook_name: str, agent_version: str | None = None
     ) -> None:
@@ -1597,6 +1728,10 @@ class PlaybookMixin:
             frag, sparams = _build_status_sql(status_filter)
             conditions.append(frag)
             params.extend(sparams)
+        else:
+            # Default: exclude tombstone statuses (MERGED/SUPERSEDED)
+            conditions.append("(ap.status IS NULL OR ap.status NOT IN (?, ?))")
+            params.extend(_TOMBSTONE_STATUS_VALUES)
         tag_frag, tag_params = _build_tags_sql("ap", request.tags)
         if tag_frag:
             conditions.append(tag_frag)
