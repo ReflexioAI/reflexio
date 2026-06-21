@@ -461,6 +461,21 @@ class ProfileMixin:
         return _row_to_profile(row) if row else None
 
     @SQLiteStorageBase.handle_exceptions
+    def get_distinct_generated_from_request_ids(self) -> list[str]:
+        """Return DISTINCT non-empty generated_from_request_id values, including tombstones.
+
+        Returns:
+            list[str]: Distinct non-empty ``generated_from_request_id`` values.
+        """
+        rows = self._fetchall(
+            "SELECT DISTINCT generated_from_request_id FROM profiles"
+            " WHERE generated_from_request_id IS NOT NULL"
+            " AND generated_from_request_id != ''",
+            (),
+        )
+        return [row[0] for row in rows]
+
+    @SQLiteStorageBase.handle_exceptions
     def get_profiles_by_generated_from_request_id(
         self,
         request_id: str,

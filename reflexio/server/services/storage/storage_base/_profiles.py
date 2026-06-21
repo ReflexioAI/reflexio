@@ -262,6 +262,23 @@ class ProfileMixin:
         raise NotImplementedError
 
     @abstractmethod
+    def get_distinct_generated_from_request_ids(self) -> list[str]:
+        """Return the DISTINCT non-empty generated_from_request_id values present on profiles.
+
+        Scoped to the org. Includes profiles of any status (tombstones included) so
+        that an add-only run whose profiles were later tombstoned is still discoverable.
+        Empty-string values are excluded by the query (they must never form a group).
+
+        Used by ``reconstruct_profile_change_log`` to discover add-only dedup runs
+        (runs that added new profiles but superseded nothing, which emit no lineage
+        event and would otherwise be invisible).
+
+        Returns:
+            list[str]: Distinct non-empty ``generated_from_request_id`` values.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     def get_profiles_by_generated_from_request_id(
         self,
         request_id: str,

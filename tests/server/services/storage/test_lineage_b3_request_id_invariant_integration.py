@@ -124,33 +124,43 @@ def test_distinct_request_ids_produce_two_separate_rows(tmp_path):
 
 
 def test_empty_request_id_group_is_skipped(tmp_path):
-    """GUARD: events with request_id='' are SKIPPED, not merged into one row.
+    """GUARD: profiles with generated_from_request_id='' produce no reconstruction row.
 
     The new time-travel-stable model explicitly skips the empty-string
-    request_id key so unrelated dedup runs can never be merged under "".
-    A profile with generated_from_request_id="" also produces no row.
+    generated_from_request_id so unrelated runs can never be merged under "".
+    The distinct-column query excludes empty-string values at the DB level.
 
     This replaces the old "collapse" documentation: the new behavior is a
     hard skip, enforced in reconstruct_profile_change_log.
     """
     s = _store(tmp_path)
-    # Add profiles with empty generated_from_request_id.
-    p1 = _make_profile(
-        user_id="u1", profile_id="p-empty-1", content="c1", request_id=""
+    # Add profiles with TRULY empty generated_from_request_id (bypass the
+    # _make_profile helper's `or` fallback by constructing directly).
+    p1 = UserProfile(
+        user_id="u1",
+        profile_id="p-empty-1",
+        content="c1",
+        last_modified_timestamp=int(datetime.now(UTC).timestamp()),
+        generated_from_request_id="",
+        profile_time_to_live=ProfileTimeToLive.INFINITY,
     )
-    p2 = _make_profile(
-        user_id="u1", profile_id="p-empty-2", content="c2", request_id=""
+    p2 = UserProfile(
+        user_id="u1",
+        profile_id="p-empty-2",
+        content="c2",
+        last_modified_timestamp=int(datetime.now(UTC).timestamp()),
+        generated_from_request_id="",
+        profile_time_to_live=ProfileTimeToLive.INFINITY,
     )
     s.add_user_profile("u1", [p1, p2])
     # Even if a status_change event with request_id="" existed, it would be skipped.
-    # (supersede_profiles_by_ids with "" would work but produce no useful row.)
 
     result = reconstruct_profile_change_log(s)
     assert result.success
     # Empty request_id group is skipped entirely.
     req_ids = {row.request_id for row in result.profile_change_logs}
     assert "" not in req_ids, "empty request_id must be skipped"
-    assert result.profile_change_logs == [], "no dedup signals → no rows"
+    assert result.profile_change_logs == [], "empty generated_from_request_id → no rows"
 
 
 # ---------------------------------------------------------------------------

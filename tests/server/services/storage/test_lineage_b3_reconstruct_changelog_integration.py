@@ -376,9 +376,15 @@ def test_reflection_revise_event_not_counted_as_removal(tmp_path):
 
 
 def test_adds_only_run_produces_row(tmp_path):
-    """A run with adds but no removals still produces a change-log row."""
+    """An add-only dedup run (no removals) now produces a change-log row.
+
+    B3-pre T6a closes the reconstruction-completeness gap: generated_from_request_id
+    values are unioned into the candidate pool, so a run that only added profiles
+    (no supersede_profiles_by_ids call, hence no lineage event) is still discovered
+    and yields a row with the N added profiles and removed_profiles=[].
+    """
     s = _store(tmp_path)
-    # Adds-only: two new profiles with the same generated_from_request_id
+    # Adds-only: two new profiles with the same generated_from_request_id.
     p1 = _make_profile(
         user_id="u1", profile_id="p-a1", content="fact A", request_id="r-adds"
     )
@@ -388,16 +394,21 @@ def test_adds_only_run_produces_row(tmp_path):
     s.add_user_profile("u1", [p1, p2])
     # No supersede_profiles_by_ids call — adds only.
 
-    # To get lineage events for "r-adds", we need at least one event with that request_id.
-    # The profile insertion itself doesn't emit a lineage event, so there are no events
-    # for "r-adds". The spec says: a row exists iff added∪removed is non-empty.
-    # Since we have no lineage events for "r-adds", the reconstruction won't see it.
-    # This is correct — the legacy log was only written when dedup was called.
-    # This test verifies that we don't crash and return an empty list.
     result = reconstruct_profile_change_log(s)
     assert result.success
-    # No lineage events → no rows (correct — matches legacy semantics)
-    assert result.profile_change_logs == []
+
+    rows_by_req = {row.request_id: row for row in result.profile_change_logs}
+    assert "r-adds" in rows_by_req, (
+        "add-only run must now appear in reconstruction (B3-pre T6a gap closure)"
+    )
+    row = rows_by_req["r-adds"]
+
+    added_ids = {p.profile_id for p in row.added_profiles}
+    assert added_ids == {"p-a1", "p-a2"}, (
+        f"expected both added profiles; got {added_ids}"
+    )
+    assert row.removed_profiles == [], "add-only run has no removed profiles"
+    assert row.mentioned_profiles == []
 
 
 # --------------------------------------------------------------------------
@@ -501,11 +512,17 @@ def test_most_recent_first_ordering(tmp_path):
 
 
 def test_cross_org_isolation(tmp_path):
-    """reconstruct_profile_change_log for org A must not return org B's events."""
-    db_path = str(tmp_path / "shared.db")
-    s_a = SQLiteStorage(org_id="org-a", db_path=db_path)
+    """reconstruct_profile_change_log for org A must not return org B's runs.
+
+    SQLite is a per-org DB in production (each org has its own db_path), so
+    cross-org isolation is enforced by the file path — not by an org_id column
+    on the profiles table. This test uses separate DB files to mirror that
+    production topology.
+    """
+    s_a = SQLiteStorage(org_id="org-a", db_path=str(tmp_path / "a.db"))
     s_a.migrate()
-    s_b = SQLiteStorage(org_id="org-b", db_path=db_path)
+    s_b = SQLiteStorage(org_id="org-b", db_path=str(tmp_path / "b.db"))
+    s_b.migrate()
 
     old_a = _make_profile(user_id="ua", profile_id="pa-old", request_id="r-a-seed")
     s_a.add_user_profile("ua", [old_a])
@@ -548,8 +565,59 @@ def test_cross_org_isolation(tmp_path):
 
 
 def test_no_events_returns_empty(tmp_path):
-    """With no lineage events, returns an empty list."""
+    """With no lineage events AND no profiles, returns an empty list."""
     s = _store(tmp_path)
     result = reconstruct_profile_change_log(s)
     assert result.success
     assert result.profile_change_logs == []
+
+
+# --------------------------------------------------------------------------
+# get_distinct_generated_from_request_ids storage query
+# --------------------------------------------------------------------------
+
+
+def test_get_distinct_generated_from_request_ids_returns_correct_set(tmp_path):
+    """The storage query returns the right distinct set, including tombstoned profiles."""
+    s = _store(tmp_path)
+
+    # Two profiles from run "r-live" (both live), one from run "r-tomb" (tombstoned).
+    p_live1 = _make_profile(user_id="u1", profile_id="p-live-1", request_id="r-live")
+    p_live2 = _make_profile(user_id="u1", profile_id="p-live-2", request_id="r-live")
+    p_tomb = _make_profile(user_id="u1", profile_id="p-tomb", request_id="r-tomb")
+    s.add_user_profile("u1", [p_live1, p_live2, p_tomb])
+
+    # Tombstone p_tomb by superseding it under a different run.
+    p_newer = _make_profile(user_id="u1", profile_id="p-newer", request_id="r-newer")
+    s.add_user_profile("u1", [p_newer])
+    s.supersede_profiles_by_ids("u1", ["p-tomb"], "r-newer")
+
+    result = set(s.get_distinct_generated_from_request_ids())
+
+    # r-live and r-tomb must appear; r-newer must also appear (p_newer is live).
+    assert "r-live" in result
+    assert "r-tomb" in result, "tombstoned profiles must still contribute their run id"
+    assert "r-newer" in result
+
+    # No duplicates: r-live had two profiles but should appear once.
+    raw = s.get_distinct_generated_from_request_ids()
+    assert raw.count("r-live") == 1, "DISTINCT must deduplicate"
+
+
+def test_get_distinct_generated_from_request_ids_excludes_empty(tmp_path):
+    """Empty-string generated_from_request_id values are excluded from the result."""
+    s = _store(tmp_path)
+    # One profile with empty generated_from_request_id.
+    p_empty = UserProfile(
+        user_id="u1",
+        profile_id="p-empty",
+        content="c",
+        last_modified_timestamp=1,
+        generated_from_request_id="",
+        profile_time_to_live=ProfileTimeToLive.INFINITY,
+    )
+    s.add_user_profile("u1", [p_empty])
+
+    result = s.get_distinct_generated_from_request_ids()
+    assert "" not in result, "empty-string request_id must be excluded"
+    assert result == [], "no non-empty ids → empty result"

@@ -618,28 +618,46 @@ def reconstruct_profile_change_log(
         if evt.op == "status_change" and evt.to_status == "superseded":
             removal_by_req[key].append(evt.entity_id)
 
-    # Candidate request_ids come from lineage EVENT request_ids (the runs that
-    # produced a dedup removal `status_change`/superseded event). For each such
-    # run, `added` is then pulled from the immutable `generated_from_request_id`
-    # column below.
+    # Candidate request_ids are the UNION of:
+    #   (a) lineage EVENT request_ids — runs that produced a dedup removal
+    #       (status_change/superseded event); and
+    #   (b) distinct non-empty generated_from_request_id values present on
+    #       profile rows — discovers ADD-ONLY dedup runs (new profiles, nothing
+    #       superseded) that emit no lineage event.
     #
-    # KNOWN LIMITATION (reconstruction-completeness gap): an ADD-ONLY dedup run
-    # (new profiles, nothing superseded) emits NO lineage event, so its
-    # request_id is absent from this pool and the run is OMITTED from
-    # reconstruction — even though the legacy log DID write a row for it
-    # (`add_profile_change_log` fires when `all_new_profiles or
-    # superseded_profiles`). This surfaces as a RECON-MISSING discrepancy in the
-    # parity gate, which MUST stay green before any endpoint cutover. The future
-    # B3 retirement must close this gap (e.g. union the distinct non-empty
-    # `generated_from_request_id` values into the candidate pool) before the
-    # reconstruction can replace the legacy log. Harmless on this branch:
-    # nothing serves `reconstruct_profile_change_log` (the endpoint still reads
-    # the legacy table; the repoint was reverted).
-    candidate_req_ids: set[str] = set(sort_key.keys())
+    # This closes the reconstruction-completeness gap for add-only runs: the
+    # legacy `add_profile_change_log` fired whenever `all_new_profiles or
+    # superseded_profiles` was non-empty, so a run with only adds was still
+    # recorded. The (b) path mirrors that: any profile row stamped with a
+    # non-empty generated_from_request_id is evidence that a run produced it.
+    #
+    # For add-only runs (in set (b) but not (a)), no event timestamp exists.
+    # We derive their sort key from the max `last_modified_timestamp` of the
+    # profiles in that group — this is set at creation and represents the
+    # insertion time, giving a sensible most-recent-first ordering relative to
+    # event-timestamped runs.  The secondary key is 0 (no event_id available).
+    column_req_ids = set(storage.get_distinct_generated_from_request_ids())
+    candidate_req_ids: set[str] = set(sort_key.keys()) | column_req_ids
+
+    # First pass: resolve added profiles for all candidate ids so we can compute
+    # sort keys for add-only runs (those absent from `sort_key`).
+    added_by_req: dict[str, list] = {
+        req_id: storage.get_profiles_by_generated_from_request_id(req_id)
+        for req_id in candidate_req_ids
+    }
+
+    def _effective_sort_key(req_id: str) -> tuple[int, int]:
+        """Return (timestamp, event_id) for sorting; for add-only runs fall back to
+        the max last_modified_timestamp of the profiles in that group."""
+        if req_id in sort_key:
+            return sort_key[req_id]
+        profiles = added_by_req.get(req_id, [])
+        max_ts = max((p.last_modified_timestamp for p in profiles), default=0)
+        return (max_ts, 0)
 
     sorted_keys = sorted(
         candidate_req_ids,
-        key=lambda k: sort_key.get(k, (0, 0)),
+        key=_effective_sort_key,
         reverse=True,
     )[:limit]
 
@@ -648,7 +666,7 @@ def reconstruct_profile_change_log(
         # added: profiles whose generated_from_request_id == req_id (any status,
         # include tombstones — a profile added in R1 and tombstoned in R2 is still
         # "added in R1").
-        added = storage.get_profiles_by_generated_from_request_id(req_id)
+        added = added_by_req[req_id]
 
         # removed: dedup-superseded profiles from this run's lineage events.
         removed: list = []
@@ -662,14 +680,14 @@ def reconstruct_profile_change_log(
             # No dedup activity for this request_id — skip to match legacy semantics.
             continue
 
-        created_at, _ = sort_key.get(req_id, (0, 0))
+        ts, _ = _effective_sort_key(req_id)
         user_id = added[0].user_id if added else removed[0].user_id
         logs.append(
             ProfileChangeLog(
                 id=0,
                 user_id=user_id,
                 request_id=req_id,
-                created_at=created_at,
+                created_at=ts,
                 added_profiles=added,
                 removed_profiles=removed,
                 mentioned_profiles=[],
