@@ -9,6 +9,7 @@ from reflexio.models.api_schema.domain.entities import LineageContext, LineageEv
 from reflexio.models.api_schema.domain.enums import Status
 from reflexio.server.tracing import capture_anomaly
 
+from ._base import _epoch_now as _now
 from ._base import _epoch_to_iso
 
 EntityType = Literal["user_playbook", "agent_playbook", "profile"]
@@ -233,6 +234,7 @@ class SQLiteLineageMixin:
             ValueError: If ``entity_type`` is not a recognized entity type.
         """
         table, pk = _resolve_table(entity_type)
+        now = _now()
         with self._lock:
             for sid in source_ids:
                 if sid == survivor_id:
@@ -240,10 +242,17 @@ class SQLiteLineageMixin:
                     # accidentally listed among the source ids.
                     continue
                 self.conn.execute(
-                    f"UPDATE {table} SET status=?, merged_into=? "  # noqa: S608
+                    f"UPDATE {table} SET status=?, merged_into=?, retired_at=? "  # noqa: S608
                     f"WHERE {pk}=? AND {pk}!=? "
                     f"AND (status IS NULL OR status NOT IN (?, ?))",
-                    (Status.MERGED.value, survivor_id, sid, survivor_id, *_TOMBSTONE),
+                    (
+                        Status.MERGED.value,
+                        survivor_id,
+                        now,
+                        sid,
+                        survivor_id,
+                        *_TOMBSTONE,
+                    ),
                 )
             _append_event_stmt(
                 self.conn,
@@ -291,9 +300,9 @@ class SQLiteLineageMixin:
         table, pk = _resolve_table(entity_type)
         with self._lock:
             cur = self.conn.execute(
-                f"UPDATE {table} SET status=?, superseded_by=? "  # noqa: S608
+                f"UPDATE {table} SET status=?, superseded_by=?, retired_at=? "  # noqa: S608
                 f"WHERE {pk}=? AND status IS NULL",
-                (Status.SUPERSEDED.value, successor_id, incumbent_id),
+                (Status.SUPERSEDED.value, successor_id, _now(), incumbent_id),
             )
             if cur.rowcount == 0:
                 self.conn.commit()

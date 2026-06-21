@@ -31,6 +31,7 @@ from ._base import (
     SQLiteStorageBase,
     _build_status_sql,
     _effective_search_mode,
+    _epoch_now,
     _epoch_to_iso,
     _json_dumps,
     _json_loads,
@@ -446,6 +447,7 @@ class PlaybookMixin:
         playbook_name: str | None = None,
     ) -> int:
         new_val = new_status.value if new_status else None
+        now_ts = _epoch_now()
         old_val_str = old_status.value if old_status else "None"
         new_val_str = new_status.value if new_status else "None"
         reason = f"{old_val_str}->{new_val_str}"
@@ -467,6 +469,14 @@ class PlaybookMixin:
             where += " AND playbook_name = ?"
             extra_params.append(playbook_name)
 
+        # Set retired_at = now when transitioning to a tombstone status; clear to NULL otherwise.
+        _tombstone_vals = {
+            Status.MERGED.value,
+            Status.SUPERSEDED.value,
+            Status.ARCHIVED.value,
+        }
+        retired_at_val = now_ts if new_val in _tombstone_vals else None
+
         batch_request_id = uuid.uuid4().hex
         with self._lock:
             affected = [
@@ -477,8 +487,8 @@ class PlaybookMixin:
                 ).fetchall()
             ]
             cur = self.conn.execute(
-                f"UPDATE user_playbooks SET status = ? WHERE {where}",
-                [new_val] + select_params + extra_params,
+                f"UPDATE user_playbooks SET status = ?, retired_at = ? WHERE {where}",
+                [new_val, retired_at_val] + select_params + extra_params,
             )
             from_val = old_status.value if old_status else None
             to_val = new_status.value if new_status else None
@@ -563,9 +573,9 @@ class PlaybookMixin:
     @SQLiteStorageBase.handle_exceptions
     def archive_user_playbook_by_id(self, user_id: str, user_playbook_id: int) -> bool:
         cur = self._execute(
-            "UPDATE user_playbooks SET status = ? "
+            "UPDATE user_playbooks SET status = ?, retired_at = ? "
             "WHERE user_playbook_id = ? AND user_id = ? AND status IS NULL",
-            (Status.ARCHIVED.value, user_playbook_id, user_id),
+            (Status.ARCHIVED.value, _epoch_now(), user_playbook_id, user_id),
         )
         return cur.rowcount > 0
 
@@ -1169,6 +1179,7 @@ class PlaybookMixin:
         if agent_version is not None:
             where += " AND agent_version = ?"
             params.append(agent_version)
+        now_ts = _epoch_now()
         batch_request_id = uuid.uuid4().hex
         with self._lock:
             affected = self.conn.execute(
@@ -1176,8 +1187,8 @@ class PlaybookMixin:
                 params,
             ).fetchall()
             self.conn.execute(
-                f"UPDATE agent_playbooks SET status = 'archived' WHERE {where}",
-                params,
+                f"UPDATE agent_playbooks SET status = 'archived', retired_at = ? WHERE {where}",
+                [now_ts, *params],
             )
             for row in affected:
                 prior = row["status"] or "None"
@@ -1203,6 +1214,7 @@ class PlaybookMixin:
         if not agent_playbook_ids:
             return
         ph = ",".join("?" for _ in agent_playbook_ids)
+        now_ts = _epoch_now()
         batch_request_id = uuid.uuid4().hex
         with self._lock:
             affected = self.conn.execute(
@@ -1212,10 +1224,10 @@ class PlaybookMixin:
                 [*agent_playbook_ids, PlaybookStatus.APPROVED.value],
             ).fetchall()
             self.conn.execute(
-                f"UPDATE agent_playbooks SET status = 'archived'"
+                f"UPDATE agent_playbooks SET status = 'archived', retired_at = ?"
                 f" WHERE agent_playbook_id IN ({ph}) AND playbook_status != ?"
                 f" AND (status IS NULL OR status != 'archived')",
-                [*agent_playbook_ids, PlaybookStatus.APPROVED.value],
+                [now_ts, *agent_playbook_ids, PlaybookStatus.APPROVED.value],
             )
             for row in affected:
                 prior = row["status"] or "None"
@@ -1276,11 +1288,12 @@ class PlaybookMixin:
                 # clause already excludes those rows atomically; the extra continue here
                 # would be a no-op and not worth the added complexity.
                 cur = self.conn.execute(
-                    "UPDATE agent_playbooks SET status = ?"
+                    "UPDATE agent_playbooks SET status = ?, retired_at = ?"
                     " WHERE agent_playbook_id = ? AND playbook_status != ?"
                     " AND (status IS NULL OR status NOT IN (?, ?))",
                     (
                         Status.SUPERSEDED.value,
+                        _epoch_now(),
                         apid,
                         PlaybookStatus.APPROVED.value,
                         *_TOMBSTONE_STATUS_VALUES,
@@ -1336,11 +1349,12 @@ class PlaybookMixin:
                 apid = row["agent_playbook_id"]
                 old_status = row["status"]
                 cur = self.conn.execute(
-                    "UPDATE agent_playbooks SET status = ?"
+                    "UPDATE agent_playbooks SET status = ?, retired_at = ?"
                     " WHERE agent_playbook_id = ? AND playbook_status != ?"
                     " AND status = 'archived'",
                     (
                         Status.SUPERSEDED.value,
+                        _epoch_now(),
                         apid,
                         PlaybookStatus.APPROVED.value,
                     ),
@@ -1361,7 +1375,7 @@ class PlaybookMixin:
     def restore_archived_agent_playbooks_by_playbook_name(
         self, playbook_name: str, agent_version: str | None = None
     ) -> None:
-        sql = "UPDATE agent_playbooks SET status = NULL WHERE playbook_name = ? AND status = 'archived'"
+        sql = "UPDATE agent_playbooks SET status = NULL, retired_at = NULL WHERE playbook_name = ? AND status = 'archived'"
         params: list[Any] = [playbook_name]
         if agent_version is not None:
             sql += " AND agent_version = ?"
@@ -1376,7 +1390,7 @@ class PlaybookMixin:
             return
         ph = ",".join("?" for _ in agent_playbook_ids)
         self._execute(
-            f"UPDATE agent_playbooks SET status = NULL WHERE agent_playbook_id IN ({ph}) AND status = 'archived'",
+            f"UPDATE agent_playbooks SET status = NULL, retired_at = NULL WHERE agent_playbook_id IN ({ph}) AND status = 'archived'",
             agent_playbook_ids,
         )
 

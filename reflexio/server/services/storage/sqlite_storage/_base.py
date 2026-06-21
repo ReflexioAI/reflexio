@@ -698,6 +698,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         self._migrate_shadow_comparison_verdicts()
         self._migrate_user_playbook_polarity()
         self._migrate_lineage()
+        self._migrate_retired_at()
         self._migrate_lineage_event_table()
         init_stall_state_table(self.conn)
         return True
@@ -1284,6 +1285,31 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                     logger.info("Added %s column to %s", col, table)
         self.conn.commit()
 
+    def _migrate_retired_at(self) -> None:
+        """Add nullable ``retired_at INTEGER`` GC column to tombstone-bearing tables.
+
+        Backfill-safe: column is nullable with no default. Existing tombstones
+        will have ``retired_at = NULL`` (conservative — GC T2 uses ``retired_at``
+        as the age signal, so old tombstones without it are simply not yet eligible
+        by the new clock; ops can backfill via T4 if needed).
+        Also creates the covering index for GC queries (idempotent).
+        """
+        for table in ("profiles", "user_playbooks", "agent_playbooks"):
+            cols = {
+                row["name"]
+                for row in self.conn.execute(f"PRAGMA table_info({table})").fetchall()
+            }
+            if "retired_at" not in cols:
+                self.conn.execute(
+                    f"ALTER TABLE {table} ADD COLUMN retired_at INTEGER"  # noqa: S608
+                )
+                logger.info("Added retired_at column to %s", table)
+            self.conn.execute(
+                f"CREATE INDEX IF NOT EXISTS idx_{table}_retired_at "  # noqa: S608
+                f"ON {table}(status, retired_at)"
+            )
+        self.conn.commit()
+
     def _migrate_lineage_event_table(self) -> None:
         """Create the lineage_event table + index for existing databases (idempotent)."""
         with self._lock:
@@ -1803,7 +1829,8 @@ CREATE TABLE IF NOT EXISTS profiles (
     reader_angle TEXT,
     merged_into TEXT,
     superseded_by TEXT,
-    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    retired_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_profiles_user_id ON profiles(user_id);
 CREATE INDEX IF NOT EXISTS idx_profiles_status ON profiles(status);
@@ -1864,7 +1891,8 @@ CREATE TABLE IF NOT EXISTS user_playbooks (
     notes TEXT,
     reader_angle TEXT,
     merged_into INTEGER,
-    superseded_by INTEGER
+    superseded_by INTEGER,
+    retired_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_user_playbooks_playbook_name ON user_playbooks(playbook_name);
 CREATE INDEX IF NOT EXISTS idx_user_playbooks_agent_version ON user_playbooks(agent_version);
@@ -1887,7 +1915,8 @@ CREATE TABLE IF NOT EXISTS agent_playbooks (
     tags TEXT,
     status TEXT,
     merged_into INTEGER,
-    superseded_by INTEGER
+    superseded_by INTEGER,
+    retired_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_agent_playbooks_playbook_name ON agent_playbooks(playbook_name);
 CREATE INDEX IF NOT EXISTS idx_agent_playbooks_agent_version ON agent_playbooks(agent_version);
