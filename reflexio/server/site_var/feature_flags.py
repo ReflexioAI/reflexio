@@ -138,11 +138,16 @@ def _is_fail_closed_flag_enabled(org_id: str, feature_key: str) -> bool:
         )
         return False
 
-    if feature_config.get("enabled", False):
+    # Strict bool identity — truthy strings like "false" must not enable (#195).
+    enabled = feature_config.get("enabled", False)
+    if enabled is True:
         return True
 
-    enabled_org_ids = feature_config.get("enabled_org_ids", []) or []
-    return org_id in enabled_org_ids
+    # Reject non-list values — a string does substring `in` match, not membership (#195).
+    org_ids = feature_config.get("enabled_org_ids", [])
+    if not isinstance(org_ids, list):
+        return False
+    return org_id in org_ids
 
 
 def is_dedup_soft_delete_enabled(org_id: str) -> bool:

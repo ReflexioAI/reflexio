@@ -439,5 +439,99 @@ class TestFailClosedFlagMalformedConfig(unittest.TestCase):
         self.assertFalse(is_aggregation_soft_delete_enabled("org-any"))
 
 
+class TestFailClosedFlagStrictBoolValidation(unittest.TestCase):
+    """#195: strict enabled is True — truthy strings and non-bool ints must not enable.
+
+    CodeRabbit finding: `if feature_config.get("enabled", False):` accepts any truthy
+    value including the string "false". Fix: `if enabled is True:` (strict identity).
+    """
+
+    # --- is_dedup_soft_delete_enabled ---
+
+    @patch(
+        "reflexio.server.site_var.feature_flags._get_feature_flags_config",
+        return_value={"dedup_soft_delete": {"enabled": "false", "enabled_org_ids": []}},
+    )
+    def test_dedup_string_false_returns_false(self, _mock):
+        """enabled='false' (string) must not enable — truthy string previously bypassed guard."""
+        self.assertFalse(is_dedup_soft_delete_enabled("org-any"))
+
+    @patch(
+        "reflexio.server.site_var.feature_flags._get_feature_flags_config",
+        return_value={"dedup_soft_delete": {"enabled": "true", "enabled_org_ids": []}},
+    )
+    def test_dedup_string_true_returns_false(self, _mock):
+        """enabled='true' (string) is not bool True — must return False."""
+        self.assertFalse(is_dedup_soft_delete_enabled("org-any"))
+
+    @patch(
+        "reflexio.server.site_var.feature_flags._get_feature_flags_config",
+        return_value={"dedup_soft_delete": {"enabled": 1, "enabled_org_ids": []}},
+    )
+    def test_dedup_int_one_returns_false(self, _mock):
+        """enabled=1 (int) is not bool True — strict identity check must reject it."""
+        self.assertFalse(is_dedup_soft_delete_enabled("org-any"))
+
+    @patch(
+        "reflexio.server.site_var.feature_flags._get_feature_flags_config",
+        return_value={
+            "dedup_soft_delete": {
+                "enabled": False,
+                "enabled_org_ids": "org-pilot",
+            }
+        },
+    )
+    def test_dedup_string_org_ids_substring_org_pilot_returns_false(self, _mock):
+        """enabled_org_ids='org-pilot' (string) must not match 'org-pilot' via in-string (#195)."""
+        self.assertFalse(is_dedup_soft_delete_enabled("org-pilot"))
+
+    @patch(
+        "reflexio.server.site_var.feature_flags._get_feature_flags_config",
+        return_value={
+            "dedup_soft_delete": {
+                "enabled": False,
+                "enabled_org_ids": "org-pilot",
+            }
+        },
+    )
+    def test_dedup_string_org_ids_substring_pilot_returns_false(self, _mock):
+        """enabled_org_ids='org-pilot' (string) must not match substring 'pilot' (#195)."""
+        self.assertFalse(is_dedup_soft_delete_enabled("pilot"))
+
+    # --- is_aggregation_soft_delete_enabled ---
+
+    @patch(
+        "reflexio.server.site_var.feature_flags._get_feature_flags_config",
+        return_value={
+            "aggregation_soft_delete": {"enabled": "false", "enabled_org_ids": []}
+        },
+    )
+    def test_aggregation_string_false_returns_false(self, _mock):
+        """enabled='false' (string) must not enable aggregation soft-delete."""
+        self.assertFalse(is_aggregation_soft_delete_enabled("org-any"))
+
+    @patch(
+        "reflexio.server.site_var.feature_flags._get_feature_flags_config",
+        return_value={"aggregation_soft_delete": {"enabled": 1, "enabled_org_ids": []}},
+    )
+    def test_aggregation_int_one_returns_false(self, _mock):
+        """enabled=1 (int) must not enable aggregation soft-delete."""
+        self.assertFalse(is_aggregation_soft_delete_enabled("org-any"))
+
+    @patch(
+        "reflexio.server.site_var.feature_flags._get_feature_flags_config",
+        return_value={
+            "aggregation_soft_delete": {
+                "enabled": False,
+                "enabled_org_ids": "org-pilot",
+            }
+        },
+    )
+    def test_aggregation_string_org_ids_returns_false(self, _mock):
+        """enabled_org_ids='org-pilot' (string) must not match 'org-pilot' or 'pilot'."""
+        self.assertFalse(is_aggregation_soft_delete_enabled("org-pilot"))
+        self.assertFalse(is_aggregation_soft_delete_enabled("pilot"))
+
+
 if __name__ == "__main__":
     unittest.main()
