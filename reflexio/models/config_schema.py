@@ -682,9 +682,19 @@ class LineageGCConfig(BaseModel):
 
     Grace window
     ------------
-    90 days is a defensible engineering default — cf. common 90-day soft-delete
-    retention policies and GDPR Art. 5(1)(e) storage-limitation.  The value is a
-    per-deployment policy knob; ratify with your DPO before enabling in production.
+    90 days is the vetted default — cf. common 90-day soft-delete retention policies
+    and GDPR Art. 5(1)(e) storage-limitation.  The value is a per-deployment policy
+    knob; ratify with your DPO before enabling in production.
+
+    Enablement gate
+    ---------------
+    Enable per-org only after ALL of the following hold:
+
+    * ``tombstone_grace_window_days`` ≥ the B3 reconstruction read-back horizon, OR
+      B3 changelog replay is fully shipped and the horizon is confirmed.  Enabling
+      before this point risks GC'ing tombstones that B3 replay still needs.
+    * DPO/product sign-off on the PII-lifetime and audit-depth implications for the
+      specific deployment.
 
     Tuner floor
     -----------

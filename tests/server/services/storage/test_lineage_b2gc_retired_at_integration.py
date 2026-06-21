@@ -379,6 +379,154 @@ def test_restore_archived_by_ids_clears_retired_at(tmp_path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# F3 — missing contract cases: archive_user_playbook_by_id,
+#       archive_profile_by_id, supersede_record(agent_playbook)
+# ---------------------------------------------------------------------------
+
+
+def test_archive_user_playbook_by_id_sets_retired_at(tmp_path) -> None:
+    s = _store(tmp_path, "org-archive-up-by-id")
+    up = _make_user_playbook()
+    s.save_user_playbooks([up])
+
+    result = s.archive_user_playbook_by_id("u1", up.user_playbook_id)
+
+    assert result is True
+    _assert_retired_now(_get_retired_at_user_playbook(s, up.user_playbook_id))
+
+
+def test_archive_profile_by_id_sets_retired_at(tmp_path) -> None:
+    s = _store(tmp_path, "org-archive-profile-by-id")
+    p = _make_profile("ap1", "u1")
+    s.add_user_profile("u1", [p])
+
+    result = s.archive_profile_by_id("u1", p.profile_id)
+
+    assert result is True
+    _assert_retired_now(_get_retired_at_profile(s, p.profile_id))
+
+
+def test_supersede_record_agent_playbook_sets_retired_at(tmp_path) -> None:
+    s = _store(tmp_path, "org-super-record-ap")
+    incumbent = _make_agent_playbook("pb-inc")
+    successor = _make_agent_playbook("pb-succ")
+    s.save_agent_playbooks([incumbent, successor])
+
+    result = s.supersede_record(
+        entity_type="agent_playbook",
+        incumbent_id=str(incumbent.agent_playbook_id),
+        successor_id=str(successor.agent_playbook_id),
+        context=LineageContext(op_kind="revise", actor="test", request_id="r-super-ap"),
+    )
+
+    assert result is True
+    _assert_retired_now(_get_retired_at_agent_playbook(s, incumbent.agent_playbook_id))
+    assert _get_retired_at_agent_playbook(s, successor.agent_playbook_id) is None
+
+
+# ---------------------------------------------------------------------------
+# F4 — merge-on-archived: archived source must NOT be re-tombstoned to MERGED
+# ---------------------------------------------------------------------------
+
+
+def test_merge_does_not_re_tombstone_archived_source(tmp_path) -> None:
+    """Archived source must keep status=ARCHIVED and retired_at=T0 after merge."""
+    s = _store(tmp_path, "org-merge-archived-guard")
+    source = _make_profile("src-arch", "u1")
+    survivor = _make_profile("surv-arch", "u1")
+    s.add_user_profile("u1", [source, survivor])
+
+    # Archive the source first — records its retired_at=T0.
+    s.archive_profile_by_id("u1", source.profile_id)
+    retired_at_t0 = _get_retired_at_profile(s, source.profile_id)
+    assert retired_at_t0 is not None
+
+    # Now merge with the archived source among source_ids.
+    s.merge_records(
+        entity_type="profile",
+        survivor_id=survivor.profile_id,
+        source_ids=[source.profile_id],
+        context=LineageContext(
+            op_kind="merge", actor="test", request_id="r-merge-arch"
+        ),
+    )
+
+    # Status must remain ARCHIVED, not flipped to MERGED.
+    row = s.conn.execute(
+        "SELECT status, retired_at FROM profiles WHERE profile_id = ?",
+        (source.profile_id,),
+    ).fetchone()
+    assert row["status"] == "archived", (
+        f"Expected status=archived, got {row['status']!r}"
+    )
+    # retired_at must be unchanged — not re-set by the merge.
+    assert row["retired_at"] == retired_at_t0, (
+        f"retired_at changed from {retired_at_t0} to {row['retired_at']} after merge"
+    )
+
+
+# ---------------------------------------------------------------------------
+# F5 — GC legal-hold forward-progress: a held oldest row must not starve
+#       eligible non-held rows in the same pass
+# ---------------------------------------------------------------------------
+
+
+def test_gc_legal_hold_does_not_starve_non_held_eligible_rows(tmp_path) -> None:
+    """Hold the oldest tombstone; assert the next eligible row is still GC'd."""
+    from unittest.mock import patch
+
+    s = _store(tmp_path, "org-gc-hold-progress")
+
+    # Seed two user_playbook tombstones: older_up (smaller retired_at) and newer_up.
+    older_up = _make_user_playbook()
+    newer_up = _make_user_playbook()
+    s.save_user_playbooks([older_up, newer_up])
+
+    old_epoch = _now() - 200  # 200 s ago — clearly past any cutoff
+    recent_eligible_epoch = _now() - 100  # 100 s ago
+
+    s.conn.execute(
+        "UPDATE user_playbooks SET status = 'merged', retired_at = ? "
+        "WHERE user_playbook_id = ?",
+        (old_epoch, older_up.user_playbook_id),
+    )
+    s.conn.execute(
+        "UPDATE user_playbooks SET status = 'merged', retired_at = ? "
+        "WHERE user_playbook_id = ?",
+        (recent_eligible_epoch, newer_up.user_playbook_id),
+    )
+    s.conn.commit()
+
+    cutoff = _now() - 50  # both tombstones are older than 50 s
+
+    held_id = str(older_up.user_playbook_id)
+
+    def _hold_oldest(org_id: str, entity_type: str, entity_id: str) -> bool:  # noqa: ARG001
+        return entity_id == held_id
+
+    with patch.object(s.__class__, "_is_on_legal_hold", side_effect=_hold_oldest):
+        deleted = s.gc_expired_tombstones(
+            entity_type="user_playbook",
+            older_than_epoch=cutoff,
+            limit=1,  # small limit: only 1 non-held row can be GC'd per pass
+        )
+
+    assert deleted == 1, f"Expected 1 deletion (the non-held row), got {deleted}"
+    # Held (older) row must still exist.
+    still_there = s.conn.execute(
+        "SELECT 1 FROM user_playbooks WHERE user_playbook_id = ?",
+        (older_up.user_playbook_id,),
+    ).fetchone()
+    assert still_there is not None, "Held row was incorrectly deleted"
+    # Non-held (newer) row must be gone.
+    gone = s.conn.execute(
+        "SELECT 1 FROM user_playbooks WHERE user_playbook_id = ?",
+        (newer_up.user_playbook_id,),
+    ).fetchone()
+    assert gone is None, "Non-held eligible row was NOT deleted"
+
+
+# ---------------------------------------------------------------------------
 # Schema guard: retired_at column exists on all three tables
 # ---------------------------------------------------------------------------
 

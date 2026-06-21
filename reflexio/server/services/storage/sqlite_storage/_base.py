@@ -1294,21 +1294,24 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         by the new clock; ops can backfill via T4 if needed).
         Also creates the covering index for GC queries (idempotent).
         """
-        for table in ("profiles", "user_playbooks", "agent_playbooks"):
-            cols = {
-                row["name"]
-                for row in self.conn.execute(f"PRAGMA table_info({table})").fetchall()
-            }
-            if "retired_at" not in cols:
+        with self._lock:
+            for table in ("profiles", "user_playbooks", "agent_playbooks"):
+                cols = {
+                    row["name"]
+                    for row in self.conn.execute(
+                        f"PRAGMA table_info({table})"  # noqa: S608
+                    ).fetchall()
+                }
+                if "retired_at" not in cols:
+                    self.conn.execute(
+                        f"ALTER TABLE {table} ADD COLUMN retired_at INTEGER"  # noqa: S608
+                    )
+                    logger.info("Added retired_at column to %s", table)
                 self.conn.execute(
-                    f"ALTER TABLE {table} ADD COLUMN retired_at INTEGER"  # noqa: S608
+                    f"CREATE INDEX IF NOT EXISTS idx_{table}_retired_at "  # noqa: S608
+                    f"ON {table}(status, retired_at)"
                 )
-                logger.info("Added retired_at column to %s", table)
-            self.conn.execute(
-                f"CREATE INDEX IF NOT EXISTS idx_{table}_retired_at "  # noqa: S608
-                f"ON {table}(status, retired_at)"
-            )
-        self.conn.commit()
+            self.conn.commit()
 
     def _migrate_lineage_event_table(self) -> None:
         """Create the lineage_event table + index for existing databases (idempotent)."""

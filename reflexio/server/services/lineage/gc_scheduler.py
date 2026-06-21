@@ -149,14 +149,21 @@ def maybe_start_lineage_gc(
 ) -> LineageGCScheduler | None:
     """Start the GC scheduler only when the bootstrap-org config enables it.
 
-    Off by default. The mechanism is resolved: GC ages tombstones by
-    ``retired_at`` (the retirement instant, PB-8b) and the window default is a
-    vetted 90 days (PB-9) — see
-    ``docs/superpowers/specs/2026-06-21-lineage-pb9-gc-retention-resolution.md``.
-    Per-org enablement is an explicit ops action, and remains gated on the
-    B2↔B3 timing contract (PB-5: window ≥ the reconstruction read-back horizon,
-    or B3 shipped) PLUS DPO/product sign-off on the PII-lifetime and
-    audit-depth implications flagged in that spec.
+    Off by default. Enablement criteria (must ALL hold before enabling for a
+    production org):
+
+    1. **Mechanism**: GC ages tombstones by ``retired_at`` (the INTEGER epoch
+       written at every tombstone write-path).  Rows with ``retired_at = NULL``
+       (created before the column was added) are never eligible and are retained.
+    2. **Grace window**: 90 days is the vetted default (``tombstone_grace_window_days``).
+       This is a per-deployment policy knob — do not shorten without reviewing
+       PII-lifetime obligations (GDPR Art. 5(1)(e)) and audit-depth requirements.
+    3. **B2↔B3 timing gate**: enable per-org only once the grace window is ≥ the
+       reconstruction read-back horizon used by B3 changelog replay, OR once B3 is
+       fully shipped and the horizon is confirmed.  Enabling before this point risks
+       GC'ing tombstones the B3 replay still needs.
+    4. **DPO sign-off**: obtain sign-off on the PII-lifetime and audit-depth
+       implications before enabling in any deployment that processes personal data.
 
     Args:
         request_context_factory: Builds an org-scoped :class:`RequestContext`.
