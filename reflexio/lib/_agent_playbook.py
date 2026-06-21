@@ -1,8 +1,15 @@
+from collections import defaultdict
+
 from reflexio.lib._base import (
     STORAGE_NOT_CONFIGURED_MSG,
     ReflexioBase,
     _require_storage,
 )
+from reflexio.models.api_schema.domain.entities import (
+    PlaybookAggregationChangeLog,
+    agent_playbook_to_snapshot,
+)
+from reflexio.models.api_schema.domain.enums import Status
 from reflexio.models.api_schema.retriever_schema import (
     GetAgentPlaybooksRequest,
     GetAgentPlaybooksResponse,
@@ -24,6 +31,7 @@ from reflexio.models.api_schema.service_schemas import (
     PlaybookAggregationChangeLogResponse,
 )
 from reflexio.models.config_schema import SearchOptions
+from reflexio.server.services.storage.storage_base import BaseStorage
 from reflexio.server.tracing import profile_step
 
 
@@ -309,3 +317,130 @@ class AgentPlaybookMixin(ReflexioBase):
         return UpdateAgentPlaybookResponse(
             success=True, msg="Agent playbook updated successfully"
         )
+
+
+# ---------------------------------------------------------------------------
+# Standalone read-side reconstruction (Phase B3b Task 2)
+# ---------------------------------------------------------------------------
+
+_PREFIX = "aggregate:"
+
+
+def reconstruct_playbook_aggregation_change_log(
+    storage: BaseStorage,
+    *,
+    limit: int = 100,
+) -> PlaybookAggregationChangeLogResponse:
+    """Rebuild the PlaybookAggregationChangeLog view from lineage events.
+
+    Uses two immutable / stable signals to classify every aggregation run:
+
+    * **added(R)** — entity_ids of ``aggregate`` lineage events with
+      ``request_id == R``.  Each ``aggregate`` event records one playbook
+      saved in the run.  The ``reason`` field encodes the run mode:
+      ``"aggregate:full_archive"`` or ``"aggregate:incremental"``; any other
+      value defaults to ``"incremental"``.
+
+    * **removed(R)** — entity_ids of ``status_change`` lineage events with
+      ``to_status == "superseded"`` and ``request_id == R``.  This is the
+      exact signature emitted by ``supersede_agent_playbooks_by_ids`` and
+      ``supersede_agent_playbooks_by_playbook_name`` (the soft-delete paths).
+      APPROVED playbooks are skipped by those helpers, so they have no removal
+      signal and are correctly absent from reconstruction.removed.
+
+    Groups are formed over the union of request_ids from both signals.
+    Request_id ``""`` is skipped — it would merge unrelated runs.
+    A row is emitted only when ``added or removed`` is non-empty.
+
+    When a removed playbook's tombstone has been physically purged (GC),
+    it is silently omitted from ``removed_agent_playbooks`` rather than crashing.
+
+    ``updated_agent_playbooks = []`` (Decision 3 — tolerated delta; updates
+    are folded into added/removed in the B3b reconstruction model).
+
+    Run-scalars (``playbook_name``, ``agent_version``) are read from the
+    reconstructed content: ``added[0]`` is preferred, else ``removed[0]``.
+
+    Args:
+        storage (BaseStorage): Storage instance to query.
+        limit (int): Maximum number of reconstructed entries to return.
+            Defaults to 100.
+
+    Returns:
+        PlaybookAggregationChangeLogResponse: ``success=True`` with
+            reconstructed rows ordered most-recent-first (by max event
+            ``created_at`` in each request_id group), capped at ``limit``.
+    """
+    if limit <= 0:
+        return PlaybookAggregationChangeLogResponse(success=True, change_logs=[])
+
+    all_events = storage.get_lineage_events(
+        entity_type="agent_playbook", org_id=storage.org_id
+    )
+
+    added_by_req: dict[str, list[str]] = defaultdict(list)
+    removed_by_req: dict[str, list[str]] = defaultdict(list)
+    run_mode_by_req: dict[str, str] = {}
+    sort_key: dict[str, tuple[int, int]] = {}
+
+    for evt in all_events:
+        req = evt.request_id
+        if not req:
+            continue  # skip empty — never merge unrelated runs
+        cur = sort_key.get(req, (0, 0))
+        if (evt.created_at, evt.event_id) > cur:
+            sort_key[req] = (evt.created_at, evt.event_id)
+        if evt.op == "aggregate":
+            added_by_req[req].append(evt.entity_id)
+            if req not in run_mode_by_req:
+                reason = evt.reason or ""
+                if reason.startswith(_PREFIX):
+                    run_mode_by_req[req] = reason[len(_PREFIX) :]
+                else:
+                    run_mode_by_req[req] = "incremental"
+        elif evt.op == "status_change" and evt.to_status == Status.SUPERSEDED.value:
+            removed_by_req[req].append(evt.entity_id)
+
+    candidate_reqs = set(added_by_req) | set(removed_by_req)
+    sorted_reqs = sorted(
+        candidate_reqs,
+        key=lambda r: sort_key.get(r, (0, 0)),
+        reverse=True,
+    )[:limit]
+
+    logs: list[PlaybookAggregationChangeLog] = []
+    for req in sorted_reqs:
+        added = [
+            agent_playbook_to_snapshot(pb)
+            for eid in added_by_req[req]
+            if (pb := storage.get_agent_playbook_by_id(int(eid))) is not None
+        ]
+        removed = [
+            agent_playbook_to_snapshot(pb)
+            for eid in removed_by_req[req]
+            if (
+                pb := storage.get_agent_playbook_by_id(
+                    int(eid), include_tombstones=True
+                )
+            )
+            is not None
+        ]
+
+        if not added and not removed:
+            continue
+
+        first = added[0] if added else removed[0]
+        ts, _ = sort_key.get(req, (0, 0))
+        logs.append(
+            PlaybookAggregationChangeLog(
+                playbook_name=first.playbook_name,
+                agent_version=first.agent_version,
+                run_mode=run_mode_by_req.get(req, "incremental"),  # type: ignore[arg-type]
+                added_agent_playbooks=added,
+                removed_agent_playbooks=removed,
+                updated_agent_playbooks=[],
+                created_at=ts,
+            )
+        )
+
+    return PlaybookAggregationChangeLogResponse(success=True, change_logs=logs)

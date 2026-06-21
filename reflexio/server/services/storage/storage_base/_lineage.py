@@ -31,6 +31,7 @@ class LineageEventMixin:
         entity_type: str | None = None,
         entity_id: str | None = None,
         org_id: str | None = None,
+        request_id: str | None = None,
     ) -> list[LineageEvent]:
         """Retrieve lineage events, optionally filtered.
 
@@ -41,6 +42,8 @@ class LineageEventMixin:
                 no entity_id filter is applied.
             org_id (str | None): Filter to events for this org. If None, no
                 org_id filter is applied.
+            request_id (str | None): Filter to events for this request id. If
+                None, no request_id filter is applied.
 
         Returns:
             list[LineageEvent]: Matching events ordered by ``event_id`` ascending.

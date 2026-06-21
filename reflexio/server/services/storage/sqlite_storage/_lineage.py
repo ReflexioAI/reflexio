@@ -157,6 +157,7 @@ class SQLiteLineageMixin:
         entity_type: str | None = None,
         entity_id: str | None = None,
         org_id: str | None = None,
+        request_id: str | None = None,
     ) -> list[LineageEvent]:
         """Retrieve lineage events, optionally filtered.
 
@@ -164,6 +165,7 @@ class SQLiteLineageMixin:
             entity_type (str | None): Filter to events for this entity type.
             entity_id (str | None): Filter to events for this entity id.
             org_id (str | None): Filter to events for this org.
+            request_id (str | None): Filter to events for this request id.
 
         Returns:
             list[LineageEvent]: Matching events ordered by ``event_id`` ascending.
@@ -174,6 +176,7 @@ class SQLiteLineageMixin:
             ("entity_type", entity_type),
             ("entity_id", entity_id),
             ("org_id", org_id),
+            ("request_id", request_id),
         ):
             if val is not None:
                 clauses.append(f"{col}=?")
