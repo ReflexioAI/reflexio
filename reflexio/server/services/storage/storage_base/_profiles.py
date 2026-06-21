@@ -291,10 +291,10 @@ class ProfileMixin:
     ) -> int:
         """Soft-delete profiles by setting status to SUPERSEDED, emitting set-based lineage.
 
-        For each profile id that matches (user_id, current status=NULL), updates
-        status to SUPERSEDED and emits one ``status_change`` lineage event under the
-        shared ``request_id``.  Rows are NOT physically deleted — reads that exclude
-        tombstones will simply filter them out by status.
+        For each profile id that matches (user_id, current status in {NULL/CURRENT,
+        PENDING}), updates status to SUPERSEDED and emits one ``status_change``
+        lineage event under the shared ``request_id``.  Rows are NOT physically
+        deleted — reads that exclude tombstones will simply filter them out by status.
 
         Args:
             user_id (str): Owning user id. Predicate scoped to this user.

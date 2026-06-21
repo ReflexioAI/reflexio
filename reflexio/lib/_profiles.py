@@ -618,14 +618,23 @@ def reconstruct_profile_change_log(
         if evt.op == "status_change" and evt.to_status == "superseded":
             removal_by_req[key].append(evt.entity_id)
 
-    # The set of request_ids to reconstruct = union of:
-    #   (a) removal event request_ids  — runs that have dedup removals
-    #   (b) generated_from_request_id values on profiles — runs that have adds
-    # Both sets come from stable/immutable signals.  We collect (b) by looking
-    # at the profiles in each candidate request_id below.  To discover add-only
-    # runs (no matching removal events) we leverage the fact that lineage events
-    # are written for every op — we use all unique non-empty event request_ids
-    # as the candidate pool and filter to non-empty (added ∪ removed) groups.
+    # Candidate request_ids come from lineage EVENT request_ids (the runs that
+    # produced a dedup removal `status_change`/superseded event). For each such
+    # run, `added` is then pulled from the immutable `generated_from_request_id`
+    # column below.
+    #
+    # KNOWN LIMITATION (reconstruction-completeness gap): an ADD-ONLY dedup run
+    # (new profiles, nothing superseded) emits NO lineage event, so its
+    # request_id is absent from this pool and the run is OMITTED from
+    # reconstruction — even though the legacy log DID write a row for it
+    # (`add_profile_change_log` fires when `all_new_profiles or
+    # superseded_profiles`). This surfaces as a RECON-MISSING discrepancy in the
+    # parity gate, which MUST stay green before any endpoint cutover. The future
+    # B3 retirement must close this gap (e.g. union the distinct non-empty
+    # `generated_from_request_id` values into the candidate pool) before the
+    # reconstruction can replace the legacy log. Harmless on this branch:
+    # nothing serves `reconstruct_profile_change_log` (the endpoint still reads
+    # the legacy table; the repoint was reverted).
     candidate_req_ids: set[str] = set(sort_key.keys())
 
     sorted_keys = sorted(
