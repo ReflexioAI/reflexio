@@ -5,15 +5,17 @@ This is the DROP GATE for ProfileChangeLog.  Before the legacy
 
 Three cases are documented (matching the B3 spec):
 
-1. NORMAL SUPERSEDE — reconstruction equals legacy output (added/removed by
-   profile content and profile_id).
+1. NORMAL DEDUP RUN — reconstruction equals legacy output (added/removed by
+   profile content and profile_id).  Seeds via the REAL dedup path:
+   - adds via generated_from_request_id (immutable column)
+   - removes via supersede_profiles_by_ids (emits status_change+superseded)
 2. LEGACY-MISSING — a legacy row has no corresponding lineage event.  The
    reconstruction simply returns no row; the discrepancy is *tolerated*
    (best-effort drop), not a failure.
-3. PURGED TOMBSTONE — the incumbent tombstone was GC'd after the legacy row
-   was written.  Reconstruction yields an empty removed_profiles list rather
-   than crashing; the legacy row retains the original content.  Both outcomes
-   are documented and accepted.
+3. PURGED TOMBSTONE — the removed tombstone was GC'd after the legacy row was
+   written.  Reconstruction yields an empty removed_profiles list rather than
+   crashing; the legacy row retains the original content.  Both outcomes are
+   documented and accepted.
 """
 
 from __future__ import annotations
@@ -24,7 +26,6 @@ import pytest
 
 from reflexio.lib._profiles import reconstruct_profile_change_log
 from reflexio.models.api_schema.domain.entities import (
-    LineageContext,
     ProfileChangeLog,
     UserProfile,
 )
@@ -49,18 +50,19 @@ def _make_profile(
     user_id: str = "u1",
     profile_id: str = "p1",
     content: str = "hello world",
+    request_id: str = "",
 ) -> UserProfile:
     return UserProfile(
         user_id=user_id,
         profile_id=profile_id,
         content=content,
         last_modified_timestamp=int(datetime.now(UTC).timestamp()),
-        generated_from_request_id=f"req_{profile_id}",
+        generated_from_request_id=request_id,
         profile_time_to_live=ProfileTimeToLive.INFINITY,
     )
 
 
-def _dual_write_supersede(
+def _dual_write_dedup(
     s: SQLiteStorage,
     *,
     user_id: str,
@@ -70,24 +72,27 @@ def _dual_write_supersede(
     old_content: str = "old content",
     new_content: str = "new content",
 ) -> tuple[UserProfile, UserProfile]:
-    """Dual-write: legacy add_profile_change_log AND supersede_record.
+    """Dual-write: legacy add_profile_change_log AND real dedup path.
 
-    Mirrors production ProfileGenerationService which calls both paths
-    during the transition window before the legacy table is dropped.
+    The real dedup path:
+      - new profile carries generated_from_request_id == request_id (immutable add signal)
+      - old profile is soft-deleted via supersede_profiles_by_ids (emits
+        status_change+superseded — the dedup removal signal)
+
+    Also writes the legacy row so parity comparisons are possible.
     Returns (old_profile, new_profile).
     """
-    old = _make_profile(user_id=user_id, profile_id=old_id, content=old_content)
-    new = _make_profile(user_id=user_id, profile_id=new_id, content=new_content)
+    old = _make_profile(
+        user_id=user_id, profile_id=old_id, content=old_content, request_id="seed"
+    )
+    new = _make_profile(
+        user_id=user_id, profile_id=new_id, content=new_content, request_id=request_id
+    )
     s.add_user_profile(user_id, [old])
     s.add_user_profile(user_id, [new])
 
-    ctx = LineageContext(op_kind="revise", actor="reflection", request_id=request_id)
-    s.supersede_record(
-        entity_type="profile",
-        incumbent_id=old_id,
-        successor_id=new_id,
-        context=ctx,
-    )
+    # Dedup soft-delete: emits status_change(to_status="superseded", request_id=request_id)
+    s.supersede_profiles_by_ids(user_id, [old_id], request_id)
 
     # Legacy side: write to profile_change_logs table
     legacy_log = ProfileChangeLog(
@@ -104,20 +109,20 @@ def _dual_write_supersede(
 
 
 # ---------------------------------------------------------------------------
-# Case 1 — NORMAL SUPERSEDE: reconstruction equals legacy
+# Case 1 — NORMAL DEDUP RUN: reconstruction equals legacy
 # ---------------------------------------------------------------------------
 
 
-def test_reconstruction_parity_gate_normal_supersede(tmp_path):
-    """CORE INVARIANT: reconstruction == legacy for a normal supersede.
+def test_reconstruction_parity_gate_normal_dedup(tmp_path):
+    """CORE INVARIANT: reconstruction == legacy for a normal dedup run.
 
-    For every legacy ProfileChangeLog row produced by a supersede,
+    For every legacy ProfileChangeLog row produced by a dedup run,
     reconstruct_profile_change_log must yield a matching row with
     identical added_profiles and removed_profiles (by content and
     profile_id), and mentioned_profiles=[].
     """
     s = _store(tmp_path)
-    old_p, new_p = _dual_write_supersede(
+    old_p, new_p = _dual_write_dedup(
         s,
         user_id="u1",
         old_id="p-old",
@@ -135,8 +140,9 @@ def test_reconstruction_parity_gate_normal_supersede(tmp_path):
     # Reconstruction
     recon = reconstruct_profile_change_log(s)
     assert recon.success
-    assert len(recon.profile_change_logs) == 1, "expected exactly one reconstructed row"
-    row = recon.profile_change_logs[0]
+    rows_by_req = {row.request_id: row for row in recon.profile_change_logs}
+    assert "req-parity" in rows_by_req, "expected reconstructed row for req-parity"
+    row = rows_by_req["req-parity"]
 
     # --- request_id ---
     assert row.request_id == legacy.request_id
@@ -159,22 +165,24 @@ def test_reconstruction_parity_gate_normal_supersede(tmp_path):
     assert legacy.mentioned_profiles == []
     assert row.mentioned_profiles == []
 
-    # --- source_ids on the lineage event includes the incumbent ---
-    events = s.get_lineage_events(entity_id="p-new")
-    revise_events = [e for e in events if e.op == "revise"]
-    assert revise_events, "revise event must exist"
-    assert "p-old" in revise_events[0].source_ids
+    # --- dedup removal signal exists as status_change+superseded event ---
+    events = s.get_lineage_events(entity_id="p-old")
+    sc_events = [
+        e for e in events if e.op == "status_change" and e.to_status == "superseded"
+    ]
+    assert sc_events, "status_change+superseded event must exist for removed profile"
+    assert sc_events[0].request_id == "req-parity"
 
 
-def test_reconstruction_parity_gate_multi_supersede(tmp_path):
-    """Three supersedes: each reconstructed row matches its legacy counterpart."""
+def test_reconstruction_parity_gate_multi_dedup(tmp_path):
+    """Three dedup runs: each reconstructed row matches its legacy counterpart."""
     s = _store(tmp_path)
     pairs = [
         ("u1", f"old-{i}", f"new-{i}", f"req-multi-{i}", f"old-c-{i}", f"new-c-{i}")
         for i in range(3)
     ]
     for user_id, old_id, new_id, req_id, old_c, new_c in pairs:
-        _dual_write_supersede(
+        _dual_write_dedup(
             s,
             user_id=user_id,
             old_id=old_id,
@@ -190,7 +198,6 @@ def test_reconstruction_parity_gate_multi_supersede(tmp_path):
         for row in reconstruct_profile_change_log(s).profile_change_logs
     }
 
-    # Every legacy request_id must have a matching reconstruction.
     for req_id, legacy in legacy_by_req.items():
         assert req_id in recon_by_req, f"reconstruction missing req_id={req_id}"
         recon_row = recon_by_req[req_id]
@@ -218,11 +225,15 @@ def test_reconstruction_parity_gate_legacy_missing(tmp_path):
     """
     s = _store(tmp_path)
 
-    old_p = _make_profile(user_id="u1", profile_id="p-legacy-only-old")
-    new_p = _make_profile(user_id="u1", profile_id="p-legacy-only-new")
+    old_p = _make_profile(
+        user_id="u1", profile_id="p-legacy-only-old", request_id="legacy-seed"
+    )
+    new_p = _make_profile(
+        user_id="u1", profile_id="p-legacy-only-new", request_id="legacy-new"
+    )
     s.add_user_profile("u1", [old_p, new_p])
 
-    # Write ONLY the legacy row — no lineage event.
+    # Write ONLY the legacy row — no lineage event, no supersede_profiles_by_ids call.
     legacy_log = ProfileChangeLog(
         id=0,
         user_id="u1",
@@ -239,8 +250,9 @@ def test_reconstruction_parity_gate_legacy_missing(tmp_path):
     recon = reconstruct_profile_change_log(s)
 
     assert len(legacy_rows) == 1
-    assert recon.profile_change_logs == [], (
-        "LEGACY-MISSING: no lineage event means nothing to reconstruct"
+    req_ids = {row.request_id for row in recon.profile_change_logs}
+    assert "req-legacy-only" not in req_ids, (
+        "LEGACY-MISSING: no dedup signal means nothing to reconstruct"
     )
 
 
@@ -257,7 +269,7 @@ def test_reconstruction_parity_gate_purged_tombstone(tmp_path):
     than crashing.  Both outcomes are documented and accepted.
     """
     s = _store(tmp_path)
-    old_p, new_p = _dual_write_supersede(
+    old_p, new_p = _dual_write_dedup(
         s,
         user_id="u1",
         old_id="p-gc-old",
@@ -279,8 +291,9 @@ def test_reconstruction_parity_gate_purged_tombstone(tmp_path):
     # Reconstruction yields empty removed_profiles — graceful blank, not a crash.
     recon = reconstruct_profile_change_log(s)
     assert recon.success
-    assert len(recon.profile_change_logs) == 1
-    row = recon.profile_change_logs[0]
+    rows_by_req = {row.request_id: row for row in recon.profile_change_logs}
+    assert "req-gc" in rows_by_req
+    row = rows_by_req["req-gc"]
     assert row.removed_profiles == [], (
         "PURGED TOMBSTONE: reconstruction yields empty removed list, not a crash"
     )

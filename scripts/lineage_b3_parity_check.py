@@ -10,8 +10,14 @@ each discrepancy:
   RECON-MISSING  — legacy has a row but reconstruction produced nothing for
                    that request_id.  REAL GAP → exits non-zero, reports failure.
   LEGACY-MISSING — reconstruction produced a row but legacy has no matching
-                   request_id (e.g. lineage events exist but old log was not
+                   request_id (e.g. dedup events exist but old log was not
                    written).  Tolerated — best-effort drop.
+
+The reconstruction uses the time-travel-stable model:
+  - added(R)   = profiles with immutable generated_from_request_id == R
+                 (includes tombstones).
+  - removed(R) = entity_ids of status_change+superseded events with request_id == R
+                 (the dedup soft-delete signature; NOT reflection revise events).
 
 Prints a summary with counts per class.  Exits 0 when there are no RECON-MISSING
 gaps; exits 1 when at least one RECON-MISSING gap is found.

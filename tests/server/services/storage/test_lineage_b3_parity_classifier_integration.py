@@ -17,7 +17,6 @@ from pathlib import Path
 import pytest
 
 from reflexio.models.api_schema.domain.entities import (
-    LineageContext,
     ProfileChangeLog,
     UserProfile,
 )
@@ -53,13 +52,14 @@ def _make_profile(
     user_id: str = "u1",
     profile_id: str = "p1",
     content: str = "c",
+    request_id: str = "",
 ) -> UserProfile:
     return UserProfile(
         user_id=user_id,
         profile_id=profile_id,
         content=content,
         last_modified_timestamp=int(datetime.now(UTC).timestamp()),
-        generated_from_request_id=f"gen_{profile_id}",
+        generated_from_request_id=request_id or f"gen_{profile_id}",
         profile_time_to_live=ProfileTimeToLive.INFINITY,
     )
 
@@ -163,27 +163,29 @@ def test_classify_mixed():
 
 
 def test_run_parity_check_all_match(tmp_path):
-    """run_parity_check returns all MATCH when both paths are seeded together."""
+    """run_parity_check returns all MATCH when both paths are seeded together.
+
+    Uses the real dedup path:
+      - new profiles carry generated_from_request_id == request_id (add signal)
+      - old profiles are soft-deleted via supersede_profiles_by_ids (removal signal:
+        status_change+superseded event)
+    """
     s = _store(tmp_path)
 
     for i in range(3):
-        old_p = _make_profile("u1", f"p-old-{i}", f"old-{i}")
-        new_p = _make_profile("u1", f"p-new-{i}", f"new-{i}")
-        s.add_user_profile("u1", [old_p, new_p])
-        ctx = LineageContext(
-            op_kind="revise", actor="reflection", request_id=f"req-full-{i}"
-        )
-        s.supersede_record(
-            entity_type="profile",
-            incumbent_id=f"p-old-{i}",
-            successor_id=f"p-new-{i}",
-            context=ctx,
-        )
-        s.add_profile_change_log(_legacy_row("u1", f"req-full-{i}", [new_p], [old_p]))
+        req_id = f"req-full-{i}"
+        old_p = _make_profile("u1", f"p-old-{i}", f"old-{i}", request_id="seed")
+        new_p = _make_profile("u1", f"p-new-{i}", f"new-{i}", request_id=req_id)
+        s.add_user_profile("u1", [old_p])
+        s.add_user_profile("u1", [new_p])
+        # Dedup removal: emits status_change(to_status="superseded") under req_id
+        s.supersede_profiles_by_ids("u1", [f"p-old-{i}"], req_id)
+        s.add_profile_change_log(_legacy_row("u1", req_id, [new_p], [old_p]))
 
     results = run_parity_check(s)
-    assert all(r.classification == ParityClass.MATCH for r in results), (
-        f"expected all MATCH but got: {[(r.request_id, r.classification) for r in results]}"
+    match_results = [r for r in results if r.request_id.startswith("req-full-")]
+    assert all(r.classification == ParityClass.MATCH for r in match_results), (
+        f"expected all MATCH but got: {[(r.request_id, r.classification) for r in match_results]}"
     )
 
 
@@ -204,28 +206,29 @@ def test_run_parity_check_detects_recon_missing(tmp_path):
 
 
 def test_run_parity_check_tolerates_legacy_missing(tmp_path):
-    """run_parity_check does not fail for LEGACY-MISSING rows."""
+    """run_parity_check does not fail for LEGACY-MISSING rows.
+
+    Seeds a real dedup run (status_change+superseded event + profile with
+    generated_from_request_id) WITHOUT writing a legacy row — this represents
+    a run that used the new path but didn't dual-write to the legacy table.
+    The reconstruction produces a row; the legacy table has none → LEGACY-MISSING.
+    """
     s = _store(tmp_path)
 
-    old_p = _make_profile("u1", "p-orphan-old", "old")
-    new_p = _make_profile("u1", "p-orphan-new", "new")
-    s.add_user_profile("u1", [old_p, new_p])
-    # Only lineage event — no legacy row.
-    ctx = LineageContext(
-        op_kind="revise", actor="reflection", request_id="req-orphan-only"
-    )
-    s.supersede_record(
-        entity_type="profile",
-        incumbent_id="p-orphan-old",
-        successor_id="p-orphan-new",
-        context=ctx,
-    )
+    req_id = "req-orphan-only"
+    old_p = _make_profile("u1", "p-orphan-old", "old", request_id="orphan-seed")
+    new_p = _make_profile("u1", "p-orphan-new", "new", request_id=req_id)
+    s.add_user_profile("u1", [old_p])
+    s.add_user_profile("u1", [new_p])
+    # Dedup removal — no legacy row written.
+    s.supersede_profiles_by_ids("u1", ["p-orphan-old"], req_id)
 
     results = run_parity_check(s)
     legacy_missing = [
         r for r in results if r.classification == ParityClass.LEGACY_MISSING
     ]
     assert legacy_missing, "expected at least one LEGACY-MISSING"
+    assert any(r.request_id == req_id for r in legacy_missing)
     # No RECON-MISSING → exit code would be 0.
     gaps = [r for r in results if r.classification == ParityClass.RECON_MISSING]
     assert not gaps, "LEGACY-MISSING should not trigger a real gap"

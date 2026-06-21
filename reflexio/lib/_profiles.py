@@ -552,47 +552,48 @@ class ProfilesMixin(ReflexioBase):
 # Standalone read-side reconstruction (Phase B3 Task 2)
 # ---------------------------------------------------------------------------
 
-# Operations that signal an add/remove transition (supersede or merge).
-# Status-change-only events produce no change-log row — matching legacy
-# semantics where add_profile_change_log was only called when
-# all_new_profiles or superseded_profiles were present.
-_SUPERSEDE_OPS = frozenset({"revise", "merge"})
-
 
 def reconstruct_profile_change_log(
     storage: BaseStorage,
     *,
     limit: int = 100,
 ) -> ProfileChangeLogResponse:
-    """Rebuild the ProfileChangeLog view from the content-free lineage_event log.
+    """Rebuild the ProfileChangeLog view using time-travel-stable signals.
 
-    Reads ``lineage_event`` rows for ``entity_type="profile"`` whose ``op``
-    is ``"revise"`` or ``"merge"``, groups them by ``request_id`` (most-recent
-    first), and reconstructs each row by fetching live and tombstone profile
-    content from storage.  Matches the shape produced by the legacy
-    ``add_profile_change_log`` path:
+    Uses two immutable / stable signals to classify every dedup run:
 
-    * ``added_profiles``   — the successor / survivor (live row, or tombstone
-      fallback if already superseded again).
-    * ``removed_profiles`` — the incumbents from ``source_ids`` (tombstone
-      content via ``include_tombstones=True``).  When a tombstone body has
-      been physically purged (GDPR GC), the profile is silently omitted from
-      ``removed_profiles`` rather than crashing.
-    * ``mentioned_profiles = []`` — always empty (Stage-1 placeholder; the
-      legacy path also always wrote ``[]``).
+    * **added(R)** — profiles whose ``generated_from_request_id == R``.  This
+      column is set at creation and never changes, so it correctly classifies
+      a profile as "added in run R" even if it is later tombstoned in run R2.
+      Tombstones are included so the content is available.
 
-    Status-change-only events (no ``revise``/``merge`` in the same
-    ``request_id``) produce no change-log row — matching legacy semantics.
+    * **removed(R)** — entity_ids of ``status_change`` lineage events with
+      ``to_status == "superseded"`` and ``request_id == R``.  This is the
+      exact signature emitted by ``supersede_profiles_by_ids`` (the dedup
+      soft-delete path).  It is distinct from reflection which emits
+      ``op="revise"``, so reflection events are never mis-counted as removals.
+
+    Groups are formed over the union of request_ids from both signals.
+    Request_id ``""`` is skipped — it would merge unrelated runs.
+    A row is emitted only when ``added ∪ removed`` is non-empty (matching
+    legacy semantics: ``add_profile_change_log`` was called only when
+    ``all_new_profiles or superseded_profiles``).
+
+    ``mentioned_profiles = []`` — always empty (Stage-1 shape; the legacy
+    path also always wrote ``[]``).
+
+    When a removed profile's tombstone has been physically purged (GDPR GC),
+    it is silently omitted from ``removed_profiles`` rather than crashing.
 
     Args:
         storage (BaseStorage): Storage instance to query.
-        limit (int): Maximum number of reconstructed change-log entries to
-            return.  Defaults to 100.
+        limit (int): Maximum number of reconstructed entries to return.
+            Defaults to 100.
 
     Returns:
         ProfileChangeLogResponse: ``success=True`` with reconstructed rows
-            ordered most-recent first (by the maximum ``created_at`` in each
-            ``request_id`` group), capped at ``limit``.
+            ordered most-recent first (by max event ``created_at`` in each
+            request_id group), capped at ``limit``.
     """
     if limit == 0:
         return ProfileChangeLogResponse(success=True, profile_change_logs=[])
@@ -601,63 +602,64 @@ def reconstruct_profile_change_log(
         entity_type="profile", org_id=storage.org_id
     )
 
-    # Keep only revise / merge ops — the ones that represent an add/remove.
-    supersede_events = [e for e in all_events if e.op in _SUPERSEDE_OPS]
-
-    # Group by request_id; track the most-recent (created_at, event_id) per group
-    # for stable ordering.  event_id is the autoincrement PK so it breaks ties
-    # when two groups share the same second-resolution timestamp.
-    groups: dict[str, list] = defaultdict(list)
-    group_sort_key: dict[str, tuple[int, int]] = defaultdict(lambda: (0, 0))
-    for evt in supersede_events:
+    # Dedup soft-delete signature: status_change to_status=="superseded".
+    # Each such event records one profile removed in the dedup run ``request_id``.
+    # Distinct from reflection which emits op="revise" — so revise events are
+    # never counted as removals here.
+    removal_by_req: dict[str, list[str]] = defaultdict(list)
+    sort_key: dict[str, tuple[int, int]] = {}  # request_id -> (created_at, event_id)
+    for evt in all_events:
         key = evt.request_id
-        groups[key].append(evt)
-        cur_ts, cur_eid = group_sort_key[key]
-        if (evt.created_at, evt.event_id) > (cur_ts, cur_eid):
-            group_sort_key[key] = (evt.created_at, evt.event_id)
+        if not key:
+            continue  # skip empty-string request_ids — never merge unrelated runs
+        cur = sort_key.get(key, (0, 0))
+        if (evt.created_at, evt.event_id) > cur:
+            sort_key[key] = (evt.created_at, evt.event_id)
+        if evt.op == "status_change" and evt.to_status == "superseded":
+            removal_by_req[key].append(evt.entity_id)
 
-    # Sort groups most-recent first, then apply the limit.
-    sorted_keys = sorted(group_sort_key, key=lambda k: group_sort_key[k], reverse=True)
-    sorted_keys = sorted_keys[:limit]
+    # The set of request_ids to reconstruct = union of:
+    #   (a) removal event request_ids  — runs that have dedup removals
+    #   (b) generated_from_request_id values on profiles — runs that have adds
+    # Both sets come from stable/immutable signals.  We collect (b) by looking
+    # at the profiles in each candidate request_id below.  To discover add-only
+    # runs (no matching removal events) we leverage the fact that lineage events
+    # are written for every op — we use all unique non-empty event request_ids
+    # as the candidate pool and filter to non-empty (added ∪ removed) groups.
+    candidate_req_ids: set[str] = set(sort_key.keys())
+
+    sorted_keys = sorted(
+        candidate_req_ids,
+        key=lambda k: sort_key.get(k, (0, 0)),
+        reverse=True,
+    )[:limit]
 
     logs: list[ProfileChangeLog] = []
-    for key in sorted_keys:
-        evts = groups[key]
-        # Derive created_at and request_id from the group.
-        created_at, _ = group_sort_key[key]
-        request_id = key
+    for req_id in sorted_keys:
+        # added: profiles whose generated_from_request_id == req_id (any status,
+        # include tombstones — a profile added in R1 and tombstoned in R2 is still
+        # "added in R1").
+        added = storage.get_profiles_by_generated_from_request_id(req_id)
 
-        # Collect added (successor) and removed (incumbent) profiles.
-        added: list = []
+        # removed: dedup-superseded profiles from this run's lineage events.
         removed: list = []
+        for entity_id in removal_by_req.get(req_id, []):
+            profile = storage.get_profile_by_id(entity_id, include_tombstones=True)
+            if profile is not None:
+                removed.append(profile)
+            # Tombstone physically purged (GDPR GC) → silently omit; no crash.
 
-        for evt in evts:
-            # successor / survivor — prefer live row, fall back to tombstone.
-            successor = storage.get_profile_by_id(
-                evt.entity_id, include_tombstones=False
-            )
-            if successor is None:
-                successor = storage.get_profile_by_id(
-                    evt.entity_id, include_tombstones=True
-                )
-            if successor is not None:
-                added.append(successor)
+        if not added and not removed:
+            # No dedup activity for this request_id — skip to match legacy semantics.
+            continue
 
-            # incumbents — must use tombstone lookup (status=SUPERSEDED/MERGED).
-            for src_id in evt.source_ids:
-                tombstone = storage.get_profile_by_id(src_id, include_tombstones=True)
-                if tombstone is not None:
-                    removed.append(tombstone)
-                # If tombstone was physically purged (GDPR GC), silently omit —
-                # do NOT crash; the content is gone by design.
-
+        created_at, _ = sort_key.get(req_id, (0, 0))
+        user_id = added[0].user_id if added else removed[0].user_id
         logs.append(
             ProfileChangeLog(
                 id=0,
-                user_id=added[0].user_id
-                if added
-                else (removed[0].user_id if removed else ""),
-                request_id=request_id,
+                user_id=user_id,
+                request_id=req_id,
                 created_at=created_at,
                 added_profiles=added,
                 removed_profiles=removed,

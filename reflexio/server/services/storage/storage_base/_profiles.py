@@ -262,6 +262,27 @@ class ProfileMixin:
         raise NotImplementedError
 
     @abstractmethod
+    def get_profiles_by_generated_from_request_id(
+        self,
+        request_id: str,
+    ) -> list[UserProfile]:
+        """Return all profiles (any status, including tombstones) for a given generated_from_request_id.
+
+        Scoped to the org. Used by reconstruct_profile_change_log to find the
+        "added" side of a dedup run without depending on mutable status columns.
+        The column is set at profile creation and never changes — it is the
+        time-travel-stable signal for "added in run R".
+
+        Args:
+            request_id (str): The generated_from_request_id value to filter on.
+
+        Returns:
+            list[UserProfile]: All profiles (live or tombstone) whose
+                ``generated_from_request_id`` matches, scoped by org.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     def supersede_profiles_by_ids(
         self,
         user_id: str,

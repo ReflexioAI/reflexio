@@ -461,6 +461,25 @@ class ProfileMixin:
         return _row_to_profile(row) if row else None
 
     @SQLiteStorageBase.handle_exceptions
+    def get_profiles_by_generated_from_request_id(
+        self,
+        request_id: str,
+    ) -> list[UserProfile]:
+        """Return all profiles for a generated_from_request_id, including tombstones.
+
+        Args:
+            request_id (str): The generated_from_request_id to filter on.
+
+        Returns:
+            list[UserProfile]: All matching profiles (any status).
+        """
+        rows = self._fetchall(
+            "SELECT * FROM profiles WHERE generated_from_request_id = ?",
+            (request_id,),
+        )
+        return [_row_to_profile(r) for r in rows]
+
+    @SQLiteStorageBase.handle_exceptions
     def archive_profile_by_id(self, user_id: str, profile_id: str) -> bool:
         with self._lock:
             cur = self.conn.execute(

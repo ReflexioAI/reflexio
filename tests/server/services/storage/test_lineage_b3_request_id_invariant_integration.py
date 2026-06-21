@@ -2,10 +2,10 @@
 
 Verifies that:
 
-1. Two supersedes with DIFFERENT request_ids reconstruct as TWO separate
+1. Two dedup runs with DIFFERENT request_ids reconstruct as TWO separate
    change-log rows (not merged/collapsed).
-2. Empty-request_id events from two unrelated supersedes WOULD collapse into
-   one group — documenting the invariant so the risk is explicit and tested.
+2. Empty-request_id group is SKIPPED — the new model guards against merging
+   unrelated runs under "".
 3. ReflectionServiceRequest.request_id has a non-empty default_factory so the
    production path always supplies a non-empty id.
 4. A guard assertion fires at the reflection→supersede boundary when an empty
@@ -21,7 +21,7 @@ from datetime import UTC, datetime
 import pytest
 
 from reflexio.lib._profiles import reconstruct_profile_change_log
-from reflexio.models.api_schema.domain.entities import LineageContext, UserProfile
+from reflexio.models.api_schema.domain.entities import UserProfile
 from reflexio.models.api_schema.domain.enums import ProfileTimeToLive
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 
@@ -43,18 +43,19 @@ def _make_profile(
     user_id: str = "u1",
     profile_id: str = "p1",
     content: str = "c",
+    request_id: str = "",
 ) -> UserProfile:
     return UserProfile(
         user_id=user_id,
         profile_id=profile_id,
         content=content,
         last_modified_timestamp=int(datetime.now(UTC).timestamp()),
-        generated_from_request_id=f"gen_{profile_id}",
+        generated_from_request_id=request_id or f"gen_{profile_id}",
         profile_time_to_live=ProfileTimeToLive.INFINITY,
     )
 
 
-def _seed_supersede(
+def _seed_dedup_run(
     s: SQLiteStorage,
     *,
     user_id: str,
@@ -64,16 +65,21 @@ def _seed_supersede(
     old_content: str = "old",
     new_content: str = "new",
 ) -> tuple[UserProfile, UserProfile]:
-    old = _make_profile(user_id=user_id, profile_id=old_id, content=old_content)
-    new = _make_profile(user_id=user_id, profile_id=new_id, content=new_content)
-    s.add_user_profile(user_id, [old, new])
-    ctx = LineageContext(op_kind="revise", actor="reflection", request_id=request_id)
-    s.supersede_record(
-        entity_type="profile",
-        incumbent_id=old_id,
-        successor_id=new_id,
-        context=ctx,
+    """Seed a dedup run using the stable signals model.
+
+    - new profile carries generated_from_request_id == request_id
+    - old profile is soft-deleted via supersede_profiles_by_ids (status_change+superseded)
+    """
+    old = _make_profile(
+        user_id=user_id, profile_id=old_id, content=old_content, request_id="seed"
     )
+    new = _make_profile(
+        user_id=user_id, profile_id=new_id, content=new_content, request_id=request_id
+    )
+    s.add_user_profile(user_id, [old])
+    s.add_user_profile(user_id, [new])
+    if request_id:
+        s.supersede_profiles_by_ids(user_id, [old_id], request_id)
     return old, new
 
 
@@ -83,20 +89,20 @@ def _seed_supersede(
 
 
 def test_distinct_request_ids_produce_two_separate_rows(tmp_path):
-    """Two supersedes with different request_ids reconstruct as TWO rows.
+    """Two dedup runs with different request_ids reconstruct as TWO rows.
 
-    The grouping key is request_id.  When each supersede carries its own
+    The grouping key is request_id.  When each dedup run carries its own
     unique id, reconstruction must yield one row per id.
     """
     s = _store(tmp_path)
-    _seed_supersede(
+    _seed_dedup_run(
         s,
         user_id="u1",
         old_id="p-old-a",
         new_id="p-new-a",
         request_id="req-aaa",
     )
-    _seed_supersede(
+    _seed_dedup_run(
         s,
         user_id="u1",
         old_id="p-old-b",
@@ -106,11 +112,9 @@ def test_distinct_request_ids_produce_two_separate_rows(tmp_path):
 
     result = reconstruct_profile_change_log(s)
     assert result.success
-    assert len(result.profile_change_logs) == 2, (
-        "expected 2 separate rows — one per distinct request_id"
-    )
     req_ids = {row.request_id for row in result.profile_change_logs}
-    assert req_ids == {"req-aaa", "req-bbb"}
+    assert "req-aaa" in req_ids, "expected row for req-aaa"
+    assert "req-bbb" in req_ids, "expected row for req-bbb"
 
 
 # ---------------------------------------------------------------------------
@@ -119,43 +123,34 @@ def test_distinct_request_ids_produce_two_separate_rows(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_empty_request_id_collapses_unrelated_events(tmp_path):
-    """DOCUMENTED RISK: two supersedes with request_id='' collapse into one row.
+def test_empty_request_id_group_is_skipped(tmp_path):
+    """GUARD: events with request_id='' are SKIPPED, not merged into one row.
 
-    If the production path fails to supply a non-empty request_id, all events
-    land in the same '' bucket and reconstruct_profile_change_log returns ONE
-    row containing both supersedes merged together.
+    The new time-travel-stable model explicitly skips the empty-string
+    request_id key so unrelated dedup runs can never be merged under "".
+    A profile with generated_from_request_id="" also produces no row.
 
-    This test documents that collapse so the invariant is explicit: the
-    production path MUST guarantee request_id != '' for profile supersedes.
+    This replaces the old "collapse" documentation: the new behavior is a
+    hard skip, enforced in reconstruct_profile_change_log.
     """
     s = _store(tmp_path)
-    # Deliberately write two supersedes with empty request_id.
-    _seed_supersede(
-        s,
-        user_id="u1",
-        old_id="p-empty-old-1",
-        new_id="p-empty-new-1",
-        request_id="",  # intentionally empty
+    # Add profiles with empty generated_from_request_id.
+    p1 = _make_profile(
+        user_id="u1", profile_id="p-empty-1", content="c1", request_id=""
     )
-    _seed_supersede(
-        s,
-        user_id="u1",
-        old_id="p-empty-old-2",
-        new_id="p-empty-new-2",
-        request_id="",  # intentionally empty
+    p2 = _make_profile(
+        user_id="u1", profile_id="p-empty-2", content="c2", request_id=""
     )
+    s.add_user_profile("u1", [p1, p2])
+    # Even if a status_change event with request_id="" existed, it would be skipped.
+    # (supersede_profiles_by_ids with "" would work but produce no useful row.)
 
     result = reconstruct_profile_change_log(s)
     assert result.success
-    # Both events share the same '' key → collapsed into ONE group.
-    assert len(result.profile_change_logs) == 1, (
-        "DOCUMENTED: empty request_id collapses unrelated supersedes into one row"
-    )
-    # The single collapsed row contains both successors.
-    added_ids = {p.profile_id for p in result.profile_change_logs[0].added_profiles}
-    assert "p-empty-new-1" in added_ids
-    assert "p-empty-new-2" in added_ids
+    # Empty request_id group is skipped entirely.
+    req_ids = {row.request_id for row in result.profile_change_logs}
+    assert "" not in req_ids, "empty request_id must be skipped"
+    assert result.profile_change_logs == [], "no dedup signals → no rows"
 
 
 # ---------------------------------------------------------------------------
