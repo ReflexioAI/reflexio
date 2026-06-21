@@ -357,8 +357,6 @@ class PlaybookMixin:
     @SQLiteStorageBase.handle_exceptions
     def delete_user_playbook(self, user_playbook_id: int) -> None:
         with self._lock:
-            self._fts_delete("user_playbooks_fts", user_playbook_id)
-            self._vec_delete("user_playbooks_vec", user_playbook_id)
             cur = self.conn.execute(
                 "DELETE FROM user_playbooks WHERE user_playbook_id = ?",
                 (user_playbook_id,),
@@ -371,6 +369,7 @@ class PlaybookMixin:
                     entity_id=str(user_playbook_id),
                     request_id=uuid.uuid4().hex,
                 )
+            self._delete_playbook_search_rows("user", [user_playbook_id], commit=False)
             self.conn.commit()
 
     @SQLiteStorageBase.handle_exceptions
@@ -522,19 +521,18 @@ class PlaybookMixin:
             where += " AND playbook_name = ?"
             params.append(playbook_name)
 
-        # Clean up FTS + vec
-        ids = [
-            r["user_playbook_id"]
-            for r in self._fetchall(
-                f"SELECT user_playbook_id FROM user_playbooks WHERE {where}", params
-            )
-        ]
-        if ids:
-            with self._lock:
-                self._delete_playbook_search_rows("user", ids)
-                self.conn.commit()
-
-        cur = self._execute(f"DELETE FROM user_playbooks WHERE {where}", params)
+        with self._lock:
+            ids = [
+                r["user_playbook_id"]
+                for r in self.conn.execute(
+                    f"SELECT user_playbook_id FROM user_playbooks WHERE {where}", params
+                ).fetchall()
+            ]
+            if not ids:
+                return 0
+            cur = self.conn.execute(f"DELETE FROM user_playbooks WHERE {where}", params)
+            self._delete_playbook_search_rows("user", ids, commit=False)
+            self.conn.commit()
         return cur.rowcount
 
     @SQLiteStorageBase.handle_exceptions
@@ -891,8 +889,6 @@ class PlaybookMixin:
     @SQLiteStorageBase.handle_exceptions
     def delete_agent_playbook(self, agent_playbook_id: int) -> None:
         with self._lock:
-            self._fts_delete("agent_playbooks_fts", agent_playbook_id)
-            self._vec_delete("agent_playbooks_vec", agent_playbook_id)
             cur = self.conn.execute(
                 "DELETE FROM agent_playbooks WHERE agent_playbook_id = ?",
                 (agent_playbook_id,),
@@ -905,6 +901,9 @@ class PlaybookMixin:
                     entity_id=str(agent_playbook_id),
                     request_id=uuid.uuid4().hex,
                 )
+            self._delete_playbook_search_rows(
+                "agent", [agent_playbook_id], commit=False
+            )
             self.conn.commit()
 
     @SQLiteStorageBase.handle_exceptions
