@@ -575,7 +575,7 @@ def reconstruct_profile_change_log(
 
     Groups are formed over the union of request_ids from both signals.
     Request_id ``""`` is skipped — it would merge unrelated runs.
-    A row is emitted only when ``added ∪ removed`` is non-empty (matching
+    A row is emitted only when ``added or removed`` is non-empty (matching
     legacy semantics: ``add_profile_change_log`` was called only when
     ``all_new_profiles or superseded_profiles``).
 
@@ -595,7 +595,7 @@ def reconstruct_profile_change_log(
             ordered most-recent first (by max event ``created_at`` in each
             request_id group), capped at ``limit``.
     """
-    if limit == 0:
+    if limit <= 0:
         return ProfileChangeLogResponse(success=True, profile_change_logs=[])
 
     all_events = storage.get_lineage_events(

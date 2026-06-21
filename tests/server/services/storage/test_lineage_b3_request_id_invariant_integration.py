@@ -132,6 +132,10 @@ def test_empty_request_id_group_is_skipped(tmp_path):
 
     This replaces the old "collapse" documentation: the new behavior is a
     hard skip, enforced in reconstruct_profile_change_log.
+
+    Seeds rows with TRULY empty generated_from_request_id (bypassing the
+    _make_profile helper's ``or`` fallback by constructing directly) to ensure
+    the skip is exercised, not vacuously passing on an empty DB.
     """
     s = _store(tmp_path)
     # Add profiles with TRULY empty generated_from_request_id (bypass the
@@ -153,11 +157,20 @@ def test_empty_request_id_group_is_skipped(tmp_path):
         profile_time_to_live=ProfileTimeToLive.INFINITY,
     )
     s.add_user_profile("u1", [p1, p2])
-    # Even if a status_change event with request_id="" existed, it would be skipped.
+    # Verify the seed was actually persisted (non-vacuous guard): query the
+    # DB directly to confirm empty generated_from_request_id rows are present.
+    rows = s.conn.execute(
+        "SELECT profile_id FROM profiles WHERE generated_from_request_id = ''",
+    ).fetchall()
+    assert len(rows) == 2, (
+        "test setup failed: expected 2 profiles with empty generated_from_request_id "
+        f"in storage, got {len(rows)}"
+    )
 
     result = reconstruct_profile_change_log(s)
     assert result.success
-    # Empty request_id group is skipped entirely.
+    # Empty request_id group is skipped entirely — the seeded rows are in storage
+    # but the empty-string key is excluded before grouping.
     req_ids = {row.request_id for row in result.profile_change_logs}
     assert "" not in req_ids, "empty request_id must be skipped"
     assert result.profile_change_logs == [], "empty generated_from_request_id → no rows"

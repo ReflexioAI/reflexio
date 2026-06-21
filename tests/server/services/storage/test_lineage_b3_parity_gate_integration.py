@@ -9,9 +9,9 @@ Three cases are documented (matching the B3 spec):
    profile content and profile_id).  Seeds via the REAL dedup path:
    - adds via generated_from_request_id (immutable column)
    - removes via supersede_profiles_by_ids (emits status_change+superseded)
-2. LEGACY-MISSING — a legacy row has no corresponding lineage event.  The
-   reconstruction simply returns no row; the discrepancy is *tolerated*
-   (best-effort drop), not a failure.
+2. RECON-MISSING — a legacy row has no corresponding lineage event.  The
+   reconstruction simply returns no row; the discrepancy means the gate
+   classifier flags it as a real gap (RECON-MISSING, exits non-zero).
 3. PURGED TOMBSTONE — the removed tombstone was GC'd after the legacy row was
    written.  Reconstruction yields an empty removed_profiles list rather than
    crashing; the legacy row retains the original content.  Both outcomes are
@@ -198,6 +198,21 @@ def test_reconstruction_parity_gate_multi_dedup(tmp_path):
         for row in reconstruct_profile_change_log(s).profile_change_logs
     }
 
+    # Exact request_id set check: legacy must contain exactly the seeded req_ids,
+    # and every seeded req_id must appear in reconstruction.
+    # (Reconstruction may additionally surface "seed" profiles added before any
+    # dedup run — those have no legacy counterpart and are expected extra output;
+    # they don't invalidate the gate.)
+    seeded_req_ids = {req_id for _, _, _, req_id, _, _ in pairs}
+    assert set(legacy_by_req) == seeded_req_ids, (
+        f"legacy request_ids must exactly match seeded set: "
+        f"legacy={set(legacy_by_req)!r} seeded={seeded_req_ids!r}"
+    )
+    assert seeded_req_ids <= set(recon_by_req), (
+        f"seeded request_ids missing from reconstruction: "
+        f"{seeded_req_ids - set(recon_by_req)}"
+    )
+
     for req_id, legacy in legacy_by_req.items():
         assert req_id in recon_by_req, f"reconstruction missing req_id={req_id}"
         recon_row = recon_by_req[req_id]
@@ -212,16 +227,17 @@ def test_reconstruction_parity_gate_multi_dedup(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Case 2 — LEGACY-MISSING: legacy row with no lineage event (tolerated)
+# Case 2 — RECON-MISSING: legacy row with no lineage event (real gap)
 # ---------------------------------------------------------------------------
 
 
-def test_reconstruction_parity_gate_legacy_missing(tmp_path):
-    """A legacy row with no lineage event reconstructs as nothing — TOLERATED.
+def test_reconstruction_parity_gate_recon_missing(tmp_path):
+    """A legacy row with no lineage event reconstructs as nothing — RECON-MISSING.
 
     This happens if a legacy row was written by old code that did not
     yet emit lineage events.  The parity checker classifies this as
-    LEGACY-MISSING and tolerates it (not a failure).
+    RECON-MISSING (legacy has a row, reconstruction does not) — a real gap
+    that triggers a non-zero exit in the gate script.
     """
     s = _store(tmp_path)
 

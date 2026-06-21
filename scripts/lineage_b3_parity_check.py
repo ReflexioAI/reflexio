@@ -92,13 +92,24 @@ def classify_parity(
             MATCH, RECON-MISSING, or LEGACY-MISSING.
     """
     legacy_by_req: dict[str, ProfileChangeLog] = {}
+    legacy_dupes: list[str] = []
     for row in legacy_rows:
-        # Last-write wins on duplicate request_ids (should not happen in production).
+        if row.request_id in legacy_by_req:
+            legacy_dupes.append(row.request_id)
         legacy_by_req[row.request_id] = row
 
     recon_by_req: dict[str, ProfileChangeLog] = {}
+    recon_dupes: list[str] = []
     for row in recon_rows:
+        if row.request_id in recon_by_req:
+            recon_dupes.append(row.request_id)
         recon_by_req[row.request_id] = row
+
+    if legacy_dupes or recon_dupes:
+        raise ValueError(
+            f"Duplicate request_ids detected — parity comparison is ambiguous. "
+            f"Legacy dupes: {legacy_dupes!r}. Recon dupes: {recon_dupes!r}."
+        )
 
     all_req_ids = set(legacy_by_req) | set(recon_by_req)
     results: list[ParityResult] = []
@@ -142,6 +153,9 @@ def classify_parity(
     return results
 
 
+_READ_CAP = 10_000
+
+
 def run_parity_check(storage: BaseStorage) -> list[ParityResult]:
     """Run both paths against storage and classify each request_id.
 
@@ -151,9 +165,32 @@ def run_parity_check(storage: BaseStorage) -> list[ParityResult]:
 
     Returns:
         list[ParityResult]: Classified results, one per distinct request_id.
+
+    Raises:
+        SystemExit: If either side returns exactly ``_READ_CAP`` rows, the
+            comparison may be based on truncated data and cannot be trusted.
+            The run is treated as INCONCLUSIVE and exits non-zero.
     """
-    legacy_rows = storage.get_profile_change_logs(limit=10_000)
-    recon_resp = reconstruct_profile_change_log(storage, limit=10_000)
+    legacy_rows = storage.get_profile_change_logs(limit=_READ_CAP)
+    recon_resp = reconstruct_profile_change_log(storage, limit=_READ_CAP)
+
+    truncated: list[str] = []
+    if len(legacy_rows) >= _READ_CAP:
+        truncated.append(f"legacy ({len(legacy_rows)} rows == cap)")
+    if len(recon_resp.profile_change_logs) >= _READ_CAP:
+        truncated.append(
+            f"reconstruction ({len(recon_resp.profile_change_logs)} rows == cap)"
+        )
+
+    if truncated:
+        print(
+            f"\nINCONCLUSIVE: data may be truncated at the {_READ_CAP}-row cap — "
+            f"{', '.join(truncated)}. "
+            "Re-run after raising the cap or filtering the dataset.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
     return classify_parity(legacy_rows, recon_resp.profile_change_logs)
 
 

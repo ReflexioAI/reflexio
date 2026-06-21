@@ -55,7 +55,7 @@ def is_feature_enabled(org_id: str, feature_name: str) -> bool:
     if feature_config.get("enabled", False):
         return True
 
-    enabled_org_ids = feature_config.get("enabled_org_ids", [])
+    enabled_org_ids = feature_config.get("enabled_org_ids", []) or []
     return org_id in enabled_org_ids
 
 
@@ -136,7 +136,7 @@ def is_dedup_soft_delete_enabled(org_id: str) -> bool:
     if feature_config.get("enabled", False):
         return True
 
-    enabled_org_ids = feature_config.get("enabled_org_ids", [])
+    enabled_org_ids = feature_config.get("enabled_org_ids", []) or []
     return org_id in enabled_org_ids
 
 

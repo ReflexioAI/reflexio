@@ -257,6 +257,40 @@ class TestDedupSoftDeleteFlag(unittest.TestCase):
         self.assertTrue(is_feature_enabled("org-any", key))
         self.assertFalse(is_dedup_soft_delete_enabled("org-any"))
 
+    @patch(
+        "reflexio.server.site_var.feature_flags._get_feature_flags_config",
+        return_value={
+            "dedup_soft_delete": {"enabled": False, "enabled_org_ids": None},
+        },
+    )
+    def test_explicit_null_enabled_org_ids_returns_false(self, _mock):
+        """Explicit null enabled_org_ids must not raise TypeError.
+
+        When ``enabled_org_ids`` is explicitly null (None) in config, the
+        membership check must treat it as an empty list and return False,
+        not raise TypeError.
+        """
+        self.assertFalse(is_dedup_soft_delete_enabled("org-pilot"))
+
+
+class TestIsFeatureFlagsNullOrgIds(unittest.TestCase):
+    """Null-safety tests for is_feature_enabled with null enabled_org_ids."""
+
+    @patch(
+        "reflexio.server.site_var.feature_flags._get_feature_flags_config",
+        return_value={
+            "some_feature": {"enabled": False, "enabled_org_ids": None},
+        },
+    )
+    def test_explicit_null_enabled_org_ids_returns_false(self, _mock):
+        """Explicit null enabled_org_ids must not raise TypeError in is_feature_enabled.
+
+        When ``enabled_org_ids`` is explicitly null (None) in config, the
+        membership check must treat it as an empty list and return False,
+        not raise TypeError.
+        """
+        self.assertFalse(is_feature_enabled("org-any", "some_feature"))
+
 
 if __name__ == "__main__":
     unittest.main()

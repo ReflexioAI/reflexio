@@ -184,6 +184,7 @@ def test_run_parity_check_all_match(tmp_path):
 
     results = run_parity_check(s)
     match_results = [r for r in results if r.request_id.startswith("req-full-")]
+    assert match_results, "expected at least one req-full-* result (non-vacuous guard)"
     assert all(r.classification == ParityClass.MATCH for r in match_results), (
         f"expected all MATCH but got: {[(r.request_id, r.classification) for r in match_results]}"
     )
