@@ -1241,6 +1241,13 @@ class PlaybookMixin:
                     if isinstance(row, dict) or hasattr(row, "keys")
                     else row[0]
                 )
+                # NOTE (M3): The model supersede_profiles_by_ids adds an eligible-check
+                # `if old_status_val not in eligible: continue` before the UPDATE. For
+                # agent_playbooks the ineligible condition spans two columns (status in
+                # _TOMBSTONE_STATUS_VALUES OR playbook_status == APPROVED), so aligning
+                # would require adding playbook_status to the SELECT. The UPDATE WHERE
+                # clause already excludes those rows atomically; the extra continue here
+                # would be a no-op and not worth the added complexity.
                 cur = self.conn.execute(
                     "UPDATE agent_playbooks SET status = ?"
                     " WHERE agent_playbook_id = ? AND playbook_status != ?"
@@ -1299,11 +1306,11 @@ class PlaybookMixin:
         if agent_version is not None:
             sql += " AND agent_version = ?"
             params.append(agent_version)
+        rows = self.conn.execute(sql, params).fetchall()
+        if not rows:
+            return 0
         updated = 0
         with self._lock:
-            rows = self.conn.execute(sql, params).fetchall()
-            if not rows:
-                return 0
             for row in rows:
                 apid = row["agent_playbook_id"] if hasattr(row, "keys") else row[0]
                 old_status = row["status"] if hasattr(row, "keys") else row[1]
