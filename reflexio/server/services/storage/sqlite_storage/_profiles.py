@@ -810,6 +810,11 @@ class ProfileMixin:
                 "DELETE FROM interactions_fts WHERE rowid = ?",
                 (request.interaction_id,),
             )
+            if self._has_sqlite_vec:
+                self.conn.execute(
+                    "DELETE FROM interactions_vec WHERE rowid = ?",
+                    (request.interaction_id,),
+                )
             self.conn.execute(
                 "DELETE FROM interactions WHERE user_id = ? AND interaction_id = ?",
                 (request.user_id, request.interaction_id),
@@ -831,6 +836,10 @@ class ProfileMixin:
             self.conn.execute(
                 f"DELETE FROM interactions_fts WHERE rowid IN ({placeholders})", ids
             )
+            if self._has_sqlite_vec:
+                self.conn.execute(
+                    f"DELETE FROM interactions_vec WHERE rowid IN ({placeholders})", ids
+                )
             self.conn.execute("DELETE FROM interactions WHERE user_id = ?", (user_id,))
             self.conn.commit()
 
@@ -838,6 +847,8 @@ class ProfileMixin:
     def delete_all_interactions(self) -> None:
         with self._lock:
             self.conn.execute("DELETE FROM interactions_fts")
+            if self._has_sqlite_vec:
+                self.conn.execute("DELETE FROM interactions_vec")
             self.conn.execute("DELETE FROM interactions")
             self.conn.commit()
 
@@ -862,6 +873,10 @@ class ProfileMixin:
             self.conn.execute(
                 f"DELETE FROM interactions_fts WHERE rowid IN ({placeholders})", ids
             )
+            if self._has_sqlite_vec:
+                self.conn.execute(
+                    f"DELETE FROM interactions_vec WHERE rowid IN ({placeholders})", ids
+                )
             self.conn.execute(
                 f"DELETE FROM interactions WHERE interaction_id IN ({placeholders})",
                 ids,
