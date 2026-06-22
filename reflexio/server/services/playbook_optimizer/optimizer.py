@@ -535,7 +535,14 @@ def _supersede_user_playbook(
     Returns:
         int | None: ``user_playbook_id`` of the successor, or ``None`` if the
             incumbent was not CURRENT.
+
+    Raises:
+        ValueError: If ``request_id`` is empty or None.
     """
+    if not request_id:
+        raise ValueError(
+            "_supersede_user_playbook: request_id must be non-empty (run-correlation id)"
+        )
     successor = incumbent.model_copy(
         update={"user_playbook_id": 0, "content": best_content, "status": None}
     )
@@ -587,7 +594,14 @@ def _supersede_agent_playbook(
     Returns:
         int | None: ``agent_playbook_id`` of the successor, or ``None`` if the
             incumbent was not CURRENT.
+
+    Raises:
+        ValueError: If ``request_id`` is empty or None.
     """
+    if not request_id:
+        raise ValueError(
+            "_supersede_agent_playbook: request_id must be non-empty (run-correlation id)"
+        )
     successor = incumbent.model_copy(
         update={
             "agent_playbook_id": 0,

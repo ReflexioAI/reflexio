@@ -4,6 +4,11 @@ Tests the ``_supersede_user_playbook`` and ``_supersede_agent_playbook`` helpers
 that were extracted from ``PlaybookOptimizer._commit_if_allowed`` as part of the
 lineage Phase A work.  These helpers are unit-tested directly against a real
 SQLite storage so no full PlaybookOptimizer construction is needed.
+
+B3 request_id contract: each supersede call must stamp a non-empty, job-derived
+request_id on its revise lineage event, enabling correct run-correlation (tying
+optimizer/edit events to their originating job).  An empty request_id would coerce
+to "" and be silently rejected by the non-empty guard in ``supersede_record``.
 """
 
 from __future__ import annotations
@@ -228,23 +233,55 @@ def test_supersede_agent_playbook_returns_none_for_non_current_incumbent(tmp_pat
 
 
 # ---------------------------------------------------------------------------
-# Regression: two optimizer passes on the same agent_playbook must produce
-# two distinct, non-colliding lineage events (not silently drop the second).
-# Bug: _supersede_agent_playbook passed request_id=None which coerced to ""
-# causing (org, "agent_playbook", id, "revise", "") to collide on the second
-# call — ON CONFLICT DO NOTHING silently discarded the second event.
+# B3 contract: helpers stamp a non-empty, job-derived request_id on revise events
 # ---------------------------------------------------------------------------
 
 
-def test_two_optimizer_passes_produce_distinct_revise_events(tmp_path):
-    """Regression: two optimizer supersede calls on the same incumbent emit two events.
+def test_supersede_user_playbook_revise_event_carries_job_request_id(tmp_path):
+    """_supersede_user_playbook stamps the passed request_id on the revise event.
 
-    Pre-fix: both calls used request_id="" (coerced from None) so the second
-    INSERT OR IGNORE hit the unique constraint and was silently dropped,
-    leaving only one event in the log.
+    The value of the B3 request_id change is correct run-correlation: tying each
+    optimizer/edit event to its originating job id.  The revise event's request_id
+    must be non-empty and equal the run id passed in — not empty, not the incumbent's
+    birth request_id.
+    """
+    storage = _storage(tmp_path)
+    incumbent = UserPlaybook(
+        user_id="u1",
+        agent_version="v1",
+        request_id="birth-req-original",
+        playbook_name="support",
+        content="old content",
+    )
+    storage.save_user_playbooks([incumbent])
 
-    Post-fix: each call receives a distinct job-derived request_id so both
-    events are stored and both are non-empty.
+    run_id = "optjob_42"
+    result = _supersede_user_playbook(
+        storage,
+        incumbent,
+        "new content",
+        "playbook_optimizer",
+        request_id=run_id,
+    )
+
+    assert result is not None
+    events = storage.get_lineage_events(
+        entity_type="user_playbook", entity_id=str(result)
+    )
+    assert len(events) == 1
+    assert events[0].op == "revise"
+    assert events[0].request_id == run_id, (
+        f"revise event must carry the job-derived run id {run_id!r}, "
+        f"got {events[0].request_id!r}"
+    )
+    assert events[0].request_id != "", "revise event request_id must not be empty"
+
+
+def test_supersede_agent_playbook_revise_event_carries_job_request_id(tmp_path):
+    """_supersede_agent_playbook stamps the passed request_id on the revise event.
+
+    Same contract as the user-playbook helper: the lineage event's request_id
+    must equal the job-derived run id, enabling correct run-correlation.
     """
     storage = _storage(tmp_path)
     [incumbent] = storage.save_agent_playbooks(
@@ -252,57 +289,79 @@ def test_two_optimizer_passes_produce_distinct_revise_events(tmp_path):
             AgentPlaybook(
                 playbook_name="support",
                 agent_version="v1",
-                content="original content",
+                content="old agent content",
                 playbook_status=PlaybookStatus.PENDING,
             )
         ]
     )
 
-    # First optimizer pass — simulates job 101
-    result_1 = _supersede_agent_playbook(
+    run_id = "optjob_99"
+    result = _supersede_agent_playbook(
         storage,
         incumbent,
-        "improved content v1",
+        "new agent content",
         "playbook_optimizer",
-        request_id="optjob_101",
+        request_id=run_id,
     )
-    assert result_1 is not None, "first supersede should succeed"
 
-    # Restore the incumbent to CURRENT so a second pass can supersede it again
-    # (simulates a separate optimizer run picking up the same original row
-    # before the first pass has committed, or replays on a fresh incumbent copy).
-    # In practice we re-insert the original incumbent and supersede it again.
-    [incumbent2] = storage.save_agent_playbooks(
+    assert result is not None
+    events = storage.get_lineage_events(
+        entity_type="agent_playbook", entity_id=str(result)
+    )
+    assert len(events) == 1
+    assert events[0].op == "revise"
+    assert events[0].request_id == run_id, (
+        f"revise event must carry the job-derived run id {run_id!r}, "
+        f"got {events[0].request_id!r}"
+    )
+    assert events[0].request_id != "", "revise event request_id must not be empty"
+
+
+def test_supersede_user_playbook_raises_on_empty_request_id(tmp_path):
+    """_supersede_user_playbook raises ValueError on empty request_id before any write."""
+    storage = _storage(tmp_path)
+    incumbent = UserPlaybook(
+        user_id="u1",
+        agent_version="v1",
+        request_id="birth-req",
+        playbook_name="support",
+        content="old content",
+    )
+    storage.save_user_playbooks([incumbent])
+
+    import pytest
+
+    with pytest.raises(ValueError, match="request_id must be non-empty"):
+        _supersede_user_playbook(
+            storage, incumbent, "new content", "playbook_optimizer", request_id=""
+        )
+
+    # No orphan successor should have been inserted
+    count = storage.conn.execute("SELECT COUNT(*) FROM user_playbooks").fetchone()[0]
+    assert count == 1, "no orphan row should be inserted when request_id is empty"
+
+
+def test_supersede_agent_playbook_raises_on_empty_request_id(tmp_path):
+    """_supersede_agent_playbook raises ValueError on empty request_id before any write."""
+    storage = _storage(tmp_path)
+    [incumbent] = storage.save_agent_playbooks(
         [
             AgentPlaybook(
                 playbook_name="support",
                 agent_version="v1",
-                content="original content",
+                content="old content",
                 playbook_status=PlaybookStatus.PENDING,
             )
         ]
     )
 
-    # Second optimizer pass — simulates job 102 (different request_id)
-    result_2 = _supersede_agent_playbook(
-        storage,
-        incumbent2,
-        "improved content v2",
-        "playbook_optimizer",
-        request_id="optjob_102",
-    )
-    assert result_2 is not None, "second supersede should succeed"
+    import pytest
 
-    # Both revise events must exist and carry distinct non-empty request_ids
-    events = storage.get_lineage_events(entity_type="agent_playbook")
-    revise_events = [e for e in events if e.op == "revise"]
-    assert len(revise_events) == 2, (
-        f"expected 2 distinct revise events, got {len(revise_events)}; "
-        "the second may have been silently dropped by ON CONFLICT DO NOTHING "
-        "(regression: request_id=None coerced to '' causing key collision)"
-    )
-    request_ids = {e.request_id for e in revise_events}
-    assert "" not in request_ids, "no revise event should have an empty request_id"
-    assert request_ids == {"optjob_101", "optjob_102"}, (
-        f"expected distinct job-derived request_ids, got {request_ids}"
-    )
+    with pytest.raises(ValueError, match="request_id must be non-empty"):
+        _supersede_agent_playbook(
+            storage, incumbent, "new content", "playbook_optimizer", request_id=""
+        )
+
+    # No orphan successor should have been inserted
+    count = storage.conn.execute("SELECT COUNT(*) FROM agent_playbooks").fetchone()[0]
+    assert count == 1, "no orphan row should be inserted when request_id is empty"

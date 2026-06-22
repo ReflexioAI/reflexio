@@ -18,6 +18,7 @@ def apply_playbook_edit(
     incumbent_id: int,
     new_playbook: UserPlaybook,
     source: str,
+    request_id: str,
 ) -> int:
     """Insert a replacement playbook then atomically supersede the incumbent.
 
@@ -38,18 +39,27 @@ def apply_playbook_edit(
             ``status=None``).
         source: Provenance label stored on the new playbook row and in the
             lineage event actor field.
+        request_id: Operation-run correlation id for the lineage event. Must be
+            non-empty; use the reflection run id (``ReflectionServiceRequest.request_id``)
+            or another operation-scoped id. Raises ``ValueError`` immediately
+            (before any storage write) when empty, preventing orphaned successor rows.
 
     Returns:
         The ``user_playbook_id`` of the newly inserted playbook, or ``-1`` if
         the incumbent was not CURRENT (no mutation; no orphan left behind).
+
+    Raises:
+        ValueError: If ``request_id`` is empty or None.
     """
+    if not request_id:
+        raise ValueError(
+            "apply_playbook_edit: request_id must be non-empty (operation-run correlation id)"
+        )
     new_playbook.source = source
     storage.save_user_playbooks([new_playbook])
     new_id: int = new_playbook.user_playbook_id
 
-    ctx = LineageContext(
-        op_kind="revise", actor=source, request_id=new_playbook.request_id
-    )
+    ctx = LineageContext(op_kind="revise", actor=source, request_id=request_id)
     superseded = storage.supersede_record(
         entity_type="user_playbook",
         incumbent_id=str(incumbent_id),

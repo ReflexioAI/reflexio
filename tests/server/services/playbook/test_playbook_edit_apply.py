@@ -3,6 +3,8 @@
 import tempfile
 from unittest.mock import patch
 
+import pytest
+
 from reflexio.models.api_schema.domain.entities import UserPlaybook
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 
@@ -38,7 +40,11 @@ def test_apply_inserts_new_and_archives_incumbent():
 
             new = _playbook(content="new")
             new_id = apply_playbook_edit(
-                s, incumbent_id=old_id, new_playbook=new, source="offline_optimizer"
+                s,
+                incumbent_id=old_id,
+                new_playbook=new,
+                source="offline_optimizer",
+                request_id="run-abc",
             )
         assert new_id > 0
 
@@ -67,7 +73,11 @@ def test_apply_skips_archive_when_incumbent_not_current():
 
             new = _playbook(content="new")
             new_id = apply_playbook_edit(
-                s, incumbent_id=old_id, new_playbook=new, source="offline_optimizer"
+                s,
+                incumbent_id=old_id,
+                new_playbook=new,
+                source="offline_optimizer",
+                request_id="run-abc",
             )
         # Optimistic-concurrency: incumbent was already archived → skip and return -1
         assert new_id == -1
@@ -93,6 +103,7 @@ def test_apply_expect_current_false_archives():
                 incumbent_id=old_id,
                 new_playbook=new,
                 source="offline_optimizer",
+                request_id="run-abc",
             )
         assert new_id > 0
 
@@ -130,6 +141,7 @@ def test_apply_expect_current_false_returns_minus1_and_no_orphan():
                 incumbent_id=old_id,
                 new_playbook=new,
                 source="offline_optimizer",
+                request_id="run-abc",
             )
         # supersede_record returned False → -1, successor cleaned up (no orphan)
         assert new_id == -1
@@ -138,3 +150,81 @@ def test_apply_expect_current_false_returns_minus1_and_no_orphan():
         all_pbs = s.get_user_playbooks(user_id="u1")
         current_ids = {p.user_playbook_id for p in all_pbs if p.status is None}
         assert len(current_ids) == 0
+
+
+def test_apply_raises_on_empty_request_id_before_write():
+    """apply_playbook_edit raises ValueError on empty request_id before any storage write.
+
+    The I2 (orphan) guard: an empty request_id is rejected immediately so no
+    successor row is ever inserted when the caller forgets to supply a run id.
+    """
+    from reflexio.server.services.playbook.playbook_edit_apply import (
+        apply_playbook_edit,
+    )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        s = _storage(tmp)
+        with patch.object(SQLiteStorage, "_get_embedding", return_value=[0.0] * 512):
+            old = _playbook(content="old")
+            s.save_user_playbooks([old])
+            old_id = old.user_playbook_id
+
+        with pytest.raises(ValueError, match="request_id must be non-empty"):
+            apply_playbook_edit(
+                s,
+                incumbent_id=old_id,
+                new_playbook=_playbook(content="new"),
+                source="offline_optimizer",
+                request_id="",
+            )
+
+        # No orphan: no successor row was inserted
+        count = s.conn.execute(
+            "SELECT COUNT(*) FROM user_playbooks WHERE status IS NULL"
+        ).fetchone()[0]
+        # The original old playbook was archived by archive_user_playbook_by_id;
+        # without that call here the incumbent is still CURRENT; count must be 1
+        # (only the original, no successor).
+        assert count == 1, (
+            "no orphan successor row should be inserted on empty request_id"
+        )
+
+
+def test_apply_lineage_event_carries_operation_run_id():
+    """apply_playbook_edit records the operation-run request_id on the revise event.
+
+    The lineage event must carry the operation request_id (the reflection run id),
+    NOT the incumbent's birth request_id.  This enables correct run-correlation.
+    """
+    from reflexio.server.services.playbook.playbook_edit_apply import (
+        apply_playbook_edit,
+    )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        s = _storage(tmp)
+        with patch.object(SQLiteStorage, "_get_embedding", return_value=[0.0] * 512):
+            old = _playbook(content="old")
+            s.save_user_playbooks([old])
+            old_id = old.user_playbook_id
+            assert old_id > 0
+
+            operation_run_id = "reflection_run_xyz"
+            new = _playbook(content="new")
+            new_id = apply_playbook_edit(
+                s,
+                incumbent_id=old_id,
+                new_playbook=new,
+                source="reflection",
+                request_id=operation_run_id,
+            )
+        assert new_id > 0
+
+        events = s.get_lineage_events(
+            entity_type="user_playbook", entity_id=str(new_id)
+        )
+        assert len(events) == 1
+        assert events[0].op == "revise"
+        assert events[0].request_id == operation_run_id, (
+            f"lineage event must carry the operation run id {operation_run_id!r}, "
+            f"not the incumbent's birth request_id {old.request_id!r}"
+        )

@@ -604,6 +604,7 @@ class ReflectionService:
                 incumbent_id=cited.user_playbook_id,
                 new_playbook=new_playbook,
                 source=new_playbook.source or "reflection",
+                request_id=request.request_id,
             )
         except Exception as exc:  # noqa: BLE001
             with sentry_tags(
