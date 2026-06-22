@@ -14,8 +14,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
+from typing import TYPE_CHECKING
 
 from reflexio.models.api_schema.domain.entities import ProfileChangeLog, UserProfile
+
+if TYPE_CHECKING:
+    from reflexio.server.services.storage.storage_base import BaseStorage
 
 
 class ParityClass(StrEnum):
@@ -197,7 +201,7 @@ def classify_change_log_parity(
     return results
 
 
-def profile_reconstructible_request_ids(storage: object) -> set[str]:
+def profile_reconstructible_request_ids(storage: BaseStorage) -> set[str]:
     """Compute the set of request_ids that have reconstructible signals.
 
     These are request_ids where reconstruction *could* produce a row:
@@ -206,17 +210,17 @@ def profile_reconstructible_request_ids(storage: object) -> set[str]:
     distinguish RECON_MISSING (a real gap) from LEGACY_MISSING (tolerated).
 
     Args:
-        storage: Any ``BaseStorage`` instance that implements
+        storage (BaseStorage): Any ``BaseStorage`` instance that implements
             ``get_distinct_generated_from_request_ids`` and
             ``get_lineage_events``.
 
     Returns:
         set[str]: Request ids with at least one reconstructible signal.
     """
-    ids: set[str] = set(storage.get_distinct_generated_from_request_ids())  # type: ignore[union-attr]
-    for evt in storage.get_lineage_events(  # type: ignore[union-attr]
+    ids: set[str] = set(storage.get_distinct_generated_from_request_ids())
+    for evt in storage.get_lineage_events(
         entity_type="profile",
-        org_id=storage.org_id,  # type: ignore[union-attr]
+        org_id=storage.org_id,
     ):
         if (
             evt.op == "status_change"

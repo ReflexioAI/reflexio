@@ -303,14 +303,14 @@ def test_coverage_usage_event_recorded(
 ) -> None:
     """(c) Exactly one lineage.reconstruct.coverage event is emitted.
 
-    Seeds two runs:
-      - One MATCH (add-only): new profile stamped with req-id, old superseded,
-        but no removed_profiles in the legacy row → add_only_runs should be 1.
-      - One MATCH (remove-bearing): legacy row has a non-empty removed_profiles
-        list → remove_bearing_runs should be 1.
+    Seeds three runs, all of which produce MATCH:
+      - "req-add-only": new profile (add-only), no removed_profiles in legacy row.
+      - "seed-rem": seed profile for the remove-bearing run; reconstruction
+        produces an add-only row for it; we add a matching legacy row.
+      - "req-remove-bearing": the actual dedup run; legacy row has removed_profiles.
 
-    Asserts: event_category="lineage", add_only_runs and remove_bearing_runs
-    are integers, and their values match expectations.
+    Asserts: event_category="lineage", add_only_runs=2, remove_bearing_runs=1,
+    outcome="match" (zero divergences).
     """
     org_id = storage.org_id
 
@@ -333,6 +333,10 @@ def test_coverage_usage_event_recorded(
     storage.add_profile_change_log(
         _make_change_log("u1", "req-remove-bearing", [new_rem], [old_rem])
     )
+    # Add legacy row for "seed-rem" so reconstruction (which produces an add-only
+    # row for old_rem's generated_from_request_id) finds a matching legacy entry
+    # → MATCH instead of CONTENT_MISMATCH.
+    storage.add_profile_change_log(_make_change_log("u1", "seed-rem", [old_rem], []))
 
     with patch(
         "reflexio.server.site_var.feature_flags._get_feature_flags_config",
@@ -358,11 +362,15 @@ def test_coverage_usage_event_recorded(
     assert isinstance(meta.get("remove_bearing_runs"), int), (
         f"remove_bearing_runs must be int; got {type(meta.get('remove_bearing_runs'))}"
     )
-    assert meta["add_only_runs"] == 1, (
-        f"expected add_only_runs=1; got {meta['add_only_runs']}"
+    # req-add-only and seed-rem both produce add-only MATCH rows (legacy removed=[]).
+    assert meta["add_only_runs"] == 2, (
+        f"expected add_only_runs=2; got {meta['add_only_runs']}"
     )
     assert meta["remove_bearing_runs"] == 1, (
         f"expected remove_bearing_runs=1; got {meta['remove_bearing_runs']}"
+    )
+    assert evt.outcome == "match", (
+        f"expected outcome='match' (zero divergences); got {evt.outcome!r}"
     )
 
 
@@ -403,11 +411,17 @@ def test_non_disruption_returns_none_and_does_not_mutate_legacy(
     legacy_after_on = storage.get_profile_change_logs()
 
     # With flag OFF.
+    capturing_recorder.events.clear()
     with patch(
         "reflexio.server.site_var.feature_flags._get_feature_flags_config",
         return_value=_FLAG_DISABLED_CONFIG,
     ):
         result_off = dual_read_diff(reflexio_stub, org_id)
+
+    # A disabled flag must emit ZERO usage events (no side-effects at all).
+    assert not capturing_recorder.events, (
+        f"expected no usage events when flag is OFF; got: {capturing_recorder.events}"
+    )
 
     legacy_after_off = storage.get_profile_change_logs()
 

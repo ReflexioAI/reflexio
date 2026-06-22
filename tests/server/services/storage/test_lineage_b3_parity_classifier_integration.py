@@ -296,6 +296,7 @@ def test_run_parity_check_tolerates_legacy_missing(tmp_path) -> None:
     assert any(r.request_id == req_id for r in content_mismatch), (
         f"Expected CONTENT_MISMATCH for {req_id!r}; got {[(r.request_id, r.classification) for r in results]}"
     )
-    # No RECON-MISSING → exit code will correctly reflect any real gaps (none here).
+    # No RECON-MISSING → only CONTENT_MISMATCH (recon-only) which IS a gap and
+    # would cause exit 1, but not a RECON_MISSING gap.
     gaps = [r for r in results if r.classification == ParityClass.RECON_MISSING]
     assert not gaps, "recon-only run should not trigger RECON-MISSING"

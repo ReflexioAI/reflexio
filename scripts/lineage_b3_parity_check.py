@@ -20,7 +20,10 @@ The reconstruction uses the time-travel-stable model:
                  (the dedup soft-delete signature; NOT reflection revise events).
 
 Prints a summary with counts per class.  Exits 0 when there are no RECON-MISSING
-gaps; exits 1 when at least one RECON-MISSING gap is found.
+or CONTENT-MISMATCH gaps; exits 1 when at least one such gap is found.  Note:
+recon-only runs (reconstruction produced a run absent from legacy) are classified
+as CONTENT_MISMATCH and therefore count as a gap → exit 1.  The old offline
+analysis tolerated recon-only as exit 0; this script does not.
 
 Usage (SQLite):
     uv run python scripts/lineage_b3_parity_check.py --db-path path/to/db --org-id myorg
