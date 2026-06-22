@@ -36,7 +36,7 @@ import json
 import os
 from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Any
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 from reflexio.test_support.llm_model_registry import get_model_registry
@@ -93,13 +93,53 @@ def _extraction_finish_args(prompt_content: str) -> dict[str, Any]:
     same schema marker the content-mode path uses.
     """
     registry = get_model_registry()
+    # Both extraction entries carry dict ``minimal_valid`` payloads (the
+    # ``| str`` arm of the registry type only applies to raw-string entries).
     if '"playbooks"' in prompt_content:
-        return registry["playbook_extraction"].minimal_valid
-    return registry["profile_extraction"].minimal_valid
+        return cast(dict[str, Any], registry["playbook_extraction"].minimal_valid)
+    return cast(dict[str, Any], registry["profile_extraction"].minimal_valid)
+
+
+def _find_schema_key(node: Any, key: str) -> bool:
+    """Recursively report whether ``key`` appears anywhere in a JSON schema."""
+    if isinstance(node, dict):
+        if key in node:
+            return True
+        return any(_find_schema_key(v, key) for v in node.values())
+    if isinstance(node, list):
+        return any(_find_schema_key(v, key) for v in node)
+    return False
+
+
+def _assert_response_format_strict_compatible(kwargs: dict[str, Any]) -> None:
+    """Guard every structured-output call: a ``json_schema`` response_format sent
+    to the provider must be OpenAI strict-mode compatible (no ``oneOf`` /
+    ``discriminator``). Pydantic discriminated unions emit ``oneOf``, which strict
+    structured-output endpoints reject with a 400 (Sentry PYTHON-FASTAPI-9J) — a
+    failure the canned mock would otherwise hide. Raw Pydantic-class
+    response_format (the unsupported-provider passthrough) is skipped: that path
+    is handled by LiteLLM/the provider, not by an explicit strict schema.
+    """
+    response_format = kwargs.get("response_format")
+    if not isinstance(response_format, dict):
+        return
+    if response_format.get("type") != "json_schema":
+        return
+    schema = response_format.get("json_schema", {}).get("schema")
+    if not isinstance(schema, dict):
+        return
+    for banned in ("oneOf", "discriminator"):
+        if _find_schema_key(schema, banned):
+            raise AssertionError(
+                f"response_format json_schema contains '{banned}' — OpenAI strict "
+                "structured outputs reject it. Normalize via make_strict_json_schema "
+                "before sending (Sentry PYTHON-FASTAPI-9J)."
+            )
 
 
 def _mock_completion(*args: Any, **kwargs: Any) -> MagicMock:
     """Mock implementation for litellm.completion."""
+    _assert_response_format_strict_compatible(kwargs)
     messages = kwargs.get("messages", args[0] if args else [])
     prompt_content = ""
     for message in messages:

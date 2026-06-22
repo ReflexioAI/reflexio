@@ -1175,9 +1175,9 @@ class TestStrictStructuredOutputRequest:
         # (strict structured-output endpoints reject `oneOf`).
 
         # Sanity: the raw Pydantic schema really does emit the rejected keyword.
-        raw_items = _DiscriminatedOutput.model_json_schema()["properties"][
-            "decisions"
-        ]["items"]
+        raw_items = _DiscriminatedOutput.model_json_schema()["properties"]["decisions"][
+            "items"
+        ]
         assert "oneOf" in raw_items
 
         client = _build_client(LiteLLMConfig(model="minimax/MiniMax-M3"))
@@ -1198,6 +1198,26 @@ class TestStrictStructuredOutputRequest:
         assert _find_schema_keys(sent_schema, "discriminator") == []
         # The variants are preserved as `anyOf` so generation stays constrained.
         assert "anyOf" in sent_schema["properties"]["decisions"]["items"]
+
+    def test_real_minimax_gate_normalizes_without_mocking_predicate(self):
+        # The bug slipped because every strict-schema test PATCHED
+        # _supports_response_schema. This one does NOT — it exercises the real
+        # litellm capability lookup + allowlist for the actual default prod model
+        # (minimax). With the discriminated-union output, the response_format
+        # actually built must be a normalized dict with no oneOf/discriminator.
+        client = _build_client(LiteLLMConfig(model="minimax/MiniMax-M3"))
+        params, _, _, _, _ = client._build_completion_params(
+            [{"role": "user", "content": "test"}],
+            response_format=_DiscriminatedOutput,
+        )
+        provider_format = params["response_format"]
+        assert isinstance(provider_format, dict), (
+            "minimax must receive a normalized strict schema, not the raw Pydantic "
+            "model (Sentry PYTHON-FASTAPI-9J)"
+        )
+        schema = provider_format["json_schema"]["schema"]
+        assert _find_schema_keys(schema, "oneOf") == []
+        assert _find_schema_keys(schema, "discriminator") == []
 
     def test_strict_response_format_can_be_disabled_per_call(self):
         client = _build_client(LiteLLMConfig(model="gpt-4o-mini"))
