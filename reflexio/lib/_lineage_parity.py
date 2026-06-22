@@ -138,10 +138,9 @@ def classify_change_log_parity(
         recon_by_req[row.request_id] = row
 
     all_dupes = legacy_dupes | recon_dupes
-    results: list[ParityResult] = []
 
     # Emit one INCONCLUSIVE per duplicate id; skip duplicates in all other logic.
-    results = [
+    results: list[ParityResult] = [
         ParityResult(
             request_id=req_id,
             classification=ParityClass.INCONCLUSIVE,
