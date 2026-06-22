@@ -136,7 +136,9 @@ def _emit_metrics(
         event_name="lineage.reconstruct.coverage",
         event_category="lineage",
         count_value=len(matches),
-        outcome="diverged" if divergences else "match",
+        outcome=(
+            "diverged" if divergences else "inconclusive" if inconclusive else "match"
+        ),
         metadata={
             "add_only_runs": add_only_runs,
             "remove_bearing_runs": remove_bearing_runs,

@@ -269,14 +269,14 @@ def test_run_parity_check_detects_recon_missing(tmp_path) -> None:
     assert any(r.request_id == "req-gap-only" for r in gaps)
 
 
-def test_run_parity_check_tolerates_legacy_missing(tmp_path) -> None:
-    """run_parity_check does not fail for LEGACY-MISSING rows.
+def test_run_parity_check_recon_only_is_content_mismatch(tmp_path) -> None:
+    """run_parity_check classifies a recon-only run as CONTENT_MISMATCH (not RECON-MISSING).
 
     Seeds a real dedup run (status_change+superseded event + profile with
     generated_from_request_id) WITHOUT writing a legacy row — this represents
     a run that used the new path but didn't dual-write to the legacy table.
     The reconstruction produces a row; the legacy table has none → CONTENT_MISMATCH
-    (recon-only).
+    (recon-only). This is a gap (exit 1) but distinct from a RECON-MISSING gap.
     """
     s = _store(tmp_path)
 
