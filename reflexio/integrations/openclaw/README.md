@@ -74,8 +74,9 @@ and `openclaw-smart repair`.
   `force_extraction=True` so the session's learnings are available before
   the next openClaw run.
 
-The full design lives in
-[`docs/superpowers/specs/2026-05-19-openclaw-smart-design.md`](../../../../docs/superpowers/specs/2026-05-19-openclaw-smart-design.md).
+For shipped behavior, use this README plus the plugin contract in
+[`plugin/README.md`](plugin/README.md); internal design notes are not packaged
+with the public repository.
 
 ## Skills
 
