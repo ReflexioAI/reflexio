@@ -1043,7 +1043,11 @@ def unified_search_endpoint(
 def get_profile_change_log(
     org_id: str = Depends(default_get_org_id),
 ) -> ProfileChangeLogViewResponse:
-    response = get_reflexio(org_id=org_id).get_profile_change_logs()
+    from reflexio.server.lineage_parity_shim import dual_read_diff
+
+    rfx = get_reflexio(org_id=org_id)
+    response = rfx.get_profile_change_logs()
+    dual_read_diff(rfx, org_id)
     return ProfileChangeLogViewResponse(
         success=response.success,
         profile_change_logs=[
