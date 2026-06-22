@@ -7,8 +7,8 @@ SQLite storage so no full PlaybookOptimizer construction is needed.
 
 B3 request_id contract: each supersede call must stamp a non-empty, job-derived
 request_id on its revise lineage event, enabling correct run-correlation (tying
-optimizer/edit events to their originating job).  An empty request_id would coerce
-to "" and be silently rejected by the non-empty guard in ``supersede_record``.
+optimizer/edit events to their originating job).  An empty request_id is rejected
+loudly (``ValueError``) by the guard at the top of each helper, before any write.
 """
 
 from __future__ import annotations
