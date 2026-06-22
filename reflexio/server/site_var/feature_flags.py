@@ -264,3 +264,25 @@ def is_resumable_extraction_agent_enabled(org_id: str) -> bool:
         bool: True if the resumable extraction agent is enabled
     """
     return is_feature_enabled(org_id, "resumable_extraction_agent")
+
+
+def is_lineage_dual_read_diff_enabled(org_id: str) -> bool:
+    """
+    Check if the lineage dual-read diff path is enabled for a given organization.
+
+    Defaults to DISABLED when the key is absent from config (default-CLOSED). This
+    flag gates an experimental read path that compares new and old lineage query
+    results side-by-side; it must never activate accidentally on unconfigured
+    deployments.
+
+    A feature is enabled only if:
+    - The feature's "enabled" field is True (globally enabled), OR
+    - The org_id is in the feature's "enabled_org_ids" list.
+
+    Args:
+        org_id (str): The organization ID to check
+
+    Returns:
+        bool: True only if the feature is explicitly enabled for this org
+    """
+    return _is_fail_closed_flag_enabled(org_id, "lineage_dual_read_diff")
