@@ -17,8 +17,9 @@ def isolate_state_dir(monkeypatch, tmp_path):
 
 
 def test_cmd_show_fetches_all_entities(capsys):
-    with patch("openclaw_smart.cli.Adapter") as Ad, patch(
-        "openclaw_smart.cli.ids.resolve_project_id", return_value="proj-x"
+    with (
+        patch("openclaw_smart.cli.Adapter") as Ad,
+        patch("openclaw_smart.cli.ids.resolve_project_id", return_value="proj-x"),
     ):
         Ad.return_value.fetch_all.return_value = ([], [], [])
         rc = cli.cmd_show(Namespace(project=None))
@@ -28,8 +29,9 @@ def test_cmd_show_fetches_all_entities(capsys):
 
 
 def test_cmd_show_renders_markdown(capsys):
-    with patch("openclaw_smart.cli.Adapter") as Ad, patch(
-        "openclaw_smart.cli.ids.resolve_project_id", return_value="proj-x"
+    with (
+        patch("openclaw_smart.cli.Adapter") as Ad,
+        patch("openclaw_smart.cli.ids.resolve_project_id", return_value="proj-x"),
     ):
         Ad.return_value.fetch_all.return_value = (
             [{"user_playbook_id": "abc", "content": "Test rule"}],
@@ -43,8 +45,9 @@ def test_cmd_show_renders_markdown(capsys):
 
 
 def test_cmd_show_honors_project_override(capsys):
-    with patch("openclaw_smart.cli.Adapter") as Ad, patch(
-        "openclaw_smart.cli.ids.resolve_project_id", return_value="ignored"
+    with (
+        patch("openclaw_smart.cli.Adapter") as Ad,
+        patch("openclaw_smart.cli.ids.resolve_project_id", return_value="ignored"),
     ):
         Ad.return_value.fetch_all.return_value = ([], [], [])
         cli.cmd_show(Namespace(project="explicit-proj"))
@@ -63,8 +66,9 @@ def test_cmd_learn_force_extracts(isolate_state_dir):
     from openclaw_smart import state
 
     state.append("sess-1", {"role": "User", "content": "x"})
-    with patch("openclaw_smart.cli.publish") as pub, patch(
-        "openclaw_smart.cli.ids.resolve_project_id", return_value="proj-x"
+    with (
+        patch("openclaw_smart.cli.publish") as pub,
+        patch("openclaw_smart.cli.ids.resolve_project_id", return_value="proj-x"),
     ):
         pub.publish_unpublished.return_value = ("ok", 1)
         rc = cli.cmd_learn(Namespace(session=None, project=None, note=None))
@@ -78,8 +82,9 @@ def test_cmd_learn_appends_note(isolate_state_dir):
     from openclaw_smart import state
 
     state.append("sess-2", {"role": "User", "content": "earlier"})
-    with patch("openclaw_smart.cli.publish") as pub, patch(
-        "openclaw_smart.cli.ids.resolve_project_id", return_value="proj-x"
+    with (
+        patch("openclaw_smart.cli.publish") as pub,
+        patch("openclaw_smart.cli.ids.resolve_project_id", return_value="proj-x"),
     ):
         pub.publish_unpublished.return_value = ("ok", 2)
         cli.cmd_learn(Namespace(session="sess-2", project=None, note="key insight"))
@@ -92,8 +97,9 @@ def test_cmd_learn_handles_unreachable_backend(isolate_state_dir, capsys):
     from openclaw_smart import state
 
     state.append("sess-3", {"role": "User", "content": "x"})
-    with patch("openclaw_smart.cli.publish") as pub, patch(
-        "openclaw_smart.cli.ids.resolve_project_id", return_value="proj-x"
+    with (
+        patch("openclaw_smart.cli.publish") as pub,
+        patch("openclaw_smart.cli.ids.resolve_project_id", return_value="proj-x"),
     ):
         pub.publish_unpublished.return_value = ("failed", 0)
         rc = cli.cmd_learn(Namespace(session=None, project=None, note=None))
@@ -102,9 +108,7 @@ def test_cmd_learn_handles_unreachable_backend(isolate_state_dir, capsys):
 
 
 def test_cmd_clear_all_requires_yes(capsys):
-    with patch(
-        "openclaw_smart.cli._resolve_clear_all_targets", return_value=[]
-    ):
+    with patch("openclaw_smart.cli._resolve_clear_all_targets", return_value=[]):
         rc = cli.cmd_clear_all(Namespace(yes=False))
     assert rc != 0
     assert "--yes" in capsys.readouterr().out
@@ -116,10 +120,10 @@ def test_cmd_clear_all_with_yes_proceeds(monkeypatch, tmp_path):
     (sessions / "old.jsonl").write_text('{"role":"User"}\n')
     monkeypatch.setenv("OPENCLAW_SMART_STATE_DIR", str(sessions))
 
-    with patch(
-        "openclaw_smart.cli._resolve_clear_all_targets", return_value=[]
-    ), patch("openclaw_smart.cli._service_status", return_value="not running"), patch(
-        "openclaw_smart.cli._run_service", return_value=0
+    with (
+        patch("openclaw_smart.cli._resolve_clear_all_targets", return_value=[]),
+        patch("openclaw_smart.cli._service_status", return_value="not running"),
+        patch("openclaw_smart.cli._run_service", return_value=0),
     ):
         rc = cli.cmd_clear_all(Namespace(yes=True))
     assert rc == 0
@@ -138,13 +142,14 @@ def test_cmd_clear_all_restarts_backend_after_delete_failure(tmp_path):
         service_calls.append(command)
         return 0
 
-    with patch(
-        "openclaw_smart.cli._resolve_clear_all_targets", return_value=[target]
-    ), patch("openclaw_smart.cli._service_status", return_value="running on 8071"), patch(
-        "openclaw_smart.cli._remove_clear_all_target",
-        side_effect=cli._ClearAllError("boom"),
-    ), patch(
-        "openclaw_smart.cli._run_service", side_effect=fake_run_service
+    with (
+        patch("openclaw_smart.cli._resolve_clear_all_targets", return_value=[target]),
+        patch("openclaw_smart.cli._service_status", return_value="running on 8071"),
+        patch(
+            "openclaw_smart.cli._remove_clear_all_target",
+            side_effect=cli._ClearAllError("boom"),
+        ),
+        patch("openclaw_smart.cli._run_service", side_effect=fake_run_service),
     ):
         rc = cli.cmd_clear_all(Namespace(yes=True))
 

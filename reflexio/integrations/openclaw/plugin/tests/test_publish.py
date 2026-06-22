@@ -46,4 +46,3 @@ def test_publish_unpublished_serializes_with_lock_and_stamps_watermark(
         for line in (isolate_state_dir / "s1.jsonl").read_text().splitlines()
     ]
     assert records[-1] == {"published_up_to": 1}
-

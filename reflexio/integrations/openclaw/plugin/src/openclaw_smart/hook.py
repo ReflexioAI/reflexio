@@ -17,7 +17,8 @@ from __future__ import annotations
 import json
 import logging
 import sys
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from openclaw_smart import runtime
 from openclaw_smart.internal_call import is_internal_invocation

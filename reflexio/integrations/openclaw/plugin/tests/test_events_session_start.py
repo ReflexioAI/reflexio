@@ -7,7 +7,6 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
-
 from openclaw_smart.events import session_start
 
 

@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 
 import pytest
-
 from openclaw_smart.events import after_tool_call as atc
 
 

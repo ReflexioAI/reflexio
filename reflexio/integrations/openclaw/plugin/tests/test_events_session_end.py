@@ -14,9 +14,12 @@ def test_handle_no_session_id_returns_silently():
 
 
 def test_handle_force_extracts():
-    with patch("openclaw_smart.events.session_end.publish") as pub, patch(
-        "openclaw_smart.events.session_end.ids.resolve_project_id_with_fallback",
-        return_value="proj-x",
+    with (
+        patch("openclaw_smart.events.session_end.publish") as pub,
+        patch(
+            "openclaw_smart.events.session_end.ids.resolve_project_id_with_fallback",
+            return_value="proj-x",
+        ),
     ):
         session_end.handle({"sessionKey": "s1", "agentId": "a"})
         pub.publish_unpublished.assert_called_once()
@@ -28,9 +31,12 @@ def test_handle_force_extracts():
 
 
 def test_handle_falls_back_to_session_id_key():
-    with patch("openclaw_smart.events.session_end.publish") as pub, patch(
-        "openclaw_smart.events.session_end.ids.resolve_project_id_with_fallback",
-        return_value="proj-y",
+    with (
+        patch("openclaw_smart.events.session_end.publish") as pub,
+        patch(
+            "openclaw_smart.events.session_end.ids.resolve_project_id_with_fallback",
+            return_value="proj-y",
+        ),
     ):
         session_end.handle({"sessionId": "s2"})
         pub.publish_unpublished.assert_called_once()

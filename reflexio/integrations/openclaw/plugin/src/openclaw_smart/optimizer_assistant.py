@@ -19,6 +19,7 @@ import os
 import shutil
 import subprocess  # noqa: S404 — subprocess is the integration point.
 import sys
+from pathlib import Path
 from typing import Any
 
 _CLI_TIMEOUT_SECONDS = 300
@@ -170,7 +171,7 @@ def _render_transcript(messages: list[dict[str, str]]) -> str:
 def _resolve_cli_path() -> str | None:
     """Return the openclaw binary path, honoring ``OPENCLAW_BIN`` then PATH."""
     override = os.environ.get(ENV_CLI_PATH)
-    if override and os.path.isfile(override) and os.access(override, os.X_OK):
+    if override and Path(override).is_file() and os.access(override, os.X_OK):
         return override
     return shutil.which("openclaw")
 

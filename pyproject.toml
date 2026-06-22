@@ -217,6 +217,12 @@ ignore = [
 "reflexio/server/api.py" = ["B008", "ARG001", "ARG002"]
 "reflexio/server/api_endpoints/**" = ["B008", "ARG001", "ARG002"]
 "reflexio/integrations/**" = ["ARG002"]
+# The openclaw plugin is a nested package; its tests/scripts/cli are not reached
+# by the top-level "tests/**" / "reflexio/cli/**" globs above (those only match
+# at the tree root), so mirror the same standard test/cli ignores here.
+"reflexio/integrations/openclaw/plugin/tests/**" = ["S101", "ARG001", "ARG002", "ARG005", "PTH", "ANN", "S105", "S106", "S107", "S108", "S310", "N802", "N806"]
+"reflexio/integrations/openclaw/plugin/scripts/**" = ["S101", "G004", "ANN", "S603", "S607"]
+"reflexio/integrations/openclaw/plugin/src/openclaw_smart/cli.py" = ["S603", "S607"]
 "reflexio/server/services/configurator/test_config_storage.py" = ["S101", "ANN", "S108"]
 "demo/**" = ["S101", "PTH", "G004", "ANN"]
 "reflexio/server/services/storage/sqlite_storage/**" = ["S608"]

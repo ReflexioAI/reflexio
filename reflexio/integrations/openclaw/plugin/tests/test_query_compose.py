@@ -24,9 +24,7 @@ def test_write_tool_uses_content_fallback():
 
 
 def test_bash_tool_query_uses_first_line():
-    q = query_compose.from_tool_call(
-        "Bash", {"command": "pytest tests/\nexit 0"}
-    )
+    q = query_compose.from_tool_call("Bash", {"command": "pytest tests/\nexit 0"})
     assert "pytest tests/" in q
     assert "exit 0" not in q
 

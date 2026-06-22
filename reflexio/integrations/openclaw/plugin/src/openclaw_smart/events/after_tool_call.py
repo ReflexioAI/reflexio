@@ -37,7 +37,7 @@ def _looks_like_secret(value: str) -> bool:
 def _mask_secrets(text: str) -> str:
     """Mask values that look like high-entropy secrets in ``KEY=value`` form."""
 
-    def sub(match: "re.Match[str]") -> str:
+    def sub(match: re.Match[str]) -> str:
         value = match.group("value")
         if not _looks_like_secret(value):
             return match.group(0)
@@ -59,8 +59,7 @@ def _redact_string(value: str) -> str:
 def _redact(tool_input: dict[str, Any]) -> dict[str, Any]:
     """Redact obvious secrets and truncate oversized string values."""
     return {
-        k: _redact_string(v) if isinstance(v, str) else v
-        for k, v in tool_input.items()
+        k: _redact_string(v) if isinstance(v, str) else v for k, v in tool_input.items()
     }
 
 
@@ -71,9 +70,10 @@ def _derive_status(tool_response: Any) -> str:
     ``result``; a structured failure may use ``is_error``/``error`` keys,
     while plain string results default to success.
     """
-    if isinstance(tool_response, dict):
-        if tool_response.get("is_error") or tool_response.get("error"):
-            return "error"
+    if isinstance(tool_response, dict) and (
+        tool_response.get("is_error") or tool_response.get("error")
+    ):
+        return "error"
     return "success"
 
 

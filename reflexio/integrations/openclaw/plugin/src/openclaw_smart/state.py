@@ -137,7 +137,9 @@ def append_injected(session_id: str, entries: Iterable[dict[str, Any]]) -> None:
         return
     path = injected_path(session_id)
     if path is None:
-        _LOGGER.warning("rejected unsafe session_id for append_injected: %r", session_id)
+        _LOGGER.warning(
+            "rejected unsafe session_id for append_injected: %r", session_id
+        )
         return
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as fh:

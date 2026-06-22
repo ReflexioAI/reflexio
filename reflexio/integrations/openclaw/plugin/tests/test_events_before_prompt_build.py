@@ -6,8 +6,6 @@ import json
 from unittest.mock import patch
 
 import pytest
-
-from openclaw_smart import state
 from openclaw_smart.events import before_prompt_build as bpb
 
 
@@ -19,11 +17,12 @@ def isolate_state_dir(monkeypatch, tmp_path):
 
 
 def test_handle_buffers_prompt(isolate_state_dir):
-    with patch(
-        "openclaw_smart.events.before_prompt_build.context_inject"
-    ) as ci, patch(
-        "openclaw_smart.events.before_prompt_build.ids.resolve_project_id_with_fallback",
-        return_value="proj-x",
+    with (
+        patch("openclaw_smart.events.before_prompt_build.context_inject") as ci,
+        patch(
+            "openclaw_smart.events.before_prompt_build.ids.resolve_project_id_with_fallback",
+            return_value="proj-x",
+        ),
     ):
         ci.emit_context.return_value = False
         bpb.handle(
@@ -45,11 +44,12 @@ def test_handle_buffers_prompt(isolate_state_dir):
 
 
 def test_handle_calls_emit_context_with_top_k():
-    with patch(
-        "openclaw_smart.events.before_prompt_build.context_inject"
-    ) as ci, patch(
-        "openclaw_smart.events.before_prompt_build.ids.resolve_project_id_with_fallback",
-        return_value="proj-x",
+    with (
+        patch("openclaw_smart.events.before_prompt_build.context_inject") as ci,
+        patch(
+            "openclaw_smart.events.before_prompt_build.ids.resolve_project_id_with_fallback",
+            return_value="proj-x",
+        ),
     ):
         bpb.handle(
             {
@@ -81,11 +81,12 @@ def test_handle_skips_when_no_prompt(isolate_state_dir):
 
 
 def test_handle_swallows_emit_exceptions(isolate_state_dir):
-    with patch(
-        "openclaw_smart.events.before_prompt_build.context_inject"
-    ) as ci, patch(
-        "openclaw_smart.events.before_prompt_build.ids.resolve_project_id_with_fallback",
-        return_value="proj-x",
+    with (
+        patch("openclaw_smart.events.before_prompt_build.context_inject") as ci,
+        patch(
+            "openclaw_smart.events.before_prompt_build.ids.resolve_project_id_with_fallback",
+            return_value="proj-x",
+        ),
     ):
         ci.emit_context.side_effect = ConnectionError("reflexio down")
         # Must not raise
@@ -103,11 +104,12 @@ def test_handle_swallows_emit_exceptions(isolate_state_dir):
 
 
 def test_handle_falls_back_to_session_id():
-    with patch(
-        "openclaw_smart.events.before_prompt_build.context_inject"
-    ) as ci, patch(
-        "openclaw_smart.events.before_prompt_build.ids.resolve_project_id_with_fallback",
-        return_value="proj-x",
+    with (
+        patch("openclaw_smart.events.before_prompt_build.context_inject") as ci,
+        patch(
+            "openclaw_smart.events.before_prompt_build.ids.resolve_project_id_with_fallback",
+            return_value="proj-x",
+        ),
     ):
         bpb.handle({"sessionId": "s2", "prompt": "hello", "agentId": "a"})
         ci.emit_context.assert_called_once()

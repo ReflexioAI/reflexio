@@ -16,6 +16,7 @@ stdout for the TS shim to relay back to openClaw. Otherwise emits nothing.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import sys
@@ -117,10 +118,9 @@ def handle(payload: dict[str, Any]) -> None:
     sys.stdout.write(json.dumps({"prependContext": banner}))
     sys.stdout.write("\n")
 
-    try:
+    # Telemetry must not break the session.
+    with contextlib.suppress(Exception):
         adapter.mark_stall_notified()
-    except Exception:  # noqa: BLE001 — telemetry must not break session.
-        pass
 
 
 def _optimizer_assistant_path() -> str:

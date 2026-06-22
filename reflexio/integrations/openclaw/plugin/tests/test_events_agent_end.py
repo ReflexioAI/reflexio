@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
-
 from openclaw_smart import state
 from openclaw_smart.events import agent_end
 
@@ -95,9 +94,12 @@ def test_handle_no_session_id_returns_silently(isolate_state_dir):
 
 
 def test_handle_appends_assistant_record(isolate_state_dir):
-    with patch("openclaw_smart.events.agent_end.publish") as pub, patch(
-        "openclaw_smart.events.agent_end.ids.resolve_project_id_with_fallback",
-        return_value="proj-x",
+    with (
+        patch("openclaw_smart.events.agent_end.publish") as pub,
+        patch(
+            "openclaw_smart.events.agent_end.ids.resolve_project_id_with_fallback",
+            return_value="proj-x",
+        ),
     ):
         pub.publish_unpublished.return_value = ("ok", 1)
         agent_end.handle(
@@ -118,9 +120,12 @@ def test_handle_appends_assistant_record(isolate_state_dir):
 
 
 def test_handle_publishes_unpublished_slice(isolate_state_dir):
-    with patch("openclaw_smart.events.agent_end.publish") as pub, patch(
-        "openclaw_smart.events.agent_end.ids.resolve_project_id_with_fallback",
-        return_value="proj-x",
+    with (
+        patch("openclaw_smart.events.agent_end.publish") as pub,
+        patch(
+            "openclaw_smart.events.agent_end.ids.resolve_project_id_with_fallback",
+            return_value="proj-x",
+        ),
     ):
         pub.publish_unpublished.return_value = ("ok", 1)
         agent_end.handle(
@@ -151,9 +156,12 @@ def test_handle_resolves_citations(isolate_state_dir, monkeypatch):
         ],
     )
 
-    with patch("openclaw_smart.events.agent_end.publish") as pub, patch(
-        "openclaw_smart.events.agent_end.ids.resolve_project_id_with_fallback",
-        return_value="proj-x",
+    with (
+        patch("openclaw_smart.events.agent_end.publish") as pub,
+        patch(
+            "openclaw_smart.events.agent_end.ids.resolve_project_id_with_fallback",
+            return_value="proj-x",
+        ),
     ):
         pub.publish_unpublished.return_value = ("ok", 1)
         agent_end.handle(
@@ -181,9 +189,12 @@ def test_handle_resolves_citations(isolate_state_dir, monkeypatch):
 
 def test_handle_skips_unknown_citations(isolate_state_dir):
     """Citations for ids not in the registry are dropped, not raised."""
-    with patch("openclaw_smart.events.agent_end.publish") as pub, patch(
-        "openclaw_smart.events.agent_end.ids.resolve_project_id_with_fallback",
-        return_value="proj-x",
+    with (
+        patch("openclaw_smart.events.agent_end.publish") as pub,
+        patch(
+            "openclaw_smart.events.agent_end.ids.resolve_project_id_with_fallback",
+            return_value="proj-x",
+        ),
     ):
         pub.publish_unpublished.return_value = ("ok", 1)
         agent_end.handle(
@@ -193,8 +204,7 @@ def test_handle_skips_unknown_citations(isolate_state_dir):
                     {
                         "role": "assistant",
                         "content": (
-                            "Done.\n"
-                            "✨ 1 openclaw-smart learning applied [oc:s9-9999]"
+                            "Done.\n✨ 1 openclaw-smart learning applied [oc:s9-9999]"
                         ),
                     }
                 ],
@@ -205,9 +215,12 @@ def test_handle_skips_unknown_citations(isolate_state_dir):
 
 
 def test_handle_falls_back_to_session_id(isolate_state_dir):
-    with patch("openclaw_smart.events.agent_end.publish") as pub, patch(
-        "openclaw_smart.events.agent_end.ids.resolve_project_id_with_fallback",
-        return_value="proj-x",
+    with (
+        patch("openclaw_smart.events.agent_end.publish") as pub,
+        patch(
+            "openclaw_smart.events.agent_end.ids.resolve_project_id_with_fallback",
+            return_value="proj-x",
+        ),
     ):
         pub.publish_unpublished.return_value = ("ok", 1)
         agent_end.handle(

@@ -164,7 +164,12 @@ def test_append_injected_writes_registry():
         "s4",
         [
             {"id": "s1-abcd", "kind": "skill", "title": "Test skill", "real_id": "abc"},
-            {"id": "p1-efgh", "kind": "preference", "title": "Test pref", "real_id": "def"},
+            {
+                "id": "p1-efgh",
+                "kind": "preference",
+                "title": "Test pref",
+                "real_id": "def",
+            },
         ],
     )
     registry = state.read_injected("s4")
@@ -196,9 +201,7 @@ def test_path_traversal_session_id_rejected(isolate_state_dir, tmp_path):
         "a" * 200,  # over 128 char cap
     ]
     for sid in escape_attempts:
-        assert state.session_path(sid) is None, (
-            f"unsafe session_path accepted: {sid!r}"
-        )
+        assert state.session_path(sid) is None, f"unsafe session_path accepted: {sid!r}"
         assert state.injected_path(sid) is None
         # Append + read must silently no-op rather than writing anywhere.
         state.append(sid, {"role": "User", "content": "x"})

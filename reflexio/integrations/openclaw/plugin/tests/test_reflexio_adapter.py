@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from openclaw_smart.reflexio_adapter import Adapter
 
 
@@ -47,9 +45,7 @@ def test_get_client_returns_none_on_construction_failure():
 
 def test_publish_returns_true_for_empty_interactions():
     adapter = Adapter()
-    assert (
-        adapter.publish(session_id="s", project_id="p", interactions=[]) is True
-    )
+    assert adapter.publish(session_id="s", project_id="p", interactions=[]) is True
 
 
 def test_publish_returns_false_when_client_none():
@@ -161,9 +157,7 @@ def test_apply_extraction_defaults_skips_when_already_matching():
     fake_client.get_config.return_value = config
     adapter = Adapter()
     with patch.object(adapter, "_get_client", return_value=fake_client):
-        assert (
-            adapter.apply_extraction_defaults(window_size=10, stride_size=5) is True
-        )
+        assert adapter.apply_extraction_defaults(window_size=10, stride_size=5) is True
         fake_client.set_config.assert_not_called()
 
 

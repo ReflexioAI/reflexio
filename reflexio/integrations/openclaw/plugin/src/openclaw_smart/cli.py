@@ -259,7 +259,9 @@ def _rebuild_dashboard() -> int:
         try:
             subprocess.run(install_cmd, cwd=_DASHBOARD_DIR, check=True)
         except subprocess.CalledProcessError as exc:
-            sys.stderr.write(f"error: dashboard install failed (exit {exc.returncode})\n")
+            sys.stderr.write(
+                f"error: dashboard install failed (exit {exc.returncode})\n"
+            )
             return exc.returncode or 1
     sys.stdout.write("Rebuilding dashboard…\n")
     try:
@@ -430,14 +432,14 @@ def _resolve_clear_all_targets() -> list[_ClearAllTarget]:
                 db_path = _resolve_absolute_path(
                     raw_db_path.strip(), source="configured SQLite db_path"
                 )
-                for suffix in ("", "-wal", "-shm", "-journal"):
-                    targets.append(
-                        _ClearAllTarget(
-                            Path(f"{db_path}{suffix}"),
-                            "file",
-                            "configured SQLite data",
-                        )
+                targets.extend(
+                    _ClearAllTarget(
+                        Path(f"{db_path}{suffix}"),
+                        "file",
+                        "configured SQLite data",
                     )
+                    for suffix in ("", "-wal", "-shm", "-journal")
+                )
         elif kind == "disk":
             raw_dir_path = storage_config.get("dir_path")
             if not isinstance(raw_dir_path, str) or not raw_dir_path.strip():

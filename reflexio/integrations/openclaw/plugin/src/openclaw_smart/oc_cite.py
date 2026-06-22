@@ -64,7 +64,7 @@ _FINGERPRINT_LEN = 4
 # may be comma- and/or whitespace-separated. Chained commands (&&, |, ;)
 # and extra trailing tokens remain rejected by the anchored `\s*$`
 # terminator so accidental mentions don't register as citations.
-_ID_TOKEN = r"(?i:oc:)?(?i:[ps])\d+(?:-(?i:[a-z0-9]){1,4})?"
+_ID_TOKEN = r"(?i:oc:)?(?i:[ps])\d+(?:-(?i:[a-z0-9]){1,4})?"  # noqa: S105 — regex pattern, not a secret.
 _ID_SEP = r"[,\s]+"
 CITATION_CMD_RE = re.compile(
     rf"^\s*(?:[^\s]*/)?oc-cite\s+({_ID_TOKEN}(?:{_ID_SEP}{_ID_TOKEN})*)\s*$"
@@ -157,11 +157,11 @@ def parse_text_citations(text: str) -> list[str]:
 
 
 def _parse_id_tokens(raw_ids: str) -> list[str]:
-    ids: list[str] = []
-    for tok in _SPLIT_RE.split(raw_ids.strip()):
-        if clean := _CLEAN_ID_RE.match(tok):
-            ids.append(clean.group(1).lower())
-    return ids
+    return [
+        clean.group(1).lower()
+        for tok in _SPLIT_RE.split(raw_ids.strip())
+        if (clean := _CLEAN_ID_RE.match(tok))
+    ]
 
 
 def ensure_installed() -> Path:

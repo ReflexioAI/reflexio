@@ -31,6 +31,7 @@ _TABLE: dict[str, tuple[str, str]] = {
 # Shared here so tests can reference this exact string without hardcoding.
 _EMPTY_REQUEST_ID_MSG = "request_id must be non-empty"
 
+
 def _resolve_table(entity_type: str) -> tuple[str, str]:
     """Map an entity_type to its (table, primary_key), raising on bad input."""
     table = _TABLE.get(entity_type)

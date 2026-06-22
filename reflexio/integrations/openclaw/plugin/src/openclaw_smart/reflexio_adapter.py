@@ -8,9 +8,10 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import Any, Sequence
+from typing import Any
 
 from openclaw_smart import runtime
 

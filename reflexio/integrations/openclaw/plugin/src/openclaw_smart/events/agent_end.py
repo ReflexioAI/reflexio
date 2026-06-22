@@ -112,9 +112,7 @@ def _extract_text_blocks(content: Any) -> list[str]:
     return out
 
 
-def _resolve_cited_items(
-    session_id: str, cited_ids: list[str]
-) -> list[dict[str, Any]]:
+def _resolve_cited_items(session_id: str, cited_ids: list[str]) -> list[dict[str, Any]]:
     """Map citation ids to ``{id, kind, title}`` entries via the session registry.
 
     Unknown ids (model hallucinations, or items injected in a newer session

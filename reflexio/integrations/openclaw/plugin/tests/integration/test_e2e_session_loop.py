@@ -79,7 +79,12 @@ def test_full_session_loop_records_all_roles(
     project = "test-project"
 
     # session-start: pushes defaults + emits a stall banner (or empty stdout).
-    assert _drive(monkeypatch, "session-start", {"sessionKey": session, "agentId": project}) == 0
+    assert (
+        _drive(
+            monkeypatch, "session-start", {"sessionKey": session, "agentId": project}
+        )
+        == 0
+    )
     capsys.readouterr()  # drain
 
     # before-prompt-build: appends a "User" record.
@@ -149,7 +154,10 @@ def test_full_session_loop_records_all_roles(
     capsys.readouterr()
 
     # session-end: force-publish; should not crash.
-    assert _drive(monkeypatch, "session-end", {"sessionKey": session, "agentId": project}) == 0
+    assert (
+        _drive(monkeypatch, "session-end", {"sessionKey": session, "agentId": project})
+        == 0
+    )
     capsys.readouterr()
 
     records = state.read_all(session)
