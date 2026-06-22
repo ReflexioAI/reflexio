@@ -109,6 +109,22 @@ class TestSchemaCompliance:
         result = entry.model_class.model_validate(entry.minimal_valid)
         assert isinstance(result, entry.model_class)
 
+    def test_guard_finder_ignores_property_named_like_a_keyword(self):
+        """The mock guard's finder must not flag a field NAMED oneOf/discriminator.
+
+        Those are property names, not schema keywords (CodeRabbit false-positive fix).
+        """
+        from pydantic import BaseModel
+
+        class _TrickyNames(BaseModel):
+            oneOf: str = ""  # noqa: N815  (deliberately a keyword-like field name)
+            discriminator: int = 0
+
+        schema = strict_response_format_for_model(_TrickyNames)["json_schema"]["schema"]
+        assert "oneOf" in schema["properties"]
+        assert not _find_schema_key(schema, "oneOf")
+        assert not _find_schema_key(schema, "discriminator")
+
     @pytest.mark.parametrize("entry_name", list(get_model_registry().keys()))
     def test_registry_models_emit_strict_compatible_schema(self, entry_name):
         """Every structured-output model must produce a provider-strict schema.

@@ -100,12 +100,29 @@ def _extraction_finish_args(prompt_content: str) -> dict[str, Any]:
     return cast(dict[str, Any], registry["profile_extraction"].minimal_valid)
 
 
+# Keys whose *values* are name→subschema maps: their entries are user-chosen
+# names (field names, $def names), not JSON-Schema keywords. We recurse into the
+# subschemas but must not treat the names themselves as keyword matches —
+# otherwise a model with a field literally named ``oneOf`` would false-positive.
+_SCHEMA_NAME_MAP_KEYS = ("properties", "$defs", "definitions", "patternProperties")
+
+
 def _find_schema_key(node: Any, key: str) -> bool:
-    """Recursively report whether ``key`` appears anywhere in a JSON schema."""
+    """Report whether ``key`` appears as a JSON-Schema *keyword* anywhere in a schema.
+
+    Context-aware: occurrences of ``key`` as a property/``$defs`` *name* are not
+    matches — only occurrences in JSON-Schema keyword position count.
+    """
     if isinstance(node, dict):
         if key in node:
             return True
-        return any(_find_schema_key(v, key) for v in node.values())
+        for k, v in node.items():
+            if k in _SCHEMA_NAME_MAP_KEYS and isinstance(v, dict):
+                if any(_find_schema_key(sub, key) for sub in v.values()):
+                    return True
+            elif _find_schema_key(v, key):
+                return True
+        return False
     if isinstance(node, list):
         return any(_find_schema_key(v, key) for v in node)
     return False
