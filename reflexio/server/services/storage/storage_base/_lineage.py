@@ -1,9 +1,50 @@
 from abc import abstractmethod
+from dataclasses import dataclass
 from typing import Literal
 
 from reflexio.models.api_schema.domain.entities import LineageContext, LineageEvent
 
 EntityType = Literal["user_playbook", "agent_playbook", "profile"]
+
+
+@dataclass
+class LegalHold:
+    """A legal hold record that protects entities from hard deletion.
+
+    A hold is *active* while ``released_at`` is None. Releasing a hold sets
+    ``released_at`` (and ``released_by``) but never deletes the row — the hold
+    history is itself a compliance artifact and must survive.
+
+    Attributes:
+        id (int): Auto-assigned hold id.
+        org_id (str): The organisation that owns the held entities.
+        scope (str): One of ``'org'``, ``'user'``, or ``'entity'``.
+        entity_type (str | None): For ``'entity'`` scope, the held entity's type.
+        entity_id (str | None): For ``'entity'`` scope, the held entity's id.
+        user_id (str | None): For ``'user'`` scope, the held user's id.
+        matter_id (str): Caller-supplied identifier grouping related holds.
+        legal_basis (str): One of ``'litigation_hold'``, ``'regulatory_order'``,
+            or ``'legal_obligation'``.
+        reason (str): Free-text justification for the hold.
+        placed_by (str): Actor who placed the hold.
+        placed_at (int): Unix epoch when the hold was placed.
+        released_at (int | None): Unix epoch when released; None while active.
+        released_by (str | None): Actor who released the hold; None while active.
+    """
+
+    id: int
+    org_id: str
+    scope: str  # 'org' | 'user' | 'entity'
+    entity_type: str | None
+    entity_id: str | None
+    user_id: str | None
+    matter_id: str
+    legal_basis: str  # 'litigation_hold' | 'regulatory_order' | 'legal_obligation'
+    reason: str
+    placed_by: str
+    placed_at: int  # epoch
+    released_at: int | None  # None = active
+    released_by: str | None
 
 
 class LineageEventMixin:
@@ -145,6 +186,95 @@ class LineageEventMixin:
 
         Raises:
             ValueError: If ``entity_type`` is not a recognized entity type.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def place_hold(
+        self,
+        *,
+        org_id: str,
+        scope: str,
+        entity_type: str | None = None,
+        entity_id: str | None = None,
+        user_id: str | None = None,
+        matter_id: str,
+        legal_basis: str,
+        reason: str,
+        placed_by: str,
+        placed_at: int | None = None,  # defaults to now
+    ) -> int:
+        """Place a legal hold; return the new hold id.
+
+        Args:
+            org_id (str): The organisation that owns the held entities.
+            scope (str): One of ``'org'``, ``'user'``, or ``'entity'``.
+            entity_type (str | None): For ``'entity'`` scope, the held entity's type.
+            entity_id (str | None): For ``'entity'`` scope, the held entity's id.
+            user_id (str | None): For ``'user'`` scope, the held user's id.
+            matter_id (str): Caller-supplied identifier grouping related holds.
+            legal_basis (str): One of ``'litigation_hold'``, ``'regulatory_order'``,
+                or ``'legal_obligation'``.
+            reason (str): Free-text justification.
+            placed_by (str): Actor placing the hold.
+            placed_at (int | None): Unix epoch; defaults to now when None.
+
+        Returns:
+            int: The new hold's id.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def release_hold(
+        self,
+        *,
+        org_id: str,
+        hold_id: int | None = None,
+        matter_id: str | None = None,
+        scope: str | None = None,
+        user_id: str | None = None,
+        released_by: str,
+        released_at: int | None = None,  # defaults to now
+    ) -> int:
+        """Release holds by id OR by matter+scope+optional user; return count released.
+
+        Exactly one of ``hold_id`` or ``matter_id`` must be supplied. When
+        releasing by ``matter_id``, the optional ``scope`` and ``user_id`` further
+        narrow which active holds are released. Already-released holds are skipped.
+
+        Args:
+            org_id (str): The organisation that owns the holds.
+            hold_id (int | None): Release this specific hold id.
+            matter_id (str | None): Release active holds with this matter id.
+            scope (str | None): Narrow matter-release to this scope.
+            user_id (str | None): Narrow matter-release to this user.
+            released_by (str): Actor releasing the holds.
+            released_at (int | None): Unix epoch; defaults to now when None.
+
+        Returns:
+            int: The number of holds released.
+
+        Raises:
+            ValueError: If neither ``hold_id`` nor ``matter_id`` is supplied.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_holds(
+        self,
+        org_id: str,
+        *,
+        active_only: bool = True,
+    ) -> list[LegalHold]:
+        """Return holds for ``org_id``.
+
+        Args:
+            org_id (str): The organisation whose holds to return.
+            active_only (bool): When True (default), only return rows where
+                ``released_at IS NULL``. When False, include released holds too.
+
+        Returns:
+            list[LegalHold]: Matching holds.
         """
         raise NotImplementedError
 

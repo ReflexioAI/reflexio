@@ -7,6 +7,7 @@ from typing import Any, Literal
 
 from reflexio.models.api_schema.domain.entities import LineageContext, LineageEvent
 from reflexio.models.api_schema.domain.enums import Status
+from reflexio.server.services.storage.storage_base._lineage import LegalHold
 from reflexio.server.tracing import capture_anomaly
 
 from ._base import _epoch_now
@@ -30,6 +31,7 @@ _TABLE: dict[str, tuple[str, str]] = {
 # Error message used by merge_records and supersede_record guards.
 # Shared here so tests can reference this exact string without hardcoding.
 _EMPTY_REQUEST_ID_MSG = "request_id must be non-empty"
+
 
 def _resolve_table(entity_type: str) -> tuple[str, str]:
     """Map an entity_type to its (table, primary_key), raising on bad input."""
@@ -324,15 +326,169 @@ class SQLiteLineageMixin:
             self.conn.commit()
             return True
 
+    def place_hold(
+        self,
+        *,
+        org_id: str,
+        scope: str,
+        entity_type: str | None = None,
+        entity_id: str | None = None,
+        user_id: str | None = None,
+        matter_id: str,
+        legal_basis: str,
+        reason: str = "",
+        placed_by: str = "",
+        placed_at: int | None = None,
+    ) -> int:
+        """Place a legal hold; return the new hold id.
+
+        Args:
+            org_id (str): The organisation that owns the held entities.
+            scope (str): One of ``'org'``, ``'user'``, or ``'entity'``.
+            entity_type (str | None): For ``'entity'`` scope, the held entity's type.
+            entity_id (str | None): For ``'entity'`` scope, the held entity's id.
+            user_id (str | None): For ``'user'`` scope, the held user's id.
+            matter_id (str): Caller-supplied identifier grouping related holds.
+            legal_basis (str): One of ``'litigation_hold'``, ``'regulatory_order'``,
+                or ``'legal_obligation'``.
+            reason (str): Free-text justification.
+            placed_by (str): Actor placing the hold.
+            placed_at (int | None): Unix epoch; defaults to now when None.
+
+        Returns:
+            int: The new hold's id.
+        """
+        now = placed_at if placed_at is not None else _epoch_now()
+        with self._lock:
+            cur = self.conn.execute(
+                "INSERT INTO lineage_legal_hold "
+                "(org_id, scope, entity_type, entity_id, user_id, matter_id, "
+                "legal_basis, reason, placed_by, placed_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    org_id,
+                    scope,
+                    entity_type,
+                    entity_id,
+                    user_id,
+                    matter_id,
+                    legal_basis,
+                    reason,
+                    placed_by,
+                    now,
+                ),
+            )
+            self.conn.commit()
+            return int(cur.lastrowid or 0)
+
+    def release_hold(
+        self,
+        *,
+        org_id: str,
+        hold_id: int | None = None,
+        matter_id: str | None = None,
+        scope: str | None = None,
+        user_id: str | None = None,
+        released_by: str = "",
+        released_at: int | None = None,
+    ) -> int:
+        """Release holds by id OR by matter+scope+optional user; return count released.
+
+        Args:
+            org_id (str): The organisation that owns the holds.
+            hold_id (int | None): Release this specific hold id.
+            matter_id (str | None): Release active holds with this matter id.
+            scope (str | None): Narrow matter-release to this scope.
+            user_id (str | None): Narrow matter-release to this user.
+            released_by (str): Actor releasing the holds.
+            released_at (int | None): Unix epoch; defaults to now when None.
+
+        Returns:
+            int: The number of holds released.
+
+        Raises:
+            ValueError: If neither ``hold_id`` nor ``matter_id`` is supplied.
+        """
+        now = released_at if released_at is not None else _epoch_now()
+        with self._lock:
+            if hold_id is not None:
+                cur = self.conn.execute(
+                    "UPDATE lineage_legal_hold SET released_at = ?, released_by = ? "
+                    "WHERE id = ? AND org_id = ? AND released_at IS NULL",
+                    (now, released_by, hold_id, org_id),
+                )
+            elif matter_id is not None:
+                params: list[Any] = [now, released_by, org_id, matter_id]
+                sql_extra = ""
+                if scope is not None:
+                    sql_extra += " AND scope = ?"
+                    params.append(scope)
+                if user_id is not None:
+                    sql_extra += " AND user_id = ?"
+                    params.append(user_id)
+                cur = self.conn.execute(
+                    "UPDATE lineage_legal_hold SET released_at = ?, released_by = ? "
+                    "WHERE org_id = ? AND matter_id = ? AND released_at IS NULL"
+                    f"{sql_extra}",  # noqa: S608 — sql_extra is built from fixed clauses only
+                    params,
+                )
+            else:
+                raise ValueError("release_hold requires either hold_id or matter_id")
+            self.conn.commit()
+            return cur.rowcount
+
+    def get_holds(self, org_id: str, *, active_only: bool = True) -> list[LegalHold]:
+        """Return holds for ``org_id``.
+
+        Args:
+            org_id (str): The organisation whose holds to return.
+            active_only (bool): When True (default), only return rows where
+                ``released_at IS NULL``.
+
+        Returns:
+            list[LegalHold]: Matching holds.
+        """
+        sql_q = "SELECT * FROM lineage_legal_hold WHERE org_id = ?"
+        if active_only:
+            sql_q += " AND released_at IS NULL"
+        rows = self.conn.execute(sql_q, (org_id,)).fetchall()
+        return [
+            LegalHold(
+                id=r["id"],
+                org_id=r["org_id"],
+                scope=r["scope"],
+                entity_type=r["entity_type"],
+                entity_id=r["entity_id"],
+                user_id=r["user_id"],
+                matter_id=r["matter_id"],
+                legal_basis=r["legal_basis"],
+                reason=r["reason"],
+                placed_by=r["placed_by"],
+                placed_at=r["placed_at"],
+                released_at=r["released_at"],
+                released_by=r["released_by"],
+            )
+            for r in rows
+        ]
+
     def _is_on_legal_hold(
         self,
-        org_id: str,  # noqa: ARG002
-        entity_type: str,  # noqa: ARG002
-        entity_id: str,  # noqa: ARG002
+        org_id: str,
+        entity_type: str,
+        entity_id: str,
     ) -> bool:
-        """Return True if this entity is under a legal hold and must not be GC'd.
+        """Return True if this entity is under an active legal hold.
 
-        Deferred seam — always returns False until a hold store exists.
+        Checks three hold scopes in order:
+
+        1. org-scope: any active hold for this org covers all entities.
+        2. user-scope: any active hold for this entity's user. Skipped for
+           ``agent_playbook``, which has no ``user_id`` column.
+        3. entity-scope: any active hold for this specific (entity_type, entity_id).
+
+        Called from ``gc_expired_tombstones`` inside ``with self._lock:`` — the
+        queries here run on the same connection, so the check is atomic with the
+        DELETE that follows.
 
         Args:
             org_id (str): The organisation that owns the entity.
@@ -341,9 +497,42 @@ class SQLiteLineageMixin:
             entity_id (str): The entity's primary key as a string.
 
         Returns:
-            bool: False (no hold store implemented yet).
+            bool: True if the entity is covered by an active hold.
         """
-        return False
+        # org-scope: covers everything in this org.
+        row = self.conn.execute(
+            "SELECT 1 FROM lineage_legal_hold "
+            "WHERE org_id = ? AND scope = 'org' AND released_at IS NULL LIMIT 1",
+            (org_id,),
+        ).fetchone()
+        if row:
+            return True
+
+        # user-scope: covers profile and user_playbook (agent_playbook has no user_id).
+        if entity_type != "agent_playbook":
+            table, pk = _resolve_table(entity_type)
+            entity_row = self.conn.execute(
+                f"SELECT user_id FROM {table} WHERE {pk} = ?",  # noqa: S608 — table/pk from fixed mapping
+                (entity_id,),
+            ).fetchone()
+            if entity_row and entity_row["user_id"] is not None:
+                row = self.conn.execute(
+                    "SELECT 1 FROM lineage_legal_hold "
+                    "WHERE org_id = ? AND scope = 'user' AND user_id = ? "
+                    "AND released_at IS NULL LIMIT 1",
+                    (org_id, entity_row["user_id"]),
+                ).fetchone()
+                if row:
+                    return True
+
+        # entity-scope: covers only this specific row.
+        row = self.conn.execute(
+            "SELECT 1 FROM lineage_legal_hold "
+            "WHERE org_id = ? AND scope = 'entity' AND entity_type = ? "
+            "AND entity_id = ? AND released_at IS NULL LIMIT 1",
+            (org_id, entity_type, str(entity_id)),
+        ).fetchone()
+        return bool(row)
 
     def list_org_ids(self) -> list[str]:
         """Return the single org_id for this SQLite storage instance.

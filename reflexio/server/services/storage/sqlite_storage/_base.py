@@ -700,6 +700,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         self._migrate_lineage()
         self._migrate_retired_at()
         self._migrate_lineage_event_table()
+        self._migrate_lineage_legal_hold_table()
         init_stall_state_table(self.conn)
         return True
 
@@ -1346,6 +1347,39 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                         f"ALTER TABLE lineage_event ADD COLUMN {col} TEXT"  # noqa: S608
                     )
                     logger.info("Added %s column to lineage_event", col)
+            self.conn.commit()
+
+    def _migrate_lineage_legal_hold_table(self) -> None:
+        """Create the lineage_legal_hold table and partial indexes (idempotent)."""
+        with self._lock:
+            self.conn.executescript("""
+                CREATE TABLE IF NOT EXISTS lineage_legal_hold (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    org_id        TEXT NOT NULL,
+                    scope         TEXT NOT NULL CHECK (scope IN ('org', 'user', 'entity')),
+                    entity_type   TEXT,
+                    entity_id     TEXT,
+                    user_id       TEXT,
+                    matter_id     TEXT NOT NULL,
+                    legal_basis   TEXT NOT NULL CHECK (
+                        legal_basis IN (
+                            'litigation_hold', 'regulatory_order', 'legal_obligation'
+                        )
+                    ),
+                    reason        TEXT NOT NULL DEFAULT '',
+                    placed_by     TEXT NOT NULL DEFAULT '',
+                    placed_at     INTEGER NOT NULL,
+                    released_at   INTEGER,
+                    released_by   TEXT,
+                    CHECK (released_at IS NULL OR released_at >= placed_at)
+                );
+                CREATE INDEX IF NOT EXISTS idx_llh_active_entity
+                    ON lineage_legal_hold (org_id, entity_type, entity_id)
+                    WHERE released_at IS NULL;
+                CREATE INDEX IF NOT EXISTS idx_llh_active_user
+                    ON lineage_legal_hold (org_id, user_id)
+                    WHERE released_at IS NULL;
+            """)
             self.conn.commit()
 
     def _migrate_agent_playbook_source_windows(self) -> None:
