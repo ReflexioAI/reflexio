@@ -1,14 +1,18 @@
-"""Integration tests: B3 parity classifier (lineage_b3_parity_check.py).
+"""Integration tests: B3 parity classifier.
 
-Verifies that ``classify_parity`` labels each class correctly on seeded data:
-  - MATCH: legacy and reconstruction agree on content
-  - RECON-MISSING: legacy row exists, no lineage event (real gap → exit non-zero)
-  - LEGACY-MISSING: lineage event exists, no legacy row (tolerated)
+Verifies that ``classify_change_log_parity`` labels each class correctly on
+seeded data:
+  - MATCH: legacy and reconstruction agree on content.
+  - RECON-MISSING: legacy row exists AND a reconstructible signal exists but
+    reconstruction dropped the run (real gap → exit non-zero).
+  - LEGACY-MISSING: legacy row exists but NO reconstructible signal (tolerated —
+    predates soft-delete or purged).
+  - CONTENT_MISMATCH: both sides exist but content differs, or recon-only.
 """
 
 from __future__ import annotations
 
-# Script under test lives outside the package; import via sys.path trick.
+# Import run_parity_check from the script (it calls storage, so still lives there).
 import importlib.util
 import sys
 from datetime import UTC, datetime
@@ -16,6 +20,10 @@ from pathlib import Path
 
 import pytest
 
+from reflexio.lib._lineage_parity import (
+    ParityClass,
+    classify_change_log_parity,
+)
 from reflexio.models.api_schema.domain.entities import (
     ProfileChangeLog,
     UserProfile,
@@ -30,8 +38,6 @@ _mod = importlib.util.module_from_spec(_spec)
 sys.modules.setdefault("lineage_b3_parity_check", _mod)
 _spec.loader.exec_module(_mod)  # type: ignore[union-attr]
 
-classify_parity = _mod.classify_parity
-ParityClass = _mod.ParityClass
 run_parity_check = _mod.run_parity_check
 
 pytestmark = pytest.mark.integration
@@ -82,57 +88,92 @@ def _legacy_row(
 
 
 # ---------------------------------------------------------------------------
-# Unit-level: classify_parity labels correctly on hand-crafted inputs
+# Unit-level: classify_change_log_parity labels correctly on hand-crafted inputs
 # ---------------------------------------------------------------------------
 
 
-def test_classify_match():
+def test_classify_match() -> None:
     """MATCH when both sides have identical added/removed content."""
     p_old = _make_profile("u1", "p-old", "old c")
     p_new = _make_profile("u1", "p-new", "new c")
     legacy = [_legacy_row("u1", "req-1", [p_new], [p_old])]
     recon = [_legacy_row("u1", "req-1", [p_new], [p_old])]
-    results = classify_parity(legacy, recon)
+    results = classify_change_log_parity(
+        legacy, recon, reconstructible_request_ids=set(), read_cap_hit=False
+    )
     assert len(results) == 1
     assert results[0].classification == ParityClass.MATCH
 
 
-def test_classify_recon_missing_no_lineage_event():
-    """RECON-MISSING when legacy has a row but recon list is empty."""
+def test_classify_legacy_only_with_reconstructible_signal_is_recon_missing() -> None:
+    """RECON-MISSING when legacy row exists AND a reconstructible signal is present."""
     p_old = _make_profile("u1", "p-old", "old c")
     p_new = _make_profile("u1", "p-new", "new c")
     legacy = [_legacy_row("u1", "req-gap", [p_new], [p_old])]
     recon: list[ProfileChangeLog] = []
-    results = classify_parity(legacy, recon)
+    results = classify_change_log_parity(
+        legacy,
+        recon,
+        reconstructible_request_ids={"req-gap"},
+        read_cap_hit=False,
+    )
     assert len(results) == 1
     assert results[0].classification == ParityClass.RECON_MISSING
 
 
-def test_classify_recon_missing_content_mismatch():
-    """RECON-MISSING when both sides exist but content disagrees."""
+def test_classify_legacy_only_without_reconstructible_signal_is_legacy_missing() -> (
+    None
+):
+    """LEGACY-MISSING when legacy row exists but no reconstructible signal (tolerated)."""
+    p_old = _make_profile("u1", "p-old", "old c")
+    p_new = _make_profile("u1", "p-new", "new c")
+    legacy = [_legacy_row("u1", "req-old", [p_new], [p_old])]
+    recon: list[ProfileChangeLog] = []
+    results = classify_change_log_parity(
+        legacy,
+        recon,
+        reconstructible_request_ids=set(),
+        read_cap_hit=False,
+    )
+    assert len(results) == 1
+    assert results[0].classification == ParityClass.LEGACY_MISSING
+
+
+def test_classify_content_mismatch_both_exist() -> None:
+    """CONTENT_MISMATCH when both sides exist but content disagrees."""
     p_old = _make_profile("u1", "p-old", "old c")
     p_new_legacy = _make_profile("u1", "p-new", "correct content")
     p_new_recon = _make_profile("u1", "p-new", "WRONG content")
     legacy = [_legacy_row("u1", "req-mismatch", [p_new_legacy], [p_old])]
     recon = [_legacy_row("u1", "req-mismatch", [p_new_recon], [p_old])]
-    results = classify_parity(legacy, recon)
+    results = classify_change_log_parity(
+        legacy,
+        recon,
+        reconstructible_request_ids=set(),
+        read_cap_hit=False,
+    )
     assert len(results) == 1
-    assert results[0].classification == ParityClass.RECON_MISSING
+    assert results[0].classification == ParityClass.CONTENT_MISMATCH
 
 
-def test_classify_legacy_missing():
-    """LEGACY-MISSING when recon has a row but legacy list is empty."""
+def test_classify_recon_only_is_content_mismatch() -> None:
+    """CONTENT_MISMATCH when recon has a row but legacy list is empty."""
     p_old = _make_profile("u1", "p-old", "old c")
     p_new = _make_profile("u1", "p-new", "new c")
     legacy: list[ProfileChangeLog] = []
     recon = [_legacy_row("u1", "req-orphan", [p_new], [p_old])]
-    results = classify_parity(legacy, recon)
+    results = classify_change_log_parity(
+        legacy,
+        recon,
+        reconstructible_request_ids=set(),
+        read_cap_hit=False,
+    )
     assert len(results) == 1
-    assert results[0].classification == ParityClass.LEGACY_MISSING
+    assert results[0].classification == ParityClass.CONTENT_MISMATCH
 
 
-def test_classify_mixed():
-    """Mixed: one MATCH, one RECON-MISSING, one LEGACY-MISSING."""
+def test_classify_mixed() -> None:
+    """Mixed: one MATCH, one LEGACY_MISSING (no signal), one CONTENT_MISMATCH (recon-only)."""
     p = _make_profile
 
     # MATCH
@@ -143,18 +184,23 @@ def test_classify_mixed():
         "u1", "req-match", [p("u1", "pa", "ca")], [p("u1", "pb", "cb")]
     )
 
-    # RECON-MISSING (legacy only)
+    # LEGACY_MISSING (legacy only, no reconstructible signal)
     l_gap = _legacy_row("u1", "req-gap", [p("u1", "pc", "cc")], [])
 
-    # LEGACY-MISSING (recon only)
+    # CONTENT_MISMATCH (recon only)
     r_orphan = _legacy_row("u1", "req-orphan", [p("u1", "pd", "cd")], [])
 
-    results = classify_parity([l_match, l_gap], [r_match, r_orphan])
+    results = classify_change_log_parity(
+        [l_match, l_gap],
+        [r_match, r_orphan],
+        reconstructible_request_ids=set(),
+        read_cap_hit=False,
+    )
     by_req = {r.request_id: r.classification for r in results}
 
     assert by_req["req-match"] == ParityClass.MATCH
-    assert by_req["req-gap"] == ParityClass.RECON_MISSING
-    assert by_req["req-orphan"] == ParityClass.LEGACY_MISSING
+    assert by_req["req-gap"] == ParityClass.LEGACY_MISSING
+    assert by_req["req-orphan"] == ParityClass.CONTENT_MISMATCH
 
 
 # ---------------------------------------------------------------------------
@@ -162,7 +208,7 @@ def test_classify_mixed():
 # ---------------------------------------------------------------------------
 
 
-def test_run_parity_check_all_match(tmp_path):
+def test_run_parity_check_all_match(tmp_path) -> None:
     """run_parity_check returns all MATCH when both paths are seeded together.
 
     Uses the real dedup path:
@@ -190,15 +236,32 @@ def test_run_parity_check_all_match(tmp_path):
     )
 
 
-def test_run_parity_check_detects_recon_missing(tmp_path):
-    """run_parity_check flags RECON-MISSING when legacy-only row exists."""
+def test_run_parity_check_detects_recon_missing(tmp_path) -> None:
+    """run_parity_check flags RECON-MISSING when legacy-only row exists with a reconstructible signal.
+
+    To produce RECON_MISSING we need:
+      1. A status_change+superseded lineage event for "req-gap-only" (puts it
+         in the reconstructible set).
+      2. The superseded profile is physically deleted (reconstruction can't
+         fetch it → removed=[]).
+      3. No profile has generated_from_request_id="req-gap-only" → added=[].
+      4. Reconstruction skips the row (empty added+removed).
+      5. Legacy table has the row → RECON_MISSING.
+    """
     s = _store(tmp_path)
 
-    old_p = _make_profile("u1", "p-gap-old", "old")
-    new_p = _make_profile("u1", "p-gap-new", "new")
-    s.add_user_profile("u1", [old_p, new_p])
-    # Only legacy row — no lineage event.
-    s.add_profile_change_log(_legacy_row("u1", "req-gap-only", [new_p], [old_p]))
+    old_p = _make_profile("u1", "p-gap-old", "old", request_id="seed-old")
+    s.add_user_profile("u1", [old_p])
+    # Dedup soft-delete: emits status_change+superseded with request_id="req-gap-only".
+    s.supersede_profiles_by_ids("u1", ["p-gap-old"], "req-gap-only")
+    # Simulate GC hard-deleting the tombstone so reconstruction can't find the profile.
+    s.conn.execute("DELETE FROM profiles WHERE profile_id = ?", ("p-gap-old",))
+    s.conn.commit()
+
+    # Legacy row exists for "req-gap-only" — reconstruction produces nothing (empty add+remove).
+    s.add_profile_change_log(
+        _legacy_row("u1", "req-gap-only", [], [old_p])  # legacy retains the content
+    )
 
     results = run_parity_check(s)
     gaps = [r for r in results if r.classification == ParityClass.RECON_MISSING]
@@ -206,13 +269,14 @@ def test_run_parity_check_detects_recon_missing(tmp_path):
     assert any(r.request_id == "req-gap-only" for r in gaps)
 
 
-def test_run_parity_check_tolerates_legacy_missing(tmp_path):
+def test_run_parity_check_tolerates_legacy_missing(tmp_path) -> None:
     """run_parity_check does not fail for LEGACY-MISSING rows.
 
     Seeds a real dedup run (status_change+superseded event + profile with
     generated_from_request_id) WITHOUT writing a legacy row — this represents
     a run that used the new path but didn't dual-write to the legacy table.
-    The reconstruction produces a row; the legacy table has none → LEGACY-MISSING.
+    The reconstruction produces a row; the legacy table has none → CONTENT_MISMATCH
+    (recon-only).
     """
     s = _store(tmp_path)
 
@@ -225,11 +289,13 @@ def test_run_parity_check_tolerates_legacy_missing(tmp_path):
     s.supersede_profiles_by_ids("u1", ["p-orphan-old"], req_id)
 
     results = run_parity_check(s)
-    legacy_missing = [
-        r for r in results if r.classification == ParityClass.LEGACY_MISSING
+    # Recon-only → CONTENT_MISMATCH (reconstruction produced a run absent from legacy).
+    content_mismatch = [
+        r for r in results if r.classification == ParityClass.CONTENT_MISMATCH
     ]
-    assert legacy_missing, "expected at least one LEGACY-MISSING"
-    assert any(r.request_id == req_id for r in legacy_missing)
-    # No RECON-MISSING → exit code would be 0.
+    assert any(r.request_id == req_id for r in content_mismatch), (
+        f"Expected CONTENT_MISMATCH for {req_id!r}; got {[(r.request_id, r.classification) for r in results]}"
+    )
+    # No RECON-MISSING → exit code will correctly reflect any real gaps (none here).
     gaps = [r for r in results if r.classification == ParityClass.RECON_MISSING]
-    assert not gaps, "LEGACY-MISSING should not trigger a real gap"
+    assert not gaps, "recon-only run should not trigger RECON-MISSING"
