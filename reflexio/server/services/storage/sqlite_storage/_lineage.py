@@ -221,6 +221,8 @@ class SQLiteLineageMixin:
         Raises:
             ValueError: If ``entity_type`` is not a recognized entity type.
         """
+        if not context.request_id:
+            raise ValueError("lineage merge: request_id must be non-empty")
         table, pk = _resolve_table(entity_type)
         now = _epoch_now()
         eligible_ph = ",".join("?" * len(_GC_ELIGIBLE_STATUSES))
@@ -256,7 +258,7 @@ class SQLiteLineageMixin:
                 prov="wasDerivedFrom",
                 source_ids=source_ids,
                 actor=context.actor,
-                request_id=context.request_id or "",
+                request_id=context.request_id,
                 reason=context.reason,
             )
             self.conn.commit()
@@ -290,6 +292,8 @@ class SQLiteLineageMixin:
         Raises:
             ValueError: If ``entity_type`` is not a recognized entity type.
         """
+        if not context.request_id:
+            raise ValueError("lineage supersede: request_id must be non-empty")
         table, pk = _resolve_table(entity_type)
         with self._lock:
             cur = self.conn.execute(
@@ -309,7 +313,7 @@ class SQLiteLineageMixin:
                 prov="wasRevisionOf",
                 source_ids=[incumbent_id],
                 actor=context.actor,
-                request_id=context.request_id or "",
+                request_id=context.request_id,
                 reason=context.reason,
             )
             self.conn.commit()

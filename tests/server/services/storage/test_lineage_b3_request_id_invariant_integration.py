@@ -8,9 +8,8 @@ Verifies that:
    unrelated runs under "".
 3. ReflectionServiceRequest.request_id has a non-empty default_factory so the
    production path always supplies a non-empty id.
-4. A guard assertion fires at the reflection→supersede boundary when an empty
-   request_id is passed (scoped to the profile reflection path via a helper
-   that is the single enforcement point).
+4. supersede_record and merge_records raise ValueError on empty/None
+   context.request_id (production raise, not a test-only helper).
 """
 
 from __future__ import annotations
@@ -21,7 +20,7 @@ from datetime import UTC, datetime
 import pytest
 
 from reflexio.lib._profiles import reconstruct_profile_change_log
-from reflexio.models.api_schema.domain.entities import UserProfile
+from reflexio.models.api_schema.domain.entities import LineageContext, UserProfile
 from reflexio.models.api_schema.domain.enums import ProfileTimeToLive
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 
@@ -217,57 +216,59 @@ def test_reflection_service_request_explicit_request_id_preserved():
 
 
 # ---------------------------------------------------------------------------
-# Test 4 — Guard: assert_nonempty_request_id helper raises on empty
+# Test 4 — supersede_record and merge_records raise on empty request_id
+# (production guards in _lineage.py, not a test-only helper)
 # ---------------------------------------------------------------------------
 
 
-def assert_nonempty_request_id(
-    request_id: str, *, context: str = "profile supersede"
-) -> None:
-    """Guard: raise ValueError if request_id is empty.
-
-    Scoped to the reflection→profile-supersede boundary.  Call this before
-    ``supersede_record`` in the reflection service when entity_type='profile'.
-    Do NOT add this to supersede_record's shared signature — other callers
-    (merge etc.) have different invariants.
-
-    Args:
-        request_id (str): The request_id to validate.
-        context (str): Human-readable name of the call site for error messages.
-
-    Raises:
-        ValueError: If request_id is empty.
-    """
-    if not request_id:
-        raise ValueError(
-            f"Empty request_id at {context}: every profile supersede must carry "
-            "a non-empty request_id so reconstruct_profile_change_log groups "
-            "events correctly. Supply request.request_id from "
-            "ReflectionServiceRequest (has default_factory=uuid4().hex)."
+def test_supersede_record_raises_on_empty_request_id(tmp_path):
+    """supersede_record raises ValueError when context.request_id is empty."""
+    s = _store(tmp_path)
+    ctx = LineageContext(op_kind="revise", actor="test", request_id="")
+    with pytest.raises(ValueError, match="request_id must be non-empty"):
+        s.supersede_record(
+            entity_type="user_playbook",
+            incumbent_id="1",
+            successor_id="2",
+            context=ctx,
         )
 
 
-def test_guard_raises_on_empty_request_id():
-    """assert_nonempty_request_id raises ValueError for an empty string."""
-    with pytest.raises(ValueError, match="Empty request_id"):
-        assert_nonempty_request_id("", context="test")
+def test_supersede_record_raises_on_none_request_id(tmp_path):
+    """supersede_record raises ValueError when context.request_id is None."""
+    s = _store(tmp_path)
+    # LineageContext allows None for request_id field
+    ctx = LineageContext(op_kind="revise", actor="test", request_id=None)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="request_id must be non-empty"):
+        s.supersede_record(
+            entity_type="user_playbook",
+            incumbent_id="1",
+            successor_id="2",
+            context=ctx,
+        )
 
 
-def test_guard_passes_on_whitespace_request_id():
-    """assert_nonempty_request_id does NOT raise for whitespace — it is non-empty.
-
-    Whitespace-only strings are truthy (len > 0) in Python, so the guard does
-    not fire.  The production path uses ``uuid.uuid4().hex`` which never
-    produces whitespace, so this edge case cannot arise from normal callers.
-    """
-    assert_nonempty_request_id("   ")  # no exception — whitespace is truthy
-
-
-def test_guard_passes_on_nonempty_request_id():
-    """assert_nonempty_request_id is a no-op for a non-empty string."""
-    assert_nonempty_request_id("req-abc-123")  # no exception
+def test_merge_records_raises_on_empty_request_id(tmp_path):
+    """merge_records raises ValueError when context.request_id is empty."""
+    s = _store(tmp_path)
+    ctx = LineageContext(op_kind="merge", actor="test", request_id="")
+    with pytest.raises(ValueError, match="request_id must be non-empty"):
+        s.merge_records(
+            entity_type="user_playbook",
+            survivor_id="1",
+            source_ids=["2"],
+            context=ctx,
+        )
 
 
-def test_guard_passes_on_uuid_hex():
-    """assert_nonempty_request_id is a no-op for a UUID hex request_id."""
-    assert_nonempty_request_id(uuid.uuid4().hex)
+def test_merge_records_raises_on_none_request_id(tmp_path):
+    """merge_records raises ValueError when context.request_id is None."""
+    s = _store(tmp_path)
+    ctx = LineageContext(op_kind="merge", actor="test", request_id=None)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="request_id must be non-empty"):
+        s.merge_records(
+            entity_type="user_playbook",
+            survivor_id="1",
+            source_ids=["2"],
+            context=ctx,
+        )

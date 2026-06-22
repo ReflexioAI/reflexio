@@ -56,7 +56,11 @@ def test_supersede_user_playbook_sets_superseded_by_and_revise_event(tmp_path):
     incumbent_id = incumbent.user_playbook_id
 
     result = _supersede_user_playbook(
-        storage, incumbent, "new content", "playbook_optimizer"
+        storage,
+        incumbent,
+        "new content",
+        "playbook_optimizer",
+        request_id="optjob_1",
     )
 
     assert result is not None, "helper should return the successor id on success"
@@ -106,7 +110,11 @@ def test_supersede_user_playbook_returns_none_for_non_current_incumbent(tmp_path
     ).fetchone()["cnt"]
 
     result = _supersede_user_playbook(
-        storage, incumbent, "new content", "playbook_optimizer"
+        storage,
+        incumbent,
+        "new content",
+        "playbook_optimizer",
+        request_id="optjob_2",
     )
 
     assert result is None, "helper should return None when incumbent is not CURRENT"
@@ -143,7 +151,11 @@ def test_supersede_agent_playbook_sets_superseded_by_and_revise_event(tmp_path):
     incumbent_id = incumbent.agent_playbook_id
 
     result = _supersede_agent_playbook(
-        storage, incumbent, "new agent content", "playbook_optimizer"
+        storage,
+        incumbent,
+        "new agent content",
+        "playbook_optimizer",
+        request_id="optjob_99",
     )
 
     assert result is not None, "helper should return the successor id on success"
@@ -195,7 +207,11 @@ def test_supersede_agent_playbook_returns_none_for_non_current_incumbent(tmp_pat
     ).fetchone()["cnt"]
 
     result = _supersede_agent_playbook(
-        storage, incumbent, "new agent content", "playbook_optimizer"
+        storage,
+        incumbent,
+        "new agent content",
+        "playbook_optimizer",
+        request_id="job-x",
     )
 
     assert result is None, "helper should return None when incumbent is not CURRENT"
@@ -209,3 +225,84 @@ def test_supersede_agent_playbook_returns_none_for_non_current_incumbent(tmp_pat
 
     events = storage.get_lineage_events(entity_type="agent_playbook")
     assert events == []
+
+
+# ---------------------------------------------------------------------------
+# Regression: two optimizer passes on the same agent_playbook must produce
+# two distinct, non-colliding lineage events (not silently drop the second).
+# Bug: _supersede_agent_playbook passed request_id=None which coerced to ""
+# causing (org, "agent_playbook", id, "revise", "") to collide on the second
+# call — ON CONFLICT DO NOTHING silently discarded the second event.
+# ---------------------------------------------------------------------------
+
+
+def test_two_optimizer_passes_produce_distinct_revise_events(tmp_path):
+    """Regression: two optimizer supersede calls on the same incumbent emit two events.
+
+    Pre-fix: both calls used request_id="" (coerced from None) so the second
+    INSERT OR IGNORE hit the unique constraint and was silently dropped,
+    leaving only one event in the log.
+
+    Post-fix: each call receives a distinct job-derived request_id so both
+    events are stored and both are non-empty.
+    """
+    storage = _storage(tmp_path)
+    [incumbent] = storage.save_agent_playbooks(
+        [
+            AgentPlaybook(
+                playbook_name="support",
+                agent_version="v1",
+                content="original content",
+                playbook_status=PlaybookStatus.PENDING,
+            )
+        ]
+    )
+
+    # First optimizer pass — simulates job 101
+    result_1 = _supersede_agent_playbook(
+        storage,
+        incumbent,
+        "improved content v1",
+        "playbook_optimizer",
+        request_id="optjob_101",
+    )
+    assert result_1 is not None, "first supersede should succeed"
+
+    # Restore the incumbent to CURRENT so a second pass can supersede it again
+    # (simulates a separate optimizer run picking up the same original row
+    # before the first pass has committed, or replays on a fresh incumbent copy).
+    # In practice we re-insert the original incumbent and supersede it again.
+    [incumbent2] = storage.save_agent_playbooks(
+        [
+            AgentPlaybook(
+                playbook_name="support",
+                agent_version="v1",
+                content="original content",
+                playbook_status=PlaybookStatus.PENDING,
+            )
+        ]
+    )
+
+    # Second optimizer pass — simulates job 102 (different request_id)
+    result_2 = _supersede_agent_playbook(
+        storage,
+        incumbent2,
+        "improved content v2",
+        "playbook_optimizer",
+        request_id="optjob_102",
+    )
+    assert result_2 is not None, "second supersede should succeed"
+
+    # Both revise events must exist and carry distinct non-empty request_ids
+    events = storage.get_lineage_events(entity_type="agent_playbook")
+    revise_events = [e for e in events if e.op == "revise"]
+    assert len(revise_events) == 2, (
+        f"expected 2 distinct revise events, got {len(revise_events)}; "
+        "the second may have been silently dropped by ON CONFLICT DO NOTHING "
+        "(regression: request_id=None coerced to '' causing key collision)"
+    )
+    request_ids = {e.request_id for e in revise_events}
+    assert "" not in request_ids, "no revise event should have an empty request_id"
+    assert request_ids == {"optjob_101", "optjob_102"}, (
+        f"expected distinct job-derived request_ids, got {request_ids}"
+    )
