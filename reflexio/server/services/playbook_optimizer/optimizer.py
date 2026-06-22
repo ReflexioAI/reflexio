@@ -31,6 +31,22 @@ from .scenario_resolver import ScenarioResolver
 
 logger = logging.getLogger(__name__)
 
+# Prefix used when constructing the run-scoped lineage request_id from a job id.
+# Shared with tests so the format is defined in one place.
+_OPTIMIZER_RUN_ID_PREFIX = "optjob_"
+
+
+def optimizer_run_request_id(job_id: int) -> str:
+    """Return the lineage request_id for a playbook optimizer run.
+
+    Args:
+        job_id (int): The ``PlaybookOptimizationJob.job_id`` for this run.
+
+    Returns:
+        str: A non-empty, job-scoped request id of the form ``optjob_<job_id>``.
+    """
+    return f"{_OPTIMIZER_RUN_ID_PREFIX}{job_id}"
+
 
 class PlaybookOptimizationTarget(BaseModel):
     """A single playbook (agent or user) the optimizer should try to improve."""
@@ -129,7 +145,7 @@ class PlaybookOptimizer:
                 metadata_json=json.dumps(split_metadata, ensure_ascii=False),
             )
         )
-        run_request_id = f"optjob_{job.job_id}"
+        run_request_id = optimizer_run_request_id(job.job_id)
         logger.info(
             "event=playbook_optimization_start job_id=%d candidate_id=none "
             "target_kind=%s target_id=%d "

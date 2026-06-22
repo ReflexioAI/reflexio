@@ -23,6 +23,9 @@ from reflexio.lib._profiles import reconstruct_profile_change_log
 from reflexio.models.api_schema.domain.entities import LineageContext, UserProfile
 from reflexio.models.api_schema.domain.enums import ProfileTimeToLive
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
+from reflexio.server.services.storage.sqlite_storage._lineage import (
+    _EMPTY_REQUEST_ID_MSG,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -225,7 +228,7 @@ def test_supersede_record_raises_on_empty_request_id(tmp_path):
     """supersede_record raises ValueError when context.request_id is empty."""
     s = _store(tmp_path)
     ctx = LineageContext(op_kind="revise", actor="test", request_id="")
-    with pytest.raises(ValueError, match="request_id must be non-empty"):
+    with pytest.raises(ValueError, match=_EMPTY_REQUEST_ID_MSG):
         s.supersede_record(
             entity_type="user_playbook",
             incumbent_id="1",
@@ -238,8 +241,8 @@ def test_supersede_record_raises_on_none_request_id(tmp_path):
     """supersede_record raises ValueError when context.request_id is None."""
     s = _store(tmp_path)
     # LineageContext allows None for request_id field
-    ctx = LineageContext(op_kind="revise", actor="test", request_id=None)  # type: ignore[arg-type]
-    with pytest.raises(ValueError, match="request_id must be non-empty"):
+    ctx = LineageContext(op_kind="revise", actor="test", request_id=None)
+    with pytest.raises(ValueError, match=_EMPTY_REQUEST_ID_MSG):
         s.supersede_record(
             entity_type="user_playbook",
             incumbent_id="1",
@@ -252,7 +255,7 @@ def test_merge_records_raises_on_empty_request_id(tmp_path):
     """merge_records raises ValueError when context.request_id is empty."""
     s = _store(tmp_path)
     ctx = LineageContext(op_kind="merge", actor="test", request_id="")
-    with pytest.raises(ValueError, match="request_id must be non-empty"):
+    with pytest.raises(ValueError, match=_EMPTY_REQUEST_ID_MSG):
         s.merge_records(
             entity_type="user_playbook",
             survivor_id="1",
@@ -264,8 +267,41 @@ def test_merge_records_raises_on_empty_request_id(tmp_path):
 def test_merge_records_raises_on_none_request_id(tmp_path):
     """merge_records raises ValueError when context.request_id is None."""
     s = _store(tmp_path)
-    ctx = LineageContext(op_kind="merge", actor="test", request_id=None)  # type: ignore[arg-type]
-    with pytest.raises(ValueError, match="request_id must be non-empty"):
+    ctx = LineageContext(op_kind="merge", actor="test", request_id=None)
+    with pytest.raises(ValueError, match=_EMPTY_REQUEST_ID_MSG):
+        s.merge_records(
+            entity_type="user_playbook",
+            survivor_id="1",
+            source_ids=["2"],
+            context=ctx,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Test 5 — whitespace-only request_id is also rejected (F009)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("ws_id", ["   ", "\t", "\n"])
+def test_supersede_record_raises_on_whitespace_request_id(tmp_path, ws_id):
+    """supersede_record raises ValueError when context.request_id is whitespace-only."""
+    s = _store(tmp_path)
+    ctx = LineageContext(op_kind="revise", actor="test", request_id=ws_id)
+    with pytest.raises(ValueError, match=_EMPTY_REQUEST_ID_MSG):
+        s.supersede_record(
+            entity_type="user_playbook",
+            incumbent_id="1",
+            successor_id="2",
+            context=ctx,
+        )
+
+
+@pytest.mark.parametrize("ws_id", ["   ", "\t", "\n"])
+def test_merge_records_raises_on_whitespace_request_id(tmp_path, ws_id):
+    """merge_records raises ValueError when context.request_id is whitespace-only."""
+    s = _store(tmp_path)
+    ctx = LineageContext(op_kind="merge", actor="test", request_id=ws_id)
+    with pytest.raises(ValueError, match=_EMPTY_REQUEST_ID_MSG):
         s.merge_records(
             entity_type="user_playbook",
             survivor_id="1",

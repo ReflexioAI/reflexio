@@ -21,6 +21,14 @@ class LineageEventMixin:
 
         Returns:
             int: The assigned or existing ``event_id``.
+
+        Note:
+            This method deliberately does NOT enforce a non-empty ``request_id``.
+            System and GC events (e.g. ``hard_delete`` from TTL GC, ``status_change``
+            from internal transitions) legitimately use an auto-generated UUID that
+            need not be tied to a user-facing request id. Callers that require
+            request-scoped lineage (``merge_records``, ``supersede_record``) enforce
+            non-empty ``request_id`` themselves.
         """
         raise NotImplementedError
 
@@ -76,6 +84,9 @@ class LineageEventMixin:
             survivor_id (str): The id of the record that survives the merge.
             source_ids (list[str]): Ids of records to tombstone as merged.
             context (LineageContext): Caller-supplied intent (actor, reason, etc.).
+
+        Raises:
+            ValueError: If ``context.request_id`` is empty or whitespace-only.
         """
         raise NotImplementedError
 
@@ -106,6 +117,9 @@ class LineageEventMixin:
         Returns:
             bool: ``True`` if the incumbent was CURRENT and was superseded;
                 ``False`` if the incumbent was not CURRENT and no mutation occurred.
+
+        Raises:
+            ValueError: If ``context.request_id`` is empty or whitespace-only.
         """
         raise NotImplementedError
 

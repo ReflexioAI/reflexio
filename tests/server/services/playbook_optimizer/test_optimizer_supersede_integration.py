@@ -26,8 +26,12 @@ from reflexio.models.api_schema.domain.enums import Status
 from reflexio.server.services.playbook_optimizer.optimizer import (
     _supersede_agent_playbook,
     _supersede_user_playbook,
+    optimizer_run_request_id,
 )
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
+from reflexio.server.services.storage.sqlite_storage._lineage import (
+    _EMPTY_REQUEST_ID_MSG,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -65,7 +69,7 @@ def test_supersede_user_playbook_sets_superseded_by_and_revise_event(tmp_path):
         incumbent,
         "new content",
         "playbook_optimizer",
-        request_id="optjob_1",
+        request_id=optimizer_run_request_id(1),
     )
 
     assert result is not None, "helper should return the successor id on success"
@@ -119,7 +123,7 @@ def test_supersede_user_playbook_returns_none_for_non_current_incumbent(tmp_path
         incumbent,
         "new content",
         "playbook_optimizer",
-        request_id="optjob_2",
+        request_id=optimizer_run_request_id(2),
     )
 
     assert result is None, "helper should return None when incumbent is not CURRENT"
@@ -160,7 +164,7 @@ def test_supersede_agent_playbook_sets_superseded_by_and_revise_event(tmp_path):
         incumbent,
         "new agent content",
         "playbook_optimizer",
-        request_id="optjob_99",
+        request_id=optimizer_run_request_id(99),
     )
 
     assert result is not None, "helper should return the successor id on success"
@@ -255,7 +259,7 @@ def test_supersede_user_playbook_revise_event_carries_job_request_id(tmp_path):
     )
     storage.save_user_playbooks([incumbent])
 
-    run_id = "optjob_42"
+    run_id = optimizer_run_request_id(42)
     result = _supersede_user_playbook(
         storage,
         incumbent,
@@ -274,7 +278,6 @@ def test_supersede_user_playbook_revise_event_carries_job_request_id(tmp_path):
         f"revise event must carry the job-derived run id {run_id!r}, "
         f"got {events[0].request_id!r}"
     )
-    assert events[0].request_id != "", "revise event request_id must not be empty"
 
 
 def test_supersede_agent_playbook_revise_event_carries_job_request_id(tmp_path):
@@ -295,7 +298,7 @@ def test_supersede_agent_playbook_revise_event_carries_job_request_id(tmp_path):
         ]
     )
 
-    run_id = "optjob_99"
+    run_id = optimizer_run_request_id(99)
     result = _supersede_agent_playbook(
         storage,
         incumbent,
@@ -314,7 +317,6 @@ def test_supersede_agent_playbook_revise_event_carries_job_request_id(tmp_path):
         f"revise event must carry the job-derived run id {run_id!r}, "
         f"got {events[0].request_id!r}"
     )
-    assert events[0].request_id != "", "revise event request_id must not be empty"
 
 
 def test_supersede_user_playbook_raises_on_empty_request_id(tmp_path):
@@ -329,9 +331,7 @@ def test_supersede_user_playbook_raises_on_empty_request_id(tmp_path):
     )
     storage.save_user_playbooks([incumbent])
 
-    import pytest
-
-    with pytest.raises(ValueError, match="request_id must be non-empty"):
+    with pytest.raises(ValueError, match=_EMPTY_REQUEST_ID_MSG):
         _supersede_user_playbook(
             storage, incumbent, "new content", "playbook_optimizer", request_id=""
         )
@@ -355,9 +355,7 @@ def test_supersede_agent_playbook_raises_on_empty_request_id(tmp_path):
         ]
     )
 
-    import pytest
-
-    with pytest.raises(ValueError, match="request_id must be non-empty"):
+    with pytest.raises(ValueError, match=_EMPTY_REQUEST_ID_MSG):
         _supersede_agent_playbook(
             storage, incumbent, "new content", "playbook_optimizer", request_id=""
         )

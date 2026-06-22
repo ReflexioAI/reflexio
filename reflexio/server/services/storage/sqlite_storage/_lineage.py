@@ -27,6 +27,9 @@ _TABLE: dict[str, tuple[str, str]] = {
     "profile": ("profiles", "profile_id"),
 }
 
+# Error message used by merge_records and supersede_record guards.
+# Shared here so tests can reference this exact string without hardcoding.
+_EMPTY_REQUEST_ID_MSG = "request_id must be non-empty"
 
 def _resolve_table(entity_type: str) -> tuple[str, str]:
     """Map an entity_type to its (table, primary_key), raising on bad input."""
@@ -220,9 +223,10 @@ class SQLiteLineageMixin:
 
         Raises:
             ValueError: If ``entity_type`` is not a recognized entity type.
+            ValueError: If ``context.request_id`` is empty or whitespace-only.
         """
-        if not context.request_id:
-            raise ValueError("lineage merge: request_id must be non-empty")
+        if not (context.request_id and context.request_id.strip()):
+            raise ValueError(f"lineage merge: {_EMPTY_REQUEST_ID_MSG}")
         table, pk = _resolve_table(entity_type)
         now = _epoch_now()
         eligible_ph = ",".join("?" * len(_GC_ELIGIBLE_STATUSES))
@@ -291,9 +295,10 @@ class SQLiteLineageMixin:
 
         Raises:
             ValueError: If ``entity_type`` is not a recognized entity type.
+            ValueError: If ``context.request_id`` is empty or whitespace-only.
         """
-        if not context.request_id:
-            raise ValueError("lineage supersede: request_id must be non-empty")
+        if not (context.request_id and context.request_id.strip()):
+            raise ValueError(f"lineage supersede: {_EMPTY_REQUEST_ID_MSG}")
         table, pk = _resolve_table(entity_type)
         with self._lock:
             cur = self.conn.execute(

@@ -7,6 +7,9 @@ import pytest
 
 from reflexio.models.api_schema.domain.entities import UserPlaybook
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
+from reflexio.server.services.storage.sqlite_storage._lineage import (
+    _EMPTY_REQUEST_ID_MSG,
+)
 
 
 def _storage(tmp: str) -> SQLiteStorage:
@@ -169,25 +172,49 @@ def test_apply_raises_on_empty_request_id_before_write():
             s.save_user_playbooks([old])
             old_id = old.user_playbook_id
 
-        with pytest.raises(ValueError, match="request_id must be non-empty"):
+        # Patch save_user_playbooks to confirm it is never reached on empty request_id.
+        with patch.object(s, "save_user_playbooks") as mock_save:
+            with pytest.raises(ValueError, match=_EMPTY_REQUEST_ID_MSG):
+                apply_playbook_edit(
+                    s,
+                    incumbent_id=old_id,
+                    new_playbook=_playbook(content="new"),
+                    source="offline_optimizer",
+                    request_id="",
+                )
+            mock_save.assert_not_called()
+
+        # No orphan: no successor row was inserted (incumbent still CURRENT, count==1).
+        count = s.conn.execute(
+            "SELECT COUNT(*) FROM user_playbooks WHERE status IS NULL"
+        ).fetchone()[0]
+        assert count == 1, (
+            "no orphan successor row should be inserted on empty request_id"
+        )
+
+
+@pytest.mark.parametrize("bad_request_id", ["", None])
+def test_apply_raises_on_empty_or_none_request_id(bad_request_id):
+    """apply_playbook_edit raises ValueError for both empty string and None request_id."""
+    from reflexio.server.services.playbook.playbook_edit_apply import (
+        apply_playbook_edit,
+    )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        s = _storage(tmp)
+        with patch.object(SQLiteStorage, "_get_embedding", return_value=[0.0] * 512):
+            old = _playbook(content="old")
+            s.save_user_playbooks([old])
+            old_id = old.user_playbook_id
+
+        with pytest.raises((ValueError, TypeError)):
             apply_playbook_edit(
                 s,
                 incumbent_id=old_id,
                 new_playbook=_playbook(content="new"),
                 source="offline_optimizer",
-                request_id="",
+                request_id=bad_request_id,  # type: ignore[arg-type]
             )
-
-        # No orphan: no successor row was inserted
-        count = s.conn.execute(
-            "SELECT COUNT(*) FROM user_playbooks WHERE status IS NULL"
-        ).fetchone()[0]
-        # The original old playbook was archived by archive_user_playbook_by_id;
-        # without that call here the incumbent is still CURRENT; count must be 1
-        # (only the original, no successor).
-        assert count == 1, (
-            "no orphan successor row should be inserted on empty request_id"
-        )
 
 
 def test_apply_lineage_event_carries_operation_run_id():
