@@ -14,7 +14,7 @@ import tempfile
 import time
 import zlib
 from pathlib import Path
-from typing import Any, cast
+from typing import Annotated, Any, Literal, cast
 from unittest.mock import MagicMock, patch
 
 import litellm
@@ -1030,6 +1030,42 @@ class TestMaybeParseStructuredOutput:
             )
 
 
+def _find_schema_keys(node: Any, key: str) -> list[str]:
+    """Return JSON-pointer-ish paths to every occurrence of ``key`` in a schema."""
+    hits: list[str] = []
+    if isinstance(node, dict):
+        for k, v in node.items():
+            if k == key:
+                hits.append(k)
+            hits.extend(f"{k}.{p}" for p in _find_schema_keys(v, key))
+    elif isinstance(node, list):
+        for i, v in enumerate(node):
+            hits.extend(f"[{i}].{p}" for p in _find_schema_keys(v, key))
+    return hits
+
+
+# A minimal discriminated-union output schema, the shape behind PYTHON-FASTAPI-9J.
+# Pydantic emits `oneOf` + `discriminator` at properties.decisions.items, which
+# strict structured-output endpoints reject.
+class _UnifyDecision(BaseModel):
+    kind: Literal["unify"] = "unify"
+    new_id: str
+
+
+class _RejectDecision(BaseModel):
+    kind: Literal["reject"] = "reject"
+    existing_id: int
+
+
+_ConsolidationDecision = Annotated[
+    _UnifyDecision | _RejectDecision, Field(discriminator="kind")
+]
+
+
+class _DiscriminatedOutput(BaseModel):
+    decisions: list[_ConsolidationDecision] = Field(default_factory=list)
+
+
 class TestStrictStructuredOutputRequest:
     """Provider-facing structured output request format."""
 
@@ -1088,7 +1124,10 @@ class TestStrictStructuredOutputRequest:
         assert parse_structured is True
 
     def test_unsupported_model_keeps_pydantic_response_format(self):
-        client = _build_client(LiteLLMConfig(model="minimax/MiniMax-M2.7"))
+        # A provider that is neither natively response-schema-capable nor on the
+        # OpenAI-compatible allowlist keeps the raw Pydantic model so LiteLLM can
+        # apply its own provider-specific handling (e.g. tool-calling).
+        client = _build_client(LiteLLMConfig(model="ollama/llama3"))
 
         with patch.object(
             LiteLLMClient,
@@ -1102,6 +1141,63 @@ class TestStrictStructuredOutputRequest:
 
         assert params["response_format"] is SampleResponse
         assert parser_schema is SampleResponse
+
+    def test_openai_compatible_underreported_provider_uses_strict_schema(self):
+        # Regression for Sentry PYTHON-FASTAPI-9J: minimax reports
+        # supports_response_schema=False, but it is an OpenAI-compatible endpoint
+        # LiteLLM would still hand a self-built json_schema. We must send our own
+        # normalized strict schema instead of the raw Pydantic model.
+        client = _build_client(LiteLLMConfig(model="minimax/MiniMax-M3"))
+
+        with patch.object(
+            LiteLLMClient,
+            "_supports_response_schema",
+            return_value=False,
+        ):
+            params, parser_schema, parse_structured, _, _ = (
+                client._build_completion_params(
+                    [{"role": "user", "content": "test"}],
+                    response_format=SampleResponse,
+                )
+            )
+
+        provider_format = params["response_format"]
+        assert provider_format["type"] == "json_schema"
+        assert provider_format["json_schema"]["strict"] is True
+        assert parser_schema is SampleResponse
+        assert parse_structured is True
+
+    def test_discriminated_union_strips_oneof_for_underreported_provider(self):
+        # The exact shape behind PYTHON-FASTAPI-9J: a discriminated-union output
+        # whose Pydantic schema carries `oneOf`/`discriminator` at
+        # properties.<field>.items. On an under-reported OpenAI-compatible
+        # provider (minimax), the schema actually sent must contain neither
+        # (strict structured-output endpoints reject `oneOf`).
+
+        # Sanity: the raw Pydantic schema really does emit the rejected keyword.
+        raw_items = _DiscriminatedOutput.model_json_schema()["properties"][
+            "decisions"
+        ]["items"]
+        assert "oneOf" in raw_items
+
+        client = _build_client(LiteLLMConfig(model="minimax/MiniMax-M3"))
+        with patch.object(
+            LiteLLMClient,
+            "_supports_response_schema",
+            return_value=False,
+        ):
+            params, _, _, _, _ = client._build_completion_params(
+                [{"role": "user", "content": "test"}],
+                response_format=_DiscriminatedOutput,
+            )
+
+        provider_format = params["response_format"]
+        assert provider_format["type"] == "json_schema"
+        sent_schema = provider_format["json_schema"]["schema"]
+        assert _find_schema_keys(sent_schema, "oneOf") == []
+        assert _find_schema_keys(sent_schema, "discriminator") == []
+        # The variants are preserved as `anyOf` so generation stays constrained.
+        assert "anyOf" in sent_schema["properties"]["decisions"]["items"]
 
     def test_strict_response_format_can_be_disabled_per_call(self):
         client = _build_client(LiteLLMConfig(model="gpt-4o-mini"))

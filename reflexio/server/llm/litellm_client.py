@@ -473,6 +473,15 @@ class LiteLLMClient:
         "xai/": "xai",
     }
 
+    # OpenAI-compatible providers that accept a ``json_schema`` response_format
+    # but that ``litellm.supports_response_schema`` reports as unsupported. For
+    # these, the gate below would fall back to handing LiteLLM the raw Pydantic
+    # model; LiteLLM then builds the ``json_schema`` itself and emits ``oneOf``
+    # for discriminated unions, which strict structured-output endpoints reject
+    # (Sentry PYTHON-FASTAPI-9J). Listing the provider here forces our own
+    # normalized strict schema (``oneOf`` folded into ``anyOf``) to be sent.
+    _JSON_SCHEMA_PROVIDER_ALLOWLIST: frozenset[str] = frozenset({"minimax"})
+
     # Models that only support temperature=1.0 (custom values cause errors or degraded performance)
     TEMPERATURE_RESTRICTED_MODELS = {
         "gpt-5",
@@ -1084,6 +1093,28 @@ class LiteLLMClient:
         except Exception:
             return False
 
+    @staticmethod
+    @lru_cache(maxsize=256)
+    def _provider_for_model(model: str) -> str | None:
+        try:
+            return litellm.get_llm_provider(model)[1]
+        except Exception:
+            return None
+
+    @classmethod
+    def _accepts_json_schema_response_format(cls, model: str) -> bool:
+        """Whether to send ``model`` an explicit strict ``json_schema`` schema.
+
+        True when LiteLLM reports native response-schema support, or when the
+        provider is a known OpenAI-compatible endpoint that LiteLLM
+        under-reports (see ``_JSON_SCHEMA_PROVIDER_ALLOWLIST``). In the latter
+        case LiteLLM would otherwise forward a ``json_schema`` it built itself,
+        emitting ``oneOf`` for discriminated unions that the endpoint rejects.
+        """
+        if cls._supports_response_schema(model):
+            return True
+        return cls._provider_for_model(model) in cls._JSON_SCHEMA_PROVIDER_ALLOWLIST
+
     def _provider_response_format(
         self,
         *,
@@ -1093,16 +1124,19 @@ class LiteLLMClient:
     ) -> Any:
         """Return the provider-facing response_format while preserving parser schema.
 
-        Callers pass a Pydantic model so local parsing stays type-safe. When
-        LiteLLM says the target model supports JSON Schema response formats, we
-        send an explicit strict schema to constrain generation. Unsupported
-        providers keep the existing Pydantic response_format behavior.
+        Callers pass a Pydantic model so local parsing stays type-safe. When the
+        target model accepts a JSON Schema response format — either LiteLLM
+        reports native support, or the provider is an OpenAI-compatible endpoint
+        LiteLLM under-reports (see ``_accepts_json_schema_response_format``) — we
+        send an explicit strict schema to constrain generation. Truly
+        unsupported providers keep the existing Pydantic response_format
+        behavior.
         """
 
         if (
             strict_response_format
             and is_pydantic_model(response_format)
-            and self._supports_response_schema(model)
+            and self._accepts_json_schema_response_format(model)
         ):
             return strict_response_format_for_model(response_format)
         return response_format
