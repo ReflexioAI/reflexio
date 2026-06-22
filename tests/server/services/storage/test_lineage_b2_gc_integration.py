@@ -296,6 +296,13 @@ def test_gc_pb8b_old_created_at_recent_retired_at_not_gc_d(tmp_path):
     assert deleted_p == 0, (
         "Profile with recent retired_at must NOT be GC'd even when last_modified_timestamp is ancient"
     )
+    assert (
+        s.conn.execute(
+            "SELECT 1 FROM profiles WHERE profile_id = ?",
+            ("pb8b-profile",),
+        ).fetchone()
+        is not None
+    ), "PB-8b profile must still exist when retired_at is recent"
 
 
 # ---------------------------------------------------------------------------

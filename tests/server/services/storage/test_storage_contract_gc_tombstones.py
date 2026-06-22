@@ -151,6 +151,9 @@ def test_gc_does_not_delete_fresh_tombstone(storage) -> None:
     )
 
     assert deleted == 0
+    assert (
+        storage.get_profile_by_id("gc-fresh-src", include_tombstones=True) is not None
+    ), "Fresh tombstone must survive when retired_at is after cutoff"
 
     # The fresh tombstone must still be retrievable.
     events = storage.get_lineage_events(entity_type="profile", entity_id="gc-fresh-src")
