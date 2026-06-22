@@ -550,7 +550,7 @@ class ProfileMixin:
         user_id: str,
         profile_ids: list[str],
         request_id: str,
-    ) -> int:
+    ) -> list[str]:
         """Soft-delete profiles by setting status to SUPERSEDED, emitting set-based lineage.
 
         For each matching id (user_id scoped, currently CURRENT), updates status to
@@ -564,16 +564,17 @@ class ProfileMixin:
             request_id (str): Shared request id for all emitted lineage events.
 
         Returns:
-            int: Number of profiles actually updated.
+            list[str]: The profile ids actually superseded by this call, in input order
+                (already-superseded or absent ids are omitted).
         """
         if not profile_ids:
-            return 0
+            return []
         if not request_id:
             raise ValueError("request_id must be non-empty for supersede")
         now_ts = _epoch_now()
         # Eligibility: CURRENT (NULL) or PENDING — the two live statuses dedup can target.
         eligible = (None, Status.PENDING.value)
-        updated = 0
+        committed_ids: list[str] = []
         with self._lock:
             for pid in profile_ids:
                 # Read current status for from_status derivation (user_id scoped)
@@ -617,9 +618,9 @@ class ProfileMixin:
                         to_status=Status.SUPERSEDED.value,
                         status_namespace="lifecycle_status",
                     )
-                    updated += 1
+                    committed_ids.append(pid)
             self.conn.commit()
-        return updated
+        return committed_ids
 
     @SQLiteStorageBase.handle_exceptions
     def delete_all_profiles_by_status(self, status: Status) -> int:

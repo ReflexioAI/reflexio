@@ -305,7 +305,7 @@ class ProfileMixin:
         user_id: str,
         profile_ids: list[str],
         request_id: str,
-    ) -> int:
+    ) -> list[str]:
         """Soft-delete profiles by setting status to SUPERSEDED, emitting set-based lineage.
 
         For each profile id that matches (user_id, current status in {NULL/CURRENT,
@@ -321,7 +321,11 @@ class ProfileMixin:
                 entire dedup run is reconstructible from a single id.
 
         Returns:
-            int: Number of profiles actually updated (0 if all already superseded/absent).
+            list[str]: The profile ids that were actually superseded by this call, in
+                input order. Already-superseded or non-existent ids are omitted (so an
+                empty list means nothing committed). Callers needing a count use
+                ``len(...)``. This is the commit-accurate set used to build a
+                commit-atomic legacy change-log "removed" entry.
         """
         raise NotImplementedError
 

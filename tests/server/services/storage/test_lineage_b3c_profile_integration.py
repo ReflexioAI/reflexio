@@ -298,10 +298,10 @@ class TestSupersedeProfilesEmptyRequestIdGuard:
         s = _store(tmp_path)
         s.add_user_profile("u1", [_make_profile("u1", "sup3")])
         result = s.supersede_profiles_by_ids("u1", ["sup3"], request_id="req-abc")
-        assert result == 1
+        assert result == ["sup3"]
 
-    def test_empty_ids_returns_zero_without_guard_check(self, tmp_path) -> None:
-        """Empty profile_ids returns 0 (short-circuit before the request_id check)."""
+    def test_empty_ids_returns_empty_without_guard_check(self, tmp_path) -> None:
+        """Empty profile_ids returns [] (short-circuit before the request_id check)."""
         s = _store(tmp_path)
         result = s.supersede_profiles_by_ids("u1", [], request_id="")
-        assert result == 0
+        assert result == []

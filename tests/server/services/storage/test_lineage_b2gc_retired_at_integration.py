@@ -211,11 +211,11 @@ def test_supersede_profiles_by_ids_sets_retired_at(tmp_path) -> None:
     p2 = _make_profile("sp2", "u1")
     s.add_user_profile("u1", [p1, p2])
 
-    count = s.supersede_profiles_by_ids(
+    committed = s.supersede_profiles_by_ids(
         "u1", [p1.profile_id, p2.profile_id], "req-super"
     )
 
-    assert count == 2
+    assert set(committed) == {p1.profile_id, p2.profile_id}
     _assert_retired_now(_get_retired_at_profile(s, p1.profile_id))
     _assert_retired_now(_get_retired_at_profile(s, p2.profile_id))
 
