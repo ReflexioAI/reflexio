@@ -12,7 +12,7 @@ from reflexio.models.config_schema import (
 
 def test_lineage_gc_config_defaults():
     cfg = LineageGCConfig()
-    assert cfg.enabled is False
+    assert cfg.enabled is True
     assert cfg.tombstone_grace_window_days == 90
     assert cfg.poll_interval_seconds == 86400
 
@@ -20,12 +20,19 @@ def test_lineage_gc_config_defaults():
 def test_config_has_lineage_gc_default():
     cfg = Config(storage_config=StorageConfigSQLite())
     assert isinstance(cfg.lineage_gc, LineageGCConfig)
-    assert cfg.lineage_gc.enabled is False
+    assert cfg.lineage_gc.enabled is True
 
 
 def test_lineage_gc_enabled_can_be_set():
+    """enabled=True is the default; explicitly setting it is a no-op but must still work."""
     cfg = LineageGCConfig(enabled=True)
     assert cfg.enabled is True
+
+
+def test_lineage_gc_can_be_explicitly_disabled():
+    """Explicit enabled=False must override the default-on."""
+    cfg = LineageGCConfig(enabled=False)
+    assert cfg.enabled is False
 
 
 def test_lineage_gc_fields_can_be_overridden():

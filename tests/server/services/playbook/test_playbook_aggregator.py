@@ -668,10 +668,16 @@ class TestRun:
             any_order=True,
         )
 
+    @patch(
+        "reflexio.server.services.playbook.playbook_aggregator.is_aggregation_soft_delete_enabled",
+        return_value=False,
+    )
     @patch.object(PlaybookAggregator, "get_clusters")
     @patch.object(PlaybookAggregator, "_generate_playbooks_with_source_clusters")
-    def test_rerun_deletes_archived_playbooks_after_success(self, mock_gen, mock_clust):
-        """After successful rerun, delete_archived_agent_playbooks_by_playbook_name is called."""
+    def test_rerun_deletes_archived_playbooks_after_success(
+        self, mock_gen, mock_clust, _mock_flag
+    ):
+        """After successful rerun (flag OFF), delete_archived_agent_playbooks_by_playbook_name is called."""
         agg = self._make_runnable_aggregator()
         raws = [_raw(rid=1)]
         mock_clust.return_value = {0: raws}
@@ -731,10 +737,16 @@ class TestRun:
         # Should NOT call _generate_playbooks_from_clusters
         agg.storage.save_agent_playbooks.assert_not_called()
 
+    @patch(
+        "reflexio.server.services.playbook.playbook_aggregator.is_aggregation_soft_delete_enabled",
+        return_value=False,
+    )
     @patch.object(PlaybookAggregator, "get_clusters")
     @patch.object(PlaybookAggregator, "_generate_playbooks_with_source_clusters")
-    def test_incremental_with_changes_archives_selectively(self, mock_gen, mock_clust):
-        """Incremental mode with changed clusters archives only affected playbook_ids."""
+    def test_incremental_with_changes_archives_selectively(
+        self, mock_gen, mock_clust, _mock_flag
+    ):
+        """Incremental mode (flag OFF) with changed clusters hard-deletes affected playbook_ids."""
         agg = self._make_runnable_aggregator()
         raws_new = [_raw(rid=5), _raw(rid=6)]
         agg.storage.get_user_playbooks.return_value = raws_new
@@ -796,10 +808,14 @@ class TestRun:
             [50]
         )
 
+    @patch(
+        "reflexio.server.services.playbook.playbook_aggregator.is_aggregation_soft_delete_enabled",
+        return_value=False,
+    )
     @patch.object(PlaybookAggregator, "get_clusters")
     @patch.object(PlaybookAggregator, "_generate_playbooks_with_source_clusters")
-    def test_change_log_exception_is_caught(self, mock_gen, mock_clust):
-        """Exception in add_playbook_aggregation_change_log should be caught, not raised."""
+    def test_change_log_exception_is_caught(self, mock_gen, mock_clust, _mock_flag):
+        """Exception in add_playbook_aggregation_change_log should be caught, not raised (flag OFF)."""
         agg = self._make_runnable_aggregator()
         raws = [_raw(rid=1)]
         mock_clust.return_value = {0: raws}
@@ -814,7 +830,7 @@ class TestRun:
         # Should NOT raise
         agg.run(req)
 
-        # Despite the exception, delete should still proceed
+        # Despite the exception, hard-delete should still proceed (flag OFF path)
         agg.storage.delete_archived_agent_playbooks_by_playbook_name.assert_called()
 
     @patch.object(PlaybookAggregator, "get_clusters")

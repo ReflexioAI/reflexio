@@ -665,7 +665,7 @@ class PlaybookOptimizerConfig(BaseModel):
 
 
 class LineageGCConfig(BaseModel):
-    """Configuration for the tombstone garbage-collection job (off by default).
+    """Configuration for the tombstone garbage-collection job (enabled by default).
 
     Purpose
     -------
@@ -682,28 +682,28 @@ class LineageGCConfig(BaseModel):
 
     Grace window
     ------------
-    90 days is the vetted default — cf. common 90-day soft-delete retention policies
-    and GDPR Art. 5(1)(e) storage-limitation.  The value is a per-deployment policy
-    knob; ratify with your DPO before enabling in production.
+    90 days is the default grace window.  This matches common 90-day soft-delete
+    retention policies and satisfies GDPR Art. 5(1)(e) storage-limitation for
+    personal data in profiles.  The value is a per-deployment policy knob; ratify
+    with your DPO before shortening it in production.  The 90-day floor also
+    preserves tombstones long enough for B3 changelog replay and any rollback
+    horizon the offline tuner may require — raise ``tombstone_grace_window_days``
+    further if your replay horizon exceeds 90 days.
 
-    Enablement gate
-    ---------------
-    Enable per-org only after ALL of the following hold:
+    Enabled by default
+    ------------------
+    GC is ON by default so tombstones created by the soft-delete flags (also ON by
+    default) are reclaimed automatically.  Disabling GC while soft-delete is enabled
+    allows tombstone counts to grow without bound — only do this deliberately (e.g.
+    extended audit hold) and with a plan to re-enable.
 
-    * ``tombstone_grace_window_days`` ≥ the B3 reconstruction read-back horizon, OR
-      B3 changelog replay is fully shipped and the horizon is confirmed.  Enabling
-      before this point risks GC'ing tombstones that B3 replay still needs.
-    * DPO/product sign-off on the PII-lifetime and audit-depth implications for the
-      specific deployment.
-
-    Tuner floor
-    -----------
-    When the offline tuner ships, raise the effective floor to
-    ``max(window, tuner.window_days + rollback_horizon)`` so the GC cannot delete
-    tombstones the tuner still needs for replay.
+    Disabling
+    ---------
+    Set ``enabled = False`` in your deployment config to hold all tombstones
+    indefinitely (e.g. for an extended audit window or rollback standby period).
     """
 
-    enabled: bool = False
+    enabled: bool = True
     tombstone_grace_window_days: int = Field(default=90, gt=0)
     poll_interval_seconds: int = Field(default=86400, gt=0)
 

@@ -173,29 +173,29 @@ class TestFeatureFlags(unittest.TestCase):
 
 
 class TestDedupSoftDeleteFlag(unittest.TestCase):
-    """Tests for is_dedup_soft_delete_enabled — a FAIL-CLOSED flag.
+    """Tests for is_dedup_soft_delete_enabled — a DEFAULT-OPEN flag.
 
-    Unlike is_feature_enabled (fail-open), a missing key must return False.
-    This is the safety invariant: unconfigured orgs must never get soft-delete
-    enabled accidentally (tombstone growth without B2 GC would be unbounded).
+    The key is absent from config → True (default ON, because GC is also ON by
+    default).  Explicit disable still works via enabled=False with no org list.
+    Malformed config (non-dict) → False with a warning (safe fallback).
     """
 
-    # F1 regression: the critical case — key absent → OFF
+    # Default-open: the critical case — key absent → ON
     @patch(
         "reflexio.server.site_var.feature_flags._get_feature_flags_config",
         return_value={},
     )
-    def test_unconfigured_org_returns_false(self, _mock):
-        """FAIL-CLOSED: key absent from config → False (not True like is_feature_enabled)."""
-        self.assertFalse(is_dedup_soft_delete_enabled("org-any"))
+    def test_unconfigured_org_returns_true(self, _mock):
+        """DEFAULT-OPEN: key absent from config → True (soft-delete on by default)."""
+        self.assertTrue(is_dedup_soft_delete_enabled("org-any"))
 
     @patch(
         "reflexio.server.site_var.feature_flags._get_feature_flags_config",
         return_value=MOCK_CONFIG,  # MOCK_CONFIG has no dedup_soft_delete key
     )
-    def test_key_missing_from_populated_config_returns_false(self, _mock):
-        """FAIL-CLOSED: key missing from a non-empty config still returns False."""
-        self.assertFalse(is_dedup_soft_delete_enabled("org-123"))
+    def test_key_missing_from_populated_config_returns_true(self, _mock):
+        """DEFAULT-OPEN: key missing from a non-empty config still returns True."""
+        self.assertTrue(is_dedup_soft_delete_enabled("org-123"))
 
     @patch(
         "reflexio.server.site_var.feature_flags._get_feature_flags_config",
@@ -240,23 +240,23 @@ class TestDedupSoftDeleteFlag(unittest.TestCase):
         },
     )
     def test_org_not_in_enabled_list_returns_false(self, _mock):
-        """Org NOT in enabled_org_ids with global disabled → False."""
+        """Org NOT in enabled_org_ids with global disabled → False (explicit disable)."""
         self.assertFalse(is_dedup_soft_delete_enabled("org-other"))
 
-    # Contrast test: documents deliberate divergence from is_feature_enabled
+    # Both is_feature_enabled and is_dedup_soft_delete_enabled are now default-open.
     @patch(
         "reflexio.server.site_var.feature_flags._get_feature_flags_config",
         return_value={},
     )
-    def test_contrast_with_fail_open_helper(self, _mock):
-        """Contrast: is_feature_enabled returns True for unknown key; is_dedup_soft_delete_enabled returns False.
+    def test_both_helpers_agree_on_absent_key(self, _mock):
+        """Both is_feature_enabled and is_dedup_soft_delete_enabled return True for absent key.
 
-        This documents the deliberate divergence — the two functions have
-        opposite defaults for unconfigured keys.
+        Previously they diverged (fail-open vs fail-closed). Now both are default-open
+        for this flag. The contrast test is retained to document the current behavior.
         """
         key = "dedup_soft_delete"
         self.assertTrue(is_feature_enabled("org-any", key))
-        self.assertFalse(is_dedup_soft_delete_enabled("org-any"))
+        self.assertTrue(is_dedup_soft_delete_enabled("org-any"))
 
     @patch(
         "reflexio.server.site_var.feature_flags._get_feature_flags_config",
@@ -275,32 +275,30 @@ class TestDedupSoftDeleteFlag(unittest.TestCase):
 
 
 class TestAggregationSoftDeleteFlag(unittest.TestCase):
-    """Tests for is_aggregation_soft_delete_enabled — a FAIL-CLOSED flag.
+    """Tests for is_aggregation_soft_delete_enabled — a DEFAULT-OPEN flag.
 
-    Unlike is_feature_enabled (fail-open), a missing key must return False.
-    This is the safety invariant: unconfigured orgs must never get soft-delete
-    enabled accidentally. The flag gates soft-supersede (durable replacement of
-    hard-delete for playbook aggregation removal). It must only be turned ON for
-    an org once Phase B2 GC is enabled for that org — B2 GC is the only reclaimer
-    of the SUPERSEDED tombstones this will later create.
+    The key is absent from config → True (default ON, because GC is also ON by
+    default so tombstones are reclaimed). Explicit disable still works via
+    enabled=False with no org list. Malformed config (non-dict) → False with a
+    warning (safe fallback).
     """
 
-    # F1 regression: the critical case — key absent → OFF
+    # Default-open: the critical case — key absent → ON
     @patch(
         "reflexio.server.site_var.feature_flags._get_feature_flags_config",
         return_value={},
     )
-    def test_unconfigured_org_returns_false(self, _mock):
-        """FAIL-CLOSED: key absent from config → False (not True like is_feature_enabled)."""
-        self.assertFalse(is_aggregation_soft_delete_enabled("org-any"))
+    def test_unconfigured_org_returns_true(self, _mock):
+        """DEFAULT-OPEN: key absent from config → True (soft-delete on by default)."""
+        self.assertTrue(is_aggregation_soft_delete_enabled("org-any"))
 
     @patch(
         "reflexio.server.site_var.feature_flags._get_feature_flags_config",
         return_value=MOCK_CONFIG,  # MOCK_CONFIG has no aggregation_soft_delete key
     )
-    def test_key_missing_from_populated_config_returns_false(self, _mock):
-        """FAIL-CLOSED: key missing from a non-empty config still returns False."""
-        self.assertFalse(is_aggregation_soft_delete_enabled("org-123"))
+    def test_key_missing_from_populated_config_returns_true(self, _mock):
+        """DEFAULT-OPEN: key missing from a non-empty config still returns True."""
+        self.assertTrue(is_aggregation_soft_delete_enabled("org-123"))
 
     @patch(
         "reflexio.server.site_var.feature_flags._get_feature_flags_config",
@@ -345,23 +343,23 @@ class TestAggregationSoftDeleteFlag(unittest.TestCase):
         },
     )
     def test_org_not_in_enabled_list_returns_false(self, _mock):
-        """Org NOT in enabled_org_ids with global disabled → False."""
+        """Org NOT in enabled_org_ids with global disabled → False (explicit disable)."""
         self.assertFalse(is_aggregation_soft_delete_enabled("org-other"))
 
-    # Contrast test: documents deliberate divergence from is_feature_enabled
+    # Both is_feature_enabled and is_aggregation_soft_delete_enabled are now default-open.
     @patch(
         "reflexio.server.site_var.feature_flags._get_feature_flags_config",
         return_value={},
     )
-    def test_contrast_with_fail_open_helper(self, _mock):
-        """Contrast: is_feature_enabled returns True for unknown key; is_aggregation_soft_delete_enabled returns False.
+    def test_both_helpers_agree_on_absent_key(self, _mock):
+        """Both is_feature_enabled and is_aggregation_soft_delete_enabled return True for absent key.
 
-        This documents the deliberate divergence — the two functions have
-        opposite defaults for unconfigured keys.
+        Previously they diverged (fail-open vs fail-closed). Now both are default-open
+        for this flag. The contrast test is retained to document the current behavior.
         """
         key = "aggregation_soft_delete"
         self.assertTrue(is_feature_enabled("org-any", key))
-        self.assertFalse(is_aggregation_soft_delete_enabled("org-any"))
+        self.assertTrue(is_aggregation_soft_delete_enabled("org-any"))
 
     @patch(
         "reflexio.server.site_var.feature_flags._get_feature_flags_config",
@@ -531,6 +529,85 @@ class TestFailClosedFlagStrictBoolValidation(unittest.TestCase):
         """enabled_org_ids='org-pilot' (string) must not match 'org-pilot' or 'pilot'."""
         self.assertFalse(is_aggregation_soft_delete_enabled("org-pilot"))
         self.assertFalse(is_aggregation_soft_delete_enabled("pilot"))
+
+
+class TestSoftDeleteDefaultOn(unittest.TestCase):
+    """Regression suite for the default-ON semantics of the soft-delete flags.
+
+    Both dedup_soft_delete and aggregation_soft_delete must return True for any
+    org when the site var has no entry for that key (absent → enabled). The GC is
+    also enabled by default so tombstones are reclaimed automatically.
+    """
+
+    # --- dedup_soft_delete ---
+
+    @patch(
+        "reflexio.server.site_var.feature_flags._get_feature_flags_config",
+        return_value={},
+    )
+    def test_dedup_absent_key_any_org_returns_true(self, _mock):
+        """Any org with absent dedup_soft_delete key → True (default ON)."""
+        for org_id in ("org-a", "org-b", "org-c", "org-xyz-123"):
+            with self.subTest(org_id=org_id):
+                self.assertTrue(is_dedup_soft_delete_enabled(org_id))
+
+    @patch(
+        "reflexio.server.site_var.feature_flags._get_feature_flags_config",
+        return_value={"dedup_soft_delete": {"enabled": False, "enabled_org_ids": []}},
+    )
+    def test_dedup_explicit_global_disable_overrides_default(self, _mock):
+        """Explicit enabled=False + empty list → False for all orgs (override respected)."""
+        self.assertFalse(is_dedup_soft_delete_enabled("org-any"))
+
+    @patch(
+        "reflexio.server.site_var.feature_flags._get_feature_flags_config",
+        return_value={
+            "dedup_soft_delete": {
+                "enabled": False,
+                "enabled_org_ids": ["org-exempt"],
+            }
+        },
+    )
+    def test_dedup_explicit_per_org_disable_respected(self, _mock):
+        """Explicit per-org exclusion via enabled=False + list without org → False."""
+        self.assertFalse(is_dedup_soft_delete_enabled("org-not-exempt"))
+        self.assertTrue(is_dedup_soft_delete_enabled("org-exempt"))
+
+    # --- aggregation_soft_delete ---
+
+    @patch(
+        "reflexio.server.site_var.feature_flags._get_feature_flags_config",
+        return_value={},
+    )
+    def test_aggregation_absent_key_any_org_returns_true(self, _mock):
+        """Any org with absent aggregation_soft_delete key → True (default ON)."""
+        for org_id in ("org-a", "org-b", "org-c", "org-xyz-456"):
+            with self.subTest(org_id=org_id):
+                self.assertTrue(is_aggregation_soft_delete_enabled(org_id))
+
+    @patch(
+        "reflexio.server.site_var.feature_flags._get_feature_flags_config",
+        return_value={
+            "aggregation_soft_delete": {"enabled": False, "enabled_org_ids": []}
+        },
+    )
+    def test_aggregation_explicit_global_disable_overrides_default(self, _mock):
+        """Explicit enabled=False + empty list → False for all orgs (override respected)."""
+        self.assertFalse(is_aggregation_soft_delete_enabled("org-any"))
+
+    @patch(
+        "reflexio.server.site_var.feature_flags._get_feature_flags_config",
+        return_value={
+            "aggregation_soft_delete": {
+                "enabled": False,
+                "enabled_org_ids": ["org-exempt"],
+            }
+        },
+    )
+    def test_aggregation_explicit_per_org_disable_respected(self, _mock):
+        """Explicit per-org exclusion via enabled=False + list without org → False."""
+        self.assertFalse(is_aggregation_soft_delete_enabled("org-not-exempt"))
+        self.assertTrue(is_aggregation_soft_delete_enabled("org-exempt"))
 
 
 if __name__ == "__main__":
