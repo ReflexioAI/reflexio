@@ -15,7 +15,6 @@ project-level conftest). The feature flag is enabled via the standard
 
 from __future__ import annotations
 
-import tempfile
 import types
 from datetime import UTC, datetime
 from typing import Any
@@ -165,9 +164,7 @@ def test_divergence_emitted_for_recon_missing(
     storage.conn.commit()
 
     # Legacy table retains the row.
-    storage.add_profile_change_log(
-        _make_change_log("u1", "req-missing", [], [old_p])
-    )
+    storage.add_profile_change_log(_make_change_log("u1", "req-missing", [], [old_p]))
 
     anomalies: list[tuple[str, dict[str, Any]]] = []
 
@@ -187,14 +184,14 @@ def test_divergence_emitted_for_recon_missing(
         dual_read_diff(reflexio_stub, org_id)
 
     divergence_calls = [
-        (msg, kw)
-        for msg, kw in anomalies
-        if msg == "lineage.reconstruct.divergence"
+        (msg, kw) for msg, kw in anomalies if msg == "lineage.reconstruct.divergence"
     ]
-    assert divergence_calls, "expected at least one lineage.reconstruct.divergence anomaly"
-    assert any(
-        kw.get("kind") == "RECON-MISSING" for _, kw in divergence_calls
-    ), f"expected kind=RECON-MISSING in divergence anomalies, got: {divergence_calls}"
+    assert divergence_calls, (
+        "expected at least one lineage.reconstruct.divergence anomaly"
+    )
+    assert any(kw.get("kind") == "RECON-MISSING" for _, kw in divergence_calls), (
+        f"expected kind=RECON-MISSING in divergence anomalies, got: {divergence_calls}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -231,7 +228,9 @@ def test_no_divergence_on_matching_run(
     # old_match uses generated_from_request_id="req-match-seed" — we also add a
     # legacy row for "req-match-seed" so it doesn't become a phantom CONTENT_MISMATCH.
     # The actual dedup run is "req-match".
-    old_match = _make_profile("u1", "p-match-old", "old-match", request_id="req-match-seed")
+    old_match = _make_profile(
+        "u1", "p-match-old", "old-match", request_id="req-match-seed"
+    )
     new_match = _make_profile("u1", "p-match-new", "new-match", request_id="req-match")
     storage.add_user_profile("u1", [old_match])
     storage.add_user_profile("u1", [new_match])
@@ -284,9 +283,7 @@ def test_no_divergence_on_matching_run(
         dual_read_diff(reflexio_stub, org_id)
 
     divergence_calls = [
-        (msg, kw)
-        for msg, kw in anomalies
-        if msg == "lineage.reconstruct.divergence"
+        (msg, kw) for msg, kw in anomalies if msg == "lineage.reconstruct.divergence"
     ]
     assert not divergence_calls, (
         f"expected zero divergence anomalies for MATCH+LEGACY_MISSING data; got: {divergence_calls}"
@@ -327,7 +324,9 @@ def test_coverage_usage_event_recorded(
 
     # --- remove-bearing MATCH run ---
     old_rem = _make_profile("u1", "p-rem-old", "old-rem", request_id="seed-rem")
-    new_rem = _make_profile("u1", "p-rem-new", "new-rem", request_id="req-remove-bearing")
+    new_rem = _make_profile(
+        "u1", "p-rem-new", "new-rem", request_id="req-remove-bearing"
+    )
     storage.add_user_profile("u1", [old_rem])
     storage.add_user_profile("u1", [new_rem])
     storage.supersede_profiles_by_ids("u1", ["p-rem-old"], "req-remove-bearing")
@@ -359,7 +358,9 @@ def test_coverage_usage_event_recorded(
     assert isinstance(meta.get("remove_bearing_runs"), int), (
         f"remove_bearing_runs must be int; got {type(meta.get('remove_bearing_runs'))}"
     )
-    assert meta["add_only_runs"] == 1, f"expected add_only_runs=1; got {meta['add_only_runs']}"
+    assert meta["add_only_runs"] == 1, (
+        f"expected add_only_runs=1; got {meta['add_only_runs']}"
+    )
     assert meta["remove_bearing_runs"] == 1, (
         f"expected remove_bearing_runs=1; got {meta['remove_bearing_runs']}"
     )
@@ -388,9 +389,7 @@ def test_non_disruption_returns_none_and_does_not_mutate_legacy(
     storage.add_user_profile("u1", [old_p])
     storage.add_user_profile("u1", [new_p])
     storage.supersede_profiles_by_ids("u1", ["p-nd-old"], "req-nd")
-    storage.add_profile_change_log(
-        _make_change_log("u1", "req-nd", [new_p], [old_p])
-    )
+    storage.add_profile_change_log(_make_change_log("u1", "req-nd", [new_p], [old_p]))
 
     legacy_before = storage.get_profile_change_logs()
 
@@ -412,8 +411,12 @@ def test_non_disruption_returns_none_and_does_not_mutate_legacy(
 
     legacy_after_off = storage.get_profile_change_logs()
 
-    assert result_on is None, f"expected None from dual_read_diff (flag ON); got {result_on!r}"
-    assert result_off is None, f"expected None from dual_read_diff (flag OFF); got {result_off!r}"
+    assert result_on is None, (
+        f"expected None from dual_read_diff (flag ON); got {result_on!r}"
+    )
+    assert result_off is None, (
+        f"expected None from dual_read_diff (flag OFF); got {result_off!r}"
+    )
 
     # Legacy read must be unchanged by the shim.
     def _key(row: ProfileChangeLog) -> str:
@@ -475,11 +478,13 @@ def test_error_path_swallowed_and_emits_anomaly(
 
     assert result is None, f"expected None; got {result!r}"
 
-    error_calls = [(msg, kw) for msg, kw in anomalies if msg == "lineage.reconstruct.error"]
+    error_calls = [
+        (msg, kw) for msg, kw in anomalies if msg == "lineage.reconstruct.error"
+    ]
     assert error_calls, "expected at least one lineage.reconstruct.error anomaly"
-    assert any(
-        kw.get("error") == "ValueError" for _, kw in error_calls
-    ), f"expected error='ValueError' in anomaly kwargs; got: {error_calls}"
+    assert any(kw.get("error") == "ValueError" for _, kw in error_calls), (
+        f"expected error='ValueError' in anomaly kwargs; got: {error_calls}"
+    )
 
     divergence_calls = [
         (msg, kw) for msg, kw in anomalies if msg == "lineage.reconstruct.divergence"
