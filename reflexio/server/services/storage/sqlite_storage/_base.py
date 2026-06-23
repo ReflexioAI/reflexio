@@ -1759,6 +1759,11 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         hard-deleted. This preserves chain resolution across user erasures.
         Standalone rows with no lineage involvement are hard-deleted as before.
 
+        The purge/delete decision delegates to
+        ``BaseStorage._partition_purge_vs_delete`` so the logic is defined once
+        and shared with the default ``clear_user_data`` implementation used by
+        Supabase/Postgres backends.
+
         **Commit ordering (atomicity invariant):**
         The hard-deletes for interactions, requests, and the delete-sets of
         profiles/user_playbooks are committed in one transaction first. Then
@@ -1778,67 +1783,6 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 ``profiles`` and ``user_playbooks`` reflect hard-deleted counts;
                 purged rows are counted separately.
         """
-
-        def _split_profiles(
-            rows: list[object],
-        ) -> tuple[list[str], list[int], list[str], list[int]]:
-            """Partition profile rows into purge vs delete sets.
-
-            Returns:
-                Tuple of (purge_ids, purge_rowids, delete_ids, delete_rowids).
-            """
-            purge_ids: list[str] = []
-            purge_rowids: list[int] = []
-            delete_ids: list[str] = []
-            delete_rowids: list[int] = []
-            for r in rows:
-                pid = r["profile_id"]  # type: ignore[index]
-                rowid = r["rowid"]  # type: ignore[index]
-                is_tombstone = (
-                    self.conn.execute(
-                        "SELECT 1 FROM profiles WHERE profile_id = ?"
-                        " AND (merged_into IS NOT NULL OR superseded_by IS NOT NULL)",
-                        (pid,),
-                    ).fetchone()
-                    is not None
-                )
-                if is_tombstone or self.has_inbound_lineage_refs(
-                    entity_type="profile", entity_id=str(pid)
-                ):
-                    purge_ids.append(pid)
-                    purge_rowids.append(rowid)
-                else:
-                    delete_ids.append(pid)
-                    delete_rowids.append(rowid)
-            return purge_ids, purge_rowids, delete_ids, delete_rowids
-
-        def _split_user_playbooks(
-            ids: list[int],
-        ) -> tuple[list[int], list[int]]:
-            """Partition user_playbook ids into purge vs delete sets.
-
-            Returns:
-                Tuple of (purge_ids, delete_ids).
-            """
-            purge_ids: list[int] = []
-            delete_ids: list[int] = []
-            for upid in ids:
-                is_tombstone = (
-                    self.conn.execute(
-                        "SELECT 1 FROM user_playbooks WHERE user_playbook_id = ?"
-                        " AND (merged_into IS NOT NULL OR superseded_by IS NOT NULL)",
-                        (upid,),
-                    ).fetchone()
-                    is not None
-                )
-                if is_tombstone or self.has_inbound_lineage_refs(
-                    entity_type="user_playbook", entity_id=str(upid)
-                ):
-                    purge_ids.append(upid)
-                else:
-                    delete_ids.append(upid)
-            return purge_ids, delete_ids
-
         with self._lock:
             # ------------------------------------------------------------------
             # Phase 1: snapshot all user-scoped ids before any mutations.
@@ -1862,16 +1806,32 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 (user_id,),
             ).fetchall()
 
+            # Build a rowid lookup for FTS/vec cleanup (SQLite-specific need).
+            profile_rowid_by_id: dict[str, int] = {
+                r["profile_id"]: r["rowid"] for r in profile_rows
+            }
+            all_profile_ids = list(profile_rowid_by_id.keys())
+
             # ------------------------------------------------------------------
             # Phase 2: partition profiles and user_playbooks into purge vs delete.
+            # Delegates to the shared BaseStorage helper so the decision logic
+            # is defined once and reused by all backends.
             # ------------------------------------------------------------------
-            (
-                purge_profile_ids,
-                purge_profile_rowids,
-                delete_profile_ids,
-                delete_profile_rowids,
-            ) = _split_profiles(profile_rows)
-            purge_upb_ids, delete_upb_ids = _split_user_playbooks(raw_upb_ids)
+            purge_profile_ids, delete_profile_ids = self._partition_purge_vs_delete(
+                "profile", all_profile_ids
+            )
+            purge_upb_str_ids, delete_upb_str_ids = self._partition_purge_vs_delete(
+                "user_playbook", [str(uid) for uid in raw_upb_ids]
+            )
+            purge_upb_ids = [int(s) for s in purge_upb_str_ids]
+            delete_upb_ids = [int(s) for s in delete_upb_str_ids]
+
+            # Rowids for the delete-set only (purge_content handles its own cleanup).
+            delete_profile_rowids = [
+                profile_rowid_by_id[pid]
+                for pid in delete_profile_ids
+                if pid in profile_rowid_by_id
+            ]
 
             # ------------------------------------------------------------------
             # Phase 3: FTS and vector cleanup — only for the delete-sets
