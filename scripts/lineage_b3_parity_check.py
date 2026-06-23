@@ -47,7 +47,6 @@ import argparse
 import os
 import sys
 from pathlib import Path
-from typing import cast
 
 _THIS_DIR = Path(__file__).resolve().parent  # scripts/
 _PROJECT_ROOT = _THIS_DIR.parent  # repo root
@@ -56,10 +55,10 @@ sys.path.insert(0, str(_PROJECT_ROOT))
 
 from reflexio.lib._lineage_parity import (
     ParityClass,
+    ParityReadStorage,
     ParityResult,
     run_parity_check,
 )
-from reflexio.server.services.storage.storage_base import BaseStorage
 
 
 def print_summary(results: list[ParityResult]) -> None:
@@ -85,7 +84,7 @@ def print_summary(results: list[ParityResult]) -> None:
     )
     print(f"  CONTENT-MISMATCH  : {counts[ParityClass.CONTENT_MISMATCH]}  (divergence)")
     print(
-        f"  INCONCLUSIVE      : {counts[ParityClass.INCONCLUSIVE]}  (duplicate ids or cap hit)"
+        f"  INCONCLUSIVE      : {counts[ParityClass.INCONCLUSIVE]}  (duplicate ids, cap hit, or truncated reads)"
     )
     print(f"{'=' * 60}")
 
@@ -110,7 +109,7 @@ def print_summary(results: list[ParityResult]) -> None:
 
 def _build_storage(
     args: argparse.Namespace, parser: argparse.ArgumentParser
-) -> BaseStorage:
+) -> ParityReadStorage:
     """Construct the storage to check from CLI args (SQLite or read-only Supabase)."""
     if args.supabase_url:
         key = os.environ.get(args.service_key_env)
@@ -120,13 +119,9 @@ def _build_storage(
             )
         from reflexio.lib._lineage_parity_readers import RestStorageReader
 
-        # Read-only reader; duck-types the storage read surface that
-        # run_parity_check / reconstruct need (not a BaseStorage subclass).
-        return cast(
-            "BaseStorage",
-            RestStorageReader(
-                args.supabase_url, key, org_id=args.org_id, schema=args.schema
-            ),
+        # Read-only reader implementing the ParityReadStorage protocol.
+        return RestStorageReader(
+            args.supabase_url, key, org_id=args.org_id, schema=args.schema
         )
 
     from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
@@ -164,6 +159,10 @@ def main() -> None:
     results = run_parity_check(storage)
     print_summary(results)
 
+    # Exit 2 = INCONCLUSIVE (truncated/duplicate — verdict untrustworthy),
+    # 1 = real gaps, 0 = clean.
+    if any(r.classification is ParityClass.INCONCLUSIVE for r in results):
+        sys.exit(2)
     gaps = [
         r
         for r in results

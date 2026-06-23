@@ -10,6 +10,7 @@ from reflexio.lib._base import (
     ReflexioBase,
     _require_storage,
 )
+from reflexio.lib._lineage_parity import ParityReadStorage
 from reflexio.models.api_schema.domain.entities import ProfileChangeLog
 from reflexio.models.api_schema.retriever_schema import (
     GetProfileStatisticsResponse,
@@ -41,7 +42,6 @@ from reflexio.models.api_schema.service_schemas import (
 from reflexio.server.services.profile.profile_generation_service import (
     ProfileGenerationService,
 )
-from reflexio.server.services.storage.storage_base import BaseStorage
 from reflexio.server.tracing import profile_step
 
 
@@ -561,7 +561,7 @@ class ProfilesMixin(ReflexioBase):
 
 
 def reconstruct_profile_change_log(
-    storage: BaseStorage,
+    storage: ParityReadStorage,
     *,
     limit: int = 100,
 ) -> ProfileChangeLogResponse:
@@ -593,7 +593,8 @@ def reconstruct_profile_change_log(
     it is silently omitted from ``removed_profiles`` rather than crashing.
 
     Args:
-        storage (BaseStorage): Storage instance to query.
+        storage (ParityReadStorage): Storage read surface to query (any
+            BaseStorage backend or the read-only parity reader).
         limit (int): Maximum number of reconstructed entries to return.
             Defaults to 100.
 
