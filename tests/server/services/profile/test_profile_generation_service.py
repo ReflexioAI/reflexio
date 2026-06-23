@@ -340,35 +340,28 @@ class TestProcessResults:
         request_context.storage.delete_user_profile.assert_not_called()
         request_context.storage.add_profile_change_log.assert_not_called()
 
-    def test_changelog_created_after_profiles_saved(
+    def test_legacy_changelog_not_written_when_profiles_saved(
         self, service, request_context, sample_profile
     ):
-        """Profile changelog is created when new profiles are saved."""
+        """The legacy profile_change_logs table is no longer written on the save path.
+
+        The change log is served by reconstruction from lineage events (see
+        reconstruct_profile_change_log); profile generation must still SUCCEED and
+        persist the new profiles, but must NOT write the frozen legacy table.
+        """
         self._setup_service_config(service)
 
         service._process_results([[sample_profile]])
 
-        request_context.storage.add_profile_change_log.assert_called_once()
-        changelog = request_context.storage.add_profile_change_log.call_args[0][0]
-        assert changelog.user_id == "user_1"
-        assert changelog.request_id == "req_1"
-        assert changelog.added_profiles == [sample_profile]
-
-    def test_changelog_failure_is_handled(
-        self, service, request_context, sample_profile
-    ):
-        """When add_profile_change_log fails, exception is caught and logged."""
-        self._setup_service_config(service)
-        request_context.storage.add_profile_change_log.side_effect = RuntimeError(
-            "Changelog error"
+        request_context.storage.add_user_profile.assert_called_once_with(
+            "user_1", [sample_profile]
         )
+        request_context.storage.add_profile_change_log.assert_not_called()
 
-        service._process_results([[sample_profile]])
-
-        request_context.storage.add_user_profile.assert_called_once()
-
-    def test_no_changelog_when_no_profiles(self, service, request_context):
-        """No changelog is created when there are no new or superseded profiles."""
+    def test_legacy_changelog_not_written_when_no_profiles(
+        self, service, request_context
+    ):
+        """The legacy table is not written when there are no new profiles either."""
         self._setup_service_config(service)
 
         service._process_results([])

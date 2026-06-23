@@ -3,19 +3,20 @@
 These tests guard the central invariant of the "always soft" dedup fix:
 
     A dedup removal either soft-supersedes (tombstone + ONE status_change/
-    superseded lineage event under the run's request_id) AND appears in the
-    legacy ProfileChangeLog.removed_profiles, OR neither happens — never a
-    legacy "removed" with no committed tombstone, and never a hard_delete for a
-    dedup removal.
+    superseded lineage event under the run's request_id), OR nothing happens —
+    never a hard_delete for a dedup removal. The change log is then rebuilt from
+    those lineage events (reconstruct_profile_change_log); the legacy
+    ``profile_change_logs`` table is no longer written.
 
 They replace the deleted ``test_dedup_soft_delete_integration.py`` (which was
 built around the now-removed ``is_dedup_soft_delete_enabled`` flag and the
 hard-delete fallback).
 
 Test groups:
-- A: happy-path with REAL SQLiteStorage + reconstruction parity → MATCH.
-- B: failure-path (mocked storage) — supersede raises / partial commit → the
-     legacy log records only committed ids (no phantom removal).
+- A: happy-path with REAL SQLiteStorage → soft tombstone + one superseded event,
+     reconstruction reflects the removal, and the legacy table stays unwritten.
+- B: failure-path (mocked storage) — supersede raises → no hard-delete, no legacy
+     write, run does not raise.
 - C: empty request_id (mocked storage) — fail-loud anomaly, NO removal at all.
 - D: regression guard — the dedup path never calls delete_user_profile.
 
@@ -31,11 +32,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from reflexio.lib._lineage_parity import (
-    ParityClass,
-    classify_change_log_parity,
-    profile_reconstructible_request_ids,
-)
 from reflexio.lib._profiles import reconstruct_profile_change_log
 from reflexio.models.api_schema.domain.enums import ProfileTimeToLive, Status
 from reflexio.models.api_schema.service_schemas import UserProfile
@@ -126,9 +122,9 @@ def _patch_dedup(*, all_new, existing_ids, superseded):
 # ===========================================================================
 
 
-def test_dedup_removal_soft_supersedes_and_reconstructs_match(tmp_path) -> None:
+def test_dedup_removal_soft_supersedes_and_reconstructs(tmp_path) -> None:
     """A committed dedup removal leaves a tombstone + one superseded event, the
-    legacy log records it, and reconstruction MATCHes legacy (divergence 0)."""
+    legacy table stays unwritten, and reconstruction reflects the removal."""
     org_id = "always-soft-org-A"
     user_id = "u_A"
     request_id = "manual_softA1"
@@ -181,23 +177,18 @@ def test_dedup_removal_soft_supersedes_and_reconstructs_match(tmp_path) -> None:
     hard_deletes = [e for e in events if e.op == "hard_delete"]
     assert hard_deletes == []
 
-    # (iv) Legacy ProfileChangeLog.removed_profiles == [P_old] (committed set).
-    legacy_rows = storage.get_profile_change_logs()
-    legacy = next(r for r in legacy_rows if r.request_id == request_id)
-    assert [p.profile_id for p in legacy.removed_profiles] == ["p_old_A"]
-    assert [p.profile_id for p in legacy.added_profiles] == ["p_new_A"]
+    # (iv) The legacy profile_change_logs table is NO LONGER written.
+    assert storage.get_profile_change_logs() == []
 
-    # (v) Reconstruction MATCHes legacy for this request_id (divergence 0).
+    # (v) Reconstruction (served by the endpoint) reflects the removal + addition
+    # for this request_id, rebuilt purely from lineage events.
     recon = reconstruct_profile_change_log(storage)
     assert recon.success
-    results = classify_change_log_parity(
-        legacy_rows,
-        recon.profile_change_logs,
-        reconstructible_request_ids=profile_reconstructible_request_ids(storage),
-        read_cap_hit=False,
+    recon_log = next(
+        log for log in recon.profile_change_logs if log.request_id == request_id
     )
-    by_req = {r.request_id: r for r in results}
-    assert by_req[request_id].classification == ParityClass.MATCH
+    assert [p.profile_id for p in recon_log.removed_profiles] == ["p_old_A"]
+    assert [p.profile_id for p in recon_log.added_profiles] == ["p_new_A"]
 
 
 # ===========================================================================
@@ -205,9 +196,9 @@ def test_dedup_removal_soft_supersedes_and_reconstructs_match(tmp_path) -> None:
 # ===========================================================================
 
 
-def test_supersede_raises_logs_no_phantom_removal() -> None:
-    """If supersede raises, the legacy log records removed_profiles=[] (no phantom
-    removal), and the adds are still logged. The run does not raise."""
+def test_supersede_raises_does_not_hard_delete_or_write_legacy() -> None:
+    """If supersede raises, the run does not raise, does not fall back to a
+    hard-delete, and never writes the (frozen) legacy change-log table."""
     mock_storage = MagicMock()
     mock_storage.supersede_profiles_by_ids.side_effect = RuntimeError("boom")
 
@@ -229,17 +220,14 @@ def test_supersede_raises_logs_no_phantom_removal() -> None:
 
     mock_storage.supersede_profiles_by_ids.assert_called_once()
     mock_storage.delete_user_profile.assert_not_called()
-
-    log = mock_storage.add_profile_change_log.call_args[0][0]
-    assert log.removed_profiles == []
-    assert [p.profile_id for p in log.added_profiles] == ["new_B"]
+    mock_storage.add_profile_change_log.assert_not_called()
 
 
-def test_partial_commit_logs_only_committed_subset() -> None:
-    """If supersede commits a SUBSET, the legacy removed_profiles equals exactly
-    that committed subset — not the deduplicator's full intent."""
+def test_supersede_called_with_full_intent_and_no_legacy_write() -> None:
+    """The service forwards the deduplicator's full removal intent to
+    supersede_profiles_by_ids (the committed-subset semantics now live in storage
+    + reconstruction, not the service) and never writes the legacy table."""
     mock_storage = MagicMock()
-    # Intent removes two ids, but only one actually committed.
     mock_storage.supersede_profiles_by_ids.return_value = ["old_1"]
 
     superseded = [_make_profile("u_B2", "old_1"), _make_profile("u_B2", "old_2")]
@@ -262,8 +250,7 @@ def test_partial_commit_logs_only_committed_subset() -> None:
         profile_ids=["old_1", "old_2"],
         request_id="run_B2",
     )
-    log = mock_storage.add_profile_change_log.call_args[0][0]
-    assert [p.profile_id for p in log.removed_profiles] == ["old_1"]
+    mock_storage.add_profile_change_log.assert_not_called()
 
 
 # ===========================================================================
@@ -299,9 +286,8 @@ def test_empty_request_id_skips_removal_and_fires_anomaly() -> None:
     mock_anomaly.assert_called_once()
     assert mock_anomaly.call_args[0][0] == "lineage.dedup.missing_request_id"
 
-    # No phantom removal recorded.
-    log = mock_storage.add_profile_change_log.call_args[0][0]
-    assert log.removed_profiles == []
+    # No legacy change-log row written (the table is frozen) and no removal at all.
+    mock_storage.add_profile_change_log.assert_not_called()
 
 
 # ===========================================================================

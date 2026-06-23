@@ -176,7 +176,6 @@ from reflexio.server.cache.reflexio_cache import (
     invalidate_reflexio_cache,
 )
 from reflexio.server.correlation import correlation_id_var, generate_correlation_id
-from reflexio.server.lineage_parity_shim import dual_read_diff
 from reflexio.server.operation_limiter import (
     OperationName,
     limiter_http_exception,
@@ -1042,16 +1041,12 @@ def unified_search_endpoint(
 
 @core_router.get("/api/profile_change_log", response_model=ProfileChangeLogViewResponse)
 def get_profile_change_log(
-    background_tasks: BackgroundTasks,
     org_id: str = Depends(default_get_org_id),
 ) -> ProfileChangeLogViewResponse:
-    # get_reflexio returns a TTL-cached Reflexio instance (1-hour TTL, module-level
-    # cache in server/cache/reflexio_cache.py).  Its request_context.storage is set
-    # at construction time and remains valid well beyond any single request lifecycle,
-    # so running the shim as a background task is safe.
-    rfx = get_reflexio(org_id=org_id)
-    response = rfx.get_profile_change_logs()
-    background_tasks.add_task(dual_read_diff, rfx, org_id)
+    # Serves the reconstructed profile change log (rebuilt from lineage events). The
+    # legacy `profile_change_logs` table is no longer written; see
+    # reconstruct_profile_change_log in lib/_profiles.py.
+    response = get_reflexio(org_id=org_id).get_profile_change_logs()
     return ProfileChangeLogViewResponse(
         success=response.success,
         profile_change_logs=[
