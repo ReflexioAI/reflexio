@@ -330,7 +330,6 @@ def _cleanup_storage(instance: Reflexio):
             )
         instance.request_context.storage.delete_all_interactions()
         instance.request_context.storage.delete_all_profiles()
-        instance.request_context.storage.delete_all_profile_change_logs()
         instance.request_context.storage.delete_all_agent_success_evaluation_results()
         instance.request_context.storage.delete_all_requests()
         instance.request_context.storage.delete_all_operation_states()

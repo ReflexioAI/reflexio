@@ -73,20 +73,6 @@ class ExtrasMixin:
         raise NotImplementedError
 
     # ==============================
-    # Profile Change Log methods
-    # ==============================
-
-    @abstractmethod
-    def delete_profile_change_log_for_user(self, user_id: str) -> None:
-        """Delete all profile change logs for a user."""
-        raise NotImplementedError
-
-    @abstractmethod
-    def delete_all_profile_change_logs(self) -> None:
-        """Delete all profile change logs."""
-        raise NotImplementedError
-
-    # ==============================
     # Playbook Aggregation Change Log methods
     # ==============================
 

@@ -336,18 +336,6 @@ class ExtrasMixin:
         return stats
 
     # ------------------------------------------------------------------
-    # Profile Change Log methods
-    # ------------------------------------------------------------------
-
-    @SQLiteStorageBase.handle_exceptions
-    def delete_profile_change_log_for_user(self, user_id: str) -> None:
-        self._execute("DELETE FROM profile_change_logs WHERE user_id = ?", (user_id,))
-
-    @SQLiteStorageBase.handle_exceptions
-    def delete_all_profile_change_logs(self) -> None:
-        self._execute("DELETE FROM profile_change_logs")
-
-    # ------------------------------------------------------------------
     # Playbook Aggregation Change Log methods
     # ------------------------------------------------------------------
 

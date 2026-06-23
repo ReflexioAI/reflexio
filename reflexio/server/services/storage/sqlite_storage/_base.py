@@ -682,6 +682,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         self._migrate_lineage()
         self._migrate_retired_at()
         self._migrate_lineage_event_table()
+        self._migrate_retire_profile_change_logs()
         init_stall_state_table(self.conn)
         return True
 
@@ -1330,6 +1331,37 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                     logger.info("Added %s column to lineage_event", col)
             self.conn.commit()
 
+    def _migrate_retire_profile_change_logs(self) -> None:
+        """Retire the frozen ``profile_change_logs`` table via a reversible RENAME.
+
+        Lineage B3 Task 8: the legacy change log is fully de-referenced (no
+        readers, writers, or GDPR delete callers remain) and the view is served
+        from reconstruction. We rename the table out of the way now and DROP it
+        in a later migration after the recovery window — keeping the data
+        recoverable in the interim.
+
+        Idempotent: SQLite has no ``RENAME ... IF EXISTS``, so we guard on the
+        source table's presence and no-op once it has been renamed. The
+        ``CREATE TABLE`` for ``profile_change_logs`` was deleted from ``_DDL`` so
+        ``executescript(_DDL)`` does not recreate an empty table after the rename.
+        """
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+                ("profile_change_logs",),
+            ).fetchone()
+            if row is None:
+                return
+            self.conn.execute(
+                "ALTER TABLE profile_change_logs "
+                "RENAME TO profile_change_logs_retired_20260623"
+            )
+            logger.info(
+                "Renamed profile_change_logs to "
+                "profile_change_logs_retired_20260623 (B3 Task 8 retirement)"
+            )
+            self.conn.commit()
+
     def _migrate_agent_playbook_source_windows(self) -> None:
         """Add source window snapshots to existing agent source mappings."""
         cols = {
@@ -1956,18 +1988,6 @@ CREATE INDEX IF NOT EXISTS idx_eval_agent_version_created_at_desc
     ON agent_success_evaluation_result(agent_version, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_eval_identity_created_at_desc
     ON agent_success_evaluation_result(user_id, session_id, evaluation_name, agent_version, created_at DESC);
-
-CREATE TABLE IF NOT EXISTS profile_change_logs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id TEXT NOT NULL,
-    request_id TEXT NOT NULL,
-    created_at INTEGER NOT NULL,
-    added_profiles TEXT NOT NULL DEFAULT '[]',
-    removed_profiles TEXT NOT NULL DEFAULT '[]',
-    mentioned_profiles TEXT NOT NULL DEFAULT '[]'
-);
-CREATE INDEX IF NOT EXISTS idx_pcl_user_id ON profile_change_logs(user_id);
-CREATE INDEX IF NOT EXISTS idx_pcl_created_at ON profile_change_logs(created_at);
 
 CREATE TABLE IF NOT EXISTS playbook_aggregation_change_logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
