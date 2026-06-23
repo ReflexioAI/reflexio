@@ -85,6 +85,30 @@ def _append_event_stmt(
     )
 
 
+# Per-entity purge SQL: blank every PII/content column, guard on content != '' for
+# idempotency (re-running on an already-blank row skips the event emission).
+_PROFILE_PURGE_SQL = (
+    "UPDATE profiles SET "
+    "content='', user_id='', generated_from_request_id='', source='', "
+    "embedding=NULL, extractor_names=NULL, expanded_terms=NULL, tags=NULL, "
+    "custom_features=NULL, notes=NULL, source_span=NULL, reader_angle=NULL "
+    "WHERE profile_id=? AND content != ''"
+)
+_USER_PLAYBOOK_PURGE_SQL = (
+    "UPDATE user_playbooks SET "
+    "content='', user_id=NULL, source=NULL, "
+    "trigger=NULL, rationale=NULL, blocking_issue=NULL, "
+    "source_interaction_ids=NULL, embedding=NULL, expanded_terms=NULL, "
+    "tags=NULL, source_span=NULL, notes=NULL, reader_angle=NULL "
+    "WHERE user_playbook_id=? AND content != ''"
+)
+# agent_playbook purge not yet required; added when Task 3/4 needs it.
+_PURGE_SQL: dict[str, str] = {
+    "profile": _PROFILE_PURGE_SQL,
+    "user_playbook": _USER_PLAYBOOK_PURGE_SQL,
+}
+
+
 class SQLiteLineageMixin:
     """SQLite implementation of the append-only, content-free lineage event log."""
 
@@ -324,6 +348,81 @@ class SQLiteLineageMixin:
             )
             self.conn.commit()
             return True
+
+    def purge_content(self, *, entity_type: EntityType, entity_id: str) -> bool:
+        """Blank a record's PII body, keep its lineage skeleton, emit op=purge.
+
+        Blanks every non-skeleton column for the row identified by ``entity_id``,
+        emits one ``op=purge`` lineage event in the same commit, then runs FTS/vec
+        index cleanup after the commit. The ``request_id`` is deterministic
+        (``"purge_" + entity_id``) so re-runs on an already-blank row do not
+        produce a duplicate event (``INSERT OR IGNORE`` on the unique key).
+
+        Args:
+            entity_type (EntityType): One of ``"user_playbook"``, ``"agent_playbook"``,
+                or ``"profile"``.
+            entity_id (str): The entity's primary key as a string.
+
+        Returns:
+            bool: ``True`` if the row exists; ``False`` if the id had no matching row.
+
+        Raises:
+            ValueError: If ``entity_type`` is not a recognized entity type or
+                if ``entity_type`` is ``"agent_playbook"`` (not yet supported).
+        """
+        sql = _PURGE_SQL.get(entity_type)
+        if sql is None:
+            raise ValueError(f"purge_content: unsupported entity_type {entity_type!r}")
+        table, pk = _resolve_table(entity_type)
+        with self._lock:
+            row = self.conn.execute(
+                f"SELECT rowid FROM {table} WHERE {pk}=?",  # noqa: S608
+                (entity_id,),
+            ).fetchone()
+            if row is None:
+                return False
+            rowid = row["rowid"]
+            cur = self.conn.execute(sql, (entity_id,))
+            if cur.rowcount > 0:
+                # Body was actually blanked this call — record the audited fact.
+                _append_event_stmt(
+                    self.conn,
+                    org_id=self.org_id,
+                    entity_type=entity_type,
+                    entity_id=entity_id,
+                    op="purge",
+                    prov="wasPurged",
+                    source_ids=[],
+                    actor="erasure",  # no user identifier
+                    request_id=f"purge_{entity_id}",  # deterministic → idempotent
+                    reason="content_purge",
+                )
+            self.conn.commit()
+        # Post-commit index cleanup (self-committing helpers; idempotent/replayable).
+        self._purge_search_indexes(entity_type, entity_id, rowid)
+        return True
+
+    def _purge_search_indexes(
+        self, entity_type: EntityType, entity_id: str, rowid: int
+    ) -> None:
+        """Remove FTS and vec index entries for a purged entity.
+
+        Called after the blanking commit so index cleanup never interleaves with
+        the atomic mutation+event transaction.
+
+        Args:
+            entity_type (EntityType): One of ``"user_playbook"`` or ``"profile"``.
+            entity_id (str): The entity's primary key (used for profiles FTS).
+            rowid (int): The sqlite rowid (used for playbooks FTS and all vec tables).
+        """
+        if entity_type == "profile":
+            self._fts_delete_profile(entity_id)  # type: ignore[attr-defined]
+            if self._has_sqlite_vec:  # type: ignore[attr-defined]
+                self._vec_delete("profiles_vec", rowid)  # type: ignore[attr-defined]
+        elif entity_type == "user_playbook":
+            self._fts_delete("user_playbooks_fts", rowid)  # type: ignore[attr-defined]
+            if self._has_sqlite_vec:  # type: ignore[attr-defined]
+                self._vec_delete("user_playbooks_vec", rowid)  # type: ignore[attr-defined]
 
     def has_inbound_lineage_refs(
         self, *, entity_type: EntityType, entity_id: str

@@ -145,6 +145,31 @@ class LineageEventMixin:
         ...
 
     @abstractmethod
+    def purge_content(self, *, entity_type: EntityType, entity_id: str) -> bool:
+        """Blank a record's PII body, keep its lineage skeleton, emit op=purge.
+
+        Keeps only ``{pk, status, merged_into, superseded_by, retired_at}`` and
+        non-PII bookkeeping columns (timestamps, TTL); blanks every other column
+        (text → ``''``, nullable → ``NULL``; ``user_id`` → ``''``). Irreversible.
+        Emits a single ``op=purge`` lineage event with a deterministic
+        ``request_id="purge_{entity_id}"`` so repeated calls are idempotent —
+        an already-blank row re-runs without recording a duplicate event.
+        Returns ``True`` if a row existed (whether or not new blanking was done).
+
+        Args:
+            entity_type (EntityType): One of ``"user_playbook"``, ``"agent_playbook"``,
+                or ``"profile"``.
+            entity_id (str): The entity's primary key as a string.
+
+        Returns:
+            bool: ``True`` if the row exists; ``False`` if the id had no matching row.
+
+        Raises:
+            ValueError: If ``entity_type`` is not a recognized entity type.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     def gc_expired_tombstones(
         self, *, entity_type: str, older_than_epoch: int, limit: int = 1000
     ) -> int:

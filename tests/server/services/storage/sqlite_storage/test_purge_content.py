@@ -48,6 +48,98 @@ def test_has_inbound_lineage_refs_true_when_pointed_to(storage):
     )
 
 
+def test_purge_blanks_body_keeps_skeleton(storage):
+    storage.add_user_profile("alice", [_profile("A", "alice", "alice@x.com secret")])
+    storage.add_user_profile("alice", [_profile("B", "alice", "new")])
+    storage.supersede_record(
+        entity_type="profile", incumbent_id="A", successor_id="B", context=_ctx()
+    )
+    assert storage.purge_content(entity_type="profile", entity_id="A") is True
+    row = storage.conn.execute(
+        "SELECT content, user_id, status, superseded_by FROM profiles WHERE profile_id='A'"
+    ).fetchone()
+    assert row["content"] == ""  # body blanked
+    assert row["user_id"] == ""  # PII blanked to '' (NOT NULL)
+    assert row["status"] == "superseded"  # skeleton kept
+    assert row["superseded_by"] == "B"  # pointer kept
+
+
+def test_purge_emits_one_pii_free_event_idempotent(storage):
+    storage.add_user_profile("alice", [_profile("A", "alice", "x")])
+    storage.add_user_profile("alice", [_profile("B", "alice", "y")])
+    storage.supersede_record(
+        entity_type="profile", incumbent_id="A", successor_id="B", context=_ctx()
+    )
+    storage.purge_content(entity_type="profile", entity_id="A")
+    storage.purge_content(entity_type="profile", entity_id="A")  # re-run
+    events = storage.get_lineage_events(
+        entity_type="profile", entity_id="A", org_id="0"
+    )
+    purges = [e for e in events if e.op == "purge"]
+    assert len(purges) == 1  # deterministic request_id → no duplicate
+    assert "alice" not in (purges[0].actor or "")  # event carries no user identifier
+    assert purges[0].request_id == "purge_A"
+
+
+def test_purge_returns_false_for_missing_entity(storage):
+    assert (
+        storage.purge_content(entity_type="profile", entity_id="nonexistent") is False
+    )
+
+
+class _BoomOnCommit:
+    """Thin proxy around sqlite3.Connection that raises on the first commit call.
+
+    sqlite3.Connection.commit is a C-level slot and cannot be monkeypatched
+    directly, so we wrap the real connection in a proxy and swap s.conn.
+    """
+
+    def __init__(self, real_conn: object) -> None:
+        self._real = real_conn
+        self._boom = True  # raise on next commit
+
+    def commit(self) -> None:
+        if self._boom:
+            raise RuntimeError("crash")
+        self._real.commit()  # type: ignore[attr-defined]
+
+    def rollback(self) -> None:
+        self._real.rollback()  # type: ignore[attr-defined]
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._real, name)
+
+
+def test_purge_atomic_no_phantom_event(tmp_path):
+    with patch.object(SQLiteStorage, "_get_embedding", return_value=[0.0] * 512):
+        s = SQLiteStorage(org_id="0", db_path=str(tmp_path / "t.db"))
+    s.add_user_profile("alice", [_profile("A", "alice", "x")])
+    s.add_user_profile("alice", [_profile("B", "alice", "y")])
+    s.supersede_record(
+        entity_type="profile", incumbent_id="A", successor_id="B", context=_ctx()
+    )
+    # Swap in a proxy that raises on the first commit (post-UPDATE, pre-durability).
+    real_conn = s.conn
+    proxy = _BoomOnCommit(real_conn)
+    s.conn = proxy  # type: ignore[assignment]
+    with pytest.raises(RuntimeError, match="crash"):
+        s.purge_content(entity_type="profile", entity_id="A")
+    # Restore real connection and roll back the aborted transaction.
+    s.conn = real_conn
+    real_conn.rollback()
+    # Neither the blank nor the event survived.
+    row = real_conn.execute(
+        "SELECT content FROM profiles WHERE profile_id='A'"
+    ).fetchone()
+    assert row["content"] != ""  # body intact
+    purges = [
+        e
+        for e in s.get_lineage_events(entity_type="profile", entity_id="A", org_id="0")
+        if e.op == "purge"
+    ]
+    assert purges == []
+
+
 def test_has_inbound_lineage_refs_true_when_merged_into(storage):
     # Two profiles; A is merged into B → A.merged_into=B, so B has an inbound ref.
     storage.add_user_profile("bob", [_profile("C", "bob", "old")])
