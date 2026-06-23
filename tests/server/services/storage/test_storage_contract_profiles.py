@@ -31,6 +31,45 @@ def _make_profile(user_id: str, profile_id: str, content: str) -> UserProfile:
     )
 
 
+class TestGetAllGeneratedProfiles:
+    """Contract: get_all_generated_profiles returns every profile with a
+    non-empty generated_from_request_id (any status) — the bulk form of the
+    per-id read that reconstruct_profile_change_log uses for the "added" side.
+    """
+
+    def test_returns_gfr_bearing_profiles_and_matches_per_id_union(
+        self, storage: BaseStorage
+    ) -> None:
+        uid = "u-gen-all"
+        p1 = _make_profile(uid, "g-p1", "c1")  # gfr=req_g-p1
+        p2 = _make_profile(uid, "g-p2", "c2")  # gfr=req_g-p2
+        p_nogfr = UserProfile(
+            user_id=uid,
+            profile_id="g-p3",
+            content="c3",
+            last_modified_timestamp=int(datetime.now(UTC).timestamp()),
+            generated_from_request_id="",  # no run — must be excluded
+            profile_time_to_live=ProfileTimeToLive.INFINITY,
+            source="test",
+        )
+        storage.add_user_profile(uid, [p1, p2, p_nogfr])
+
+        got = {p.profile_id for p in storage.get_all_generated_profiles()}
+
+        # gfr-bearing profiles present; the empty-gfr one excluded.
+        assert {"g-p1", "g-p2"} <= got
+        assert "g-p3" not in got
+
+        # Equivalent to the union of the per-id reads it replaces (robust to any
+        # other profiles already in this storage).
+        union = {
+            p.profile_id
+            for r in storage.get_distinct_generated_from_request_ids()
+            for p in storage.get_profiles_by_generated_from_request_id(r)
+        }
+        assert got == union
+
+
 def _make_interaction(
     user_id: str,
     interaction_id: int,

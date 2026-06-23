@@ -299,6 +299,28 @@ class ProfileMixin:
         """
         raise NotImplementedError
 
+    def get_all_generated_profiles(self) -> list[UserProfile]:
+        """Return every profile (any status, incl. tombstones) with a non-empty
+        ``generated_from_request_id``, scoped to the org.
+
+        Bulk equivalent of :meth:`get_profiles_by_generated_from_request_id` — it
+        lets ``reconstruct_profile_change_log`` resolve the "added" side of every
+        run in a single query instead of one read per candidate request_id (an
+        org-history-sized fan-out on network-backed storage).
+
+        The default implementation loops the per-id reads, so every backend is
+        correct without an override; backends SHOULD override it with a single
+        ``WHERE generated_from_request_id <> ''`` query for the performance win.
+
+        Returns:
+            list[UserProfile]: All profiles with a non-empty
+                ``generated_from_request_id``.
+        """
+        out: list[UserProfile] = []
+        for request_id in self.get_distinct_generated_from_request_ids():
+            out.extend(self.get_profiles_by_generated_from_request_id(request_id))
+        return out
+
     @abstractmethod
     def supersede_profiles_by_ids(
         self,

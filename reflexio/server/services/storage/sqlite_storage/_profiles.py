@@ -516,6 +516,15 @@ class ProfileMixin:
         )
         return [_row_to_profile(r) for r in rows]
 
+    def get_all_generated_profiles(self) -> list[UserProfile]:
+        """All profiles (any status) with a non-empty generated_from_request_id."""
+        rows = self._fetchall(
+            "SELECT * FROM profiles "
+            "WHERE generated_from_request_id IS NOT NULL "
+            "AND generated_from_request_id <> ''",
+        )
+        return [_row_to_profile(r) for r in rows]
+
     @SQLiteStorageBase.handle_exceptions
     def archive_profile_by_id(self, user_id: str, profile_id: str) -> bool:
         with self._lock:

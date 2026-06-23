@@ -621,3 +621,41 @@ def test_get_distinct_generated_from_request_ids_excludes_empty(tmp_path):
     result = s.get_distinct_generated_from_request_ids()
     assert "" not in result, "empty-string request_id must be excluded"
     assert result == [], "no non-empty ids → empty result"
+
+
+def test_reconstruct_resolves_adds_in_one_bulk_read_not_per_candidate(tmp_path):
+    """F1 perf-regression guard: the "added" side is one bulk read, not N.
+
+    Regardless of how many runs exist, reconstruct must call
+    get_all_generated_profiles exactly once and never the per-id
+    get_profiles_by_generated_from_request_id — so the now-live endpoint does
+    not fan out over the org's whole dedup history before the limit slice.
+    """
+    s = _store(tmp_path)
+    for i in range(5):
+        s.add_user_profile(
+            "u1", [_make_profile("u1", f"p{i}", f"c{i}", request_id=f"run-{i}")]
+        )
+
+    calls = {"bulk": 0, "per_id": 0}
+    orig_bulk = s.get_all_generated_profiles
+    orig_per = s.get_profiles_by_generated_from_request_id
+
+    def _bulk():
+        calls["bulk"] += 1
+        return orig_bulk()
+
+    def _per(request_id):
+        calls["per_id"] += 1
+        return orig_per(request_id)
+
+    s.get_all_generated_profiles = _bulk  # type: ignore[method-assign]
+    s.get_profiles_by_generated_from_request_id = _per  # type: ignore[method-assign]
+
+    resp = reconstruct_profile_change_log(s)
+
+    assert calls["bulk"] == 1, "added side must be a single bulk read"
+    assert calls["per_id"] == 0, "no per-candidate fan-out"
+    assert {r.request_id for r in resp.profile_change_logs} == {
+        f"run-{i}" for i in range(5)
+    }

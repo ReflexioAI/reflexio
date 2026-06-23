@@ -181,6 +181,18 @@ class RestStorageReader:
         )
         return [_model(UserProfile, _USER_PROFILE_FIELDS, r) for r in rows]
 
+    def get_all_generated_profiles(self) -> list[UserProfile]:
+        # Fetch all profiles in one page and filter non-empty gfr client-side
+        # (mirrors get_distinct; avoids PostgREST empty-string operator ambiguity).
+        rows = self._note_page(
+            self._fetch("profiles", {"select": _PROFILE_COLUMNS, "limit": _FETCH_CAP})
+        )
+        return [
+            _model(UserProfile, _USER_PROFILE_FIELDS, r)
+            for r in rows
+            if r.get("generated_from_request_id")
+        ]
+
     def get_profile_by_id(
         self,
         profile_id: str,
