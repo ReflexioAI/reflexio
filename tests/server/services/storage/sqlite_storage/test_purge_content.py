@@ -202,6 +202,59 @@ def test_clear_user_data_purges_referenced_keeps_chain(tmp_path):
     assert counts["profiles"] == 1
 
 
+def test_clear_user_data_tombstone_only_user(tmp_path):
+    """Erasure reaches users whose ONLY rows are tombstones.
+
+    Regression guard for the GDPR bug where ``clear_user_data`` enumerated
+    profiles/user_playbooks with ``status_filter=[None, ARCHIVED, PENDING]``,
+    which excluded SUPERSEDED and MERGED rows.  A user whose sole profile was
+    superseded by another user's profile would survive erasure entirely.
+
+    Scenario: alice's profile A is superseded by bob's profile B.
+    After supersede, A has ``status='superseded'`` and A.superseded_by=B.
+    Erasing alice must still reach A (her only row) and purge it.
+    """
+    with patch.object(SQLiteStorage, "_get_embedding", return_value=[0.0] * 512):
+        s = SQLiteStorage(org_id="0", db_path=str(tmp_path / "t.db"))
+
+    # alice has one profile that ends up superseded by bob's profile.
+    s.add_user_profile("alice", [_profile("A", "alice", "alice@secret.com")])
+    s.add_user_profile("bob", [_profile("B", "bob", "bob content")])
+    s.supersede_record(
+        entity_type="profile", incumbent_id="A", successor_id="B", context=_ctx()
+    )
+
+    # Confirm A is now a tombstone with status='superseded'.
+    row = s.conn.execute(
+        "SELECT status, superseded_by FROM profiles WHERE profile_id='A'"
+    ).fetchone()
+    assert row["status"] == "superseded"
+    assert row["superseded_by"] == "B"
+
+    # Erase alice — her only profile is a tombstone; erasure must reach it.
+    counts = s.clear_user_data("alice")
+
+    # A is tombstone and pointed-to by nothing itself (B points at A via
+    # superseded_by, so A has no inbound refs) — but A IS a tombstone so it
+    # is purge-eligible via _is_lineage_tombstone.
+    a_row = s.conn.execute(
+        "SELECT content, user_id FROM profiles WHERE profile_id='A'"
+    ).fetchone()
+    # Row must have been reached: either purged (content='') or hard-deleted.
+    # Both outcomes satisfy erasure; the key is the row is NOT intact.
+    if a_row is not None:
+        # Purged: content blanked.
+        assert a_row["content"] == "", (
+            "Tombstone profile A must be content-purged on erasure"
+        )
+    # If a_row is None it was hard-deleted — also acceptable (no inbound refs).
+    # Either way at least one profile was touched.
+    assert counts["purged_profiles"] + counts["profiles"] >= 1, (
+        "Erasure must report at least one profile touched "
+        f"(purged={counts['purged_profiles']}, deleted={counts['profiles']})"
+    )
+
+
 def test_clear_user_data_cross_user_chain_purges_other_users_survivor(tmp_path):
     """Cross-user: alice's tombstone A points to bob's live C.
     Erasing bob must PURGE C (not hard-delete it), so alice's A still resolves.
@@ -227,7 +280,9 @@ def test_clear_user_data_cross_user_chain_purges_other_users_survivor(tmp_path):
     assert c_row is not None, (
         "C must not be hard-deleted — alice's chain still references it"
     )
-    assert c_row["content"] == "", "C's content must be blanked (purged), not merely kept"
+    assert c_row["content"] == "", (
+        "C's content must be blanked (purged), not merely kept"
+    )
     # Alice's A still resolves to C via the pointer.
     ref = resolve_current(s, "profile", "A")
     assert ref is not None and ref.id == "C"
