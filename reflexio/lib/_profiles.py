@@ -202,15 +202,22 @@ class ProfilesMixin(ReflexioBase):
         )
 
     def get_profile_change_logs(self) -> ProfileChangeLogResponse:
-        """Get profile change logs.
+        """Get profile change logs, served from the lineage reconstruction.
+
+        B3 Task 3: the change-log view is rebuilt on demand from ``lineage_event``
+        linkage joined to survivor/tombstone content via
+        :func:`reconstruct_profile_change_log`, rather than read from the legacy
+        ``profile_change_logs`` table. The legacy table is still written (Task 6
+        pending), so this read-side repoint is reversible. ``mentioned_profiles``
+        is always ``[]`` in the reconstructed shape (unchanged from legacy).
 
         Returns:
-            ProfileChangeLogResponse: Response containing profile change logs
+            ProfileChangeLogResponse: Response containing the reconstructed
+                profile change logs.
         """
         if not self._is_storage_configured():
             return ProfileChangeLogResponse(success=True, profile_change_logs=[])
-        changelogs = self._get_storage().get_profile_change_logs()
-        return ProfileChangeLogResponse(success=True, profile_change_logs=changelogs)
+        return reconstruct_profile_change_log(self._get_storage())
 
     @_require_storage(DeleteUserProfileResponse)
     def delete_profile(

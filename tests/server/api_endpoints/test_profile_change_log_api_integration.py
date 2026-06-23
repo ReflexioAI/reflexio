@@ -1,12 +1,15 @@
-"""Integration test: GET /api/profile_change_log serves the legacy get_profile_change_logs path.
+"""Integration test: GET /api/profile_change_log serves the lineage reconstruction.
 
-The endpoint was reverted from reconstruction-backed (B3 Task 3) back to the
-legacy storage read, because the production write-side emits ``hard_delete``
-events with no linkage — not the ``revise``/``merge`` events the reconstruction
-expects — so reconstruction cannot reproduce the legacy log yet.
+B3 Task 3 repoints the endpoint (via the lib facade ``get_profile_change_logs``)
+from the legacy ``profile_change_logs`` table to ``reconstruct_profile_change_log``
+(lineage_event linkage + survivor/tombstone content). The earlier revert to the
+legacy path is now resolved: the dedup write-side soft-supersedes superseded
+profiles (``supersede_profiles_by_ids`` → ``status_change``/``superseded`` events)
+instead of hard-deleting without linkage, so reconstruction can reproduce the
+removals.
 
-These tests assert that the endpoint reads from the legacy ``profile_change_logs``
-table (via storage.add_profile_change_log / get_profile_change_logs).
+These tests seed via the REAL dedup write-side and deliberately do NOT write the
+legacy table — proving the endpoint is served from reconstruction.
 """
 
 from __future__ import annotations
@@ -15,7 +18,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from reflexio.models.api_schema.domain.entities import ProfileChangeLog, UserProfile
+from reflexio.models.api_schema.domain.entities import UserProfile
 from reflexio.models.api_schema.domain.enums import ProfileTimeToLive
 from reflexio.models.api_schema.retriever_schema import ProfileChangeLogViewResponse
 from reflexio.server.cache.reflexio_cache import get_reflexio
@@ -23,67 +26,64 @@ from reflexio.server.cache.reflexio_cache import get_reflexio
 pytestmark = pytest.mark.integration
 
 
-def _make_profile(user_id: str, profile_id: str, content: str) -> UserProfile:
+def _make_profile(
+    user_id: str, profile_id: str, content: str, request_id: str
+) -> UserProfile:
     return UserProfile(
         user_id=user_id,
         profile_id=profile_id,
         content=content,
         last_modified_timestamp=int(datetime.now(UTC).timestamp()),
-        generated_from_request_id=f"req_{profile_id}",
+        generated_from_request_id=request_id,
         profile_time_to_live=ProfileTimeToLive.INFINITY,
     )
 
 
-def test_endpoint_returns_legacy_change_log(client_with_org):
-    """GET /api/profile_change_log returns data from the legacy profile_change_logs table.
+def test_endpoint_serves_reconstructed_change_log(client_with_org):
+    """GET /api/profile_change_log returns the RECONSTRUCTED view (B3 Task 3).
 
-    Seeds a ProfileChangeLog entry directly via storage.add_profile_change_log,
-    then asserts the endpoint returns:
-    - success=True
-    - one change-log entry with the correct added/removed profiles
-    - mentioned_profiles=[]
-    - response parseable by ProfileChangeLogViewResponse
+    Seeds via the real dedup write-side:
+      - survivor profile carries generated_from_request_id == the dedup run id
+        (the immutable "added" signal),
+      - the incumbent is soft-deleted via supersede_profiles_by_ids, which emits
+        a status_change/superseded lineage event under that run id (the "removed"
+        signal).
+
+    It does NOT call storage.add_profile_change_log — so if the endpoint still
+    read the legacy table it would return zero rows. The endpoint must return the
+    reconstructed row, with mentioned_profiles=[] and a schema-parseable shape.
     """
     client, org_id = client_with_org
     storage = get_reflexio(org_id=org_id).request_context.storage
     assert storage is not None, "storage must be configured in integration test fixture"
 
-    old_p = _make_profile(
-        user_id="u-legacy-test", profile_id="p-old-1", content="stale profile text"
-    )
-    new_p = _make_profile(
-        user_id="u-legacy-test", profile_id="p-new-1", content="updated profile text"
-    )
+    user_id = "u-recon-test"
+    run_id = "req-recon-test"
+    old_p = _make_profile(user_id, "p-old-1", "stale profile text", request_id="seed")
+    new_p = _make_profile(user_id, "p-new-1", "updated profile text", request_id=run_id)
 
-    log_entry = ProfileChangeLog(
-        id=0,
-        user_id="u-legacy-test",
-        request_id="req-legacy-test",
-        added_profiles=[new_p],
-        removed_profiles=[old_p],
-        mentioned_profiles=[],
-    )
-    storage.add_profile_change_log(log_entry)
+    storage.add_user_profile(user_id, [old_p])
+    storage.add_user_profile(user_id, [new_p])
+    # Dedup soft-delete: emits status_change(to_status="superseded", request_id=run_id).
+    storage.supersede_profiles_by_ids(user_id, ["p-old-1"], run_id)
 
     resp = client.get("/api/profile_change_log")
     assert resp.status_code == 200, resp.text
 
-    body = resp.json()
-    parsed = ProfileChangeLogViewResponse(**body)
+    parsed = ProfileChangeLogViewResponse(**resp.json())
     assert parsed.success is True
 
-    logs = parsed.profile_change_logs
-    assert len(logs) == 1
+    rows = {row.request_id: row for row in parsed.profile_change_logs}
+    assert run_id in rows, (
+        "endpoint must serve the reconstructed row for the dedup run; "
+        "an empty/missing row means it is still reading the legacy table"
+    )
+    row = rows[run_id]
 
-    row = logs[0]
-    assert row.request_id == "req-legacy-test"
-
-    assert len(row.added_profiles) == 1
-    assert row.added_profiles[0].profile_id == "p-new-1"
+    assert [p.profile_id for p in row.added_profiles] == ["p-new-1"]
     assert row.added_profiles[0].content == "updated profile text"
 
-    assert len(row.removed_profiles) == 1
-    assert row.removed_profiles[0].profile_id == "p-old-1"
+    assert [p.profile_id for p in row.removed_profiles] == ["p-old-1"]
     assert row.removed_profiles[0].content == "stale profile text"
 
     assert row.mentioned_profiles == []

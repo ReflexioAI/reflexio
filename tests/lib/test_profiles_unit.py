@@ -24,6 +24,7 @@ from reflexio.models.api_schema.service_schemas import (
     DowngradeProfilesRequest,
     DowngradeProfilesResponse,
     ProfileChangeLog,
+    ProfileChangeLogResponse,
     Status,
     UpgradeProfilesRequest,
     UpgradeProfilesResponse,
@@ -476,8 +477,12 @@ class TestAddUserProfile:
 
 
 class TestGetProfileChangeLogs:
-    def test_returns_change_logs(self):
-        """Returns change logs from storage."""
+    def test_returns_reconstructed_change_logs(self):
+        """Delegates to reconstruct_profile_change_log (B3 Task 3 read-side repoint).
+
+        The facade no longer reads the legacy ``profile_change_logs`` table; it
+        serves the view from ``reconstruct_profile_change_log`` over the storage.
+        """
         mixin = _make_mixin()
         sample_log = ProfileChangeLog(
             id=1,
@@ -487,10 +492,15 @@ class TestGetProfileChangeLogs:
             removed_profiles=[],
             mentioned_profiles=[],
         )
-        _get_storage(mixin).get_profile_change_logs.return_value = [sample_log]
+        with patch(
+            "reflexio.lib._profiles.reconstruct_profile_change_log",
+            return_value=ProfileChangeLogResponse(
+                success=True, profile_change_logs=[sample_log]
+            ),
+        ) as mock_recon:
+            response = mixin.get_profile_change_logs()
 
-        response = mixin.get_profile_change_logs()
-
+        mock_recon.assert_called_once_with(_get_storage(mixin))
         assert response.success is True
         assert len(response.profile_change_logs) == 1
 
