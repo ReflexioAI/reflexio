@@ -227,6 +227,7 @@ def test_clear_user_data_cross_user_chain_purges_other_users_survivor(tmp_path):
     assert c_row is not None, (
         "C must not be hard-deleted — alice's chain still references it"
     )
+    assert c_row["content"] == "", "C's content must be blanked (purged), not merely kept"
     # Alice's A still resolves to C via the pointer.
     ref = resolve_current(s, "profile", "A")
     assert ref is not None and ref.id == "C"

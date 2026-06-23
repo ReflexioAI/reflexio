@@ -1744,7 +1744,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
     def clear_user_data(self, user_id: str) -> dict[str, int]:
         """Per-``user_id`` row deletion across all user-scoped tables.
 
-        Overrides the BaseStorage default with an optimised SQL implementation.
+        Overrides the BaseStorage default with an optimized SQL implementation.
         Removes interactions, user playbooks, profiles, and requests scoped to
         the user. Intentionally does NOT touch ``agent_playbooks`` — they are
         the cross-project rollup of skills and have no ``user_id`` column.
