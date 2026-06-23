@@ -208,10 +208,11 @@ class ProfilesMixin(ReflexioBase):
     def get_profile_change_logs(self) -> ProfileChangeLogResponse:
         """Get profile change logs, served from the lineage reconstruction.
 
-        B3 Task 3: the change-log view is rebuilt on demand from ``lineage_event``
-        linkage joined to survivor/tombstone content via
-        :func:`reconstruct_profile_change_log`, rather than read from the legacy
-        ``profile_change_logs`` table (frozen since Task 6; no longer read).
+        The change-log view is rebuilt on demand from ``lineage_event`` linkage
+        joined to survivor/tombstone content via
+        :func:`reconstruct_profile_change_log`. The legacy ``profile_change_logs``
+        table is no longer written (B3 Task 6) or read (B3 Task 7); it is retained
+        frozen until its removal in Task 8.
 
         Returns:
             ProfileChangeLogResponse: Response containing the reconstructed
