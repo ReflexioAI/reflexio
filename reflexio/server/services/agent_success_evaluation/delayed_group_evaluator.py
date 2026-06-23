@@ -18,8 +18,14 @@ from reflexio.server.services.agent_success_evaluation import _eval_health
 
 logger = logging.getLogger(__name__)
 
-# Delay in seconds before evaluating a group after the last request
-GROUP_EVALUATION_DELAY_SECONDS = 600  # 10 minutes
+# Default delay in seconds before evaluating a group after the last request.
+_DEFAULT_DELAY_SECONDS = 600  # 10 minutes
+
+# Inactivity delay before a session is evaluated. Override the default via the
+# GROUP_EVALUATION_DELAY_SECONDS environment variable (in seconds).
+GROUP_EVALUATION_DELAY_SECONDS = int(
+    os.environ.get("GROUP_EVALUATION_DELAY_SECONDS", str(_DEFAULT_DELAY_SECONDS))
+)
 
 # Kept as a patch point for tests. Production should use the full inactivity
 # delay unless a test deliberately lowers this constant.

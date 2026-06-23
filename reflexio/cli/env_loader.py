@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import importlib.resources
 import logging
+import os
 import re
 import secrets
 import sys
@@ -15,7 +16,7 @@ from pathlib import Path
 
 _logger = logging.getLogger(__name__)
 
-from dotenv import load_dotenv
+from dotenv import dotenv_values, load_dotenv
 
 from .paths import reflexio_home
 
@@ -93,6 +94,37 @@ _ENV_SEARCH_PATHS = [
 ]
 
 
+def _load_dotenv_pruned(path: Path, *, override: bool = False) -> None:
+    """Load a .env file, treating blank assignments (``KEY=``) as unset.
+
+    python-dotenv exports a blank ``KEY=`` line as ``os.environ["KEY"] = ""``
+    rather than leaving the key unset. That empty string silently defeats every
+    ``os.getenv("KEY", default)`` fallback — the root cause of the HF_HOME
+    cache-in-repo-root bug, and of any ``int()``/``float()`` parse that crashes
+    on ``""``. This wrapper normalizes "set to blank" to "unset" so callers that
+    rely on a default behave correctly.
+
+    After loading, it drops any key the FILE assigned a blank/whitespace value,
+    but only when the resulting environment value is still blank — so a real
+    process-env value (task definition, shell ``export``) or an earlier-loaded
+    file value is never removed.
+
+    Args:
+        path: Path to the .env file to load.
+        override: Forwarded to ``load_dotenv``. When False (default) the existing
+            process environment wins over the file's values.
+    """
+    file_vals = dotenv_values(path)
+    load_dotenv(dotenv_path=path, override=override)
+    for key, value in file_vals.items():
+        if (
+            value is not None
+            and not value.strip()
+            and not os.environ.get(key, "").strip()
+        ):
+            os.environ.pop(key, None)
+
+
 def load_reflexio_env(
     *,
     package_data_module: str = "reflexio.data",
@@ -118,7 +150,7 @@ def load_reflexio_env(
     global _loaded_env_path
     for env_path in _ENV_SEARCH_PATHS:
         if env_path.exists():
-            load_dotenv(dotenv_path=env_path)
+            _load_dotenv_pruned(env_path)
             resolved = env_path.resolve()
             _logger.debug("Loaded env from: %s", resolved)
             _loaded_env_path = resolved
@@ -157,8 +189,6 @@ def resolve_mode(cli_mode: str | None = None) -> str | None:
     Raises:
         ValueError: If the selected mode is not a safe slug.
     """
-    import os
-
     raw_mode = cli_mode if cli_mode is not None else os.environ.get("DEPLOYMENT_MODE")
     if raw_mode is None:
         return None
@@ -211,12 +241,12 @@ def load_reflexio_env_for_mode(
     # process env both still win where they define the same keys.
     home_secrets = _USER_ENV_DIR / f".env.{mode}"
     if home_secrets.exists():
-        load_dotenv(dotenv_path=home_secrets, override=False)
+        _load_dotenv_pruned(home_secrets, override=False)
 
     loaded: Path | None = None
     for env_path in (Path(f".env.{mode}"), home_secrets):
         if env_path.exists():
-            load_dotenv(dotenv_path=env_path, override=False)
+            _load_dotenv_pruned(env_path, override=False)
             _loaded_env_path = env_path.resolve()
             _logger.debug("Loaded mode env from: %s (mode=%s)", _loaded_env_path, mode)
             loaded = env_path
@@ -253,7 +283,7 @@ def _create_default_env_for_mode(mode: str, package_data_module: str) -> Path | 
     target = _USER_ENV_DIR / f".env.{mode}"
     target.write_text(content)
     target.chmod(0o600)
-    load_dotenv(dotenv_path=target, override=False)
+    _load_dotenv_pruned(target, override=False)
     _loaded_env_path = target.resolve()
     return target
 
@@ -322,7 +352,7 @@ def ensure_user_env_for_setup(
     """
     global _loaded_env_path
     if _USER_ENV_FILE.exists():
-        load_dotenv(dotenv_path=_USER_ENV_FILE)
+        _load_dotenv_pruned(_USER_ENV_FILE)
         resolved = _USER_ENV_FILE.resolve()
         _logger.debug("Loaded user env from: %s", resolved)
         _loaded_env_path = resolved
@@ -345,8 +375,6 @@ def _backfill_missing_keys(env_path: Path, keys: list[str]) -> None:
         env_path: Path to the existing .env file.
         keys: Env var names to check/generate.
     """
-    import os
-
     generated: list[str] = []
     for key in keys:
         if os.environ.get(key):
@@ -435,7 +463,7 @@ def _create_default_env(
 
     _USER_ENV_FILE.write_text(content)
     _USER_ENV_FILE.chmod(0o600)
-    load_dotenv(dotenv_path=_USER_ENV_FILE)
+    _load_dotenv_pruned(_USER_ENV_FILE)
 
     sys.stdout.write(f"Created env file: {_USER_ENV_FILE}\n")
     if auto_generate_keys:

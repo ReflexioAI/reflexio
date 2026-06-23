@@ -6,6 +6,7 @@ from reflexio.server.env_utils import (
     env_get,
     env_required,
     env_required_literal,
+    env_str,
     env_truthy,
 )
 
@@ -13,6 +14,29 @@ from reflexio.server.env_utils import (
 def test_env_get_strips_values() -> None:
     assert env_get({"KEY": "  value  "}, "KEY") == "value"
     assert env_get({}, "KEY") == ""
+
+
+def test_env_str_treats_unset_and_blank_as_default() -> None:
+    # Unset -> default.
+    assert env_str("KEY", "fallback", env={}) == "fallback"
+    # Blank / whitespace-only -> default (the empty-equals-unset invariant).
+    assert env_str("KEY", "fallback", env={"KEY": ""}) == "fallback"
+    assert env_str("KEY", "fallback", env={"KEY": "   "}) == "fallback"
+    # Real value -> stripped value, never the default.
+    assert env_str("KEY", "fallback", env={"KEY": "  real  "}) == "real"
+
+
+def test_env_str_default_is_empty_string() -> None:
+    assert env_str("KEY", env={}) == ""
+
+
+def test_env_str_reads_os_environ_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("REFLEXIO_TEST_ENV_STR", "  from-os  ")
+    assert env_str("REFLEXIO_TEST_ENV_STR", "fallback") == "from-os"
+    monkeypatch.setenv("REFLEXIO_TEST_ENV_STR", "")
+    assert env_str("REFLEXIO_TEST_ENV_STR", "fallback") == "fallback"
 
 
 def test_env_required_raises_for_missing_value() -> None:
