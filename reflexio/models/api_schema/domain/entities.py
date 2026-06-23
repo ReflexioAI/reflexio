@@ -468,7 +468,16 @@ class LineageContext(BaseModel):
 
 
 class RecordRef(BaseModel):
-    """Result of resolve_current — the live survivor's id and whether its body was purged."""
+    """Result of resolve_current — the live survivor's id and whether its body was purged.
+
+    Attributes:
+        id: Primary key of the live survivor record.
+        is_purged: True when the survivor's content body has been blanked by
+            ``purge_content`` (GDPR/erasure).  Any consumer that dereferences the
+            resolved record's content MUST treat ``is_purged=True`` as "erased —
+            skip or treat as absent."  Reading blank content as if it were valid
+            is a silent data-quality bug.
+    """
 
     id: str
     is_purged: bool = False

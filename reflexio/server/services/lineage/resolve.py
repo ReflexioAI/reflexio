@@ -24,6 +24,12 @@ def resolve_current(
 ) -> RecordRef | None:
     """Follow merged_into/superseded_by pointers to the live survivor.
 
+    **Consumer contract:** if the returned ``RecordRef.is_purged`` is ``True``,
+    the survivor's content body has been blanked by ``purge_content`` (GDPR/erasure).
+    Any consumer that dereferences the resolved record's content MUST skip or treat
+    the record as absent when ``is_purged=True`` — reading blank content as if it
+    were valid data is a silent bug.
+
     Args:
         storage: Any storage backend exposing get_*_by_id with include_tombstones.
         entity_type: One of "user_playbook", "agent_playbook", "profile".

@@ -87,6 +87,45 @@ def test_purge_returns_false_for_missing_entity(storage):
     )
 
 
+def test_resolve_current_returns_is_purged_for_purged_survivor(storage):
+    """Guard: resolve_current returns is_purged=True when the live survivor was purged.
+
+    Contract lock-in for Task 6 (purge_content companion).  No production consumer
+    currently dereferences the resolved record's content, so no skip-logic is needed
+    today.  This test ensures the signal any future consumer relies on is stable and
+    cannot regress silently.
+
+    Audit finding: as of 2026-06-23 there are ZERO call sites outside of
+    resolve_current itself and test code that call resolve_current and then read
+    the returned RecordRef's content — the function is only consumed by tests and
+    the clear_user_data path (which only uses the resolved id, not the content).
+    No skip-guard was added to any consumer because none read content.
+    """
+    from reflexio.server.services.lineage.resolve import resolve_current
+
+    # A→B (live survivor): purge B's content, then resolve from A.
+    storage.add_user_profile("alice", [_profile("A", "alice", "old body")])
+    storage.add_user_profile("alice", [_profile("B", "alice", "live body")])
+    storage.supersede_record(
+        entity_type="profile", incumbent_id="A", successor_id="B", context=_ctx()
+    )
+
+    # Before purge: is_purged must be False.
+    ref_before = resolve_current(storage, "profile", "A")
+    assert ref_before is not None
+    assert ref_before.id == "B"
+    assert ref_before.is_purged is False
+
+    # Purge the live survivor's content.
+    storage.purge_content(entity_type="profile", entity_id="B")
+
+    # After purge: resolving from A must yield is_purged=True on the same id.
+    ref_after = resolve_current(storage, "profile", "A")
+    assert ref_after is not None
+    assert ref_after.id == "B"
+    assert ref_after.is_purged is True
+
+
 class _BoomOnCommit:
     """Thin proxy around sqlite3.Connection that raises on the first commit call.
 
