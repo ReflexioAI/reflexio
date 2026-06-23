@@ -202,17 +202,18 @@ ConsolidationDecision = Annotated[
 ]
 
 
+# ``PlaybookConsolidationOutput`` mixes in ``ProviderSafeUnionMixin`` so the
+# emitted JSON schema is folded into the provider-accepted union shape while the
+# discriminator is kept for keyed validation at parse time (Sentry
+# PYTHON-FASTAPI-9J). This note is a comment, NOT part of the docstring, because
+# the docstring is serialized into the wire schema's ``description`` sent to the
+# model — keep implementation tokens out of it.
 class PlaybookConsolidationOutput(ProviderSafeUnionMixin, BaseModel):
-    """Output schema for playbook consolidation as a 4-kind discriminated union.
+    """Output schema for playbook consolidation as a 4-kind tagged union.
 
     Each decision is one of ``UnifyDecision``, ``RejectNewDecision``,
-    ``DifferentiateDecision``, or ``IndependentDecision``; the ``kind`` literal
+    ``DifferentiateDecision``, or ``IndependentDecision``; the ``kind`` field
     selects the concrete shape.
-
-    ``ProviderSafeUnionMixin`` folds the discriminated union's ``oneOf`` into
-    ``anyOf`` in the emitted JSON schema so strict structured-output providers
-    accept it, while keeping the discriminator's keyed validation at parse time
-    (see Sentry ``PYTHON-FASTAPI-9J``).
     """
 
     decisions: list[ConsolidationDecision] = Field(default_factory=list)

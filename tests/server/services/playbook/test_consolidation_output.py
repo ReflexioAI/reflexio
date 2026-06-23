@@ -33,8 +33,11 @@ def test_output_json_schema_is_provider_safe_by_construction():
     intrinsic to the model, not bolted on by a downstream normalizer.
     """
     raw = json.dumps(PlaybookConsolidationOutput.model_json_schema())
-    assert '"oneOf"' not in raw
-    assert '"discriminator"' not in raw
+    # Bare-word (not just the ``"oneOf":`` JSON-key form) so a docstring/
+    # description leak of these tokens into the wire schema is also caught —
+    # the whole point is to keep them out of what ships to the provider.
+    assert "oneOf" not in raw
+    assert "discriminator" not in raw
     # The four variants survive as an ``anyOf`` branch (generation stays
     # constrained to exactly those shapes).
     assert '"anyOf"' in raw

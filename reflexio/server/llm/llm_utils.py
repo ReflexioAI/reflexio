@@ -2,7 +2,7 @@ import inspect
 import logging
 import os
 from copy import deepcopy
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, GetJsonSchemaHandler
 from pydantic.json_schema import JsonSchemaValue
@@ -65,6 +65,15 @@ def _fold_oneof_to_anyof(node: Any) -> None:
     Pydantic still enforces the discriminator after parse, so semantics are
     preserved.
 
+    This is a BLIND walk: it treats any dict key named ``oneOf``/``discriminator``
+    as a schema keyword, so it must NOT be used where a model field could be
+    literally named ``oneOf``/``discriminator`` (it would strip the property).
+    That is fine for ``ProviderSafeUnionMixin``'s use on real output models;
+    ``make_strict_json_schema`` instead folds inline within a structure-aware
+    traversal precisely to avoid this. Precondition: ``node`` is a finite acyclic
+    tree, as produced by ``model_json_schema()`` (which expresses recursion via
+    ``$ref``/``$defs`` strings, never in-memory cycles) — there is no cycle guard.
+
     Args:
         node (Any): A JSON-schema fragment (dict, list, or scalar); mutated in place.
     """
@@ -80,7 +89,14 @@ def _fold_oneof_to_anyof(node: Any) -> None:
             _fold_oneof_to_anyof(item)
 
 
-class ProviderSafeUnionMixin:
+# Statically the mixin must appear to derive from ``BaseModel`` so the ``super()``
+# call below type-checks; at runtime it is a bare mixin (``object`` base), and
+# ``super()`` resolves to ``BaseModel.__get_pydantic_json_schema__`` via the MRO
+# of the concrete model (e.g. ``class X(ProviderSafeUnionMixin, BaseModel)``).
+_ProviderSafeUnionBase = BaseModel if TYPE_CHECKING else object
+
+
+class ProviderSafeUnionMixin(_ProviderSafeUnionBase):
     """Make a model emit a provider-safe JSON schema by construction.
 
     A model containing a Pydantic discriminated union serializes to JSON Schema
@@ -99,7 +115,10 @@ class ProviderSafeUnionMixin:
     def __get_pydantic_json_schema__(
         cls, core_schema: CoreSchema, handler: GetJsonSchemaHandler
     ) -> JsonSchemaValue:
-        schema = handler(core_schema)
+        # Chain via super() (not handler() directly) so a cooperative base that
+        # also customizes __get_pydantic_json_schema__ is not silently shadowed;
+        # BaseModel's default impl just invokes handler(core_schema).
+        schema = super().__get_pydantic_json_schema__(core_schema, handler)
         _fold_oneof_to_anyof(schema)
         return schema
 
@@ -139,10 +158,12 @@ def make_strict_json_schema(schema: dict[str, Any]) -> dict[str, Any]:
             node.pop(keyword, None)
 
         # Strict structured output (OpenAI) permits ``anyOf`` but rejects
-        # ``oneOf`` and ``discriminator``. Pydantic emits ``oneOf`` for
-        # discriminated unions; fold it into ``anyOf`` so generation is
-        # constrained to the same variants. Pydantic still enforces the
-        # discriminator after parse, so semantics are preserved.
+        # ``oneOf`` and ``discriminator``. Folded INLINE here (deliberately NOT
+        # via the shared ``_fold_oneof_to_anyof`` helper): this traversal is
+        # schema-structure-aware and only treats ``oneOf``/``discriminator`` as
+        # keywords at schema nodes, whereas the helper is a blind walk that would
+        # also strip a *property literally named* ``oneOf`` (see its docstring).
+        # Keep the two separate; they have different traversal contracts.
         one_of = node.pop("oneOf", None)
         node.pop("discriminator", None)
         if isinstance(one_of, list):
