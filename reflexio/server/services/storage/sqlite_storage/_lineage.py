@@ -325,6 +325,33 @@ class SQLiteLineageMixin:
             self.conn.commit()
             return True
 
+    def has_inbound_lineage_refs(
+        self, *, entity_type: EntityType, entity_id: str
+    ) -> bool:
+        """Return True if any row points at ``entity_id`` via merged_into/superseded_by.
+
+        Org-scoped but deliberately NOT user_id-scoped: a cross-user chain
+        (one user's tombstone pointing at another user's survivor) must be
+        detected so the survivor is purged, not hard-deleted, on erasure.
+
+        Args:
+            entity_type (EntityType): One of ``"user_playbook"``, ``"agent_playbook"``,
+                or ``"profile"``.
+            entity_id (str): The entity's primary key to check for inbound refs.
+
+        Returns:
+            bool: True if any row has ``merged_into == entity_id``
+                OR ``superseded_by == entity_id``; False otherwise.
+        """
+        table, _pk = _resolve_table(entity_type)
+        with self._lock:
+            row = self.conn.execute(
+                f"SELECT 1 FROM {table} "  # noqa: S608
+                f"WHERE merged_into = ? OR superseded_by = ? LIMIT 1",
+                (entity_id, entity_id),
+            ).fetchone()
+        return row is not None
+
     def _is_on_legal_hold(
         self,
         org_id: str,  # noqa: ARG002

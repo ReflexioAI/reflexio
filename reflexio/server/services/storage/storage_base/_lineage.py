@@ -124,6 +124,27 @@ class LineageEventMixin:
         raise NotImplementedError
 
     @abstractmethod
+    def has_inbound_lineage_refs(
+        self, *, entity_type: EntityType, entity_id: str
+    ) -> bool:
+        """Return True if any row points at ``entity_id`` via merged_into/superseded_by.
+
+        Org-scoped but deliberately NOT user_id-scoped: a cross-user chain
+        (one user's tombstone pointing at another user's survivor) must be
+        detected so the survivor is purged, not hard-deleted, on erasure.
+
+        Args:
+            entity_type (EntityType): One of ``"user_playbook"``, ``"agent_playbook"``,
+                or ``"profile"``.
+            entity_id (str): The entity's primary key to check for inbound refs.
+
+        Returns:
+            bool: True if any row in the entity's table has ``merged_into == entity_id``
+                OR ``superseded_by == entity_id``; False otherwise.
+        """
+        ...
+
+    @abstractmethod
     def gc_expired_tombstones(
         self, *, entity_type: str, older_than_epoch: int, limit: int = 1000
     ) -> int:
