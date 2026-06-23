@@ -2,7 +2,7 @@ from typing import Any
 
 from reflexio.lib._base import ReflexioBase
 from reflexio.models.api_schema.retriever_schema import SetConfigResponse
-from reflexio.models.config_schema import Config
+from reflexio.models.config_schema import Config, StorageConfigManagedSupabase
 
 
 class ConfigMixin(ReflexioBase):
@@ -22,10 +22,17 @@ class ConfigMixin(ReflexioBase):
                 config = Config(**config)
 
             # Validate storage connection before setting config.
-            # If no storage_config provided, preserve the existing one (callers
-            # like get_config() don't expose storage_config for security).
+            # If no storage_config provided, or the caller round-tripped the
+            # redacted platform-managed marker that get_config() emits in place
+            # of real credentials, preserve the existing storage configuration
+            # (callers like get_config() don't expose storage_config for
+            # security). Without this, the marker reaches the readiness check as
+            # an unfillable StorageConfigManagedSupabase and fails with
+            # "Storage configuration is incomplete".
             storage_config = config.storage_config
-            if storage_config is None:
+            if storage_config is None or isinstance(
+                storage_config, StorageConfigManagedSupabase
+            ):
                 storage_config = configurator.get_current_storage_configuration()
                 config.storage_config = storage_config
 

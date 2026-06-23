@@ -4,6 +4,7 @@ Tests get_config, set_config for ConfigMixin and
 get_dashboard_stats for DashboardMixin with mocked storage.
 """
 
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 from reflexio.lib._config import ConfigMixin
@@ -31,6 +32,10 @@ def _make_config_mixin(*, storage_configured: bool = True) -> ConfigMixin:
     return mixin
 
 
+def _get_configurator(mixin: ConfigMixin) -> MagicMock:
+    return cast(Any, mixin.request_context).configurator
+
+
 # ---------------------------------------------------------------------------
 # get_config
 # ---------------------------------------------------------------------------
@@ -41,17 +46,17 @@ class TestGetConfig:
         """Returns config from configurator."""
         mixin = _make_config_mixin()
         mock_config = MagicMock(spec=Config)
-        mixin.request_context.configurator.get_config.return_value = mock_config
+        _get_configurator(mixin).get_config.return_value = mock_config
 
         result = mixin.get_config()
 
         assert result is mock_config
-        mixin.request_context.configurator.get_config.assert_called_once()
+        _get_configurator(mixin).get_config.assert_called_once()
 
     def test_returns_none_when_no_config(self):
         """Returns None when no config is set."""
         mixin = _make_config_mixin()
-        mixin.request_context.configurator.get_config.return_value = None
+        _get_configurator(mixin).get_config.return_value = None
 
         result = mixin.get_config()
 
@@ -72,8 +77,8 @@ class TestSetConfig:
         mock_config = MagicMock(spec=Config)
         mock_config.storage_config = mock_storage_config
 
-        mixin.request_context.configurator.is_storage_config_ready_to_test.return_value = True
-        mixin.request_context.configurator.test_and_init_storage_config.return_value = (
+        _get_configurator(mixin).is_storage_config_ready_to_test.return_value = True
+        _get_configurator(mixin).test_and_init_storage_config.return_value = (
             True,
             None,
         )
@@ -82,7 +87,7 @@ class TestSetConfig:
 
         assert response.success is True
         assert "successfully" in (response.msg or "").lower()
-        mixin.request_context.configurator.set_config.assert_called_once()
+        _get_configurator(mixin).set_config.assert_called_once()
 
     def test_set_config_storage_validation_fails(self):
         """Returns failure when storage validation fails."""
@@ -90,8 +95,8 @@ class TestSetConfig:
         mock_config = MagicMock(spec=Config)
         mock_config.storage_config = MagicMock()
 
-        mixin.request_context.configurator.is_storage_config_ready_to_test.return_value = True
-        mixin.request_context.configurator.test_and_init_storage_config.return_value = (
+        _get_configurator(mixin).is_storage_config_ready_to_test.return_value = True
+        _get_configurator(mixin).test_and_init_storage_config.return_value = (
             False,
             "Connection refused",
         )
@@ -107,7 +112,7 @@ class TestSetConfig:
         mock_config = MagicMock(spec=Config)
         mock_config.storage_config = MagicMock()
 
-        mixin.request_context.configurator.is_storage_config_ready_to_test.return_value = False
+        _get_configurator(mixin).is_storage_config_ready_to_test.return_value = False
 
         response = mixin.set_config(mock_config)
 
@@ -121,9 +126,11 @@ class TestSetConfig:
         mock_config.storage_config = None
 
         existing_storage_config = MagicMock()
-        mixin.request_context.configurator.get_current_storage_configuration.return_value = existing_storage_config
-        mixin.request_context.configurator.is_storage_config_ready_to_test.return_value = True
-        mixin.request_context.configurator.test_and_init_storage_config.return_value = (
+        _get_configurator(
+            mixin
+        ).get_current_storage_configuration.return_value = existing_storage_config
+        _get_configurator(mixin).is_storage_config_ready_to_test.return_value = True
+        _get_configurator(mixin).test_and_init_storage_config.return_value = (
             True,
             None,
         )
@@ -134,6 +141,39 @@ class TestSetConfig:
         # Verify storage_config was set to the existing one
         assert mock_config.storage_config == existing_storage_config
 
+    def test_set_config_preserves_storage_on_managed_marker(self):
+        """Round-tripping the redacted platform-managed marker that get_config()
+        emits resolves to the real storage config instead of failing readiness.
+
+        Regression: the marker (a StorageConfigManagedSupabase) carries no real
+        credentials, so it has no readiness check and previously failed with
+        "Storage configuration is incomplete" on the HTTP set_config path (which
+        binds the body to a typed Config and never hits normalize_config_payload).
+        """
+        from reflexio.models.config_schema import StorageConfigManagedSupabase
+
+        mixin = _make_config_mixin()
+        mock_config = MagicMock(spec=Config)
+        mock_config.storage_config = StorageConfigManagedSupabase(
+            managed_by="platform", schema_present=True
+        )
+
+        existing_storage_config = MagicMock()
+        _get_configurator(
+            mixin
+        ).get_current_storage_configuration.return_value = existing_storage_config
+        _get_configurator(mixin).is_storage_config_ready_to_test.return_value = True
+        _get_configurator(mixin).test_and_init_storage_config.return_value = (
+            True,
+            None,
+        )
+
+        response = mixin.set_config(mock_config)
+
+        assert response.success is True
+        # The marker is swapped for the real, current storage configuration.
+        assert mock_config.storage_config == existing_storage_config
+
     def test_set_config_dict_input(self):
         """Accepts dict input and auto-converts to Config."""
         mixin = _make_config_mixin()
@@ -141,12 +181,12 @@ class TestSetConfig:
         # MagicMock default would otherwise return another MagicMock and break
         # the **kwargs expansion below.
         payload = {"storage_config": {"db_path": "/var/data/test.db"}}
-        mixin.request_context.configurator.normalize_config_payload.return_value = (
-            payload
-        )
-        mixin.request_context.configurator.get_current_storage_configuration.return_value = MagicMock()
-        mixin.request_context.configurator.is_storage_config_ready_to_test.return_value = True
-        mixin.request_context.configurator.test_and_init_storage_config.return_value = (
+        _get_configurator(mixin).normalize_config_payload.return_value = payload
+        _get_configurator(
+            mixin
+        ).get_current_storage_configuration.return_value = MagicMock()
+        _get_configurator(mixin).is_storage_config_ready_to_test.return_value = True
+        _get_configurator(mixin).test_and_init_storage_config.return_value = (
             True,
             None,
         )
@@ -161,9 +201,9 @@ class TestSetConfig:
         mock_config = MagicMock(spec=Config)
         mock_config.storage_config = MagicMock()
 
-        mixin.request_context.configurator.is_storage_config_ready_to_test.side_effect = RuntimeError(
-            "unexpected"
-        )
+        _get_configurator(
+            mixin
+        ).is_storage_config_ready_to_test.side_effect = RuntimeError("unexpected")
 
         response = mixin.set_config(mock_config)
 
@@ -192,7 +232,7 @@ def _make_dashboard_mixin(*, storage_configured: bool = True) -> DashboardMixin:
 
 
 def _get_dashboard_storage(mixin: DashboardMixin) -> MagicMock:
-    return mixin.request_context.storage
+    return cast(MagicMock, cast(Any, mixin.request_context).storage)
 
 
 # ---------------------------------------------------------------------------
