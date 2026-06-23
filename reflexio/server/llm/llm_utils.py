@@ -4,7 +4,9 @@ import os
 from copy import deepcopy
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, GetJsonSchemaHandler
+from pydantic.json_schema import JsonSchemaValue
+from pydantic_core import CoreSchema
 
 
 def positive_int_env(name: str, default: int, logger: logging.Logger) -> int:
@@ -52,6 +54,54 @@ _STRICT_SCHEMA_UNSUPPORTED_KEYWORDS = frozenset(
         "uniqueItems",
     }
 )
+
+
+def _fold_oneof_to_anyof(node: Any) -> None:
+    """Rewrite ``oneOf`` to ``anyOf`` and drop ``discriminator`` in place (recursive).
+
+    Pydantic emits ``oneOf`` + ``discriminator`` for a discriminated union, which
+    strict structured-output endpoints (OpenAI, minimax) reject. Folding into
+    ``anyOf`` keeps the identical variant set so generation stays constrained;
+    Pydantic still enforces the discriminator after parse, so semantics are
+    preserved.
+
+    Args:
+        node (Any): A JSON-schema fragment (dict, list, or scalar); mutated in place.
+    """
+    if isinstance(node, dict):
+        one_of = node.pop("oneOf", None)
+        node.pop("discriminator", None)
+        if isinstance(one_of, list):
+            node["anyOf"] = node.get("anyOf", []) + one_of
+        for value in node.values():
+            _fold_oneof_to_anyof(value)
+    elif isinstance(node, list):
+        for item in node:
+            _fold_oneof_to_anyof(item)
+
+
+class ProviderSafeUnionMixin:
+    """Make a model emit a provider-safe JSON schema by construction.
+
+    A model containing a Pydantic discriminated union serializes to JSON Schema
+    with ``oneOf`` + ``discriminator``, which strict structured-output endpoints
+    reject (the Sentry ``PYTHON-FASTAPI-9J`` incident). Mixing this in folds
+    ``oneOf`` into ``anyOf`` (and drops ``discriminator``) at the model boundary,
+    so every caller of ``model_json_schema()`` — litellm, instructor, our own
+    path — gets a provider-safe schema **unconditionally**, without depending on
+    a provider-detection gate (e.g. ``litellm.supports_response_schema``, which
+    under-reports some providers). Only the JSON (wire) schema is rewritten; the
+    core validation schema keeps the discriminator, so keyed dispatch and precise
+    per-variant errors are preserved.
+    """
+
+    @classmethod
+    def __get_pydantic_json_schema__(
+        cls, core_schema: CoreSchema, handler: GetJsonSchemaHandler
+    ) -> JsonSchemaValue:
+        schema = handler(core_schema)
+        _fold_oneof_to_anyof(schema)
+        return schema
 
 
 def is_pydantic_model(response_format: Any) -> bool:

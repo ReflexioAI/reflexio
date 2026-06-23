@@ -19,6 +19,7 @@ from reflexio.models.config_schema import (
 )
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient
+from reflexio.server.llm.llm_utils import ProviderSafeUnionMixin
 from reflexio.server.services.deduplication_utils import (
     BaseDeduplicator,
     format_dedup_timestamp,
@@ -201,12 +202,17 @@ ConsolidationDecision = Annotated[
 ]
 
 
-class PlaybookConsolidationOutput(BaseModel):
+class PlaybookConsolidationOutput(ProviderSafeUnionMixin, BaseModel):
     """Output schema for playbook consolidation as a 4-kind discriminated union.
 
     Each decision is one of ``UnifyDecision``, ``RejectNewDecision``,
     ``DifferentiateDecision``, or ``IndependentDecision``; the ``kind`` literal
     selects the concrete shape.
+
+    ``ProviderSafeUnionMixin`` folds the discriminated union's ``oneOf`` into
+    ``anyOf`` in the emitted JSON schema so strict structured-output providers
+    accept it, while keeping the discriminator's keyed validation at parse time
+    (see Sentry ``PYTHON-FASTAPI-9J``).
     """
 
     decisions: list[ConsolidationDecision] = Field(default_factory=list)

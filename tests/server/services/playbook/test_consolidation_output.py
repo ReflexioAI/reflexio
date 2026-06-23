@@ -7,6 +7,8 @@ These tests pin down the shape of the consolidation LLM output schema after the
 longer parse — that structural guarantee is what the new schema buys.
 """
 
+import json
+
 import pytest
 from pydantic import ValidationError
 
@@ -18,6 +20,46 @@ from reflexio.server.services.playbook.playbook_consolidator import (
     RejectNewDecision,
     UnifyDecision,
 )
+
+
+def test_output_json_schema_is_provider_safe_by_construction():
+    """``model_json_schema()`` emits no ``oneOf``/``discriminator`` natively.
+
+    Option C (``ProviderSafeUnionMixin``): the discriminated union is folded to
+    ``anyOf`` at the model boundary, so the emitted JSON schema is accepted by
+    strict structured-output providers WITHOUT ``make_strict_json_schema`` and
+    WITHOUT any provider-detection gate (the gap that caused Sentry
+    ``PYTHON-FASTAPI-9J``). Asserting on the raw schema proves the property is
+    intrinsic to the model, not bolted on by a downstream normalizer.
+    """
+    raw = json.dumps(PlaybookConsolidationOutput.model_json_schema())
+    assert '"oneOf"' not in raw
+    assert '"discriminator"' not in raw
+    # The four variants survive as an ``anyOf`` branch (generation stays
+    # constrained to exactly those shapes).
+    assert '"anyOf"' in raw
+
+
+def test_provider_safe_schema_keeps_keyed_validation_errors():
+    """Folding the wire schema must NOT weaken validation.
+
+    The discriminator stays in the core (validation) schema, so a malformed
+    ``unify`` payload yields a single, pinpointed error at the ``unify``
+    variant's missing field — not the noisy multi-error spray a plain
+    (non-discriminated) union produces. This precise-error property is Option
+    C's advantage over flattening the union (Option B).
+    """
+    with pytest.raises(ValidationError) as exc_info:
+        PlaybookConsolidationOutput.model_validate(
+            {
+                "decisions": [{"kind": "unify", "new_id": "NEW-0"}]
+            }  # missing content/trigger/rationale
+        )
+    errors = exc_info.value.errors()
+    # Keyed dispatch routed validation to the ``unify`` variant only.
+    assert all("unify" in err["loc"] for err in errors)
+    # And the reported failure is the missing required field, not a union mismatch.
+    assert any(err["type"] == "missing" and "content" in err["loc"] for err in errors)
 
 
 def test_decision_kinds_are_discriminated_union():
