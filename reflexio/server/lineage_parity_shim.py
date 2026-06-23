@@ -160,6 +160,13 @@ def _emit_metrics(
     # only flag the case where legacy HAS reconstructible-worthy rows (it is
     # non-empty AND carries removals) but reconstruction produced nothing usable
     # (no matches AND an empty reconstructed change log).
+    #
+    # KNOWN residual (intentionally NOT covered, to preserve the precision above):
+    # a *physically-purged add-only* run — legacy add-only rows whose profiles were
+    # hard-deleted/GDPR-purged so reconstruction is empty — has no remove-bearing
+    # legacy row, so it is NOT flagged degraded and still collapses to "match".
+    # This is the tolerated LEGACY_MISSING class ("predates soft-delete / purged");
+    # widening the guard to add-only would mislabel every legitimately-purged org.
     legacy_has_remove_bearing = any(row.removed_profiles for row in legacy_cmp)
     degenerate = (
         bool(legacy_cmp) and legacy_has_remove_bearing and not matches and not recon_cmp
