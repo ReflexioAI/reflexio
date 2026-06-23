@@ -218,3 +218,6 @@ docs/integrations/*
 
 # Planning artifacts
 plan.md
+
+# Superpowers / SDD working artifacts (internal dev notes — never publish to OSS)
+.superpowers/
