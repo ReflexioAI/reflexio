@@ -1193,10 +1193,15 @@ class TestStrictStructuredOutputRequest:
         assert "oneOf" in raw_items
 
         client = _build_client(LiteLLMConfig(model="minimax/MiniMax-M3"))
-        with patch.object(
-            LiteLLMClient,
-            "_supports_response_schema",
-            return_value=False,
+        # ``_DiscriminatedOutput`` is intentionally a non-base double (emits oneOf)
+        # to exercise make_strict's prod backstop. The by-construction boundary
+        # guard would (correctly) raise on it under pytest, so patch it to a no-op
+        # here — this test asserts the make_strict fallback, not the guard.
+        with (
+            patch.object(
+                LiteLLMClient, "_supports_response_schema", return_value=False
+            ),
+            patch("reflexio.server.llm.litellm_client.assert_provider_safe_schema"),
         ):
             params, _, _, _, _ = client._build_completion_params(
                 [{"role": "user", "content": "test"}],
@@ -1218,10 +1223,14 @@ class TestStrictStructuredOutputRequest:
         # (minimax). With the discriminated-union output, the response_format
         # actually built must be a normalized dict with no oneOf/discriminator.
         client = _build_client(LiteLLMConfig(model="minimax/MiniMax-M3"))
-        params, _, _, _, _ = client._build_completion_params(
-            [{"role": "user", "content": "test"}],
-            response_format=_DiscriminatedOutput,
-        )
+        # Non-base double exercises the make_strict backstop; patch the
+        # by-construction guard (it would raise under pytest) — see the sibling
+        # test above for why.
+        with patch("reflexio.server.llm.litellm_client.assert_provider_safe_schema"):
+            params, _, _, _, _ = client._build_completion_params(
+                [{"role": "user", "content": "test"}],
+                response_format=_DiscriminatedOutput,
+            )
         provider_format = params["response_format"]
         assert isinstance(provider_format, dict), (
             "minimax must receive a normalized strict schema, not the raw Pydantic "

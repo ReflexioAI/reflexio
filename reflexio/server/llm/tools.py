@@ -13,7 +13,10 @@ logger = logging.getLogger(__name__)
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from reflexio.server.llm.llm_utils import make_strict_json_schema
+from reflexio.server.llm.llm_utils import (
+    assert_provider_safe_schema,
+    make_strict_json_schema,
+)
 from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
 
 if TYPE_CHECKING:
@@ -72,6 +75,11 @@ class Tool(BaseModel):
 
     def openai_spec(self) -> dict:
         parameters = self.args_model.model_json_schema()
+        # Boundary guard: tool-arg schemas bypass the response_format path and the
+        # registry contract test, so enforce provider-safety here too (raises under
+        # tests, warns in prod). Checked on the native schema to catch a model that
+        # forgot StrictStructuredOutput even when ``strict`` would later fold it.
+        assert_provider_safe_schema(parameters, name=self.args_model.__name__)
         if self.strict:
             parameters = make_strict_json_schema(parameters)
         return {

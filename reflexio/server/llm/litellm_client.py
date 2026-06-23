@@ -31,6 +31,7 @@ from reflexio.server.llm.image_utils import (
     encode_image_to_base64 as _encode_image_to_base64,
 )
 from reflexio.server.llm.llm_utils import (
+    assert_provider_safe_schema,
     is_pydantic_model,
     strict_response_format_for_model,
 )
@@ -1132,6 +1133,15 @@ class LiteLLMClient:
         unsupported providers keep the existing Pydantic response_format
         behavior.
         """
+
+        # Boundary guard: assert the model's native schema is provider-safe
+        # regardless of which path it takes below. Models inheriting
+        # StrictStructuredOutput are safe by construction; this catches a model
+        # that forgot the base (raises under tests, warns in prod).
+        if is_pydantic_model(response_format):
+            assert_provider_safe_schema(
+                response_format.model_json_schema(), name=response_format.__name__
+            )
 
         if (
             strict_response_format

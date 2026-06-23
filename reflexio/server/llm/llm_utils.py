@@ -6,6 +6,14 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from reflexio.models.structured_output import find_schema_keyword
+
+logger = logging.getLogger(__name__)
+
+# JSON-Schema keywords that strict structured-output endpoints (OpenAI, minimax)
+# reject; see PYTHON-FASTAPI-9J.
+PROVIDER_UNSAFE_KEYWORDS = ("oneOf", "discriminator")
+
 
 def positive_int_env(name: str, default: int, logger: logging.Logger) -> int:
     """Resolve a strictly-positive int from environment variable ``name``.
@@ -127,6 +135,40 @@ def make_strict_json_schema(schema: dict[str, Any]) -> dict[str, Any]:
 
     visit(strict_schema)
     return strict_schema
+
+
+def assert_provider_safe_schema(schema: dict[str, Any], *, name: str = "") -> None:
+    """Enforce that an emitted structured-output schema is provider-safe.
+
+    Strict structured-output endpoints (OpenAI, minimax) reject ``oneOf`` /
+    ``discriminator`` (Sentry PYTHON-FASTAPI-9J). Models that inherit
+    ``StrictStructuredOutput`` are safe by construction; this is the runtime net
+    at the call boundary for anything that bypasses that guarantee — a model that
+    forgot the base, or a tool-argument / dynamically-built schema not covered by
+    the registry contract test.
+
+    Under tests it RAISES so a regression fails CI loudly; otherwise it logs a
+    warning and returns, so a miss degrades to existing behavior rather than a
+    request failure (the strict path's ``make_strict_json_schema`` still folds it).
+
+    Args:
+        schema (dict[str, Any]): The emitted JSON schema to check.
+        name (str): Identifier for the schema's source, used in the message.
+    """
+    offenders = [
+        kw for kw in PROVIDER_UNSAFE_KEYWORDS if find_schema_keyword(schema, kw)
+    ]
+    if not offenders:
+        return
+    msg = (
+        f"Structured-output schema {name or '<unnamed>'!r} contains provider-unsafe "
+        f"keyword(s) {offenders}; strict providers reject these. Inherit "
+        "StrictStructuredOutput so the schema folds oneOf->anyOf by construction "
+        "(Sentry PYTHON-FASTAPI-9J)."
+    )
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        raise ValueError(msg)
+    logger.warning(msg)
 
 
 def strict_response_format_for_model(model: type[BaseModel]) -> dict[str, Any]:

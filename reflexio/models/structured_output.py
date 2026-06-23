@@ -107,3 +107,40 @@ class StrictStructuredOutput(ProviderSafeUnionMixin, BaseModel):
     ``extra=`` is not uniform across models, so a blanket dedup would silently shift
     validation/serialization behavior).
     """
+
+
+# Keys whose *values* are name→subschema maps: their entries are user-chosen names
+# (field names, $def names), not JSON-Schema keywords. We recurse into the
+# subschemas but must not treat the names themselves as keyword matches — otherwise
+# a model with a field literally named ``oneOf`` would false-positive.
+_SCHEMA_NAME_MAP_KEYS = ("properties", "$defs", "definitions", "patternProperties")
+
+
+def find_schema_keyword(node: Any, keyword: str) -> bool:
+    """Report whether ``keyword`` appears as a JSON-Schema *keyword* anywhere in ``node``.
+
+    Structure-aware: an occurrence of ``keyword`` as a property/``$defs`` *name*
+    (e.g. a model field literally named ``oneOf``) is NOT a match — only an
+    occurrence in JSON-Schema keyword position counts. Use this (not a blind
+    ``in``-walk) to check a schema for provider-unsafe keywords.
+
+    Args:
+        node (Any): A JSON-schema fragment (dict, list, or scalar).
+        keyword (str): The JSON-Schema keyword to search for (e.g. ``"oneOf"``).
+
+    Returns:
+        bool: True if ``keyword`` appears in keyword position, else False.
+    """
+    if isinstance(node, dict):
+        if keyword in node:
+            return True
+        for key, value in node.items():
+            if key in _SCHEMA_NAME_MAP_KEYS and isinstance(value, dict):
+                if any(find_schema_keyword(sub, keyword) for sub in value.values()):
+                    return True
+            elif find_schema_keyword(value, keyword):
+                return True
+        return False
+    if isinstance(node, list):
+        return any(find_schema_keyword(item, keyword) for item in node)
+    return False
