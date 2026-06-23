@@ -151,23 +151,8 @@ def test_dedup_run_removed_profiles_from_status_change_events(tmp_path):
     assert row.removed_profiles[0].content == "old facts"
 
 
-def test_mentioned_profiles_is_always_empty(tmp_path):
-    """mentioned_profiles must be [] — Stage-1 shape."""
-    s = _store(tmp_path)
-    old = _make_profile(user_id="u1", profile_id="p-old", request_id="r0")
-    s.add_user_profile("u1", [old])
-    new = _make_profile(user_id="u1", profile_id="p-new", request_id="r1")
-    _seed_dedup_run(
-        s, user_id="u1", new_profiles=[new], old_ids=["p-old"], request_id="r1"
-    )
-
-    result = reconstruct_profile_change_log(s)
-    rows_by_req = {row.request_id: row for row in result.profile_change_logs}
-    assert rows_by_req["r1"].mentioned_profiles == []
-
-
 def test_parity_with_legacy_shape(tmp_path):
-    """Reconstructed row matches legacy add_profile_change_log shape field-by-field."""
+    """Reconstructed row matches the legacy change-log shape field-by-field."""
     s = _store(tmp_path)
     old_content = "old known facts"
     new_content = "new known facts"
@@ -197,8 +182,6 @@ def test_parity_with_legacy_shape(tmp_path):
     assert r.profile_id == "p-old"
     assert r.user_id == "u1"
     assert r.content == old_content
-
-    assert row.mentioned_profiles == []
 
 
 # --------------------------------------------------------------------------
@@ -408,7 +391,6 @@ def test_adds_only_run_produces_row(tmp_path):
         f"expected both added profiles; got {added_ids}"
     )
     assert row.removed_profiles == [], "add-only run has no removed profiles"
-    assert row.mentioned_profiles == []
 
 
 # --------------------------------------------------------------------------

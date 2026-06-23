@@ -29,7 +29,6 @@ from reflexio.models.api_schema.service_schemas import (
     Interaction,
     PlaybookAggregationChangeLog,
     PlaybookStatus,
-    ProfileChangeLog,
     ProfileTimeToLive,
     RegularVsShadow,
     Request,
@@ -533,25 +532,6 @@ def _row_to_eval_result(row: sqlite3.Row) -> AgentSuccessEvaluationResult:
         user_turns_to_resolution=d.get("user_turns_to_resolution"),
         is_escalated=bool(d.get("is_escalated", False)),
         embedding=[],
-    )
-
-
-def _row_to_profile_change_log(row: sqlite3.Row) -> ProfileChangeLog:
-    d = dict(row)
-    return ProfileChangeLog(
-        id=d["id"],
-        user_id=d["user_id"],
-        request_id=d["request_id"],
-        created_at=d["created_at"],
-        added_profiles=[
-            UserProfile(**p) for p in (_json_loads(d["added_profiles"]) or [])
-        ],
-        removed_profiles=[
-            UserProfile(**p) for p in (_json_loads(d["removed_profiles"]) or [])
-        ],
-        mentioned_profiles=[
-            UserProfile(**p) for p in (_json_loads(d["mentioned_profiles"]) or [])
-        ],
     )
 
 

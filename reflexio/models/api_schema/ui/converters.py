@@ -176,5 +176,4 @@ def to_profile_change_log_view(log: ProfileChangeLog) -> ProfileChangeLogView:
         created_at=log.created_at,
         added_profiles=[to_profile_view(p) for p in log.added_profiles],
         removed_profiles=[to_profile_view(p) for p in log.removed_profiles],
-        mentioned_profiles=[to_profile_view(p) for p in log.mentioned_profiles],
     )

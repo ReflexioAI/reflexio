@@ -268,7 +268,6 @@ class ProfileChangeLog(BaseModel):
     created_at: int = Field(default_factory=lambda: int(datetime.now(UTC).timestamp()))
     added_profiles: list[UserProfile]
     removed_profiles: list[UserProfile]
-    mentioned_profiles: list[UserProfile]
 
 
 class AgentPlaybook(BaseModel):

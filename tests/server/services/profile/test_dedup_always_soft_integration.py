@@ -177,10 +177,7 @@ def test_dedup_removal_soft_supersedes_and_reconstructs(tmp_path) -> None:
     hard_deletes = [e for e in events if e.op == "hard_delete"]
     assert hard_deletes == []
 
-    # (iv) The legacy profile_change_logs table is NO LONGER written.
-    assert storage.get_profile_change_logs() == []
-
-    # (v) Reconstruction (served by the endpoint) reflects the removal + addition
+    # (iv) Reconstruction (served by the endpoint) reflects the removal + addition
     # for this request_id, rebuilt purely from lineage events.
     recon = reconstruct_profile_change_log(storage)
     assert recon.success
@@ -220,7 +217,6 @@ def test_supersede_raises_does_not_hard_delete_or_write_legacy() -> None:
 
     mock_storage.supersede_profiles_by_ids.assert_called_once()
     mock_storage.delete_user_profile.assert_not_called()
-    mock_storage.add_profile_change_log.assert_not_called()
 
 
 def test_supersede_called_with_full_intent_and_no_legacy_write() -> None:
@@ -250,7 +246,6 @@ def test_supersede_called_with_full_intent_and_no_legacy_write() -> None:
         profile_ids=["old_1", "old_2"],
         request_id="run_B2",
     )
-    mock_storage.add_profile_change_log.assert_not_called()
 
 
 # ===========================================================================
@@ -287,7 +282,6 @@ def test_empty_request_id_skips_removal_and_fires_anomaly() -> None:
     assert mock_anomaly.call_args[0][0] == "lineage.dedup.missing_request_id"
 
     # No legacy change-log row written (the table is frozen) and no removal at all.
-    mock_storage.add_profile_change_log.assert_not_called()
 
 
 # ===========================================================================

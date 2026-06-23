@@ -261,6 +261,9 @@ version_toml = ["pyproject.toml:project.version"]
 tag_format = "reflexio-v{version}"
 commit_message = "chore(release): reflexio v{version}"
 build_command = "pip install build && python -m build"
+# Pre-1.0 convention: a breaking change bumps the MINOR (0.x.y -> 0.(x+1).0),
+# not MAJOR. So the B3 Task 7 breaking removal releases as 0.3.0, not 1.0.0.
+major_on_zero = false
 
 [tool.semantic_release.branches.main]
 match = "^(main|master)$"

@@ -4,14 +4,18 @@ from collections import defaultdict
 logger = logging.getLogger(__name__)
 
 from datetime import UTC, datetime
+from typing import Protocol
 
 from reflexio.lib._base import (
     STORAGE_NOT_CONFIGURED_MSG,
     ReflexioBase,
     _require_storage,
 )
-from reflexio.lib._lineage_parity import ParityReadStorage
-from reflexio.models.api_schema.domain.entities import ProfileChangeLog
+from reflexio.models.api_schema.domain.entities import (
+    LineageEvent,
+    ProfileChangeLog,
+    UserProfile,
+)
 from reflexio.models.api_schema.retriever_schema import (
     GetProfileStatisticsResponse,
     GetUserProfilesRequest,
@@ -207,9 +211,7 @@ class ProfilesMixin(ReflexioBase):
         B3 Task 3: the change-log view is rebuilt on demand from ``lineage_event``
         linkage joined to survivor/tombstone content via
         :func:`reconstruct_profile_change_log`, rather than read from the legacy
-        ``profile_change_logs`` table. The legacy table is still written (Task 6
-        pending), so this read-side repoint is reversible. ``mentioned_profiles``
-        is always ``[]`` in the reconstructed shape (unchanged from legacy).
+        ``profile_change_logs`` table (frozen since Task 6; no longer read).
 
         Returns:
             ProfileChangeLogResponse: Response containing the reconstructed
@@ -560,8 +562,41 @@ class ProfilesMixin(ReflexioBase):
 # ---------------------------------------------------------------------------
 
 
+class ChangeLogReadStorage(Protocol):
+    """The storage read surface ``reconstruct_profile_change_log`` requires.
+
+    Both the real ``BaseStorage`` backends and the read-only
+    ``RestStorageReader`` satisfy this structurally — no inheritance required —
+    so reconstruction can run against either without an unsound ``cast`` to
+    ``BaseStorage``.
+    """
+
+    org_id: str
+
+    def get_lineage_events(
+        self,
+        *,
+        entity_type: str | None = ...,
+        entity_id: str | None = ...,
+        org_id: str | None = ...,
+        request_id: str | None = ...,
+    ) -> list[LineageEvent]: ...
+
+    def get_distinct_generated_from_request_ids(self) -> list[str]: ...
+
+    def get_profiles_by_generated_from_request_id(
+        self, request_id: str
+    ) -> list[UserProfile]: ...
+
+    def get_all_generated_profiles(self) -> list[UserProfile]: ...
+
+    def get_profile_by_id(
+        self, profile_id: str, *, include_tombstones: bool = ...
+    ) -> UserProfile | None: ...
+
+
 def reconstruct_profile_change_log(
-    storage: ParityReadStorage,
+    storage: ChangeLogReadStorage,
     *,
     limit: int = 100,
 ) -> ProfileChangeLogResponse:
@@ -583,18 +618,15 @@ def reconstruct_profile_change_log(
     Groups are formed over the union of request_ids from both signals.
     Request_id ``""`` is skipped — it would merge unrelated runs.
     A row is emitted only when ``added or removed`` is non-empty (matching
-    legacy semantics: ``add_profile_change_log`` was called only when
+    legacy semantics: the legacy table was written only when
     ``all_new_profiles or superseded_profiles``).
-
-    ``mentioned_profiles = []`` — always empty (Stage-1 shape; the legacy
-    path also always wrote ``[]``).
 
     When a removed profile's tombstone has been physically purged (GDPR GC),
     it is silently omitted from ``removed_profiles`` rather than crashing.
 
     Args:
-        storage (ParityReadStorage): Storage read surface to query (any
-            BaseStorage backend or the read-only parity reader).
+        storage (ChangeLogReadStorage): Storage read surface to query (any
+            BaseStorage backend or the read-only ``RestStorageReader``).
         limit (int): Maximum number of reconstructed entries to return.
             Defaults to 100.
 
@@ -698,7 +730,6 @@ def reconstruct_profile_change_log(
                 created_at=ts,
                 added_profiles=added,
                 removed_profiles=removed,
-                mentioned_profiles=[],
             )
         )
 

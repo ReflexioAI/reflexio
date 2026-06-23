@@ -129,4 +129,3 @@ class ProfileChangeLogView(BaseModel):
     created_at: int = Field(default_factory=lambda: int(datetime.now(UTC).timestamp()))
     added_profiles: list[ProfileView]
     removed_profiles: list[ProfileView]
-    mentioned_profiles: list[ProfileView]

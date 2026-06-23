@@ -13,7 +13,6 @@ from reflexio.models.api_schema.retriever_schema import PlaybookApplicationStat
 from reflexio.models.api_schema.service_schemas import (
     Interaction,
     PlaybookAggregationChangeLog,
-    ProfileChangeLog,
 )
 
 from ._base import (
@@ -25,7 +24,6 @@ from ._base import (
     _json_loads,
     _row_to_interaction,
     _row_to_playbook_aggregation_change_log,
-    _row_to_profile_change_log,
 )
 
 type _CitationKind = Literal["playbook", "profile"]
@@ -340,36 +338,6 @@ class ExtrasMixin:
     # ------------------------------------------------------------------
     # Profile Change Log methods
     # ------------------------------------------------------------------
-
-    @SQLiteStorageBase.handle_exceptions
-    def add_profile_change_log(self, profile_change_log: ProfileChangeLog) -> None:
-        self._execute(
-            """INSERT INTO profile_change_logs
-               (user_id, request_id, created_at, added_profiles, removed_profiles, mentioned_profiles)
-               VALUES (?,?,?,?,?,?)""",
-            (
-                profile_change_log.user_id,
-                profile_change_log.request_id,
-                profile_change_log.created_at,
-                _json_dumps(
-                    [p.model_dump() for p in profile_change_log.added_profiles]
-                ),
-                _json_dumps(
-                    [p.model_dump() for p in profile_change_log.removed_profiles]
-                ),
-                _json_dumps(
-                    [p.model_dump() for p in profile_change_log.mentioned_profiles]
-                ),
-            ),
-        )
-
-    @SQLiteStorageBase.handle_exceptions
-    def get_profile_change_logs(self, limit: int = 100) -> list[ProfileChangeLog]:
-        rows = self._fetchall(
-            "SELECT * FROM profile_change_logs ORDER BY created_at DESC LIMIT ?",
-            (limit,),
-        )
-        return [_row_to_profile_change_log(r) for r in rows]
 
     @SQLiteStorageBase.handle_exceptions
     def delete_profile_change_log_for_user(self, user_id: str) -> None:

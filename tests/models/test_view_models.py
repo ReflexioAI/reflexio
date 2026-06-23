@@ -340,17 +340,14 @@ class TestToProfileChangeLogView:
             created_at=1000000,
             added_profiles=[self._make_profile("p1")],
             removed_profiles=[self._make_profile("p2")],
-            mentioned_profiles=[self._make_profile("p3")],
         )
         view = to_profile_change_log_view(log)
         assert isinstance(view, ProfileChangeLogView)
         assert len(view.added_profiles) == 1
         assert len(view.removed_profiles) == 1
-        assert len(view.mentioned_profiles) == 1
         for pv in [
             *view.added_profiles,
             *view.removed_profiles,
-            *view.mentioned_profiles,
         ]:
             assert isinstance(pv, ProfileView)
             assert "embedding" not in ProfileView.model_fields
@@ -363,7 +360,6 @@ class TestToProfileChangeLogView:
             created_at=1000000,
             added_profiles=[self._make_profile("p1"), self._make_profile("p2")],
             removed_profiles=[],
-            mentioned_profiles=[self._make_profile("p3")],
         )
         view = to_profile_change_log_view(log)
         assert view.id == 42
@@ -372,7 +368,6 @@ class TestToProfileChangeLogView:
         assert view.created_at == 1000000
         assert len(view.added_profiles) == 2
         assert len(view.removed_profiles) == 0
-        assert len(view.mentioned_profiles) == 1
 
     def test_profile_content_preserved(self) -> None:
         log = ProfileChangeLog(
@@ -382,7 +377,6 @@ class TestToProfileChangeLogView:
             created_at=1000000,
             added_profiles=[self._make_profile("p1")],
             removed_profiles=[],
-            mentioned_profiles=[],
         )
         view = to_profile_change_log_view(log)
         assert view.added_profiles[0].profile_id == "p1"

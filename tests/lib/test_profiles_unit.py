@@ -490,7 +490,6 @@ class TestGetProfileChangeLogs:
             request_id="req1",
             added_profiles=[_sample_profile()],
             removed_profiles=[],
-            mentioned_profiles=[],
         )
         with patch(
             "reflexio.lib._profiles.reconstruct_profile_change_log",

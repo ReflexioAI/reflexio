@@ -68,7 +68,7 @@ def test_publish_interaction_profile_only(
 
     # Verify profile change logs were created
     final_change_logs = (
-        reflexio_instance_profile_only.request_context.storage.get_profile_change_logs()
+        reflexio_instance_profile_only.get_profile_change_logs().profile_change_logs
     )
     assert len(final_change_logs) > 0
 
@@ -256,9 +256,9 @@ def test_get_profile_change_logs_end_to_end(
     )
     assert response.success is True
 
-    # Verify change logs were created and stored
+    # Verify change logs were created (served from reconstruction)
     stored_change_logs = (
-        reflexio_instance_profile_only.request_context.storage.get_profile_change_logs()
+        reflexio_instance_profile_only.get_profile_change_logs().profile_change_logs
     )
     assert len(stored_change_logs) > 0
     # Get the auto-generated request_id

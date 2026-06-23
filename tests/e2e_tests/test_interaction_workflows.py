@@ -84,9 +84,7 @@ def test_publish_interaction_end_to_end(
     assert final_profiles[0].custom_features
 
     # Verify profile change logs were created
-    final_change_logs = (
-        reflexio_instance.request_context.storage.get_profile_change_logs()
-    )
+    final_change_logs = reflexio_instance.get_profile_change_logs().profile_change_logs
     assert len(final_change_logs) > 0
 
     # Verify playbooks were generated and stored

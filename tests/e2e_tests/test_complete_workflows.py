@@ -48,7 +48,7 @@ def test_complete_workflow_end_to_end(
     )
     initial_profiles = reflexio_instance.request_context.storage.get_all_profiles()
     initial_change_logs = (
-        reflexio_instance.request_context.storage.get_profile_change_logs()
+        reflexio_instance.get_profile_change_logs().profile_change_logs
     )
 
     # Step 1: Publish interactions (request_id will be auto-generated)
@@ -82,9 +82,7 @@ def test_complete_workflow_end_to_end(
         reflexio_instance.request_context.storage.get_all_interactions()
     )
     stored_profiles = reflexio_instance.request_context.storage.get_all_profiles()
-    stored_change_logs = (
-        reflexio_instance.request_context.storage.get_profile_change_logs()
-    )
+    stored_change_logs = reflexio_instance.get_profile_change_logs().profile_change_logs
     assert len(stored_interactions) > len(initial_interactions)
     assert len(stored_profiles) > len(initial_profiles)
     assert len(stored_change_logs) > len(initial_change_logs)
@@ -737,7 +735,7 @@ def test_full_workflow_with_all_features(
     assert isinstance(agent_success_results[0].is_success, bool)
 
     # Step 5: Verify profile change logs were created
-    change_logs = reflexio_instance.request_context.storage.get_profile_change_logs()
+    change_logs = reflexio_instance.get_profile_change_logs().profile_change_logs
     assert len(change_logs) > 0, "Profile change logs should be created"
 
     # Step 6: Test search operations work correctly

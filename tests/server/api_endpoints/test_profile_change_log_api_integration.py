@@ -49,9 +49,9 @@ def test_endpoint_serves_reconstructed_change_log(client_with_org):
         a status_change/superseded lineage event under that run id (the "removed"
         signal).
 
-    It does NOT call storage.add_profile_change_log — so if the endpoint still
-    read the legacy table it would return zero rows. The endpoint must return the
-    reconstructed row, with mentioned_profiles=[] and a schema-parseable shape.
+    It does NOT write the legacy table — so if the endpoint still read the legacy
+    table it would return zero rows. The endpoint must return the reconstructed
+    row with a schema-parseable shape.
     """
     client, org_id = client_with_org
     storage = get_reflexio(org_id=org_id).request_context.storage
@@ -85,8 +85,6 @@ def test_endpoint_serves_reconstructed_change_log(client_with_org):
 
     assert [p.profile_id for p in row.removed_profiles] == ["p-old-1"]
     assert row.removed_profiles[0].content == "stale profile text"
-
-    assert row.mentioned_profiles == []
 
 
 def test_endpoint_response_is_parseable_by_schema(client_with_org):

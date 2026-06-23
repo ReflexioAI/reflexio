@@ -1,15 +1,15 @@
-"""Read-only storage reader for the B3 pre-cutover parity check.
+"""Read-only PostgREST storage reader for change-log reconstruction.
 
 ``RestStorageReader`` exposes only the read methods that
-``reconstruct_profile_change_log`` + ``run_parity_check`` call (the
-``ParityReadStorage`` protocol), sourced from Supabase **PostgREST GETs**. It is
-deliberately NOT a ``BaseStorage`` subclass and performs **no writes** — so it
-can be pointed at a production data ref to run the parity check without the side
-effects of constructing the real ``SupabaseStorage`` (whose ``__init__`` can
-mutate PostgREST schema config).
+``reconstruct_profile_change_log`` calls (the ``ChangeLogReadStorage``
+protocol), sourced from Supabase **PostgREST GETs**. It is deliberately NOT a
+``BaseStorage`` subclass and performs **no writes** — so it can be pointed at a
+production data ref to run the reconstruction without the side effects of
+constructing the real ``SupabaseStorage`` (whose ``__init__`` can mutate
+PostgREST schema config).
 
-The HTTP layer is injectable (``fetch``) so the reconstruction/classification
-pipeline can be unit-tested with canned rows and no network.
+The HTTP layer is injectable (``fetch``) so the reconstruction pipeline can be
+unit-tested with canned rows and no network.
 """
 
 from __future__ import annotations
@@ -19,18 +19,16 @@ from urllib.parse import urlparse
 
 from reflexio.models.api_schema.domain.entities import (
     LineageEvent,
-    ProfileChangeLog,
     UserProfile,
 )
 
 # Page size for unbounded reads. A read returning a full page may be truncated,
-# which would silently skew the parity verdict — so reaching it flips
-# ``truncated`` and run_parity_check surfaces the run as INCONCLUSIVE.
+# which would silently skew the reconstruction — so reaching it flips
+# ``truncated`` and callers can surface the run as untrustworthy.
 _FETCH_CAP = 10_000
 
 _LINEAGE_EVENT_FIELDS = set(LineageEvent.model_fields)
 _USER_PROFILE_FIELDS = set(UserProfile.model_fields)
-_CHANGE_LOG_FIELDS = set(ProfileChangeLog.model_fields)
 
 # Explicit column list for profiles — avoids pulling the embedding/FTS columns.
 _PROFILE_COLUMNS = (
@@ -113,23 +111,6 @@ class RestStorageReader:
         if len(rows) >= _FETCH_CAP:
             self.truncated = True
         return rows
-
-    def get_profile_change_logs(self, limit: int = 100) -> list[ProfileChangeLog]:
-        rows = self._fetch(
-            "profile_change_logs",
-            # Mirror the real backend's ordering (created_at DESC).
-            {"select": "*", "order": "created_at.desc", "limit": limit},
-        )
-        out: list[ProfileChangeLog] = []
-        for raw in rows:
-            row = dict(raw)
-            for key in ("added_profiles", "removed_profiles", "mentioned_profiles"):
-                row[key] = [
-                    _model(UserProfile, _USER_PROFILE_FIELDS, p)
-                    for p in (row.get(key) or [])
-                ]
-            out.append(_model(ProfileChangeLog, _CHANGE_LOG_FIELDS, row))
-        return out
 
     def get_lineage_events(
         self,

@@ -7,7 +7,6 @@ from reflexio.models.api_schema.braintrust_schema import (
 from reflexio.models.api_schema.domain import (
     Interaction,
     PlaybookAggregationChangeLog,
-    ProfileChangeLog,
 )
 from reflexio.models.api_schema.internal_schema import SessionCitation
 from reflexio.models.api_schema.retriever_schema import PlaybookApplicationStat
@@ -76,16 +75,6 @@ class ExtrasMixin:
     # ==============================
     # Profile Change Log methods
     # ==============================
-
-    @abstractmethod
-    def add_profile_change_log(self, profile_change_log: ProfileChangeLog) -> None:
-        """Add a profile change log entry."""
-        raise NotImplementedError
-
-    @abstractmethod
-    def get_profile_change_logs(self, limit: int = 100) -> list[ProfileChangeLog]:
-        """Get profile change logs for an organization."""
-        raise NotImplementedError
 
     @abstractmethod
     def delete_profile_change_log_for_user(self, user_id: str) -> None:
