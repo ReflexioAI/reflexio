@@ -1742,28 +1742,107 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
     # ------------------------------------------------------------------
 
     def clear_user_data(self, user_id: str) -> dict[str, int]:
-        """Atomic per-``user_id`` row deletion across all user-scoped tables.
+        """Per-``user_id`` row deletion across all user-scoped tables.
 
-        Overrides the BaseStorage default with a single-transaction SQL
-        implementation. Removes interactions, user playbooks, profiles,
-        and requests scoped to the user. Intentionally does NOT touch
-        ``agent_playbooks`` — they are the cross-project rollup of
-        skills and have no ``user_id`` column.
+        Overrides the BaseStorage default with an optimised SQL implementation.
+        Removes interactions, user playbooks, profiles, and requests scoped to
+        the user. Intentionally does NOT touch ``agent_playbooks`` — they are
+        the cross-project rollup of skills and have no ``user_id`` column.
 
         Also cleans up FTS and vector sidecars for the user's rows so
         subsequent searches don't surface deleted data.
+
+        **Lineage-aware erasure for profiles and user_playbooks:**
+        Rows that are tombstones (``merged_into`` or ``superseded_by`` is set)
+        *or* are pointed-to by another row (``has_inbound_lineage_refs`` returns
+        True) are **content-purged** (skeleton kept, body blanked) rather than
+        hard-deleted. This preserves chain resolution across user erasures.
+        Standalone rows with no lineage involvement are hard-deleted as before.
+
+        **Commit ordering (atomicity invariant):**
+        The hard-deletes for interactions, requests, and the delete-sets of
+        profiles/user_playbooks are committed in one transaction first. Then
+        ``purge_content`` is called for each purge-eligible row — each call
+        commits atomically on its own. This two-phase approach is required
+        because ``purge_content`` issues its own ``conn.commit()``, and nesting
+        it inside the outer transaction would prematurely flush the still-pending
+        hard-DELETEs.
 
         Args:
             user_id (str): The user id whose rows should be deleted.
 
         Returns:
-            dict[str, int]: Per-entity deletion counts with keys
-                ``interactions``, ``user_playbooks``, ``profiles``, and
-                ``requests``.
+            dict[str, int]: Per-entity counts with keys ``interactions``,
+                ``user_playbooks``, ``profiles``, ``requests``,
+                ``purged_profiles``, and ``purged_user_playbooks``.
+                ``profiles`` and ``user_playbooks`` reflect hard-deleted counts;
+                purged rows are counted separately.
         """
+
+        def _split_profiles(
+            rows: list[object],
+        ) -> tuple[list[str], list[int], list[str], list[int]]:
+            """Partition profile rows into purge vs delete sets.
+
+            Returns:
+                Tuple of (purge_ids, purge_rowids, delete_ids, delete_rowids).
+            """
+            purge_ids: list[str] = []
+            purge_rowids: list[int] = []
+            delete_ids: list[str] = []
+            delete_rowids: list[int] = []
+            for r in rows:
+                pid = r["profile_id"]  # type: ignore[index]
+                rowid = r["rowid"]  # type: ignore[index]
+                is_tombstone = (
+                    self.conn.execute(
+                        "SELECT 1 FROM profiles WHERE profile_id = ?"
+                        " AND (merged_into IS NOT NULL OR superseded_by IS NOT NULL)",
+                        (pid,),
+                    ).fetchone()
+                    is not None
+                )
+                if is_tombstone or self.has_inbound_lineage_refs(
+                    entity_type="profile", entity_id=str(pid)
+                ):
+                    purge_ids.append(pid)
+                    purge_rowids.append(rowid)
+                else:
+                    delete_ids.append(pid)
+                    delete_rowids.append(rowid)
+            return purge_ids, purge_rowids, delete_ids, delete_rowids
+
+        def _split_user_playbooks(
+            ids: list[int],
+        ) -> tuple[list[int], list[int]]:
+            """Partition user_playbook ids into purge vs delete sets.
+
+            Returns:
+                Tuple of (purge_ids, delete_ids).
+            """
+            purge_ids: list[int] = []
+            delete_ids: list[int] = []
+            for upid in ids:
+                is_tombstone = (
+                    self.conn.execute(
+                        "SELECT 1 FROM user_playbooks WHERE user_playbook_id = ?"
+                        " AND (merged_into IS NOT NULL OR superseded_by IS NOT NULL)",
+                        (upid,),
+                    ).fetchone()
+                    is not None
+                )
+                if is_tombstone or self.has_inbound_lineage_refs(
+                    entity_type="user_playbook", entity_id=str(upid)
+                ):
+                    purge_ids.append(upid)
+                else:
+                    delete_ids.append(upid)
+            return purge_ids, delete_ids
+
         with self._lock:
-            # Snapshot rowids/ids that need FTS or vector cleanup before
-            # the DELETE removes them from the main tables.
+            # ------------------------------------------------------------------
+            # Phase 1: snapshot all user-scoped ids before any mutations.
+            # ------------------------------------------------------------------
             interaction_ids = [
                 r["interaction_id"]
                 for r in self.conn.execute(
@@ -1771,7 +1850,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                     (user_id,),
                 ).fetchall()
             ]
-            user_playbook_ids = [
+            raw_upb_ids = [
                 r["user_playbook_id"]
                 for r in self.conn.execute(
                     "SELECT user_playbook_id FROM user_playbooks WHERE user_id = ?",
@@ -1782,67 +1861,103 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 "SELECT rowid, profile_id FROM profiles WHERE user_id = ?",
                 (user_id,),
             ).fetchall()
-            profile_rowids = [r["rowid"] for r in profile_rows]
-            profile_ids = [r["profile_id"] for r in profile_rows]
 
-            # FTS cleanup
+            # ------------------------------------------------------------------
+            # Phase 2: partition profiles and user_playbooks into purge vs delete.
+            # ------------------------------------------------------------------
+            (
+                purge_profile_ids,
+                purge_profile_rowids,
+                delete_profile_ids,
+                delete_profile_rowids,
+            ) = _split_profiles(profile_rows)
+            purge_upb_ids, delete_upb_ids = _split_user_playbooks(raw_upb_ids)
+
+            # ------------------------------------------------------------------
+            # Phase 3: FTS and vector cleanup — only for the delete-sets
+            # (purge_content handles its own index cleanup for purged rows).
+            # ------------------------------------------------------------------
             if interaction_ids:
                 ph = ",".join("?" for _ in interaction_ids)
                 self.conn.execute(
-                    f"DELETE FROM interactions_fts WHERE rowid IN ({ph})",
+                    f"DELETE FROM interactions_fts WHERE rowid IN ({ph})",  # noqa: S608
                     interaction_ids,
                 )
-            if user_playbook_ids:
-                ph = ",".join("?" for _ in user_playbook_ids)
+            if delete_upb_ids:
+                ph = ",".join("?" for _ in delete_upb_ids)
                 self.conn.execute(
-                    f"DELETE FROM user_playbooks_fts WHERE rowid IN ({ph})",
-                    user_playbook_ids,
+                    f"DELETE FROM user_playbooks_fts WHERE rowid IN ({ph})",  # noqa: S608
+                    delete_upb_ids,
                 )
-            if profile_ids:
-                ph = ",".join("?" for _ in profile_ids)
+            if delete_profile_ids:
+                ph = ",".join("?" for _ in delete_profile_ids)
                 self.conn.execute(
-                    f"DELETE FROM profiles_fts WHERE profile_id IN ({ph})",
-                    profile_ids,
+                    f"DELETE FROM profiles_fts WHERE profile_id IN ({ph})",  # noqa: S608
+                    delete_profile_ids,
                 )
 
-            # Vector index cleanup (best-effort: only if sqlite-vec loaded)
             if self._has_sqlite_vec:
-                vec_targets = (
+                vec_targets: list[tuple[str, list[int]]] = [
                     ("interactions_vec", interaction_ids),
-                    ("user_playbooks_vec", user_playbook_ids),
-                    ("profiles_vec", profile_rowids),
-                )
+                    ("user_playbooks_vec", delete_upb_ids),
+                    ("profiles_vec", delete_profile_rowids),
+                ]
                 for vec_table, rowids in vec_targets:
                     if rowids:
                         ph = ",".join("?" for _ in rowids)
                         self.conn.execute(
-                            f"DELETE FROM {vec_table} WHERE rowid IN ({ph})",
+                            f"DELETE FROM {vec_table} WHERE rowid IN ({ph})",  # noqa: S608
                             rowids,
                         )
 
-            # Main-table deletes. Order matters only for foreign key
-            # integrity; SQLite default has FK off for most tables here
-            # so order is chosen for readability.
+            # ------------------------------------------------------------------
+            # Phase 4: hard-delete the delete-sets and all interactions/requests.
+            # ------------------------------------------------------------------
             interactions_cur = self.conn.execute(
                 "DELETE FROM interactions WHERE user_id = ?", (user_id,)
-            )
-            user_playbooks_cur = self.conn.execute(
-                "DELETE FROM user_playbooks WHERE user_id = ?", (user_id,)
-            )
-            profiles_cur = self.conn.execute(
-                "DELETE FROM profiles WHERE user_id = ?", (user_id,)
             )
             requests_cur = self.conn.execute(
                 "DELETE FROM requests WHERE user_id = ?", (user_id,)
             )
+            upb_deleted_count = 0
+            if delete_upb_ids:
+                ph = ",".join("?" for _ in delete_upb_ids)
+                upb_cur = self.conn.execute(
+                    f"DELETE FROM user_playbooks WHERE user_playbook_id IN ({ph})",  # noqa: S608
+                    delete_upb_ids,
+                )
+                upb_deleted_count = upb_cur.rowcount
+            profile_deleted_count = 0
+            if delete_profile_ids:
+                ph = ",".join("?" for _ in delete_profile_ids)
+                prof_cur = self.conn.execute(
+                    f"DELETE FROM profiles WHERE profile_id IN ({ph})",  # noqa: S608
+                    delete_profile_ids,
+                )
+                profile_deleted_count = prof_cur.rowcount
+
+            # Commit the hard-deletes before calling purge_content, because
+            # purge_content issues its own conn.commit() and nesting it here
+            # would prematurely flush the still-pending deletes.
             self.conn.commit()
 
-            return {
-                "interactions": interactions_cur.rowcount,
-                "user_playbooks": user_playbooks_cur.rowcount,
-                "profiles": profiles_cur.rowcount,
-                "requests": requests_cur.rowcount,
-            }
+        # ------------------------------------------------------------------
+        # Phase 5: content-purge the purge-sets (each call self-commits).
+        # Done outside the lock so purge_content can acquire it independently.
+        # ------------------------------------------------------------------
+        for pid in purge_profile_ids:
+            self.purge_content(entity_type="profile", entity_id=str(pid))
+        for upid in purge_upb_ids:
+            self.purge_content(entity_type="user_playbook", entity_id=str(upid))
+
+        return {
+            "interactions": interactions_cur.rowcount,
+            "user_playbooks": upb_deleted_count,
+            "profiles": profile_deleted_count,
+            "requests": requests_cur.rowcount,
+            "purged_profiles": len(purge_profile_ids),
+            "purged_user_playbooks": len(purge_upb_ids),
+        }
 
 
 # ---------------------------------------------------------------------------

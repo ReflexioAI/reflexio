@@ -156,3 +156,77 @@ def test_has_inbound_lineage_refs_true_when_merged_into(storage):
     assert (
         storage.has_inbound_lineage_refs(entity_type="profile", entity_id="C") is False
     )
+
+
+def test_clear_user_data_purges_referenced_keeps_chain(tmp_path):
+    """Chain A→B→C(live) + standalone D; clear_user_data purges tombstones/referenced,
+    hard-deletes unreferenced standalone rows, and chain still resolves after erasure.
+
+    Ordering invariant: A and B are tombstones (superseded_by/merged_into set) so they
+    are purge-eligible. C is the live survivor but has inbound lineage refs (B points to
+    it), so it is also purged rather than hard-deleted. D is unreferenced → hard-deleted.
+    """
+    from reflexio.server.services.lineage.resolve import resolve_current
+
+    with patch.object(SQLiteStorage, "_get_embedding", return_value=[0.0] * 512):
+        s = SQLiteStorage(org_id="0", db_path=str(tmp_path / "t.db"))
+
+    # Build chain A→B→C with supersede then merge; D is standalone.
+    s.add_user_profile("alice", [_profile("A", "alice", "a")])
+    s.add_user_profile("alice", [_profile("B", "alice", "b")])
+    s.add_user_profile("alice", [_profile("C", "alice", "c")])
+    s.add_user_profile("alice", [_profile("D", "alice", "d")])
+    s.supersede_record(
+        entity_type="profile", incumbent_id="A", successor_id="B", context=_ctx("r1")
+    )
+    s.merge_records(
+        entity_type="profile", source_ids=["B"], survivor_id="C", context=_ctx("r2")
+    )
+
+    counts = s.clear_user_data("alice")
+
+    # D must be hard-deleted (row gone).
+    assert (
+        s.conn.execute("SELECT 1 FROM profiles WHERE profile_id='D'").fetchone() is None
+    )
+    # C must be content-purged (skeleton kept, body blanked).
+    c_row = s.conn.execute(
+        "SELECT content FROM profiles WHERE profile_id='C'"
+    ).fetchone()
+    assert c_row is not None and c_row["content"] == ""
+    # Chain A→B→C still resolves via lineage pointers.
+    ref = resolve_current(s, "profile", "A")
+    assert ref is not None and ref.id == "C" and ref.is_purged is True
+    # Count checks: 3 purged (A, B, C), 1 hard-deleted (D).
+    assert counts["purged_profiles"] == 3
+    assert counts["profiles"] == 1
+
+
+def test_clear_user_data_cross_user_chain_purges_other_users_survivor(tmp_path):
+    """Cross-user: alice's tombstone A points to bob's live C.
+    Erasing bob must PURGE C (not hard-delete it), so alice's A still resolves.
+    Proves has_inbound_lineage_refs is not scoped to the user being erased.
+    """
+    from reflexio.server.services.lineage.resolve import resolve_current
+
+    with patch.object(SQLiteStorage, "_get_embedding", return_value=[0.0] * 512):
+        s = SQLiteStorage(org_id="0", db_path=str(tmp_path / "t.db"))
+
+    s.add_user_profile("alice", [_profile("A", "alice", "a")])
+    s.add_user_profile("bob", [_profile("C", "bob", "c")])  # survivor owned by bob
+    s.supersede_record(
+        entity_type="profile", incumbent_id="A", successor_id="C", context=_ctx()
+    )
+
+    s.clear_user_data("bob")  # erase bob; alice's tombstone A still points at C
+
+    # C must be PURGED (skeleton kept), not hard-deleted.
+    c_row = s.conn.execute(
+        "SELECT content FROM profiles WHERE profile_id='C'"
+    ).fetchone()
+    assert c_row is not None, (
+        "C must not be hard-deleted — alice's chain still references it"
+    )
+    # Alice's A still resolves to C via the pointer.
+    ref = resolve_current(s, "profile", "A")
+    assert ref is not None and ref.id == "C"
