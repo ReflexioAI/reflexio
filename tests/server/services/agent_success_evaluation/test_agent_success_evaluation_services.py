@@ -12,10 +12,12 @@ import contextlib
 import datetime
 import tempfile
 from datetime import UTC
+from typing import cast
 from unittest.mock import patch
 
 import pytest
 
+from reflexio.models.api_schema.domain.enums import UserActionType
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
 from reflexio.models.api_schema.service_schemas import (
     Interaction,
@@ -92,6 +94,7 @@ def test_loads_singular_agent_success_config():
         )
         service.configurator.set_config_by_name("agent_success_config", success_config)
         service.service_config = AgentSuccessGenerationServiceConfig(
+            user_id="test_user_id",
             session_id="test_group",
             agent_version="1.0",
             request_interaction_data_models=[],
@@ -106,12 +109,48 @@ def test_loads_no_agent_success_config_when_disabled():
         service = _make_agent_success_service(temp_dir)
         service.configurator.set_config_by_name("agent_success_config", None)
         service.service_config = AgentSuccessGenerationServiceConfig(
+            user_id="test_user_id",
             session_id="test_group",
             agent_version="1.0",
             request_interaction_data_models=[],
         )
 
         assert service._load_extractor_config() is None
+
+
+def test_precheck_uses_provided_session_models_for_evaluation_only():
+    """Agent success pre-check should not re-query learnable storage windows."""
+    user_id = "eval_only_user"
+    interaction = Interaction(
+        interaction_id=1,
+        user_id=user_id,
+        request_id="eval_only_request_id",
+        content="Please confirm this launch checklist answer is clear and useful.",
+        role="user",
+        created_at=int(datetime.datetime.now(UTC).timestamp()),
+    )
+    request_interaction = create_request_interaction_data_model(
+        request_id="eval_only_request_id",
+        user_id=user_id,
+        interactions=[interaction],
+    )
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        service = _make_agent_success_service(temp_dir)
+        success_config = AgentSuccessConfig(
+            evaluation_name="test_agent_success",
+            success_definition_prompt="Evaluate if the answer was clear and useful",
+        )
+        service.configurator.set_config_by_name("agent_success_config", success_config)
+        service.service_config = AgentSuccessGenerationServiceConfig(
+            user_id=user_id,
+            session_id="eval_only_session",
+            agent_version="1.0",
+            request_interaction_data_models=[request_interaction],
+            source="test",
+        )
+
+        assert service._should_run_before_extraction(success_config) is True
 
 
 def test_evaluate_agent_success(mock_chat_completion):
@@ -446,7 +485,7 @@ def test_none_request():
         )
 
         # Run with None request
-        agent_success_service.run(None)
+        agent_success_service.run(cast(AgentSuccessEvaluationRequest, None))
 
         # Verify no evaluation was generated
         assert True
@@ -474,7 +513,7 @@ def test_agent_success_message_construction_with_interactions():
             content="I used the search tool",
             role="assistant",
             created_at=int(datetime.datetime.now(UTC).timestamp()),
-            user_action="click",
+            user_action=UserActionType.CLICK,
             user_action_description="search button",
         ),
     ]

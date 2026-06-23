@@ -1847,12 +1847,13 @@ class PlaybookMixin:
             created_at_iso = _epoch_to_iso(result.created_at)
             self._execute(
                 """INSERT INTO agent_success_evaluation_result
-                   (session_id, agent_version, evaluation_name, is_success,
+                   (user_id, session_id, agent_version, evaluation_name, is_success,
                     failure_type, failure_reason, regular_vs_shadow,
                     number_of_correction_per_session, user_turns_to_resolution,
                     is_escalated, embedding, created_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
+                    result.user_id,
                     result.session_id,
                     result.agent_version,
                     result.evaluation_name,
@@ -1908,17 +1909,19 @@ class PlaybookMixin:
     @SQLiteStorageBase.handle_exceptions
     def get_agent_success_evaluation_result_ids(
         self,
+        user_id: str,
         session_id: str,
         evaluation_name: str,
         agent_version: str,
     ) -> list[int]:
         rows = self._fetchall(
             """SELECT result_id FROM agent_success_evaluation_result
-               WHERE session_id = ?
+               WHERE user_id = ?
+                 AND session_id = ?
                  AND evaluation_name = ?
                  AND agent_version = ?
                ORDER BY created_at DESC""",
-            (session_id, evaluation_name, agent_version),
+            (user_id, session_id, evaluation_name, agent_version),
         )
         return [int(r["result_id"]) for r in rows]
 
@@ -1929,13 +1932,15 @@ class PlaybookMixin:
     @SQLiteStorageBase.handle_exceptions
     def delete_agent_success_evaluation_results_for_session(
         self,
+        user_id: str,
         session_id: str,
         evaluation_name: str,
         agent_version: str,
     ) -> int:
-        """Delete results scoped to (session_id, evaluation_name, agent_version).
+        """Delete results scoped to (user_id, session_id, evaluation_name, agent_version).
 
         Args:
+            user_id (str): User whose session results to clear.
             session_id (str): Session whose results to clear.
             evaluation_name (str): Which evaluator's results to clear.
             agent_version (str): Agent version scope.
@@ -1945,8 +1950,11 @@ class PlaybookMixin:
         """
         cur = self._execute(
             """DELETE FROM agent_success_evaluation_result
-               WHERE session_id = ? AND evaluation_name = ? AND agent_version = ?""",
-            (session_id, evaluation_name, agent_version),
+               WHERE user_id = ?
+                 AND session_id = ?
+                 AND evaluation_name = ?
+                 AND agent_version = ?""",
+            (user_id, session_id, evaluation_name, agent_version),
         )
         return cur.rowcount
 

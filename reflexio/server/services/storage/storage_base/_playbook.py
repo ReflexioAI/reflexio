@@ -746,6 +746,7 @@ class PlaybookMixin:
 
     def get_agent_success_evaluation_result_ids(
         self,
+        user_id: str,
         session_id: str,
         evaluation_name: str,
         agent_version: str,
@@ -758,7 +759,9 @@ class PlaybookMixin:
         return [
             r.result_id
             for r in rows
-            if r.session_id == session_id and r.evaluation_name == evaluation_name
+            if r.user_id == user_id
+            and r.session_id == session_id
+            and r.evaluation_name == evaluation_name
         ]
 
     @abstractmethod
@@ -769,13 +772,15 @@ class PlaybookMixin:
     @abstractmethod
     def delete_agent_success_evaluation_results_for_session(
         self,
+        user_id: str,
         session_id: str,
         evaluation_name: str,
         agent_version: str,
     ) -> int:
-        """Delete stored results for (session_id, evaluation_name, agent_version).
+        """Delete stored results for (user_id, session_id, evaluation_name, agent_version).
 
         Args:
+            user_id (str): User whose session results to clear.
             session_id (str): Session whose results to clear.
             evaluation_name (str): Which evaluator's results to clear.
             agent_version (str): Agent version scope.

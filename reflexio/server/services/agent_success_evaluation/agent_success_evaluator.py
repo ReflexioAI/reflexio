@@ -274,6 +274,7 @@ class AgentSuccessEvaluator:
             request_interaction_data_models
         )
         return AgentSuccessEvaluationResult(
+            user_id=self.service_config.user_id,
             session_id=self.service_config.session_id,
             agent_version=self.service_config.agent_version,
             evaluation_name=get_extractor_name(self.config),

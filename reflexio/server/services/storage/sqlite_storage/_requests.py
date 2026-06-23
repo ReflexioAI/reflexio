@@ -298,3 +298,40 @@ class RequestMixin:
                     created_at=_iso_to_epoch(row["created_at"]),
                 )
         return out
+
+    @SQLiteStorageBase.handle_exceptions
+    def get_first_requests_by_user_session_pairs(
+        self, pairs: list[tuple[str, str]]
+    ) -> dict[tuple[str, str], SessionFirstRequest]:
+        if not pairs:
+            return {}
+        out: dict[tuple[str, str], SessionFirstRequest] = {}
+        pair_list = sorted(set(pairs))
+        chunk_size = 300
+        for i in range(0, len(pair_list), chunk_size):
+            chunk = pair_list[i : i + chunk_size]
+            values = ",".join("(?, ?)" for _ in chunk)
+            params = [value for pair in chunk for value in pair]
+            rows = self._fetchall(
+                f"""SELECT session_id, user_id, source, created_at
+                    FROM (
+                        SELECT session_id, user_id, source, created_at,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY user_id, session_id
+                                   ORDER BY created_at ASC, request_id ASC
+                               ) AS rn
+                        FROM requests
+                        WHERE (user_id, session_id) IN ({values})
+                    )
+                    WHERE rn = 1""",  # noqa: S608
+                params,
+            )
+            for row in rows:
+                key = (row["user_id"], row["session_id"])
+                out[key] = SessionFirstRequest(
+                    session_id=row["session_id"],
+                    user_id=row["user_id"],
+                    source=row["source"] or "",
+                    created_at=_iso_to_epoch(row["created_at"]),
+                )
+        return out

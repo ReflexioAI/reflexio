@@ -25,11 +25,13 @@ def _eval_result(
     result_id: int,
     session_id: str,
     is_success: bool,
+    user_id: str = "u1",
     corrections: int = 0,
     created_at: int = 1700000000,
 ) -> AgentSuccessEvaluationResult:
     return AgentSuccessEvaluationResult(
         result_id=result_id,
+        user_id=user_id,
         agent_version="v_e2e",
         session_id=session_id,
         is_success=is_success,
@@ -45,10 +47,10 @@ def _storage_with_results(
     storage = MagicMock()
     storage.org_id = ""
     storage.get_agent_success_evaluation_results_in_window.return_value = results
-    storage.get_first_requests_by_session_ids.return_value = {
-        r.session_id: SessionFirstRequest(
+    storage.get_first_requests_by_user_session_pairs.return_value = {
+        (r.user_id, r.session_id): SessionFirstRequest(
             session_id=r.session_id,
-            user_id="u1",
+            user_id=r.user_id,
             source="api",
             created_at=r.created_at,
         )
@@ -202,6 +204,7 @@ def test_service_uses_bulk_storage_methods_without_per_session_reads() -> None:
     )
     storage.get_citations_by_session_ids.return_value = [
         SessionCitation(
+            user_id="u1",
             session_id="s1",
             kind="playbook",
             real_id="42",
@@ -218,7 +221,7 @@ def test_service_uses_bulk_storage_methods_without_per_session_reads() -> None:
     storage.get_sessions.assert_not_called()
     storage.get_interactions_by_session.assert_not_called()
     storage.get_playbook_application_stats.assert_not_called()
-    storage.get_first_requests_by_session_ids.assert_called_once()
+    storage.get_first_requests_by_user_session_pairs.assert_called_once()
     storage.get_citations_by_session_ids.assert_called_once()
 
 
@@ -241,14 +244,14 @@ def test_service_limits_source_lookup_to_window_when_no_source_sets() -> None:
             ),
         ]
     )
-    storage.get_first_requests_by_session_ids.return_value = {
-        "current": SessionFirstRequest(
+    storage.get_first_requests_by_user_session_pairs.return_value = {
+        ("u1", "current"): SessionFirstRequest(
             session_id="current",
             user_id="u1",
             source="current-source",
             created_at=now,
         ),
-        "previous": SessionFirstRequest(
+        ("u1", "previous"): SessionFirstRequest(
             session_id="previous",
             user_id="u1",
             source="previous-source",
@@ -267,7 +270,9 @@ def test_service_limits_source_lookup_to_window_when_no_source_sets() -> None:
     )
 
     assert response.source_set_comparison.available_sources == ["current-source"]
-    storage.get_first_requests_by_session_ids.assert_called_once_with(["current"])
+    storage.get_first_requests_by_user_session_pairs.assert_called_once_with(
+        [("u1", "current")]
+    )
 
 
 def test_service_loads_baseline_sources_when_source_sets_requested() -> None:
@@ -289,14 +294,14 @@ def test_service_loads_baseline_sources_when_source_sets_requested() -> None:
             ),
         ]
     )
-    storage.get_first_requests_by_session_ids.return_value = {
-        "current": SessionFirstRequest(
+    storage.get_first_requests_by_user_session_pairs.return_value = {
+        ("u1", "current"): SessionFirstRequest(
             session_id="current",
             user_id="u1",
             source="candidate",
             created_at=now,
         ),
-        "previous": SessionFirstRequest(
+        ("u1", "previous"): SessionFirstRequest(
             session_id="previous",
             user_id="u1",
             source="candidate",
@@ -320,8 +325,8 @@ def test_service_loads_baseline_sources_when_source_sets_requested() -> None:
     assert (
         response.source_set_comparison.sets[0].context_tiles.success.delta_pp == 100.0
     )
-    storage.get_first_requests_by_session_ids.assert_called_once_with(
-        ["current", "previous"]
+    storage.get_first_requests_by_user_session_pairs.assert_called_once_with(
+        [("u1", "current"), ("u1", "previous")]
     )
 
 
@@ -370,7 +375,7 @@ def test_service_handles_5k_sessions_with_bulk_call_shape() -> None:
 
     assert response.hero.regular_success_rate_pp == 50.0
     storage.get_agent_success_evaluation_results_in_window.assert_called_once()
-    storage.get_first_requests_by_session_ids.assert_called_once()
+    storage.get_first_requests_by_user_session_pairs.assert_called_once()
     storage.get_citations_by_session_ids.assert_called_once()
     storage.get_sessions.assert_not_called()
     storage.get_interactions_by_session.assert_not_called()

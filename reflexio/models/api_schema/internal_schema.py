@@ -38,8 +38,9 @@ class SessionFirstRequest(NamedTuple):
 
 
 class SessionCitation(NamedTuple):
-    """One cited rule/profile occurrence, keyed by session."""
+    """One cited rule/profile occurrence, keyed by user/session."""
 
+    user_id: str
     session_id: str
     kind: str
     real_id: str

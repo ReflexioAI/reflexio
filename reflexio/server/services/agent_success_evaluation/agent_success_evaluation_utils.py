@@ -19,6 +19,7 @@ from reflexio.server.services.service_utils import (
 class AgentSuccessEvaluationRequest(BaseModel):
     """Request schema for agent success evaluation"""
 
+    user_id: str = ""
     session_id: str
     agent_version: str
     request_interaction_data_models: list[RequestInteractionDataModel]

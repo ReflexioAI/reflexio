@@ -189,3 +189,26 @@ class RequestMixin:
                 created_at=first.created_at,
             )
         return out
+
+    def get_first_requests_by_user_session_pairs(
+        self, pairs: list[tuple[str, str]]
+    ) -> dict[tuple[str, str], SessionFirstRequest]:
+        """Return earliest-request metadata for each requested (user_id, session_id).
+
+        Default implementation preserves backend compatibility by calling the
+        existing user-scoped request lookup per distinct pair. SQL backends
+        override with set-based queries.
+        """
+        out: dict[tuple[str, str], SessionFirstRequest] = {}
+        for user_id, session_id in set(pairs):
+            requests = self.get_requests_by_session(user_id, session_id)
+            if not requests:
+                continue
+            first = min(requests, key=lambda r: r.created_at)
+            out[(user_id, session_id)] = SessionFirstRequest(
+                session_id=session_id,
+                user_id=user_id,
+                source=first.source or "",
+                created_at=first.created_at,
+            )
+        return out

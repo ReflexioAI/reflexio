@@ -517,6 +517,7 @@ def _row_to_eval_result(row: sqlite3.Row) -> AgentSuccessEvaluationResult:
     d = dict(row)
     return AgentSuccessEvaluationResult(
         result_id=d["result_id"],
+        user_id=d.get("user_id") or "",
         session_id=d["session_id"],
         agent_version=d["agent_version"],
         evaluation_name=d.get("evaluation_name"),
@@ -695,6 +696,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         self._migrate_agent_playbook_source_windows()
         self._migrate_request_evaluation_only()
         self._migrate_request_session_id_required()
+        self._migrate_eval_result_user_id()
         self._migrate_shadow_comparison_verdicts()
         self._migrate_user_playbook_polarity()
         self._migrate_lineage()
@@ -1467,6 +1469,30 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         self.conn.commit()
         logger.info("Migrated requests.session_id to required non-empty values")
 
+    def _migrate_eval_result_user_id(self) -> None:
+        """Add user_id to session evaluation results for per-user identity."""
+        cols = {
+            row["name"]
+            for row in self.conn.execute(
+                "PRAGMA table_info(agent_success_evaluation_result)"
+            ).fetchall()
+        }
+        if not cols:
+            return
+        if "user_id" not in cols:
+            self.conn.execute(
+                "ALTER TABLE agent_success_evaluation_result "
+                "ADD COLUMN user_id TEXT NOT NULL DEFAULT ''"
+            )
+            logger.info("Added user_id column to agent_success_evaluation_result")
+        self.conn.execute("DROP INDEX IF EXISTS idx_eval_identity_created_at_desc")
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_eval_identity_created_at_desc "
+            "ON agent_success_evaluation_result"
+            "(user_id, session_id, evaluation_name, agent_version, created_at DESC)"
+        )
+        self.conn.commit()
+
     def _migrate_shadow_comparison_verdicts(self) -> None:
         """F1: create the shadow_comparison_verdicts table if missing.
 
@@ -1928,6 +1954,7 @@ CREATE INDEX IF NOT EXISTS idx_agent_playbooks_created_at ON agent_playbooks(cre
 
 CREATE TABLE IF NOT EXISTS agent_success_evaluation_result (
     result_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL DEFAULT '',
     session_id TEXT NOT NULL,
     agent_version TEXT NOT NULL DEFAULT '',
     evaluation_name TEXT,
@@ -1948,7 +1975,7 @@ CREATE INDEX IF NOT EXISTS idx_eval_created_at_desc
 CREATE INDEX IF NOT EXISTS idx_eval_agent_version_created_at_desc
     ON agent_success_evaluation_result(agent_version, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_eval_identity_created_at_desc
-    ON agent_success_evaluation_result(session_id, evaluation_name, agent_version, created_at DESC);
+    ON agent_success_evaluation_result(user_id, session_id, evaluation_name, agent_version, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS profile_change_logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

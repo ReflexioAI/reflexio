@@ -169,6 +169,7 @@ def run_group_evaluation(
     if force_regenerate:
         config = request_context.configurator.get_config()
         old_result_ids = storage.get_agent_success_evaluation_result_ids(  # type: ignore[reportOptionalMemberAccess]
+            user_id=user_id,
             session_id=session_id,
             evaluation_name=get_extractor_name(config),
             agent_version=agent_version,
@@ -185,6 +186,7 @@ def run_group_evaluation(
     )
 
     evaluation_request = AgentSuccessEvaluationRequest(
+        user_id=user_id,
         session_id=session_id,
         agent_version=agent_version,
         source=source,

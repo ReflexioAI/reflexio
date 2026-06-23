@@ -90,11 +90,12 @@ def _fake_runner_factory(storage, *, agent_version: str, evaluation_name: str):
     finds a fresh row to report as ``result_id``.
     """
 
-    def _fake(*, session_id: str, **_kwargs: object) -> None:
+    def _fake(*, user_id: str, session_id: str, **_kwargs: object) -> None:
         storage.save_agent_success_evaluation_results(
             [
                 AgentSuccessEvaluationResult(
                     result_id=0,
+                    user_id=user_id,
                     session_id=session_id,
                     agent_version=agent_version,
                     evaluation_name=evaluation_name,

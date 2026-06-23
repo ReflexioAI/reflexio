@@ -502,7 +502,7 @@ class ExtrasMixin:
             chunk = ids[i : i + chunk_size]
             ph = ",".join("?" for _ in chunk)
             rows = self._fetchall(
-                f"""SELECT r.session_id, i.citations
+                f"""SELECT r.user_id, r.session_id, i.citations
                     FROM requests r
                     JOIN interactions i ON i.request_id = r.request_id
                     WHERE r.session_id IN ({ph})
@@ -524,6 +524,7 @@ class ExtrasMixin:
                     if kind and real_id:
                         out.append(
                             SessionCitation(
+                                user_id=row["user_id"],
                                 session_id=row["session_id"],
                                 kind=str(kind),
                                 real_id=str(real_id),

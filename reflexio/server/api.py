@@ -2310,6 +2310,7 @@ def _resolve_session_user_id(storage: Any, session_id: str) -> str | None:
 def _find_fresh_result_id(
     storage: Any,
     *,
+    user_id: str,
     session_id: str,
     agent_version: str,
     evaluation_name: str,
@@ -2322,6 +2323,7 @@ def _find_fresh_result_id(
 
     Args:
         storage: The request's storage backend.
+        user_id (str): The user whose session slice was graded.
         session_id (str): The graded session.
         agent_version (str): The version dimension.
         evaluation_name (str): Evaluator/result namespace to isolate readback.
@@ -2332,6 +2334,7 @@ def _find_fresh_result_id(
         runner wrote nothing.
     """
     result_ids = storage.get_agent_success_evaluation_result_ids(
+        user_id=user_id,
         session_id=session_id,
         evaluation_name=evaluation_name,
         agent_version=agent_version,
@@ -2412,6 +2415,7 @@ def grade_on_demand(
 
     previous_result_ids = set(
         storage.get_agent_success_evaluation_result_ids(
+            user_id=user_id,
             session_id=payload.session_id,
             evaluation_name=evaluation_name,
             agent_version=payload.agent_version,
@@ -2441,6 +2445,7 @@ def grade_on_demand(
 
     result_id = _find_fresh_result_id(
         storage,
+        user_id=user_id,
         session_id=payload.session_id,
         agent_version=payload.agent_version,
         evaluation_name=evaluation_name,

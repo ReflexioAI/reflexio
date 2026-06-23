@@ -204,11 +204,13 @@ def _seed_eval_result(
     storage: BaseStorage,
     session_id: str,
     evaluation_name: str,
+    user_id: str = "u1",
     agent_version: str = "v1",
     created_at: int = 1000,
 ) -> None:
     """Save one ``AgentSuccessEvaluationResult`` row with minimal fields set."""
     result = AgentSuccessEvaluationResult(
+        user_id=user_id,
         session_id=session_id,
         agent_version=agent_version,
         evaluation_name=evaluation_name,
@@ -344,6 +346,7 @@ def test_targeted_eval_result_id_lookup(
     _seed_eval_result(storage, "s2", "overall_success", agent_version="v1")
 
     ids = storage.get_agent_success_evaluation_result_ids(
+        user_id="u1",
         session_id="s1",
         evaluation_name="overall_success",
         agent_version="v1",
@@ -366,7 +369,10 @@ def test_delete_scoped_to_session_and_name(storage: BaseStorage) -> None:
     _seed_eval_result(storage, "s2", "overall_success")
 
     n = storage.delete_agent_success_evaluation_results_for_session(
-        session_id="s1", evaluation_name="overall_success", agent_version="v1"
+        user_id="u1",
+        session_id="s1",
+        evaluation_name="overall_success",
+        agent_version="v1",
     )
 
     assert n == 1
@@ -377,6 +383,7 @@ def test_delete_scoped_to_session_and_name(storage: BaseStorage) -> None:
 
 def test_delete_unknown_session_returns_zero(storage: BaseStorage) -> None:
     n = storage.delete_agent_success_evaluation_results_for_session(
+        user_id="u1",
         session_id="does_not_exist",
         evaluation_name="overall_success",
         agent_version="v1",
@@ -388,12 +395,37 @@ def test_delete_respects_agent_version_scope(storage: BaseStorage) -> None:
     _seed_eval_result(storage, "s1", "overall_success", agent_version="v1")
     _seed_eval_result(storage, "s1", "overall_success", agent_version="v2")
     n = storage.delete_agent_success_evaluation_results_for_session(
-        session_id="s1", evaluation_name="overall_success", agent_version="v1"
+        user_id="u1",
+        session_id="s1",
+        evaluation_name="overall_success",
+        agent_version="v1",
     )
     assert n == 1
     remaining = storage.get_agent_success_evaluation_results(limit=100)
     versions = {r.agent_version for r in remaining if r.session_id == "s1"}
     assert versions == {"v2"}
+
+
+def test_eval_result_identity_is_user_scoped(storage: BaseStorage) -> None:
+    _seed_eval_result(storage, "shared", "overall_success", user_id="u1")
+    _seed_eval_result(storage, "shared", "overall_success", user_id="u2")
+
+    u1_ids = storage.get_agent_success_evaluation_result_ids(
+        user_id="u1",
+        session_id="shared",
+        evaluation_name="overall_success",
+        agent_version="v1",
+    )
+    u2_ids = storage.get_agent_success_evaluation_result_ids(
+        user_id="u2",
+        session_id="shared",
+        evaluation_name="overall_success",
+        agent_version="v1",
+    )
+
+    assert len(u1_ids) == 1
+    assert len(u2_ids) == 1
+    assert u1_ids != u2_ids
 
 
 def test_delete_by_ids_empty_list_is_noop(storage: BaseStorage) -> None:

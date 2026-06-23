@@ -107,6 +107,7 @@ class EvaluationResultView(BaseModel):
     """User-facing AgentSuccessEvaluationResult — excludes embedding."""
 
     result_id: int = 0
+    user_id: str = ""
     agent_version: str
     session_id: str
     is_success: bool

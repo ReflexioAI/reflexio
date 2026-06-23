@@ -392,7 +392,7 @@ Key files:
 
 **Flow**: Interactions → (deferred 10 min) → GroupEvaluationScheduler → run_group_evaluation → AgentSuccessEvaluator → AgentSuccessEvaluationResult → Storage
 
-**Session-Level Evaluation**: Evaluator treats all `request_interaction_data_models` in a session as a single conversation. Sampling rate checked once per session (not per-request). Result keyed by `session_id` (not `request_id`).
+**Session-Level Evaluation**: Evaluator treats one user's `request_interaction_data_models` in a session as a single conversation. Sampling rate checked once per session (not per-request). Results are keyed by `(user_id, session_id, evaluation_name)` so reused session IDs across users do not clobber each other.
 
 **Tool Context**: Reads `tool_can_use` from root `Config` level (shared with playbook extraction).
 

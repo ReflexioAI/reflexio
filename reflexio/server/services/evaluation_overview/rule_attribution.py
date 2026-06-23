@@ -11,6 +11,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 CitationKey = tuple[str, str]  # (kind, real_id) — matches PlaybookApplicationStat
+SessionIdentity = tuple[str, str]  # (user_id, session_id)
 
 
 @dataclass(frozen=True)
@@ -36,19 +37,19 @@ class RuleAttribution:
 
 def compute_net_sessions(
     *,
-    citations_by_session: Mapping[str, list[CitationKey]],
-    is_success_by_session: Mapping[str, bool],
+    citations_by_session: Mapping[SessionIdentity, list[CitationKey]],
+    is_success_by_session: Mapping[SessionIdentity, bool],
     rule_titles: Mapping[CitationKey, str],
     top_n: int,
 ) -> list[RuleAttribution]:
     """Aggregate net sessions per rule and return the top N by net_sessions.
 
     Args:
-        citations_by_session (Mapping[str, list[CitationKey]]): For each
-            session in the window, the list of `(kind, real_id)` citations
+        citations_by_session (Mapping[SessionIdentity, list[CitationKey]]): For
+            each user/session slice in the window, the list of `(kind, real_id)` citations
             harvested from its interactions.
-        is_success_by_session (Mapping[str, bool]): The session's evaluated
-            outcome. Sessions not in this map are skipped on both sides.
+        is_success_by_session (Mapping[SessionIdentity, bool]): The evaluated
+            outcome. User/session slices not in this map are skipped on both sides.
         rule_titles (Mapping[CitationKey, str]): Pre-loaded display titles
             for each rule (empty string when the underlying row is gone).
         top_n (int): How many rows to return at most. Ordering: net_sessions
@@ -65,8 +66,8 @@ def compute_net_sessions(
     # Ordering preserves caller-provided iteration order; the frontend sorts
     # the detail band by created_at when displaying.
     sessions_by_rule: dict[CitationKey, list[str]] = {}
-    for session_id, citations in citations_by_session.items():
-        outcome = is_success_by_session.get(session_id)
+    for session_key, citations in citations_by_session.items():
+        outcome = is_success_by_session.get(session_key)
         if outcome is None:
             continue
         # A rule cited multiple times in the same session counts once.
@@ -76,7 +77,7 @@ def compute_net_sessions(
                 successes[key] = successes.get(key, 0) + 1
             else:
                 failures[key] = failures.get(key, 0) + 1
-            sessions_by_rule.setdefault(key, []).append(session_id)
+            sessions_by_rule.setdefault(key, []).append(session_key[1])
 
     all_keys = set(successes) | set(failures)
     rows = [

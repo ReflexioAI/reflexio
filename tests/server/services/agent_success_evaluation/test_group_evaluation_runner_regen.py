@@ -68,6 +68,7 @@ def _make_prior_result(
     session_id: str,
     evaluation_name: str,
     agent_version: str = "1.0.0",
+    user_id: str = "user_a",
 ) -> AgentSuccessEvaluationResult:
     """Construct an AgentSuccessEvaluationResult representing a prior-run row.
 
@@ -82,6 +83,7 @@ def _make_prior_result(
     """
     return AgentSuccessEvaluationResult(
         result_id=result_id,
+        user_id=user_id,
         session_id=session_id,
         agent_version=agent_version,
         evaluation_name=evaluation_name,
@@ -132,16 +134,17 @@ def _make_storage(
 
     # The runner captures prior result ids via the targeted, indexed lookup
     # get_agent_success_evaluation_result_ids (added in the evaluation-overview
-    # read optimization). Mirror the storage layer's own (session_id,
+    # read optimization). Mirror the storage layer's own (user_id, session_id,
     # evaluation_name, agent_version) filtering instead of a static return — so
     # the test fails if the runner wires the WRONG identity tuple, not merely if
     # it forgets to call the method.
     def _result_ids_for(
-        session_id: str, evaluation_name: str, agent_version: str
+        user_id: str, session_id: str, evaluation_name: str, agent_version: str
     ) -> list[int]:
         """Return seeded result_ids matching one eval identity tuple (mirrors storage).
 
         Args:
+            user_id (str): Owning user to match.
             session_id (str): Owning session to match.
             evaluation_name (str): Evaluator identifier to match.
             agent_version (str): Agent version scope to match.
@@ -153,7 +156,8 @@ def _make_storage(
         return [
             r.result_id
             for r in (prior_results or [])
-            if r.session_id == session_id
+            if r.user_id == user_id
+            and r.session_id == session_id
             and r.evaluation_name == evaluation_name
             and r.agent_version == agent_version
         ]
@@ -276,7 +280,7 @@ def test_force_regenerate_deletes_prior_results() -> None:
         )
 
     # By-id delete called once with the captured prior result_ids — proving the
-    # runner passed the matching (session_a, overall_success, 1.0.0) identity to
+    # runner passed the matching (user_a, session_a, overall_success, 1.0.0) identity to
     # get_agent_success_evaluation_result_ids (the mock now filters on it).
     storage.delete_agent_success_evaluation_results_by_ids.assert_called_once_with([42])
     # The old triple-scoped delete must NOT be called by the new flow.
@@ -426,6 +430,7 @@ def test_regenerate_happy_path_with_real_sqlite_storage(tmp_path) -> None:
         # failure_type="old_value" lets us distinguish it from the new row.
         old_row = AgentSuccessEvaluationResult(
             result_id=0,
+            user_id="user_a",
             session_id="session_a",
             agent_version="1.0.0",
             evaluation_name="overall_success",
@@ -550,6 +555,7 @@ def test_regenerate_failure_preserves_old_rows_with_real_sqlite_storage(
 
         old_row = AgentSuccessEvaluationResult(
             result_id=0,
+            user_id="user_a",
             session_id="session_a",
             agent_version="1.0.0",
             evaluation_name="overall_success",

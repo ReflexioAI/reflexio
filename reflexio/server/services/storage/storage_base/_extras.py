@@ -197,6 +197,7 @@ class ExtrasMixin:
                     if kind and real_id:
                         out.append(
                             SessionCitation(
+                                user_id="",
                                 session_id=session_id,
                                 kind=str(kind),
                                 real_id=str(real_id),

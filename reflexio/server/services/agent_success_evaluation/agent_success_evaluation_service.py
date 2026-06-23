@@ -14,6 +14,10 @@ from reflexio.server.services.agent_success_evaluation.agent_success_evaluator i
     AgentSuccessEvaluator,
 )
 from reflexio.server.services.base_generation_service import BaseGenerationService
+from reflexio.server.services.extractor_interaction_utils import (
+    filter_interactions_by_source,
+    get_effective_source_filter,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -23,12 +27,14 @@ class AgentSuccessGenerationServiceConfig:
     """Runtime configuration for agent success evaluation service shared across all extractors.
 
     Attributes:
+        user_id: The user whose session slice is being evaluated
         session_id: The session being evaluated
         agent_version: The agent version
         request_interaction_data_models: The interactions to evaluate
         source: Source of the interactions
     """
 
+    user_id: str
     session_id: str
     agent_version: str
     request_interaction_data_models: list[RequestInteractionDataModel]
@@ -76,6 +82,7 @@ class AgentSuccessEvaluationService(
             AgentSuccessGenerationServiceConfig object
         """
         return AgentSuccessGenerationServiceConfig(
+            user_id=request.user_id,
             session_id=request.session_id,
             agent_version=request.agent_version,
             request_interaction_data_models=request.request_interaction_data_models,
@@ -114,6 +121,34 @@ class AgentSuccessEvaluationService(
             service_config=service_config,
             agent_context=self.configurator.get_agent_context(),
         )
+
+    def _collect_scoped_interactions_for_precheck(
+        self, extractor_config: AgentSuccessConfig
+    ) -> tuple[list[RequestInteractionDataModel], AgentSuccessConfig]:
+        """Use the session slice already loaded by the group runner.
+
+        The generic pre-check queries storage for learnable interaction windows,
+        which intentionally excludes evaluation-only requests. Agent-success
+        evaluation is allowed to run on evaluation-only sessions, so its
+        pre-check must inspect the request models passed to this service.
+        """
+        service_config = self.service_config
+        if service_config is None:
+            raise RuntimeError("Agent success pre-check requires service_config")
+        session_data_models = service_config.request_interaction_data_models
+        should_skip, source_filter = get_effective_source_filter(
+            extractor_config, service_config.source
+        )
+        if should_skip:
+            self._last_precheck_sessions = []
+            return [], extractor_config
+
+        scoped_models = filter_interactions_by_source(
+            session_data_models,
+            source_filter,
+        )
+        self._last_precheck_sessions = scoped_models
+        return scoped_models, extractor_config
 
     def _process_results(self, results: list) -> None:
         """

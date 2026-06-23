@@ -190,9 +190,9 @@ def _build_sample_candidates(
         list[SampleCandidate]: One candidate per descriptor, ready for the
         pure ``sample_candidates`` function.
     """
-    session_ids = sorted({sd.session_id for sd in descriptors})
+    pairs = sorted({(sd.user_id, sd.session_id) for sd in descriptors})
     try:
-        first_requests = storage.get_first_requests_by_session_ids(session_ids)
+        first_requests = storage.get_first_requests_by_user_session_pairs(pairs)
     except Exception as e:  # noqa: BLE001 — discovery should not abort the whole job
         logger.warning(
             "Failed to bulk fetch first requests during F3 sampler candidate "
@@ -203,7 +203,7 @@ def _build_sample_candidates(
 
     candidates: list[SampleCandidate] = []
     for sd in descriptors:
-        first = first_requests.get(sd.session_id)
+        first = first_requests.get((sd.user_id, sd.session_id))
         if first is None:
             logger.warning(
                 "Session %s has no first request in storage despite being returned by "

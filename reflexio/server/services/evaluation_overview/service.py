@@ -15,6 +15,7 @@ from collections import defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Any
 
 from reflexio.models.api_schema.braintrust_schema import ImportedScore
 from reflexio.models.api_schema.domain.entities import (
@@ -56,6 +57,7 @@ _DAY_SECONDS = 24 * 60 * 60
 _WEEK_SECONDS = 7 * 24 * 60 * 60
 _TOP_N_RULES = 5
 _LOGGER = logging.getLogger(__name__)
+ResultKey = tuple[str, str]
 
 
 @dataclass
@@ -67,7 +69,7 @@ class EvaluationOverviewService:
     Stateless across calls — safe to reuse the instance across requests.
     """
 
-    storage: object
+    storage: Any
     config: Config
 
     def run(
@@ -114,34 +116,34 @@ class EvaluationOverviewService:
         ]
 
         earliest_eval_ts = min((r.created_at for r in all_results), default=None)
-        result_session_ids = list(
-            dict.fromkeys(r.session_id for r in results if r.session_id)
+        result_keys = list(
+            dict.fromkeys((r.user_id, r.session_id) for r in results if r.session_id)
         )
         if request.source_sets:
-            source_session_ids = list(
+            source_keys = list(
                 dict.fromkeys(
-                    r.session_id
+                    (r.user_id, r.session_id)
                     for r in (*results, *results_current_7d, *results_prev_7d)
                     if r.session_id
                 )
             )
         else:
-            source_session_ids = result_session_ids
+            source_keys = result_keys
         start = time.perf_counter()
-        session_sources = self._build_first_request_sources(source_session_ids)
+        session_sources = self._build_first_request_sources(source_keys)
         self._log_phase(
             "session_sources",
             start,
-            sessions=len(set(source_session_ids)),
+            sessions=len(set(source_keys)),
             rows=len(session_sources),
         )
 
         start = time.perf_counter()
-        citations_by_session, rule_titles = self._load_citations(result_session_ids)
+        citations_by_session, rule_titles = self._load_citations(result_keys)
         self._log_phase(
             "citations",
             start,
-            sessions=len(set(result_session_ids)),
+            sessions=len(set(result_keys)),
             rows=sum(len(v) for v in citations_by_session.values()),
         )
 
@@ -262,10 +264,12 @@ class EvaluationOverviewService:
     def _build_attribution(
         self,
         results: list[AgentSuccessEvaluationResult],
-        citations_by_session: dict[str, list[tuple[str, str]]],
+        citations_by_session: dict[ResultKey, list[tuple[str, str]]],
         rule_titles: dict[tuple[str, str], str],
     ) -> list[RuleAttributionRow]:
-        is_success_by_session = {r.session_id: r.is_success for r in results}
+        is_success_by_session = {
+            (r.user_id, r.session_id): r.is_success for r in results
+        }
         rows = compute_net_sessions(
             citations_by_session=citations_by_session,
             is_success_by_session=is_success_by_session,
@@ -286,19 +290,24 @@ class EvaluationOverviewService:
         ]
 
     def _load_citations(
-        self, session_ids: list[str]
-    ) -> tuple[dict[str, list[tuple[str, str]]], dict[tuple[str, str], str]]:
-        """Pull `Interaction.citations` keyed by session, with title lookup.
+        self, result_keys: list[ResultKey]
+    ) -> tuple[dict[ResultKey, list[tuple[str, str]]], dict[tuple[str, str], str]]:
+        """Pull `Interaction.citations` keyed by user/session, with title lookup.
 
         Falls back to empty data when the underlying storage method returns
         no interactions (default behavior on backends that haven't yet
         implemented `get_interactions_by_session`).
         """
-        citations_by_session: dict[str, list[tuple[str, str]]] = defaultdict(list)
+        wanted = set(result_keys)
+        session_ids = sorted({session_id for _, session_id in result_keys})
+        citations_by_session: dict[ResultKey, list[tuple[str, str]]] = defaultdict(list)
         rule_titles: dict[tuple[str, str], str] = {}
         for citation in self.storage.get_citations_by_session_ids(session_ids):  # type: ignore[attr-defined]
+            result_key = (citation.user_id, citation.session_id)
+            if result_key not in wanted:
+                continue
             key = (citation.kind, citation.real_id)
-            citations_by_session[citation.session_id].append(key)
+            citations_by_session[result_key].append(key)
             if citation.title and key not in rule_titles:
                 rule_titles[key] = citation.title
         return citations_by_session, rule_titles
@@ -358,16 +367,16 @@ class EvaluationOverviewService:
         results: list[AgentSuccessEvaluationResult],
         current: list[AgentSuccessEvaluationResult],
         previous: list[AgentSuccessEvaluationResult],
-        session_sources: dict[str, str],
+        session_sources: dict[ResultKey, str],
         bucket: BucketLiteral,
-        citations_by_session: dict[str, list[tuple[str, str]]],
+        citations_by_session: dict[ResultKey, list[tuple[str, str]]],
         rule_titles: dict[tuple[str, str], str],
         current_scores: list[ImportedScore],
         prior_scores: list[ImportedScore],
     ) -> SourceSetComparison:
         """Build request-source cohort metrics for the evaluation page."""
         available_sources = sorted(
-            {session_sources.get(r.session_id or "", "") for r in results}
+            {session_sources.get((r.user_id, r.session_id), "") for r in results}
         )
         if not source_sets:
             return SourceSetComparison(available_sources=available_sources)
@@ -376,7 +385,8 @@ class EvaluationOverviewService:
         unmatched = sum(
             1
             for r in results
-            if session_sources.get(r.session_id or "", "") not in requested_sources
+            if session_sources.get((r.user_id, r.session_id), "")
+            not in requested_sources
         )
         rows: list[SourceSetEvaluationMetrics] = []
         for source_set in source_sets:
@@ -384,17 +394,17 @@ class EvaluationOverviewService:
             set_results = [
                 r
                 for r in results
-                if session_sources.get(r.session_id or "", "") in source_values
+                if session_sources.get((r.user_id, r.session_id), "") in source_values
             ]
             set_current = [
                 r
                 for r in current
-                if session_sources.get(r.session_id or "", "") in source_values
+                if session_sources.get((r.user_id, r.session_id), "") in source_values
             ]
             set_previous = [
                 r
                 for r in previous
-                if session_sources.get(r.session_id or "", "") in source_values
+                if session_sources.get((r.user_id, r.session_id), "") in source_values
             ]
             session_ids = {r.session_id for r in set_results if r.session_id}
             rows.append(
@@ -468,10 +478,14 @@ class EvaluationOverviewService:
             verdicts, judge_prompt_version=pinned_version
         )
 
-    def _build_first_request_sources(self, session_ids: list[str]) -> dict[str, str]:
-        """Map each session to its earliest request's source."""
-        first_requests = self.storage.get_first_requests_by_session_ids(session_ids)  # type: ignore[attr-defined]
-        return {sid: row.source or "" for sid, row in first_requests.items()}
+    def _build_first_request_sources(
+        self, result_keys: list[ResultKey]
+    ) -> dict[ResultKey, str]:
+        """Map each user/session slice to its earliest request's source."""
+        first_requests = self.storage.get_first_requests_by_user_session_pairs(
+            result_keys
+        )  # type: ignore[attr-defined]
+        return {key: row.source or "" for key, row in first_requests.items()}
 
     def _build_distribution(
         self,

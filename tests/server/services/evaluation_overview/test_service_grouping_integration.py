@@ -69,6 +69,7 @@ def _seed_session(
     storage.save_agent_success_evaluation_results(
         [
             AgentSuccessEvaluationResult(
+                user_id=user_id,
                 agent_version="v1",
                 session_id=session_id,
                 is_success=is_success,

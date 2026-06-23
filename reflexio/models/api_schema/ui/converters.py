@@ -146,6 +146,7 @@ def to_evaluation_result_view(
     """
     return EvaluationResultView(
         result_id=result.result_id,
+        user_id=result.user_id,
         agent_version=result.agent_version,
         session_id=result.session_id,
         is_success=result.is_success,
