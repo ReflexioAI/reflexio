@@ -34,6 +34,7 @@ from reflexio.models.api_schema.domain.entities import (
     UserProfile,
 )
 from reflexio.models.api_schema.domain.enums import ProfileTimeToLive
+from reflexio.server import usage_metrics as usage_metrics_module
 from reflexio.server.lineage_parity_shim import dual_read_diff
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 from reflexio.server.usage_metrics import (
@@ -125,10 +126,14 @@ def reflexio_stub(storage):
 
 @pytest.fixture
 def capturing_recorder():
+    # Save/restore the process-global recorder rather than resetting to None, so
+    # this fixture can't clobber a recorder configured by another test/fixture
+    # (order-dependent failures otherwise).
+    previous_recorder = usage_metrics_module._recorder
     recorder = _CapturingRecorder()
     configure_usage_event_recorder(recorder)
     yield recorder
-    configure_usage_event_recorder(None)
+    configure_usage_event_recorder(previous_recorder)
 
 
 # ---------------------------------------------------------------------------
