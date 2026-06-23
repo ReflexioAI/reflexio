@@ -68,12 +68,24 @@ def dual_read_diff(reflexio: object, org_id: str) -> None:
             read_cap_hit=read_cap_hit,
         )
 
-        _emit_metrics(org_id=org_id, results=results, legacy_cmp=legacy_cmp)
+        _emit_metrics(
+            org_id=org_id,
+            results=results,
+            legacy_cmp=legacy_cmp,
+            recon_cmp=recon_cmp,
+        )
 
     except Exception as e:  # noqa: BLE001 — intentionally broad; BaseException (signals) still propagates
+        # error-level so a genuine shim failure reaches the Discord
+        # (environment:production AND level:error) rule.  A real prod failure
+        # (the 42501) hid as 17 escalating warnings for hours because this was
+        # level="warning".  Fires once per failed page-view — acceptable for a
+        # "the shim is broken" signal.  (Per-run *divergence* anomalies stay at
+        # level="warning" on purpose — during the parity window divergences are
+        # expected findings and would flood Discord.)
         capture_anomaly(
             "lineage.reconstruct.error",
-            level="warning",
+            level="error",
             org_id=org_id,
             error=type(e).__name__,
         )
@@ -84,6 +96,7 @@ def _emit_metrics(
     org_id: str,
     results: list[ParityResult],
     legacy_cmp: list[ProfileChangeLog],
+    recon_cmp: list[ProfileChangeLog],
 ) -> None:
     """Emit divergence anomalies and a coverage usage event.
 
@@ -91,7 +104,10 @@ def _emit_metrics(
         org_id (str): Organization ID for tagging.
         results (list[ParityResult]): Classified results from ``classify_change_log_parity``.
         legacy_cmp (list[ProfileChangeLog]): Legacy rows used to compute add-only
-            vs remove-bearing breakdown for matched runs.
+            vs remove-bearing breakdown for matched runs, and to detect the
+            false-clean (degenerate) case.
+        recon_cmp (list[ProfileChangeLog]): Reconstructed rows, used to detect a
+            degenerate reconstruction (empty recon while legacy is non-empty).
     """
     divergent_classes = (ParityClass.RECON_MISSING, ParityClass.CONTENT_MISMATCH)
 
@@ -131,19 +147,57 @@ def _emit_metrics(
         else:
             add_only_runs += 1
 
+    # False-clean guard: a run that could NOT actually reconstruct anything must
+    # NOT be reported as "match"/clean.  The failure mode: reconstruction reads
+    # succeed but yield an EMPTY signal set (e.g. get_lineage_events returns [] —
+    # or, pre-B1-fix, partially fails) while the LEGACY change log still has rows
+    # (especially remove-bearing ones).  Then classify_change_log_parity tags
+    # every legacy row LEGACY_MISSING (tolerated) → zero divergences → a FALSE
+    # "match" that would wrongly satisfy the parity gate on incomplete data.
+    #
+    # Be precise: a legitimately add-only org with genuinely no removals (no
+    # remove-bearing legacy rows) must still be able to reach a true "match".  We
+    # only flag the case where legacy HAS reconstructible-worthy rows (it is
+    # non-empty AND carries removals) but reconstruction produced nothing usable
+    # (no matches AND an empty reconstructed change log).
+    legacy_has_remove_bearing = any(row.removed_profiles for row in legacy_cmp)
+    degenerate = (
+        bool(legacy_cmp) and legacy_has_remove_bearing and not matches and not recon_cmp
+    )
+
+    if degenerate:
+        outcome = "degraded"
+    elif divergences:
+        outcome = "diverged"
+    elif inconclusive:
+        outcome = "inconclusive"
+    else:
+        outcome = "match"
+
+    if degenerate:
+        # "We think it's clean but reconstruction saw nothing."  error-level so
+        # an all-degenerate run is visible on the Discord production rule — this
+        # is the alarm that the false-clean guard fired.
+        capture_anomaly(
+            "lineage.reconstruct.degraded",
+            level="error",
+            org_id=org_id,
+            legacy_rows=len(legacy_cmp),
+            recon_rows=len(recon_cmp),
+        )
+
     record_usage_event(
         org_id=org_id,
         event_name="lineage.reconstruct.coverage",
         event_category="lineage",
         count_value=len(matches),
-        outcome=(
-            "diverged" if divergences else "inconclusive" if inconclusive else "match"
-        ),
+        outcome=outcome,
         metadata={
             "add_only_runs": add_only_runs,
             "remove_bearing_runs": remove_bearing_runs,
             "matches": len(matches),
             "divergences": len(divergences),
             "inconclusive": len(inconclusive),
+            "degraded": degenerate,
         },
     )
