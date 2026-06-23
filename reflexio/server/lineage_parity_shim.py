@@ -162,26 +162,24 @@ def _emit_metrics(
     # (no matches AND an empty reconstructed change log).
     #
     # KNOWN residual (intentionally NOT covered, to preserve the precision above):
-    # a *physically-purged add-only* run — legacy add-only rows whose profiles were
-    # hard-deleted/GDPR-purged so reconstruction is empty — has no remove-bearing
-    # legacy row, so it is NOT flagged degraded and still collapses to "match".
-    # This is the tolerated LEGACY_MISSING class ("predates soft-delete / purged");
-    # widening the guard to add-only would mislabel every legitimately-purged org.
-    legacy_has_remove_bearing = any(row.removed_profiles for row in legacy_cmp)
+    # the guard fires ONLY when legacy carries removals.  Any *add-only* degeneracy —
+    # a physically-purged add-only run (profiles hard-deleted/GDPR-purged so
+    # reconstruction is empty), OR an add-only org whose reads genuinely returned [] —
+    # has no remove-bearing legacy row, so it is NOT flagged degraded and still
+    # collapses to "match" (the tolerated LEGACY_MISSING class).  Accepted because:
+    # widening the guard to add-only would mislabel every legitimately-purged org, and
+    # post-B1 a broken (anon-keyed) ref fails LOUD at storage construction rather than
+    # silently returning [], so the add-only-empty-read path is largely unreachable.
+    legacy_has_any_remove_bearing = any(row.removed_profiles for row in legacy_cmp)
     degenerate = (
-        bool(legacy_cmp) and legacy_has_remove_bearing and not matches and not recon_cmp
+        bool(legacy_cmp)
+        and legacy_has_any_remove_bearing
+        and not matches
+        and not recon_cmp
     )
 
     if degenerate:
         outcome = "degraded"
-    elif divergences:
-        outcome = "diverged"
-    elif inconclusive:
-        outcome = "inconclusive"
-    else:
-        outcome = "match"
-
-    if degenerate:
         # "We think it's clean but reconstruction saw nothing."  error-level so
         # an all-degenerate run is visible on the Discord production rule — this
         # is the alarm that the false-clean guard fired.
@@ -192,6 +190,12 @@ def _emit_metrics(
             legacy_rows=len(legacy_cmp),
             recon_rows=len(recon_cmp),
         )
+    elif divergences:
+        outcome = "diverged"
+    elif inconclusive:
+        outcome = "inconclusive"
+    else:
+        outcome = "match"
 
     record_usage_event(
         org_id=org_id,
