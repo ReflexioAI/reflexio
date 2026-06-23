@@ -12,6 +12,7 @@ no mutations.
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING
@@ -20,6 +21,10 @@ from reflexio.models.api_schema.domain.entities import ProfileChangeLog, UserPro
 
 if TYPE_CHECKING:
     from reflexio.server.services.storage.storage_base import BaseStorage
+
+# Read cap for the one-shot parity check: a side hitting exactly this many rows
+# may be truncated, so the comparison is treated as INCONCLUSIVE.
+_READ_CAP = 10_000
 
 
 class ParityClass(StrEnum):
@@ -229,3 +234,60 @@ def profile_reconstructible_request_ids(storage: BaseStorage) -> set[str]:
         ):
             ids.add(evt.request_id)
     return ids
+
+
+def run_parity_check(storage: BaseStorage) -> list[ParityResult]:
+    """Run both change-log paths against ``storage`` and classify each request_id.
+
+    Reads the legacy ``profile_change_logs`` table and the reconstruction
+    side-by-side and classifies every ``request_id`` via
+    :func:`classify_change_log_parity`. Storage-backend agnostic: any object
+    implementing ``get_profile_change_logs`` + the lineage read methods works
+    (real backends or a read-only reader).
+
+    Args:
+        storage (BaseStorage): Any ``BaseStorage``-like instance implementing
+            ``get_profile_change_logs`` and the lineage read methods.
+
+    Returns:
+        list[ParityResult]: Classified results, one per distinct request_id.
+
+    Raises:
+        SystemExit: If either side returns exactly ``_READ_CAP`` rows, the
+            comparison may be based on truncated data and cannot be trusted;
+            the run is treated as INCONCLUSIVE and exits non-zero.
+    """
+    # Lazy import to avoid any import cycle with reflexio.lib._profiles.
+    from reflexio.lib._profiles import reconstruct_profile_change_log
+
+    legacy_rows = storage.get_profile_change_logs(limit=_READ_CAP)
+    recon_resp = reconstruct_profile_change_log(storage, limit=_READ_CAP)
+
+    read_cap_hit = (
+        len(legacy_rows) >= _READ_CAP
+        or len(recon_resp.profile_change_logs) >= _READ_CAP
+    )
+
+    if read_cap_hit:
+        truncated: list[str] = []
+        if len(legacy_rows) >= _READ_CAP:
+            truncated.append(f"legacy ({len(legacy_rows)} rows == cap)")
+        if len(recon_resp.profile_change_logs) >= _READ_CAP:
+            truncated.append(
+                f"reconstruction ({len(recon_resp.profile_change_logs)} rows == cap)"
+            )
+        print(
+            f"\nINCONCLUSIVE: data may be truncated at the {_READ_CAP}-row cap — "
+            f"{', '.join(truncated)}. "
+            "Re-run after raising the cap or filtering the dataset.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    reconstructible = profile_reconstructible_request_ids(storage)
+    return classify_change_log_parity(
+        legacy_rows,
+        recon_resp.profile_change_logs,
+        reconstructible_request_ids=reconstructible,
+        read_cap_hit=False,
+    )

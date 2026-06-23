@@ -28,14 +28,26 @@ analysis tolerated recon-only as exit 0; this script does not.
 Usage (SQLite):
     uv run python scripts/lineage_b3_parity_check.py --db-path path/to/db --org-id myorg
 
+Usage (Supabase / production data ref — read-only):
+    LINEAGE_PARITY_SERVICE_KEY=<service_role key> \
+    uv run python scripts/lineage_b3_parity_check.py \
+        --supabase-url https://<ref>.supabase.co --org-id <org> [--schema org_<id>]
+
+``--schema`` defaults to ``public`` (a dedicated per-org ref); pass ``org_<id>``
+for an org living in the shared global-default cohort. The Supabase path is
+strictly read-only (PostgREST GETs); it never constructs the writable
+``SupabaseStorage``.
+
 This is a one-time pre-cutover tool — no scheduler, no Sentry channel.
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
+from typing import cast
 
 _THIS_DIR = Path(__file__).resolve().parent  # scripts/
 _PROJECT_ROOT = _THIS_DIR.parent  # repo root
@@ -45,61 +57,9 @@ sys.path.insert(0, str(_PROJECT_ROOT))
 from reflexio.lib._lineage_parity import (
     ParityClass,
     ParityResult,
-    classify_change_log_parity,
-    profile_reconstructible_request_ids,
+    run_parity_check,
 )
-from reflexio.lib._profiles import reconstruct_profile_change_log
 from reflexio.server.services.storage.storage_base import BaseStorage
-
-_READ_CAP = 10_000
-
-
-def run_parity_check(storage: BaseStorage) -> list[ParityResult]:
-    """Run both paths against storage and classify each request_id.
-
-    Args:
-        storage (BaseStorage): Any ``BaseStorage`` instance that implements both
-            ``get_profile_change_logs`` and ``get_lineage_events``.
-
-    Returns:
-        list[ParityResult]: Classified results, one per distinct request_id.
-
-    Raises:
-        SystemExit: If either side returns exactly ``_READ_CAP`` rows, the
-            comparison may be based on truncated data and cannot be trusted.
-            The run is treated as INCONCLUSIVE and exits non-zero.
-    """
-    legacy_rows = storage.get_profile_change_logs(limit=_READ_CAP)
-    recon_resp = reconstruct_profile_change_log(storage, limit=_READ_CAP)
-
-    read_cap_hit = (
-        len(legacy_rows) >= _READ_CAP
-        or len(recon_resp.profile_change_logs) >= _READ_CAP
-    )
-
-    if read_cap_hit:
-        truncated: list[str] = []
-        if len(legacy_rows) >= _READ_CAP:
-            truncated.append(f"legacy ({len(legacy_rows)} rows == cap)")
-        if len(recon_resp.profile_change_logs) >= _READ_CAP:
-            truncated.append(
-                f"reconstruction ({len(recon_resp.profile_change_logs)} rows == cap)"
-            )
-        print(
-            f"\nINCONCLUSIVE: data may be truncated at the {_READ_CAP}-row cap — "
-            f"{', '.join(truncated)}. "
-            "Re-run after raising the cap or filtering the dataset.",
-            file=sys.stderr,
-        )
-        sys.exit(2)
-
-    reconstructible = profile_reconstructible_request_ids(storage)
-    return classify_change_log_parity(
-        legacy_rows,
-        recon_resp.profile_change_logs,
-        reconstructible_request_ids=reconstructible,
-        read_cap_hit=False,
-    )
 
 
 def print_summary(results: list[ParityResult]) -> None:
@@ -148,17 +108,59 @@ def print_summary(results: list[ParityResult]) -> None:
         )
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="B3 pre-cutover parity check (SQLite only)."
-    )
-    parser.add_argument("--db-path", type=Path, required=True)
-    parser.add_argument("--org-id", type=str, default="default")
-    args = parser.parse_args()
+def _build_storage(
+    args: argparse.Namespace, parser: argparse.ArgumentParser
+) -> BaseStorage:
+    """Construct the storage to check from CLI args (SQLite or read-only Supabase)."""
+    if args.supabase_url:
+        key = os.environ.get(args.service_key_env)
+        if not key:
+            parser.error(
+                f"--supabase-url requires the service_role key in ${args.service_key_env}"
+            )
+        from reflexio.lib._lineage_parity_readers import RestStorageReader
+
+        # Read-only reader; duck-types the storage read surface that
+        # run_parity_check / reconstruct need (not a BaseStorage subclass).
+        return cast(
+            "BaseStorage",
+            RestStorageReader(
+                args.supabase_url, key, org_id=args.org_id, schema=args.schema
+            ),
+        )
 
     from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 
-    storage = SQLiteStorage(org_id=args.org_id, db_path=str(args.db_path))
+    return SQLiteStorage(org_id=args.org_id, db_path=str(args.db_path))
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="B3 pre-cutover parity check (SQLite or read-only Supabase)."
+    )
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--db-path", type=Path, help="SQLite DB path (local mode)")
+    source.add_argument(
+        "--supabase-url",
+        type=str,
+        help="Supabase project URL, e.g. https://<ref>.supabase.co (read-only)",
+    )
+    parser.add_argument(
+        "--schema",
+        type=str,
+        default="public",
+        help="schema holding the org's data: public (dedicated ref) or org_<id> (shared cohort)",
+    )
+    parser.add_argument(
+        "--service-key-env",
+        type=str,
+        default="LINEAGE_PARITY_SERVICE_KEY",
+        help="env var holding the service_role key for --supabase-url",
+    )
+    parser.add_argument("--org-id", type=str, default="default")
+    args = parser.parse_args()
+
+    storage = _build_storage(args, parser)
     results = run_parity_check(storage)
     print_summary(results)
 

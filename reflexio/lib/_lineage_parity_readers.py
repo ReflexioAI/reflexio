@@ -1,0 +1,149 @@
+"""Read-only storage reader for the B3 pre-cutover parity check.
+
+``RestStorageReader`` exposes only the read methods that
+``reconstruct_profile_change_log`` + ``run_parity_check`` call, sourced from
+Supabase **PostgREST GETs**. It is deliberately NOT a ``BaseStorage`` subclass
+and performs **no writes** — so it can be pointed at a production data ref to run
+the parity check without the side effects of constructing the real
+``SupabaseStorage`` (whose ``__init__`` can mutate PostgREST schema config).
+
+The HTTP layer is injectable (``fetch``) so the reconstruction/classification
+pipeline can be unit-tested with canned rows and no network.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+
+from reflexio.models.api_schema.domain.entities import (
+    LineageEvent,
+    ProfileChangeLog,
+    UserProfile,
+)
+
+# Read cap mirrors the parity check's _READ_CAP — pull whole (small) tables.
+_FETCH_CAP = 10_000
+
+_LINEAGE_EVENT_FIELDS = set(LineageEvent.model_fields)
+_USER_PROFILE_FIELDS = set(UserProfile.model_fields)
+_CHANGE_LOG_FIELDS = set(ProfileChangeLog.model_fields)
+
+# Explicit column list for profiles — avoids pulling the embedding/FTS columns.
+_PROFILE_COLUMNS = (
+    "profile_id,user_id,content,last_modified_timestamp,"
+    "generated_from_request_id,status,superseded_by,merged_into,source"
+)
+
+Fetch = Callable[[str, dict], list[dict]]
+
+
+def _model[M](cls: type[M], fields: set[str], row: dict) -> M:
+    """Build a Pydantic model from a row, ignoring columns it does not declare."""
+    return cls(**{k: v for k, v in row.items() if k in fields})
+
+
+class RestStorageReader:
+    """Read-only PostgREST reader implementing the parity-check read surface."""
+
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str,
+        *,
+        org_id: str,
+        schema: str = "public",
+        fetch: Fetch | None = None,
+    ) -> None:
+        self.org_id = org_id
+        self._base = base_url.rstrip("/")
+        self._key = api_key
+        self._schema = schema
+        self._fetch: Fetch = fetch or self._http_fetch
+
+    def _http_fetch(self, table: str, params: dict) -> list[dict]:
+        import requests  # noqa: PLC0415 — optional dep, only for the live path
+
+        headers = {"apikey": self._key, "Authorization": f"Bearer {self._key}"}
+        # Non-public schemas (the shared org_<id> cohort) are selected per-request
+        # via Accept-Profile; dedicated refs keep data in public.
+        if self._schema and self._schema != "public":
+            headers["Accept-Profile"] = self._schema
+        resp = requests.get(
+            f"{self._base}/rest/v1/{table}", headers=headers, params=params, timeout=30
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def get_profile_change_logs(self, limit: int = 100) -> list[ProfileChangeLog]:
+        rows = self._fetch(
+            "profile_change_logs",
+            {"select": "*", "order": "id.desc", "limit": limit},
+        )
+        out: list[ProfileChangeLog] = []
+        for raw in rows:
+            row = dict(raw)
+            for key in ("added_profiles", "removed_profiles", "mentioned_profiles"):
+                row[key] = [
+                    _model(UserProfile, _USER_PROFILE_FIELDS, p)
+                    for p in (row.get(key) or [])
+                ]
+            out.append(_model(ProfileChangeLog, _CHANGE_LOG_FIELDS, row))
+        return out
+
+    def get_lineage_events(
+        self,
+        *,
+        entity_type: str | None = None,
+        entity_id: str | None = None,
+        org_id: str | None = None,
+        request_id: str | None = None,
+    ) -> list[LineageEvent]:
+        params: dict = {"select": "*", "limit": _FETCH_CAP}
+        if entity_type:
+            params["entity_type"] = f"eq.{entity_type}"
+        if entity_id:
+            params["entity_id"] = f"eq.{entity_id}"
+        if request_id:
+            params["request_id"] = f"eq.{request_id}"
+        if org_id:
+            params["org_id"] = f"eq.{org_id}"
+        return [
+            _model(LineageEvent, _LINEAGE_EVENT_FIELDS, r)
+            for r in self._fetch("lineage_event", params)
+        ]
+
+    def get_distinct_generated_from_request_ids(self) -> list[str]:
+        rows = self._fetch(
+            "profiles", {"select": "generated_from_request_id", "limit": _FETCH_CAP}
+        )
+        return sorted(
+            {
+                r["generated_from_request_id"]
+                for r in rows
+                if r.get("generated_from_request_id")
+            }
+        )
+
+    def get_profiles_by_generated_from_request_id(
+        self, request_id: str
+    ) -> list[UserProfile]:
+        rows = self._fetch(
+            "profiles",
+            {
+                "select": _PROFILE_COLUMNS,
+                "generated_from_request_id": f"eq.{request_id}",
+                "limit": _FETCH_CAP,
+            },
+        )
+        return [_model(UserProfile, _USER_PROFILE_FIELDS, r) for r in rows]
+
+    def get_profile_by_id(
+        self,
+        profile_id: str,
+        include_tombstones: bool = False,  # noqa: ARG002 — id lookup always returns tombstones
+    ) -> UserProfile | None:
+        rows = self._fetch(
+            "profiles",
+            {"select": _PROFILE_COLUMNS, "profile_id": f"eq.{profile_id}", "limit": 1},
+        )
+        return _model(UserProfile, _USER_PROFILE_FIELDS, rows[0]) if rows else None

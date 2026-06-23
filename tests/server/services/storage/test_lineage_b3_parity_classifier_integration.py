@@ -12,17 +12,14 @@ seeded data:
 
 from __future__ import annotations
 
-# Import run_parity_check from the script (it calls storage, so still lives there).
-import importlib.util
-import sys
 from datetime import UTC, datetime
-from pathlib import Path
 
 import pytest
 
 from reflexio.lib._lineage_parity import (
     ParityClass,
     classify_change_log_parity,
+    run_parity_check,
 )
 from reflexio.models.api_schema.domain.entities import (
     ProfileChangeLog,
@@ -30,15 +27,6 @@ from reflexio.models.api_schema.domain.entities import (
 )
 from reflexio.models.api_schema.domain.enums import ProfileTimeToLive
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
-
-_SCRIPT = Path(__file__).resolve().parents[4] / "scripts" / "lineage_b3_parity_check.py"
-_spec = importlib.util.spec_from_file_location("lineage_b3_parity_check", _SCRIPT)
-assert _spec is not None and _spec.loader is not None
-_mod = importlib.util.module_from_spec(_spec)
-sys.modules.setdefault("lineage_b3_parity_check", _mod)
-_spec.loader.exec_module(_mod)  # type: ignore[union-attr]
-
-run_parity_check = _mod.run_parity_check
 
 pytestmark = pytest.mark.integration
 

@@ -18,6 +18,7 @@ from reflexio.lib._lineage_parity import (
     ParityClass,
     ParityResult,
     classify_change_log_parity,
+    run_parity_check,
 )
 from reflexio.models.api_schema.domain.entities import ProfileChangeLog, UserProfile
 
@@ -304,11 +305,13 @@ def test_multiple_request_ids_sorted() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_script_uses_lib_classify_change_log_parity() -> None:
-    """Verify the parity script re-exports classify_change_log_parity from the lib.
+def test_script_uses_lib_run_parity_check() -> None:
+    """Verify the parity script imports run_parity_check from the lib.
 
-    Importing the script module must expose the same function object as the lib,
-    confirming there is no local redefinition.
+    run_parity_check formerly lived locally in the script; it now lives in the
+    lib so it is importable + testable. Importing the script module must expose
+    the SAME function object as the lib, confirming there is no local
+    redefinition.
     """
 
     # The script does sys.path.insert at import time; that's fine for this check.
@@ -327,11 +330,11 @@ def test_script_uses_lib_classify_change_log_parity() -> None:
     assert spec.loader is not None
     spec.loader.exec_module(module)  # type: ignore[union-attr]
 
-    # The script must import classify_change_log_parity from the lib — same object.
-    assert hasattr(module, "classify_change_log_parity"), (
-        "Script does not expose classify_change_log_parity"
+    # The script must import run_parity_check from the lib — same object.
+    assert hasattr(module, "run_parity_check"), (
+        "Script does not expose run_parity_check"
     )
-    assert module.classify_change_log_parity is classify_change_log_parity, (
-        "Script's classify_change_log_parity is not the lib's function — "
+    assert module.run_parity_check is run_parity_check, (
+        "Script's run_parity_check is not the lib's function — "
         "a local redefinition was found"
     )
