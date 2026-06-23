@@ -59,12 +59,19 @@ def test_guard_passes_for_base_inheriting_model():
     )
 
 
-def test_guard_ignores_property_literally_named_oneof():
-    """A field literally named ``oneOf`` is a property name, not a keyword."""
+def test_structure_aware_fold_preserves_property_named_oneof():
+    """The base's fold must PRESERVE a field literally named ``oneOf`` in the
+    emitted schema (a blind fold would delete it from the wire schema, silently
+    hiding the field from the model), and ``find_schema_keyword`` must not treat
+    that property name as a keyword.
+    """
 
     class _Weird(StrictStructuredOutput):
         oneOf: str = "x"  # noqa: N815 — intentional pathological field name
 
     schema = _Weird.model_json_schema()
-    assert not find_schema_keyword(schema, "oneOf")  # structure-aware: no match
+    # Structure-aware fold preserves the property (this is the regression guard
+    # for the silent-strip footgun).
+    assert "oneOf" in schema["properties"]
+    assert not find_schema_keyword(schema, "oneOf")  # name position, not a keyword
     assert_provider_safe_schema(schema, name="_Weird")  # must not raise

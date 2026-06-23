@@ -56,6 +56,56 @@ def test_tool_openai_spec_uses_docstring_and_schema():
     assert spec["function"]["parameters"]["properties"]["content"]["type"] == "string"
 
 
+def test_openai_spec_guard_raises_on_unsafe_tool_arg_union():
+    """Tool-arg schemas bypass the response_format path + the registry contract
+    test, so ``openai_spec()`` runs the boundary guard. A plain-BaseModel
+    discriminated-union args_model emits ``oneOf`` → the guard raises under pytest.
+    """
+    from typing import Annotated, Literal
+
+    from pydantic import Field
+
+    class _A(BaseModel):
+        kind: Literal["a"] = "a"
+        a: int
+
+    class _B(BaseModel):
+        kind: Literal["b"] = "b"
+        b: str
+
+    class _UnsafeArgs(BaseModel):
+        choice: Annotated[_A | _B, Field(discriminator="kind")]
+
+    t = Tool(name="unsafe", args_model=_UnsafeArgs, handler=lambda _a, _c: {})
+    with pytest.raises(ValueError, match="provider-unsafe"):
+        t.openai_spec()
+
+
+def test_openai_spec_passes_for_strict_structured_output_tool_arg():
+    """A tool-arg model inheriting StrictStructuredOutput is provider-safe by
+    construction — ``openai_spec()`` does not raise even with a union."""
+    from typing import Annotated, Literal
+
+    from pydantic import Field
+
+    from reflexio.models.structured_output import StrictStructuredOutput
+
+    class _A(BaseModel):
+        kind: Literal["a"] = "a"
+        a: int
+
+    class _B(BaseModel):
+        kind: Literal["b"] = "b"
+        b: str
+
+    class _SafeArgs(StrictStructuredOutput):
+        choice: Annotated[_A | _B, Field(discriminator="kind")]
+
+    t = Tool(name="safe", args_model=_SafeArgs, handler=lambda _a, _c: {})
+    spec = t.openai_spec()  # must not raise
+    assert spec["function"]["name"] == "safe"
+
+
 def test_registry_handle_parses_and_dispatches():
     ctx = Ctx()
     t = Tool(name="emit_profile", args_model=EmitProfileArgs, handler=ctx.emit)

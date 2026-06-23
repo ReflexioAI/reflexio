@@ -39,6 +39,7 @@ from reflexio.models.config_schema import (
 from reflexio.models.config_schema import (
     OpenAIConfig as CommonsOpenAIConfig,
 )
+from reflexio.models.structured_output import find_schema_keyword
 from reflexio.server.llm.litellm_client import (
     LiteLLMClient,
     LiteLLMClientError,
@@ -1030,30 +1031,9 @@ class TestMaybeParseStructuredOutput:
             )
 
 
-# Keys whose values are name→subschema maps; their entries are user-chosen names,
-# not JSON-Schema keywords (so a field named ``oneOf`` must not count as a match).
-_SCHEMA_NAME_MAP_KEYS = ("properties", "$defs", "definitions", "patternProperties")
-
-
-def _find_schema_keys(node: Any, key: str) -> list[str]:
-    """Return paths to every occurrence of ``key`` in JSON-Schema *keyword* position.
-
-    Context-aware: a property/``$defs`` *name* equal to ``key`` is not a match.
-    """
-    hits: list[str] = []
-    if isinstance(node, dict):
-        for k, v in node.items():
-            if k == key:
-                hits.append(k)
-            if k in _SCHEMA_NAME_MAP_KEYS and isinstance(v, dict):
-                for name, sub in v.items():
-                    hits.extend(f"{k}.{name}.{p}" for p in _find_schema_keys(sub, key))
-            else:
-                hits.extend(f"{k}.{p}" for p in _find_schema_keys(v, key))
-    elif isinstance(node, list):
-        for i, v in enumerate(node):
-            hits.extend(f"[{i}].{p}" for p in _find_schema_keys(v, key))
-    return hits
+# Schema-keyword presence is checked via the shared structure-aware
+# ``find_schema_keyword`` (reflexio.models.structured_output) — single source of
+# truth for the name-map special-casing.
 
 
 # A minimal discriminated-union output schema, the shape behind PYTHON-FASTAPI-9J.
@@ -1211,8 +1191,8 @@ class TestStrictStructuredOutputRequest:
         provider_format = params["response_format"]
         assert provider_format["type"] == "json_schema"
         sent_schema = provider_format["json_schema"]["schema"]
-        assert _find_schema_keys(sent_schema, "oneOf") == []
-        assert _find_schema_keys(sent_schema, "discriminator") == []
+        assert not find_schema_keyword(sent_schema, "oneOf")
+        assert not find_schema_keyword(sent_schema, "discriminator")
         # The variants are preserved as `anyOf` so generation stays constrained.
         assert "anyOf" in sent_schema["properties"]["decisions"]["items"]
 
@@ -1237,8 +1217,8 @@ class TestStrictStructuredOutputRequest:
             "model (Sentry PYTHON-FASTAPI-9J)"
         )
         schema = provider_format["json_schema"]["schema"]
-        assert _find_schema_keys(schema, "oneOf") == []
-        assert _find_schema_keys(schema, "discriminator") == []
+        assert not find_schema_keyword(schema, "oneOf")
+        assert not find_schema_keyword(schema, "discriminator")
 
     def test_finder_ignores_property_named_like_a_keyword(self):
         # A field literally named `oneOf`/`discriminator` is a property NAME, not a
@@ -1251,8 +1231,8 @@ class TestStrictStructuredOutputRequest:
         schema = make_strict_json_schema(_TrickyNames.model_json_schema())
         assert "oneOf" in schema["properties"]
         assert "discriminator" in schema["properties"]
-        assert _find_schema_keys(schema, "oneOf") == []
-        assert _find_schema_keys(schema, "discriminator") == []
+        assert not find_schema_keyword(schema, "oneOf")
+        assert not find_schema_keyword(schema, "discriminator")
 
     def test_strict_response_format_can_be_disabled_per_call(self):
         client = _build_client(LiteLLMConfig(model="gpt-4o-mini"))

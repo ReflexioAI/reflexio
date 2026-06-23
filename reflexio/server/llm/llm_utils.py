@@ -1,6 +1,7 @@
 import inspect
 import logging
 import os
+import sys
 from copy import deepcopy
 from typing import Any
 
@@ -97,12 +98,12 @@ def make_strict_json_schema(schema: dict[str, Any]) -> dict[str, Any]:
             node.pop(keyword, None)
 
         # Strict structured output (OpenAI) permits ``anyOf`` but rejects
-        # ``oneOf`` and ``discriminator``. Folded INLINE here (deliberately NOT
-        # via the shared ``_fold_oneof_to_anyof`` helper): this traversal is
-        # schema-structure-aware and only treats ``oneOf``/``discriminator`` as
-        # keywords at schema nodes, whereas the helper is a blind walk that would
-        # also strip a *property literally named* ``oneOf`` (see its docstring).
-        # Keep the two separate; they have different traversal contracts.
+        # ``oneOf`` and ``discriminator``. Folded inline here, fused into this
+        # single structure-aware pass (the shared ``_fold_oneof_to_anyof`` helper
+        # does the same fold for the model-boundary hook; kept inline here to
+        # avoid a second full-tree walk). ``visit`` only ever recurses into
+        # property/$def *values*, never the name maps, so a field literally named
+        # ``oneOf`` is preserved — same contract as the helper.
         one_of = node.pop("oneOf", None)
         node.pop("discriminator", None)
         if isinstance(one_of, list):
@@ -147,9 +148,16 @@ def assert_provider_safe_schema(schema: dict[str, Any], *, name: str = "") -> No
     forgot the base, or a tool-argument / dynamically-built schema not covered by
     the registry contract test.
 
-    Under tests it RAISES so a regression fails CI loudly; otherwise it logs a
-    warning and returns, so a miss degrades to existing behavior rather than a
-    request failure (the strict path's ``make_strict_json_schema`` still folds it).
+    Enforcement: under pytest (``"pytest" in sys.modules``) it RAISES so a
+    regression fails CI loudly — including at import/collection time, which a
+    per-test signal like ``PYTEST_CURRENT_TEST`` would miss. In prod it logs a
+    warning (observability) and returns; it does NOT mutate what is sent. So a
+    forgot-the-base model is meant to be caught **pre-merge** (by this raise plus
+    the registry contract test), not auto-repaired at runtime: on the strict /
+    allowlisted path ``make_strict_json_schema`` independently folds the schema,
+    but on the raw passthrough path the warning is the only signal and an unfolded
+    ``oneOf`` would still reach the provider. Keep every output model on
+    ``StrictStructuredOutput``.
 
     Args:
         schema (dict[str, Any]): The emitted JSON schema to check.
@@ -166,19 +174,29 @@ def assert_provider_safe_schema(schema: dict[str, Any], *, name: str = "") -> No
         "StrictStructuredOutput so the schema folds oneOf->anyOf by construction "
         "(Sentry PYTHON-FASTAPI-9J)."
     )
-    if os.environ.get("PYTEST_CURRENT_TEST"):
+    if "pytest" in sys.modules:
         raise ValueError(msg)
     logger.warning(msg)
 
 
-def strict_response_format_for_model(model: type[BaseModel]) -> dict[str, Any]:
-    """Build a LiteLLM/OpenAI-compatible strict ``json_schema`` response format."""
+def strict_response_format_for_model(
+    model: type[BaseModel], schema: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """Build a LiteLLM/OpenAI-compatible strict ``json_schema`` response format.
+
+    Args:
+        model: The Pydantic model (supplies the schema ``name``).
+        schema: Optional pre-built ``model.model_json_schema()`` to reuse, avoiding
+            a second schema build when the caller already has one.
+    """
 
     return {
         "type": "json_schema",
         "json_schema": {
             "name": model.__name__,
-            "schema": make_strict_json_schema(model.model_json_schema()),
+            "schema": make_strict_json_schema(
+                schema if schema is not None else model.model_json_schema()
+            ),
             "strict": True,
         },
     }

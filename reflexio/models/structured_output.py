@@ -22,6 +22,12 @@ from pydantic import BaseModel, GetJsonSchemaHandler
 from pydantic.json_schema import JsonSchemaValue
 from pydantic_core import CoreSchema
 
+# Keys whose *values* are name→subschema maps: their entries are user-chosen names
+# (field names, $def names), not JSON-Schema keywords. Traversals must recurse into
+# the subschemas but never treat the names themselves as keywords — otherwise a
+# model with a field literally named ``oneOf`` would be mishandled.
+_SCHEMA_NAME_MAP_KEYS = ("properties", "$defs", "definitions", "patternProperties")
+
 
 def _fold_oneof_to_anyof(node: Any) -> None:
     """Rewrite ``oneOf`` to ``anyOf`` and drop ``discriminator`` in place (recursive).
@@ -32,14 +38,13 @@ def _fold_oneof_to_anyof(node: Any) -> None:
     Pydantic still enforces the discriminator after parse, so semantics are
     preserved.
 
-    This is a BLIND walk: it treats any dict key named ``oneOf``/``discriminator``
-    as a schema keyword, so it must NOT be used where a model field could be
-    literally named ``oneOf``/``discriminator`` (it would strip the property).
-    That is fine for ``ProviderSafeUnionMixin``'s use on real output models;
-    ``make_strict_json_schema`` instead folds inline within a structure-aware
-    traversal precisely to avoid this. Precondition: ``node`` is a finite acyclic
-    tree, as produced by ``model_json_schema()`` (which expresses recursion via
-    ``$ref``/``$defs`` strings, never in-memory cycles) — there is no cycle guard.
+    Structure-aware: under a name→subschema map (``properties``/``$defs``/…) it
+    recurses into the subschemas but does NOT treat a property/``$def`` *name* as a
+    keyword — so a model field literally named ``oneOf``/``discriminator`` is
+    preserved (only keyword-position occurrences are folded). Precondition:
+    ``node`` is a finite acyclic tree, as produced by ``model_json_schema()``
+    (which expresses recursion via ``$ref``/``$defs`` strings, never in-memory
+    cycles) — there is no cycle guard.
 
     Args:
         node (Any): A JSON-schema fragment (dict, list, or scalar); mutated in place.
@@ -49,8 +54,12 @@ def _fold_oneof_to_anyof(node: Any) -> None:
         node.pop("discriminator", None)
         if isinstance(one_of, list):
             node["anyOf"] = node.get("anyOf", []) + one_of
-        for value in node.values():
-            _fold_oneof_to_anyof(value)
+        for key, value in node.items():
+            if key in _SCHEMA_NAME_MAP_KEYS and isinstance(value, dict):
+                for sub in value.values():
+                    _fold_oneof_to_anyof(sub)
+            else:
+                _fold_oneof_to_anyof(value)
     elif isinstance(node, list):
         for item in node:
             _fold_oneof_to_anyof(item)
@@ -107,13 +116,6 @@ class StrictStructuredOutput(ProviderSafeUnionMixin, BaseModel):
     ``extra=`` is not uniform across models, so a blanket dedup would silently shift
     validation/serialization behavior).
     """
-
-
-# Keys whose *values* are name→subschema maps: their entries are user-chosen names
-# (field names, $def names), not JSON-Schema keywords. We recurse into the
-# subschemas but must not treat the names themselves as keyword matches — otherwise
-# a model with a field literally named ``oneOf`` would false-positive.
-_SCHEMA_NAME_MAP_KEYS = ("properties", "$defs", "definitions", "patternProperties")
 
 
 def find_schema_keyword(node: Any, keyword: str) -> bool:

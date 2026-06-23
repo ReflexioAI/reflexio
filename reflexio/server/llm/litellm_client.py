@@ -1134,21 +1134,19 @@ class LiteLLMClient:
         behavior.
         """
 
-        # Boundary guard: assert the model's native schema is provider-safe
-        # regardless of which path it takes below. Models inheriting
-        # StrictStructuredOutput are safe by construction; this catches a model
-        # that forgot the base (raises under tests, warns in prod).
-        if is_pydantic_model(response_format):
-            assert_provider_safe_schema(
-                response_format.model_json_schema(), name=response_format.__name__
-            )
+        if not is_pydantic_model(response_format):
+            return response_format
 
-        if (
-            strict_response_format
-            and is_pydantic_model(response_format)
-            and self._accepts_json_schema_response_format(model)
-        ):
-            return strict_response_format_for_model(response_format)
+        # Build the native schema once and reuse it for both the boundary guard and
+        # (when applicable) the strict normalizer, avoiding a second schema build.
+        # Boundary guard: models inheriting StrictStructuredOutput are safe by
+        # construction; this catches a model that forgot the base (raises under
+        # tests, warns in prod) regardless of which path is taken below.
+        schema = response_format.model_json_schema()
+        assert_provider_safe_schema(schema, name=response_format.__name__)
+
+        if strict_response_format and self._accepts_json_schema_response_format(model):
+            return strict_response_format_for_model(response_format, schema=schema)
         return response_format
 
     def _compute_cost_usd(self, response: Any, model: str | None) -> float | None:
