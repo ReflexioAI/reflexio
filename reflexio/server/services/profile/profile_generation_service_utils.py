@@ -14,6 +14,7 @@ from reflexio.models.api_schema.service_schemas import (
     ProfileTimeToLive,
     UserProfile,
 )
+from reflexio.models.structured_output import StrictStructuredOutput
 from reflexio.server.prompt.prompt_manager import PromptManager
 from reflexio.server.services.service_utils import (
     MessageConstructionConfig,
@@ -102,7 +103,7 @@ class ProfileAddItem(BaseModel):
     )
 
 
-class ProfileUpdateOutput(BaseModel):
+class ProfileUpdateOutput(StrictStructuredOutput):
     """
     Legacy output schema for profile_update_main prompt (kept for backward compatibility).
     Represents the complete set of profile updates including additions, deletions, and mentions.
@@ -133,7 +134,7 @@ class ProfileUpdateOutput(BaseModel):
     )
 
 
-class StructuredProfilesOutput(BaseModel):
+class StructuredProfilesOutput(StrictStructuredOutput):
     """
     Output schema for extraction-only profile extraction.
     Only extracts profiles — no delete/mention operations.

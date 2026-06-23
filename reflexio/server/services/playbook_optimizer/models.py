@@ -13,6 +13,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from reflexio.models.api_schema.domain import Interaction
+from reflexio.models.structured_output import StrictStructuredOutput
 
 
 class ChatMessage(BaseModel):
@@ -58,7 +59,7 @@ class JudgeASI(BaseModel):
     recommended_mutation: str | list[str] = ""
 
 
-class JudgeOutput(BaseModel):
+class JudgeOutput(StrictStructuredOutput):
     verdict: Literal["candidate", "incumbent", "tie"]
     score: float = Field(ge=0.0, le=1.0)
     likert: int = Field(ge=1, le=5)

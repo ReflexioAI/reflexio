@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 
 from reflexio.models.api_schema.domain.enums import ProfileTimeToLive
 from reflexio.models.api_schema.validators import NonEmptyStr
+from reflexio.models.structured_output import StrictStructuredOutput
 
 REFLECTION_OPERATION_NAME = "reflection"
 
@@ -98,7 +99,7 @@ class ReflectionDecision(BaseModel):
     reason: str = ""
 
 
-class ReflectionOutput(BaseModel):
+class ReflectionOutput(StrictStructuredOutput):
     """Structured LLM output for one reflection pass."""
 
     decisions: list[ReflectionDecision] = Field(default_factory=list)

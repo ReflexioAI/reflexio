@@ -3,7 +3,9 @@
 from dataclasses import dataclass
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import ConfigDict, Field
+
+from reflexio.models.structured_output import StrictStructuredOutput
 
 
 @dataclass(frozen=True)
@@ -14,7 +16,7 @@ class AgentSuccessEvaluationConstants:
     AGENT_SUCCESS_EVALUATION_PROMPT_ID = "agent_success_evaluation"
 
 
-class AgentSuccessEvaluationOutput(BaseModel):
+class AgentSuccessEvaluationOutput(StrictStructuredOutput):
     """
     Unified output schema for agent success evaluation.
 

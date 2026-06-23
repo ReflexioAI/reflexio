@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from reflexio.models.api_schema.domain.entities import Interaction, UserPlaybook
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
+from reflexio.models.structured_output import StrictStructuredOutput
 from reflexio.server.prompt.prompt_manager import PromptManager
 from reflexio.server.services.playbook.playbook_service_constants import (
     PlaybookServiceConstants,
@@ -113,7 +114,7 @@ class StructuredPlaybookContent(BaseModel):
         return bool(self.content and self.content.strip())
 
 
-class StructuredPlaybookList(BaseModel):
+class StructuredPlaybookList(StrictStructuredOutput):
     """
     Wrapper schema for extracting zero or more playbook entries in a single LLM call.
 
@@ -134,7 +135,7 @@ class StructuredPlaybookList(BaseModel):
     )
 
 
-class PlaybookAggregationOutput(BaseModel):
+class PlaybookAggregationOutput(StrictStructuredOutput):
     """
     Output schema for the playbook_aggregation prompt.
 

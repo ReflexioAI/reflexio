@@ -11,6 +11,7 @@ from typing import Annotated, Any
 from pydantic import BaseModel, Field, field_validator
 
 from reflexio.models.config_schema import PendingToolCallConfig
+from reflexio.models.structured_output import StrictStructuredOutput
 from reflexio.server.llm.tools import (
     AsyncAccepted,
     AsyncInfoTool,
@@ -31,7 +32,7 @@ from reflexio.server.usage_metrics import record_usage_event
 logger = logging.getLogger(__name__)
 
 
-class AskHumanArgs(BaseModel):
+class AskHumanArgs(StrictStructuredOutput):
     """Ask Agent Builder for missing extraction information and continue now."""
 
     question: Annotated[str, Field(min_length=1)]
@@ -46,7 +47,7 @@ class AskHumanArgs(BaseModel):
         return value
 
 
-class AttachPendingInfoRequestArgs(BaseModel):
+class AttachPendingInfoRequestArgs(StrictStructuredOutput):
     """Attach this run to a relevant pending Prior Knowledge request."""
 
     pending_tool_call_id: Annotated[str, Field(min_length=1)]

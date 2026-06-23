@@ -3,13 +3,14 @@ from __future__ import annotations
 import logging
 import os
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import ConfigDict, Field
 
 from reflexio.models.api_schema.service_schemas import (
     AgentPlaybook,
     UserPlaybook,
     UserProfile,
 )
+from reflexio.models.structured_output import StrictStructuredOutput
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
@@ -27,7 +28,7 @@ TAGGING_PROMPT_ID = "tagging"
 _TAGGING_FETCH_LIMIT = 1000
 
 
-class TagsOutput(BaseModel):
+class TagsOutput(StrictStructuredOutput):
     tags: list[str] = Field(default_factory=list)
 
     model_config = ConfigDict(

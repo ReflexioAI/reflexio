@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from reflexio.models.api_schema.retriever_schema import SearchUserProfileRequest
 from reflexio.models.api_schema.service_schemas import Status, UserProfile
+from reflexio.models.structured_output import StrictStructuredOutput
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.services.deduplication_utils import (
@@ -130,7 +131,7 @@ class ProfileDeletionDirective(BaseModel):
     )
 
 
-class ProfileDeduplicationOutput(BaseModel):
+class ProfileDeduplicationOutput(StrictStructuredOutput):
     """
     Output schema for profile deduplication with NEW/EXISTING format.
 

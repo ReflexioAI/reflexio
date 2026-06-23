@@ -12,6 +12,7 @@ from typing import Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from reflexio.models.api_schema.validators import NonEmptyStr
+from reflexio.models.structured_output import StrictStructuredOutput
 
 HeroStateLiteral = Literal["full", "early", "shadow_off", "empty"]
 BucketLiteral = Literal["day", "week"]
@@ -428,7 +429,7 @@ class GradeOnDemandResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class ShadowComparisonOutput(BaseModel):
+class ShadowComparisonOutput(StrictStructuredOutput):
     """LLM judge verdict for a per-turn Reflexio-vs-Shadow comparison (F1).
 
     Args:

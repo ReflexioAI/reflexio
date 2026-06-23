@@ -13,14 +13,71 @@ schema validation detects "it broke the contract" (precise).
 """
 
 import json
+from typing import Any
 
 import pytest
 from syrupy.extensions.json import JSONSnapshotExtension
 
+from reflexio.models.structured_output import StrictStructuredOutput
 from reflexio.server.llm.llm_utils import strict_response_format_for_model
 from reflexio.test_support.llm_fixtures import load_llm_fixture_content
 from reflexio.test_support.llm_mock import _create_mock_completion, _find_schema_key
 from reflexio.test_support.llm_model_registry import get_model_registry
+
+
+def _registry_model_keys() -> list[str]:
+    """Registry keys whose entries carry a Pydantic model class (skip raw/boolean)."""
+    return [
+        name
+        for name, entry in get_model_registry().items()
+        if entry.model_class is not None
+    ]
+
+
+def _walk(node: Any):
+    """Yield every dict node in a JSON-schema fragment (recursive)."""
+    if isinstance(node, dict):
+        yield node
+        for value in node.values():
+            yield from _walk(value)
+    elif isinstance(node, list):
+        for item in node:
+            yield from _walk(item)
+
+
+def _resolve_ref(ref: str, defs: dict[str, Any]) -> dict[str, Any]:
+    """Resolve a local ``#/$defs/Name`` reference against a ``$defs`` map."""
+    name = ref.rsplit("/", 1)[-1]
+    return defs.get(name, {})
+
+
+def _member_first_key(
+    member: dict[str, Any], defs: dict[str, Any]
+) -> tuple[Any, Any] | None:
+    """Return the ``(first-property-name, first-const-value)`` of an anyOf member.
+
+    Resolves a ``$ref`` member against ``$defs`` so the member's own
+    ``properties`` are inspected, mirroring how OpenAI evaluates anyOf
+    distinguishability. Returns ``None`` for a member that is not an object
+    schema (e.g. a bare ``{"type": "null"}`` / ``{"type": "array"}`` arm of an
+    *optional* field's nullable union) — that arm is not a discriminated-union
+    variant, so it does not participate in the first-key distinguishability rule
+    OpenAI applies to *object* members.
+    """
+    if "$ref" in member:
+        member = _resolve_ref(member["$ref"], defs)
+    properties = member.get("properties", {})
+    if not properties:
+        return None
+    first_name = next(iter(properties))
+    first_schema = properties[first_name]
+    const_value = first_schema.get("const")
+    if const_value is None:
+        enum_values = first_schema.get("enum")
+        if isinstance(enum_values, list) and len(enum_values) == 1:
+            const_value = enum_values[0]
+    return (first_name, const_value)
+
 
 # Mapping from fixture file names to their expected model registry keys.
 FIXTURE_TO_MODEL: list[tuple[str, str]] = [
@@ -148,6 +205,71 @@ class TestSchemaCompliance:
             f"{entry.model_class.__name__} emits 'discriminator'; "
             "strict structured-output providers reject it."
         )
+
+    @pytest.mark.parametrize("entry_name", _registry_model_keys())
+    def test_registry_models_native_schema_is_provider_safe(self, entry_name):
+        """Native ``model_json_schema()`` must be provider-safe by construction.
+
+        With no ``make_strict`` normalization and no provider gate, the raw
+        schema a model emits must already carry no ``oneOf`` and no
+        ``discriminator`` at any depth — the ``StrictStructuredOutput`` hook
+        folds any discriminated union into ``anyOf``. This proves the
+        by-construction safety the boundary guard relies on.
+        """
+        model_class = get_model_registry()[entry_name].model_class
+        assert model_class is not None
+        schema = model_class.model_json_schema()
+        for node in _walk(schema):
+            assert "oneOf" not in node, (
+                f"{model_class.__name__} emits native 'oneOf'; "
+                "StrictStructuredOutput must fold it to 'anyOf'."
+            )
+            assert "discriminator" not in node, (
+                f"{model_class.__name__} emits native 'discriminator'; "
+                "StrictStructuredOutput must drop it."
+            )
+
+    @pytest.mark.parametrize("entry_name", _registry_model_keys())
+    def test_registry_models_anyof_first_keys_distinguishable(self, entry_name):
+        """Every ``anyOf`` member set must have unique first ``(key, const)`` pairs.
+
+        OpenAI rejects ``anyOf`` members that share an identical first property
+        key unless disambiguated by a ``const`` — our folded discriminated-union
+        variants all lead with the discriminator field but carry distinct
+        ``Literal`` consts, so the pairs must be unique. Models with no
+        ``anyOf`` pass trivially.
+        """
+        model_class = get_model_registry()[entry_name].model_class
+        assert model_class is not None
+        schema = model_class.model_json_schema()
+        defs = schema.get("$defs", {})
+        for node in _walk(schema):
+            members = node.get("anyOf")
+            if not isinstance(members, list):
+                continue
+            # Only object members (discriminated-union variants) are subject to
+            # the first-key rule; nullable scalar arms return None and are
+            # ignored.
+            keys = [
+                key
+                for member in members
+                if (key := _member_first_key(member, defs)) is not None
+            ]
+            assert len(keys) == len(set(keys)), (
+                f"{model_class.__name__} has anyOf members sharing a "
+                f"(first-key, const) pair: {keys}; OpenAI rejects this."
+            )
+
+    @pytest.mark.parametrize("entry_name", _registry_model_keys())
+    def test_registry_models_are_strict_structured_output_subclasses(self, entry_name):
+        """Every registry model must inherit ``StrictStructuredOutput``.
+
+        A new structured-output model that forgets the base — and thus the
+        provider-safe schema hook — fails here.
+        """
+        model_class = get_model_registry()[entry_name].model_class
+        assert model_class is not None
+        assert issubclass(model_class, StrictStructuredOutput)
 
     @pytest.mark.parametrize("fixture_name,model_key", FIXTURE_TO_MODEL)
     def test_fixtures_validate_against_models(self, fixture_name, model_key):
