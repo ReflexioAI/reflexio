@@ -1,20 +1,19 @@
-"""Integration tests for aggregation soft-supersede (B3b T1).
+"""Integration tests for aggregation always-soft-supersede (B3b T1, finding B).
 
-Tests the new supersede_agent_playbooks_by_ids and
-supersede_agent_playbooks_by_playbook_name storage methods and the branched
-aggregation removal path behind is_aggregation_soft_delete_enabled.
+Tests the supersede_agent_playbooks_by_ids and
+supersede_agent_playbooks_by_playbook_name storage methods and the aggregation
+removal path — now ALWAYS soft-supersede (flag removed, #finding-B).
 
 Test coverage:
-1. Flag ON, incremental run: old rows SUPERSEDED, content intact, status_change events
+1. Incremental run: old rows SUPERSEDED, content intact, status_change events
 2. Resurfacing: SUPERSEDED rows excluded from standard reads/search
 3. APPROVED never superseded
 4. Full-archive run routes through supersede_agent_playbooks_by_playbook_name
 5. run_mode signal: aggregate event reason is aggregate:incremental / aggregate:full_archive
-6. Flag OFF, full-archive: hard_delete behavior byte-for-byte unchanged
-7. Flag OFF, incremental: delete_agent_playbooks_by_ids path (rows physically gone)
+6. Removal ALWAYS soft-supersedes — never hard-deletes (no hard_delete events on removal path)
+7. Empty _run_id: capture_anomaly fires, NO removal happens (fail-loud guard)
 8. Idempotency: adds (op=aggregate) and removes (op=status_change) coexist under same _run_id
-9. Empty _run_id rejected at call site (production guard in playbook_aggregator.py)
-10. search_agent_playbooks(status_filter=None) excludes SUPERSEDED (Part D fix)
+9. search_agent_playbooks(status_filter=None) excludes SUPERSEDED (Part D fix)
 """
 
 from __future__ import annotations
@@ -332,8 +331,8 @@ def _run_aggregator_with_supersede(
     temp_dir: str,
     worker_id: str,
     full_archive: bool,
-    flag_on: bool,
     suffix: str,
+    flag_on: bool = True,  # kept for call-site compat; ignored — removal is always soft
 ) -> tuple[SQLiteStorage, RequestContext]:
     """Run one aggregation with one new and one old archived playbook."""
     storage = _make_storage(temp_dir, worker_id, suffix=suffix)
@@ -359,7 +358,6 @@ def _run_aggregator_with_supersede(
         playbook_status=PlaybookStatus.PENDING,
     )
 
-    flag_path = "reflexio.server.services.playbook.playbook_aggregator.is_aggregation_soft_delete_enabled"
     with (
         patch.object(
             PlaybookAggregator,
@@ -371,7 +369,6 @@ def _run_aggregator_with_supersede(
             "_generate_playbooks_with_source_clusters",
             return_value=[(new_ap, cluster_playbooks)],
         ),
-        patch(flag_path, return_value=flag_on),
     ):
         aggregator = PlaybookAggregator(
             llm_client=MagicMock(),
@@ -388,146 +385,15 @@ def _run_aggregator_with_supersede(
     return storage, ctx
 
 
-def _run_two_aggregations_incremental_flag_off(
-    temp_dir: str,
-    worker_id: str,
-    suffix: str,
-) -> tuple[SQLiteStorage, list[int]]:
-    """Run two aggregations to exercise the incremental flag-OFF hard-delete path.
+class TestAggregationAlwaysSoft:
+    """Removal is ALWAYS soft-supersede — no flag, no hard-delete on the removal path."""
 
-    First run: 2 clusters → saves 2 agent playbooks, stores fingerprints.
-    Second run: only cluster 0 remains (cluster 1 disappeared) →
-        archived_playbook_ids is non-empty → flag OFF → delete_agent_playbooks_by_ids.
-
-    Returns:
-        Tuple of (storage, removed_ap_ids) where removed_ap_ids are the IDs that
-        should be physically deleted by the second run.
-    """
-    storage = _make_storage(temp_dir, worker_id, suffix=suffix)
-    ctx = _make_request_context(storage, temp_dir, worker_id, suffix=suffix)
-
-    # Seed user playbooks for two separate clusters
-    up_a = _seed_user_playbook(
-        storage, uid=10, playbook_name="default", agent_version="v0"
-    )
-    up_b = _seed_user_playbook(
-        storage, uid=11, playbook_name="default", agent_version="v0"
-    )
-    up_c = _seed_user_playbook(
-        storage, uid=12, playbook_name="default", agent_version="v0"
-    )
-    up_d = _seed_user_playbook(
-        storage, uid=13, playbook_name="default", agent_version="v0"
-    )
-
-    cluster_0 = [up_a, up_b]
-    cluster_1 = [up_c, up_d]
-
-    new_ap_0 = AgentPlaybook(
-        agent_playbook_id=0,
-        playbook_name="default",
-        agent_version="v0",
-        content="Cluster 0 playbook.",
-        playbook_status=PlaybookStatus.PENDING,
-    )
-    new_ap_1 = AgentPlaybook(
-        agent_playbook_id=0,
-        playbook_name="default",
-        agent_version="v0",
-        content="Cluster 1 playbook.",
-        playbook_status=PlaybookStatus.PENDING,
-    )
-
-    flag_path = "reflexio.server.services.playbook.playbook_aggregator.is_aggregation_soft_delete_enabled"
-
-    # First run: both clusters present — seeds fingerprints for cluster 0 and cluster 1.
-    with (
-        patch.object(
-            PlaybookAggregator,
-            "get_clusters",
-            return_value={0: cluster_0, 1: cluster_1},
-        ),
-        patch.object(
-            PlaybookAggregator,
-            "_generate_playbooks_with_source_clusters",
-            return_value=[(new_ap_0, cluster_0), (new_ap_1, cluster_1)],
-        ),
-        patch(flag_path, return_value=False),
-    ):
-        agg = PlaybookAggregator(
-            llm_client=MagicMock(),
-            request_context=ctx,
-            agent_version="v0",
-        )
-        agg.run(PlaybookAggregatorRequest(agent_version="v0", rerun=False))
-
-    # After first run, find the agent playbook created for cluster 1 (it will be removed).
-    all_aps = storage.get_agent_playbooks(agent_version="v0")
-    # Both APs exist (cluster 0 and cluster 1)
-    assert len(all_aps) >= 2, (
-        f"Expected >= 2 agent playbooks after first run, got {len(all_aps)}"
-    )
-
-    # We need the ap_id for cluster 1's playbook — it will be archived then deleted.
-    # Use lineage events to find the aggregate event for cluster 1's user_playbook_ids.
-    events_all = storage.get_lineage_events(entity_type="agent_playbook")
-    cluster1_up_ids = {str(up_c.user_playbook_id), str(up_d.user_playbook_id)}
-    cluster1_ap_id: int | None = None
-    for evt in events_all:
-        if (
-            evt.op == "aggregate"
-            and evt.source_ids
-            and cluster1_up_ids.issubset(set(evt.source_ids))
-        ):
-            cluster1_ap_id = int(evt.entity_id)
-            break
-
-    assert cluster1_ap_id is not None, (
-        "Could not find cluster 1 agent_playbook_id from lineage events"
-    )
-
-    # Second run: only cluster 0 remains — cluster 1 fingerprint disappears →
-    # archived_playbook_ids = [cluster1_ap_id] → incremental path → flag OFF → hard delete.
-    # Patch _should_run_aggregation to True so the gate doesn't skip (no new UPs since run 1).
-    new_ap_0_v2 = AgentPlaybook(
-        agent_playbook_id=0,
-        playbook_name="default",
-        agent_version="v0",
-        content="Cluster 0 updated playbook.",
-        playbook_status=PlaybookStatus.PENDING,
-    )
-    with (
-        patch.object(
-            PlaybookAggregator,
-            "get_clusters",
-            return_value={0: cluster_0},
-        ),
-        patch.object(
-            PlaybookAggregator,
-            "_generate_playbooks_with_source_clusters",
-            return_value=[(new_ap_0_v2, cluster_0)],
-        ),
-        patch.object(PlaybookAggregator, "_should_run_aggregation", return_value=True),
-        patch(flag_path, return_value=False),
-    ):
-        agg2 = PlaybookAggregator(
-            llm_client=MagicMock(),
-            request_context=ctx,
-            agent_version="v0",
-        )
-        agg2.run(PlaybookAggregatorRequest(agent_version="v0", rerun=False))
-
-    return storage, [cluster1_ap_id]
-
-
-class TestAggregationSoftDeleteFlagOn:
     def test_incremental_supersedes_old_rows(self, temp_dir, worker_id) -> None:
-        """Flag ON + incremental: old archived rows become SUPERSEDED, content intact."""
+        """Incremental: old archived rows become SUPERSEDED, content intact."""
         storage, _ctx = _run_aggregator_with_supersede(
-            temp_dir, worker_id, full_archive=False, flag_on=True, suffix="-incr-on"
+            temp_dir, worker_id, full_archive=False, suffix="-incr-on"
         )
         # Old ap was archived, should now be superseded.
-        # We use the lineage query to verify SUPERSEDED events exist.
         events = storage.get_lineage_events(entity_type="agent_playbook")
         sc_supersede = [
             e for e in events if e.op == "status_change" and e.to_status == "superseded"
@@ -536,12 +402,23 @@ class TestAggregationSoftDeleteFlagOn:
             "Expected at least 1 status_change->superseded event"
         )
 
+    def test_incremental_no_hard_delete_events(self, temp_dir, worker_id) -> None:
+        """Incremental: removal path emits NO hard_delete events (always soft)."""
+        storage, _ctx = _run_aggregator_with_supersede(
+            temp_dir, worker_id, full_archive=False, suffix="-incr-no-hd"
+        )
+        events = storage.get_lineage_events(entity_type="agent_playbook")
+        hd_events = [e for e in events if e.op == "hard_delete"]
+        assert not hd_events, (
+            "Removal path must never emit hard_delete events (always soft-supersede)"
+        )
+
     def test_incremental_status_change_events_carry_run_id(
         self, temp_dir, worker_id
     ) -> None:
         """All status_change events for removed rows share the same request_id as aggregate events."""
         storage, _ctx = _run_aggregator_with_supersede(
-            temp_dir, worker_id, full_archive=False, flag_on=True, suffix="-incr-rid"
+            temp_dir, worker_id, full_archive=False, suffix="-incr-rid"
         )
         events = storage.get_lineage_events(entity_type="agent_playbook")
         agg_events = [e for e in events if e.op == "aggregate"]
@@ -552,7 +429,6 @@ class TestAggregationSoftDeleteFlagOn:
         assert sc_events, "Expected status_change->superseded events"
         run_ids_agg = {e.request_id for e in agg_events}
         run_ids_sc = {e.request_id for e in sc_events}
-        # Both sets should share the same run_id
         shared = run_ids_agg & run_ids_sc
         assert shared, (
             f"aggregate and status_change events must share _run_id; "
@@ -562,23 +438,22 @@ class TestAggregationSoftDeleteFlagOn:
     def test_idempotency_key_non_collision(self, temp_dir, worker_id) -> None:
         """aggregate (op=aggregate) and removes (op=status_change) coexist under same _run_id."""
         storage, _ctx = _run_aggregator_with_supersede(
-            temp_dir, worker_id, full_archive=False, flag_on=True, suffix="-idem"
+            temp_dir, worker_id, full_archive=False, suffix="-idem"
         )
         events = storage.get_lineage_events(entity_type="agent_playbook")
         agg_events = [e for e in events if e.op == "aggregate"]
         sc_events = [
             e for e in events if e.op == "status_change" and e.to_status == "superseded"
         ]
-        # Both must be present after the run
         assert agg_events, "aggregate events must be present"
         assert sc_events, "status_change->superseded events must be present"
 
     def test_superseded_rows_excluded_from_get_agent_playbooks(
         self, temp_dir, worker_id
     ) -> None:
-        """After flag-ON run, superseded rows are NOT in standard get_agent_playbooks()."""
+        """After run, superseded rows are NOT in standard get_agent_playbooks()."""
         storage, _ctx = _run_aggregator_with_supersede(
-            temp_dir, worker_id, full_archive=False, flag_on=True, suffix="-excl"
+            temp_dir, worker_id, full_archive=False, suffix="-excl"
         )
         events = storage.get_lineage_events(entity_type="agent_playbook")
         sc_events = [
@@ -596,14 +471,9 @@ class TestAggregationSoftDeleteFlagOn:
             )
 
     def test_run_mode_reason_incremental(self, temp_dir, worker_id) -> None:
-        """aggregate event reason == 'aggregate:incremental' for truly incremental runs.
-
-        The first run always triggers full_archive (no previous fingerprints).
-        A second run with rerun=False and no changed clusters yields 'incremental'.
-        We verify the reason is one of the two valid structured tokens.
-        """
+        """aggregate event reason is one of the two valid structured tokens."""
         storage, _ctx = _run_aggregator_with_supersede(
-            temp_dir, worker_id, full_archive=False, flag_on=True, suffix="-rm-incr"
+            temp_dir, worker_id, full_archive=False, suffix="-rm-incr"
         )
         events = storage.get_lineage_events(entity_type="agent_playbook")
         agg_events = [e for e in events if e.op == "aggregate"]
@@ -617,20 +487,31 @@ class TestAggregationSoftDeleteFlagOn:
     def test_full_archive_run_routes_supersede_by_name(
         self, temp_dir, worker_id
     ) -> None:
-        """Flag ON + full_archive: supersede_by_name path, old rows SUPERSEDED."""
+        """Full_archive: supersede_by_name path, old rows SUPERSEDED."""
         storage, _ctx = _run_aggregator_with_supersede(
-            temp_dir, worker_id, full_archive=True, flag_on=True, suffix="-full-on"
+            temp_dir, worker_id, full_archive=True, suffix="-full-on"
         )
         events = storage.get_lineage_events(entity_type="agent_playbook")
         sc_events = [
             e for e in events if e.op == "status_change" and e.to_status == "superseded"
         ]
-        assert sc_events, "Full-archive + flag ON must supersede old rows"
+        assert sc_events, "Full-archive must supersede old rows"
+
+    def test_full_archive_no_hard_delete_events(self, temp_dir, worker_id) -> None:
+        """Full-archive: removal path emits NO hard_delete events (always soft)."""
+        storage, _ctx = _run_aggregator_with_supersede(
+            temp_dir, worker_id, full_archive=True, suffix="-full-no-hd"
+        )
+        events = storage.get_lineage_events(entity_type="agent_playbook")
+        hd_events = [e for e in events if e.op == "hard_delete"]
+        assert not hd_events, (
+            "Full-archive removal path must never emit hard_delete events"
+        )
 
     def test_run_mode_reason_full_archive(self, temp_dir, worker_id) -> None:
         """aggregate event reason == 'aggregate:full_archive' for full-archive run."""
         storage, _ctx = _run_aggregator_with_supersede(
-            temp_dir, worker_id, full_archive=True, flag_on=True, suffix="-rm-full"
+            temp_dir, worker_id, full_archive=True, suffix="-rm-full"
         )
         events = storage.get_lineage_events(entity_type="agent_playbook")
         agg_events = [e for e in events if e.op == "aggregate"]
@@ -641,9 +522,9 @@ class TestAggregationSoftDeleteFlagOn:
             )
 
     def test_run_mode_reason_is_structured_token(self, temp_dir, worker_id) -> None:
-        """aggregate event reason must be a structured 'aggregate:<mode>' token, not free text."""
+        """aggregate event reason must be a structured 'aggregate:<mode>' token."""
         storage, _ctx = _run_aggregator_with_supersede(
-            temp_dir, worker_id, full_archive=True, flag_on=True, suffix="-rm-struct"
+            temp_dir, worker_id, full_archive=True, suffix="-rm-struct"
         )
         events = storage.get_lineage_events(entity_type="agent_playbook")
         agg_events = [e for e in events if e.op == "aggregate"]
@@ -657,94 +538,33 @@ class TestAggregationSoftDeleteFlagOn:
             )
 
 
-class TestAggregationSoftDeleteFlagOff:
-    def test_flag_off_full_archive_hard_delete(self, temp_dir, worker_id) -> None:
-        """Flag OFF + full_archive: removal uses delete_archived_*_by_playbook_name (rows physically gone)."""
-        storage, _ctx = _run_aggregator_with_supersede(
-            temp_dir,
-            worker_id,
-            full_archive=True,
-            flag_on=False,
-            suffix="-flag-off-full",
-        )
-        events = storage.get_lineage_events(entity_type="agent_playbook")
-        hd_events = [e for e in events if e.op == "hard_delete"]
-        assert hd_events, "Flag OFF + full_archive must emit hard_delete events"
-        # No superseded rows
-        sc_supersede = [
-            e for e in events if e.op == "status_change" and e.to_status == "superseded"
-        ]
-        assert not sc_supersede, (
-            "Flag OFF must not emit status_change->superseded events"
-        )
+# ---------------------------------------------------------------------------
+# Part B: Empty _run_id — fail-loud guard (capture_anomaly, no removal)
+# ---------------------------------------------------------------------------
 
-    def test_flag_off_full_archive_rows_physically_gone(
+
+class TestEmptyRunIdFailLoud:
+    """When _run_id is empty, the aggregator must fire capture_anomaly(level='error')
+    and skip ALL removal (no supersede, no hard-delete) — never silently corrupt lineage."""
+
+    def test_empty_run_id_fires_capture_anomaly_and_skips_removal(
         self, temp_dir, worker_id
     ) -> None:
-        """Flag OFF + full_archive: physically deleted rows are gone even with include_tombstones=True."""
-        storage, _ctx = _run_aggregator_with_supersede(
-            temp_dir, worker_id, full_archive=True, flag_on=False, suffix="-phys-gone"
-        )
-        events = storage.get_lineage_events(entity_type="agent_playbook")
-        hd_events = [e for e in events if e.op == "hard_delete"]
-        for evt in hd_events:
-            ap_id = int(evt.entity_id)
-            row = storage.get_agent_playbook_by_id(ap_id, include_tombstones=True)
-            assert row is None, f"Hard-deleted ap {ap_id} must be physically gone"
+        """Empty _run_id: capture_anomaly fires with level='error', no supersede called.
 
-    def test_flag_off_incremental_deletes_by_ids(self, temp_dir, worker_id) -> None:
-        """Flag OFF + incremental: delete_agent_playbooks_by_ids path — rows physically gone, hard_delete events emitted.
-
-        This exercises the ``elif archived_playbook_ids: ... delete_agent_playbooks_by_ids``
-        branch in playbook_aggregator.py (flag OFF, not full_archive).
-        Setup: two-run sequence where cluster 1 disappears on the second run, causing
-        its agent playbook ID to land in archived_playbook_ids.
-        """
-        storage, removed_ids = _run_two_aggregations_incremental_flag_off(
-            temp_dir, worker_id, suffix="-incr-flag-off"
-        )
-        assert removed_ids, "Expected at least one removed ap_id"
-        events = storage.get_lineage_events(entity_type="agent_playbook")
-        hd_events = [e for e in events if e.op == "hard_delete"]
-
-        for ap_id in removed_ids:
-            # Row must be physically gone (even with include_tombstones=True)
-            row = storage.get_agent_playbook_by_id(ap_id, include_tombstones=True)
-            assert row is None, (
-                f"Incremental flag-OFF: ap {ap_id} must be physically deleted"
-            )
-            # hard_delete event must exist for this entity
-            entity_hd = [e for e in hd_events if e.entity_id == str(ap_id)]
-            assert entity_hd, (
-                f"Incremental flag-OFF: expected hard_delete event for ap {ap_id}"
-            )
-
-        # No superseded rows from the removal path
-        sc_supersede = [
-            e for e in events if e.op == "status_change" and e.to_status == "superseded"
-        ]
-        assert not sc_supersede, (
-            "Flag OFF incremental must not emit status_change->superseded events"
-        )
-
-
-# ---------------------------------------------------------------------------
-# Part B: Empty _run_id rejected (production guard in playbook_aggregator.py)
-# ---------------------------------------------------------------------------
-
-
-class TestEmptyRunIdRejected:
-    def test_empty_run_id_raises_via_aggregator(self, temp_dir, worker_id) -> None:
-        """StorageError propagates when _run_id is empty (validated at storage layer).
-
-        The aggregator no longer has its own guard for empty _run_id; instead,
-        supersede methods raise StorageError("request_id must be non-empty").
-        The test patches uuid.uuid4 in the aggregator module so _run_id becomes "",
-        sets flag ON (soft=True), uses rerun=True (full_archive=True guaranteed), and
-        confirms StorageError propagates from the supersede call through the aggregator.
+        Patch uuid.uuid4 in the aggregator module so _run_id becomes "". The run must
+        complete without raising (crash-safe), fire capture_anomaly with level='error',
+        and call neither supersede_agent_playbooks_by_playbook_name nor
+        supersede_agent_playbooks_by_ids.
         """
         storage = _make_storage(temp_dir, worker_id, suffix="-empty-rid")
         ctx = _make_request_context(storage, temp_dir, worker_id, suffix="-empty-rid")
+
+        # Seed an old archived agent playbook (the one that SHOULD be removed but won't be)
+        old_ap = _seed_agent_playbook(
+            storage, content="should not be removed", playbook_name="default"
+        )
+        storage.archive_agent_playbooks_by_ids([old_ap.agent_playbook_id])
 
         up_a = _seed_user_playbook(storage, uid=1)
         up_b = _seed_user_playbook(storage, uid=2)
@@ -757,12 +577,8 @@ class TestEmptyRunIdRejected:
             playbook_status=PlaybookStatus.PENDING,
         )
 
-        flag_path = "reflexio.server.services.playbook.playbook_aggregator.is_aggregation_soft_delete_enabled"
-
-        # We need _run_id = str(uuid.uuid4()) to evaluate to "".
-        # Patch uuid.uuid4 in the aggregator's module namespace only. To avoid breaking
-        # other uuid.uuid4().hex calls in the storage layer (different module import),
-        # return a mock object whose __str__ returns "" but whose .hex is a valid string.
+        # Patch uuid.uuid4 so _run_id = str(mock) = "".
+        # Use a mock whose __str__ returns "" but whose .hex is valid (storage layer uses .hex).
         class _EmptyStrUUID:
             hex = "000000000000000000000000"
 
@@ -770,6 +586,9 @@ class TestEmptyRunIdRejected:
                 return ""
 
         uuid_path = "reflexio.server.services.playbook.playbook_aggregator.uuid.uuid4"
+        capture_path = (
+            "reflexio.server.services.playbook.playbook_aggregator.capture_anomaly"
+        )
 
         with (
             patch.object(
@@ -782,22 +601,47 @@ class TestEmptyRunIdRejected:
                 "_generate_playbooks_with_source_clusters",
                 return_value=[(new_ap, cluster_playbooks)],
             ),
-            patch(flag_path, return_value=True),
-            # Patch uuid.uuid4 in the aggregator module so _run_id = str(mock) = "".
             patch(uuid_path, return_value=_EmptyStrUUID()),
-            pytest.raises(StorageError, match="request_id must be non-empty"),
+            patch(capture_path) as mock_capture,
         ):
             aggregator = PlaybookAggregator(
                 llm_client=MagicMock(),
                 request_context=ctx,
                 agent_version="v0",
             )
-            aggregator.run(
-                PlaybookAggregatorRequest(
-                    agent_version="v0",
-                    rerun=True,  # guarantees full_archive=True → StorageError fires from supersede
-                )
-            )
+            # rerun=True → full_archive path; if guard fires, removal is skipped entirely
+            aggregator.run(PlaybookAggregatorRequest(agent_version="v0", rerun=True))
+
+        # capture_anomaly must have been called with level="error"
+        assert mock_capture.called, (
+            "capture_anomaly must be called when _run_id is empty"
+        )
+        call_kwargs = mock_capture.call_args
+        assert call_kwargs.kwargs.get("level") == "error", (
+            f"capture_anomaly must be called with level='error', "
+            f"got kwargs={call_kwargs.kwargs}"
+        )
+
+        # No supersede events must exist for the old archived playbook
+        events = storage.get_lineage_events(entity_type="agent_playbook")
+        supersede_events = [
+            e
+            for e in events
+            if e.op == "status_change"
+            and e.to_status == "superseded"
+            and e.entity_id == str(old_ap.agent_playbook_id)
+        ]
+        assert not supersede_events, (
+            "Empty _run_id guard must skip removal — no supersede events for old playbook"
+        )
+
+        # The old archived playbook row must still be present (not removed)
+        row = storage.get_agent_playbook_by_id(
+            old_ap.agent_playbook_id, include_tombstones=True
+        )
+        assert row is not None, (
+            "Empty _run_id guard must skip removal — old playbook row must still exist"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -859,14 +703,14 @@ class TestAggregatorFromStatusSignal:
         with the correct structured fields.
         """
         storage, _ctx = _run_aggregator_with_supersede(
-            temp_dir, worker_id, full_archive=True, flag_on=True, suffix="-from-status"
+            temp_dir, worker_id, full_archive=True, suffix="-from-status"
         )
         events = storage.get_lineage_events(entity_type="agent_playbook")
         sc_supersede = [
             e for e in events if e.op == "status_change" and e.to_status == "superseded"
         ]
         assert sc_supersede, (
-            "Full-archive + flag ON must produce status_change->superseded events"
+            "Full-archive must produce status_change->superseded events"
         )
         for evt in sc_supersede:
             assert evt.from_status == "archived", (

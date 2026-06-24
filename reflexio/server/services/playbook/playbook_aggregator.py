@@ -35,8 +35,7 @@ from reflexio.server.services.playbook.playbook_service_utils import (
     ensure_playbook_content,
 )
 from reflexio.server.services.service_utils import log_model_response
-from reflexio.server.site_var.feature_flags import is_aggregation_soft_delete_enabled
-from reflexio.server.tracing import capture_anomaly
+from reflexio.server.tracing import capture_anomaly, sentry_tags
 from reflexio.server.usage_metrics import record_usage_event
 
 logger = logging.getLogger(__name__)
@@ -822,28 +821,41 @@ class PlaybookAggregator:
             # Update operation state with the highest user_playbook_id processed
             self._update_operation_state(playbook_name, user_playbooks)
 
-            # Remove archived playbooks after successful aggregation.
-            # Flag ON → durable soft-supersede; Flag OFF → hard-delete (unchanged behavior).
-            soft = is_aggregation_soft_delete_enabled(self.request_context.org_id)
-            if full_archive:
-                for name in full_archive_playbook_names:
-                    if soft:
-                        # _run_id is always non-empty (uuid4); supersede methods validate request_id themselves.
-                        self.storage.supersede_agent_playbooks_by_playbook_name(  # type: ignore[reportOptionalMemberAccess]
-                            name, agent_version=self.agent_version, request_id=_run_id
+            # Remove archived playbooks after successful aggregation. ALWAYS soft-supersede
+            # (never hard-delete) so the removal is reconstructable from lineage — mirrors the
+            # profile dedup always-soft path (#206).
+            if not _run_id:
+                # Empty request_id makes the removal unreconstructable (lineage events are keyed
+                # on it). Fail loud and skip removal — never silently hard-delete.
+                capture_anomaly(
+                    "lineage.aggregation.missing_request_id",
+                    level="error",
+                    org_id=self.request_context.org_id,
+                )
+            else:
+                try:
+                    if full_archive:
+                        for name in full_archive_playbook_names:
+                            self.storage.supersede_agent_playbooks_by_playbook_name(  # type: ignore[reportOptionalMemberAccess]
+                                name,
+                                agent_version=self.agent_version,
+                                request_id=_run_id,
+                            )
+                    elif archived_playbook_ids:
+                        self.storage.supersede_agent_playbooks_by_ids(  # type: ignore[reportOptionalMemberAccess]
+                            archived_playbook_ids, request_id=_run_id
                         )
-                    else:
-                        self.storage.delete_archived_agent_playbooks_by_playbook_name(  # type: ignore[reportOptionalMemberAccess]
-                            name, agent_version=self.agent_version
+                except Exception:
+                    with sentry_tags(
+                        subsystem="playbook_aggregation",
+                        op="supersede_agent_playbooks",
+                        org_id=self.request_context.org_id,
+                        request_id=_run_id,
+                    ):
+                        logger.exception(
+                            "Failed to soft-supersede archived agent playbooks (run %s)",
+                            _run_id,
                         )
-            elif archived_playbook_ids:
-                if soft:
-                    # _run_id is always non-empty (uuid4); supersede methods validate request_id themselves.
-                    self.storage.supersede_agent_playbooks_by_ids(  # type: ignore[reportOptionalMemberAccess]
-                        archived_playbook_ids, request_id=_run_id
-                    )
-                else:
-                    self.storage.delete_agent_playbooks_by_ids(archived_playbook_ids)  # type: ignore[reportOptionalMemberAccess]
 
             self._enqueue_playbook_optimization(saved_playbook_list)
 

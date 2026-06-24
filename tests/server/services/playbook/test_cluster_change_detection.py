@@ -708,10 +708,8 @@ class TestAggregatorRunWithChangeDetection:
         )
         assert restore_by_ids_called or restore_by_name_called
 
-    def test_first_run_deletes_archived_on_success(self):
-        """Regression: first-run (non-rerun) path must delete archived playbooks after success (flag OFF)."""
-        from unittest.mock import patch
-
+    def test_first_run_supersedes_archived_on_success(self):
+        """Regression: first-run (non-rerun) path must supersede archived playbooks after success (always soft)."""
         group_a = create_similar_embeddings(3, base_seed=42)
         group_b = create_similar_embeddings(3, base_seed=100)
         user_playbooks = create_user_playbooks_with_embeddings(group_a + group_b)
@@ -733,11 +731,10 @@ class TestAggregatorRunWithChangeDetection:
             rerun=False,
         )
 
-        flag_path = "reflexio.server.services.playbook.playbook_aggregator.is_aggregation_soft_delete_enabled"
-        with patch(flag_path, return_value=False):
-            aggregator.run(request)
+        aggregator.run(request)
 
-        mock_storage.delete_archived_agent_playbooks_by_playbook_name.assert_called()
+        mock_storage.supersede_agent_playbooks_by_playbook_name.assert_called()
+        mock_storage.delete_archived_agent_playbooks_by_playbook_name.assert_not_called()
 
     def test_first_run_restores_archived_on_error(self):
         """Regression: first-run (non-rerun) must restore archived playbooks on save error."""

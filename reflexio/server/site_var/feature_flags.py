@@ -200,33 +200,6 @@ def _is_default_open_flag_enabled(org_id: str, feature_key: str) -> bool:
     return org_id in org_ids
 
 
-def is_aggregation_soft_delete_enabled(org_id: str) -> bool:
-    """
-    Check if aggregation soft-delete is enabled for a given organization.
-
-    Defaults to ENABLED when the key is absent from config (default-open).
-    GC is also enabled by default (LineageGCConfig.enabled=True), so SUPERSEDED
-    tombstones created by this path are reclaimed automatically after the 90-day
-    grace window.
-
-    Explicit disable: set ``aggregation_soft_delete: {enabled: false, enabled_org_ids: []}``
-    in the feature_flags site var to disable globally, or omit an org from
-    ``enabled_org_ids`` while setting ``enabled: false`` to disable per-org.
-
-    A feature is enabled if:
-    - The feature key is absent from config (default ON), OR
-    - The feature's "enabled" field is True (globally enabled), OR
-    - The org_id is in the feature's "enabled_org_ids" list.
-
-    Args:
-        org_id (str): The organization ID to check
-
-    Returns:
-        bool: True unless the feature is explicitly disabled for this org
-    """
-    return _is_default_open_flag_enabled(org_id, "aggregation_soft_delete")
-
-
 def is_resumable_extraction_agent_enabled(org_id: str) -> bool:
     """
     Convenience check for whether classic extraction should use the resumable agent.
