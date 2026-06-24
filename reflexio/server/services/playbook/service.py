@@ -38,6 +38,9 @@ from reflexio.server.services.playbook.playbook_service_utils import (
     format_expert_comparison_pairs,
     has_expert_content,
 )
+from reflexio.server.services.playbook.user_detail_stripping import (
+    create_configured_user_detail_stripper,
+)
 from reflexio.server.services.service_utils import (
     extract_interactions_from_request_interaction_data_models,
     format_sessions_to_history_string,
@@ -537,10 +540,19 @@ class PlaybookGenerationService(
         )
 
         # Initialize and run aggregator (synchronous)
+        user_detail_stripper = create_configured_user_detail_stripper(
+            self.request_context.configurator
+        )
+        aggregator_kwargs = (
+            {"user_detail_stripper": user_detail_stripper}
+            if user_detail_stripper is not None
+            else {}
+        )
         aggregator = PlaybookAggregator(
             llm_client=self.client,
             request_context=self.request_context,
             agent_version=self.service_config.agent_version,  # type: ignore[reportOptionalMemberAccess]
+            **aggregator_kwargs,
         )
         try:
             run_with_operation_limit(

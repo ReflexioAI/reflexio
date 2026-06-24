@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 from reflexio.models.config_schema import Config, StorageConfig, StorageConfigTest
 from reflexio.server.services.configurator.config_storage import ConfigStorage
+from reflexio.server.services.playbook.user_detail_stripping import UserDetailStripper
 from reflexio.server.services.storage.error import StorageError
 from reflexio.server.services.storage.storage_base import BaseStorage
 
@@ -85,6 +86,10 @@ class BaseConfigurator(ABC):
     def get_prompt_bank_paths(self) -> list[Path]:
         """Return additional prompt banks this configurator contributes."""
         return []
+
+    def create_user_detail_stripper(self) -> UserDetailStripper | None:
+        """Return the aggregation-boundary user detail stripper, if enabled."""
+        return None
 
     def get_agent_context(self) -> str:
         context = self.get_config().agent_context_prompt

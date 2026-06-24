@@ -3,7 +3,11 @@
 import pytest
 from pydantic import ValidationError
 
-from reflexio.models.config_schema import Config, StorageConfigSQLite
+from reflexio.models.config_schema import (
+    Config,
+    StorageConfigSQLite,
+    UserDetailStrippingConfig,
+)
 
 
 def _minimal(**overrides) -> Config:
@@ -25,3 +29,25 @@ def test_shadow_comparison_judge_prompt_version_accepts_arbitrary_semver():
     assert c.shadow_comparison_judge_prompt_version == "v2.1.3"
     re = Config(**c.model_dump())
     assert re.shadow_comparison_judge_prompt_version == "v2.1.3"
+
+
+def test_user_detail_stripping_config_defaults_to_none():
+    c = _minimal()
+
+    assert c.user_detail_stripping_config is None
+
+
+def test_user_detail_stripping_config_accepts_enabled_and_forcelist():
+    c = _minimal(
+        user_detail_stripping_config={
+            "enabled": False,
+            "forcelist": ["Sarah Chen"],
+        }
+    )
+
+    assert c.user_detail_stripping_config == UserDetailStrippingConfig(
+        enabled=False,
+        forcelist=["Sarah Chen"],
+    )
+    re = Config(**c.model_dump())
+    assert re.user_detail_stripping_config == c.user_detail_stripping_config

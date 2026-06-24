@@ -28,7 +28,9 @@ from reflexio.models.config_schema import (
 )
 from reflexio.server.services.playbook.components.aggregator import PlaybookAggregator
 from reflexio.server.services.playbook.playbook_service_utils import (
+    PlaybookAggregationOutput,
     PlaybookAggregatorRequest,
+    StructuredPlaybookContent,
 )
 
 # ---------------------------------------------------------------------------
@@ -39,6 +41,7 @@ from reflexio.server.services.playbook.playbook_service_utils import (
 def _make_aggregator(
     storage: MagicMock | None = None,
     configurator: MagicMock | None = None,
+    user_detail_stripper: Any | None = None,
 ) -> Any:
     """Build an aggregator with fully mocked dependencies."""
     llm = MagicMock()
@@ -50,6 +53,7 @@ def _make_aggregator(
         llm_client=llm,
         request_context=ctx,
         agent_version="v1",
+        user_detail_stripper=user_detail_stripper,
     )
 
 
@@ -80,6 +84,154 @@ def _agent_playbook(
         content=content,
         playbook_status=PlaybookStatus.PENDING,
     )
+
+
+# ---------------------------------------------------------------------------
+# User detail stripping seam
+# ---------------------------------------------------------------------------
+
+
+class _MappingAwareStripper:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, int]] = []
+
+    def strip_user_details(
+        self, text: str, shared_mapping: dict[str, int] | None = None
+    ) -> Any:
+        from reflexio.server.services.playbook.user_detail_stripping import (
+            StrippingResult,
+        )
+
+        assert shared_mapping is not None
+        if "Sarah" in text:
+            shared_mapping.setdefault("sarah", len(shared_mapping) + 1)
+            text = text.replace("Sarah", f"[PERSON_{shared_mapping['sarah']}]")
+        if "Mike" in text:
+            shared_mapping.setdefault("mike", len(shared_mapping) + 1)
+            text = text.replace("Mike", f"[PERSON_{shared_mapping['mike']}]")
+        self.calls.append((text, id(shared_mapping)))
+        return StrippingResult(text=text, detections=[])
+
+
+def test_user_detail_stripping_protocol_types_importable():
+    from reflexio.server.services.playbook.user_detail_stripping import (
+        DetectedEntity,
+        PassthroughStripper,
+        StrippingResult,
+    )
+
+    result = PassthroughStripper().strip_user_details("keep this")
+
+    assert result == StrippingResult(text="keep this", detections=[])
+    assert DetectedEntity(
+        start=0,
+        end=4,
+        entity_type="PERSON",
+        replacement="[PERSON_1]",
+        confidence=1.0,
+        source="test",
+    )
+
+
+def test_user_detail_stripper_sanitizes_cluster_and_existing_playbooks_for_prompt():
+    stripper = _MappingAwareStripper()
+    agg = _make_aggregator(user_detail_stripper=stripper)
+    captured_messages: list[dict[str, str]] = []
+
+    agg.request_context.prompt_manager.render_prompt.side_effect = (
+        lambda _prompt_id, variables: (
+            f"{variables['user_playbooks']}\n\nEXISTING:\n"
+            f"{variables['existing_approved_playbooks']}"
+        )
+    )
+    agg.client.generate_chat_response.side_effect = lambda messages, **_kwargs: (
+        captured_messages.extend(messages)
+        or PlaybookAggregationOutput(
+            playbook=StructuredPlaybookContent(
+                content="Keep the shared operational rule.",
+                trigger="When the shared workflow appears.",
+                rationale="The rule is common across users.",
+            )
+        )
+    )
+    clusters = {
+        0: [
+            UserPlaybook(
+                user_playbook_id=1,
+                agent_version="v1",
+                request_id="req-1",
+                playbook_name="test_fb",
+                content="Sarah prefers the safety checklist.",
+                trigger="When Sarah opens a ticket.",
+                rationale="Sarah missed one step.",
+            ),
+            UserPlaybook(
+                user_playbook_id=2,
+                agent_version="v1",
+                request_id="req-2",
+                playbook_name="test_fb",
+                content="Mike asks for the same checklist.",
+                trigger="When Mike opens a ticket.",
+                rationale="Mike missed the same step.",
+            ),
+        ]
+    }
+    existing = [
+        AgentPlaybook(
+            agent_playbook_id=7,
+            playbook_name="test_fb",
+            agent_version="v1",
+            content="Sarah already has a checklist playbook.",
+            playbook_status=PlaybookStatus.PENDING,
+        )
+    ]
+
+    with patch.dict("os.environ", {"MOCK_LLM_RESPONSE": ""}):
+        result = agg._generate_playbooks_with_source_clusters(clusters, existing)
+
+    assert len(result) == 1
+    rendered_prompt = captured_messages[0]["content"]
+    assert "Sarah" not in rendered_prompt
+    assert "Mike" not in rendered_prompt
+    assert "[PERSON_1]" in rendered_prompt
+    assert "[PERSON_2]" in rendered_prompt
+    assert len({mapping_id for _text, mapping_id in stripper.calls}) == 1
+    assert clusters[0][0].content == "Sarah prefers the safety checklist."
+    assert existing[0].content == "Sarah already has a checklist playbook."
+
+
+def test_placeholder_leakage_is_replaced_before_response_logging_and_storage():
+    agg = _make_aggregator()
+    agg.request_context.prompt_manager.render_prompt.return_value = "prompt"
+    raw_response = PlaybookAggregationOutput(
+        playbook=StructuredPlaybookContent(
+            content="- Ask [PERSON_1] to confirm the workflow.",
+            trigger="When [PERSON_2] requests access.",
+            rationale="[PERSON_1] and [PERSON_2] both hit this case.",
+        )
+    )
+    agg.client.generate_chat_response.return_value = raw_response
+    cluster = [_raw(rid=1)]
+
+    with (
+        patch(
+            "reflexio.server.services.playbook.playbook_aggregator.log_model_response"
+        ) as mock_log_model_response,
+        patch.dict("os.environ", {"MOCK_LLM_RESPONSE": ""}),
+    ):
+        result = agg._generate_playbook_from_cluster(cluster, "None")
+
+    assert result is not None
+    assert "[PERSON_" not in result.content
+    assert "[PERSON_" not in (result.trigger or "")
+    assert "[PERSON_" not in (result.rationale or "")
+    assert "a user" in result.content
+    logged_response = mock_log_model_response.call_args.args[2]
+    assert isinstance(logged_response, PlaybookAggregationOutput)
+    assert logged_response.playbook is not None
+    assert "[PERSON_" not in (logged_response.playbook.content or "")
+    assert "[PERSON_" not in (logged_response.playbook.trigger or "")
+    assert "[PERSON_" not in (logged_response.playbook.rationale or "")
 
 
 # ---------------------------------------------------------------------------

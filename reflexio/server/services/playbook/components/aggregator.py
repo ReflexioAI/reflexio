@@ -32,6 +32,11 @@ from reflexio.server.services.playbook.playbook_service_utils import (
     PlaybookAggregatorRequest,
     ensure_playbook_content,
 )
+from reflexio.server.services.playbook.user_detail_stripping import (
+    UserDetailStripper,
+    count_person_placeholders,
+    replace_person_placeholders,
+)
 from reflexio.server.services.service_utils import log_model_response
 from reflexio.server.tracing import capture_anomaly, sentry_tags
 from reflexio.server.usage_metrics import record_usage_event
@@ -50,12 +55,14 @@ class PlaybookAggregator:
         llm_client: LiteLLMClient,
         request_context: RequestContext,
         agent_version: str,
+        user_detail_stripper: UserDetailStripper | None = None,
     ) -> None:
         self.client = llm_client
         self.storage = request_context.storage
         self.configurator = request_context.configurator
         self.request_context = request_context
         self.agent_version = agent_version
+        self.user_detail_stripper = user_detail_stripper
 
     # ===============================
     # private methods - operation state
@@ -191,6 +198,99 @@ class PlaybookAggregator:
                 lines.append(f'Rationale: "{fb.rationale}"')
             blocks.append("\n".join(lines))
         return "\n\n".join(blocks) if blocks else "(No playbook items)"
+
+    def _strip_prompt_field(
+        self,
+        text: str | None,
+        shared_mapping: dict[str, int],
+    ) -> str | None:
+        if text is None or self.user_detail_stripper is None:
+            return text
+        return self.user_detail_stripper.strip_user_details(
+            text, shared_mapping=shared_mapping
+        ).text
+
+    def _strip_user_playbook_for_prompt(
+        self,
+        playbook: UserPlaybook,
+        shared_mapping: dict[str, int],
+    ) -> UserPlaybook:
+        if self.user_detail_stripper is None:
+            return playbook
+        return playbook.model_copy(
+            update={
+                "content": self._strip_prompt_field(playbook.content, shared_mapping)
+                or "",
+                "trigger": self._strip_prompt_field(playbook.trigger, shared_mapping),
+                "rationale": self._strip_prompt_field(
+                    playbook.rationale, shared_mapping
+                ),
+            }
+        )
+
+    def _strip_agent_playbook_for_prompt(
+        self,
+        playbook: AgentPlaybook,
+        shared_mapping: dict[str, int],
+    ) -> AgentPlaybook:
+        if self.user_detail_stripper is None:
+            return playbook
+        return playbook.model_copy(
+            update={
+                "content": self._strip_prompt_field(playbook.content, shared_mapping)
+                or ""
+            }
+        )
+
+    @staticmethod
+    def _format_existing_approved_playbooks(
+        existing_approved_playbooks: list[AgentPlaybook],
+    ) -> str:
+        return (
+            "\n".join([f"- {fb.content}" for fb in existing_approved_playbooks])
+            if existing_approved_playbooks
+            else "None"
+        )
+
+    def _sanitize_aggregation_response(
+        self, response: PlaybookAggregationOutput
+    ) -> tuple[PlaybookAggregationOutput, int]:
+        structured = response.playbook
+        if structured is None:
+            return response, 0
+
+        updates: dict[str, str | None] = {}
+        placeholder_count = 0
+        for field_name, value in structured.model_dump().items():
+            if not isinstance(value, str):
+                continue
+            placeholder_count += count_person_placeholders(value)
+            sanitized = replace_person_placeholders(value)
+            if sanitized != value:
+                updates[field_name] = sanitized
+
+        if not updates:
+            return response, 0
+        return response.model_copy(
+            update={"playbook": structured.model_copy(update=updates)}
+        ), placeholder_count
+
+    def _record_placeholder_leakage(self, placeholder_count: int) -> None:
+        if placeholder_count <= 0:
+            return
+        logger.warning(
+            "Replaced %d residual user-detail placeholders in aggregated playbook output",
+            placeholder_count,
+        )
+        record_usage_event(
+            org_id=self.request_context.org_id,
+            event_name="placeholder_leakage_count",
+            event_category="aggregation",
+            pipeline="playbook",
+            agent_version=self.agent_version,
+            outcome="replaced",
+            count_value=placeholder_count,
+        )
 
     @staticmethod
     def _get_direction_key(fb: UserPlaybook) -> str:
@@ -570,6 +670,12 @@ class PlaybookAggregator:
             "Running user playbook aggregation for '%s' (agent_version=%s)",
             playbook_name,
             self.agent_version,
+        )
+        logger.info(
+            "User detail stripping for aggregation: %s",
+            type(self.user_detail_stripper).__name__
+            if self.user_detail_stripper is not None
+            else "disabled",
         )
 
         # Get existing APPROVED and PENDING playbooks before archiving (to pass to LLM for deduplication).
@@ -1113,17 +1219,23 @@ class PlaybookAggregator:
         direction_overlap_threshold: float = 0.6,
     ) -> list[tuple[AgentPlaybook, list[UserPlaybook]]]:
         """Generate agent playbooks while preserving their exact source cluster."""
-        # Format existing approved playbooks for the prompt
-        approved_playbooks_str = (
-            "\n".join([f"- {fb.content}" for fb in existing_approved_playbooks])
-            if existing_approved_playbooks
-            else "None"
-        )
-
         new_playbooks: list[tuple[AgentPlaybook, list[UserPlaybook]]] = []
         for cluster_playbooks in clusters.values():
+            shared_mapping: dict[str, int] = {}
+            prompt_cluster_playbooks = [
+                self._strip_user_playbook_for_prompt(playbook, shared_mapping)
+                for playbook in cluster_playbooks
+            ]
+            prompt_existing_playbooks = [
+                self._strip_agent_playbook_for_prompt(playbook, shared_mapping)
+                for playbook in existing_approved_playbooks
+            ]
+            approved_playbooks_str = self._format_existing_approved_playbooks(
+                prompt_existing_playbooks
+            )
+
             playbook = self._generate_playbook_from_cluster(
-                cluster_playbooks,
+                prompt_cluster_playbooks,
                 approved_playbooks_str,
                 direction_overlap_threshold=direction_overlap_threshold,
             )
@@ -1240,6 +1352,11 @@ class PlaybookAggregator:
                 response_format=PlaybookAggregationOutput,
                 parse_structured_output=True,
             )
+            if isinstance(response, PlaybookAggregationOutput):
+                response, placeholder_count = self._sanitize_aggregation_response(
+                    response
+                )
+                self._record_placeholder_leakage(placeholder_count)
             log_model_response(logger, "Aggregation structured response", response)
 
             if not isinstance(response, PlaybookAggregationOutput):
@@ -1272,6 +1389,7 @@ class PlaybookAggregator:
         """
         if not response:
             return None
+        response, _placeholder_count = self._sanitize_aggregation_response(response)
 
         structured = response.playbook
         if structured is None:
