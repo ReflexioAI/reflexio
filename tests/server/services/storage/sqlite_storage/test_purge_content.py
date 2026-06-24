@@ -7,7 +7,13 @@ from unittest.mock import patch
 
 import pytest
 
-from reflexio.models.api_schema.domain.entities import LineageContext, UserProfile
+from reflexio.models.api_schema.domain.entities import (
+    AgentPlaybook,
+    AgentPlaybookSourceWindow,
+    LineageContext,
+    UserPlaybook,
+    UserProfile,
+)
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 
 pytestmark = pytest.mark.integration
@@ -381,4 +387,176 @@ def test_clear_user_data_cross_user_chain_purges_other_users_survivor(tmp_path):
     assert ref is not None and ref.id == "C"
     assert ref.is_purged is True, (
         "Resolved survivor C must be marked is_purged after content purge"
+    )
+
+
+# ---------------------------------------------------------------------------
+# F1 — user_playbook purge path
+# ---------------------------------------------------------------------------
+
+
+def _user_playbook(user_id: str, content: str = "secret body") -> UserPlaybook:
+    return UserPlaybook(
+        user_id=user_id,
+        agent_version="v1",
+        request_id="req-upb",
+        content=content,
+    )
+
+
+def test_purge_user_playbook_blanks_body_user_id_null(storage):
+    """purge_content on a user_playbook tombstone blanks body and sets user_id=NULL.
+
+    user_playbooks.user_id is NULLABLE, so the purge SQL sets it to NULL
+    (unlike profiles where user_id is NOT NULL and is blanked to '').
+    The skeleton (status, pointers) must be kept intact and exactly one
+    op=purge lineage event must be recorded.
+    """
+    # Create incumbent and successor user_playbooks.
+    up_inc = _user_playbook("alice", "alice@secret.com")
+    up_suc = _user_playbook("alice", "replacement body")
+    storage.save_user_playbooks([up_inc])
+    storage.save_user_playbooks([up_suc])
+    inc_id = up_inc.user_playbook_id
+    suc_id = up_suc.user_playbook_id
+
+    # Supersede the incumbent — now it is a tombstone.
+    storage.supersede_record(
+        entity_type="user_playbook",
+        incumbent_id=str(inc_id),
+        successor_id=str(suc_id),
+        context=_ctx("r-upb"),
+    )
+
+    # Confirm the tombstone state.
+    row_before = storage.conn.execute(
+        "SELECT user_id, superseded_by, status FROM user_playbooks WHERE user_playbook_id=?",
+        (inc_id,),
+    ).fetchone()
+    assert row_before["user_id"] == "alice"
+    assert row_before["superseded_by"] == suc_id
+
+    # Purge the tombstone.
+    result = storage.purge_content(entity_type="user_playbook", entity_id=str(inc_id))
+    assert result is True
+
+    # Content and user_id must be blanked; user_id is NULLABLE → goes to NULL.
+    row = storage.conn.execute(
+        "SELECT content, user_id, status, superseded_by FROM user_playbooks WHERE user_playbook_id=?",
+        (inc_id,),
+    ).fetchone()
+    assert row["content"] == ""
+    assert row["user_id"] is None  # NULLABLE column → NULL, not ''
+    assert row["status"] == "superseded"  # skeleton kept
+    assert row["superseded_by"] == suc_id  # pointer kept
+
+    # Exactly one op=purge lineage event.
+    events = storage.get_lineage_events(
+        entity_type="user_playbook", entity_id=str(inc_id), org_id="0"
+    )
+    purges = [e for e in events if e.op == "purge"]
+    assert len(purges) == 1
+    assert purges[0].request_id == f"purge_{inc_id}"
+
+
+def test_purge_agent_playbook_raises_value_error(storage):
+    """purge_content with entity_type='agent_playbook' must raise ValueError."""
+    with pytest.raises(ValueError, match="agent_playbook"):
+        storage.purge_content(entity_type="agent_playbook", entity_id="x")
+
+
+# ---------------------------------------------------------------------------
+# F2 — chunk-boundary: clear_user_data handles more rows than chunk size
+# ---------------------------------------------------------------------------
+
+
+def test_clear_user_data_chunk_boundary(tmp_path, monkeypatch):
+    """clear_user_data deletes all rows even when the count exceeds the chunk size.
+
+    Monkeypatches the ``chunked`` helper used by ``_delete_in_chunks`` to force
+    a chunk size of 2, then seeds 5 profiles so the delete-set crosses the chunk
+    boundary. All rows must be deleted/purged without error.
+    """
+    import reflexio.server.services.storage.sqlite_storage._base as _base_mod
+    from reflexio.server.services.storage.retention_mixin import chunked as real_chunked
+
+    def chunked_size2(values, chunk_size=500):  # type: ignore[misc]
+        return real_chunked(values, chunk_size=2)
+
+    monkeypatch.setattr(_base_mod, "chunked", chunked_size2)
+
+    with patch.object(SQLiteStorage, "_get_embedding", return_value=[0.0] * 512):
+        s = SQLiteStorage(org_id="0", db_path=str(tmp_path / "t.db"))
+
+    # Seed 5 standalone profiles for "alice" — all go to the hard-delete set.
+    for i in range(5):
+        s.add_user_profile("alice", [_profile(f"P{i}", "alice", f"body {i}")])
+
+    counts = s.clear_user_data("alice")
+
+    # All 5 profiles hard-deleted (no lineage refs, no tombstone).
+    assert counts["profiles"] == 5, f"expected 5 hard-deleted, got {counts['profiles']}"
+    assert counts["purged_profiles"] == 0
+
+    # Confirm the table is empty for alice.
+    remaining = s.conn.execute(
+        "SELECT count(*) AS n FROM profiles WHERE user_id='alice'"
+    ).fetchone()["n"]
+    assert remaining == 0
+
+
+# ---------------------------------------------------------------------------
+# F3 — source-window orphan: clear_user_data cleans join rows for hard-deleted playbooks
+# ---------------------------------------------------------------------------
+
+
+def test_clear_user_data_no_orphan_source_window_rows(tmp_path):
+    """After clear_user_data, no orphan rows remain in agent_playbook_source_user_playbooks
+    for the erased user's hard-deleted playbooks.
+
+    Source-window cleanup applies only to the HARD-DELETE set; a purged playbook
+    keeps its skeleton and join rows. Here the user_playbook has no lineage refs,
+    so it is hard-deleted and its join rows must be gone.
+    """
+    with patch.object(SQLiteStorage, "_get_embedding", return_value=[0.0] * 512):
+        s = SQLiteStorage(org_id="0", db_path=str(tmp_path / "t.db"))
+
+    # Create a user_playbook for alice (standalone, no lineage → will be hard-deleted).
+    upb = _user_playbook("alice", "alice's playbook body")
+    s.save_user_playbooks([upb])
+    upb_id = upb.user_playbook_id
+
+    # Create an agent_playbook and link it to the user_playbook via a source window.
+    [ap] = s.save_agent_playbooks(
+        [AgentPlaybook(agent_version="v1", content="agent body")]
+    )
+    ap_id = ap.agent_playbook_id
+    s.set_source_windows_for_agent_playbook(
+        ap_id,
+        [
+            AgentPlaybookSourceWindow(
+                user_playbook_id=upb_id, source_interaction_ids=[1]
+            )
+        ],
+    )
+
+    # Confirm the join row exists before erasure.
+    join_before = s.conn.execute(
+        "SELECT count(*) AS n FROM agent_playbook_source_user_playbooks WHERE user_playbook_id=?",
+        (upb_id,),
+    ).fetchone()["n"]
+    assert join_before == 1
+
+    # Erase alice — user_playbook is standalone → hard-deleted → join row must be removed.
+    counts = s.clear_user_data("alice")
+    assert counts["user_playbooks"] == 1  # hard-deleted, not purged
+    assert counts["purged_user_playbooks"] == 0
+
+    # No orphan join rows for the deleted user_playbook_id.
+    join_after = s.conn.execute(
+        "SELECT count(*) AS n FROM agent_playbook_source_user_playbooks WHERE user_playbook_id=?",
+        (upb_id,),
+    ).fetchone()["n"]
+    assert join_after == 0, (
+        f"Orphan source-window row survived for hard-deleted user_playbook_id={upb_id}"
     )

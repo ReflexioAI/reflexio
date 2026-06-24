@@ -142,7 +142,7 @@ class LineageEventMixin:
             bool: True if any row in the entity's table has ``merged_into == entity_id``
                 OR ``superseded_by == entity_id``; False otherwise.
         """
-        ...
+        raise NotImplementedError
 
     @abstractmethod
     def purge_content(self, *, entity_type: EntityType, entity_id: str) -> bool:

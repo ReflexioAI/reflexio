@@ -131,6 +131,12 @@ class BaseStorage(
         postgres, ...) gets correct behaviour for free.
         Subclasses MAY override for atomic / transactional efficiency.
 
+        **Atomicity note (default path only):** this default implementation is
+        NOT wrapped in a single transaction. Each ``purge_content`` call commits
+        independently, so a crash mid-erasure may leave some purge-eligible rows
+        with PII intact until ``clear_user_data`` is re-invoked. The call is
+        idempotent — re-invoking it is safe and will finish the erasure.
+
         Args:
             user_id (str): The user id whose rows should be deleted.
 

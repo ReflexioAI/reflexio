@@ -386,15 +386,16 @@ class SQLiteLineageMixin:
         table, pk = _resolve_table(entity_type)
         with self._lock:
             row = self.conn.execute(
-                f"SELECT rowid FROM {table} WHERE {pk}=?",  # noqa: S608
+                f"SELECT rowid AS _rowid FROM {table} WHERE {pk}=?",  # noqa: S608
                 (entity_id,),
             ).fetchone()
             if row is None:
                 return False
-            rowid = row["rowid"]
+            rowid = row["_rowid"]
             cur = self.conn.execute(sql, (entity_id,))
             if cur.rowcount > 0:
-                # Body was actually blanked this call — record the audited fact.
+                # Row matched (rowcount==1 whenever it exists); attempt the event —
+                # INSERT OR IGNORE dedups on the deterministic request_id.
                 _append_event_stmt(
                     self.conn,
                     org_id=self.org_id,
