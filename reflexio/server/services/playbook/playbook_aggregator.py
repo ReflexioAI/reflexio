@@ -15,13 +15,9 @@ from reflexio.lib._agent_playbook import _PREFIX as _AGGREGATE_PREFIX
 from reflexio.models.api_schema.domain.entities import LineageEvent
 from reflexio.models.api_schema.service_schemas import (
     AgentPlaybook,
-    AgentPlaybookSnapshot,
     AgentPlaybookSourceWindow,
-    AgentPlaybookUpdateEntry,
-    PlaybookAggregationChangeLog,
     PlaybookStatus,
     UserPlaybook,
-    agent_playbook_to_snapshot,
 )
 from reflexio.models.config_schema import (
     SINGLETON_USER_PLAYBOOK_NAME,
@@ -470,102 +466,6 @@ class PlaybookAggregator:
 
         return changed_clusters, playbook_ids_to_archive
 
-    def _build_change_log(
-        self,
-        playbook_name: str,
-        full_archive: bool,
-        before_playbooks_by_id: dict[int, AgentPlaybook],
-        saved_playbooks: list[AgentPlaybook],
-        archived_playbook_ids: list[int],
-        prev_fingerprints: dict,
-    ) -> PlaybookAggregationChangeLog:
-        """Build a PlaybookAggregationChangeLog from the aggregation run results.
-
-        Args:
-            playbook_name: The playbook name being aggregated
-            full_archive: Whether this was a full archive (rerun/first run)
-            before_playbooks_by_id: Snapshot of playbooks before archiving, keyed by playbook_id
-            saved_playbooks: Newly saved playbooks from this run
-            archived_playbook_ids: AgentPlaybook IDs that were selectively archived (incremental mode)
-            prev_fingerprints: Previous cluster fingerprints (empty for full archive)
-
-        Returns:
-            PlaybookAggregationChangeLog with added/removed/updated lists populated
-        """
-        added: list[AgentPlaybookSnapshot] = []
-        removed: list[AgentPlaybookSnapshot] = []
-        updated: list[AgentPlaybookUpdateEntry] = []
-
-        if full_archive:
-            # No 1:1 mapping — all old playbooks are removed, all new are added
-            removed = [
-                agent_playbook_to_snapshot(fb) for fb in before_playbooks_by_id.values()
-            ]
-            added = [agent_playbook_to_snapshot(fb) for fb in saved_playbooks if fb]
-        else:
-            # Incremental mode: map old playbook_ids to new playbooks via fingerprints
-            # Build a set of old playbook_ids that were archived
-            archived_id_set = set(archived_playbook_ids)
-
-            # Build mapping: old_playbook_id -> new_playbook_id via fingerprint changes
-            # prev_fingerprints maps fp_hash -> {playbook_id, user_playbook_ids}
-            # new_fingerprints maps fp_hash -> {playbook_id, user_playbook_ids}
-            # If an old fingerprint disappeared and a new one appeared, and
-            # the old fp had a playbook_id in archived_id_set, we can try to pair them.
-            # However, without a direct cluster-level old->new mapping, we use a simpler approach:
-            # archived playbooks that have a corresponding new playbook (by position in saved list) are updates.
-
-            # Collect old playbook_ids from disappeared fingerprints
-            old_fp_playbook_ids = {}
-            for fp, fp_data in prev_fingerprints.items():
-                fid = fp_data.get("agent_playbook_id")
-                if fid is not None and fid in archived_id_set:
-                    old_fp_playbook_ids[fid] = fp
-
-            # For each saved playbook, try to match with an archived old playbook
-            matched_old_ids: set[int] = set()
-            for saved_fb in saved_playbooks:
-                if not saved_fb:
-                    continue
-                # Try to find an old playbook from the archived set to pair with
-                paired_old_id = None
-                for old_id in list(old_fp_playbook_ids.keys()):
-                    if old_id not in matched_old_ids:
-                        paired_old_id = old_id
-                        matched_old_ids.add(old_id)
-                        break
-
-                if (
-                    paired_old_id is not None
-                    and paired_old_id in before_playbooks_by_id
-                ):
-                    updated.append(
-                        AgentPlaybookUpdateEntry(
-                            before=agent_playbook_to_snapshot(
-                                before_playbooks_by_id[paired_old_id]
-                            ),
-                            after=agent_playbook_to_snapshot(saved_fb),
-                        )
-                    )
-                else:
-                    added.append(agent_playbook_to_snapshot(saved_fb))
-
-            # Remaining archived playbooks that weren't paired are removals
-            for old_id in archived_id_set:
-                if old_id not in matched_old_ids and old_id in before_playbooks_by_id:
-                    removed.append(
-                        agent_playbook_to_snapshot(before_playbooks_by_id[old_id])
-                    )
-
-        return PlaybookAggregationChangeLog(
-            playbook_name=playbook_name,
-            agent_version=self.agent_version,
-            run_mode="full_archive" if full_archive else "incremental",
-            added_agent_playbooks=added,
-            removed_agent_playbooks=removed,
-            updated_agent_playbooks=updated,
-        )
-
     # ===============================
     # public methods
     # ===============================
@@ -700,11 +600,6 @@ class PlaybookAggregator:
             | {playbook_name}
         )
         clusters = self.get_clusters(user_playbooks, playbook_aggregator_config)
-
-        # Capture all current playbooks before archiving (for change log)
-        before_playbooks_by_id: dict[int, AgentPlaybook] = {
-            fb.agent_playbook_id: fb for fb in existing_playbooks
-        }
 
         # Determine which clusters changed (skip for rerun)
         mgr = self._create_state_manager()
@@ -926,31 +821,6 @@ class PlaybookAggregator:
 
             # Update operation state with the highest user_playbook_id processed
             self._update_operation_state(playbook_name, user_playbooks)
-
-            # Build and save change log
-            try:
-                change_log = self._build_change_log(
-                    playbook_name=playbook_name,
-                    full_archive=full_archive,
-                    before_playbooks_by_id=before_playbooks_by_id,
-                    saved_playbooks=saved_playbook_list,
-                    archived_playbook_ids=archived_playbook_ids,
-                    prev_fingerprints=(prev_fingerprints if not full_archive else {}),
-                )
-                self.storage.add_playbook_aggregation_change_log(change_log)  # type: ignore[reportOptionalMemberAccess]
-                logger.info(
-                    "User playbook aggregation change log for '%s' (agent_version=%s): %d agent playbooks added, %d removed, %d updated",
-                    playbook_name,
-                    self.agent_version,
-                    len(change_log.added_agent_playbooks),
-                    len(change_log.removed_agent_playbooks),
-                    len(change_log.updated_agent_playbooks),
-                )
-            except Exception:
-                logger.exception(
-                    "Failed to save playbook aggregation change log for '%s', continuing",
-                    playbook_name,
-                )
 
             # Remove archived playbooks after successful aggregation.
             # Flag ON → durable soft-supersede; Flag OFF → hard-delete (unchanged behavior).
