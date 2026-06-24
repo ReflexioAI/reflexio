@@ -332,7 +332,6 @@ def _run_aggregator_with_supersede(
     worker_id: str,
     full_archive: bool,
     suffix: str,
-    flag_on: bool = True,  # kept for call-site compat; ignored — removal is always soft
 ) -> tuple[SQLiteStorage, RequestContext]:
     """Run one aggregation with one new and one old archived playbook."""
     storage = _make_storage(temp_dir, worker_id, suffix=suffix)
@@ -544,18 +543,24 @@ class TestAggregationAlwaysSoft:
 
 
 class TestEmptyRunIdFailLoud:
-    """When _run_id is empty, the aggregator must fire capture_anomaly(level='error')
-    and skip ALL removal (no supersede, no hard-delete) — never silently corrupt lineage."""
+    """When _run_id is empty, the aggregator must never silently corrupt lineage.
 
-    def test_empty_run_id_fires_capture_anomaly_and_skips_removal(
+    With the storage-layer guard (C3): if there are playbooks to save, the save
+    call raises immediately on empty request_id, propagating to the outer handler
+    which restores archives and re-raises.  The aggregator-level removal guard
+    (``if not _run_id:``) is retained as defense-in-depth for the no-save-but-
+    remove edge case (clusters exist but generate no new playbooks).
+    """
+
+    def test_empty_run_id_aborts_and_restores_archived(
         self, temp_dir, worker_id
     ) -> None:
-        """Empty _run_id: capture_anomaly fires with level='error', no supersede called.
+        """Empty _run_id: run raises, archived playbook is restored, no orphan created.
 
-        Patch uuid.uuid4 in the aggregator module so _run_id becomes "". The run must
-        complete without raising (crash-safe), fire capture_anomaly with level='error',
-        and call neither supersede_agent_playbooks_by_playbook_name nor
-        supersede_agent_playbooks_by_ids.
+        The storage-layer guard raises ValueError (wrapped as StorageError) when
+        request_id is empty.  C1 propagates this to the outer handler which restores
+        the archived generation and re-raises — all-or-nothing even for the empty-id
+        case when there are playbooks to save.
         """
         storage = _make_storage(temp_dir, worker_id, suffix="-empty-rid")
         ctx = _make_request_context(storage, temp_dir, worker_id, suffix="-empty-rid")
@@ -586,9 +591,6 @@ class TestEmptyRunIdFailLoud:
                 return ""
 
         uuid_path = "reflexio.server.services.playbook.playbook_aggregator.uuid.uuid4"
-        capture_path = (
-            "reflexio.server.services.playbook.playbook_aggregator.capture_anomaly"
-        )
 
         with (
             patch.object(
@@ -602,27 +604,19 @@ class TestEmptyRunIdFailLoud:
                 return_value=[(new_ap, cluster_playbooks)],
             ),
             patch(uuid_path, return_value=_EmptyStrUUID()),
-            patch(capture_path) as mock_capture,
         ):
             aggregator = PlaybookAggregator(
                 llm_client=MagicMock(),
                 request_context=ctx,
                 agent_version="v0",
             )
-            # rerun=True → full_archive path; if guard fires, removal is skipped entirely
-            aggregator.run(PlaybookAggregatorRequest(agent_version="v0", rerun=True))
+            # The storage guard raises on empty request_id; outer handler restores + re-raises.
+            with pytest.raises(StorageError, match="non-empty request_id"):
+                aggregator.run(
+                    PlaybookAggregatorRequest(agent_version="v0", rerun=True)
+                )
 
-        # capture_anomaly must have been called with level="error"
-        assert mock_capture.called, (
-            "capture_anomaly must be called when _run_id is empty"
-        )
-        call_kwargs = mock_capture.call_args
-        assert call_kwargs.kwargs.get("level") == "error", (
-            f"capture_anomaly must be called with level='error', "
-            f"got kwargs={call_kwargs.kwargs}"
-        )
-
-        # No supersede events must exist for the old archived playbook
+        # No supersede events must exist for the old archived playbook (aborted before removal)
         events = storage.get_lineage_events(entity_type="agent_playbook")
         supersede_events = [
             e
@@ -632,15 +626,15 @@ class TestEmptyRunIdFailLoud:
             and e.entity_id == str(old_ap.agent_playbook_id)
         ]
         assert not supersede_events, (
-            "Empty _run_id guard must skip removal — no supersede events for old playbook"
+            "Empty _run_id abort must skip removal — no supersede events for old playbook"
         )
 
-        # The old archived playbook row must still be present (not removed)
+        # The old archived playbook row must be restored (outer handler ran)
         row = storage.get_agent_playbook_by_id(
             old_ap.agent_playbook_id, include_tombstones=True
         )
         assert row is not None, (
-            "Empty _run_id guard must skip removal — old playbook row must still exist"
+            "Old playbook must exist (restored by outer abort handler)"
         )
 
 

@@ -9,9 +9,9 @@ Asserts:
 - prov_relation="wasDerivedFrom",
 - source_ids contains str(UP-a.user_playbook_id) and str(UP-b.user_playbook_id).
 
-Also includes a PB-7 best-effort regression test verifying that a transient
-``append_lineage_event`` failure does NOT abort the aggregation run and that
-``capture_anomaly`` is called with "lineage.aggregate.append_failed".
+Also includes a regression test verifying that a failure in the atomic
+``save_agent_playbook_with_aggregate_event`` ABORTS the run, restores any
+archived playbooks, and re-raises — all-or-nothing semantics (C1).
 
 Mirrors the real-SQLite + mocked-cluster fixture style of
 ``test_consolidation_lineage_integration.py``.
@@ -195,34 +195,47 @@ def test_aggregation_emits_aggregate_lineage_event(
     assert evt.request_id != "", "request_id must be non-empty"
 
 
-def test_aggregate_save_failure_is_skip_not_abort(
+def test_aggregate_save_failure_aborts_and_restores(
     sqlite_storage: SQLiteStorage,
     request_context: RequestContext,
     aggregator: PlaybookAggregator,
     worker_id: str,
 ):
-    """D1 safety: a failure in save_agent_playbook_with_aggregate_event skips the playbook but does not abort the run.
+    """C1: a failure in save_agent_playbook_with_aggregate_event aborts the run and restores archives.
 
-    Patches the combined atomic save+emit method to raise, verifying that:
-    (a) the aggregation run completes without raising,
-    (b) the failed playbook is not in the saved list (atomic rollback — no orphan),
-    (c) the run's stats dict is returned correctly.
+    The per-playbook save no longer silently skips on failure.  Instead the
+    exception propagates to the outer handler which:
+    (a) re-raises so the caller knows the run failed,
+    (b) calls restore_archived_agent_playbooks_by_* to un-archive the old generation,
+    (c) leaves no orphan agent_playbook row (atomic rollback of the INSERT + event).
 
-    This replaces the old PB-7 best-effort test which targeted the now-removed
-    inline ``append_lineage_event`` try/except in the aggregator. With D1 the
-    combined method is the atomic unit; per-playbook failures skip, not abort.
+    Setup: seed one archived agent playbook (the old generation) + two user
+    playbooks.  Patch save_agent_playbook_with_aggregate_event to raise.
+    The archived playbook must survive (be restorable) and no new row must appear.
     """
     org_id = request_context.org_id
+
+    # Seed an old archived agent playbook that the aggregator would supersede on success
+    old_ap = AgentPlaybook(
+        agent_playbook_id=0,
+        playbook_name="default",
+        agent_version="v0",
+        content="old generation",
+        playbook_status=PlaybookStatus.PENDING,
+    )
+    saved_list = sqlite_storage.save_agent_playbooks([old_ap])
+    old_ap_id = saved_list[0].agent_playbook_id
+    sqlite_storage.archive_agent_playbooks_by_ids([old_ap_id])
 
     up_a = _seed_user_playbook(sqlite_storage, uid=10, org_id=org_id)
     up_b = _seed_user_playbook(sqlite_storage, uid=11, org_id=org_id)
     cluster_playbooks = [up_a, up_b]
 
-    unsaved_ap = AgentPlaybook(
+    new_ap = AgentPlaybook(
         agent_playbook_id=0,
         playbook_name="default",
         agent_version="v0",
-        content="Best-effort AP.",
+        content="New AP that will fail to save.",
         playbook_status=PlaybookStatus.PENDING,
     )
 
@@ -235,30 +248,31 @@ def test_aggregate_save_failure_is_skip_not_abort(
         patch.object(
             PlaybookAggregator,
             "_generate_playbooks_with_source_clusters",
-            return_value=[(unsaved_ap, cluster_playbooks)],
+            return_value=[(new_ap, cluster_playbooks)],
         ),
         patch.object(
             sqlite_storage,
             "save_agent_playbook_with_aggregate_event",
             side_effect=RuntimeError("simulated atomic failure"),
         ),
+        pytest.raises(RuntimeError, match="simulated atomic failure"),
     ):
-        # (a) run must complete without raising
-        result = aggregator.run(
-            PlaybookAggregatorRequest(agent_version="v0", rerun=True)
-        )
+        # (a) run must RAISE — failure is no longer swallowed
+        aggregator.run(PlaybookAggregatorRequest(agent_version="v0", rerun=True))
 
-    # (a) no exception propagated — result is the stats dict
-    assert isinstance(result, dict), f"Expected dict, got: {result!r}"
-    assert "playbooks_generated" in result
-
-    # (b) the failed playbook was skipped — 0 generated (atomic rollback = no orphan)
-    assert result["playbooks_generated"] == 0, (
-        "Failed playbook must be skipped (not counted as generated)"
+    # (b) old archived playbook is restored (status cleared back to normal)
+    restored = sqlite_storage.get_agent_playbook_by_id(old_ap_id)
+    assert restored is not None, (
+        "Old archived playbook must be restored after save failure"
     )
-    saved_aps = sqlite_storage.get_agent_playbooks()
-    assert not saved_aps, (
-        "No agent playbook must be saved when save_agent_playbook_with_aggregate_event fails"
+
+    # (c) no new agent_playbook row was persisted (atomic rollback — no orphan)
+    all_aps = sqlite_storage.get_agent_playbooks()
+    new_ids = [
+        ap.agent_playbook_id for ap in all_aps if ap.agent_playbook_id != old_ap_id
+    ]
+    assert not new_ids, (
+        "No new agent playbook must be saved when save_agent_playbook_with_aggregate_event fails"
     )
 
 

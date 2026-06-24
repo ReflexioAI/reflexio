@@ -36,6 +36,9 @@ from reflexio.models.api_schema.service_schemas import (
 )
 from reflexio.models.config_schema import SearchOptions
 from reflexio.server.services.storage.storage_base import BaseStorage
+from reflexio.server.services.storage.storage_base._playbook import (
+    AGGREGATE_REASON_PREFIX,
+)
 from reflexio.server.tracing import profile_step
 
 
@@ -340,9 +343,9 @@ class AgentPlaybookMixin(ReflexioBase):
 
 logger = logging.getLogger(__name__)
 
-# Prefix for aggregate lineage event reasons — keep in sync with
-# _AGGREGATE_PREFIX in reflexio/server/services/playbook/playbook_aggregator.py
-_PREFIX = "aggregate:"
+# Prefix for aggregate lineage event reasons — single source of truth in
+# AGGREGATE_REASON_PREFIX (storage_base/_playbook.py); imported here for the parser.
+_PREFIX = AGGREGATE_REASON_PREFIX
 
 
 def reconstruct_playbook_aggregation_change_log(
@@ -378,6 +381,15 @@ def reconstruct_playbook_aggregation_change_log(
 
     ``updated_agent_playbooks = []`` (Decision 3 — tolerated delta; updates
     are folded into added/removed in the B3b reconstruction model).
+
+    Known limitation (Bucket-4 follow-up): added-side resolve omits
+    include_tombstones → an added-then-superseded playbook drops from its
+    run's history.
+
+    Version-semantics note (E1): for remove-only runs with mixed agent_version
+    across the superseded set, ``agent_version`` is that of the first resolved
+    removed snapshot.  This is a query-VISIBILITY loss — version-filtered
+    queries will omit those removals — not just a label ambiguity.
 
     Run-scalars (``playbook_name``, ``agent_version``) are read from the
     reconstructed content: ``added[0]`` is preferred, else ``removed[0]``.

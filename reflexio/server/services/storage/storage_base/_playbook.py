@@ -27,6 +27,11 @@ logger = logging.getLogger(__name__)
 
 _AGGREGATE_EVENT_EMIT_ATTEMPTS = 3
 
+# Shared prefix for aggregate lineage event reasons.
+# Consumers: storage_base (here), sqlite_storage/_playbook.py, and lib/_agent_playbook.py
+# (which imports this constant to keep the parser and producers in sync).
+AGGREGATE_REASON_PREFIX = "aggregate:"
+
 
 class PlaybookMixin:
     """Mixin for playbook and agent success evaluation methods."""
@@ -324,7 +329,14 @@ class PlaybookMixin:
 
         Returns:
             AgentPlaybook: The saved playbook with ``agent_playbook_id`` populated.
+
+        Raises:
+            ValueError: If ``request_id`` is empty (would produce an unreconstructable event).
         """
+        if not request_id or not request_id.strip():
+            raise ValueError(
+                "save_agent_playbook_with_aggregate_event requires a non-empty request_id"
+            )
         saved = self.save_agent_playbooks([agent_playbook])[0]
         event = LineageEvent(
             org_id=self.org_id,  # type: ignore[attr-defined]
@@ -335,13 +347,15 @@ class PlaybookMixin:
             source_ids=source_ids,
             actor="aggregator",
             request_id=request_id,
-            reason=f"aggregate:{run_mode}",
+            reason=f"{AGGREGATE_REASON_PREFIX}{run_mode}",
         )
-        # The row is already committed; this default is non-atomic (atomic backends override
-        # it). The event is the sole reconstruction signal for the run, so make the emit
-        # durable: bounded retry (append is idempotent on (entity_id, op, request_id)), and on
-        # final failure fail LOUD at level=error so the gap is paged + backfillable rather than
-        # silently lost. Never raise — the playbook itself is saved and must not be lost.
+        # The row is already committed; this default is non-atomic (SQLite overrides it to
+        # make the INSERT + event one transaction). The event is the sole reconstruction signal
+        # for the run, so make the emit durable: bounded retry (idempotent on retrying the
+        # same row's emit — entity_id is a fresh autoincrement per run, so this is NOT
+        # cross-run idempotency), and on final failure fail LOUD at level=error so the gap
+        # is paged + backfillable rather than silently lost. Never raise — the playbook
+        # itself is saved and must not be lost.
         for attempt in range(_AGGREGATE_EVENT_EMIT_ATTEMPTS):
             try:
                 self.append_lineage_event(event)  # type: ignore[attr-defined]

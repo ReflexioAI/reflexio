@@ -3,7 +3,7 @@
 Tests the base-class default directly via an unbound-method call with a mock
 self, so the SQLite override (which has its own tests) does not interfere.
 
-Three tests:
+Two tests:
   1. Retry + loud: append_lineage_event always fails → retried
      _AGGREGATE_EVENT_EMIT_ATTEMPTS times, capture_anomaly called with
      level="error", method RETURNS the saved playbook (does not raise).
@@ -14,6 +14,8 @@ Three tests:
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from reflexio.models.api_schema.domain.entities import AgentPlaybook
 from reflexio.server.services.storage.storage_base._playbook import (
@@ -106,3 +108,21 @@ class TestPlaybookBaseAggregateEmit:
 
         # capture_anomaly must NOT be called on success
         mock_capture.assert_not_called()
+
+    def test_empty_request_id_raises_before_save(self):
+        """Empty request_id raises ValueError before any storage write (no orphan row)."""
+        saved_pb = _make_saved_playbook()
+        mock_self = _make_mock_self(saved_pb)
+
+        with pytest.raises(ValueError, match="non-empty request_id"):
+            PlaybookMixin.save_agent_playbook_with_aggregate_event(
+                mock_self,
+                AgentPlaybook(playbook_name="test-pb", agent_version="v2", content="x"),
+                source_ids=["1"],
+                request_id="",
+                run_mode="full_archive",
+            )
+
+        # No storage call must have been made
+        mock_self.save_agent_playbooks.assert_not_called()
+        mock_self.append_lineage_event.assert_not_called()

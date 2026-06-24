@@ -756,27 +756,12 @@ class PlaybookAggregator:
                     for fb in cluster_playbooks
                     if fb.user_playbook_id
                 ]
-                try:
-                    saved_fb = self.storage.save_agent_playbook_with_aggregate_event(  # type: ignore[reportOptionalMemberAccess]
-                        playbook,
-                        source_ids=member_ids,
-                        request_id=_run_id,
-                        run_mode=run_mode,
-                    )
-                except Exception:
-                    # Atomic create rolled back (no orphan row/event); skip this
-                    # playbook and keep the run going.
-                    with sentry_tags(
-                        subsystem="playbook_aggregation",
-                        op="save_with_aggregate_event",
-                        org_id=self.request_context.org_id,
-                        request_id=_run_id,
-                    ):
-                        logger.exception(
-                            "atomic save+aggregate-event failed; skipping playbook (run %s)",
-                            _run_id,
-                        )
-                    continue
+                saved_fb = self.storage.save_agent_playbook_with_aggregate_event(  # type: ignore[reportOptionalMemberAccess]
+                    playbook,
+                    source_ids=member_ids,
+                    request_id=_run_id,
+                    run_mode=run_mode,
+                )
                 saved_playbook_list.append(saved_fb)
                 if saved_fb and saved_fb.agent_playbook_id:
                     fp_key = self._compute_cluster_fingerprint(cluster_playbooks)
@@ -844,6 +829,12 @@ class PlaybookAggregator:
                             "Failed to soft-supersede archived agent playbooks (run %s)",
                             _run_id,
                         )
+                    capture_anomaly(
+                        "lineage.aggregation.supersede_failed",
+                        level="error",
+                        org_id=self.request_context.org_id,
+                        request_id=_run_id,
+                    )
 
             self._enqueue_playbook_optimization(saved_playbook_list)
 

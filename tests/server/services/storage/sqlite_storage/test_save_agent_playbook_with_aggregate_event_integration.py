@@ -1,10 +1,13 @@
 """TDD tests for save_agent_playbook_with_aggregate_event — SQLite atomic write side.
 
-Three tests:
+Five tests:
   1. Happy path: row inserted + exactly one op=aggregate event with correct
      reason / source_ids.
   2. Atomicity: if _append_event_stmt raises, the INSERT rolls back (no orphaned row).
   3. FTS: the new playbook is searchable after the call.
+  4. C2: FTS/vec index failure after commit does NOT roll back the committed row+event;
+     the method returns the saved playbook normally.
+  5. Empty request_id raises ValueError before any storage write (no orphan row).
 """
 
 from __future__ import annotations
@@ -137,3 +140,61 @@ class TestSaveAgentPlaybookWithAggregateEvent:
         assert any(h.agent_playbook_id == result.agent_playbook_id for h in hits), (
             "New playbook not found in FTS index after save_agent_playbook_with_aggregate_event"
         )
+
+    def test_index_failure_after_commit_does_not_rollback_row(self, tmp_path):
+        """C2: FTS/vec index failure after commit returns the saved playbook (row+event intact).
+
+        The row and the aggregate event are committed before indexing begins.
+        A crash in _index_agent_playbook_fts_vec must NOT propagate as a save failure —
+        the caller gets the saved playbook back, and the committed data is preserved.
+        """
+        s = _store(tmp_path)
+        pb = _make_playbook(trigger="index-fail-trigger", content="some content")
+
+        with patch.object(
+            s,
+            "_index_agent_playbook_fts_vec",
+            side_effect=RuntimeError("simulated FTS index failure"),
+        ):
+            result = s.save_agent_playbook_with_aggregate_event(
+                pb,
+                source_ids=["42"],
+                request_id="run-idx-fail",
+                run_mode="incremental",
+            )
+
+        # Method returns the saved playbook normally
+        assert result is not None
+        assert result.agent_playbook_id > 0
+
+        # Row is durably committed
+        fetched = s.get_agent_playbook_by_id(result.agent_playbook_id)
+        assert fetched is not None, "Row must be committed even if FTS indexing fails"
+
+        # Event is durably committed
+        events = s.get_lineage_events(
+            entity_type="agent_playbook",
+            entity_id=str(result.agent_playbook_id),
+        )
+        agg_events = [e for e in events if e.op == "aggregate"]
+        assert len(agg_events) == 1, (
+            "Aggregate event must be committed even if FTS indexing fails"
+        )
+
+    def test_empty_request_id_raises_before_write(self, tmp_path):
+        """Empty request_id raises ValueError before any storage write (no orphan row)."""
+        s = _store(tmp_path)
+        pb = _make_playbook()
+        rows_before = len(s.get_agent_playbooks())
+
+        # StorageError wraps ValueError via handle_exceptions
+        with pytest.raises((ValueError, StorageError), match="non-empty request_id"):
+            s.save_agent_playbook_with_aggregate_event(
+                pb,
+                source_ids=["1"],
+                request_id="",
+                run_mode="full_archive",
+            )
+
+        rows_after = len(s.get_agent_playbooks())
+        assert rows_after == rows_before, "No row must be written for empty request_id"
