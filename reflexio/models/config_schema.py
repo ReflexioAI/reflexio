@@ -466,13 +466,6 @@ class PlaybookAggregatorConfig(BaseModel):
         return _migrate_dict(data, _AGGREGATOR_FIELD_MIGRATION)
 
 
-class UserDetailStrippingConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    enabled: bool = True
-    forcelist: list[NonEmptyStr] = Field(default_factory=list)
-
-
 class UserPlaybookExtractorConfig(_ExtractorWindowOverrideCompatMixin, BaseModel):
     # Deprecated: kept for back-compat with stored configs. Extraction is singleton
     # (one playbook extractor per org), so the name is accepted but ignored.
@@ -852,9 +845,6 @@ class Config(BaseModel):
     playbook_optimizer_config: PlaybookOptimizerConfig = Field(
         default_factory=PlaybookOptimizerConfig
     )
-    # Optional aggregation-boundary user detail stripping controls.
-    # None means no mechanical stripper is required by the shared package.
-    user_detail_stripping_config: UserDetailStrippingConfig | None = None
     # Tombstone GC job gate (opt-in, off by default — see LineageGCConfig)
     lineage_gc: LineageGCConfig = Field(default_factory=LineageGCConfig)
     # Optional non-blocking async information tools for classic extraction.

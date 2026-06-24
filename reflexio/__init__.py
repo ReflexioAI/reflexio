@@ -78,7 +78,6 @@ from reflexio.models.config_schema import (
     StorageConfigSupabase,
     StorageConfigTest,
     ToolUseConfig,
-    UserDetailStrippingConfig,
     UserPlaybookExtractorConfig,
 )
 
@@ -161,7 +160,6 @@ __all__ = [
     "PlaybookAggregatorConfig",
     "PlaybookConfig",
     "UserPlaybookExtractorConfig",
-    "UserDetailStrippingConfig",
     "AgentSuccessConfig",
     "ToolUseConfig",
     "Config",
