@@ -48,9 +48,7 @@ Triggered manually via `/api/run_playbook_aggregation`. Clusters user playbooks 
 **Key Methods**:
 - `get_clusters(user_playbooks, config)` - HDBSCAN/Agglomerative clustering on embeddings
 - `aggregate()` - Full aggregation pipeline with LLM-based consolidation
-- `_build_change_log()` - Builds `PlaybookAggregationChangeLog` with before/after snapshots (added/removed/updated playbooks)
-
-**Change Log**: After each aggregation, saves a `PlaybookAggregationChangeLog` to storage. In full_archive mode, all old playbooks are "removed" and new ones "added". In incremental mode, maps old->new via fingerprints to detect updates. Saving is best-effort (failures logged, don't block aggregation).
+**Change Log**: The legacy `playbook_aggregation_change_logs` table is retired (Track B, 2026-06-24) — the aggregator no longer writes it. The change-log view is reconstructed on demand from `lineage_event` via `reconstruct_playbook_aggregation_change_log` (`lib/_agent_playbook.py`): each run emits `op=aggregate` events (the "added" side) and `status_change→superseded` events from the supersede calls (the "removed" side), grouped by the run's `request_id`. Per-row `updated` pairing is not reconstructed (`updated_agent_playbooks=[]`, a tolerated parity delta).
 
 **Clustering**: Embeds user playbooks -> HDBSCAN clustering -> falls back to Agglomerative if too few clusters
 
