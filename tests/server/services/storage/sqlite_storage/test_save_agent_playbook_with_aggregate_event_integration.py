@@ -62,7 +62,6 @@ class TestSaveAgentPlaybookWithAggregateEvent:
             source_ids=["10", "11"],
             request_id="run-x",
             run_mode="full_archive",
-            agent_version="v2",
         )
 
         # Row exists and has a real ID
@@ -79,7 +78,7 @@ class TestSaveAgentPlaybookWithAggregateEvent:
         agg_events = [e for e in events if e.op == "aggregate"]
         assert len(agg_events) == 1
         ev = agg_events[0]
-        assert ev.reason == "aggregate:full_archive|av=v2"
+        assert ev.reason == "aggregate:full_archive"
         assert ev.source_ids == ["10", "11"]
         assert ev.request_id == "run-x"
         assert ev.actor == "aggregator"
@@ -107,7 +106,6 @@ class TestSaveAgentPlaybookWithAggregateEvent:
                 source_ids=["1"],
                 request_id="run-fail",
                 run_mode="incremental",
-                agent_version="v1",
             )
 
         # Row count must be unchanged — INSERT rolled back
@@ -131,7 +129,6 @@ class TestSaveAgentPlaybookWithAggregateEvent:
             source_ids=[],
             request_id="run-fts",
             run_mode="incremental",
-            agent_version="v1",
         )
 
         hits = s.search_agent_playbooks(

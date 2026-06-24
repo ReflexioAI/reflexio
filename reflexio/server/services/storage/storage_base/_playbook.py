@@ -308,7 +308,6 @@ class PlaybookMixin:
         source_ids: list[str],
         request_id: str,
         run_mode: str,
-        agent_version: str,
     ) -> AgentPlaybook:
         """Persist an agent playbook AND its ``op=aggregate`` lineage event.
 
@@ -322,7 +321,6 @@ class PlaybookMixin:
             source_ids (list[str]): IDs of the source entities that produced this playbook.
             request_id (str): The aggregation run ID (used as the lineage event request_id).
             run_mode (str): The aggregation run mode (e.g. ``full_archive`` or ``incremental``).
-            agent_version (str): The agent version string (encoded in the event reason).
 
         Returns:
             AgentPlaybook: The saved playbook with ``agent_playbook_id`` populated.
@@ -337,7 +335,7 @@ class PlaybookMixin:
             source_ids=source_ids,
             actor="aggregator",
             request_id=request_id,
-            reason=f"aggregate:{run_mode}|av={agent_version}",
+            reason=f"aggregate:{run_mode}",
         )
         # The row is already committed; this default is non-atomic (atomic backends override
         # it). The event is the sole reconstruction signal for the run, so make the emit

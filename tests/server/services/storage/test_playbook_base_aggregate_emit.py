@@ -59,7 +59,6 @@ class TestPlaybookBaseAggregateEmit:
                 source_ids=["1", "2"],
                 request_id="r-fail",
                 run_mode="full_archive",
-                agent_version="v2",
             )
 
         # Method must return the saved playbook — never raise
@@ -89,7 +88,6 @@ class TestPlaybookBaseAggregateEmit:
                 source_ids=["10", "11"],
                 request_id="r-ok",
                 run_mode="full_archive",
-                agent_version="v2",
             )
 
         assert result is saved_pb
@@ -100,7 +98,7 @@ class TestPlaybookBaseAggregateEmit:
         # Verify the emitted event has correct op and reason
         (event,) = mock_self.append_lineage_event.call_args.args
         assert event.op == "aggregate"
-        assert event.reason == "aggregate:full_archive|av=v2"
+        assert event.reason == "aggregate:full_archive"
         assert event.prov_relation == "wasDerivedFrom"
         assert event.actor == "aggregator"
         assert event.source_ids == ["10", "11"]

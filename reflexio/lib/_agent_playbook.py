@@ -381,6 +381,10 @@ def reconstruct_playbook_aggregation_change_log(
 
     Run-scalars (``playbook_name``, ``agent_version``) are read from the
     reconstructed content: ``added[0]`` is preferred, else ``removed[0]``.
+    For a remove-only run whose superseded playbooks span multiple versions,
+    ``agent_version`` is that of the first resolved removed snapshot — a
+    tolerated, documented ambiguity (the aggregate event carries no version
+    since remove-only runs emit no aggregate event).
 
     Args:
         storage (BaseStorage): Storage instance to query.
@@ -486,6 +490,10 @@ def reconstruct_playbook_aggregation_change_log(
         if not added and not removed:
             continue
 
+        # agent_version is the run's REPRESENTATIVE snapshot version (added[0], else
+        # removed[0]). For a remove-only run whose superseded playbooks span multiple
+        # versions, the label is that of the first resolved removed snapshot — a
+        # tolerated, documented ambiguity (the aggregate event carries no version).
         first = added[0] if added else removed[0]
         # Filter INSIDE the loop so the ``limit`` is applied to the post-filter
         # set (not a pre-filter slice) AND we can stop once the page is full.
