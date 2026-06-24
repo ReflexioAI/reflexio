@@ -1210,7 +1210,7 @@ def test_playbook_aggregation_prompt_generalizes_direct_identifiers():
     assert "triggers, rationales, and any freeform content" in out
     assert "Never carry user-specific or source-specific direct identifiers" in out
     assert "Secrets and credentials must not be copied" in out
-    assert "Return {\"playbook\": null}" in out
+    assert 'Return {"playbook": null}' in out
 
 
 def test_playbook_aggregation_prompt_has_privacy_self_check_before_output():
@@ -1229,12 +1229,14 @@ def test_playbook_aggregation_prompt_has_privacy_self_check_before_output():
     output_index = out.index("## Output")
     assert checklist_index < output_index
     assert "`trigger`, `content`, and `rationale`" in out[checklist_index:output_index]
-    assert "direct identifiers, secrets, raw contact details, or exact IDs" in out[
-        checklist_index:output_index
-    ]
-    assert "grounded in the clustered source playbooks" in out[
-        checklist_index:output_index
-    ]
+    assert (
+        "direct identifiers, secrets, raw contact details, or exact IDs"
+        in out[checklist_index:output_index]
+    )
+    assert (
+        "grounded in the clustered source playbooks"
+        in out[checklist_index:output_index]
+    )
 
 
 def test_playbook_aggregation_prompt_preserves_distinct_orientations():
