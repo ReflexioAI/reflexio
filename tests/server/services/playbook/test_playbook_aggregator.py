@@ -1210,7 +1210,7 @@ def test_playbook_aggregation_prompt_generalizes_direct_identifiers():
     assert "triggers, rationales, and any freeform content" in out
     assert "Never carry user-specific or source-specific direct identifiers" in out
     assert "Secrets and credentials must not be copied" in out
-    assert "Return {{\"playbook\": null}}" in out
+    assert "Return {\"playbook\": null}" in out
 
 
 def test_playbook_aggregation_prompt_has_privacy_self_check_before_output():
