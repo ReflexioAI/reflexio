@@ -42,31 +42,35 @@ from reflexio.server.tracing import profile_step
 class AgentPlaybookMixin(ReflexioBase):
     def get_playbook_aggregation_change_logs(
         self,
-        playbook_name: str,  # noqa: ARG002
-        agent_version: str,  # noqa: ARG002
+        playbook_name: str,
+        agent_version: str,
     ) -> PlaybookAggregationChangeLogResponse:
         """Get playbook aggregation change logs, served from the lineage reconstruction.
 
         The change-log view is rebuilt on demand from ``lineage_event`` rows via
         :func:`reconstruct_playbook_aggregation_change_log`. The legacy
-        ``playbook_aggregation_change_logs`` table is no longer read; ``playbook_name``
-        and ``agent_version`` args are accepted for API compatibility but reconstruction
-        returns all logs without filtering. ``updated_agent_playbooks`` is always ``[]``
-        (tolerated parity delta — Decision 3).
+        ``playbook_aggregation_change_logs`` table is no longer read. Results are
+        filtered to entries matching ``playbook_name`` and ``agent_version``.
+        ``updated_agent_playbooks`` is always ``[]`` (tolerated parity delta — Decision 3).
 
         Args:
-            playbook_name (str): Accepted for API compatibility; not used in reconstruction.
-            agent_version (str): Accepted for API compatibility; not used in reconstruction.
+            playbook_name (str): Filter — only logs for this playbook name are returned.
+            agent_version (str): Filter — only logs for this agent version are returned.
 
         Returns:
             PlaybookAggregationChangeLogResponse: Response containing the reconstructed
-                change logs.
+                change logs filtered by playbook_name and agent_version.
         """
         if not self._is_storage_configured():
             return PlaybookAggregationChangeLogResponse(success=True, change_logs=[])
-        # Legacy table no longer read; served by reconstruction.
-        # updated_agent_playbooks is always [] (tolerated parity delta).
-        return reconstruct_playbook_aggregation_change_log(self._get_storage())
+        # Legacy table no longer read; served by reconstruction filtered by
+        # playbook_name + agent_version. updated_agent_playbooks is always []
+        # (tolerated parity delta).
+        return reconstruct_playbook_aggregation_change_log(
+            self._get_storage(),
+            playbook_name=playbook_name,
+            agent_version=agent_version,
+        )
 
     @_require_storage(DeleteAgentPlaybookResponse)
     def delete_agent_playbook(
@@ -345,6 +349,8 @@ def reconstruct_playbook_aggregation_change_log(
     storage: BaseStorage,
     *,
     limit: int = 100,
+    playbook_name: str | None = None,
+    agent_version: str | None = None,
 ) -> PlaybookAggregationChangeLogResponse:
     """Rebuild the PlaybookAggregationChangeLog view from lineage events.
 
@@ -380,11 +386,19 @@ def reconstruct_playbook_aggregation_change_log(
         storage (BaseStorage): Storage instance to query.
         limit (int): Maximum number of reconstructed entries to return.
             Defaults to 100.
+        playbook_name (str | None): When provided, only logs whose
+            ``playbook_name`` matches are returned. Defaults to ``None``
+            (no filter).
+        agent_version (str | None): When provided, only logs whose
+            ``agent_version`` matches are returned. Defaults to ``None``
+            (no filter).
 
     Returns:
         PlaybookAggregationChangeLogResponse: ``success=True`` with
             reconstructed rows ordered most-recent-first (by max event
-            ``created_at`` in each request_id group), capped at ``limit``.
+            ``created_at`` in each request_id group), filtered by
+            ``playbook_name``/``agent_version`` when supplied, and capped
+            at ``limit``.
     """
     if limit <= 0:
         return PlaybookAggregationChangeLogResponse(success=True, change_logs=[])
@@ -427,7 +441,7 @@ def reconstruct_playbook_aggregation_change_log(
         candidate_reqs,
         key=lambda r: sort_key.get(r, (0, 0)),
         reverse=True,
-    )[:limit]
+    )
 
     logs: list[PlaybookAggregationChangeLog] = []
     # PERFORMANCE NOTE (M3): this resolves content with a per-entity
@@ -482,4 +496,10 @@ def reconstruct_playbook_aggregation_change_log(
             )
         )
 
-    return PlaybookAggregationChangeLogResponse(success=True, change_logs=logs)
+    # Filter BEFORE applying limit so the limit is applied to the relevant set.
+    if playbook_name is not None:
+        logs = [log for log in logs if log.playbook_name == playbook_name]
+    if agent_version is not None:
+        logs = [log for log in logs if log.agent_version == agent_version]
+
+    return PlaybookAggregationChangeLogResponse(success=True, change_logs=logs[:limit])

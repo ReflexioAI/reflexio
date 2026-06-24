@@ -199,6 +199,78 @@ class TestGetPlaybookAggregationChangeLogs:
         assert response.success is True
         assert response.change_logs == []
 
+    def test_filters_by_playbook_name_and_agent_version(self, tmp_path):
+        """get_playbook_aggregation_change_logs returns only logs matching the
+        requested playbook_name + agent_version and excludes all others.
+
+        Seeds two distinct (playbook_name, agent_version) combinations via
+        lineage events, calls the mixin with only one combination, and asserts
+        only that combination's log is returned.
+        """
+        from reflexio.models.api_schema.domain.entities import LineageEvent
+        from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
+
+        s = SQLiteStorage(org_id="org-unit-filter", db_path=str(tmp_path / "filter.db"))
+        s.migrate()
+
+        # --- Combination A: playbook_name="fb_A", agent_version="v1" ---
+        pb_a = AgentPlaybook(
+            playbook_name="fb_A", agent_version="v1", content="content A"
+        )
+        saved_a = s.save_agent_playbooks([pb_a])
+        id_a = saved_a[0].agent_playbook_id
+        s.append_lineage_event(
+            LineageEvent(
+                org_id=s.org_id,
+                entity_type="agent_playbook",
+                entity_id=str(id_a),
+                op="aggregate",
+                prov_relation="wasDerivedFrom",
+                source_ids=[],
+                actor="aggregator",
+                request_id="run-A",
+                reason="aggregate:incremental",
+            )
+        )
+
+        # --- Combination B: playbook_name="fb_B", agent_version="v2" ---
+        pb_b = AgentPlaybook(
+            playbook_name="fb_B", agent_version="v2", content="content B"
+        )
+        saved_b = s.save_agent_playbooks([pb_b])
+        id_b = saved_b[0].agent_playbook_id
+        s.append_lineage_event(
+            LineageEvent(
+                org_id=s.org_id,
+                entity_type="agent_playbook",
+                entity_id=str(id_b),
+                op="aggregate",
+                prov_relation="wasDerivedFrom",
+                source_ids=[],
+                actor="aggregator",
+                request_id="run-B",
+                reason="aggregate:incremental",
+            )
+        )
+
+        mixin = _make_mixin_with_sqlite(s)
+        # Request only combination A
+        response = mixin.get_playbook_aggregation_change_logs(
+            playbook_name="fb_A", agent_version="v1"
+        )
+
+        assert response.success is True
+        assert len(response.change_logs) == 1, (
+            f"Expected 1 log for fb_A/v1, got {len(response.change_logs)}"
+        )
+        log = response.change_logs[0]
+        assert log.playbook_name == "fb_A"
+        assert log.agent_version == "v1"
+        # Combination B must be excluded
+        contents = {snap.content for snap in log.added_agent_playbooks}
+        assert "content B" not in contents
+        assert "content A" in contents
+
 
 # ---------------------------------------------------------------------------
 # add_agent_playbook
