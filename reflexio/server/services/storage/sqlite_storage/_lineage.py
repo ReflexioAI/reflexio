@@ -85,14 +85,18 @@ def _append_event_stmt(
     )
 
 
-# Per-entity purge SQL: blank every PII/content column, guard on content != '' for
-# idempotency (re-running on an already-blank row skips the event emission).
+# Per-entity purge SQL: blank every PII/content column.
+# No ``content != ''`` guard — a row with content='' but other PII still populated
+# (user_id, embedding, tags, …) would be skipped by that guard, leaving its PII live.
+# Blanking already-blank columns is an idempotent no-op in SQLite (rowcount=1 either
+# way because the row matched); event idempotency is guaranteed by the deterministic
+# request_id + INSERT OR IGNORE on (org,entity_type,entity_id,op,request_id).
 _PROFILE_PURGE_SQL = (
     "UPDATE profiles SET "
     "content='', user_id='', generated_from_request_id='', source='', "
     "embedding=NULL, extractor_names=NULL, expanded_terms=NULL, tags=NULL, "
     "custom_features=NULL, notes=NULL, source_span=NULL, reader_angle=NULL "
-    "WHERE profile_id=? AND content != ''"
+    "WHERE profile_id=?"
 )
 _USER_PLAYBOOK_PURGE_SQL = (
     "UPDATE user_playbooks SET "
@@ -100,7 +104,7 @@ _USER_PLAYBOOK_PURGE_SQL = (
     "trigger=NULL, rationale=NULL, blocking_issue=NULL, "
     "source_interaction_ids=NULL, embedding=NULL, expanded_terms=NULL, "
     "tags=NULL, source_span=NULL, notes=NULL, reader_angle=NULL "
-    "WHERE user_playbook_id=? AND content != ''"
+    "WHERE user_playbook_id=?"
 )
 # agent_playbook purge not yet required; added when Task 3/4 needs it.
 _PURGE_SQL: dict[str, str] = {
@@ -358,9 +362,15 @@ class SQLiteLineageMixin:
         (``"purge_" + entity_id``) so re-runs on an already-blank row do not
         produce a duplicate event (``INSERT OR IGNORE`` on the unique key).
 
+        Re-running on a row whose content is already blank is safe: the UPDATE
+        still matches the row and sets the same values (harmless idempotent write),
+        while the INSERT OR IGNORE deduplicates the event on
+        ``(org_id, entity_type, entity_id, op, request_id)``.
+
         Args:
-            entity_type (EntityType): One of ``"user_playbook"``, ``"agent_playbook"``,
-                or ``"profile"``.
+            entity_type (EntityType): One of ``"user_playbook"`` or ``"profile"``.
+                ``"agent_playbook"`` raises ``ValueError`` — agent playbooks have no
+                ``user_id`` and are out of scope for content purge.
             entity_id (str): The entity's primary key as a string.
 
         Returns:
@@ -368,7 +378,7 @@ class SQLiteLineageMixin:
 
         Raises:
             ValueError: If ``entity_type`` is not a recognized entity type or
-                if ``entity_type`` is ``"agent_playbook"`` (not yet supported).
+                if ``entity_type`` is ``"agent_playbook"`` (not supported).
         """
         sql = _PURGE_SQL.get(entity_type)
         if sql is None:

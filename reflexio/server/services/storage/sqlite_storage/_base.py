@@ -1836,39 +1836,17 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             # ------------------------------------------------------------------
             # Phase 3: FTS and vector cleanup — only for the delete-sets
             # (purge_content handles its own index cleanup for purged rows).
+            # Use _delete_in_chunks to stay under SQLite's SQLITE_MAX_VARIABLE_NUMBER
+            # limit for large user datasets.
             # ------------------------------------------------------------------
-            if interaction_ids:
-                ph = ",".join("?" for _ in interaction_ids)
-                self.conn.execute(
-                    f"DELETE FROM interactions_fts WHERE rowid IN ({ph})",  # noqa: S608
-                    interaction_ids,
-                )
-            if delete_upb_ids:
-                ph = ",".join("?" for _ in delete_upb_ids)
-                self.conn.execute(
-                    f"DELETE FROM user_playbooks_fts WHERE rowid IN ({ph})",  # noqa: S608
-                    delete_upb_ids,
-                )
-            if delete_profile_ids:
-                ph = ",".join("?" for _ in delete_profile_ids)
-                self.conn.execute(
-                    f"DELETE FROM profiles_fts WHERE profile_id IN ({ph})",  # noqa: S608
-                    delete_profile_ids,
-                )
+            self._delete_in_chunks("interactions_fts", "rowid", interaction_ids)
+            self._delete_in_chunks("user_playbooks_fts", "rowid", delete_upb_ids)
+            self._delete_in_chunks("profiles_fts", "profile_id", delete_profile_ids)
 
             if self._has_sqlite_vec:
-                vec_targets: list[tuple[str, list[int]]] = [
-                    ("interactions_vec", interaction_ids),
-                    ("user_playbooks_vec", delete_upb_ids),
-                    ("profiles_vec", delete_profile_rowids),
-                ]
-                for vec_table, rowids in vec_targets:
-                    if rowids:
-                        ph = ",".join("?" for _ in rowids)
-                        self.conn.execute(
-                            f"DELETE FROM {vec_table} WHERE rowid IN ({ph})",  # noqa: S608
-                            rowids,
-                        )
+                self._delete_in_chunks("interactions_vec", "rowid", interaction_ids)
+                self._delete_in_chunks("user_playbooks_vec", "rowid", delete_upb_ids)
+                self._delete_in_chunks("profiles_vec", "rowid", delete_profile_rowids)
 
             # ------------------------------------------------------------------
             # Phase 4: hard-delete the delete-sets and all interactions/requests.
@@ -1881,20 +1859,18 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             )
             upb_deleted_count = 0
             if delete_upb_ids:
-                ph = ",".join("?" for _ in delete_upb_ids)
-                upb_cur = self.conn.execute(
-                    f"DELETE FROM user_playbooks WHERE user_playbook_id IN ({ph})",  # noqa: S608
-                    delete_upb_ids,
+                # Clean up source-window join rows before deleting the parent rows.
+                self._delete_source_windows_for_user_playbook_ids(delete_upb_ids)
+                self._delete_in_chunks(
+                    "user_playbooks", "user_playbook_id", delete_upb_ids
                 )
-                upb_deleted_count = upb_cur.rowcount
+                # rowcount not available from _delete_in_chunks; derive from list length
+                # (all ids came from a pre-snapshot so they exist at delete time).
+                upb_deleted_count = len(delete_upb_ids)
             profile_deleted_count = 0
             if delete_profile_ids:
-                ph = ",".join("?" for _ in delete_profile_ids)
-                prof_cur = self.conn.execute(
-                    f"DELETE FROM profiles WHERE profile_id IN ({ph})",  # noqa: S608
-                    delete_profile_ids,
-                )
-                profile_deleted_count = prof_cur.rowcount
+                self._delete_in_chunks("profiles", "profile_id", delete_profile_ids)
+                profile_deleted_count = len(delete_profile_ids)
 
             # Commit the hard-deletes before calling purge_content, because
             # purge_content issues its own conn.commit() and nesting it here
@@ -1903,12 +1879,15 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
 
         # ------------------------------------------------------------------
         # Phase 5: content-purge the purge-sets (each call self-commits).
-        # Done outside the lock so purge_content can acquire it independently.
+        # self._lock is an RLock, so purge_content's internal ``with self._lock``
+        # re-acquires cleanly. The hard-delete commit above already closed the
+        # outer transaction, so no flush hazard exists.
         # ------------------------------------------------------------------
-        for pid in purge_profile_ids:
-            self.purge_content(entity_type="profile", entity_id=str(pid))
-        for upid in purge_upb_ids:
-            self.purge_content(entity_type="user_playbook", entity_id=str(upid))
+        with self._lock:
+            for pid in purge_profile_ids:
+                self.purge_content(entity_type="profile", entity_id=str(pid))
+            for upid in purge_upb_ids:
+                self.purge_content(entity_type="user_playbook", entity_id=str(upid))
 
         return {
             "interactions": interactions_cur.rowcount,

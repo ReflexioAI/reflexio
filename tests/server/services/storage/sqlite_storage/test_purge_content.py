@@ -87,6 +87,63 @@ def test_purge_returns_false_for_missing_entity(storage):
     )
 
 
+def test_purge_with_empty_content_still_blanks_other_pii(storage):
+    """Row with content='' but other PII populated must be fully purged.
+
+    Guards against the former ``AND content != ''`` guard that would skip the
+    UPDATE entirely when content was already blank, leaving user_id / embedding /
+    tags / etc. intact.
+    """
+    # Insert a profile and then zero out content manually, leaving user_id set.
+    storage.add_user_profile("alice", [_profile("E", "alice", "initial body")])
+    # Blank only content so the row has content='' but user_id='alice' still live.
+    storage.conn.execute("UPDATE profiles SET content='' WHERE profile_id='E'")
+    storage.conn.commit()
+
+    # Sanity: user_id is still populated before the purge.
+    before = storage.conn.execute(
+        "SELECT content, user_id FROM profiles WHERE profile_id='E'"
+    ).fetchone()
+    assert before["content"] == ""
+    assert before["user_id"] == "alice"
+
+    # Purge must return True (row exists) and blank user_id even though content was ''.
+    assert storage.purge_content(entity_type="profile", entity_id="E") is True
+
+    after = storage.conn.execute(
+        "SELECT content, user_id FROM profiles WHERE profile_id='E'"
+    ).fetchone()
+    assert after["content"] == "", "content already blank — stays blank"
+    assert after["user_id"] == "", (
+        "user_id must be blanked even when content was already ''"
+    )
+
+    # Exactly one purge event recorded.
+    events = storage.get_lineage_events(
+        entity_type="profile", entity_id="E", org_id="0"
+    )
+    purges = [e for e in events if e.op == "purge"]
+    assert len(purges) == 1
+
+
+def test_purge_idempotent_on_already_purged_row(storage):
+    """Re-running purge on an already-purged row yields exactly one op=purge event.
+
+    The deterministic request_id ``"purge_{entity_id}"`` + INSERT OR IGNORE on the
+    unique key ensures no duplicate event is recorded.
+    """
+    storage.add_user_profile("bob", [_profile("F", "bob", "some content")])
+    storage.purge_content(entity_type="profile", entity_id="F")  # first purge
+    storage.purge_content(entity_type="profile", entity_id="F")  # re-run
+
+    events = storage.get_lineage_events(
+        entity_type="profile", entity_id="F", org_id="0"
+    )
+    purges = [e for e in events if e.op == "purge"]
+    assert len(purges) == 1, f"Expected 1 purge event, got {len(purges)}"
+    assert purges[0].request_id == "purge_F"
+
+
 def test_resolve_current_returns_is_purged_for_purged_survivor(storage):
     """Guard: resolve_current returns is_purged=True when the live survivor was purged.
 
@@ -273,24 +330,21 @@ def test_clear_user_data_tombstone_only_user(tmp_path):
     # Erase alice — her only profile is a tombstone; erasure must reach it.
     counts = s.clear_user_data("alice")
 
-    # A is tombstone and pointed-to by nothing itself (B points at A via
-    # superseded_by, so A has no inbound refs) — but A IS a tombstone so it
-    # is purge-eligible via _is_lineage_tombstone.
+    # A is a tombstone (superseded_by=B set) → _is_lineage_tombstone returns True
+    # → _partition_purge_vs_delete puts A in the purge set (not hard-delete).
+    # The row must still exist, content blanked, and count as purged.
     a_row = s.conn.execute(
         "SELECT content, user_id FROM profiles WHERE profile_id='A'"
     ).fetchone()
-    # Row must have been reached: either purged (content='') or hard-deleted.
-    # Both outcomes satisfy erasure; the key is the row is NOT intact.
-    if a_row is not None:
-        # Purged: content blanked.
-        assert a_row["content"] == "", (
-            "Tombstone profile A must be content-purged on erasure"
-        )
-    # If a_row is None it was hard-deleted — also acceptable (no inbound refs).
-    # Either way at least one profile was touched.
-    assert counts["purged_profiles"] + counts["profiles"] >= 1, (
-        "Erasure must report at least one profile touched "
-        f"(purged={counts['purged_profiles']}, deleted={counts['profiles']})"
+    assert a_row is not None, (
+        "Tombstone A must be content-purged (skeleton kept), not hard-deleted"
+    )
+    assert a_row["content"] == "", "Tombstone profile A must have its content blanked"
+    assert counts["purged_profiles"] == 1, (
+        f"Expected 1 purged profile, got {counts['purged_profiles']}"
+    )
+    assert counts["profiles"] == 0, (
+        f"Expected 0 hard-deleted profiles, got {counts['profiles']}"
     )
 
 
@@ -322,6 +376,9 @@ def test_clear_user_data_cross_user_chain_purges_other_users_survivor(tmp_path):
     assert c_row["content"] == "", (
         "C's content must be blanked (purged), not merely kept"
     )
-    # Alice's A still resolves to C via the pointer.
+    # Alice's A still resolves to C via the pointer, and C is marked purged.
     ref = resolve_current(s, "profile", "A")
     assert ref is not None and ref.id == "C"
+    assert ref.is_purged is True, (
+        "Resolved survivor C must be marked is_purged after content purge"
+    )

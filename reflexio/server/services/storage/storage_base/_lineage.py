@@ -157,15 +157,18 @@ class LineageEventMixin:
         Returns ``True`` if a row existed (whether or not new blanking was done).
 
         Args:
-            entity_type (EntityType): One of ``"user_playbook"``, ``"agent_playbook"``,
-                or ``"profile"``.
+            entity_type (EntityType): One of ``"user_playbook"`` or ``"profile"``.
+                ``"agent_playbook"`` is **not** supported (agent playbooks have no
+                ``user_id`` and are out of scope for content purge) — implementations
+                must raise ``ValueError`` for that value.
             entity_id (str): The entity's primary key as a string.
 
         Returns:
             bool: ``True`` if the row exists; ``False`` if the id had no matching row.
 
         Raises:
-            ValueError: If ``entity_type`` is not a recognized entity type.
+            ValueError: If ``entity_type`` is not a recognized entity type or is
+                ``"agent_playbook"``.
         """
         raise NotImplementedError
 
