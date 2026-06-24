@@ -5,7 +5,7 @@ Tests fingerprint computation, change detection logic, selective LLM invocation,
 and clustering stability.
 """
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
@@ -461,13 +461,17 @@ class TestAggregatorRunWithChangeDetection:
             operation_state=None,
         )
 
-        # Make save_agent_playbooks return playbooks with IDs
-        def save_agent_playbooks_side_effect(playbooks):
-            for i, fb in enumerate(playbooks):
-                fb.agent_playbook_id = i + 1
-            return playbooks
+        # Make save_agent_playbook_with_aggregate_event return playbooks with IDs
+        _id_counter = [0]
 
-        mock_storage.save_agent_playbooks.side_effect = save_agent_playbooks_side_effect
+        def save_with_event_side_effect(playbook, *, source_ids, request_id, run_mode):  # noqa: ANN001, ARG001
+            _id_counter[0] += 1
+            playbook.agent_playbook_id = _id_counter[0]
+            return playbook
+
+        mock_storage.save_agent_playbook_with_aggregate_event.side_effect = (
+            save_with_event_side_effect
+        )
 
         request = PlaybookAggregatorRequest(
             agent_version="1.0",
@@ -477,8 +481,8 @@ class TestAggregatorRunWithChangeDetection:
 
         # LLM should be called for each cluster (at least 1, up to 2)
         assert mock_llm_client.generate_chat_response.call_count >= 1
-        # Save playbooks should be called
-        mock_storage.save_agent_playbooks.assert_called_once()
+        # save_agent_playbook_with_aggregate_event should be called
+        mock_storage.save_agent_playbook_with_aggregate_event.assert_called()
         # Fingerprints should be stored
         mock_storage.upsert_operation_state.assert_called()
 
@@ -578,12 +582,16 @@ class TestAggregatorRunWithChangeDetection:
             config=config,
         )
 
-        def save_agent_playbooks_side_effect(playbooks):
-            for i, fb in enumerate(playbooks):
-                fb.agent_playbook_id = i + 200
-            return playbooks
+        _id_counter2 = [200]
 
-        mock_storage.save_agent_playbooks.side_effect = save_agent_playbooks_side_effect
+        def save_with_event_side_effect2(playbook, *, source_ids, request_id, run_mode):  # noqa: ANN001, ARG001
+            _id_counter2[0] += 1
+            playbook.agent_playbook_id = _id_counter2[0]
+            return playbook
+
+        mock_storage.save_agent_playbook_with_aggregate_event.side_effect = (
+            save_with_event_side_effect2
+        )
 
         request = PlaybookAggregatorRequest(
             agent_version="1.0",
@@ -594,8 +602,8 @@ class TestAggregatorRunWithChangeDetection:
         # LLM should be called fewer times than total clusters
         total_llm_calls = mock_llm_client.generate_chat_response.call_count
         assert total_llm_calls >= 1
-        # save_agent_playbooks should be called
-        mock_storage.save_agent_playbooks.assert_called_once()
+        # save_agent_playbook_with_aggregate_event should be called
+        mock_storage.save_agent_playbook_with_aggregate_event.assert_called()
 
     def test_rerun_bypasses_change_detection(self):
         """rerun=True should call LLM for ALL clusters regardless of fingerprints."""
@@ -630,12 +638,16 @@ class TestAggregatorRunWithChangeDetection:
             config=config,
         )
 
-        def save_agent_playbooks_side_effect(playbooks):
-            for i, fb in enumerate(playbooks):
-                fb.agent_playbook_id = i + 1
-            return playbooks
+        _id_counter3 = [0]
 
-        mock_storage.save_agent_playbooks.side_effect = save_agent_playbooks_side_effect
+        def save_with_event_side_effect3(playbook, *, source_ids, request_id, run_mode):  # noqa: ANN001, ARG001
+            _id_counter3[0] += 1
+            playbook.agent_playbook_id = _id_counter3[0]
+            return playbook
+
+        mock_storage.save_agent_playbook_with_aggregate_event.side_effect = (
+            save_with_event_side_effect3
+        )
 
         request = PlaybookAggregatorRequest(
             agent_version="1.0",
@@ -650,8 +662,12 @@ class TestAggregatorRunWithChangeDetection:
         # full-archive playbook name (one call per name)
         mock_storage.archive_agent_playbooks_by_playbook_name.assert_called()
 
-    def test_error_during_save_restores_archived_playbooks(self):
-        """If save_agent_playbooks fails, archived playbooks should be restored."""
+    def test_error_during_generation_restores_archived_playbooks(self):
+        """If _generate_playbooks_with_source_clusters raises, archived playbooks should be restored.
+
+        D1: per-playbook save failures are caught and skipped; only outer-scope
+        exceptions (e.g. generation crash) propagate and trigger restore.
+        """
         group_a = create_similar_embeddings(3, base_seed=42)
         group_b = create_similar_embeddings(3, base_seed=100)
         original_playbooks = create_user_playbooks_with_embeddings(group_a + group_b)
@@ -688,14 +704,19 @@ class TestAggregatorRunWithChangeDetection:
             config=config,
         )
 
-        # Make save_agent_playbooks raise an exception (this happens after archiving)
-        mock_storage.save_agent_playbooks.side_effect = Exception("Storage save error")
-
         request = PlaybookAggregatorRequest(
             agent_version="1.0",
         )
 
-        with pytest.raises(Exception, match="Storage save error"):
+        # Generation helper raises → exception propagates out of the outer try → restore called.
+        with (
+            patch.object(
+                PlaybookAggregator,
+                "_generate_playbooks_with_source_clusters",
+                side_effect=RuntimeError("generation crash"),
+            ),
+            pytest.raises(RuntimeError, match="generation crash"),
+        ):
             aggregator.run(request)
 
         # restore_archived_agent_playbooks_by_ids should be called if selective archiving happened
@@ -719,12 +740,16 @@ class TestAggregatorRunWithChangeDetection:
             operation_state=None,  # No previous state → first-run path
         )
 
-        def save_agent_playbooks_side_effect(playbooks):
-            for i, fb in enumerate(playbooks):
-                fb.agent_playbook_id = i + 1
-            return playbooks
+        _id_counter4 = [0]
 
-        mock_storage.save_agent_playbooks.side_effect = save_agent_playbooks_side_effect
+        def save_with_event_side_effect4(playbook, *, source_ids, request_id, run_mode):  # noqa: ANN001, ARG001
+            _id_counter4[0] += 1
+            playbook.agent_playbook_id = _id_counter4[0]
+            return playbook
+
+        mock_storage.save_agent_playbook_with_aggregate_event.side_effect = (
+            save_with_event_side_effect4
+        )
 
         request = PlaybookAggregatorRequest(
             agent_version="1.0",
@@ -736,8 +761,12 @@ class TestAggregatorRunWithChangeDetection:
         mock_storage.supersede_agent_playbooks_by_playbook_name.assert_called()
         mock_storage.delete_archived_agent_playbooks_by_playbook_name.assert_not_called()
 
-    def test_first_run_restores_archived_on_error(self):
-        """Regression: first-run (non-rerun) must restore archived playbooks on save error."""
+    def test_first_run_restores_archived_on_generation_crash(self):
+        """Regression: first-run (non-rerun) must restore archived playbooks when generation crashes.
+
+        D1: per-playbook save failures are per-playbook caught and skipped.
+        Only outer-scope crashes (generation helper raises here) trigger the archive restore.
+        """
         group_a = create_similar_embeddings(3, base_seed=42)
         group_b = create_similar_embeddings(3, base_seed=100)
         user_playbooks = create_user_playbooks_with_embeddings(group_a + group_b)
@@ -747,14 +776,19 @@ class TestAggregatorRunWithChangeDetection:
             operation_state=None,  # No previous state → first-run path
         )
 
-        mock_storage.save_agent_playbooks.side_effect = Exception("Storage save error")
-
         request = PlaybookAggregatorRequest(
             agent_version="1.0",
             rerun=False,
         )
 
-        with pytest.raises(Exception, match="Storage save error"):
+        with (
+            patch.object(
+                PlaybookAggregator,
+                "_generate_playbooks_with_source_clusters",
+                side_effect=RuntimeError("generation crash"),
+            ),
+            pytest.raises(RuntimeError, match="generation crash"),
+        ):
             aggregator.run(request)
 
         mock_storage.restore_archived_agent_playbooks_by_playbook_name.assert_called()

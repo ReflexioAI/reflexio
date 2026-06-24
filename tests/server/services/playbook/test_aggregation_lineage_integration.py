@@ -25,6 +25,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from reflexio.lib._agent_playbook import reconstruct_playbook_aggregation_change_log
 from reflexio.models.api_schema.service_schemas import (
     AgentPlaybook,
     PlaybookStatus,
@@ -194,17 +195,22 @@ def test_aggregation_emits_aggregate_lineage_event(
     assert evt.request_id != "", "request_id must be non-empty"
 
 
-def test_aggregate_lineage_append_failure_is_best_effort(
+def test_aggregate_save_failure_is_skip_not_abort(
     sqlite_storage: SQLiteStorage,
     request_context: RequestContext,
     aggregator: PlaybookAggregator,
     worker_id: str,
 ):
-    """PB-7: a transient append_lineage_event failure must NOT abort aggregation.
+    """D1 safety: a failure in save_agent_playbook_with_aggregate_event skips the playbook but does not abort the run.
 
-    Pins the safety property: the try/except around ``storage.append_lineage_event``
-    swallows the exception, saves the agent playbook(s) anyway, and calls
-    ``capture_anomaly("lineage.aggregate.append_failed", ...)``.
+    Patches the combined atomic save+emit method to raise, verifying that:
+    (a) the aggregation run completes without raising,
+    (b) the failed playbook is not in the saved list (atomic rollback — no orphan),
+    (c) the run's stats dict is returned correctly.
+
+    This replaces the old PB-7 best-effort test which targeted the now-removed
+    inline ``append_lineage_event`` try/except in the aggregator. With D1 the
+    combined method is the atomic unit; per-playbook failures skip, not abort.
     """
     org_id = request_context.org_id
 
@@ -220,9 +226,6 @@ def test_aggregate_lineage_append_failure_is_best_effort(
         playbook_status=PlaybookStatus.PENDING,
     )
 
-    def _raise_on_append(event):  # noqa: ANN001
-        raise RuntimeError("transient lineage failure")
-
     with (
         patch.object(
             PlaybookAggregator,
@@ -235,11 +238,10 @@ def test_aggregate_lineage_append_failure_is_best_effort(
             return_value=[(unsaved_ap, cluster_playbooks)],
         ),
         patch.object(
-            sqlite_storage, "append_lineage_event", side_effect=_raise_on_append
+            sqlite_storage,
+            "save_agent_playbook_with_aggregate_event",
+            side_effect=RuntimeError("simulated atomic failure"),
         ),
-        patch(
-            "reflexio.server.services.playbook.playbook_aggregator.capture_anomaly"
-        ) as mock_capture,
     ):
         # (a) run must complete without raising
         result = aggregator.run(
@@ -250,13 +252,222 @@ def test_aggregate_lineage_append_failure_is_best_effort(
     assert isinstance(result, dict), f"Expected dict, got: {result!r}"
     assert "playbooks_generated" in result
 
-    # (b) the agent playbook was still saved despite the lineage failure
-    saved_aps = sqlite_storage.get_agent_playbooks()
-    assert saved_aps, "Agent playbook must be saved even when lineage append fails"
-
-    # (c) capture_anomaly was called with the correct anomaly key
-    assert mock_capture.called, (
-        "capture_anomaly must be called on lineage append failure"
+    # (b) the failed playbook was skipped — 0 generated (atomic rollback = no orphan)
+    assert result["playbooks_generated"] == 0, (
+        "Failed playbook must be skipped (not counted as generated)"
     )
-    anomaly_keys = [c.args[0] for c in mock_capture.call_args_list]
-    assert "lineage.aggregate.append_failed" in anomaly_keys, anomaly_keys
+    saved_aps = sqlite_storage.get_agent_playbooks()
+    assert not saved_aps, (
+        "No agent playbook must be saved when save_agent_playbook_with_aggregate_event fails"
+    )
+
+
+def _make_storage_and_ctx(
+    temp_dir: str, suffix: str, worker_id: str
+) -> tuple[SQLiteStorage, RequestContext]:
+    """Build a fresh SQLite storage + RequestContext for an e2e test."""
+    storage = SQLiteStorage(
+        org_id=f"test-e2e-reconstruct-{worker_id}{suffix}",
+        db_path=os.path.join(temp_dir, f"e2e{suffix}.db"),
+    )
+    ctx = RequestContext(
+        org_id=f"test-e2e-reconstruct-{worker_id}{suffix}",
+        storage_base_dir=temp_dir,
+    )
+    ctx.storage = storage
+    ctx.prompt_manager = MagicMock()
+    ctx.configurator = MagicMock()
+    agg_config = PlaybookAggregatorConfig(
+        min_cluster_size=2,
+        reaggregation_trigger_count=2,
+    )
+    ctx.configurator.get_config.return_value.user_playbook_extractor_config = (
+        PlaybookConfig(
+            extractor_name="default",
+            extraction_definition_prompt="stub",
+            aggregation_config=agg_config,
+        )
+    )
+    return storage, ctx
+
+
+def test_e2e_reconstruct_added_and_run_mode(
+    temp_storage_dir: str,
+    worker_id: str,
+) -> None:
+    """E2E: run aggregation (full_archive) → reconstruct → assert added + run_mode.
+
+    Validates the D1 rewire end-to-end: each saved playbook's aggregate event is
+    emitted atomically via ``save_agent_playbook_with_aggregate_event``, and
+    ``reconstruct_playbook_aggregation_change_log`` can reconstruct the run with:
+    - correct ``added_agent_playbooks`` (from aggregate events),
+    - ``run_mode == "full_archive"`` (reason == "aggregate:full_archive"),
+    - non-empty ``removed_agent_playbooks`` (ties task B always-soft to D1).
+    """
+    storage, ctx = _make_storage_and_ctx(temp_storage_dir, "-e2e-full", worker_id)
+
+    # Seed an old archived agent playbook (will be soft-superseded by the run).
+    old_ap = AgentPlaybook(
+        agent_playbook_id=0,
+        playbook_name="default",
+        agent_version="v0",
+        content="old content to supersede",
+        playbook_status=PlaybookStatus.PENDING,
+    )
+    saved_old_list = storage.save_agent_playbooks([old_ap])
+    old_ap_saved = saved_old_list[0]
+    storage.archive_agent_playbooks_by_ids([old_ap_saved.agent_playbook_id])
+
+    # Seed user playbooks that will cluster into the new AP.
+    up_a = _seed_user_playbook(storage, uid=20, org_id=ctx.org_id)
+    up_b = _seed_user_playbook(storage, uid=21, org_id=ctx.org_id)
+    cluster_playbooks = [up_a, up_b]
+
+    new_ap = AgentPlaybook(
+        agent_playbook_id=0,
+        playbook_name="default",
+        agent_version="v0",
+        content="New aggregated content.",
+        playbook_status=PlaybookStatus.PENDING,
+    )
+
+    with (
+        patch.object(
+            PlaybookAggregator,
+            "get_clusters",
+            return_value={0: cluster_playbooks},
+        ),
+        patch.object(
+            PlaybookAggregator,
+            "_generate_playbooks_with_source_clusters",
+            return_value=[(new_ap, cluster_playbooks)],
+        ),
+    ):
+        aggregator = PlaybookAggregator(
+            llm_client=MagicMock(),
+            request_context=ctx,
+            agent_version="v0",
+        )
+        stats = aggregator.run(
+            PlaybookAggregatorRequest(agent_version="v0", rerun=True)
+        )
+
+    assert stats.get("playbooks_generated", 0) == 1, (
+        f"Expected 1 playbook generated, got {stats}"
+    )
+
+    # Reconstruct and assert.
+    result = reconstruct_playbook_aggregation_change_log(
+        storage,
+        playbook_name="default",
+        agent_version="v0",
+    )
+
+    assert result.success
+    assert result.change_logs, "Expected at least one reconstructed change log entry"
+
+    log = result.change_logs[0]
+    assert log.run_mode == "full_archive", (
+        f"Expected run_mode='full_archive', got {log.run_mode!r}"
+    )
+    assert log.added_agent_playbooks, (
+        "Expected non-empty added_agent_playbooks from aggregate events"
+    )
+    assert log.removed_agent_playbooks, (
+        "Expected non-empty removed_agent_playbooks (old archived playbook soft-superseded by D1+task-B)"
+    )
+
+
+def test_e2e_reconstruct_incremental_run_mode(
+    temp_storage_dir: str,
+    worker_id: str,
+) -> None:
+    """E2E (incremental): second run with changed cluster reconstructs as 'incremental'.
+
+    Run 1 (rerun=True) seeds cluster fingerprints. Run 2 (rerun=False) sees a
+    NEW cluster (different fingerprints) and runs incrementally. The reconstructed
+    change log for run 2 has run_mode='incremental'.
+    """
+    storage, ctx = _make_storage_and_ctx(temp_storage_dir, "-e2e-incr", worker_id)
+
+    # Seed user playbooks for run 1.
+    up_a = _seed_user_playbook(storage, uid=30, org_id=ctx.org_id)
+    up_b = _seed_user_playbook(storage, uid=31, org_id=ctx.org_id)
+    cluster_run1 = [up_a, up_b]
+
+    ap_run1 = AgentPlaybook(
+        agent_playbook_id=0,
+        playbook_name="default",
+        agent_version="v0",
+        content="Run 1 content.",
+        playbook_status=PlaybookStatus.PENDING,
+    )
+
+    # Run 1 — full_archive seeds fingerprints in operation state.
+    with (
+        patch.object(
+            PlaybookAggregator, "get_clusters", return_value={0: cluster_run1}
+        ),
+        patch.object(
+            PlaybookAggregator,
+            "_generate_playbooks_with_source_clusters",
+            return_value=[(ap_run1, cluster_run1)],
+        ),
+    ):
+        agg1 = PlaybookAggregator(
+            llm_client=MagicMock(), request_context=ctx, agent_version="v0"
+        )
+        agg1.run(PlaybookAggregatorRequest(agent_version="v0", rerun=True))
+
+    # Seed additional user playbooks so the count threshold is met for run 2.
+    up_c = _seed_user_playbook(storage, uid=32, org_id=ctx.org_id)
+    up_d = _seed_user_playbook(storage, uid=33, org_id=ctx.org_id)
+    # New cluster uses different user playbooks so fingerprint is different.
+    cluster_run2 = [up_c, up_d]
+
+    ap_run2 = AgentPlaybook(
+        agent_playbook_id=0,
+        playbook_name="default",
+        agent_version="v0",
+        content="Run 2 incremental content.",
+        playbook_status=PlaybookStatus.PENDING,
+    )
+
+    # Run 2 — incremental (rerun=False, prev fingerprints now present).
+    with (
+        patch.object(
+            PlaybookAggregator, "get_clusters", return_value={0: cluster_run2}
+        ),
+        patch.object(
+            PlaybookAggregator,
+            "_generate_playbooks_with_source_clusters",
+            return_value=[(ap_run2, cluster_run2)],
+        ),
+    ):
+        agg2 = PlaybookAggregator(
+            llm_client=MagicMock(), request_context=ctx, agent_version="v0"
+        )
+        agg2.run(PlaybookAggregatorRequest(agent_version="v0", rerun=False))
+
+    result = reconstruct_playbook_aggregation_change_log(
+        storage,
+        playbook_name="default",
+        agent_version="v0",
+    )
+
+    assert result.success
+    assert result.change_logs, "Expected at least one reconstructed entry"
+    # Most recent entry (index 0) is the incremental run (run 2 has a later timestamp).
+    # Run 1's ap was superseded by run 2, so it won't appear in run1's 'added' list
+    # (reconstruct skips tombstoned entries in the added slot). Run 2's ap is live and
+    # has the superseded ap1 in its 'removed' list — so run 2 IS the first entry.
+    log_most_recent = result.change_logs[0]
+    assert log_most_recent.run_mode == "incremental", (
+        f"Expected run_mode='incremental' for the most recent run, got {log_most_recent.run_mode!r}"
+    )
+    assert log_most_recent.added_agent_playbooks, (
+        "Expected added playbooks in incremental run"
+    )
+    assert log_most_recent.removed_agent_playbooks, (
+        "Expected removed playbooks in incremental run (ap1 superseded under run2 request_id)"
+    )

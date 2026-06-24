@@ -401,7 +401,9 @@ class TestRun:
         agg.storage.count_user_playbooks.return_value = 5
         agg.storage.get_agent_playbooks.return_value = []
         agg.storage.get_user_playbooks.return_value = [_raw(rid=1), _raw(rid=2)]
-        agg.storage.save_agent_playbooks.return_value = [_agent_playbook(fid=100)]
+        agg.storage.save_agent_playbook_with_aggregate_event.return_value = (
+            _agent_playbook(fid=100)
+        )
         return agg
 
     def test_no_config_returns_early(self):
@@ -456,7 +458,9 @@ class TestRun:
         raws = [_raw(rid=1)]
         mock_clust.return_value = {0: raws}
         mock_gen.return_value = [(_agent_playbook(fid=100), raws)]
-        agg.storage.save_agent_playbooks.return_value = [_agent_playbook(fid=100)]
+        agg.storage.save_agent_playbook_with_aggregate_event.return_value = (
+            _agent_playbook(fid=100)
+        )
 
         req = PlaybookAggregatorRequest(agent_version="v1", rerun=True)
         agg.run(req)
@@ -479,7 +483,9 @@ class TestRun:
         raws = [_raw(rid=1)]
         mock_clust.return_value = {0: raws}
         mock_gen.return_value = [(_agent_playbook(fid=100), raws)]
-        agg.storage.save_agent_playbooks.return_value = [_agent_playbook(fid=100)]
+        agg.storage.save_agent_playbook_with_aggregate_event.return_value = (
+            _agent_playbook(fid=100)
+        )
 
         req = PlaybookAggregatorRequest(agent_version="v1", rerun=True)
         agg.run(req)
@@ -501,7 +507,9 @@ class TestRun:
         raws = [_raw(rid=1), _raw(rid=2)]
         mock_clust.return_value = {0: raws}
         mock_gen.return_value = [(_agent_playbook(fid=100), raws)]
-        agg.storage.save_agent_playbooks.return_value = [_agent_playbook(fid=100)]
+        agg.storage.save_agent_playbook_with_aggregate_event.return_value = (
+            _agent_playbook(fid=100)
+        )
 
         with patch.object(PlaybookAggregator, "_create_state_manager") as mock_csm:
             mgr = MagicMock()
@@ -532,8 +540,8 @@ class TestRun:
             req = PlaybookAggregatorRequest(agent_version="v1")
             agg.run(req)
 
-        # Should NOT call _generate_playbooks_from_clusters
-        agg.storage.save_agent_playbooks.assert_not_called()
+        # Should NOT call save_agent_playbook_with_aggregate_event
+        agg.storage.save_agent_playbook_with_aggregate_event.assert_not_called()
 
     @patch.object(PlaybookAggregator, "get_clusters")
     @patch.object(PlaybookAggregator, "_generate_playbooks_with_source_clusters")
@@ -546,7 +554,9 @@ class TestRun:
         agg.storage.get_user_playbooks.return_value = raws_new
         mock_clust.return_value = {0: raws_new}
         mock_gen.return_value = [(_agent_playbook(fid=200), raws_new)]
-        agg.storage.save_agent_playbooks.return_value = [_agent_playbook(fid=200)]
+        agg.storage.save_agent_playbook_with_aggregate_event.return_value = (
+            _agent_playbook(fid=200)
+        )
 
         with patch.object(PlaybookAggregator, "_create_state_manager") as mock_csm:
             mgr = MagicMock()
@@ -615,7 +625,7 @@ class TestRun:
         saved = _agent_playbook(fid=100)
         saved.agent_playbook_id = 100
         mock_gen.return_value = [(saved, raws)]
-        agg.storage.save_agent_playbooks.return_value = [saved]
+        agg.storage.save_agent_playbook_with_aggregate_event.return_value = saved
 
         with patch.object(PlaybookAggregator, "_create_state_manager") as mock_csm:
             mgr = MagicMock()
@@ -647,7 +657,9 @@ class TestRun:
         agg.storage.get_user_playbooks.return_value = raws_new
         mock_clust.return_value = {0: raws_new}
         mock_gen.return_value = [(_agent_playbook(fid=200), raws_new)]
-        agg.storage.save_agent_playbooks.return_value = [_agent_playbook(fid=200)]
+        agg.storage.save_agent_playbook_with_aggregate_event.return_value = (
+            _agent_playbook(fid=200)
+        )
 
         with patch.object(PlaybookAggregator, "_create_state_manager") as mock_csm:
             mgr = MagicMock()
@@ -679,7 +691,7 @@ class TestRun:
         fb_no_id = _agent_playbook(fid=0, content="no id")
         fb_no_id.agent_playbook_id = 0
         mock_gen.return_value = [(fb_no_id, raws)]
-        agg.storage.save_agent_playbooks.return_value = [fb_no_id]
+        agg.storage.save_agent_playbook_with_aggregate_event.return_value = fb_no_id
 
         with patch.object(PlaybookAggregator, "_create_state_manager") as mock_csm:
             mgr = MagicMock()
@@ -736,7 +748,6 @@ class TestRun:
         raws = [_raw(rid=1)]
         mock_clust.return_value = {0: raws}
         mock_gen.return_value = []
-        agg.storage.save_agent_playbooks.return_value = [None]
 
         with patch.object(PlaybookAggregator, "_create_state_manager") as mock_csm:
             mgr = MagicMock()
@@ -762,7 +773,7 @@ class TestRun:
         fb2 = _agent_playbook(fid=200, content="b")
         fb2.agent_playbook_id = 200
         mock_gen.return_value = [(fb1, raws_a), (fb2, raws_b)]
-        agg.storage.save_agent_playbooks.return_value = [fb1, fb2]
+        agg.storage.save_agent_playbook_with_aggregate_event.side_effect = [fb1, fb2]
 
         with patch.object(PlaybookAggregator, "_create_state_manager") as mock_csm:
             mgr = MagicMock()
@@ -799,7 +810,7 @@ class TestRun:
         saved = _agent_playbook(fid=200, content="b")
         saved.agent_playbook_id = 200
         mock_gen.return_value = [(saved, generated_cluster)]
-        agg.storage.save_agent_playbooks.return_value = [saved]
+        agg.storage.save_agent_playbook_with_aggregate_event.return_value = saved
 
         with patch.object(PlaybookAggregator, "_create_state_manager") as mock_csm:
             mgr = MagicMock()
@@ -839,7 +850,9 @@ class TestRun:
         agg.storage.get_user_playbooks.return_value = all_raws
         mock_clust.return_value = {0: raws_unchanged, 1: raws_new}
         mock_gen.return_value = [(_agent_playbook(fid=200), raws_new)]
-        agg.storage.save_agent_playbooks.return_value = [_agent_playbook(fid=200)]
+        agg.storage.save_agent_playbook_with_aggregate_event.return_value = (
+            _agent_playbook(fid=200)
+        )
 
         with patch.object(PlaybookAggregator, "_create_state_manager") as mock_csm:
             mgr = MagicMock()

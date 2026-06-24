@@ -11,8 +11,6 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     import numpy as np
 
-from reflexio.lib._agent_playbook import _PREFIX as _AGGREGATE_PREFIX
-from reflexio.models.api_schema.domain.entities import LineageEvent
 from reflexio.models.api_schema.service_schemas import (
     AgentPlaybook,
     AgentPlaybookSourceWindow,
@@ -707,9 +705,6 @@ class PlaybookAggregator:
                     )
                     full_archive = False
 
-            # Save playbooks (returns playbooks with playbook_id populated)
-            saved_playbooks = self.storage.save_agent_playbooks(new_playbooks)  # type: ignore[reportOptionalMemberAccess]
-
             # Build new fingerprint state
             new_fingerprints = {}
 
@@ -750,12 +745,39 @@ class PlaybookAggregator:
                     "user_playbook_ids": raw_ids,
                 }
 
-            saved_playbook_list = list(saved_playbooks)
+            saved_playbook_list: list[AgentPlaybook] = []
 
-            # Assign saved playbook ids to the exact source cluster that generated them.
-            for saved_fb, (_, cluster_playbooks) in zip(
-                saved_playbook_list, generated_pairs, strict=False
-            ):
+            # Save each playbook + its aggregate event atomically, then assign
+            # fingerprints and source-windows for the saved row.
+            for playbook, cluster_playbooks in generated_pairs:
+                run_mode = "full_archive" if full_archive else "incremental"
+                member_ids = [
+                    str(fb.user_playbook_id)
+                    for fb in cluster_playbooks
+                    if fb.user_playbook_id
+                ]
+                try:
+                    saved_fb = self.storage.save_agent_playbook_with_aggregate_event(  # type: ignore[reportOptionalMemberAccess]
+                        playbook,
+                        source_ids=member_ids,
+                        request_id=_run_id,
+                        run_mode=run_mode,
+                    )
+                except Exception:
+                    # Atomic create rolled back (no orphan row/event); skip this
+                    # playbook and keep the run going.
+                    with sentry_tags(
+                        subsystem="playbook_aggregation",
+                        op="save_with_aggregate_event",
+                        org_id=self.request_context.org_id,
+                        request_id=_run_id,
+                    ):
+                        logger.exception(
+                            "atomic save+aggregate-event failed; skipping playbook (run %s)",
+                            _run_id,
+                        )
+                    continue
+                saved_playbook_list.append(saved_fb)
                 if saved_fb and saved_fb.agent_playbook_id:
                     fp_key = self._compute_cluster_fingerprint(cluster_playbooks)
                     raw_ids = sorted(fb.user_playbook_id for fb in cluster_playbooks)
@@ -776,40 +798,6 @@ class PlaybookAggregator:
                             )
                         ],
                     )
-                    # Emit set-level aggregate lineage event (W3C PROV wasDerivedFrom, M:N).
-                    # Best-effort (PB-7): save_agent_playbooks already committed; a transient
-                    # append failure must NOT abort the run. Gap is acceptable for B1 since
-                    # the legacy change log remains the source of record until B3.
-                    member_ids = [
-                        str(fb.user_playbook_id)
-                        for fb in cluster_playbooks
-                        if fb.user_playbook_id
-                    ]
-                    try:
-                        self.storage.append_lineage_event(  # pyright: ignore[reportOptionalMemberAccess]
-                            LineageEvent(
-                                org_id=self.request_context.org_id,
-                                entity_type="agent_playbook",
-                                entity_id=str(saved_fb.agent_playbook_id),
-                                op="aggregate",
-                                prov_relation="wasDerivedFrom",
-                                source_ids=member_ids,
-                                actor="aggregator",
-                                request_id=_run_id,
-                                reason=f"{_AGGREGATE_PREFIX}{'full_archive' if full_archive else 'incremental'}",
-                            )
-                        )
-                    except Exception:  # noqa: BLE001
-                        logger.warning(
-                            "aggregate lineage event failed for agent_playbook %s",
-                            saved_fb.agent_playbook_id,
-                            exc_info=True,
-                        )
-                        capture_anomaly(
-                            "lineage.aggregate.append_failed",
-                            entity_id=str(saved_fb.agent_playbook_id),
-                            org_id=self.request_context.org_id,
-                        )
 
             # Store fingerprints in operation state
             mgr.update_cluster_fingerprints(
