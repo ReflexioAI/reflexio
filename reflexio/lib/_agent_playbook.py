@@ -41,25 +41,32 @@ from reflexio.server.tracing import profile_step
 
 class AgentPlaybookMixin(ReflexioBase):
     def get_playbook_aggregation_change_logs(
-        self, playbook_name: str, agent_version: str
+        self,
+        playbook_name: str,  # noqa: ARG002
+        agent_version: str,  # noqa: ARG002
     ) -> PlaybookAggregationChangeLogResponse:
-        """Get playbook aggregation change logs.
+        """Get playbook aggregation change logs, served from the lineage reconstruction.
+
+        The change-log view is rebuilt on demand from ``lineage_event`` rows via
+        :func:`reconstruct_playbook_aggregation_change_log`. The legacy
+        ``playbook_aggregation_change_logs`` table is no longer read; ``playbook_name``
+        and ``agent_version`` args are accepted for API compatibility but reconstruction
+        returns all logs without filtering. ``updated_agent_playbooks`` is always ``[]``
+        (tolerated parity delta — Decision 3).
 
         Args:
-            playbook_name (str): Playbook name to filter by
-            agent_version (str): Agent version to filter by
+            playbook_name (str): Accepted for API compatibility; not used in reconstruction.
+            agent_version (str): Accepted for API compatibility; not used in reconstruction.
 
         Returns:
-            PlaybookAggregationChangeLogResponse: Response containing change logs
+            PlaybookAggregationChangeLogResponse: Response containing the reconstructed
+                change logs.
         """
         if not self._is_storage_configured():
             return PlaybookAggregationChangeLogResponse(success=True, change_logs=[])
-        change_logs = self._get_storage().get_playbook_aggregation_change_logs(
-            playbook_name=playbook_name, agent_version=agent_version
-        )
-        return PlaybookAggregationChangeLogResponse(
-            success=True, change_logs=change_logs
-        )
+        # Legacy table no longer read; served by reconstruction.
+        # updated_agent_playbooks is always [] (tolerated parity delta).
+        return reconstruct_playbook_aggregation_change_log(self._get_storage())
 
     @_require_storage(DeleteAgentPlaybookResponse)
     def delete_agent_playbook(
