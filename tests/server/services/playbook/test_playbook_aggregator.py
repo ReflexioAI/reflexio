@@ -1192,6 +1192,51 @@ def test_playbook_aggregation_prompt_specifies_structured_format():
     assert "one sentence" in out.lower()
 
 
+def test_playbook_aggregation_prompt_generalizes_direct_identifiers():
+    """Aggregation prompt should generalize direct identifiers for shared playbooks."""
+    from reflexio.server.prompt.prompt_manager import PromptManager
+
+    out = PromptManager().render_prompt(
+        "playbook_aggregation",
+        {
+            "existing_approved_playbooks": "[]",
+            "user_playbooks": "TRIGGER conditions (to be consolidated):\n- when approving a deployment\nRATIONALE summaries:\n- direct approval details appeared in the source",
+        },
+    )
+
+    assert "Privacy and Identifier Generalization" in out
+    assert "shared organization-wide rules" in out
+    assert "all source fields shown to you" in out
+    assert "triggers, rationales, and any freeform content" in out
+    assert "Never carry user-specific or source-specific direct identifiers" in out
+    assert "Secrets and credentials must not be copied" in out
+    assert "Return {{\"playbook\": null}}" in out
+
+
+def test_playbook_aggregation_prompt_has_privacy_self_check_before_output():
+    """Privacy checklist should run after source sections and before final JSON output."""
+    from reflexio.server.prompt.prompt_manager import PromptManager
+
+    out = PromptManager().render_prompt(
+        "playbook_aggregation",
+        {
+            "existing_approved_playbooks": "[]",
+            "user_playbooks": "TRIGGER conditions (to be consolidated):\n- when handling account access",
+        },
+    )
+
+    checklist_index = out.index("Before returning JSON")
+    output_index = out.index("## Output")
+    assert checklist_index < output_index
+    assert "`trigger`, `content`, and `rationale`" in out[checklist_index:output_index]
+    assert "direct identifiers, secrets, raw contact details, or exact IDs" in out[
+        checklist_index:output_index
+    ]
+    assert "grounded in the clustered source playbooks" in out[
+        checklist_index:output_index
+    ]
+
+
 def test_playbook_aggregation_prompt_preserves_distinct_orientations():
     """v2.2.0: the aggregation prompt must carry the preserve-distinct-rules
     instruction that replaced the retired mechanical polarity-bucketing gate.
