@@ -1,3 +1,4 @@
+import logging
 from abc import abstractmethod
 from collections.abc import Sequence
 
@@ -20,6 +21,11 @@ from reflexio.models.api_schema.retriever_schema import (
     SearchUserPlaybookRequest,
 )
 from reflexio.models.config_schema import SearchOptions
+from reflexio.server.tracing import capture_anomaly
+
+logger = logging.getLogger(__name__)
+
+_AGGREGATE_EVENT_EMIT_ATTEMPTS = 3
 
 
 class PlaybookMixin:
@@ -308,7 +314,8 @@ class PlaybookMixin:
 
         Backends SHOULD override this so the row insert and the event commit in ONE
         transaction (the event is the sole record of the run->playbook membership for
-        reconstruction). This base default is a non-atomic save-then-emit fallback.
+        reconstruction). This base default is a non-atomic save-then-emit fallback
+        with bounded retry + loud (level=error) on final failure.
 
         Args:
             agent_playbook (AgentPlaybook): The playbook to persist.
@@ -321,18 +328,40 @@ class PlaybookMixin:
             AgentPlaybook: The saved playbook with ``agent_playbook_id`` populated.
         """
         saved = self.save_agent_playbooks([agent_playbook])[0]
-        self.append_lineage_event(  # type: ignore[attr-defined]
-            LineageEvent(
-                org_id=self.org_id,  # type: ignore[attr-defined]
-                entity_type="agent_playbook",
-                entity_id=str(saved.agent_playbook_id),
-                op="aggregate",
-                prov_relation="wasDerivedFrom",
-                source_ids=source_ids,
-                actor="aggregator",
-                request_id=request_id,
-                reason=f"aggregate:{run_mode}|av={agent_version}",
-            )
+        event = LineageEvent(
+            org_id=self.org_id,  # type: ignore[attr-defined]
+            entity_type="agent_playbook",
+            entity_id=str(saved.agent_playbook_id),
+            op="aggregate",
+            prov_relation="wasDerivedFrom",
+            source_ids=source_ids,
+            actor="aggregator",
+            request_id=request_id,
+            reason=f"aggregate:{run_mode}|av={agent_version}",
+        )
+        # The row is already committed; this default is non-atomic (atomic backends override
+        # it). The event is the sole reconstruction signal for the run, so make the emit
+        # durable: bounded retry (append is idempotent on (entity_id, op, request_id)), and on
+        # final failure fail LOUD at level=error so the gap is paged + backfillable rather than
+        # silently lost. Never raise — the playbook itself is saved and must not be lost.
+        for attempt in range(_AGGREGATE_EVENT_EMIT_ATTEMPTS):
+            try:
+                self.append_lineage_event(event)  # type: ignore[attr-defined]
+                return saved
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "aggregate lineage event append failed (attempt %d/%d) for agent_playbook %s",
+                    attempt + 1,
+                    _AGGREGATE_EVENT_EMIT_ATTEMPTS,
+                    saved.agent_playbook_id,
+                    exc_info=True,
+                )
+        capture_anomaly(
+            "lineage.aggregate.append_failed",
+            level="error",
+            entity_id=str(saved.agent_playbook_id),
+            org_id=self.org_id,  # type: ignore[attr-defined]
+            request_id=request_id,
         )
         return saved
 
