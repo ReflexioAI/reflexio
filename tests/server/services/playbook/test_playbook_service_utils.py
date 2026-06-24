@@ -418,6 +418,36 @@ class TestStructuredPlaybookList:
                 }
             )
 
+    def test_blank_string_entries_dropped_not_rejected(self):
+        """A malformed list of empty strings normalizes to an empty extraction.
+
+        Weak tool-callers (e.g. MiniMax) sometimes terminate the extraction
+        with ``finish_extraction({"playbooks": ["", "", ""]})`` instead of an
+        empty list. Per-item validation would reject the strings and fail the
+        whole finish call (dropping an otherwise-valid empty extraction and
+        persisting zero playbooks via a FAILED run). The before-validator must
+        strip those entries so the canonical "no SOP found" outcome is produced.
+        """
+        result = StructuredPlaybookList.model_validate({"playbooks": ["", "  ", None]})
+        assert result.playbooks == []
+
+    def test_blank_entries_dropped_but_valid_entries_kept(self):
+        """Blank/None entries are stripped while valid entries are preserved."""
+        result = StructuredPlaybookList.model_validate(
+            {
+                "playbooks": [
+                    "",
+                    {
+                        "trigger": "user asks for help debugging",
+                        "content": "Explain root cause before fixes.",
+                    },
+                    None,
+                ]
+            }
+        )
+        assert len(result.playbooks) == 1
+        assert result.playbooks[0].trigger == "user asks for help debugging"
+
     def test_nested_entry_tolerates_extra_fields(self):
         """Unknown fields on a nested entry are tolerated at runtime.
 

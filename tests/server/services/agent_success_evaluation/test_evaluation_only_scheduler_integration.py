@@ -49,7 +49,9 @@ def _wait_until(assertion: Callable[[], None], timeout_s: float = 5.0) -> None:
 def _interaction_pair(label: str) -> list[InteractionData]:
     return [
         InteractionData(content=f"Please help with {label}", role="User"),
-        InteractionData(content=f"Resolved {label} with steps A and B.", role="Assistant"),
+        InteractionData(
+            content=f"Resolved {label} with steps A and B.", role="Assistant"
+        ),
     ]
 
 
@@ -94,7 +96,9 @@ def test_evaluation_only_publish_waits_and_batches_followup_session_requests(
         self: AgentSuccessEvaluationService,
         request: AgentSuccessEvaluationRequest,
     ) -> None:
-        observed_request_model_counts.append(len(request.request_interaction_data_models))
+        observed_request_model_counts.append(
+            len(request.request_interaction_data_models)
+        )
         return original_run(self, request)
 
     monkeypatch.setattr(AgentSuccessEvaluationService, "run", recording_run)

@@ -144,6 +144,7 @@ def sample_request_interaction_models(sample_interactions):
 def service_config(sample_request_interaction_models):
     """Create a service config with required request_interaction_data_models."""
     return AgentSuccessGenerationServiceConfig(
+        user_id="test_user",
         agent_version="1.0.0",
         session_id="test_group",
         request_interaction_data_models=sample_request_interaction_models,
@@ -196,6 +197,7 @@ class TestRun:
         )
 
         service_config = AgentSuccessGenerationServiceConfig(
+            user_id="test_user",
             agent_version="1.0.0",
             session_id="test_group",
             request_interaction_data_models=sample_request_interaction_models,
@@ -290,6 +292,7 @@ class TestSourceFiltering:
         )
 
         service_config = AgentSuccessGenerationServiceConfig(
+            user_id="test_user",
             agent_version="1.0.0",
             session_id="test_group",
             request_interaction_data_models=models,
@@ -327,6 +330,7 @@ class TestCountUserTurns:
             success_definition_prompt="test",
         )
         service_config = AgentSuccessGenerationServiceConfig(
+            user_id="test_user",
             session_id="test_session",
             agent_version="v1",
             request_interaction_data_models=[],
@@ -409,6 +413,7 @@ class TestGetCorrectionCount:
             success_definition_prompt="test",
         )
         service_config = AgentSuccessGenerationServiceConfig(
+            user_id="test_user",
             session_id="test_session",
             agent_version="v1",
             request_interaction_data_models=[],
@@ -438,6 +443,7 @@ class TestGetCorrectionCount:
             success_definition_prompt="test",
         )
         service_config = AgentSuccessGenerationServiceConfig(
+            user_id="test_user",
             session_id="test_session",
             agent_version="v1",
             request_interaction_data_models=[],

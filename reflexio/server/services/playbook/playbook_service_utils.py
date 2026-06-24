@@ -129,6 +129,27 @@ class StructuredPlaybookList(StrictStructuredOutput):
         description="Extracted playbook entries — empty list when no valid SOP was found",
     )
 
+    @model_validator(mode="before")
+    @classmethod
+    def drop_blank_entries(cls, data: Any) -> Any:
+        """Tolerate weak tool-callers that emit placeholder list entries.
+
+        Some models (e.g. MiniMax) terminate the extraction by calling
+        ``finish_extraction`` with a malformed ``playbooks`` list of empty
+        strings (``{"playbooks": ["", "", ""]}``) instead of an empty list to
+        signal "no SOP found". Per-item validation would reject those strings
+        and fail the whole finish call, dropping an otherwise-valid (empty)
+        extraction. Strip non-dict / blank entries here so the canonical
+        "no playbooks" outcome (``[]``) is produced instead of an error.
+        """
+        if isinstance(data, dict) and isinstance(data.get("playbooks"), list):
+            data["playbooks"] = [
+                item
+                for item in data["playbooks"]
+                if not (item is None or (isinstance(item, str) and not item.strip()))
+            ]
+        return data
+
     model_config = ConfigDict(
         extra="forbid",
         json_schema_extra={"additionalProperties": False},
