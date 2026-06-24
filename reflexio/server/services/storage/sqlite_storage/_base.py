@@ -1877,13 +1877,12 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             # would prematurely flush the still-pending deletes.
             self.conn.commit()
 
-        # ------------------------------------------------------------------
-        # Phase 5: content-purge the purge-sets (each call self-commits).
-        # self._lock is an RLock, so purge_content's internal ``with self._lock``
-        # re-acquires cleanly. The hard-delete commit above already closed the
-        # outer transaction, so no flush hazard exists.
-        # ------------------------------------------------------------------
-        with self._lock:
+            # Phase 5: content-purge the purge-sets WITHOUT releasing the lock,
+            # so erase-eligible rows are never observable by another thread with
+            # PII still intact between the hard-delete commit and the purge. Each
+            # purge_content call self-commits; self._lock is an RLock so its
+            # internal ``with self._lock`` re-acquires cleanly, and the commit
+            # above already closed the outer transaction (no flush hazard).
             for pid in purge_profile_ids:
                 self.purge_content(entity_type="profile", entity_id=str(pid))
             for upid in purge_upb_ids:
