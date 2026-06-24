@@ -467,6 +467,8 @@ class PlaybookAggregatorConfig(BaseModel):
 
 
 class UserDetailStrippingConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     enabled: bool = True
     forcelist: list[NonEmptyStr] = Field(default_factory=list)
 

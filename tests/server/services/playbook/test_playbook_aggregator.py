@@ -11,6 +11,7 @@ Targets coverage gaps in:
          full archive delete path, incremental archive delete)
 """
 
+import logging
 from typing import Any
 from unittest.mock import ANY, MagicMock, call, patch
 
@@ -232,6 +233,73 @@ def test_placeholder_leakage_is_replaced_before_response_logging_and_storage():
     assert "[PERSON_" not in (logged_response.playbook.content or "")
     assert "[PERSON_" not in (logged_response.playbook.trigger or "")
     assert "[PERSON_" not in (logged_response.playbook.rationale or "")
+
+
+def test_placeholder_leakage_is_replaced_before_string_fallback_logging():
+    agg = _make_aggregator()
+    agg.request_context.prompt_manager.render_prompt.return_value = "prompt"
+    agg.client.generate_chat_response.return_value = "invalid [PERSON_7] response"
+    cluster = [_raw(rid=1)]
+
+    with (
+        patch(
+            "reflexio.server.services.playbook.playbook_aggregator.log_model_response"
+        ) as mock_log_model_response,
+        patch.dict("os.environ", {"MOCK_LLM_RESPONSE": ""}),
+    ):
+        result = agg._generate_playbook_from_cluster(cluster, "None")
+
+    assert result is None
+    logged_response = mock_log_model_response.call_args.args[2]
+    assert logged_response == "invalid a user response"
+
+
+def test_placeholder_leakage_is_replaced_before_dict_fallback_logging():
+    agg = _make_aggregator()
+    agg.request_context.prompt_manager.render_prompt.return_value = "prompt"
+    agg.client.generate_chat_response.return_value = {
+        "playbook": {
+            "content": "Ask [PERSON_1] to confirm.",
+            "rationale": ["[PERSON_2] saw this before."],
+        },
+        "[PERSON_3]": "key should not leak either",
+    }
+    cluster = [_raw(rid=1)]
+
+    with (
+        patch(
+            "reflexio.server.services.playbook.playbook_aggregator.log_model_response"
+        ) as mock_log_model_response,
+        patch.dict("os.environ", {"MOCK_LLM_RESPONSE": ""}),
+    ):
+        result = agg._generate_playbook_from_cluster(cluster, "None")
+
+    assert result is None
+    logged_response = mock_log_model_response.call_args.args[2]
+    assert "[PERSON_" not in repr(logged_response)
+    assert "a user" in repr(logged_response)
+
+
+def test_placeholder_leakage_is_replaced_before_exception_logging(caplog):
+    agg = _make_aggregator()
+    agg.request_context.prompt_manager.render_prompt.return_value = "prompt"
+    agg.client.generate_chat_response.side_effect = RuntimeError(
+        "failed after [PERSON_9] appeared in parse error"
+    )
+    cluster = [_raw(rid=1)]
+
+    with (
+        caplog.at_level(
+            logging.ERROR,
+            logger="reflexio.server.services.playbook.playbook_aggregator",
+        ),
+        patch.dict("os.environ", {"MOCK_LLM_RESPONSE": ""}),
+    ):
+        result = agg._generate_playbook_from_cluster(cluster, "None")
+
+    assert result is None
+    assert "[PERSON_" not in caplog.text
+    assert "a user" in caplog.text
 
 
 # ---------------------------------------------------------------------------

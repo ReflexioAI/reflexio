@@ -13,8 +13,10 @@ from reflexio.models.api_schema.service_schemas import (
     Request,
 )
 from reflexio.models.config_schema import (
+    Config,
     PlaybookAggregatorConfig,
     PlaybookConfig,
+    StorageConfigSQLite,
 )
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
@@ -25,6 +27,7 @@ from reflexio.server.services.playbook.service import (
     PlaybookGenerationService,
     PlaybookGenerationServiceConfig,
 )
+from reflexio.server.services.playbook.user_detail_stripping import PassthroughStripper
 
 
 def create_request_interaction_data_model(
@@ -48,6 +51,95 @@ def create_request_interaction_data_model(
 def _storage(service: PlaybookGenerationService) -> Any:
     assert service.storage is not None
     return cast(Any, service.storage)
+
+
+def _aggregation_enabled_config() -> Config:
+    return Config(
+        storage_config=StorageConfigSQLite(),
+        user_playbook_extractor_config=PlaybookConfig(
+            extractor_name="test_playbook",
+            extraction_definition_prompt="test",
+            aggregation_config=PlaybookAggregatorConfig(min_cluster_size=2),
+        ),
+    )
+
+
+def _service_for_inline_aggregation(configurator: Any) -> PlaybookGenerationService:
+    ctx = MagicMock()
+    ctx.configurator = configurator
+    ctx.org_id = "test-org"
+    service = PlaybookGenerationService(llm_client=MagicMock(), request_context=ctx)
+    service.service_config = PlaybookGenerationServiceConfig(
+        request_id="req-1",
+        agent_version="v1",
+        user_id="user-1",
+    )
+    return service
+
+
+def test_inline_aggregation_default_path_does_not_inject_stripper():
+    configurator = MagicMock()
+    configurator.get_config.return_value = _aggregation_enabled_config()
+    service = _service_for_inline_aggregation(configurator)
+    created_kwargs: list[dict[str, Any]] = []
+
+    class FakeAggregator:
+        def __init__(self, **kwargs: Any) -> None:
+            created_kwargs.append(kwargs)
+
+        def run(self, _request: Any) -> dict[str, int]:
+            return {"playbooks_generated": 0}
+
+    with (
+        patch(
+            "reflexio.server.services.playbook.playbook_generation_service.PlaybookAggregator",
+            FakeAggregator,
+        ),
+        patch(
+            "reflexio.server.services.playbook.playbook_generation_service.run_with_operation_limit",
+            side_effect=lambda **kwargs: kwargs["fn"](),
+        ),
+    ):
+        service._trigger_playbook_aggregation()
+
+    assert len(created_kwargs) == 1
+    assert "user_detail_stripper" not in created_kwargs[0]
+
+
+def test_inline_aggregation_injects_configured_stripper():
+    stripper = PassthroughStripper()
+
+    class ConfiguratorWithStripper:
+        def get_config(self) -> Config:
+            return _aggregation_enabled_config()
+
+        def create_user_detail_stripper(self) -> PassthroughStripper:
+            return stripper
+
+    service = _service_for_inline_aggregation(ConfiguratorWithStripper())
+    created_kwargs: list[dict[str, Any]] = []
+
+    class FakeAggregator:
+        def __init__(self, **kwargs: Any) -> None:
+            created_kwargs.append(kwargs)
+
+        def run(self, _request: Any) -> dict[str, int]:
+            return {"playbooks_generated": 0}
+
+    with (
+        patch(
+            "reflexio.server.services.playbook.playbook_generation_service.PlaybookAggregator",
+            FakeAggregator,
+        ),
+        patch(
+            "reflexio.server.services.playbook.playbook_generation_service.run_with_operation_limit",
+            side_effect=lambda **kwargs: kwargs["fn"](),
+        ),
+    ):
+        service._trigger_playbook_aggregation()
+
+    assert len(created_kwargs) == 1
+    assert created_kwargs[0]["user_detail_stripper"] is stripper
 
 
 @pytest.fixture

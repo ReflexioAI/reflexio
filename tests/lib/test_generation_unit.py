@@ -5,6 +5,7 @@ rerun_profile_generation, manual_profile_generation, rerun_playbook_generation,
 manual_playbook_generation, and storage-not-configured error handling.
 """
 
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -21,6 +22,7 @@ from reflexio.models.api_schema.service_schemas import (
     RerunProfileGenerationRequest,
     RerunProfileGenerationResponse,
 )
+from reflexio.server.services.playbook.user_detail_stripping import PassthroughStripper
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -67,6 +69,30 @@ class TestRunPlaybookAggregation:
         request_arg = mock_agg_instance.run.call_args[0][0]
         assert request_arg.agent_version == "v2"
         assert request_arg.rerun is True
+
+    @patch("reflexio.server.services.playbook.playbook_aggregator.PlaybookAggregator")
+    def test_injects_configured_stripper(self, mock_agg_cls):
+        """Passes a configured user-detail stripper to manual aggregation."""
+        stripper = PassthroughStripper()
+        mixin = _make_mixin()
+
+        class ConfiguratorWithStripper:
+            def create_user_detail_stripper(self) -> PassthroughStripper:
+                return stripper
+
+        cast(Any, mixin.request_context).configurator = ConfiguratorWithStripper()
+        mock_agg_instance = MagicMock()
+        mock_agg_cls.return_value = mock_agg_instance
+
+        mixin.run_playbook_aggregation(agent_version="v2")
+
+        mock_agg_cls.assert_called_once_with(
+            llm_client=mixin.llm_client,
+            request_context=mixin.request_context,
+            agent_version="v2",
+            user_detail_stripper=stripper,
+        )
+        mock_agg_instance.run.assert_called_once()
 
     def test_raises_when_storage_not_configured(self):
         """Raises ValueError when storage is not configured."""

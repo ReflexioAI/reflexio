@@ -51,3 +51,14 @@ def test_user_detail_stripping_config_accepts_enabled_and_forcelist():
     )
     re = Config(**c.model_dump())
     assert re.user_detail_stripping_config == c.user_detail_stripping_config
+
+
+@pytest.mark.parametrize("extra_field", ["allowlist", "force_list"])
+def test_user_detail_stripping_config_rejects_unknown_fields(extra_field):
+    with pytest.raises(ValidationError):
+        _minimal(
+            user_detail_stripping_config={
+                "enabled": True,
+                extra_field: ["Sarah Chen"],
+            }
+        )

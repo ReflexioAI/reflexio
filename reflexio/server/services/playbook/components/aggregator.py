@@ -275,6 +275,41 @@ class PlaybookAggregator:
             update={"playbook": structured.model_copy(update=updates)}
         ), placeholder_count
 
+    def _sanitize_aggregation_log_value(self, value: object) -> tuple[object, int]:
+        if isinstance(value, str):
+            placeholder_count = count_person_placeholders(value)
+            return replace_person_placeholders(value) or "", placeholder_count
+
+        if isinstance(value, dict):
+            sanitized: dict[object, object] = {}
+            placeholder_count = 0
+            for key, item in value.items():
+                sanitized_key, key_count = self._sanitize_aggregation_log_value(key)
+                sanitized_item, item_count = self._sanitize_aggregation_log_value(item)
+                sanitized[sanitized_key] = sanitized_item
+                placeholder_count += key_count + item_count
+            return sanitized, placeholder_count
+
+        if isinstance(value, list):
+            sanitized_items: list[object] = []
+            placeholder_count = 0
+            for item in value:
+                sanitized_item, item_count = self._sanitize_aggregation_log_value(item)
+                sanitized_items.append(sanitized_item)
+                placeholder_count += item_count
+            return sanitized_items, placeholder_count
+
+        if isinstance(value, tuple):
+            sanitized_items: list[object] = []
+            placeholder_count = 0
+            for item in value:
+                sanitized_item, item_count = self._sanitize_aggregation_log_value(item)
+                sanitized_items.append(sanitized_item)
+                placeholder_count += item_count
+            return tuple(sanitized_items), placeholder_count
+
+        return value, 0
+
     def _record_placeholder_leakage(self, placeholder_count: int) -> None:
         if placeholder_count <= 0:
             return
@@ -1220,19 +1255,28 @@ class PlaybookAggregator:
     ) -> list[tuple[AgentPlaybook, list[UserPlaybook]]]:
         """Generate agent playbooks while preserving their exact source cluster."""
         new_playbooks: list[tuple[AgentPlaybook, list[UserPlaybook]]] = []
+        unstripped_existing_playbooks_str = (
+            self._format_existing_approved_playbooks(existing_approved_playbooks)
+            if self.user_detail_stripper is None
+            else None
+        )
         for cluster_playbooks in clusters.values():
             shared_mapping: dict[str, int] = {}
-            prompt_cluster_playbooks = [
-                self._strip_user_playbook_for_prompt(playbook, shared_mapping)
-                for playbook in cluster_playbooks
-            ]
-            prompt_existing_playbooks = [
-                self._strip_agent_playbook_for_prompt(playbook, shared_mapping)
-                for playbook in existing_approved_playbooks
-            ]
-            approved_playbooks_str = self._format_existing_approved_playbooks(
-                prompt_existing_playbooks
-            )
+            if self.user_detail_stripper is None:
+                prompt_cluster_playbooks = cluster_playbooks
+                approved_playbooks_str = unstripped_existing_playbooks_str or "None"
+            else:
+                prompt_cluster_playbooks = [
+                    self._strip_user_playbook_for_prompt(playbook, shared_mapping)
+                    for playbook in cluster_playbooks
+                ]
+                prompt_existing_playbooks = [
+                    self._strip_agent_playbook_for_prompt(playbook, shared_mapping)
+                    for playbook in existing_approved_playbooks
+                ]
+                approved_playbooks_str = self._format_existing_approved_playbooks(
+                    prompt_existing_playbooks
+                )
 
             playbook = self._generate_playbook_from_cluster(
                 prompt_cluster_playbooks,
@@ -1357,6 +1401,11 @@ class PlaybookAggregator:
                     response
                 )
                 self._record_placeholder_leakage(placeholder_count)
+            else:
+                response, placeholder_count = self._sanitize_aggregation_log_value(
+                    response
+                )
+                self._record_placeholder_leakage(placeholder_count)
             log_model_response(logger, "Aggregation structured response", response)
 
             if not isinstance(response, PlaybookAggregationOutput):
@@ -1368,9 +1417,13 @@ class PlaybookAggregator:
 
             return self._process_aggregation_response(response, cluster_playbooks)
         except Exception as exc:
+            sanitized_error, placeholder_count = self._sanitize_aggregation_log_value(
+                str(exc)
+            )
+            self._record_placeholder_leakage(placeholder_count)
             logger.error(
                 "AgentPlaybook aggregation failed due to %s, returning None.",
-                str(exc),
+                sanitized_error,
             )
             return None
 

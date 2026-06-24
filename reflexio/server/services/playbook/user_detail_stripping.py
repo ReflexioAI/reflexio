@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Protocol, cast
 
 
 @dataclass(frozen=True)
@@ -50,7 +51,10 @@ def create_configured_user_detail_stripper(
     create_stripper = getattr(configurator, "create_user_detail_stripper", None)
     if not callable(create_stripper):
         return None
-    return create_stripper()
+    typed_create_stripper = cast(
+        "Callable[[], UserDetailStripper | None]", create_stripper
+    )
+    return typed_create_stripper()
 
 
 _PERSON_PLACEHOLDER_RE = re.compile(r"\[PERSON_\d+\]")
