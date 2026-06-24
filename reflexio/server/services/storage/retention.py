@@ -36,12 +36,6 @@ RETENTION_TARGETS: tuple[RetentionTarget, ...] = (
         "created_at",
         ("result_id",),
     ),
-    RetentionTarget(
-        "playbook_aggregation_change_logs",
-        "playbook_aggregation_change_logs",
-        "created_at",
-        ("id",),
-    ),
     RetentionTarget("share_links", "share_links", "created_at", ("id",)),
     RetentionTarget(
         "agent_playbook_source_user_playbooks",

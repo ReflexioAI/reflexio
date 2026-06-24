@@ -383,10 +383,6 @@ class ExtrasMixin:
         )
         return [_row_to_playbook_aggregation_change_log(r) for r in rows]
 
-    @SQLiteStorageBase.handle_exceptions
-    def delete_all_playbook_aggregation_change_logs(self) -> None:
-        self._execute("DELETE FROM playbook_aggregation_change_logs")
-
     # ------------------------------------------------------------------
     # Evaluation-overview support (Plan B-backend)
     # ------------------------------------------------------------------

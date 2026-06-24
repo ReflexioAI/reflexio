@@ -93,11 +93,6 @@ class ExtrasMixin:
         """Get playbook aggregation change logs filtered by playbook_name and agent_version."""
         raise NotImplementedError
 
-    @abstractmethod
-    def delete_all_playbook_aggregation_change_logs(self) -> None:
-        """Delete all playbook aggregation change logs."""
-        raise NotImplementedError
-
     # ==============================
     # Misc methods
     # ==============================
