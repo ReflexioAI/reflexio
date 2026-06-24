@@ -6,14 +6,13 @@ from reflexio.models.api_schema.braintrust_schema import (
 )
 from reflexio.models.api_schema.domain import (
     Interaction,
-    PlaybookAggregationChangeLog,
 )
 from reflexio.models.api_schema.internal_schema import SessionCitation
 from reflexio.models.api_schema.retriever_schema import PlaybookApplicationStat
 
 
 class ExtrasMixin:
-    """Mixin for dashboard, profile change logs, playbook aggregation change logs, and misc methods."""
+    """Mixin for dashboard, profile change logs, and misc methods."""
 
     # ==============================
     # Dashboard methods
@@ -70,27 +69,6 @@ class ExtrasMixin:
         Returns:
             dict with keys: current_count, pending_count, archived_count, expiring_soon_count
         """
-        raise NotImplementedError
-
-    # ==============================
-    # Playbook Aggregation Change Log methods
-    # ==============================
-
-    @abstractmethod
-    def add_playbook_aggregation_change_log(
-        self, change_log: PlaybookAggregationChangeLog
-    ) -> None:
-        """Add a playbook aggregation change log entry."""
-        raise NotImplementedError
-
-    @abstractmethod
-    def get_playbook_aggregation_change_logs(
-        self,
-        playbook_name: str,
-        agent_version: str,
-        limit: int = 100,
-    ) -> list[PlaybookAggregationChangeLog]:
-        """Get playbook aggregation change logs filtered by playbook_name and agent_version."""
         raise NotImplementedError
 
     # ==============================

@@ -22,12 +22,9 @@ from typing import Any, ClassVar, Literal
 from reflexio.models.api_schema.common import BlockingIssue
 from reflexio.models.api_schema.service_schemas import (
     AgentPlaybook,
-    AgentPlaybookSnapshot,
-    AgentPlaybookUpdateEntry,
     AgentSuccessEvaluationResult,
     Citation,
     Interaction,
-    PlaybookAggregationChangeLog,
     PlaybookStatus,
     ProfileTimeToLive,
     RegularVsShadow,
@@ -536,34 +533,6 @@ def _row_to_eval_result(row: sqlite3.Row) -> AgentSuccessEvaluationResult:
     )
 
 
-def _row_to_playbook_aggregation_change_log(
-    row: sqlite3.Row,
-) -> PlaybookAggregationChangeLog:
-    d = dict(row)
-    return PlaybookAggregationChangeLog(
-        id=d["id"],
-        created_at=d["created_at"],
-        playbook_name=d["playbook_name"],
-        agent_version=d["agent_version"],
-        run_mode=d["run_mode"],
-        added_agent_playbooks=[
-            AgentPlaybookSnapshot(**fb)
-            for fb in (_json_loads(d.get("added_playbooks")) or [])
-        ],
-        removed_agent_playbooks=[
-            AgentPlaybookSnapshot(**fb)
-            for fb in (_json_loads(d.get("removed_playbooks")) or [])
-        ],
-        updated_agent_playbooks=[
-            AgentPlaybookUpdateEntry(
-                before=AgentPlaybookSnapshot(**entry["before"]),
-                after=AgentPlaybookSnapshot(**entry["after"]),
-            )
-            for entry in (_json_loads(d.get("updated_playbooks")) or [])
-        ],
-    )
-
-
 # ---------------------------------------------------------------------------
 # SQLiteStorageBase
 # ---------------------------------------------------------------------------
@@ -683,6 +652,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         self._migrate_retired_at()
         self._migrate_lineage_event_table()
         self._migrate_retire_profile_change_logs()
+        self._migrate_retire_playbook_aggregation_change_logs()
         init_stall_state_table(self.conn)
         return True
 
@@ -1359,6 +1329,39 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             logger.info(
                 "Renamed profile_change_logs to "
                 "profile_change_logs_retired_20260623 (B3 Task 8 retirement)"
+            )
+            self.conn.commit()
+
+    def _migrate_retire_playbook_aggregation_change_logs(self) -> None:
+        """Retire the frozen ``playbook_aggregation_change_logs`` table via a reversible RENAME.
+
+        Lineage Track B Task 4: the legacy change log is fully de-referenced (no
+        readers, writers, or GDPR delete callers remain) and the view is served
+        from reconstruction. We rename the table out of the way now and DROP it
+        in a later migration after the recovery window — keeping the data
+        recoverable in the interim.
+
+        Idempotent: SQLite has no ``RENAME ... IF EXISTS``, so we guard on the
+        source table's presence and no-op once it has been renamed. The
+        ``CREATE TABLE`` for ``playbook_aggregation_change_logs`` was deleted from
+        ``_DDL`` so ``executescript(_DDL)`` does not recreate an empty table after
+        the rename.
+        """
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+                ("playbook_aggregation_change_logs",),
+            ).fetchone()
+            if row is None:
+                return
+            self.conn.execute(
+                "ALTER TABLE playbook_aggregation_change_logs "
+                "RENAME TO playbook_aggregation_change_logs_retired_20260624"
+            )
+            logger.info(
+                "Renamed playbook_aggregation_change_logs to "
+                "playbook_aggregation_change_logs_retired_20260624 "
+                "(Track B Task 4 retirement)"
             )
             self.conn.commit()
 
@@ -2041,19 +2044,6 @@ CREATE INDEX IF NOT EXISTS idx_eval_agent_version_created_at_desc
     ON agent_success_evaluation_result(agent_version, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_eval_identity_created_at_desc
     ON agent_success_evaluation_result(user_id, session_id, evaluation_name, agent_version, created_at DESC);
-
-CREATE TABLE IF NOT EXISTS playbook_aggregation_change_logs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    created_at INTEGER NOT NULL,
-    playbook_name TEXT NOT NULL,
-    agent_version TEXT NOT NULL,
-    run_mode TEXT NOT NULL,
-    added_playbooks TEXT NOT NULL DEFAULT '[]',
-    removed_playbooks TEXT NOT NULL DEFAULT '[]',
-    updated_playbooks TEXT NOT NULL DEFAULT '[]'
-);
-CREATE INDEX IF NOT EXISTS idx_pacl_playbook_name ON playbook_aggregation_change_logs(playbook_name);
-CREATE INDEX IF NOT EXISTS idx_pacl_agent_version ON playbook_aggregation_change_logs(agent_version);
 
 CREATE TABLE IF NOT EXISTS agent_playbook_source_user_playbooks (
     agent_playbook_id INTEGER NOT NULL,

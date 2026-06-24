@@ -6,18 +6,19 @@ lineage events, mirroring the profile reconstruction model.
 Covered scenarios:
   1. 2-add / 1-remove incremental run — correct added/removed snapshots, run_mode.
   2. Full-archive run reconstructs added/removed; run_mode="full_archive".
-  3. S3 parity gate — seeds legacy via add_playbook_aggregation_change_log (PENDING+APPROVED
-     in removed), reads via get_playbook_aggregation_change_logs, asserts:
-       reconstruction.removed ⊆ legacy.removed; delta ⊆ {APPROVED}; added matches.
-  4. Add-only run (aggregate events, no supersede) → added-only, removed=[].
-  5. Remove-only run (supersede events, no aggregate) → removed-only, added=[].
-  6. Empty request_id events are skipped (never merged into a group).
-  7. Purged tombstone (row hard-deleted after supersede) → omitted, no crash.
-  8. get_lineage_events(request_id=R) returns only R's events (Part A filter).
-  9. limit=0 returns empty change_logs.
-  10. run_mode defaults to "incremental" when event reason has no "aggregate:" prefix.
-  11. H2: reason="aggregate:" (empty suffix) → run_mode="incremental", no crash.
-  12. H2: reason="aggregate:bogus" (unknown suffix) → run_mode="incremental", no crash.
+  3. Add-only run (aggregate events, no supersede) → added-only, removed=[].
+  4. Remove-only run (supersede events, no aggregate) → removed-only, added=[].
+  5. Empty request_id events are skipped (never merged into a group).
+  6. Purged tombstone (row hard-deleted after supersede) → omitted, no crash.
+  7. get_lineage_events(request_id=R) returns only R's events (Part A filter).
+  8. limit=0 returns empty change_logs.
+  9. run_mode defaults to "incremental" when event reason has no "aggregate:" prefix.
+  10. H2: reason="aggregate:" (empty suffix) → run_mode="incremental", no crash.
+  11. H2: reason="aggregate:bogus" (unknown suffix) → run_mode="incremental", no crash.
+
+Note: the S3 parity-gate test (formerly Test 3) was retired with the legacy
+``playbook_aggregation_change_logs`` table (Track B Task 4). Parity is moot
+once the legacy write path is stopped.
 """
 
 from __future__ import annotations
@@ -28,8 +29,6 @@ from reflexio.lib._agent_playbook import reconstruct_playbook_aggregation_change
 from reflexio.models.api_schema.domain.entities import (
     AgentPlaybook,
     LineageEvent,
-    PlaybookAggregationChangeLog,
-    agent_playbook_to_snapshot,
 )
 from reflexio.models.api_schema.domain.enums import PlaybookStatus, Status
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
@@ -200,136 +199,6 @@ def test_full_archive_run_mode(tmp_path):
     assert result.change_logs[0].run_mode == "full_archive"
     assert len(result.change_logs[0].added_agent_playbooks) == 1
     assert result.change_logs[0].removed_agent_playbooks == []
-
-
-# ---------------------------------------------------------------------------
-# Test 3: APPROVED playbook absent from reconstruction.removed (S3 gate)
-# ---------------------------------------------------------------------------
-
-
-def test_approved_playbook_absent_from_reconstruction_removed(tmp_path):
-    """S3 parity gate: APPROVED playbook absent from reconstruction.removed.
-
-    Seeds the legacy table via add_playbook_aggregation_change_log (including
-    both PENDING and APPROVED in removed), reads it back via
-    get_playbook_aggregation_change_logs, runs reconstruction, then asserts
-    the S3 gate against the REAL legacy row:
-
-      reconstruction.removed ⊆ legacy.removed  (by content)
-      legacy.removed \\ reconstruction.removed ⊆ {APPROVED playbooks}  (over-recording tolerated)
-      reconstruction.added == legacy.added  (by content)
-
-    Reconstruction correctly excludes APPROVED because supersede helpers skip
-    APPROVED rows — no status_change event is emitted for them.
-
-    Tolerated deltas:
-      - updated count differs (Decision 3 — updated_agent_playbooks=[])
-      - APPROVED over-recording in legacy.removed (S3 — full_archive snapshots them)
-      - purged tombstone → blank removed (separate test)
-      - pre-T1 historical runs reconstruct empty/partial removed (forward-only)
-    """
-    s = _store(tmp_path)
-
-    # A PENDING playbook that gets superseded (will appear in reconstruction.removed)
-    pending_pb = _make_playbook(
-        playbook_name="pb",
-        agent_version="v1",
-        content="pending content",
-        playbook_status=PlaybookStatus.PENDING,
-    )
-    pending_id = _add_playbook(s, pending_pb)
-
-    # An APPROVED playbook — supersede helper skips APPROVED (no event emitted)
-    approved_pb = _make_playbook(
-        playbook_name="pb",
-        agent_version="v1",
-        content="approved content",
-        playbook_status=PlaybookStatus.APPROVED,
-    )
-    approved_id = _add_playbook(s, approved_pb)
-    _set_superseded(s, pending_id)  # pending is tombstoned; approved remains current
-
-    # New playbook added in this run
-    new_pb = _make_playbook(
-        playbook_name="pb", agent_version="v1", content="new content"
-    )
-    new_id = _add_playbook(s, new_pb)
-
-    req_id = "run-s3"
-    _emit_aggregate_event(
-        s, entity_id=str(new_id), request_id=req_id, run_mode="full_archive"
-    )
-    # Emit supersede event only for pending (not approved — mirrors real behavior)
-    _emit_status_change_superseded(s, entity_id=str(pending_id), request_id=req_id)
-
-    # --- Seed the legacy table (as the real aggregator did pre-B3b) ---
-    # Legacy full_archive over-records: both PENDING and APPROVED appear in removed.
-    pending_snap = agent_playbook_to_snapshot(
-        s.get_agent_playbook_by_id(pending_id, include_tombstones=True)
-    )
-    approved_snap = agent_playbook_to_snapshot(s.get_agent_playbook_by_id(approved_id))
-    new_snap = agent_playbook_to_snapshot(s.get_agent_playbook_by_id(new_id))
-    legacy_log = PlaybookAggregationChangeLog(
-        playbook_name="pb",
-        agent_version="v1",
-        run_mode="full_archive",
-        added_agent_playbooks=[new_snap],
-        removed_agent_playbooks=[pending_snap, approved_snap],  # over-records APPROVED
-        updated_agent_playbooks=[],
-    )
-    s.add_playbook_aggregation_change_log(legacy_log)
-
-    # --- Read back the REAL legacy row ---
-    legacy_rows = s.get_playbook_aggregation_change_logs("pb", "v1")
-    assert len(legacy_rows) == 1, "expected exactly one legacy row"
-    legacy = legacy_rows[0]
-    legacy_removed_contents = {snap.content for snap in legacy.removed_agent_playbooks}
-    legacy_added_contents = {snap.content for snap in legacy.added_agent_playbooks}
-
-    # Non-vacuous: legacy must contain the APPROVED entry (the over-recording we tolerate)
-    assert "approved content" in legacy_removed_contents, (
-        "test is non-vacuous: legacy.removed must contain the APPROVED entry"
-    )
-    assert "pending content" in legacy_removed_contents, (
-        "test is non-vacuous: legacy.removed must contain the PENDING entry"
-    )
-
-    # --- Run reconstruction ---
-    result = reconstruct_playbook_aggregation_change_log(s)
-    assert result.success
-    assert len(result.change_logs) == 1
-    log = result.change_logs[0]
-
-    recon_removed_contents = {snap.content for snap in log.removed_agent_playbooks}
-    recon_added_contents = {snap.content for snap in log.added_agent_playbooks}
-
-    # S3 gate: reconstruction.removed ⊆ legacy.removed
-    assert recon_removed_contents <= legacy_removed_contents, (
-        f"reconstruction.removed={recon_removed_contents!r} not subset of "
-        f"legacy.removed={legacy_removed_contents!r}"
-    )
-
-    # S3 gate: legacy.removed \ reconstruction.removed ⊆ {APPROVED playbooks}
-    delta = legacy_removed_contents - recon_removed_contents
-    approved_contents = {
-        snap.content
-        for snap in legacy.removed_agent_playbooks
-        if snap.playbook_status == PlaybookStatus.APPROVED
-    }
-    assert delta <= approved_contents, (
-        f"delta={delta!r} contains non-APPROVED entries (approved_contents={approved_contents!r})"
-    )
-
-    # S3 gate: reconstruction.added == legacy.added (by content)
-    assert recon_added_contents == legacy_added_contents, (
-        f"added mismatch: recon={recon_added_contents!r} legacy={legacy_added_contents!r}"
-    )
-
-    # APPROVED playbook must NOT be in reconstruction.removed
-    assert "approved content" not in recon_removed_contents
-
-    # PENDING playbook MUST be in reconstruction.removed (drop-gate: would fail if non-APPROVED removed)
-    assert "pending content" in recon_removed_contents
 
 
 # ---------------------------------------------------------------------------

@@ -12,7 +12,6 @@ from reflexio.models.api_schema.internal_schema import SessionCitation
 from reflexio.models.api_schema.retriever_schema import PlaybookApplicationStat
 from reflexio.models.api_schema.service_schemas import (
     Interaction,
-    PlaybookAggregationChangeLog,
 )
 
 from ._base import (
@@ -23,7 +22,6 @@ from ._base import (
     _json_dumps,
     _json_loads,
     _row_to_interaction,
-    _row_to_playbook_aggregation_change_log,
 )
 
 type _CitationKind = Literal["playbook", "profile"]
@@ -334,54 +332,6 @@ class ExtrasMixin:
             elif s == "archived":
                 stats["archived_count"] += 1
         return stats
-
-    # ------------------------------------------------------------------
-    # Playbook Aggregation Change Log methods
-    # ------------------------------------------------------------------
-
-    @SQLiteStorageBase.handle_exceptions
-    def add_playbook_aggregation_change_log(
-        self, change_log: PlaybookAggregationChangeLog
-    ) -> None:
-        self._execute(
-            """INSERT INTO playbook_aggregation_change_logs
-               (created_at, playbook_name, agent_version, run_mode,
-                added_playbooks, removed_playbooks, updated_playbooks)
-               VALUES (?,?,?,?,?,?,?)""",
-            (
-                change_log.created_at,
-                change_log.playbook_name,
-                change_log.agent_version,
-                change_log.run_mode,
-                _json_dumps(
-                    [fb.model_dump() for fb in change_log.added_agent_playbooks]
-                ),
-                _json_dumps(
-                    [fb.model_dump() for fb in change_log.removed_agent_playbooks]
-                ),
-                _json_dumps(
-                    [
-                        {"before": e.before.model_dump(), "after": e.after.model_dump()}
-                        for e in change_log.updated_agent_playbooks
-                    ]
-                ),
-            ),
-        )
-
-    @SQLiteStorageBase.handle_exceptions
-    def get_playbook_aggregation_change_logs(
-        self,
-        playbook_name: str,
-        agent_version: str,
-        limit: int = 100,
-    ) -> list[PlaybookAggregationChangeLog]:
-        rows = self._fetchall(
-            """SELECT * FROM playbook_aggregation_change_logs
-               WHERE playbook_name = ? AND agent_version = ?
-               ORDER BY created_at DESC LIMIT ?""",
-            (playbook_name, agent_version, limit),
-        )
-        return [_row_to_playbook_aggregation_change_log(r) for r in rows]
 
     # ------------------------------------------------------------------
     # Evaluation-overview support (Plan B-backend)
