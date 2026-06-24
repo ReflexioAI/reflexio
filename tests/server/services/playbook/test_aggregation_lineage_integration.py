@@ -471,10 +471,12 @@ def test_e2e_reconstruct_incremental_run_mode(
 
     assert result.success
     assert result.change_logs, "Expected at least one reconstructed entry"
-    # Most recent entry (index 0) is the incremental run (run 2 has a later timestamp).
-    # Run 1's ap was superseded by run 2, so it won't appear in run1's 'added' list
-    # (reconstruct skips tombstoned entries in the added slot). Run 2's ap is live and
-    # has the superseded ap1 in its 'removed' list — so run 2 IS the first entry.
+    # BOTH runs appear. Run 2 (later timestamp) is the most recent entry. Run 1's ap was
+    # superseded by run 2 but is still shown in run 1's 'added' list — reconstruct resolves
+    # the added side with include_tombstones, so run 1 is no longer dropped from history.
+    assert len(result.change_logs) == 2, (
+        f"Expected both runs reconstructed, got {len(result.change_logs)}"
+    )
     log_most_recent = result.change_logs[0]
     assert log_most_recent.run_mode == "incremental", (
         f"Expected run_mode='incremental' for the most recent run, got {log_most_recent.run_mode!r}"
@@ -484,4 +486,10 @@ def test_e2e_reconstruct_incremental_run_mode(
     )
     assert log_most_recent.removed_agent_playbooks, (
         "Expected removed playbooks in incremental run (ap1 superseded under run2 request_id)"
+    )
+    # Run 1 survives supersession: its (now-tombstoned) added playbook is still present.
+    log_run1 = result.change_logs[1]
+    run1_added_contents = {snap.content for snap in log_run1.added_agent_playbooks}
+    assert "Run 1 content." in run1_added_contents, (
+        f"Run 1's added playbook must survive supersession, got {run1_added_contents}"
     )

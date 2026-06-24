@@ -320,6 +320,49 @@ def test_purged_tombstone_omitted_no_crash(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Test 7b: added-then-superseded playbook still appears in its run's added side
+# ---------------------------------------------------------------------------
+
+
+def test_added_then_superseded_still_in_added(tmp_path):
+    """A playbook added in run R1 and later superseded by R2 stays in R1's added side.
+
+    Inverse of test_purged_tombstone_omitted_no_crash: while the tombstone still exists
+    (not yet GC-purged), the added side is resolved with include_tombstones, so R1 is
+    NOT dropped from the change log. (Pre-fix, R1's only added playbook resolved to None
+    and R1 — having no removals — was dropped entirely.)
+    """
+    s = _store(tmp_path)
+
+    # Run 1 adds playbook X.
+    pb_x = _make_playbook(playbook_name="pb", agent_version="v1", content="X added in run1")
+    x_id = _add_playbook(s, pb_x)
+    _emit_aggregate_event(s, entity_id=str(x_id), request_id="run-1")
+
+    # Run 2 supersedes X (tombstones the row + emits the superseded event).
+    _set_superseded(s, x_id)
+    _emit_status_change_superseded(s, entity_id=str(x_id), request_id="run-2")
+
+    result = reconstruct_playbook_aggregation_change_log(s)
+    assert result.success
+
+    run1 = next(
+        (
+            log
+            for log in result.change_logs
+            if any(
+                snap.content == "X added in run1" for snap in log.added_agent_playbooks
+            )
+        ),
+        None,
+    )
+    assert run1 is not None, (
+        "Run 1 must remain in the change log with its added playbook, got "
+        f"{[(cl.added_agent_playbooks, cl.removed_agent_playbooks) for cl in result.change_logs]}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Test 8: get_lineage_events(request_id=...) filter
 # ---------------------------------------------------------------------------
 

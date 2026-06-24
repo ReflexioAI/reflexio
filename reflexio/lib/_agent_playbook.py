@@ -382,9 +382,12 @@ def reconstruct_playbook_aggregation_change_log(
     ``updated_agent_playbooks = []`` (Decision 3 — tolerated delta; updates
     are folded into added/removed in the B3b reconstruction model).
 
-    Known limitation (Bucket-4 follow-up): added-side resolve omits
-    include_tombstones → an added-then-superseded playbook drops from its
-    run's history.
+    An agent_playbook *added* in run R is included in R's
+    ``added_agent_playbooks`` even if a later run superseded (tombstoned) it
+    (resolved with ``include_tombstones=True``) — so R is not dropped from the
+    change log, matching the legacy table and ``reconstruct_profile_change_log``.
+    As with the removed side, once a tombstone is physically purged (GC) the
+    snapshot resolves to ``None`` and is silently omitted.
 
     Version-semantics note (E1): for remove-only runs with mixed agent_version
     across the superseded set, ``agent_version`` is that of the first resolved
@@ -477,7 +480,10 @@ def reconstruct_playbook_aggregation_change_log(
         added = []
         for eid in added_by_req[req]:
             try:
-                pb = storage.get_agent_playbook_by_id(int(eid))
+                # include_tombstones: a playbook added in this run but later
+                # superseded must still appear in this run's added side (so the
+                # run is not dropped) — mirrors the removed-side resolve below.
+                pb = storage.get_agent_playbook_by_id(int(eid), include_tombstones=True)
             except (ValueError, TypeError):
                 logger.warning(
                     "reconstruct: malformed entity_id %r in added_by_req, skipping", eid
