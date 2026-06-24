@@ -14,6 +14,7 @@ from reflexio.models.api_schema.domain import (
     Status,
     UserPlaybook,
 )
+from reflexio.models.api_schema.domain.entities import LineageEvent
 from reflexio.models.api_schema.retriever_schema import (
     SearchAgentPlaybookRequest,
     SearchUserPlaybookRequest,
@@ -293,6 +294,47 @@ class PlaybookMixin:
             list[AgentPlaybook]: Saved agent playbooks with agent_playbook_id populated from storage
         """
         raise NotImplementedError
+
+    def save_agent_playbook_with_aggregate_event(
+        self,
+        agent_playbook: AgentPlaybook,
+        *,
+        source_ids: list[str],
+        request_id: str,
+        run_mode: str,
+        agent_version: str,
+    ) -> AgentPlaybook:
+        """Persist an agent playbook AND its ``op=aggregate`` lineage event.
+
+        Backends SHOULD override this so the row insert and the event commit in ONE
+        transaction (the event is the sole record of the run->playbook membership for
+        reconstruction). This base default is a non-atomic save-then-emit fallback.
+
+        Args:
+            agent_playbook (AgentPlaybook): The playbook to persist.
+            source_ids (list[str]): IDs of the source entities that produced this playbook.
+            request_id (str): The aggregation run ID (used as the lineage event request_id).
+            run_mode (str): The aggregation run mode (e.g. ``full_archive`` or ``incremental``).
+            agent_version (str): The agent version string (encoded in the event reason).
+
+        Returns:
+            AgentPlaybook: The saved playbook with ``agent_playbook_id`` populated.
+        """
+        saved = self.save_agent_playbooks([agent_playbook])[0]
+        self.append_lineage_event(  # type: ignore[attr-defined]
+            LineageEvent(
+                org_id=self.org_id,  # type: ignore[attr-defined]
+                entity_type="agent_playbook",
+                entity_id=str(saved.agent_playbook_id),
+                op="aggregate",
+                prov_relation="wasDerivedFrom",
+                source_ids=source_ids,
+                actor="aggregator",
+                request_id=request_id,
+                reason=f"aggregate:{run_mode}|av={agent_version}",
+            )
+        )
+        return saved
 
     @abstractmethod
     def get_agent_playbooks(
