@@ -179,6 +179,7 @@ from reflexio.server.correlation import correlation_id_var, generate_correlation
 from reflexio.server.operation_limiter import (
     OperationName,
     limiter_http_exception,
+    log_publish_hardware_capacity,
     run_with_operation_limit,
 )
 from reflexio.server.services.agent_success_evaluation.group_evaluation_runner import (
@@ -2975,6 +2976,7 @@ def create_app(
         scheduler = None
         gc_scheduler = None
         if mount_data_plane:
+            log_publish_hardware_capacity()
             validate_llm_availability()
             from reflexio.server.llm.rerank import prewarm as _prewarm_cross_encoder
 
