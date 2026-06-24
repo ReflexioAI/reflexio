@@ -375,6 +375,50 @@ def test_limit_zero_returns_empty(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Test 9b: limit applies to the POST-filter set + short-circuits at the page
+# ---------------------------------------------------------------------------
+
+
+def test_limit_applies_to_post_filter_set(tmp_path):
+    """``limit`` caps the FILTERED set and yields the most-recent matches.
+
+    Seeds three matching (fb_A/v1) runs interleaved with a non-matching
+    (fb_B/v2) run, then reconstructs with ``playbook_name``/``agent_version`` +
+    ``limit=2``. The result must be exactly the two most-recent fb_A runs —
+    proving the limit is applied AFTER filtering (not a pre-filter slice, the
+    fb01ae2 contract) and that reconstruction stops once the page is full.
+    """
+    s = _store(tmp_path)
+
+    def _run(name: str, version: str, content: str, request_id: str) -> None:
+        pb = _make_playbook(playbook_name=name, agent_version=version, content=content)
+        pid = _add_playbook(s, pb)
+        _emit_aggregate_event(s, entity_id=str(pid), request_id=request_id)
+
+    # Appended oldest -> newest; a non-matching fb_B run sits in the middle.
+    _run("fb_A", "v1", "A oldest", "run-A1")
+    _run("fb_A", "v1", "A middle", "run-A2")
+    _run("fb_B", "v2", "B other", "run-B")
+    _run("fb_A", "v1", "A newest", "run-A3")
+
+    result = reconstruct_playbook_aggregation_change_log(
+        s, limit=2, playbook_name="fb_A", agent_version="v1"
+    )
+    assert result.success
+    assert len(result.change_logs) == 2, (
+        f"limit=2 must cap the filtered set, got {len(result.change_logs)}"
+    )
+    # Most-recent-first: the two newest fb_A runs, oldest dropped, fb_B excluded.
+    contents = [
+        snap.content
+        for log in result.change_logs
+        for snap in log.added_agent_playbooks
+    ]
+    assert contents == ["A newest", "A middle"], contents
+    assert all(log.playbook_name == "fb_A" for log in result.change_logs)
+
+
+# ---------------------------------------------------------------------------
 # Test 10: run_mode default when reason doesn't match "aggregate:" prefix
 # ---------------------------------------------------------------------------
 

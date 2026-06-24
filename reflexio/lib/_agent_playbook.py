@@ -444,15 +444,19 @@ def reconstruct_playbook_aggregation_change_log(
     )
 
     logs: list[PlaybookAggregationChangeLog] = []
-    # PERFORMANCE NOTE (M3): this resolves content with a per-entity
-    # ``get_agent_playbook_by_id`` call (N+1), matching the merged
-    # ``reconstruct_profile_change_log`` model. It is an OFF-hot-path
-    # reconstruction tool — the legacy ``PlaybookAggregationChangeLog`` still
-    # serves the live endpoint, so this only runs in parity tooling / scripts
-    # today. Deliberately NOT optimized here: a batch ``*_by_ids`` fetch should
-    # be introduced for BOTH the profile and aggregation reconstructions
-    # together at the B3 retirement stage (when reconstruction may move onto the
-    # request path), not divergently for one of the two now.
+    # PERFORMANCE NOTE (M3): as of Track B retirement this serves the live
+    # ``/api/playbook_aggregation_change_logs`` endpoint (the legacy table is no
+    # longer read), so it IS on the request path. Two bounds keep it from scaling
+    # with full org history: (1) the lineage-event read is paginated in the
+    # Supabase backend (``get_lineage_events`` loops ``.range()`` windows), so
+    # PostgREST ``max_rows`` can no longer silently truncate to the oldest rows;
+    # (2) name/version filtering AND the ``limit`` are applied INSIDE this loop and
+    # we ``break`` once ``limit`` matches are collected, so the per-entity
+    # ``get_agent_playbook_by_id`` (N+1) resolution stops at the requested page
+    # instead of resolving every run in the org. ``sorted_reqs`` is most-recent
+    # first, so breaking after ``limit`` matches yields the ``limit`` most-recent
+    # matches. Remaining follow-up (tracked, NOT done here): a batch ``*_by_ids``
+    # fetch shared with ``reconstruct_profile_change_log``.
     for req in sorted_reqs:
         added = []
         for eid in added_by_req[req]:
@@ -483,6 +487,13 @@ def reconstruct_playbook_aggregation_change_log(
             continue
 
         first = added[0] if added else removed[0]
+        # Filter INSIDE the loop so the ``limit`` is applied to the post-filter
+        # set (not a pre-filter slice) AND we can stop once the page is full.
+        if playbook_name is not None and first.playbook_name != playbook_name:
+            continue
+        if agent_version is not None and first.agent_version != agent_version:
+            continue
+
         ts, _ = sort_key.get(req, (0, 0))
         logs.append(
             PlaybookAggregationChangeLog(
@@ -495,11 +506,7 @@ def reconstruct_playbook_aggregation_change_log(
                 created_at=ts,
             )
         )
+        if len(logs) >= limit:  # limit > 0 guaranteed above
+            break
 
-    # Filter BEFORE applying limit so the limit is applied to the relevant set.
-    if playbook_name is not None:
-        logs = [log for log in logs if log.playbook_name == playbook_name]
-    if agent_version is not None:
-        logs = [log for log in logs if log.agent_version == agent_version]
-
-    return PlaybookAggregationChangeLogResponse(success=True, change_logs=logs[:limit])
+    return PlaybookAggregationChangeLogResponse(success=True, change_logs=logs)

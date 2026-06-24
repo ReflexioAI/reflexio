@@ -341,7 +341,7 @@ Aggregation clusters user playbooks by embedding similarity, then calls LLM per 
 | No changes | Logs skip message, updates bookmark, returns early |
 | Error during save | Restores only selectively archived playbooks |
 
-**Change Log Tracking**: After each aggregation run, a `PlaybookAggregationChangeLog` is saved with before/after snapshots of added, removed, and updated playbooks. Viewable via `GET /api/playbook_aggregation_change_logs`. Change log saving is best-effort (failures are logged but don't block aggregation).
+**Change Log Tracking**: The legacy `playbook_aggregation_change_logs` table is retired (Track B, 2026-06-24) — the aggregator no longer writes it. The change-log view served by `GET /api/playbook_aggregation_change_logs` is reconstructed on demand from `lineage_event` rows via `reconstruct_playbook_aggregation_change_log` (`lib/_agent_playbook.py`): each run's `op=aggregate` events form the "added" side and its `status_change→superseded` events form the "removed" side, grouped by `request_id`. Per-row `updated` pairing is not reconstructed (`updated_agent_playbooks=[]`, a tolerated parity delta).
 
 **Generation Modes** (detailed comparison):
 
