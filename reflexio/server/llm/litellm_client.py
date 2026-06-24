@@ -299,6 +299,10 @@ class ToolCallingChatResponse:
         usage: Raw usage object from the LLM response (provider-dependent shape), or None.
         cost_usd: Estimated cost in USD for this call via litellm price table, or None when
             the provider is not in the table (local ONNX, claude-code CLI, etc.).
+        parsed_output: When ``response_format`` is passed alongside ``tools`` and the model
+            ends the turn with a plain (non-tool) response, the content parsed into the
+            ``response_format`` schema. None when the turn emitted tool calls, when no
+            ``response_format`` was requested, or when the content was not parseable.
     """
 
     content: str | None
@@ -306,6 +310,7 @@ class ToolCallingChatResponse:
     finish_reason: str | None
     usage: Any | None = None
     cost_usd: float | None = None
+    parsed_output: BaseModel | None = None
 
 
 class LiteLLMClientError(Exception):
@@ -1464,12 +1469,28 @@ class LiteLLMClient:
             if "tools" in params:
                 raw_usage = getattr(response, "usage", None)
                 call_cost = self._compute_cost_usd(response, params.get("model"))
+                tool_calls = getattr(message, "tool_calls", None)
+                # Structured-output + tools: when the model ends the turn with a
+                # plain (non-tool) response and a response_format was requested,
+                # the content IS the final structured answer. Parse it here so a
+                # tool-loop caller can finish on it. A malformed parse raises
+                # StructuredOutputParseError, which the outer wrapper retries once.
+                parsed_output: BaseModel | None = None
+                if response_format is not None and not tool_calls:
+                    parsed = self._maybe_parse_structured_output(
+                        content,  # type: ignore[reportArgumentType]
+                        response_format,
+                        parse_structured_output,
+                    )
+                    if isinstance(parsed, BaseModel):
+                        parsed_output = parsed
                 return ToolCallingChatResponse(
                     content=content,
-                    tool_calls=getattr(message, "tool_calls", None),
+                    tool_calls=tool_calls,
                     finish_reason=response.choices[0].finish_reason,  # type: ignore[reportAttributeAccessIssue]
                     usage=raw_usage,
                     cost_usd=call_cost,
+                    parsed_output=parsed_output,
                 )
 
             return self._maybe_parse_structured_output(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
@@ -15,7 +16,6 @@ from reflexio.server.services.extraction.pending_tool_call_dispatch import (
     create_attach_pending_info_request_tool,
 )
 from reflexio.server.services.extraction.resumable_agent import (
-    FINISH_EXTRACTION_TOOL_NAME,
     ResumableExtractionAgent,
     create_pending_info_tools_for_extractor_kind,
 )
@@ -68,14 +68,16 @@ def _agent_run(run_id: str, extractor_kind: str = "profile") -> AgentRunRecord:
     )
 
 
-def test_profile_instruction_prompt_is_resumable_by_default():
-    """The extraction loop is always-on, so the resumable instruction prompt
-    (v1.1.0) is the active version of ``profile_update_instruction_start`` —
-    there is no longer a separate resumable prompt-version override."""
+def test_profile_instruction_prompt_delivers_structured_response():
+    """The extraction agent now delivers its result as a structured response,
+    so the active ``profile_update_instruction_start`` version (v1.2.0) frames
+    the output as a direct JSON response rather than a ``finish_extraction``
+    tool call. ``attach_pending_info_request`` remains a real intermediate tool;
+    the profile extractor does not offer ``ask_human``."""
     prompt_manager = PromptManager()
 
     assert prompt_manager.get_active_version("profile_update_instruction_start") == (
-        "1.1.0"
+        "1.2.0"
     )
     rendered = prompt_manager.render_prompt(
         "profile_update_instruction_start",
@@ -90,7 +92,9 @@ def test_profile_instruction_prompt_is_resumable_by_default():
     assert "Resumable Extraction Mode" in rendered
     assert "ask_human" not in rendered
     assert "attach_pending_info_request" in rendered
-    assert "finish_extraction" in rendered
+    # The finish-tool framing is gone — the result is a direct structured response.
+    assert "finish_extraction" not in rendered
+    assert "final response" in rendered
 
 
 def test_profile_pending_info_tools_do_not_include_ask_human():
@@ -115,17 +119,19 @@ def test_resumable_agent_finishes_profile_output(
 ):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_CLI", raising=False)
-    make_tc, _make_stop = tool_call_completion
-    response = make_tc(
-        FINISH_EXTRACTION_TOOL_NAME,
-        {
-            "profiles": [
-                {
-                    "content": "User prefers AWS ECS deployments.",
-                    "time_to_live": "infinity",
-                }
-            ]
-        },
+    _make_tc, make_stop = tool_call_completion
+    # The model delivers the result as a structured (no-tool) response.
+    response = make_stop(
+        json.dumps(
+            {
+                "profiles": [
+                    {
+                        "content": "User prefers AWS ECS deployments.",
+                        "time_to_live": "infinity",
+                    }
+                ]
+            }
+        )
     )
     client = LiteLLMClient(LiteLLMConfig(model="claude-sonnet-4-6"))
     agent = ResumableExtractionAgent(client=client, storage=storage)
@@ -137,7 +143,7 @@ def test_resumable_agent_finishes_profile_output(
             output_schema=StructuredProfilesOutput,
         )
 
-    assert result.finished_reason == "finish_tool"
+    assert result.finished_reason == "structured_output"
     assert isinstance(result.output, StructuredProfilesOutput)
     assert result.output.profiles is not None
     assert result.output.profiles[0].content == "User prefers AWS ECS deployments."
@@ -147,11 +153,11 @@ def test_resumable_agent_finishes_profile_output(
     assert stored.max_steps_remaining == 7
     assert stored.committed_output == {
         "profiles": [
-                    {
-                        "content": "User prefers AWS ECS deployments.",
-                        "time_to_live": "infinity",
-                        "source_span": None,
-                        "notes": None,
+            {
+                "content": "User prefers AWS ECS deployments.",
+                "time_to_live": "infinity",
+                "source_span": None,
+                "notes": None,
                 "reader_angle": None,
             }
         ]
@@ -165,17 +171,18 @@ def test_resumable_agent_discards_late_output_after_timeout_failure(
 ):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_CLI", raising=False)
-    make_tc, _make_stop = tool_call_completion
-    response = make_tc(
-        FINISH_EXTRACTION_TOOL_NAME,
-        {
-            "profiles": [
-                {
-                    "content": "User prefers AWS ECS deployments.",
-                    "time_to_live": "infinity",
-                }
-            ]
-        },
+    _make_tc, make_stop = tool_call_completion
+    response = make_stop(
+        json.dumps(
+            {
+                "profiles": [
+                    {
+                        "content": "User prefers AWS ECS deployments.",
+                        "time_to_live": "infinity",
+                    }
+                ]
+            }
+        )
     )
     client = LiteLLMClient(LiteLLMConfig(model="claude-sonnet-4-6"))
     agent = ResumableExtractionAgent(client=client, storage=storage)
@@ -211,18 +218,19 @@ def test_resumable_agent_finishes_playbook_output(
 ):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_CLI", raising=False)
-    make_tc, _make_stop = tool_call_completion
-    response = make_tc(
-        FINISH_EXTRACTION_TOOL_NAME,
-        {
-            "playbooks": [
-                {
-                    "trigger": "Deploying services",
-                    "content": "Prefer ECS for this environment.",
-                    "rationale": "The team standardizes on AWS.",
-                }
-            ]
-        },
+    _make_tc, make_stop = tool_call_completion
+    response = make_stop(
+        json.dumps(
+            {
+                "playbooks": [
+                    {
+                        "trigger": "Deploying services",
+                        "content": "Prefer ECS for this environment.",
+                        "rationale": "The team standardizes on AWS.",
+                    }
+                ]
+            }
+        )
     )
     client = LiteLLMClient(LiteLLMConfig(model="claude-sonnet-4-6"))
     agent = ResumableExtractionAgent(client=client, storage=storage)
@@ -234,7 +242,7 @@ def test_resumable_agent_finishes_playbook_output(
             output_schema=StructuredPlaybookList,
         )
 
-    assert result.finished_reason == "finish_tool"
+    assert result.finished_reason == "structured_output"
     assert isinstance(result.output, StructuredPlaybookList)
     assert result.output.playbooks[0].content == "Prefer ECS for this environment."
     stored = storage.get_agent_run("run_playbook")
@@ -269,98 +277,21 @@ def test_resumable_agent_marks_run_failed_on_loop_error(monkeypatch, storage):
     assert stored.last_error == "Extraction agent did not finish: error"
 
 
-def test_resumable_agent_no_tool_call_marks_failed_after_retries(
+def test_resumable_agent_uses_auto_tool_choice_with_extra_tools(
     monkeypatch,
     storage,
     tool_call_completion,
 ):
-    """A persistent no-tool-call turn is retried up to the cap, then fails.
+    """With async-info tools registered, the loop uses tool_choice='auto'.
 
-    The model answers with plain text and zero tool calls on every attempt, so
-    the finish handler never runs and no output is committed. After exhausting
-    the retries (1 initial + 2 retries = 3 calls) the run is marked failed with
-    the accurate, non-contradictory reason.
+    The model is free to call ask_human / attach_pending_info_request OR to
+    deliver the final structured response directly — a plain (no-tool) turn
+    carrying the schema-conformant JSON is the success terminus.
     """
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_CLI", raising=False)
-    _, make_stop = tool_call_completion
-    responses = [make_stop('{"profiles": null}') for _ in range(3)]
-    client = LiteLLMClient(LiteLLMConfig(model="claude-sonnet-4-6"))
-    agent = ResumableExtractionAgent(client=client, storage=storage)
-
-    with patch("litellm.completion", side_effect=responses) as completion:
-        result = agent.start(
-            run=_agent_run("run_no_tool"),
-            messages=[{"role": "user", "content": "extract profiles"}],
-            output_schema=StructuredProfilesOutput,
-        )
-
-    assert completion.call_count == 3
-    assert result.finished_reason == "no_tool_call"
-    assert result.output is None
-    stored = storage.get_agent_run("run_no_tool")
-    assert stored is not None
-    assert stored.status == AgentRunStatus.FAILED
-    assert stored.committed_output is None
-    assert stored.last_error == "Extraction agent did not finish: no_tool_call"
-
-
-def test_resumable_agent_retries_no_tool_call_then_finishes(
-    monkeypatch,
-    storage,
-    tool_call_completion,
-):
-    """A transient no-tool-call turn is retried; a later finish_tool turn
-    recovers the output and the run completes."""
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
-    monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_CLI", raising=False)
-    make_tc, make_stop = tool_call_completion
-    no_tool = make_stop('{"profiles": null}')
-    finish = make_tc(
-        FINISH_EXTRACTION_TOOL_NAME,
-        {
-            "profiles": [
-                {
-                    "content": "User prefers AWS ECS deployments.",
-                    "time_to_live": "infinity",
-                }
-            ]
-        },
-    )
-    client = LiteLLMClient(LiteLLMConfig(model="claude-sonnet-4-6"))
-    agent = ResumableExtractionAgent(client=client, storage=storage)
-
-    with patch("litellm.completion", side_effect=[no_tool, finish]) as completion:
-        result = agent.start(
-            run=_agent_run("run_retry"),
-            messages=[{"role": "user", "content": "extract profiles"}],
-            output_schema=StructuredProfilesOutput,
-        )
-
-    assert completion.call_count == 2
-    assert result.finished_reason == "finish_tool"
-    assert isinstance(result.output, StructuredProfilesOutput)
-    assert result.output.profiles is not None
-    assert result.output.profiles[0].content == "User prefers AWS ECS deployments."
-    stored = storage.get_agent_run("run_retry")
-    assert stored is not None
-    assert stored.status == AgentRunStatus.AGENT_COMPLETED
-
-
-def test_resumable_agent_requires_tool_call_when_extra_tools_present(
-    monkeypatch,
-    storage,
-    tool_call_completion,
-):
-    """With async-info tools registered, the loop forces tool_choice='required'.
-
-    The model is free to pick ask_human vs finish_extraction, but cannot return
-    a no-tool text turn that would silently drop extraction output.
-    """
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
-    monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_CLI", raising=False)
-    make_tc, _ = tool_call_completion
-    response = make_tc(FINISH_EXTRACTION_TOOL_NAME, {"profiles": None})
+    _make_tc, make_stop = tool_call_completion
+    response = make_stop(json.dumps({"profiles": None}))
     client = LiteLLMClient(LiteLLMConfig(model="claude-sonnet-4-6"))
     agent = ResumableExtractionAgent(client=client, storage=storage)
 
@@ -369,20 +300,21 @@ def test_resumable_agent_requires_tool_call_when_extra_tools_present(
 
     def _spy(*args, **kwargs):
         captured["tool_choice"] = kwargs.get("tool_choice")
+        captured["response_format"] = kwargs.get("response_format")
         return original(*args, **kwargs)
 
     monkeypatch.setattr(client, "generate_chat_response", _spy)
 
     extra_ctx = PendingToolCallToolContext(
         storage=storage,
-        run_id="run_required",
+        run_id="run_auto",
         org_id="org_1",
         extractor_kind="profile",
         config=PendingToolCallConfig(enabled=True),
     )
     with patch("litellm.completion", side_effect=[response]):
         result = agent.start(
-            run=_agent_run("run_required"),
+            run=_agent_run("run_auto"),
             messages=[{"role": "user", "content": "extract profiles"}],
             output_schema=StructuredProfilesOutput,
             extra_tools=[
@@ -392,8 +324,9 @@ def test_resumable_agent_requires_tool_call_when_extra_tools_present(
             extra_tool_context=extra_ctx,
         )
 
-    assert captured["tool_choice"] == "required"
-    assert result.finished_reason == "finish_tool"
+    assert captured["tool_choice"] == "auto"
+    assert captured["response_format"] is StructuredProfilesOutput
+    assert result.finished_reason == "structured_output"
 
 
 def test_resumable_agent_resume_injects_resolved_tool_result(
@@ -447,17 +380,18 @@ def test_resumable_agent_resume_injects_resolved_tool_result(
     assert claimed is not None
     assert claimed.status == AgentRunStatus.RESUMING
 
-    make_tc, _make_stop = tool_call_completion
-    response = make_tc(
-        FINISH_EXTRACTION_TOOL_NAME,
-        {
-            "profiles": [
-                {
-                    "content": "User deployment standard is AWS ECS.",
-                    "time_to_live": "infinity",
-                }
-            ]
-        },
+    _make_tc, make_stop = tool_call_completion
+    response = make_stop(
+        json.dumps(
+            {
+                "profiles": [
+                    {
+                        "content": "User deployment standard is AWS ECS.",
+                        "time_to_live": "infinity",
+                    }
+                ]
+            }
+        )
     )
     client = LiteLLMClient(LiteLLMConfig(model="claude-sonnet-4-6"))
     agent = ResumableExtractionAgent(client=client, storage=storage)
@@ -470,7 +404,7 @@ def test_resumable_agent_resume_injects_resolved_tool_result(
             resolved_tool_calls=[resolved],
         )
 
-    assert result.finished_reason == "finish_tool"
+    assert result.finished_reason == "structured_output"
     assert isinstance(result.output, StructuredProfilesOutput)
     assert result.output.profiles is not None
     assert result.output.profiles[0].content == "User deployment standard is AWS ECS."
@@ -524,15 +458,32 @@ def test_resumable_agent_resume_uses_persisted_step_budget(
     client = LiteLLMClient(LiteLLMConfig(model="claude-sonnet-4-6"))
     agent = ResumableExtractionAgent(client=client, storage=storage, max_steps=8)
 
+    extra_ctx = PendingToolCallToolContext(
+        storage=storage,
+        run_id=run.id,
+        org_id="org_1",
+        extractor_kind="profile",
+        config=PendingToolCallConfig(enabled=True),
+    )
+    # The model keeps calling an intermediate tool (ask_human) instead of
+    # delivering the structured finish, consuming the single remaining step so
+    # the loop terminates on max_steps.
     with patch(
         "litellm.completion",
-        side_effect=[make_tc("unknown_tool", {"value": "ignored"})],
+        side_effect=[
+            make_tc(
+                "ask_human",
+                {"question": "Need more?", "answer_format": "text", "tags": []},
+            )
+        ],
     ) as completion:
         result = agent.resume(
             run=run,
             messages=[{"role": "user", "content": "resume extraction"}],
             output_schema=StructuredProfilesOutput,
             resolved_tool_calls=[resolved],
+            extra_tools=[create_ask_human_tool()],
+            extra_tool_context=extra_ctx,
         )
 
     assert completion.call_count == 1

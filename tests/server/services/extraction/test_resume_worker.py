@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
@@ -14,9 +15,6 @@ from reflexio.models.config_schema import (
     StorageConfigSQLite,
 )
 from reflexio.server.api_endpoints.request_context import RequestContext
-from reflexio.server.services.extraction.resumable_agent import (
-    FINISH_EXTRACTION_TOOL_NAME,
-)
 from reflexio.server.services.extraction.resume_worker import ExtractionResumeWorker
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 from reflexio.server.services.storage.storage_base import (
@@ -159,17 +157,18 @@ def test_resume_worker_resumes_profile_run_and_consumes_dependency(
     monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_CLI", raising=False)
     _seed_interactions(storage)
     _seed_ready_run(storage)
-    make_tc, _make_stop = tool_call_completion
-    response = make_tc(
-        FINISH_EXTRACTION_TOOL_NAME,
-        {
-            "profiles": [
-                {
-                    "content": "User deployment target is AWS ECS.",
-                    "time_to_live": "infinity",
-                }
-            ]
-        },
+    _make_tc, make_stop = tool_call_completion
+    response = make_stop(
+        json.dumps(
+            {
+                "profiles": [
+                    {
+                        "content": "User deployment target is AWS ECS.",
+                        "time_to_live": "infinity",
+                    }
+                ]
+            }
+        )
     )
     worker = ExtractionResumeWorker(request_context=request_context)
 
@@ -203,17 +202,18 @@ def test_resume_worker_retries_finalization_without_rerunning_agent(
     monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_CLI", raising=False)
     _seed_interactions(storage)
     _seed_ready_run(storage)
-    make_tc, _make_stop = tool_call_completion
-    response = make_tc(
-        FINISH_EXTRACTION_TOOL_NAME,
-        {
-            "profiles": [
-                {
-                    "content": "User deployment target is AWS ECS.",
-                    "time_to_live": "infinity",
-                }
-            ]
-        },
+    _make_tc, make_stop = tool_call_completion
+    response = make_stop(
+        json.dumps(
+            {
+                "profiles": [
+                    {
+                        "content": "User deployment target is AWS ECS.",
+                        "time_to_live": "infinity",
+                    }
+                ]
+            }
+        )
     )
     worker = ExtractionResumeWorker(request_context=request_context)
 

@@ -146,6 +146,7 @@ def service_config(sample_request_interaction_models):
     return AgentSuccessGenerationServiceConfig(
         agent_version="1.0.0",
         session_id="test_group",
+        user_id="user1",
         request_interaction_data_models=sample_request_interaction_models,
         source="api",
     )
@@ -198,6 +199,7 @@ class TestRun:
         service_config = AgentSuccessGenerationServiceConfig(
             agent_version="1.0.0",
             session_id="test_group",
+            user_id="user1",
             request_interaction_data_models=sample_request_interaction_models,
             source="api",
         )
@@ -292,6 +294,7 @@ class TestSourceFiltering:
         service_config = AgentSuccessGenerationServiceConfig(
             agent_version="1.0.0",
             session_id="test_group",
+            user_id="user1",
             request_interaction_data_models=models,
             source="api",
         )
@@ -329,6 +332,7 @@ class TestCountUserTurns:
         service_config = AgentSuccessGenerationServiceConfig(
             session_id="test_session",
             agent_version="v1",
+            user_id="user1",
             request_interaction_data_models=[],
             source="api",
         )
@@ -411,6 +415,7 @@ class TestGetCorrectionCount:
         service_config = AgentSuccessGenerationServiceConfig(
             session_id="test_session",
             agent_version="v1",
+            user_id="user1",
             request_interaction_data_models=[],
             source="api",
         )
@@ -440,6 +445,7 @@ class TestGetCorrectionCount:
         service_config = AgentSuccessGenerationServiceConfig(
             session_id="test_session",
             agent_version="v1",
+            user_id="user1",
             request_interaction_data_models=[],
             source="api",
         )

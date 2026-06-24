@@ -17,6 +17,7 @@ def disable_mock_llm_response(monkeypatch):
     monkeypatch.delenv("MOCK_LLM_RESPONSE", raising=False)
 
 
+from reflexio.models.api_schema.domain.enums import UserActionType
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
 from reflexio.models.api_schema.service_schemas import (
     Interaction,
@@ -40,34 +41,25 @@ from tests import test_data
 from tests.server.test_utils import encode_image_to_base64
 
 
+def _storage(service):
+    storage = service.storage
+    assert storage is not None
+    return storage
+
+
 @pytest.fixture
 def mock_chat_completion():
     """Mock ``generate_chat_response`` for the unified extraction pipeline.
 
-    Profile extraction now runs the always-on ``finish_extraction`` tool loop,
-    which calls ``generate_chat_response`` with ``tools=`` and reads
-    ``resp.tool_calls`` — so the extraction turn must return a
-    ``ToolCallingChatResponse`` carrying a single ``finish_extraction`` tool
-    call. The should-extract boolean gate still returns a plain string.
+    Profile extraction now delivers its result as a native structured response:
+    the loop calls ``generate_chat_response`` with ``response_format=`` and reads
+    the parsed output model from a plain (no-tool) turn — so the extraction turn
+    returns the parsed ``StructuredProfilesOutput`` directly. The should-extract
+    boolean gate still returns a plain string.
     """
-    from reflexio.server.llm.litellm_client import ToolCallingChatResponse
-    from reflexio.server.services.extraction.resumable_agent import (
-        FINISH_EXTRACTION_TOOL_NAME,
-    )
-
-    def _finish_tool_call() -> MagicMock:
-        output = StructuredProfilesOutput(
-            profiles=[ProfileAddItem(content="like sushi", time_to_live="one_month")]
-        )
-        tc = MagicMock()
-        tc.id = f"tc_{FINISH_EXTRACTION_TOOL_NAME}"
-        tc.type = "function"
-        tc.function.name = FINISH_EXTRACTION_TOOL_NAME
-        tc.function.arguments = output.model_dump_json()
-        return tc
 
     def mock_generate_chat_response_side_effect(messages, **kwargs):
-        """Route on prompt content / tool-loop mode to the right mock response."""
+        """Route on prompt content / extraction mode to the right mock response."""
         # Get the prompt content from the messages
         prompt_content = ""
         for message in messages:
@@ -77,12 +69,13 @@ def mock_chat_completion():
         # Check if this is a should_extract_profile call
         if "Output just a boolean value" in prompt_content:
             return "true"
-        # Extraction tool-loop turn: return a finish_extraction tool call.
-        if kwargs.get("tools"):
-            return ToolCallingChatResponse(
-                content=None,
-                tool_calls=[_finish_tool_call()],
-                finish_reason="tool_calls",
+        # Extraction turn: a response_format is requested, so return the parsed
+        # structured output model directly (the structured-response terminus).
+        if kwargs.get("response_format"):
+            return StructuredProfilesOutput(
+                profiles=[
+                    ProfileAddItem(content="like sushi", time_to_live="one_month")
+                ]
             )
         # Fallback: non-structured JSON string (legacy non-loop callers).
         return '```json\n{\n    "add": [{\n        "content": "like sushi",\n        "time_to_live": "one_month"\n    }]\n}\n```'
@@ -144,9 +137,9 @@ def test_refresh_profiles_for_user(mock_chat_completion):
             session_id="test_session",
             source="",
         )
-        profile_generation_service.storage.add_request(request_obj)
+        _storage(profile_generation_service).add_request(request_obj)
         for interaction_obj in interactions:
-            profile_generation_service.storage.add_user_interaction(
+            _storage(profile_generation_service).add_user_interaction(
                 user_id, interaction_obj
             )
 
@@ -160,7 +153,7 @@ def test_refresh_profiles_for_user(mock_chat_completion):
 
         profile_generation_service.run(profile_generation_request)
 
-        profiles = profile_generation_service.storage.get_user_profile(user_id)
+        profiles = _storage(profile_generation_service).get_user_profile(user_id)
         assert len(profiles) == 1
         profile = profiles[0]
         assert profile.content == "like sushi"
@@ -218,9 +211,9 @@ def test_test_refresh_profiles_for_user_with_image_encoding(mock_chat_completion
             session_id="test_session",
             source="",
         )
-        profile_generation_service.storage.add_request(request_obj)
+        _storage(profile_generation_service).add_request(request_obj)
         for interaction_obj in interactions:
-            profile_generation_service.storage.add_user_interaction(
+            _storage(profile_generation_service).add_user_interaction(
                 user_id, interaction_obj
             )
 
@@ -234,7 +227,7 @@ def test_test_refresh_profiles_for_user_with_image_encoding(mock_chat_completion
 
         profile_generation_service.run(profile_generation_request)
 
-        profiles = profile_generation_service.storage.get_user_profile(user_id)
+        profiles = _storage(profile_generation_service).get_user_profile(user_id)
         assert len(profiles) == 1
         profile = profiles[0]
         assert profile.content == "like sushi"
@@ -260,7 +253,7 @@ def test_profile_extraction_message_construction():
         interaction2 = InteractionData(
             content="I also enjoy sushi",
             created_at=int(datetime.datetime.now(UTC).timestamp()),
-            user_action="click",
+            user_action=UserActionType.CLICK,
             user_action_description="restaurant menu",
         )
 
@@ -309,9 +302,9 @@ def test_profile_extraction_message_construction():
                 session_id="test_session",
                 source="",
             )
-            profile_generation_service.storage.add_request(request_obj)
+            _storage(profile_generation_service).add_request(request_obj)
             for interaction_obj in interactions:
-                profile_generation_service.storage.add_user_interaction(
+                _storage(profile_generation_service).add_user_interaction(
                     user_id, interaction_obj
                 )
 
@@ -474,9 +467,9 @@ def test_refresh_profiles_with_output_pending_status(mock_chat_completion):
             session_id="test_session",
             source="",
         )
-        profile_generation_service.storage.add_request(request_obj1)
+        _storage(profile_generation_service).add_request(request_obj1)
         for interaction_obj in interactions1:
-            profile_generation_service.storage.add_user_interaction(
+            _storage(profile_generation_service).add_user_interaction(
                 user_id, interaction_obj
             )
 
@@ -490,7 +483,7 @@ def test_refresh_profiles_with_output_pending_status(mock_chat_completion):
         profile_generation_service.run(profile_generation_request1)
 
         # Verify CURRENT profile was created (status=None)
-        current_profiles = profile_generation_service.storage.get_user_profile(
+        current_profiles = _storage(profile_generation_service).get_user_profile(
             user_id, status_filter=[None]
         )
         assert len(current_profiles) == 1
@@ -517,9 +510,9 @@ def test_refresh_profiles_with_output_pending_status(mock_chat_completion):
             session_id="test_session",
             source="",
         )
-        profile_generation_service.storage.add_request(request_obj2)
+        _storage(profile_generation_service).add_request(request_obj2)
         for interaction_obj in interactions2:
-            profile_generation_service.storage.add_user_interaction(
+            _storage(profile_generation_service).add_user_interaction(
                 user_id, interaction_obj
             )
 
@@ -543,7 +536,7 @@ def test_refresh_profiles_with_output_pending_status(mock_chat_completion):
         # Verify PENDING profile was created (status="pending")
         from reflexio.models.api_schema.service_schemas import Status
 
-        pending_profiles = profile_generation_service.storage.get_user_profile(
+        pending_profiles = _storage(profile_generation_service).get_user_profile(
             user_id, status_filter=[Status.PENDING]
         )
         assert len(pending_profiles) == 1
@@ -551,7 +544,7 @@ def test_refresh_profiles_with_output_pending_status(mock_chat_completion):
         assert pending_profiles[0].content == "like sushi"
 
         # Verify CURRENT profile is still there and unchanged
-        current_profiles = profile_generation_service.storage.get_user_profile(
+        current_profiles = _storage(profile_generation_service).get_user_profile(
             user_id, status_filter=[None]
         )
         assert len(current_profiles) == 1
@@ -559,7 +552,7 @@ def test_refresh_profiles_with_output_pending_status(mock_chat_completion):
         assert current_profiles[0].content == "like sushi"
 
         # Verify we have 2 total profiles (1 CURRENT + 1 PENDING)
-        all_profiles = profile_generation_service.storage.get_user_profile(
+        all_profiles = _storage(profile_generation_service).get_user_profile(
             user_id, status_filter=[None, Status.PENDING]
         )
         assert len(all_profiles) == 2
@@ -613,8 +606,8 @@ def test_run_manual_regular_no_window_size(mock_chat_completion):
             session_id="test_session",
             source="",
         )
-        profile_generation_service.storage.add_request(request_obj)
-        profile_generation_service.storage.add_user_interaction(user_id, interaction)
+        _storage(profile_generation_service).add_request(request_obj)
+        _storage(profile_generation_service).add_user_interaction(user_id, interaction)
 
         from reflexio.models.api_schema.service_schemas import (
             ManualProfileGenerationRequest,
@@ -719,9 +712,9 @@ def test_run_manual_regular_with_interactions(mock_chat_completion):
             session_id="test_session",
             source="",
         )
-        profile_generation_service.storage.add_request(request_obj)
+        _storage(profile_generation_service).add_request(request_obj)
         for interaction_obj in interactions:
-            profile_generation_service.storage.add_user_interaction(
+            _storage(profile_generation_service).add_user_interaction(
                 user_id, interaction_obj
             )
 
@@ -734,10 +727,11 @@ def test_run_manual_regular_with_interactions(mock_chat_completion):
 
         # Should succeed with profiles generated
         assert response.success is True
+        assert response.profiles_generated is not None
         assert response.profiles_generated > 0
 
         # Verify profiles have CURRENT status (None)
-        profiles = profile_generation_service.storage.get_user_profile(
+        profiles = _storage(profile_generation_service).get_user_profile(
             user_id, status_filter=[None]
         )
         assert len(profiles) > 0
@@ -796,9 +790,9 @@ def test_run_manual_regular_with_source_filter(mock_chat_completion):
             session_id="test_session",
             source="source_a",
         )
-        profile_generation_service.storage.add_request(request_a)
+        _storage(profile_generation_service).add_request(request_a)
         for interaction_obj in interactions_a:
-            profile_generation_service.storage.add_user_interaction(
+            _storage(profile_generation_service).add_user_interaction(
                 user_id, interaction_obj
             )
 
@@ -825,9 +819,9 @@ def test_run_manual_regular_with_source_filter(mock_chat_completion):
             session_id="test_session",
             source="source_b",
         )
-        profile_generation_service.storage.add_request(request_b)
+        _storage(profile_generation_service).add_request(request_b)
         for interaction_obj in interactions_b:
-            profile_generation_service.storage.add_user_interaction(
+            _storage(profile_generation_service).add_user_interaction(
                 user_id, interaction_obj
             )
 
@@ -841,6 +835,7 @@ def test_run_manual_regular_with_source_filter(mock_chat_completion):
 
         # Should succeed and generate profiles from source_a
         assert response.success is True
+        assert response.profiles_generated is not None
         assert response.profiles_generated > 0
 
 
@@ -883,8 +878,8 @@ class TestGetRerunItems:
                     source="test_source",
                     session_id=f"group_{i}",
                 )
-                service.storage.add_request(request_obj)
-                service.storage.add_user_interaction("user1", interaction)
+                _storage(service).add_request(request_obj)
+                _storage(service).add_user_interaction("user1", interaction)
 
             # Add interactions for user2 - 1 request
             request_id = "user2_request_0"
@@ -902,8 +897,8 @@ class TestGetRerunItems:
                 source="test_source",
                 session_id="group_user2",
             )
-            service.storage.add_request(request_obj)
-            service.storage.add_user_interaction("user2", interaction)
+            _storage(service).add_request(request_obj)
+            _storage(service).add_user_interaction("user2", interaction)
 
             from reflexio.models.api_schema.service_schemas import (
                 RerunProfileGenerationRequest,
@@ -947,8 +942,8 @@ class TestGetRerunItems:
                 source="test_source",
                 session_id="group_1",
             )
-            service.storage.add_request(request1)
-            service.storage.add_user_interaction("user1", interaction1)
+            _storage(service).add_request(request1)
+            _storage(service).add_user_interaction("user1", interaction1)
 
             # Add interactions for user2
             interaction2 = Interaction(
@@ -965,8 +960,8 @@ class TestGetRerunItems:
                 source="test_source",
                 session_id="group_2",
             )
-            service.storage.add_request(request2)
-            service.storage.add_user_interaction("user2", interaction2)
+            _storage(service).add_request(request2)
+            _storage(service).add_user_interaction("user2", interaction2)
 
             from reflexio.models.api_schema.service_schemas import (
                 RerunProfileGenerationRequest,
@@ -1012,8 +1007,8 @@ class TestGetRerunItems:
                 source="source_a",
                 session_id="group_a",
             )
-            service.storage.add_request(request_a)
-            service.storage.add_user_interaction(user_id, interaction_a)
+            _storage(service).add_request(request_a)
+            _storage(service).add_user_interaction(user_id, interaction_a)
 
             # Add request with source_b
             interaction_b = Interaction(
@@ -1030,8 +1025,8 @@ class TestGetRerunItems:
                 source="source_b",
                 session_id="group_b",
             )
-            service.storage.add_request(request_b)
-            service.storage.add_user_interaction(user_id, interaction_b)
+            _storage(service).add_request(request_b)
+            _storage(service).add_user_interaction(user_id, interaction_b)
 
             from reflexio.models.api_schema.service_schemas import (
                 RerunProfileGenerationRequest,
@@ -1115,7 +1110,7 @@ def test_collect_scoped_interactions_for_precheck_uses_extractor_scope():
             interactions=[interaction],
         )
 
-        service.storage.get_last_k_interactions_grouped = MagicMock(
+        _storage(service).get_last_k_interactions_grouped = MagicMock(
             return_value=([session_data], [])
         )
 
@@ -1135,15 +1130,17 @@ def test_collect_scoped_interactions_for_precheck_uses_extractor_scope():
 
         assert scoped_groups == [session_data]
         assert scoped_config is api_config
-        service.storage.get_last_k_interactions_grouped.assert_called_once()
-        _, kwargs = service.storage.get_last_k_interactions_grouped.call_args
+        get_grouped_mock = _storage(service).get_last_k_interactions_grouped
+        assert isinstance(get_grouped_mock, MagicMock)
+        get_grouped_mock.assert_called_once()
+        _, kwargs = get_grouped_mock.call_args
         assert kwargs["k"] == 150
         assert kwargs["sources"] == ["api"]
 
         # Source-scoping intent: an extractor that does NOT enable the triggering
         # "api" source must short-circuit (get_effective_source_filter should_skip)
         # and return empty groups WITHOUT touching storage.
-        service.storage.get_last_k_interactions_grouped.reset_mock()
+        get_grouped_mock.reset_mock()
         web_config = ProfileExtractorConfig(
             extractor_name="web_profiles",
             extraction_definition_prompt="shopping preferences",
@@ -1157,7 +1154,7 @@ def test_collect_scoped_interactions_for_precheck_uses_extractor_scope():
 
         assert empty_groups == []
         assert web_scoped_config is web_config
-        service.storage.get_last_k_interactions_grouped.assert_not_called()
+        get_grouped_mock.assert_not_called()
 
 
 def test_should_run_before_extraction_includes_extractor_definition_and_override():

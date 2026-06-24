@@ -230,16 +230,14 @@ def test_live_extraction_provider_returns_canned_items(tmp_path):
 
     from reflexio.server.api_endpoints.request_context import RequestContext
     from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
-    from reflexio.server.services.extraction.resumable_agent import (
-        FINISH_EXTRACTION_TOOL_NAME,
+    from reflexio.test_support.llm_mock import (
+        make_structured_finish,
     )
-    from reflexio.test_support.llm_mock import make_tool_call_response
 
     # The playbook extractor runs first (one completion), then the profile
     # extractor (one completion). Default config => single forced-tool pass
     # per extractor, so exactly two completion turns are consumed.
-    playbook_turn = make_tool_call_response(
-        FINISH_EXTRACTION_TOOL_NAME,
+    playbook_turn = make_structured_finish(
         {
             "playbooks": [
                 {
@@ -250,8 +248,7 @@ def test_live_extraction_provider_returns_canned_items(tmp_path):
             ]
         },
     )
-    profile_turn = make_tool_call_response(
-        FINISH_EXTRACTION_TOOL_NAME,
+    profile_turn = make_structured_finish(
         {
             "profiles": [
                 {"content": "User prefers dark mode.", "time_to_live": "infinity"}

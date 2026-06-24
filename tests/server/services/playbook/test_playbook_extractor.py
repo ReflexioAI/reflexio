@@ -29,9 +29,6 @@ from reflexio.models.config_schema import (
 )
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
-from reflexio.server.services.extraction.resumable_agent import (
-    FINISH_EXTRACTION_TOOL_NAME,
-)
 from reflexio.server.services.playbook.playbook_extractor import PlaybookExtractor
 from reflexio.server.services.playbook.playbook_generation_service import (
     PlaybookGenerationServiceConfig,
@@ -42,6 +39,7 @@ from reflexio.server.services.playbook.playbook_service_utils import (
 )
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 from reflexio.server.services.storage.storage_base import AgentRunStatus
+from reflexio.test_support.llm_mock import make_structured_finish
 
 # ===============================
 # Fixtures
@@ -615,8 +613,7 @@ class TestResumableAgentPath:
         )
 
         make_tc, _make_stop = tool_call_completion
-        response = make_tc(
-            FINISH_EXTRACTION_TOOL_NAME,
+        response = make_structured_finish(
             {
                 "playbooks": [
                     {
@@ -717,8 +714,7 @@ class TestStructuredPlaybookExtraction:
         )
 
         make_tc, _make_stop = tool_call_completion
-        response = make_tc(
-            FINISH_EXTRACTION_TOOL_NAME,
+        response = make_structured_finish(
             {
                 "playbooks": [
                     {
@@ -764,8 +760,7 @@ class TestStructuredPlaybookExtraction:
         )
 
         make_tc, _make_stop = tool_call_completion
-        response = make_tc(
-            FINISH_EXTRACTION_TOOL_NAME,
+        response = make_structured_finish(
             {
                 "playbooks": [
                     {
@@ -810,7 +805,7 @@ class TestStructuredPlaybookExtraction:
         )
 
         make_tc, _make_stop = tool_call_completion
-        response = make_tc(FINISH_EXTRACTION_TOOL_NAME, {"playbooks": []})
+        response = make_structured_finish({"playbooks": []})
 
         with (
             patch("litellm.completion", side_effect=[response]),
@@ -1144,8 +1139,7 @@ class TestRationaleRoundTrip:
         )
 
         make_tc, _make_stop = tool_call_completion
-        response = make_tc(
-            FINISH_EXTRACTION_TOOL_NAME,
+        response = make_structured_finish(
             {
                 "playbooks": [
                     {
@@ -1319,8 +1313,7 @@ class TestPlaybookContentExtraction:
         )
 
         make_tc, _make_stop = tool_call_completion
-        response = make_tc(
-            FINISH_EXTRACTION_TOOL_NAME,
+        response = make_structured_finish(
             {
                 "playbooks": [
                     {

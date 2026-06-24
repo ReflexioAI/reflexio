@@ -203,38 +203,20 @@ def failure_request_interaction_models():
 # ===============================
 
 
-def _loop_response(playbooks: StructuredPlaybookList) -> object:
-    """Build a ``ToolCallingChatResponse`` carrying a ``finish_extraction``
-    tool call for the given playbooks.
-
-    Playbook extraction routes through the always-on ``finish_extraction`` tool
-    loop, which calls ``generate_chat_response`` with ``tools=`` and reads
-    ``resp.tool_calls`` — so the extraction turn must return tool calls, not a
-    bare ``StructuredPlaybookList``.
-    """
-    from reflexio.server.llm.litellm_client import ToolCallingChatResponse
-    from reflexio.server.services.extraction.resumable_agent import (
-        FINISH_EXTRACTION_TOOL_NAME,
-    )
-
-    tc = MagicMock()
-    tc.id = f"tc_{FINISH_EXTRACTION_TOOL_NAME}"
-    tc.type = "function"
-    tc.function.name = FINISH_EXTRACTION_TOOL_NAME
-    tc.function.arguments = playbooks.model_dump_json()
-    return ToolCallingChatResponse(
-        content=None, tool_calls=[tc], finish_reason="tool_calls"
-    )
-
-
 def _make_generate_side_effect(playbooks: StructuredPlaybookList):
     """Return a ``generate_chat_response`` side effect that answers the
-    should-generate boolean gate with ``"true"`` and the extraction tool-loop
-    turn with a ``finish_extraction`` tool call."""
+    should-generate boolean gate with ``"true"`` and the extraction turn with
+    the parsed ``StructuredPlaybookList``.
+
+    Playbook extraction now delivers its result as a native structured response:
+    the loop calls ``generate_chat_response`` with ``response_format=`` and reads
+    the parsed output model from a plain (no-tool) turn — so the extraction turn
+    returns the ``StructuredPlaybookList`` directly.
+    """
 
     def _side_effect(messages, **kwargs):
-        if kwargs.get("tools"):
-            return _loop_response(playbooks)
+        if kwargs.get("response_format"):
+            return playbooks
         return "true"
 
     return _side_effect

@@ -259,6 +259,40 @@ def test_run_tool_loop_drives_multiple_turns_until_finish(
     assert ctx.finished is True
 
 
+def test_run_tool_loop_empty_registry_omits_tool_choice_for_structured_finish(
+    monkeypatch, tool_call_completion
+):
+    """Structured-output-only loops must not send tool_choice without tools."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_CLI", raising=False)
+
+    class StructuredFinish(BaseModel):
+        value: str
+
+    _make_tc, make_stop = tool_call_completion
+    response = make_stop(json.dumps({"value": "ok"}))
+
+    config = LiteLLMConfig(model="claude-sonnet-4-6")
+    client = LiteLLMClient(config)
+
+    with patch("litellm.completion", return_value=response) as completion:
+        result = run_tool_loop(
+            client=client,
+            messages=[{"role": "user", "content": "go"}],
+            registry=ToolRegistry([]),
+            model_role=ModelRole.EXTRACTION_AGENT,
+            response_format=StructuredFinish,
+            tool_choice="auto",
+        )
+
+    call_kwargs = completion.call_args.kwargs
+    assert "tools" not in call_kwargs
+    assert "tool_choice" not in call_kwargs
+    assert result.finished_reason == "structured_output"
+    assert isinstance(result.structured_output, StructuredFinish)
+    assert result.structured_output.value == "ok"
+
+
 def test_run_tool_loop_records_async_accepted_and_continues(
     monkeypatch,
     tool_call_completion,

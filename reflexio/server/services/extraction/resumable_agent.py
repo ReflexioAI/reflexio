@@ -40,14 +40,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-FINISH_EXTRACTION_TOOL_NAME = "finish_extraction"
 PROFILE_EXTRACTOR_KIND = "profile"
-
-# Max in-process retries when the model returns a plain-text turn with no tool
-# call (finished_reason="no_tool_call"). tool_choice="required" is not always
-# honored by every provider/model, so a single bad turn would otherwise drop the
-# extraction entirely. Retries re-issue the same prompt from scratch.
-_NO_TOOL_CALL_MAX_RETRIES = 2
 
 
 def _record_agent_usage_event(
@@ -85,17 +78,6 @@ class AgentRunResult:
     finished_reason: str
 
 
-@dataclass(slots=True)
-class _FinishExtractionContext:
-    output: BaseModel | None = None
-
-
-@dataclass(slots=True)
-class _ExtractionAgentToolContext:
-    finish_context: _FinishExtractionContext
-    extra_tool_context: Any | None = None
-
-
 def _format_resolved_tool_result(record: PendingToolCallRecord) -> str:
     resolved_at = record.resolved_at.isoformat() if record.resolved_at else "unknown"
     return (
@@ -106,7 +88,7 @@ def _format_resolved_tool_result(record: PendingToolCallRecord) -> str:
         f"Result: {record.result or {}}\n\n"
         "Use this Agent Builder feedback only if it is relevant to the "
         "current extraction window. If it adds or corrects durable profile or "
-        "playbook information, include that in finish_extraction."
+        "playbook information, include that in your structured extraction result."
     )
 
 
@@ -126,22 +108,6 @@ def append_resolved_tool_result_context(
             for record in ordered
         ],
     ]
-
-
-def _finish_handler(args: BaseModel, ctx: Any) -> dict[str, Any]:
-    ctx = getattr(ctx, "finish_context", ctx)
-    if not isinstance(ctx, _FinishExtractionContext):
-        raise TypeError(f"Expected _FinishExtractionContext, got {type(ctx).__name__}")
-    ctx.output = args
-    return {"status": "completed"}
-
-
-def create_finish_extraction_tool(output_schema: type[BaseModel]) -> Tool:
-    return Tool(
-        name=FINISH_EXTRACTION_TOOL_NAME,
-        args_model=output_schema,
-        handler=_finish_handler,
-    )
 
 
 def _pending_tool_call_config(request_context: RequestContext) -> Any | None:
@@ -361,90 +327,38 @@ class ResumableExtractionAgent:
         if run.max_steps_remaining is not None:
             max_steps = min(max_steps, max(0, run.max_steps_remaining))
 
-        # When only finish_extraction is registered (no human/prior-knowledge
-        # tools), force that tool so the degenerate one-call loop is strictly
-        # equivalent to the old single-shot response_format extraction —
-        # the model cannot return a no-tool turn and yield empty output.
+        # The extractor delivers its result as a native structured response
+        # (response_format=output_schema): a turn with no tool call IS the
+        # committed output, parsed into output_schema. ask_human /
+        # attach_pending_info_request stay real tools the model may call
+        # mid-run, so tool_choice="auto" — forcing a tool would suppress the
+        # structured finish and is what produced the no_tool_call failures.
         #
-        # When the async-info tools are also registered we cannot force a single
-        # tool (the model must be free to pick ask_human vs finish_extraction),
-        # but we still require *some* tool call via "required". This prevents a
-        # weak tool-caller (e.g. MiniMax) from emitting the answer as plain text
-        # with zero tool_calls, which the loop would otherwise treat as a no-op
-        # finish and drop the output.
-        tool_choice: str | dict[str, Any] = (
-            {
-                "type": "function",
-                "function": {"name": FINISH_EXTRACTION_TOOL_NAME},
-            }
-            if not extra_tools
-            else "required"
+        # No retry loop: a plain (no-tool) turn is now the SUCCESS terminus
+        # (finished_reason="structured_output"), not a dropped output, and the
+        # client already retries once on a malformed structured parse. The
+        # async-info tool handlers read ctx via getattr(ctx, "extra_tool_context",
+        # ctx), so the bare context object can be passed directly.
+        registry = ToolRegistry(list(extra_tools or []))
+        result = run_tool_loop(
+            client=self.client,
+            messages=messages,
+            registry=registry,
+            model_role=self.model_role,
+            max_steps=max_steps,
+            ctx=extra_tool_context,
+            response_format=output_schema,
+            tool_choice="auto",
+            log_label=log_label,
         )
 
-        # Retry only the no_tool_call termination: the model emitted plain text
-        # with zero tool calls, so nothing was committed and re-issuing the same
-        # prompt is safe. Each attempt uses a fresh finish_ctx/registry so no
-        # partial state leaks across attempts. We do NOT retry once the model has
-        # already registered async tool calls (e.g. attach_pending_info_request)
-        # — restarting from scratch would discard them.
-        for attempt in range(_NO_TOOL_CALL_MAX_RETRIES + 1):
-            finish_ctx = _FinishExtractionContext()
-            ctx: Any = (
-                _ExtractionAgentToolContext(
-                    finish_context=finish_ctx,
-                    extra_tool_context=extra_tool_context,
-                )
-                if extra_tool_context is not None
-                else finish_ctx
-            )
-            registry = ToolRegistry(
-                [*(extra_tools or []), create_finish_extraction_tool(output_schema)]
-            )
-
-            result = run_tool_loop(
-                client=self.client,
-                messages=messages,
-                registry=registry,
-                model_role=self.model_role,
-                max_steps=max_steps,
-                ctx=ctx,
-                finish_tool_name=FINISH_EXTRACTION_TOOL_NAME,
-                tool_choice=tool_choice,
-                log_label=log_label,
-            )
-
-            should_retry = (
-                result.finished_reason == "no_tool_call"
-                and not result.pending_tool_call_ids
-                and attempt < _NO_TOOL_CALL_MAX_RETRIES
-            )
-            if not should_retry:
-                break
-            logger.warning(
-                "event=extraction_agent_retry org_id=%s user_id=%s "
-                "extractor_kind=%s run_id=%s request_id=%s "
-                "finished_reason=%s attempt=%d max_retries=%d",
-                run.binding.org_id,
-                run.binding.user_id,
-                run.binding.extractor_kind,
-                run.id,
-                run.binding.request_id,
-                result.finished_reason,
-                attempt + 1,
-                _NO_TOOL_CALL_MAX_RETRIES,
-            )
-            _record_agent_usage_event(
-                run=run,
-                event_name="extraction_agent_retry",
-                error_kind=result.finished_reason,
-                metadata={"attempt": attempt + 1},
-            )
-
-        committed_output = (
-            finish_ctx.output.model_dump() if finish_ctx.output is not None else None
-        )
+        output = result.structured_output
+        committed_output = output.model_dump() if output is not None else None
         active_statuses = (AgentRunStatus.RUNNING, AgentRunStatus.RESUMING)
-        if result.finished_reason == "finish_tool" and committed_output is not None:
+        if (
+            result.finished_reason == "structured_output"
+            and committed_output is not None
+        ):
             stored_run = self.storage.update_agent_run_status(
                 run.id,
                 AgentRunStatus.AGENT_COMPLETED,
@@ -515,19 +429,19 @@ class ResumableExtractionAgent:
                 run.id,
                 run.binding.request_id,
                 result.finished_reason,
-                finish_ctx.output is not None,
+                output is not None,
             )
             _record_agent_usage_event(
                 run=run,
                 event_name="extraction_agent_failed",
                 outcome="failed",
                 error_kind=result.finished_reason,
-                metadata={"has_output": finish_ctx.output is not None},
+                metadata={"has_output": output is not None},
             )
 
         return AgentRunResult(
             run_id=run.id,
-            output=finish_ctx.output,
+            output=output,
             pending_tool_call_ids=result.pending_tool_call_ids,
             messages=result.messages,
             trace=result.trace,

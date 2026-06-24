@@ -178,10 +178,17 @@ class ToolLoopResult(BaseModel):
 
     ctx: Any
     trace: ToolLoopTrace
-    finished_reason: Literal["finish_tool", "no_tool_call", "max_steps", "error"]
+    finished_reason: Literal[
+        "finish_tool", "structured_output", "no_tool_call", "max_steps", "error"
+    ]
     messages: list[dict[str, Any]] = Field(default_factory=list)
     pending_tool_call_ids: list[str] = Field(default_factory=list)
     max_steps_remaining: int = 0
+    # Set when finished_reason == "structured_output": the model ended the turn
+    # with a plain response parsed into the caller's ``response_format`` schema
+    # (the structured-output terminus, used by the extraction agent instead of a
+    # finish-sentinel tool call).
+    structured_output: BaseModel | None = None
 
 
 # Models we know support function calling per vendor docs but that litellm's
@@ -469,6 +476,7 @@ def run_tool_loop(
     fallback_schema: type[BaseModel] | None = None,
     fallback_tool_name: str | None = None,
     multi_stage_schema: type[BaseModel] | None = None,
+    response_format: type[BaseModel] | None = None,
     tool_choice: str | dict[str, Any] = "auto",
     log_label: str | None = None,
 ) -> ToolLoopResult:
@@ -509,6 +517,14 @@ def run_tool_loop(
             ``tool`` discriminator literal — that literal names the tool
             to dispatch, all other fields become its args. Takes priority
             over ``fallback_schema``.
+        response_format (type[BaseModel] | None): When set, the native tool loop
+            requests this schema as the model's structured response and treats a
+            turn with no tool call as the SUCCESS terminus — the parsed result is
+            returned on ``ToolLoopResult.structured_output`` with
+            ``finished_reason="structured_output"``. This is how the extraction
+            agent finishes (a direct structured answer) while still letting the
+            model call intermediate tools such as ``ask_human``. Leave unset for
+            finish-sentinel-tool loops.
         tool_choice (str | dict): Forwarded to each native tool-calling turn.
             Defaults to ``"auto"``. Pass an OpenAI tool-choice dict (e.g.
             ``{"type": "function", "function": {"name": "finish"}}``) to force a
@@ -621,14 +637,16 @@ def run_tool_loop(
 
     local_msgs = list(messages)
     try:
+        tool_specs = registry.openai_specs()
         for _step in range(max_steps):
             if log_label:
                 log_llm_messages(logger, f"{log_label} (turn {_step + 1})", local_msgs)
             resp = client.generate_chat_response(
                 messages=local_msgs,
-                tools=registry.openai_specs(),
-                tool_choice=tool_choice,
+                tools=tool_specs or None,
+                tool_choice=tool_choice if tool_specs else None,
                 model_role=model_role,
+                response_format=response_format,
             )
             if log_label:
                 log_model_response(logger, f"{log_label} (turn {_step + 1})", resp)
@@ -649,12 +667,36 @@ def run_tool_loop(
 
             tool_calls = getattr(resp, "tool_calls", None)
             if not tool_calls:
-                # The model returned a plain-text turn with no tool calls. For a
-                # text-output agent this means "done", but the finish handler did
-                # NOT run, so no structured output was committed. Report a
-                # distinct reason so callers (and logs) don't conflate this with
-                # an actual finish_extraction call. Callers that require output
-                # (extraction) already gate success on committed output, so this
+                # No tool call this turn. When response_format was requested, this
+                # is the SUCCESS terminus: the model returned the final answer
+                # directly and the client parsed it into the schema (on the
+                # no-tools path the client returns the parsed BaseModel itself;
+                # with tools present it sets ``parsed_output``). This is the
+                # structured-output equivalent of a finish-sentinel tool call and
+                # is how the extraction agent commits its result.
+                if response_format is not None:
+                    structured = (
+                        resp
+                        if isinstance(resp, BaseModel)
+                        else getattr(resp, "parsed_output", None)
+                    )
+                    if isinstance(structured, BaseModel):
+                        trace.finished = True
+                        return ToolLoopResult(
+                            ctx=ctx,
+                            trace=trace,
+                            finished_reason="structured_output",
+                            structured_output=structured,
+                            messages=local_msgs,
+                            # The structured answer is committed on this turn —
+                            # one LLM call consumed, mirroring the finish_tool path.
+                            max_steps_remaining=max_steps - _step - 1,
+                        )
+                # No response_format requested (or nothing parseable): the finish
+                # handler did NOT run, so no structured output was committed.
+                # Report a distinct reason so callers (and logs) don't conflate
+                # this with an actual finish tool call. Callers that require
+                # output already gate success on committed output, so this
                 # surfaces accurately as a non-finish termination.
                 trace.finished = True
                 return ToolLoopResult(

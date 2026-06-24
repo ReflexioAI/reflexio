@@ -24,9 +24,6 @@ from reflexio.models.config_schema import (
 )
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
-from reflexio.server.services.extraction.resumable_agent import (
-    FINISH_EXTRACTION_TOOL_NAME,
-)
 from reflexio.server.services.extraction.resume_worker import ExtractionResumeWorker
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 from reflexio.server.services.storage.storage_base import (
@@ -40,6 +37,7 @@ from reflexio.server.services.storage.storage_base import (
     build_scope_hash,
     human_feedback_scope,
 )
+from reflexio.test_support.llm_mock import make_structured_finish
 
 pytestmark = pytest.mark.e2e
 
@@ -284,8 +282,8 @@ def _live_resumable_config(marker: str) -> tuple[dict[str, Any], str, str]:
                     "extracting the deployment-target profile. Use this exact "
                     f"question text: {question_text!r}. Use answer_format "
                     f"'short text' and include the tag {marker!r}. After a human "
-                    "answer is available, you must call finish_extraction with "
-                    "exactly one profile. Never call finish_extraction with "
+                    "answer is available, you must respond with the structured "
+                    "result containing exactly one profile. Never respond with "
                     "profiles null after a resolved answer is present. The profile "
                     f"content must be exactly {profile_prefix!r} followed by one "
                     "space and the human-provided answer. Use time_to_live "
@@ -312,7 +310,6 @@ def _live_resumable_config(marker: str) -> tuple[dict[str, Any], str, str]:
             "skip_should_run_check": True,
             "window_size": 4,
             "stride_size": 4,
-            "extraction_backend": "classic",
         },
         question_text,
         profile_prefix,
@@ -377,8 +374,7 @@ def test_resumable_extraction_resumes_after_human_answer(
             llm_client=LiteLLMClient(LiteLLMConfig(model="claude-sonnet-4-6")),
         )
         make_tc, _ = tool_call_completion
-        response = make_tc(
-            FINISH_EXTRACTION_TOOL_NAME,
+        response = make_structured_finish(
             {
                 "profiles": [
                     {
