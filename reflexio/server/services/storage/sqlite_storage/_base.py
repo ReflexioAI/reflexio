@@ -1322,6 +1322,16 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             ).fetchone()
             if row is None:
                 return
+            target_row = self.conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+                ("profile_change_logs_retired_20260623",),
+            ).fetchone()
+            if target_row is not None:
+                logger.info(
+                    "Retired target profile_change_logs_retired_20260623 already exists;"
+                    " skipping rename (idempotent no-op)."
+                )
+                return
             self.conn.execute(
                 "ALTER TABLE profile_change_logs "
                 "RENAME TO profile_change_logs_retired_20260623"
@@ -1353,6 +1363,16 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 ("playbook_aggregation_change_logs",),
             ).fetchone()
             if row is None:
+                return
+            target_row = self.conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+                ("playbook_aggregation_change_logs_retired_20260624",),
+            ).fetchone()
+            if target_row is not None:
+                logger.info(
+                    "Retired target playbook_aggregation_change_logs_retired_20260624"
+                    " already exists; skipping rename (idempotent no-op)."
+                )
                 return
             self.conn.execute(
                 "ALTER TABLE playbook_aggregation_change_logs "

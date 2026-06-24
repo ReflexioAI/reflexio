@@ -101,3 +101,31 @@ def test_fresh_db_has_neither_table(tmp_path):
     tables = _table_names(db_path)
     assert "profile_change_logs" not in tables
     assert _RETIRED_NAME not in tables
+
+
+def test_target_collision_is_no_op(tmp_path):
+    """If the retired target table already exists the rename is skipped (idempotent).
+
+    Defense-in-depth guard (finding H): without the target-exists check,
+    ``ALTER TABLE ... RENAME TO`` raises ``sqlite3.OperationalError`` when the
+    target name is already taken.  With the guard the call is a silent no-op
+    and the source table is left in place.
+    """
+    db_path = str(tmp_path / "collision.db")
+    # Seed the source table.
+    _seed_legacy_pcl(db_path)
+    # Also create the retired target directly — simulates a prior partial migration.
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(f"CREATE TABLE {_RETIRED_NAME} (x INTEGER)")
+        conn.commit()
+    finally:
+        conn.close()
+
+    # Must not raise sqlite3.OperationalError ("table ... already exists").
+    SQLiteStorage(org_id="0", db_path=db_path)
+
+    tables = _table_names(db_path)
+    # Source is left as-is because the target already existed.
+    assert "profile_change_logs" in tables
+    assert _RETIRED_NAME in tables
