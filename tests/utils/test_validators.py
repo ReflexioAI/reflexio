@@ -125,7 +125,8 @@ class TestIsStrictMode:
 class TestCheckSafeUrl:
     """Tests for _check_safe_url validator."""
 
-    def test_public_url_allowed(self):
+    def test_public_url_allowed(self, monkeypatch):
+        monkeypatch.delenv("REFLEXIO_BLOCK_PRIVATE_URLS", raising=False)
         result = _check_safe_url("https://api.example.com/v1")
         assert str(result) == "https://api.example.com/v1"
 
