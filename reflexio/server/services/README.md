@@ -12,6 +12,7 @@ Description: Core business-logic layer — LLM orchestration, extraction, evalua
 | `generation_service.py` | `GenerationService` — saves interactions, runs profile + playbook generation in parallel (ThreadPoolExecutor), schedules deferred evaluation when `session_id` is present. |
 | `base_generation_service.py` | `BaseGenerationService` — abstract base; the **Service Pattern** (load configs → create actors → run in parallel → save results). Per-extractor timeout `EXTRACTOR_TIMEOUT_SECONDS = 300`. |
 | `operation_state_utils.py` | `OperationStateManager` — all `_operation_state` access (progress, concurrency locks, extractor/aggregator bookmarks, cluster fingerprints, cancellation). |
+| `../operation_limiter.py` | Process-local per-org concurrency limits around search, publish, and aggregation hot paths. |
 | `extractor_config_utils.py`, `extractor_interaction_utils.py` | Filter extractors by source / `allow_manual_trigger` / names; per-extractor stride + window + bookmark handling. |
 | `deduplication_utils.py`, `service_utils.py`, `embedding_text.py` | LLM dedup helpers (used by `ProfileDeduplicator` + `PlaybookConsolidator`), message construction / JSON extraction / response logging, embedding text builders. |
 
@@ -47,7 +48,7 @@ Description: Core business-logic layer — LLM orchestration, extraction, evalua
 
 | Path | Purpose |
 |------|---------|
-| `storage/` | `storage_base/` (`BaseStorage` split by domain, including `_lineage.py`) + `sqlite_storage/` (including lineage/tombstones) + `retention*.py`. Access via `request_context.storage` only. |
+| `storage/` | `storage_base/` (`BaseStorage` split by domain, including `_lineage.py` and `_retrieval_log.py`) + `sqlite_storage/` (including lineage/tombstones and purge helpers) + `retention*.py`. Access via `request_context.storage` only. |
 | `configurator/` | `DefaultConfigurator` — loads YAML config and creates the storage backend. |
 
 ## Key Rules
@@ -56,4 +57,5 @@ Description: Core business-logic layer — LLM orchestration, extraction, evalua
 - **NEVER import storage implementations directly** — use `request_context.storage` (`BaseStorage`).
 - **ALWAYS use `LiteLLMClient`** for completions/embeddings and `request_context.prompt_manager.render_prompt(...)` for prompts — no hardcoded prompts, no direct OpenAI/Claude clients.
 - **All `_operation_state` writes go through `OperationStateManager`** — don't touch the table directly (it backs locks, bookmarks, progress, and cancellation).
+- **Hot-path concurrency goes through `operation_limiter.py`** — don't create ad hoc per-endpoint semaphores for search, publish, or aggregation.
 - **`tool_can_use` lives at root `Config`** — shared by playbook extraction and success evaluation, not per-service.

@@ -43,7 +43,7 @@ Extends `BaseGenerationService` extractor pattern. Each extractor:
 
 ### Playbook Aggregation (`playbook_aggregator.py`)
 
-Triggered manually via `/api/run_playbook_aggregation`. Clusters user playbooks and generates consolidated insights.
+Triggered manually via `/api/run_playbook_aggregation`. Clusters user playbooks and generates consolidated insights. Calls run through `server/operation_limiter.py` (`aggregation` limit, default 1 per org/process) before expensive embedding/LLM work begins.
 
 **Key Methods**:
 - `get_clusters(user_playbooks, config)` - HDBSCAN/Agglomerative clustering on embeddings

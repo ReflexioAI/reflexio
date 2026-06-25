@@ -35,6 +35,7 @@ Description: FastAPI backend server that processes user interactions to generate
 - **API**: `api.py` - FastAPI routes (only place to expose endpoints)
 - **Endpoint Helpers**: `api_endpoints/` - Bridge between routes and business logic
 - **Core Service**: `services/generation_service.py` - Main orchestrator
+- **Operation Limits**: `operation_limiter.py` - Per-org/process concurrency gates for search, publish, and aggregation hot paths
 
 ## Cache
 
@@ -94,6 +95,7 @@ Key files:
 - `openai_client.py`: OpenAI implementation (legacy, do not use directly)
 - `claude_client.py`: Claude implementation (legacy, do not use directly)
 - `llm_utils.py`: Helper functions for Pydantic model conversion
+- `models/structured_output.py`: `StrictStructuredOutput` base for provider-safe Pydantic response schemas (imported from the top-level `models` package)
 
 **Features**:
 - Uses LiteLLM for multi-provider support (OpenAI, Claude, Azure, OpenRouter, Gemini, custom endpoints, etc.)
@@ -126,6 +128,7 @@ response = client.generate_response("What is 2+2?", response_format=Answer)  # R
 **Rules**:
 - **ALWAYS use `LiteLLMClient`**, never import `OpenAIClient` or `ClaudeClient` directly
 - **ALWAYS use Pydantic models** for structured outputs (dict-based schemas are not supported)
+- **Prefer `StrictStructuredOutput`** for any model sent to an LLM response schema/tool schema so strict providers accept discriminated unions by construction.
 
 ## Prompts
 
@@ -238,6 +241,11 @@ Called by API endpoints via `Reflexio`
 - Stale lock timeout: 5 minutes (assumes crashed if lock held longer)
 - Lock scoping: Profile generation = per-user, Playbook generation = per-org
 - Re-run mechanism: If new request arrives during generation, `pending_request_id` is set and generation re-runs after completion
+
+**Process-local operation limiting** (`operation_limiter.py`):
+- Wraps search, publish, and playbook aggregation with per-org semaphores before expensive thread/LLM work begins.
+- Defaults: search=8, publish=4, aggregation=1; override with `REFLEXIO_<OP>_CONCURRENCY_LIMIT` and `REFLEXIO_<OP>_CONCURRENCY_TIMEOUT_SECONDS`.
+- Logs publish hardware/cgroup capacity at startup and records wait/timeout usage events so thread pressure is observable.
 
 ### Profile Generation
 
@@ -477,8 +485,8 @@ Pre-computed embeddings passed to storage methods via `query_embedding` paramete
 
 | File | Purpose |
 |------|---------|
-| `storage_base/` | BaseStorage interface split by domain (`_profiles.py`, `_playbook.py`, `_requests.py`, `_operations.py`, `_agent_run.py`, `_lineage.py`, `_shadow_verdicts.py`, `_stall_state.py`, `_share_links.py`) |
-| `sqlite_storage/` | SQLite-backed implementation split across the same domains, including lineage/tombstone support in `_lineage.py` |
+| `storage_base/` | BaseStorage interface split by domain (`_profiles.py`, `_playbook.py`, `_requests.py`, `_operations.py`, `_agent_run.py`, `_lineage.py`, `_retrieval_log.py`, `_shadow_verdicts.py`, `_stall_state.py`, `_share_links.py`) |
+| `sqlite_storage/` | SQLite-backed implementation split across the same domains, including lineage/tombstone support in `_lineage.py` and purge helpers in `_base.py` |
 | `retention.py`, `retention_mixin.py` | Data retention and cleanup helpers |
 | `constants.py`, `error.py` | Storage constants and shared errors |
 
