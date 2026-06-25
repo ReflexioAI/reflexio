@@ -91,6 +91,10 @@ class BaseConfigurator(ABC):
         """Return the aggregation-boundary user detail stripper, if enabled."""
         return None
 
+    def get_playbook_aggregation_prompt_extra_instructions(self) -> str | None:
+        """Return optional extra instructions for the aggregation prompt."""
+        return None
+
     def get_agent_context(self) -> str:
         context = self.get_config().agent_context_prompt
         if not context:

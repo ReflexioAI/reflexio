@@ -57,6 +57,24 @@ def create_configured_user_detail_stripper(
     return typed_create_stripper()
 
 
+def get_configured_playbook_aggregation_prompt_extra_instructions(
+    configurator: object,
+) -> str | None:
+    if not hasattr(
+        type(configurator), "get_playbook_aggregation_prompt_extra_instructions"
+    ):
+        return None
+    get_instructions = getattr(
+        configurator,
+        "get_playbook_aggregation_prompt_extra_instructions",
+        None,
+    )
+    if not callable(get_instructions):
+        return None
+    typed_get_instructions = cast("Callable[[], str | None]", get_instructions)
+    return typed_get_instructions()
+
+
 _PERSON_PLACEHOLDER_RE = re.compile(r"\[PERSON_\d+\]")
 
 

@@ -142,6 +142,43 @@ def test_inline_aggregation_injects_configured_stripper():
     assert created_kwargs[0]["user_detail_stripper"] is stripper
 
 
+def test_inline_aggregation_injects_configured_prompt_extra_instructions():
+    class ConfiguratorWithExtraInstructions:
+        def get_config(self) -> Config:
+            return _aggregation_enabled_config()
+
+        def get_playbook_aggregation_prompt_extra_instructions(self) -> str:
+            return "Extra aggregation instruction."
+
+    service = _service_for_inline_aggregation(ConfiguratorWithExtraInstructions())
+    created_kwargs: list[dict[str, Any]] = []
+
+    class FakeAggregator:
+        def __init__(self, **kwargs: Any) -> None:
+            created_kwargs.append(kwargs)
+
+        def run(self, _request: Any) -> dict[str, int]:
+            return {"playbooks_generated": 0}
+
+    with (
+        patch(
+            "reflexio.server.services.playbook.playbook_generation_service.PlaybookAggregator",
+            FakeAggregator,
+        ),
+        patch(
+            "reflexio.server.services.playbook.playbook_generation_service.run_with_operation_limit",
+            side_effect=lambda **kwargs: kwargs["fn"](),
+        ),
+    ):
+        service._trigger_playbook_aggregation()
+
+    assert len(created_kwargs) == 1
+    assert (
+        created_kwargs[0]["aggregation_prompt_extra_instructions"]
+        == "Extra aggregation instruction."
+    )
+
+
 @pytest.fixture
 def mock_chat_completion():
     # Mock response for should_generate_playbook call

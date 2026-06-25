@@ -57,6 +57,7 @@ class PlaybookAggregator:
         request_context: RequestContext,
         agent_version: str,
         user_detail_stripper: UserDetailStripper | None = None,
+        aggregation_prompt_extra_instructions: str | None = None,
     ) -> None:
         self.client = llm_client
         self.storage = request_context.storage
@@ -64,6 +65,9 @@ class PlaybookAggregator:
         self.request_context = request_context
         self.agent_version = agent_version
         self.user_detail_stripper = user_detail_stripper
+        self.aggregation_prompt_extra_instructions = (
+            aggregation_prompt_extra_instructions or ""
+        )
 
     # ===============================
     # private methods - operation state
@@ -1389,6 +1393,7 @@ class PlaybookAggregator:
                     {
                         "user_playbooks": raw_playbooks_str,
                         "existing_approved_playbooks": existing_approved_playbooks_str,
+                        "aggregation_prompt_extra_instructions": self.aggregation_prompt_extra_instructions,
                     },
                 ),
             }

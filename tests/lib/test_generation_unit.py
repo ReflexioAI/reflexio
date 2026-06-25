@@ -94,6 +94,32 @@ class TestRunPlaybookAggregation:
         )
         mock_agg_instance.run.assert_called_once()
 
+    @patch("reflexio.server.services.playbook.playbook_aggregator.PlaybookAggregator")
+    def test_injects_configured_aggregation_prompt_extra_instructions(
+        self, mock_agg_cls
+    ):
+        mixin = _make_mixin()
+
+        class ConfiguratorWithExtraInstructions:
+            def get_playbook_aggregation_prompt_extra_instructions(self) -> str:
+                return "Extra aggregation instruction."
+
+        cast(
+            Any, mixin.request_context
+        ).configurator = ConfiguratorWithExtraInstructions()
+        mock_agg_instance = MagicMock()
+        mock_agg_cls.return_value = mock_agg_instance
+
+        mixin.run_playbook_aggregation(agent_version="v2")
+
+        mock_agg_cls.assert_called_once_with(
+            llm_client=mixin.llm_client,
+            request_context=mixin.request_context,
+            agent_version="v2",
+            aggregation_prompt_extra_instructions="Extra aggregation instruction.",
+        )
+        mock_agg_instance.run.assert_called_once()
+
     def test_raises_when_storage_not_configured(self):
         """Raises ValueError when storage is not configured."""
         mixin = _make_mixin(storage_configured=False)

@@ -43,6 +43,7 @@ def _make_aggregator(
     storage: MagicMock | None = None,
     configurator: MagicMock | None = None,
     user_detail_stripper: Any | None = None,
+    aggregation_prompt_extra_instructions: str | None = None,
 ) -> Any:
     """Build an aggregator with fully mocked dependencies."""
     llm = MagicMock()
@@ -55,6 +56,7 @@ def _make_aggregator(
         request_context=ctx,
         agent_version="v1",
         user_detail_stripper=user_detail_stripper,
+        aggregation_prompt_extra_instructions=aggregation_prompt_extra_instructions,
     )
 
 
@@ -1478,6 +1480,7 @@ def test_playbook_aggregation_prompt_specifies_structured_format():
         variables={
             "user_playbooks": '[1]\nContent: "x"\nTrigger: "y"',
             "existing_approved_playbooks": "(none)",
+            "aggregation_prompt_extra_instructions": "",
         },
     )
     # The Playbook format section must be present.
@@ -1501,6 +1504,7 @@ def test_playbook_aggregation_prompt_generalizes_direct_identifiers():
         {
             "existing_approved_playbooks": "[]",
             "user_playbooks": "TRIGGER conditions (to be consolidated):\n- when approving a deployment\nRATIONALE summaries:\n- direct approval details appeared in the source",
+            "aggregation_prompt_extra_instructions": "",
         },
     )
 
@@ -1513,8 +1517,8 @@ def test_playbook_aggregation_prompt_generalizes_direct_identifiers():
     assert 'Return {"playbook": null}' in out
 
 
-def test_playbook_aggregation_prompt_generalizes_anonymized_person_placeholders():
-    """Aggregation prompt should tell the model how to handle stripped placeholders."""
+def test_playbook_aggregation_prompt_does_not_mention_person_placeholders_by_default():
+    """Default OSS prompt should stay generic because OSS does not create placeholders."""
     from reflexio.server.prompt.prompt_manager import PromptManager
 
     out = PromptManager().render_prompt(
@@ -1522,12 +1526,41 @@ def test_playbook_aggregation_prompt_generalizes_anonymized_person_placeholders(
         {
             "existing_approved_playbooks": "[]",
             "user_playbooks": "TRIGGER conditions:\n- When [PERSON_1] opens a support ticket",
+            "aggregation_prompt_extra_instructions": "",
         },
     )
 
-    assert "[PERSON_N]" in out
-    assert "anonymized individuals" in out
-    assert "functional roles" in out
+    assert "[PERSON_N]" not in out
+    assert "anonymized individuals" not in out
+
+
+def test_aggregation_prompt_extra_instructions_are_rendered_when_injected():
+    agg = _make_aggregator(
+        aggregation_prompt_extra_instructions=(
+            "Anonymized placeholders like `[PERSON_N]` represent anonymized individuals."
+        )
+    )
+    captured_variables: dict[str, str] = {}
+
+    def render_prompt(_prompt_id: str, variables: dict[str, str]) -> str:
+        captured_variables.update(variables)
+        return variables["aggregation_prompt_extra_instructions"]
+
+    agg.request_context.prompt_manager.render_prompt.side_effect = render_prompt
+    agg.client.generate_chat_response.return_value = PlaybookAggregationOutput(
+        playbook=StructuredPlaybookContent(
+            content="Use generalized roles.",
+            trigger="When access support is needed.",
+        )
+    )
+
+    with patch.dict("os.environ", {"MOCK_LLM_RESPONSE": ""}):
+        result = agg._generate_playbook_from_cluster([_raw(rid=1)], "None")
+
+    assert result is not None
+    assert captured_variables["aggregation_prompt_extra_instructions"].startswith(
+        "Anonymized placeholders"
+    )
 
 
 def test_playbook_aggregation_prompt_has_privacy_self_check_before_output():
@@ -1539,6 +1572,7 @@ def test_playbook_aggregation_prompt_has_privacy_self_check_before_output():
         {
             "existing_approved_playbooks": "[]",
             "user_playbooks": "TRIGGER conditions (to be consolidated):\n- when handling account access",
+            "aggregation_prompt_extra_instructions": "",
         },
     )
 
@@ -1572,6 +1606,7 @@ def test_playbook_aggregation_prompt_preserves_distinct_orientations():
         variables={
             "user_playbooks": '[1]\nContent: "x"\nTrigger: "y"',
             "existing_approved_playbooks": "(none)",
+            "aggregation_prompt_extra_instructions": "",
         },
     )
     # The preserve-distinct-orientations instruction must be present.
