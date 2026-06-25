@@ -5,6 +5,19 @@ Description: Core business-logic layer — LLM orchestration, extraction, evalua
 
 **Service Boundary**: services own the LLM/extraction/evaluation/storage logic; API endpoints only authenticate, build `RequestContext`, and delegate into `Reflexio` or a focused service helper.
 
+## LLM Pipeline Module Contract
+
+LLM/pipeline modules use a shared vocabulary across OSS and enterprise:
+`service.py` for request-path entry points, `runner.py` for manual/background
+workflow entry points, `scheduler.py` for periodic/deferred execution,
+`config.py` for module-owned config, `models.py` for module-local data shapes,
+and `components/` for internal extractors, judges, proposers, aggregators,
+evaluators, gates, and resolvers.
+
+Files are optional. Do not create empty files only to satisfy the vocabulary.
+Complete cutover migrations update consumers, tests, docs, and monkeypatch
+strings before deleting old import paths in the same PR.
+
 ## Orchestration & Base Infrastructure
 
 | File | Purpose |
@@ -22,7 +35,7 @@ Description: Core business-logic layer — LLM orchestration, extraction, evalua
 | `profile/` | `ProfileGenerationService` | `profile_extractor.py`, `profile_deduplicator.py`, `profile_updater.py` |
 | `playbook/` | `PlaybookGenerationService` | `playbook_extractor.py`, `playbook_consolidator.py`, `playbook_aggregator.py` (cluster-fingerprint change detection) — has its own [README](playbook/README.md) |
 | `agent_success_evaluation/` | `AgentSuccessEvaluationService` | `agent_success_evaluator.py` (session-level), `delayed_group_evaluator.py` (`GroupEvaluationScheduler`, 10-min defer), `group_evaluation_runner.py`, `regen_jobs.py` |
-| `reflection/` | `ReflectionService` | `reflection_extractor.py` — post-horizon reflection; runs **before** extraction so extractors read post-reflection state |
+| `reflection/` | `ReflectionService` | `service.py`, `components/extractor.py` — post-horizon reflection; runs **before** extraction so extractors read post-reflection state |
 
 ## Async Extraction
 
