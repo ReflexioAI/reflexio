@@ -562,6 +562,38 @@ def _meter_applied_learnings(
         )
 
 
+def _meter_search_request(
+    *,
+    org_id: str,
+    caller_type: str,
+    request_id: str | None = None,
+    session_id: str | None = None,
+) -> None:
+    """Emit one production-agent search request metric.
+
+    Args:
+        org_id: Organization ID for the requesting caller.
+        caller_type: Resolved caller classification.
+        request_id: Optional request correlation ID from the payload.
+        session_id: Optional session ID from the payload.
+    """
+    if caller_type != "production_agent":
+        return
+    try:
+        from reflexio.server.billing_meter import record_search_request
+
+        record_search_request(
+            org_id=org_id,
+            caller_type=caller_type,
+            request_id=request_id,
+            session_id=session_id,
+        )
+    except Exception:
+        logger.warning(
+            "search-request metering failed for org %s", org_id, exc_info=True
+        )
+
+
 @core_router.get("/")
 def root() -> dict[str, str]:
     return {
@@ -768,6 +800,12 @@ def search_user_profiles(
         user_profiles=[to_profile_view(p) for p in response.user_profiles],
         msg=response.msg,
     )
+    _meter_search_request(
+        org_id=org_id,
+        caller_type=caller_type,
+        request_id=getattr(payload, "request_id", None),
+        session_id=getattr(payload, "session_id", None),
+    )
     _meter_applied_learnings(
         org_id=org_id,
         caller_type=caller_type,
@@ -902,6 +940,12 @@ def search_user_playbooks_endpoint(
         user_playbooks=[to_user_playbook_view(rf) for rf in response.user_playbooks],
         msg=response.msg,
     )
+    _meter_search_request(
+        org_id=org_id,
+        caller_type=caller_type,
+        request_id=getattr(payload, "request_id", None),
+        session_id=getattr(payload, "session_id", None),
+    )
     _meter_applied_learnings(
         org_id=org_id,
         caller_type=caller_type,
@@ -948,6 +992,12 @@ def search_agent_playbooks_endpoint(
         success=response.success,
         agent_playbooks=[to_agent_playbook_view(fb) for fb in response.agent_playbooks],
         msg=response.msg,
+    )
+    _meter_search_request(
+        org_id=org_id,
+        caller_type=caller_type,
+        request_id=getattr(payload, "request_id", None),
+        session_id=getattr(payload, "session_id", None),
     )
     _meter_applied_learnings(
         org_id=org_id,
@@ -1027,6 +1077,13 @@ def unified_search_endpoint(
                 agent_trace=response.agent_trace,
                 rehydrated_text=response.rehydrated_text,
             )
+        background_tasks.add_task(
+            _meter_search_request,
+            org_id=org_id,
+            caller_type=caller_type,
+            request_id=getattr(payload, "request_id", None),
+            session_id=getattr(payload, "session_id", None),
+        )
         background_tasks.add_task(
             _meter_applied_learnings,
             org_id=org_id,

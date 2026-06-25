@@ -139,3 +139,35 @@ def record_applied_learnings(
         platform_storage=platform_storage,
         caller_type=caller_type,
     )
+
+
+def record_search_request(
+    *,
+    org_id: str,
+    caller_type: str,
+    request_id: str | None = None,
+    session_id: str | None = None,
+) -> None:
+    """Emit one analytics-only search request count for production agents.
+
+    No-op unless ``caller_type == "production_agent"``. Unlike
+    :func:`record_applied_learnings`, empty search responses still count because
+    this measures requests made, not learnings surfaced.
+
+    Args:
+        org_id: Organisation identifier.
+        caller_type: Caller classification string.
+        request_id: Optional request correlation ID.
+        session_id: Optional session ID.
+    """
+    if caller_type != "production_agent":
+        return
+    record_usage_event(
+        org_id=org_id,
+        event_name="search_request",
+        event_category="application",
+        request_id=request_id,
+        session_id=session_id,
+        count_value=1,
+        caller_type=caller_type,
+    )
