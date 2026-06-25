@@ -2239,6 +2239,9 @@ class ReflexioClient:
         enable_agent_answer: bool | None = None,
         conversation_history: list[ConversationTurn] | list[dict] | None = None,
         search_mode: SearchMode | str | None = None,
+        request_id: str | None = None,
+        session_id: str | None = None,
+        interaction_id: int | None = None,
     ) -> UnifiedSearchViewResponse:
         """Search across all entity types (profiles, agent playbooks, user playbooks).
 
@@ -2262,6 +2265,9 @@ class ReflexioClient:
                 the configured search backend supports it (default: False).
             conversation_history (Optional[list[ConversationTurn] | list[dict]]): Prior conversation turns for context-aware query reformulation. Accepts ConversationTurn objects or dicts with "role" and "content" keys.
             search_mode (Optional[SearchMode | str]): Search mode to use. Accepts SearchMode enum or string value ("vector", "fts", "hybrid").
+            request_id (Optional[str]): Caller correlation id for the search turn.
+            session_id (Optional[str]): Caller session id for the search turn.
+            interaction_id (Optional[int]): Caller interaction id for the search turn.
 
         Returns:
             UnifiedSearchViewResponse: Combined search results from all entity types
@@ -2281,6 +2287,9 @@ class ReflexioClient:
             enable_agent_answer=enable_agent_answer,
             conversation_history=conversation_history,
             search_mode=search_mode,
+            request_id=request_id,
+            session_id=session_id,
+            interaction_id=interaction_id,
         )
         response = self._make_request("POST", "/api/search", json=req.model_dump())
         return UnifiedSearchViewResponse(**response)

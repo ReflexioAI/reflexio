@@ -648,6 +648,7 @@ class UnifiedSearchRequest(BaseModel):
     # Optional; consumed by _meter_applied_learnings in server/api.py.
     request_id: str | None = None
     session_id: str | None = None
+    interaction_id: int | None = Field(default=None, gt=0)
 
 
 class UnifiedSearchResponse(BaseModel):

@@ -8,14 +8,19 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from reflexio.models.api_schema.domain.entities import AgentPlaybook, PlaybookStatus
+from reflexio.models.api_schema.domain.entities import (
+    AgentPlaybook,
+    PlaybookStatus,
+    UserPlaybook,
+)
 from reflexio.models.api_schema.retriever_schema import (
     UnifiedSearchRequest,
 )
-from reflexio.models.config_schema import SearchOptions
+from reflexio.models.config_schema import RetrievalFloorConfig, SearchOptions
 from reflexio.server.services.pre_retrieval import ReformulationResult
 from reflexio.server.services.unified_search_service import (
     _search_agent_playbooks_via_storage,
+    configure_retrieval_capture_hook,
     run_unified_search,
 )
 
@@ -153,6 +158,83 @@ class TestRunUnifiedSearch(unittest.TestCase):
 
         self.assertTrue(result.success)
         self.assertIsNone(result.reformulated_query)
+
+    @patch("reflexio.server.services.unified_search_service.QueryReformulator")
+    def test_capture_hook_receives_final_shaped_response(
+        self, _reformulator_cls
+    ) -> None:
+        """The capture seam must see post-floor, post-suppression results only."""
+        _reformulator_cls.return_value.rewrite.return_value = ReformulationResult(
+            standalone_query="same query"
+        )
+        storage = _mock_storage()
+
+        pre_floor_agent = _agent_playbook(10, PlaybookStatus.PENDING)
+        object.__setattr__(
+            pre_floor_agent, "_source_user_playbook_ids", frozenset({101})
+        )
+        kept_user_playbook = UserPlaybook(
+            user_playbook_id=102,
+            user_id="user-1",
+            agent_version="claude-code",
+            request_id="req-102",
+            playbook_name="pb",
+            content="kept",
+        )
+        suppressed_user_playbook = UserPlaybook(
+            user_playbook_id=101,
+            user_id="user-1",
+            agent_version="claude-code",
+            request_id="req-101",
+            playbook_name="pb",
+            content="suppressed",
+        )
+        captured = []
+
+        with patch(
+            "reflexio.server.services.unified_search_service._run_phase_b",
+            return_value=(
+                [],
+                [pre_floor_agent, _agent_playbook(11, PlaybookStatus.APPROVED)],
+                [suppressed_user_playbook, kept_user_playbook],
+            ),
+        ), patch(
+            "reflexio.server.services.unified_search_service._apply_floors",
+            return_value=(
+                [],
+                [pre_floor_agent],
+                [suppressed_user_playbook, kept_user_playbook],
+            ),
+        ):
+            configure_retrieval_capture_hook(
+                lambda request, response, _storage, org_id: captured.append(
+                    (
+                        request.request_id,
+                        org_id,
+                        [pb.agent_playbook_id for pb in response.agent_playbooks],
+                        [pb.user_playbook_id for pb in response.user_playbooks],
+                    )
+                )
+            )
+            try:
+                result = run_unified_search(
+                    request=UnifiedSearchRequest(
+                        query="same query",
+                        user_id="user-1",
+                        request_id="req-1",
+                        session_id="sess-1",
+                    ),
+                    org_id="test-org",
+                    storage=storage,
+                    llm_client=MagicMock(),
+                    prompt_manager=MagicMock(),
+                    retrieval_floor=RetrievalFloorConfig(enabled=True, pool_size=5),
+                )
+            finally:
+                configure_retrieval_capture_hook(None)
+
+        self.assertTrue(result.success)
+        self.assertEqual(captured, [("req-1", "test-org", [10], [102])])
 
 
 def _agent_playbook(agent_playbook_id: int, status: PlaybookStatus) -> AgentPlaybook:
