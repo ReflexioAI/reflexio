@@ -349,3 +349,30 @@ class OperationMixin:
                 (_json_dumps(current_state), self._current_timestamp(), state_key),
             )
             return {"acquired": False, "state": current_state}
+
+    @SQLiteStorageBase.handle_exceptions
+    def clear_in_progress_lock_if_owner(
+        self,
+        state_key: str,
+        request_id: str,
+        cleared_state: dict,
+    ) -> bool:
+        cursor = self._execute(
+            """
+            UPDATE _operation_state
+            SET operation_state = ?, updated_at = ?
+            WHERE service_name = ?
+              AND (
+                json_extract(operation_state, '$.current_request_id') = ?
+                OR json_extract(operation_state, '$.request_id') = ?
+              )
+            """,
+            (
+                _json_dumps(cleared_state),
+                self._current_timestamp(),
+                state_key,
+                request_id,
+                request_id,
+            ),
+        )
+        return cursor.rowcount > 0

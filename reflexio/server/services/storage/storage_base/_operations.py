@@ -168,3 +168,23 @@ class OperationMixin:
                 - 'state' (dict): The current operation state after the operation
         """
         raise NotImplementedError
+
+    @abstractmethod
+    def clear_in_progress_lock_if_owner(
+        self,
+        state_key: str,
+        request_id: str,
+        cleared_state: dict,
+    ) -> bool:
+        """Atomically clear an in-progress lock only if ``request_id`` still owns it.
+
+        Args:
+            state_key: Operation-state row key for the lock.
+            request_id: Request attempting to release the lock.
+            cleared_state: Replacement operation-state payload to write on success.
+
+        Returns:
+            bool: ``True`` when the caller still owned the lock and the clear
+            was applied, else ``False``.
+        """
+        raise NotImplementedError

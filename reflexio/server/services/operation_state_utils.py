@@ -535,6 +535,32 @@ class OperationStateManager:
             state_key,
         )
 
+    def clear_lock_if_owner(
+        self,
+        request_id: str,
+        scope_id: str | None = None,
+    ) -> bool:
+        """Atomically clear a lock only if ``request_id`` still owns it."""
+        state_key = self._lock_key(scope_id)
+        cleared = self.storage.clear_in_progress_lock_if_owner(
+            state_key,
+            request_id,
+            {
+                "in_progress": False,
+                "current_request_id": None,
+                "pending_request_id": None,
+                "pending_request_queue": [],
+            },
+        )
+        if cleared:
+            logger.debug(
+                "Cleared in-progress lock for %s: state_key=%s, request_id=%s",
+                self.service_name,
+                state_key,
+                request_id,
+            )
+        return cleared
+
     def release_lock_pop_queue(
         self,
         request_id: str,
