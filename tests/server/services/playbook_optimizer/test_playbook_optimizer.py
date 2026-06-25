@@ -1042,6 +1042,44 @@ def test_sqlite_persists_source_mapping_and_winner_candidate(tmp_path):
     assert persisted.is_winner is True
 
 
+def test_sqlite_persists_candidate_metadata_json(tmp_path):
+    storage = _sqlite_storage(tmp_path)
+    job = storage.create_playbook_optimization_job(
+        PlaybookOptimizationJob(target_kind="user_playbook", target_id=10)
+    )
+    metadata_json = json.dumps(
+        {
+            "rollback_baseline": {
+                "user_playbook_id": 10,
+                "trigger": "refund request",
+                "content": "Explain the no-refund policy.",
+            },
+            "frozen_selection_set": {
+                "target_user_playbook_id": 10,
+                "sessions": [
+                    {
+                        "session_id": "sess-holdout-1",
+                        "is_success": False,
+                        "selection_reason": "held_out_failure",
+                    }
+                ],
+            },
+        }
+    )
+
+    storage.insert_playbook_optimization_candidate(
+        PlaybookOptimizationCandidate(
+            job_id=job.job_id,
+            candidate_index=0,
+            content="candidate",
+            metadata_json=metadata_json,
+        )
+    )
+
+    [persisted] = storage.list_playbook_optimization_candidates(job.job_id)
+    assert json.loads(persisted.metadata_json) == json.loads(metadata_json)
+
+
 def test_scenario_resolver_uses_snapshotted_source_windows_after_user_delete(tmp_path):
     storage = _sqlite_storage(tmp_path)
     _seed_request_and_user_interaction(

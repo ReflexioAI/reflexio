@@ -138,6 +138,7 @@ def _row_to_playbook_optimization_candidate(
         parent_candidate_ids=_json_loads(row["parent_candidate_ids"]) or [],
         aggregate_score=row["aggregate_score"],
         is_winner=bool(row["is_winner"]),
+        metadata_json=row["metadata_json"] or "{}",
         created_at=row["created_at"],
     )
 
@@ -1755,8 +1756,8 @@ class PlaybookMixin:
             cur = self.conn.execute(
                 """INSERT INTO playbook_optimization_candidates
                    (job_id, candidate_index, content, parent_candidate_ids,
-                    aggregate_score, is_winner, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    aggregate_score, is_winner, metadata_json, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     candidate.job_id,
                     candidate.candidate_index,
@@ -1764,6 +1765,7 @@ class PlaybookMixin:
                     _json_dumps(candidate.parent_candidate_ids) or "[]",
                     candidate.aggregate_score,
                     1 if candidate.is_winner else 0,
+                    candidate.metadata_json,
                     candidate.created_at,
                 ),
             )

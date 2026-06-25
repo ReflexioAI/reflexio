@@ -2098,6 +2098,7 @@ CREATE TABLE IF NOT EXISTS playbook_optimization_candidates (
     parent_candidate_ids TEXT NOT NULL DEFAULT '[]',
     aggregate_score REAL,
     is_winner INTEGER NOT NULL DEFAULT 0,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
     created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_poc_job ON playbook_optimization_candidates(job_id);

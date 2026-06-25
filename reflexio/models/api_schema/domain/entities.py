@@ -327,6 +327,7 @@ class PlaybookOptimizationCandidate(BaseModel):
     parent_candidate_ids: list[int] = Field(default_factory=list)
     aggregate_score: float | None = None
     is_winner: bool = False
+    metadata_json: str = "{}"
     created_at: int = Field(default_factory=lambda: int(datetime.now(UTC).timestamp()))
 
 
