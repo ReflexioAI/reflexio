@@ -34,6 +34,17 @@ def _write_prompt_md(
     (directory / f"v{version}.prompt.md").write_text("\n".join(lines) + content)
 
 
+def _write_prompt_bank_prompt(
+    prompt_bank_path: Path,
+    prompt_id: str,
+    content: str,
+    variables: list[str],
+) -> None:
+    prompt_dir = prompt_bank_path / prompt_id
+    prompt_dir.mkdir(parents=True)
+    _write_prompt_md(prompt_dir, "1.0.0", content, variables, active=True)
+
+
 class TestParseFrontmatter:
     """Tests for the standalone _parse_frontmatter helper."""
 
@@ -197,6 +208,38 @@ class TestPromptManager:
         result2 = prompt_manager.render_prompt("test_prompt", variables)
         assert result1 == result2
         assert result1 == "This is a test prompt with test_value and another_value"
+
+    def test_loads_extra_prompt_bank_paths(self, tmp_path):
+        """PromptManager can load prompts from an additional prompt bank."""
+        primary = tmp_path / "primary"
+        extra = tmp_path / "extra"
+        _write_prompt_bank_prompt(primary, "oss_prompt", "Hello {name}", ["name"])
+        _write_prompt_bank_prompt(
+            extra, "enterprise_prompt", "Enterprise {name}", ["name"]
+        )
+
+        manager = PromptManager(
+            prompt_bank_path=primary,
+            extra_prompt_bank_paths=[extra],
+        )
+
+        assert manager.render_prompt("oss_prompt", {"name": "Ada"}) == "Hello Ada"
+        assert (
+            manager.render_prompt("enterprise_prompt", {"name": "Ada"})
+            == "Enterprise Ada"
+        )
+        assert set(manager.get_all_prompt_ids()) == {"oss_prompt", "enterprise_prompt"}
+        assert manager.list_versions("enterprise_prompt") == ["1.0.0"]
+
+    def test_rejects_duplicate_prompt_ids_across_banks(self, tmp_path):
+        """Prompt IDs are globally unique across configured prompt banks."""
+        primary = tmp_path / "primary"
+        extra = tmp_path / "extra"
+        _write_prompt_bank_prompt(primary, "shared_prompt", "OSS {name}", ["name"])
+        _write_prompt_bank_prompt(extra, "shared_prompt", "Enterprise {name}", ["name"])
+
+        with pytest.raises(ValueError, match="Duplicate prompt_id"):
+            PromptManager(prompt_bank_path=primary, extra_prompt_bank_paths=[extra])
 
     def test_all_prompt_md_files_valid(self):
         """Test that all .prompt.md files in prompt_bank have valid frontmatter."""

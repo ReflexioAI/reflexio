@@ -87,8 +87,8 @@ _retrieval_capture_hook: RetrievalCaptureHook | None = None
 def configure_retrieval_capture_hook(hook: RetrievalCaptureHook | None) -> None:
     """Register an optional final-response retrieval capture hook.
 
-    Enterprise installs the real hook; OSS leaves it unset so unified search
-    behavior is unchanged by default.
+    Deployments that capture retrieval logs install the hook; OSS leaves it
+    unset so unified search behavior is unchanged by default.
     """
     global _retrieval_capture_hook
     _retrieval_capture_hook = hook

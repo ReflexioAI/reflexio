@@ -4,11 +4,10 @@ from reflexio.models.api_schema.domain.entities import PlaybookRetrievalLog
 class RetrievalLogMixin:
     """Mixin for playbook retrieval log storage methods.
 
-    These methods are forward scaffolding for the offline playbook tuner and are
-    not yet implemented by any storage backend. They are intentionally concrete
-    (not ``@abstractmethod``) so concrete storage classes remain instantiable;
-    each raises ``NotImplementedError`` until a backend provides a real
-    implementation.
+    These methods are optional retrieval-capture storage hooks. They are
+    intentionally concrete (not ``@abstractmethod``) so concrete storage classes
+    remain instantiable; each raises ``NotImplementedError`` until a backend
+    provides a real implementation.
     """
 
     def save_playbook_retrieval_log(self, log: PlaybookRetrievalLog) -> int:

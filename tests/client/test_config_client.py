@@ -17,15 +17,15 @@ def _json_response(payload: dict) -> MagicMock:
 
 
 @patch("reflexio.client.client.requests.Session")
-def test_client_get_config_accepts_enterprise_overlay(mock_session_class) -> None:
+def test_client_get_config_accepts_unknown_overlay(mock_session_class) -> None:
     mock_session = MagicMock()
     mock_session_class.return_value = mock_session
-    payload = Config(storage_config=StorageConfigSQLite(db_path="/tmp/test.db")).model_dump()
-    payload["offline_tuner_config"] = {
+    payload = Config(
+        storage_config=StorageConfigSQLite(db_path="/tmp/test.db")
+    ).model_dump()
+    payload["x_extension_config"] = {
         "enabled": True,
-        "daily_run_hour_utc": 6,
-        "lookback_days": 21,
-        "tuner_version": "offline-playbook-tuner-v2",
+        "version": "extension-v1",
     }
     mock_session.request.return_value = _json_response(payload)
 
@@ -34,21 +34,19 @@ def test_client_get_config_accepts_enterprise_overlay(mock_session_class) -> Non
 
     assert isinstance(result, Config)
     assert result.storage_config == StorageConfigSQLite(db_path="/tmp/test.db")
-    assert result.model_dump()["offline_tuner_config"] == payload["offline_tuner_config"]
+    assert result.model_dump()["x_extension_config"] == payload["x_extension_config"]
 
 
 @patch("reflexio.client.client.requests.Session")
-def test_client_set_config_preserves_enterprise_overlay(mock_session_class) -> None:
+def test_client_set_config_preserves_unknown_overlay(mock_session_class) -> None:
     mock_session = MagicMock()
     mock_session_class.return_value = mock_session
     get_payload = Config(
         storage_config=StorageConfigSQLite(db_path="/tmp/test.db")
     ).model_dump()
-    get_payload["offline_tuner_config"] = {
+    get_payload["x_extension_config"] = {
         "enabled": True,
-        "daily_run_hour_utc": 6,
-        "lookback_days": 21,
-        "tuner_version": "offline-playbook-tuner-v2",
+        "version": "extension-v1",
     }
     mock_session.request.side_effect = [
         _json_response(get_payload),
@@ -64,4 +62,4 @@ def test_client_set_config_preserves_enterprise_overlay(mock_session_class) -> N
     args, kwargs = mock_session.request.call_args
     assert args[0] == "POST"
     assert args[1].endswith("/api/set_config")
-    assert kwargs["json"]["offline_tuner_config"] == get_payload["offline_tuner_config"]
+    assert kwargs["json"]["x_extension_config"] == get_payload["x_extension_config"]

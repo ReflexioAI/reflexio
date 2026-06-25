@@ -1,7 +1,7 @@
 """Shared atomic supersede primitive for applying a playbook edit.
 
-Extracted from ReflectionService._replace_playbook so the offline tuner and
-the online reflection path share one lifecycle (insert-then-supersede, no orphan).
+Extracted from ReflectionService._replace_playbook so online and background
+playbook repair paths share one lifecycle (insert-then-supersede, no orphan).
 """
 
 from typing import TYPE_CHECKING

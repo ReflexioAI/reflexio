@@ -4,6 +4,7 @@ Prompt management using file system prompt bank with markdown frontmatter files.
 
 import logging
 import re
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -75,28 +76,37 @@ class PromptManager:
 
     def __init__(
         self,
-        prompt_bank_path: str | None = None,
+        prompt_bank_path: str | Path | None = None,
         version_override: dict[str, str] | None = None,
+        extra_prompt_bank_paths: Sequence[str | Path] | None = None,
     ):
         """
         Initialize the PromptManager.
 
         Args:
-            prompt_bank_path (str, optional): Path to the prompt bank directory.
+            prompt_bank_path (str | Path, optional): Path to the primary prompt bank directory.
             version_override (dict[str, str], optional): Map of prompt_id → version string to override the active version.
+            extra_prompt_bank_paths (Sequence[str | Path], optional): Additional prompt bank directories.
         """
         if prompt_bank_path is None:
             current_dir = Path(__file__).parent
             self.prompt_bank_path = current_dir / "prompt_bank"
         else:
             self.prompt_bank_path = Path(prompt_bank_path)
+        self.prompt_bank_paths = [self.prompt_bank_path]
+        if extra_prompt_bank_paths:
+            self.prompt_bank_paths.extend(
+                Path(path) for path in extra_prompt_bank_paths
+            )
 
         self.version_override = version_override
 
-        if not self.prompt_bank_path.exists():
-            logger.warning("Prompt bank path does not exist: %s", self.prompt_bank_path)
+        for path in self.prompt_bank_paths:
+            if not path.exists():
+                logger.warning("Prompt bank path does not exist: %s", path)
 
         self._cache: dict[str, Prompt] = {}
+        self._validate_unique_prompt_ids()
 
     # ==============================
     # Public methods
@@ -148,13 +158,13 @@ class PromptManager:
         Returns:
             list[str]: List of version strings.
         """
-        prompt_dir = self.prompt_bank_path / prompt_id
-        if not prompt_dir.is_dir():
-            return []
-        return [
-            p.name.removeprefix("v").removesuffix(".prompt.md")
-            for p in sorted(prompt_dir.glob("v*.prompt.md"))
-        ]
+        versions: list[str] = []
+        for prompt_dir in self._prompt_dirs(prompt_id):
+            versions.extend(
+                p.name.removeprefix("v").removesuffix(".prompt.md")
+                for p in sorted(prompt_dir.glob("v*.prompt.md"))
+            )
+        return versions
 
     def get_active_version(self, prompt_id: str) -> str | None:
         """
@@ -177,21 +187,65 @@ class PromptManager:
         Returns:
             list[str]: List of prompt IDs.
         """
-        if not self.prompt_bank_path.exists():
-            return []
-        return [
-            item.name
-            for item in self.prompt_bank_path.iterdir()
-            if item.is_dir() and any(item.glob("v*.prompt.md"))
-        ]
+        prompt_ids: list[str] = []
+        seen: set[str] = set()
+        for prompt_bank_path in self.prompt_bank_paths:
+            if not prompt_bank_path.exists():
+                continue
+            for item in prompt_bank_path.iterdir():
+                if (
+                    item.is_dir()
+                    and item.name not in seen
+                    and any(item.glob("v*.prompt.md"))
+                ):
+                    prompt_ids.append(item.name)
+                    seen.add(item.name)
+        return prompt_ids
 
     # ==============================
     # Private methods
     # ==============================
 
+    def _prompt_dirs(self, prompt_id: str) -> list[Path]:
+        """Return configured prompt directories for a prompt ID."""
+        return [
+            prompt_bank_path / prompt_id
+            for prompt_bank_path in self.prompt_bank_paths
+            if (prompt_bank_path / prompt_id).is_dir()
+        ]
+
+    def _validate_unique_prompt_ids(self) -> None:
+        """Reject prompt IDs that appear in more than one configured prompt bank."""
+        locations: dict[str, list[Path]] = {}
+        for prompt_bank_path in self.prompt_bank_paths:
+            if not prompt_bank_path.exists():
+                continue
+            for item in prompt_bank_path.iterdir():
+                if item.is_dir() and any(item.glob("v*.prompt.md")):
+                    locations.setdefault(item.name, []).append(item)
+
+        duplicates = {
+            prompt_id: paths for prompt_id, paths in locations.items() if len(paths) > 1
+        }
+        if duplicates:
+            details = "; ".join(
+                f"{prompt_id}: {', '.join(str(path) for path in paths)}"
+                for prompt_id, paths in sorted(duplicates.items())
+            )
+            raise ValueError(f"Duplicate prompt_id found in prompt banks: {details}")
+
     def _load_prompt(self, prompt_id: str, version: str) -> Prompt | None:
         """Load a single prompt file by prompt_id and version string."""
-        path = self.prompt_bank_path / prompt_id / f"v{version}.prompt.md"
+        path: Path | None = None
+        for prompt_dir in self._prompt_dirs(prompt_id):
+            candidate = prompt_dir / f"v{version}.prompt.md"
+            if candidate.is_file():
+                path = candidate
+                break
+        if path is None:
+            logger.warning("Prompt file not found: %s v%s", prompt_id, version)
+            return None
+
         try:
             raw = path.read_text(encoding="utf-8")
         except FileNotFoundError:
@@ -217,8 +271,8 @@ class PromptManager:
 
     def _find_active_version(self, prompt_id: str) -> str | None:
         """Scan .prompt.md files to find the latest one with active: true."""
-        prompt_dir = self.prompt_bank_path / prompt_id
-        if not prompt_dir.is_dir():
+        prompt_dirs = self._prompt_dirs(prompt_id)
+        if not prompt_dirs:
             return None
 
         def _semver_key(p: Path) -> tuple[int, ...]:
@@ -239,17 +293,20 @@ class PromptManager:
                 return (0,)
 
         latest: str | None = None
-        for path in sorted(
-            prompt_dir.glob("v*.prompt.md"), key=_semver_key, reverse=True
-        ):
-            try:
-                raw = path.read_text(encoding="utf-8")
-                meta, _ = _parse_frontmatter(raw)
-                if meta.get("active"):
-                    latest = path.name.removeprefix("v").removesuffix(".prompt.md")
-                    break
-            except (ValueError, OSError):
-                continue
+        for prompt_dir in prompt_dirs:
+            for path in sorted(
+                prompt_dir.glob("v*.prompt.md"), key=_semver_key, reverse=True
+            ):
+                try:
+                    raw = path.read_text(encoding="utf-8")
+                    meta, _ = _parse_frontmatter(raw)
+                    if meta.get("active"):
+                        latest = path.name.removeprefix("v").removesuffix(".prompt.md")
+                        break
+                except (ValueError, OSError):
+                    continue
+            if latest:
+                break
         return latest
 
     def _get_prompt(self, prompt_id: str, version: str | None = None) -> Prompt | None:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any, ClassVar
 
 from pydantic import BaseModel
@@ -80,6 +81,10 @@ class BaseConfigurator(ABC):
     def normalize_config_payload(self, config: dict[str, Any]) -> dict[str, Any]:
         """Normalize raw API config payloads before Pydantic validation."""
         return config
+
+    def get_prompt_bank_paths(self) -> list[Path]:
+        """Return additional prompt banks this configurator contributes."""
+        return []
 
     def get_agent_context(self) -> str:
         context = self.get_config().agent_context_prompt

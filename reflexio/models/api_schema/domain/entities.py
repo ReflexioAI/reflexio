@@ -413,7 +413,7 @@ class PlaybookRetrievalLogItem(BaseModel):
 class PlaybookRetrievalLog(BaseModel):
     """A retrieval-log header with ordered item rows.
 
-    Used by the offline playbook tuner to correlate retrieval decisions with
+    Used by retrieval-capture consumers to correlate retrieval decisions with
     downstream outcomes. ``retrieval_log_id`` is assigned by the storage layer;
     ``shown_items`` stores ids and serve-time attribution snapshots only.
     """

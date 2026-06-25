@@ -17,7 +17,9 @@ class RequestContext:
         self.storage_base_dir = storage_base_dir
         cls = get_configurator_class()
         self.configurator = configurator or cls(org_id, base_dir=storage_base_dir)
-        self.prompt_manager = PromptManager()
+        self.prompt_manager = PromptManager(
+            extra_prompt_bank_paths=self.configurator.get_prompt_bank_paths()
+        )
         self.storage = self.configurator.create_storage(
             storage_config=self.configurator.get_current_storage_configuration(),
         )

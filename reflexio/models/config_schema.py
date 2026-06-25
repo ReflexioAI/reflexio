@@ -686,9 +686,9 @@ class LineageGCConfig(BaseModel):
     retention policies and satisfies GDPR Art. 5(1)(e) storage-limitation for
     personal data in profiles.  The value is a per-deployment policy knob; ratify
     with your DPO before shortening it in production.  The 90-day floor also
-    preserves tombstones long enough for B3 changelog replay and any rollback
-    horizon the offline tuner may require — raise ``tombstone_grace_window_days``
-    further if your replay horizon exceeds 90 days.
+    preserves tombstones long enough for B3 changelog replay and rollback
+    consumers — raise ``tombstone_grace_window_days`` further if your replay
+    horizon exceeds 90 days.
 
     Enabled by default
     ------------------
