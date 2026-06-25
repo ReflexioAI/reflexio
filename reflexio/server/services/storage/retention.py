@@ -67,6 +67,12 @@ RETENTION_TARGETS: tuple[RetentionTarget, ...] = (
         "created_at",
         ("event_id",),
     ),
+    RetentionTarget(
+        "playbook_retrieval_logs",
+        "playbook_retrieval_logs",
+        "created_at",
+        ("retrieval_log_id",),
+    ),
     RetentionTarget("skills", "skills", "created_at", ("skill_id",)),
 )
 
@@ -107,6 +113,9 @@ RETENTION_CASCADES: dict[str, tuple[CascadeRef, ...]] = {
     ),
     "playbook_optimization_candidates": (
         CascadeRef("playbook_optimization_evaluations", "candidate_id"),
+    ),
+    "playbook_retrieval_logs": (
+        CascadeRef("playbook_retrieval_log_items", "retrieval_log_id"),
     ),
 }
 

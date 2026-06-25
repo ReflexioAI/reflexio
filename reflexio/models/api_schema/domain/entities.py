@@ -118,6 +118,7 @@ __all__ = [
     "ShareLink",
     "AdminInvalidateCacheRequest",
     "AdminInvalidateCacheResponse",
+    "PlaybookRetrievalLogItem",
     "PlaybookRetrievalLog",
     "LineageEvent",
     "LineageContext",
@@ -395,29 +396,35 @@ class AgentSuccessEvaluationResult(BaseModel):
     embedding: EmbeddingVector = []
 
 
+class PlaybookRetrievalLogItem(BaseModel):
+    """One retrieved agent playbook plus the serve-time attribution snapshot."""
+
+    retrieval_log_item_id: int = 0
+    retrieval_log_id: int = 0
+    ordinal: int
+    agent_playbook_id: int
+    source_user_playbook_ids: list[int] = Field(default_factory=list)
+    source_interaction_ids_by_user_playbook_id: dict[str, list[int]] = Field(
+        default_factory=dict
+    )
+
+
 class PlaybookRetrievalLog(BaseModel):
-    """A log entry recording which playbooks were shown to a user during a request.
+    """A retrieval-log header with ordered item rows.
 
     Used by the offline playbook tuner to correlate retrieval decisions with
     downstream outcomes. ``retrieval_log_id`` is assigned by the storage layer;
-    ``shown_playbook_ids`` carries agent-playbook ids only (scores deferred to v2).
-
-    Attributes:
-        retrieval_log_id (int): Primary key assigned by storage (0 = not yet persisted).
-        request_id (str): The request during which playbooks were retrieved.
-        session_id (str): The session that owns the request.
-        user_id (str): The user the request belongs to.
-        shown_playbook_ids (list[int]): Ordered list of agent_playbook_id values shown.
-        agent_version (str | None): Agent version string at retrieval time, if available.
-        created_at (int): Unix epoch seconds at log creation time (0 = unset).
+    ``shown_items`` stores ids and serve-time attribution snapshots only.
     """
 
     retrieval_log_id: int = 0
     request_id: str
     session_id: str
+    interaction_id: int | None = None
     user_id: str
-    shown_playbook_ids: list[int] = []  # ids only (v1); scores deferred to v2 (M1)
+    query: str | None = None
     agent_version: str | None = None
+    shown_items: list[PlaybookRetrievalLogItem] = Field(default_factory=list)
     created_at: int = 0
 
 
