@@ -29,6 +29,13 @@ class ModelRegistryEntry:
 
 def _build_registry() -> dict[str, ModelRegistryEntry]:
     """Build the model registry with lazy imports to avoid circular dependencies."""
+    from reflexio_ext.server.services.offline_tuner.models import (
+        ModeBAdoptionJudgeOutput,
+        OfflinePairwiseJudgeOutput,
+        OfflinePlaybookEditResponse,
+        SuccessLabelSelfConsistencyOutput,
+    )
+
     from reflexio.models.api_schema.eval_overview_schema import ShadowComparisonOutput
     from reflexio.server.services.agent_success_evaluation.agent_success_evaluation_constants import (
         AgentSuccessEvaluationOutput,
@@ -136,6 +143,75 @@ def _build_registry() -> dict[str, ModelRegistryEntry]:
                 "verdict": "candidate",
                 "score": 0.5,
                 "likert": 3,
+            },
+        ),
+        "offline_tuner_corrective_proposer": ModelRegistryEntry(
+            model_class=OfflinePlaybookEditResponse,
+            minimal_valid={
+                "proposed_edit": {
+                    "op": "revise",
+                    "target_user_playbook_id": 101,
+                    "new_content": "Ask for the charge date and correct billing errors before discussing refund policy.",
+                    "rationale": "Corrective evidence shows billing-error failures tied to no-refund wording.",
+                }
+            },
+        ),
+        "offline_tuner_generative_proposer": ModelRegistryEntry(
+            model_class=OfflinePlaybookEditResponse,
+            minimal_valid={
+                "proposed_edit": {
+                    "op": "split",
+                    "target_user_playbook_id": 101,
+                    "replacements": [
+                        {
+                            "trigger": "billing error or double charge",
+                            "content": "Issue a billing correction or escalate to billing.",
+                            "rationale": "Observed in similar successful billing-error sessions.",
+                            "expanded_terms": ["billing error", "double charge"],
+                        },
+                        {
+                            "trigger": "buyer's-remorse refund request",
+                            "content": "Explain the no-refund policy.",
+                            "rationale": "Preserves the known-good no-refund path.",
+                            "expanded_terms": ["refund request"],
+                        },
+                    ],
+                    "rationale": "Generative support suggests splitting billing errors from true no-refund cases.",
+                }
+            },
+        ),
+        "offline_tuner_pairwise_judge": ModelRegistryEntry(
+            model_class=OfflinePairwiseJudgeOutput,
+            minimal_valid={
+                "verdict": "candidate_better",
+                "confidence": 0.81,
+                "preserves_successes": True,
+                "fixes_failures": True,
+                "rationale": "The candidate fixes billing-error failures without hurting preserved no-refund successes.",
+            },
+        ),
+        "offline_tuner_mode_b_adoption_judge": ModelRegistryEntry(
+            model_class=ModeBAdoptionJudgeOutput,
+            minimal_valid={
+                "adoption_labels": [
+                    {
+                        "user_playbook_id": 101,
+                        "label": "violated",
+                        "rationale": "The agent repeated no-refund language when the transcript showed a billing error.",
+                    }
+                ]
+            },
+        ),
+        "offline_tuner_success_label_self_consistency": ModelRegistryEntry(
+            model_class=SuccessLabelSelfConsistencyOutput,
+            minimal_valid={
+                "session_labels": [
+                    {
+                        "session_id": "sess-1",
+                        "label": "success",
+                        "rationale": "The user explicitly confirmed the billing issue was resolved.",
+                    }
+                ]
             },
         ),
         "shadow_comparison": ModelRegistryEntry(
