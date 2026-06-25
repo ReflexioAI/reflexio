@@ -346,7 +346,7 @@ def _prompt_id(component: Component) -> str:
         )
 
         return PlaybookConsolidator.DEDUPLICATION_PROMPT_ID
-    from reflexio.server.services.reflection.reflection_extractor import (
+    from reflexio.server.services.reflection.components.extractor import (
         REFLECTION_PROMPT_ID,
     )
 

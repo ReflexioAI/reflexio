@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING
 
 from reflexio.models.api_schema.domain.entities import UserPlaybook, UserProfile
 from reflexio.models.api_schema.domain.enums import ProfileTimeToLive
-from reflexio.server.services.reflection.reflection_extractor import (
+from reflexio.server.services.reflection.components.extractor import (
     ReflectionExtractor,
 )
 from reflexio.server.services.reflection.reflection_service_utils import (

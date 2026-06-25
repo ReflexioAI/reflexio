@@ -41,7 +41,7 @@ from reflexio.models.api_schema.domain.entities import (
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.services.operation_state_utils import OperationStateManager
 from reflexio.server.services.playbook.playbook_edit_apply import apply_playbook_edit
-from reflexio.server.services.reflection.reflection_extractor import (
+from reflexio.server.services.reflection.components.extractor import (
     ReflectionExtractor,
 )
 from reflexio.server.services.reflection.reflection_service_utils import (

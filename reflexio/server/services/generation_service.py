@@ -41,10 +41,10 @@ from reflexio.server.services.profile.profile_generation_service import (
 from reflexio.server.services.profile.profile_generation_service_utils import (
     ProfileGenerationRequest,
 )
-from reflexio.server.services.reflection.reflection_service import ReflectionService
 from reflexio.server.services.reflection.reflection_service_utils import (
     ReflectionServiceRequest,
 )
+from reflexio.server.services.reflection.service import ReflectionService
 from reflexio.server.services.storage.retention import (
     delete_count_for_retention,
     get_row_retention_limits,

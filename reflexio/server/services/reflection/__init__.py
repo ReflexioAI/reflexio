@@ -1,17 +1,13 @@
-"""Reflection service: critique-and-revise of cited memories after publish."""
+"""Reflection service package."""
 
-from reflexio.server.services.reflection.reflection_service import ReflectionService
 from reflexio.server.services.reflection.reflection_service_utils import (
-    ReflectionDecision,
-    ReflectionOutput,
-    ReflectionResult,
+    REFLECTION_OPERATION_NAME,
     ReflectionServiceRequest,
 )
+from reflexio.server.services.reflection.service import ReflectionService
 
 __all__ = [
+    "REFLECTION_OPERATION_NAME",
     "ReflectionService",
     "ReflectionServiceRequest",
-    "ReflectionDecision",
-    "ReflectionOutput",
-    "ReflectionResult",
 ]

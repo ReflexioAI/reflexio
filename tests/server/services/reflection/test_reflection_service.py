@@ -22,13 +22,13 @@ from reflexio.models.api_schema.domain.entities import (
 from reflexio.models.api_schema.domain.enums import ProfileTimeToLive, Status
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.services.operation_state_utils import OperationStateManager
-from reflexio.server.services.reflection.reflection_service import ReflectionService
 from reflexio.server.services.reflection.reflection_service_utils import (
     REFLECTION_OPERATION_NAME,
     ReflectionDecision,
     ReflectionOutput,
     ReflectionServiceRequest,
 )
+from reflexio.server.services.reflection.service import ReflectionService
 
 pytestmark = pytest.mark.integration
 
@@ -595,7 +595,7 @@ class TestArchiveAfterInsertFailure:
                 side_effect=RuntimeError("disk full"),
             ),
             caplog.at_level(
-                "ERROR", logger="reflexio.server.services.reflection.reflection_service"
+                "ERROR", logger="reflexio.server.services.reflection.service"
             ),
         ):
             result = service.run(ReflectionServiceRequest(user_id="u1"))
@@ -648,7 +648,7 @@ class TestArchiveAfterInsertFailure:
         with (
             patch.object(storage, "supersede_record", return_value=False),
             caplog.at_level(
-                "ERROR", logger="reflexio.server.services.reflection.reflection_service"
+                "ERROR", logger="reflexio.server.services.reflection.service"
             ),
         ):
             result = service.run(ReflectionServiceRequest(user_id="u1"))
@@ -697,7 +697,7 @@ class TestArchiveAfterInsertFailure:
                 side_effect=RuntimeError("disk full"),
             ),
             caplog.at_level(
-                "ERROR", logger="reflexio.server.services.reflection.reflection_service"
+                "ERROR", logger="reflexio.server.services.reflection.service"
             ),
         ):
             result = service.run(ReflectionServiceRequest(user_id="u1"))
@@ -1178,7 +1178,7 @@ class TestFieldDerivableCounters:
 
         with caplog.at_level(
             "INFO",
-            logger="reflexio.server.services.reflection.reflection_service",
+            logger="reflexio.server.services.reflection.service",
         ):
             result = service.run(ReflectionServiceRequest(user_id="u1"))
 

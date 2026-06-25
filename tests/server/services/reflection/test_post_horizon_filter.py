@@ -3,7 +3,7 @@
 from datetime import UTC, datetime
 
 from reflexio.models.api_schema.domain.entities import Citation, Interaction
-from reflexio.server.services.reflection.reflection_service import (
+from reflexio.server.services.reflection.service import (
     _filter_citations_by_horizon,
 )
 

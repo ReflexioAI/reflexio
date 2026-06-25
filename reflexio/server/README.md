@@ -403,8 +403,8 @@ Key files:
 **Directories**: `services/reflection/`, `services/extraction/`
 
 Key files:
-- `reflection/reflection_service.py`: Post-horizon reflection orchestration for synthesizing longer-range memory artifacts
-- `reflection/reflection_extractor.py`: LLM extractor used by the reflection service
+- `reflection/service.py`: Post-horizon reflection orchestration for synthesizing longer-range memory artifacts
+- `reflection/components/extractor.py`: LLM extractor used by the reflection service
 - `extraction/resumable_agent.py`: Resumable extraction agent runtime
 - `extraction/resume_scheduler.py` and `extraction/resume_worker.py`: Background scheduling/worker loop for paused extraction runs
 - `extraction/tools.py` and `extraction/prior_answer_search.py`: Tool surface for async extraction agents

@@ -99,7 +99,7 @@ def test_reflection_failure_does_not_break_publish(
             "reflexio.server.services.generation_service.PlaybookGenerationService"
         ) as playbook_cls,
         patch(
-            "reflexio.server.services.reflection.reflection_service.ReflectionService.run",
+            "reflexio.server.services.reflection.service.ReflectionService.run",
             side_effect=RuntimeError("boom"),
         ),
         caplog.at_level(

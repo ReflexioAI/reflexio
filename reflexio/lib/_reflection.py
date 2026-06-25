@@ -41,7 +41,7 @@ class ReflectionMixin(ReflexioBase):
 
         # Local import keeps the heavy service module out of facade
         # cold-start when reflection is disabled.
-        from reflexio.server.services.reflection.reflection_service import (
+        from reflexio.server.services.reflection.service import (
             ReflectionService,
         )
 
