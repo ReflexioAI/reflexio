@@ -1611,13 +1611,13 @@ def run_playbook_aggregation(
 @limiter.limit("10/minute")
 def set_config(
     request: Request,
-    config: Config,
+    config: dict[str, Any],
     org_id: str = Depends(default_get_org_id),
 ) -> SetConfigResponse:
     """Set configuration for the organization.
 
     Args:
-        config (Config): The configuration to set
+        config (dict[str, Any]): The configuration payload to set
         org_id (str): Organization ID
 
     Returns:
