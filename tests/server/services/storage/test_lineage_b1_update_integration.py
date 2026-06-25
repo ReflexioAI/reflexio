@@ -13,6 +13,7 @@ import pytest
 import reflexio.server.services.playbook.playbook_generation_service as playbook_generation_service
 from reflexio.models.api_schema.domain.entities import (
     AgentPlaybook,
+    LineageContext,
     UserPlaybook,
     UserProfile,
 )
@@ -131,6 +132,96 @@ def test_read_user_playbook_as_of_for_learning_allows_metadata_only_edit(tmp_pat
     assert got is not None
     assert got.user_playbook_id == pb.user_playbook_id
     assert got.content == "keep this"
+
+
+def test_read_user_playbook_as_of_for_learning_rejects_blank_purged_content(tmp_path):
+    helper = getattr(
+        playbook_generation_service,
+        "read_user_playbook_as_of_for_learning",
+        None,
+    )
+    assert helper is not None
+
+    s = _store(tmp_path)
+    pb = UserPlaybook(
+        user_id="u",
+        agent_version="v",
+        request_id="r",
+        created_at=100,
+        content="sensitive guidance",
+    )
+    s.save_user_playbooks([pb])
+    assert s.purge_content(
+        entity_type="user_playbook", entity_id=str(pb.user_playbook_id)
+    )
+
+    got = helper(s, user_playbook_id=pb.user_playbook_id, served_at=150)
+    assert got is None
+
+
+def test_read_user_playbook_as_of_for_learning_rejects_future_created_row(tmp_path):
+    helper = getattr(
+        playbook_generation_service,
+        "read_user_playbook_as_of_for_learning",
+        None,
+    )
+    assert helper is not None
+
+    s = _store(tmp_path)
+    pb = UserPlaybook(
+        user_id="u",
+        agent_version="v",
+        request_id="r",
+        created_at=200,
+        content="future guidance",
+    )
+    s.save_user_playbooks([pb])
+
+    got = helper(s, user_playbook_id=pb.user_playbook_id, served_at=150)
+    assert got is None
+
+
+def test_read_user_playbook_as_of_for_learning_does_not_resolve_to_current_survivor(
+    tmp_path,
+):
+    helper = getattr(
+        playbook_generation_service,
+        "read_user_playbook_as_of_for_learning",
+        None,
+    )
+    assert helper is not None
+
+    s = _store(tmp_path)
+    incumbent = UserPlaybook(
+        user_id="u",
+        agent_version="v",
+        request_id="r-old",
+        created_at=100,
+        content="old exact content",
+    )
+    successor = UserPlaybook(
+        user_id="u",
+        agent_version="v",
+        request_id="r-new",
+        created_at=120,
+        content="new current content",
+    )
+    s.save_user_playbooks([incumbent, successor])
+    s.supersede_record(
+        entity_type="user_playbook",
+        incumbent_id=str(incumbent.user_playbook_id),
+        successor_id=str(successor.user_playbook_id),
+        context=LineageContext(
+            op_kind="revise",
+            actor="test",
+            request_id="req-supersede",
+        ),
+    )
+
+    got = helper(s, user_playbook_id=incumbent.user_playbook_id, served_at=150)
+    assert got is not None
+    assert got.user_playbook_id == incumbent.user_playbook_id
+    assert got.content == "old exact content"
 
 
 # ---------------------------------------------------------------------------
