@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+import reflexio.server.services.playbook.playbook_generation_service as playbook_generation_service
 from reflexio.models.api_schema.domain.entities import (
     AgentPlaybook,
     UserPlaybook,
@@ -66,6 +67,70 @@ def test_update_user_playbook_multiple_edits_each_produce_event(tmp_path):
         entity_id=str(pb.user_playbook_id), entity_type="user_playbook"
     )
     assert [e.op for e in ev] == ["revise", "revise"]
+
+
+def test_update_user_playbook_trigger_change_emits_revise(tmp_path):
+    s = _store(tmp_path)
+    pb = UserPlaybook(user_id="u", agent_version="v", request_id="r", content="c")
+    s.save_user_playbooks([pb])
+    s.update_user_playbook(pb.user_playbook_id, trigger="when the user asks twice")
+    ev = s.get_lineage_events(
+        entity_id=str(pb.user_playbook_id), entity_type="user_playbook"
+    )
+    assert [e.op for e in ev] == ["revise"]
+
+
+def test_read_user_playbook_as_of_for_learning_rejects_post_serve_revise(tmp_path):
+    helper = getattr(
+        playbook_generation_service,
+        "read_user_playbook_as_of_for_learning",
+        None,
+    )
+    assert helper is not None
+
+    s = _store(tmp_path)
+    pb = UserPlaybook(
+        user_id="u",
+        agent_version="v",
+        request_id="r",
+        created_at=100,
+        content="v1",
+    )
+    s.save_user_playbooks([pb])
+
+    s.update_user_playbook(pb.user_playbook_id, content="v2")
+
+    got = helper(s, user_playbook_id=pb.user_playbook_id, served_at=150)
+    assert got is None
+
+
+def test_read_user_playbook_as_of_for_learning_allows_metadata_only_edit(tmp_path):
+    helper = getattr(
+        playbook_generation_service,
+        "read_user_playbook_as_of_for_learning",
+        None,
+    )
+    assert helper is not None
+
+    s = _store(tmp_path)
+    pb = UserPlaybook(
+        user_id="u",
+        agent_version="v",
+        request_id="r",
+        created_at=100,
+        playbook_name="original",
+        content="keep this",
+        trigger="when asked about X",
+        rationale="because of prior confusion",
+    )
+    s.save_user_playbooks([pb])
+
+    s.update_user_playbook(pb.user_playbook_id, playbook_name="renamed")
+
+    got = helper(s, user_playbook_id=pb.user_playbook_id, served_at=150)
+    assert got is not None
+    assert got.user_playbook_id == pb.user_playbook_id
+    assert got.content == "keep this"
 
 
 # ---------------------------------------------------------------------------

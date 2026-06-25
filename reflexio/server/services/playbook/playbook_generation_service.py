@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from reflexio.server.api_endpoints.request_context import RequestContext
     from reflexio.server.llm.litellm_client import LiteLLMClient
+    from reflexio.server.services.storage.storage_base import BaseStorage
 
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
 from reflexio.models.api_schema.service_schemas import (
@@ -43,6 +44,33 @@ from reflexio.server.services.service_utils import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def read_user_playbook_as_of_for_learning(
+    storage: "BaseStorage", *, user_playbook_id: int, served_at: int
+) -> UserPlaybook | None:
+    """Return the exact cited playbook row iff its body is still attributable.
+
+    This is the strict learning-time read path: it dereferences ONLY the cited
+    id, never follows merged/superseded pointers to a current survivor. When the
+    exact row body is unavailable or was revised in-place after ``served_at``,
+    the row is unattributable and the helper returns ``None``.
+    """
+    playbook = storage.get_user_playbook_by_id(
+        user_playbook_id, include_tombstones=True
+    )
+    if playbook is None:
+        return None
+    if playbook.created_at > served_at:
+        return None
+    if not playbook.content.strip():
+        return None
+    events = storage.get_lineage_events(
+        entity_type="user_playbook", entity_id=str(user_playbook_id)
+    )
+    if any(event.op == "revise" and event.created_at > served_at for event in events):
+        return None
+    return playbook
 
 
 @dataclass
@@ -345,7 +373,7 @@ class PlaybookGenerationService(
         merge_groups: list[tuple[int, list[int]]],
         existing_ids_to_delete: list[int],
     ) -> None:
-        """Materialize consolidation merges as lineage tombstones; hard-delete leftovers.
+        """Materialize consolidation merges as lineage tombstones.
 
         Runs AFTER ``save_user_playbooks`` has assigned survivor ids. For each
         ``unify`` merge group, routes the sources atomically through
@@ -353,9 +381,8 @@ class PlaybookGenerationService(
         its survivor with a ``merge`` lineage event (``resolve_current`` then
         follows the pointer). Any archived id NOT covered by a merge group
         (e.g. a ``differentiate`` split source, which has no single survivor) is
-        a pure delete and is hard-removed via ``delete_user_playbooks_by_ids`` —
-        the legacy behaviour, preserved for correctness until Task 11 makes that
-        path emit a ``hard_delete`` event.
+        soft-superseded in place so the dead source content stays auditable for
+        point-in-time attribution reads.
 
         Args:
             saved_playbooks: The just-persisted entries (survivor ids assigned).
@@ -382,18 +409,24 @@ class PlaybookGenerationService(
             )
 
         # Leftover archives not covered by any merge group (e.g. differentiate
-        # split sources) are pure deletes — hard-remove them.
+        # split sources) have no single survivor, so preserve them as dead-source
+        # tombstones instead of hard-deleting them.
         leftover_ids = [
             pid for pid in existing_ids_to_delete if pid not in merged_source_ids
         ]
         if leftover_ids:
             try:
-                deleted_count = self.storage.delete_user_playbooks_by_ids(  # type: ignore[reportOptionalMemberAccess]
-                    leftover_ids
+                superseded_count = self.storage.supersede_user_playbooks_by_ids(  # type: ignore[reportOptionalMemberAccess]
+                    leftover_ids,
+                    self.service_config.request_id,  # type: ignore[reportOptionalMemberAccess]
                 )
-                logger.info("Deleted %d superseded existing entries", deleted_count)
+                logger.info(
+                    "Superseded %d split-source existing entries", superseded_count
+                )
             except Exception as e:
-                logger.error("Failed to delete superseded existing entries: %s", str(e))
+                logger.error(
+                    "Failed to supersede split-source existing entries: %s", str(e)
+                )
 
     def _enqueue_user_playbook_optimization(
         self, saved_playbooks: list[UserPlaybook]

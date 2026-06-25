@@ -27,6 +27,7 @@ from reflexio.models.api_schema.service_schemas import UserPlaybook
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.services.lineage.resolve import resolve_current
 from reflexio.server.services.playbook.playbook_consolidator import (
+    DifferentiateDecision,
     PlaybookConsolidationOutput,
     UnifyDecision,
 )
@@ -199,3 +200,55 @@ def test_consolidation_merge_routes_through_merge_records(
     ref = resolve_current(sqlite_storage, "user_playbook", old_id)
     assert ref is not None
     assert ref.id == str(survivor.user_playbook_id)
+
+
+def test_consolidation_differentiate_tombstones_split_source(
+    sqlite_storage, generation_service
+):
+    """A differentiate split must preserve the old source as a tombstone.
+
+    The legacy leftover-delete path hard-deletes the original row, which makes
+    point-in-time attribution impossible because there is no dead source record
+    left to read. The split source must survive as a tombstone instead.
+    """
+    existing = _seed_existing(sqlite_storage)
+    old_id = existing.user_playbook_id
+
+    decision_output = PlaybookConsolidationOutput(
+        decisions=[
+            DifferentiateDecision(
+                new_id="NEW-0",
+                existing_id=0,
+                refined_new_trigger="when user asks for canonical guidance",
+                refined_existing_trigger="when user asks for quick advice",
+                reason="same advice, different situations",
+            )
+        ]
+    )
+
+    with (
+        patch(
+            "reflexio.server.site_var.feature_flags.is_deduplicator_enabled",
+            return_value=True,
+        ),
+        patch.object(
+            PlaybookGenerationService,
+            "_configured_playbook_config",
+            return_value=None,
+        ),
+        patch(
+            "reflexio.server.services.playbook.playbook_consolidator.PlaybookConsolidator._retrieve_existing_playbooks",
+            return_value=[existing],
+        ),
+        patch(
+            "reflexio.server.services.playbook.playbook_consolidator.PlaybookConsolidator._consolidation_decisions",
+            return_value=decision_output,
+        ),
+        patch.dict("os.environ", {"MOCK_LLM_RESPONSE": "false"}),
+    ):
+        generation_service._finalize_extracted_items([_candidate()])
+
+    tombstone = sqlite_storage.get_user_playbook_by_id(old_id, include_tombstones=True)
+    assert tombstone is not None, "differentiate split source was hard-deleted"
+    assert tombstone.status == Status.SUPERSEDED
+    assert tombstone.content == "Recommend X."

@@ -517,6 +517,27 @@ class PlaybookMixin:
         raise NotImplementedError
 
     @abstractmethod
+    def supersede_user_playbooks_by_ids(
+        self, user_playbook_ids: list[int], request_id: str
+    ) -> int:
+        """Soft-delete user playbooks by setting status to SUPERSEDED.
+
+        Eligible rows (CURRENT, PENDING, or ARCHIVED; not already MERGED /
+        SUPERSEDED) are transitioned to SUPERSEDED and emit one status_change
+        lineage event under the shared request id. This is the user-playbook
+        analogue of the existing agent/profile soft-supersede helpers and
+        preserves dead-source content for point-in-time attribution reads.
+
+        Args:
+            user_playbook_ids (list[int]): User playbook ids to supersede.
+            request_id (str): Shared request id for all emitted lineage events.
+
+        Returns:
+            int: Number of user playbooks actually updated.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     def archive_agent_playbooks_by_playbook_name(
         self, playbook_name: str, agent_version: str | None = None
     ) -> None:

@@ -101,6 +101,32 @@ def _emit_supersede_playbook(
     )
 
 
+def _emit_supersede_user_playbook(
+    conn: sqlite3.Connection,
+    *,
+    org_id: str,
+    entity_id: str,
+    old_status: str | None,
+    request_id: str,
+) -> None:
+    """Emit a single status_change->superseded lineage event for a user playbook."""
+    _append_event_stmt(
+        conn,
+        org_id=org_id,
+        entity_type="user_playbook",
+        entity_id=entity_id,
+        op="status_change",
+        prov="wasInvalidatedBy",
+        source_ids=[],
+        actor="consolidator",
+        request_id=request_id,
+        reason=f"{old_status or 'None'}->superseded",
+        from_status=old_status,
+        to_status=Status.SUPERSEDED.value,
+        status_namespace="lifecycle_status",
+    )
+
+
 def _row_to_playbook_optimization_candidate(
     row: sqlite3.Row,
 ) -> PlaybookOptimizationCandidate:
@@ -1249,7 +1275,10 @@ class PlaybookMixin:
             params.append(_json_dumps(tags))
         if updates:
             params.append(user_playbook_id)
-            op = "revise" if content is not None else "status_change"
+            semantic_change = any(
+                value is not None for value in (content, trigger, rationale)
+            )
+            op = "revise" if semantic_change else "status_change"
             prov = "wasRevisionOf" if op == "revise" else "wasInvalidatedBy"
             with self._lock:
                 cur = self.conn.execute(
@@ -1273,6 +1302,54 @@ class PlaybookMixin:
                         status_namespace=None,
                     )
                 self.conn.commit()
+
+    @SQLiteStorageBase.handle_exceptions
+    def supersede_user_playbooks_by_ids(
+        self, user_playbook_ids: list[int], request_id: str
+    ) -> int:
+        """Soft-delete user playbooks by setting status to SUPERSEDED.
+
+        Preserves the row content for strict point-in-time attribution reads.
+        Eligible rows are any non-tombstoned status (CURRENT / PENDING /
+        ARCHIVED). Atomic: all updates and lineage events commit together.
+        """
+        if not user_playbook_ids:
+            return 0
+        if not request_id:
+            raise ValueError("request_id must be non-empty for supersede")
+        now_ts = _epoch_now()
+        updated = 0
+        with self._lock:
+            for upid in user_playbook_ids:
+                row = self.conn.execute(
+                    "SELECT status FROM user_playbooks WHERE user_playbook_id = ?",
+                    (upid,),
+                ).fetchone()
+                if row is None:
+                    continue
+                old_status = row["status"]
+                cur = self.conn.execute(
+                    "UPDATE user_playbooks SET status = ?, retired_at = ?"
+                    " WHERE user_playbook_id = ?"
+                    " AND (status IS NULL OR status NOT IN (?, ?))",
+                    (
+                        Status.SUPERSEDED.value,
+                        now_ts,
+                        upid,
+                        *_TOMBSTONE_STATUS_VALUES,
+                    ),
+                )
+                if cur.rowcount > 0:
+                    _emit_supersede_user_playbook(
+                        self.conn,
+                        org_id=self.org_id,
+                        entity_id=str(upid),
+                        old_status=old_status,
+                        request_id=request_id,
+                    )
+                    updated += 1
+            self.conn.commit()
+        return updated
 
     @SQLiteStorageBase.handle_exceptions
     def archive_agent_playbooks_by_playbook_name(
