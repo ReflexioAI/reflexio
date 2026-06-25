@@ -105,6 +105,12 @@ class LocalFileConfigStorage(ConfigStorage):
                     )
                     data = dict(data)
                     data["storage_config"] = self._default_storage_config().model_dump()
+                if isinstance(data, dict):
+                    # Enterprise deployments may persist sidecar config fields
+                    # alongside the shared OSS Config payload. Ignore them here
+                    # so local-file validation remains forward-compatible.
+                    data = dict(data)
+                    data.pop("offline_tuner_config", None)
                 config: Config = Config(**data)
                 return config
         except Exception:
