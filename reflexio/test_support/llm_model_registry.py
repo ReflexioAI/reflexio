@@ -205,13 +205,11 @@ def _build_registry() -> dict[str, ModelRegistryEntry]:
         "offline_tuner_success_label_self_consistency": ModelRegistryEntry(
             model_class=SuccessLabelSelfConsistencyOutput,
             minimal_valid={
-                "session_labels": [
-                    {
-                        "session_id": "sess-1",
-                        "label": "success",
-                        "rationale": "The user explicitly confirmed the billing issue was resolved.",
-                    }
-                ]
+                "session_label": {
+                    "session_id": "sess-1",
+                    "label": "success",
+                    "rationale": "The user explicitly confirmed the billing issue was resolved.",
+                }
             },
         ),
         "shadow_comparison": ModelRegistryEntry(
