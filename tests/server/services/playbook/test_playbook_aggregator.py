@@ -201,6 +201,86 @@ def test_user_detail_stripper_sanitizes_cluster_and_existing_playbooks_for_promp
     assert existing[0].content == "Sarah already has a checklist playbook."
 
 
+def test_user_detail_stripper_sanitizes_grouped_prompt_input():
+    stripper = _MappingAwareStripper()
+    agg = _make_aggregator(user_detail_stripper=stripper)
+    captured_prompts: list[str] = []
+
+    agg.request_context.prompt_manager.render_prompt.side_effect = (
+        lambda _prompt_id, variables: (
+            captured_prompts.append(variables["user_playbooks"])
+            or variables["user_playbooks"]
+        )
+    )
+    agg.client.generate_chat_response.return_value = PlaybookAggregationOutput(
+        playbook=StructuredPlaybookContent(
+            content="- Keep both unrelated operational rules.",
+            trigger="When either operational condition applies.",
+            rationale="The grouped prompt preserves both source groups.",
+        )
+    )
+    clusters = {
+        0: [
+            UserPlaybook(
+                user_playbook_id=1,
+                agent_version="v1",
+                request_id="req-1",
+                playbook_name="test_fb",
+                content="Sarah checks deployment readiness.",
+                trigger="When Sarah reviews deployment readiness.",
+                rationale="Sarah owns the deployment checklist.",
+            ),
+            UserPlaybook(
+                user_playbook_id=2,
+                agent_version="v1",
+                request_id="req-2",
+                playbook_name="test_fb",
+                content="Mike audits billing anomalies.",
+                trigger="When Mike reviews billing anomalies.",
+                rationale="Mike owns the billing review.",
+            ),
+        ]
+    }
+
+    with patch.dict("os.environ", {"MOCK_LLM_RESPONSE": ""}):
+        result = agg._generate_playbooks_with_source_clusters(clusters, [])
+
+    assert len(result) == 1
+    rendered_prompt = captured_prompts[0]
+    assert "Group 1" in rendered_prompt
+    assert "Sarah" not in rendered_prompt
+    assert "Mike" not in rendered_prompt
+    assert "[PERSON_1]" in rendered_prompt
+    assert "[PERSON_2]" in rendered_prompt
+
+
+def test_mock_llm_response_sanitizes_person_placeholders_before_storage():
+    stripper = _MappingAwareStripper()
+    agg = _make_aggregator(user_detail_stripper=stripper)
+    clusters = {
+        0: [
+            UserPlaybook(
+                user_playbook_id=1,
+                agent_version="v1",
+                request_id="req-1",
+                playbook_name="test_fb",
+                content="Sarah prefers the safety checklist.",
+                trigger="When Sarah opens a ticket.",
+                rationale="Sarah missed one step.",
+            )
+        ]
+    }
+
+    with patch.dict("os.environ", {"MOCK_LLM_RESPONSE": "true"}):
+        result = agg._generate_playbooks_with_source_clusters(clusters, [])
+
+    assert len(result) == 1
+    playbook, _sources = result[0]
+    assert "[PERSON_" not in playbook.content
+    assert "[PERSON_" not in (playbook.trigger or "")
+    assert "a user" in playbook.content
+
+
 def test_placeholder_leakage_is_replaced_before_response_logging_and_storage():
     agg = _make_aggregator()
     agg.request_context.prompt_manager.render_prompt.return_value = "prompt"
@@ -1431,6 +1511,23 @@ def test_playbook_aggregation_prompt_generalizes_direct_identifiers():
     assert "Never carry user-specific or source-specific direct identifiers" in out
     assert "Secrets and credentials must not be copied" in out
     assert 'Return {"playbook": null}' in out
+
+
+def test_playbook_aggregation_prompt_generalizes_anonymized_person_placeholders():
+    """Aggregation prompt should tell the model how to handle stripped placeholders."""
+    from reflexio.server.prompt.prompt_manager import PromptManager
+
+    out = PromptManager().render_prompt(
+        "playbook_aggregation",
+        {
+            "existing_approved_playbooks": "[]",
+            "user_playbooks": "TRIGGER conditions:\n- When [PERSON_1] opens a support ticket",
+        },
+    )
+
+    assert "[PERSON_N]" in out
+    assert "anonymized individuals" in out
+    assert "functional roles" in out
 
 
 def test_playbook_aggregation_prompt_has_privacy_self_check_before_output():

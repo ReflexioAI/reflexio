@@ -30,6 +30,7 @@ from reflexio.server.services.playbook.playbook_service_constants import (
 from reflexio.server.services.playbook.playbook_service_utils import (
     PlaybookAggregationOutput,
     PlaybookAggregatorRequest,
+    StructuredPlaybookContent,
     ensure_playbook_content,
 )
 from reflexio.server.services.playbook.user_detail_stripping import (
@@ -1361,14 +1362,18 @@ class PlaybookAggregator:
             # Build content directly as a freeform summary
             content_text = f"When {trigger}, {first_content}."
 
-            return AgentPlaybook(
-                playbook_name=cluster_playbooks[0].playbook_name,
-                agent_version=cluster_playbooks[0].agent_version,
-                content=content_text,
-                trigger=trigger,
-                playbook_status=PlaybookStatus.PENDING,
-                playbook_metadata="mock_generated",
+            response = PlaybookAggregationOutput(
+                playbook=StructuredPlaybookContent(
+                    content=content_text,
+                    trigger=trigger,
+                )
             )
+            response, placeholder_count = self._sanitize_aggregation_response(response)
+            self._record_placeholder_leakage(placeholder_count)
+            playbook = self._process_aggregation_response(response, cluster_playbooks)
+            if playbook is None:
+                return None
+            return playbook.model_copy(update={"playbook_metadata": "mock_generated"})
 
         # Format raw playbooks for prompt using structured format
         raw_playbooks_str = self._format_structured_cluster_input(
@@ -1435,7 +1440,10 @@ class PlaybookAggregator:
 
         Args:
             response: Parsed PlaybookAggregationOutput from LLM
-            cluster_playbooks: Original cluster playbooks for metadata
+            cluster_playbooks: Cluster playbooks used only for non-user metadata
+                such as playbook name and agent version. Callers may pass
+                prompt-sanitized copies here, so this method must not read
+                user-authored fields from them.
 
         Returns:
             AgentPlaybook or None if no playbook should be generated
