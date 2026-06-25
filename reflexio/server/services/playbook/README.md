@@ -16,6 +16,7 @@ Description: Playbook extraction, aggregation, and consolidation pipeline
 |------|---------|
 | `playbook_service_constants.py` | Prompt IDs for all playbook operations |
 | `playbook_service_utils.py` | Request dataclasses, Pydantic output schemas, message construction utilities |
+| `user_detail_stripping.py` | Optional aggregation-boundary interfaces and helpers for prompt-only user-detail normalization |
 
 ## Architecture
 

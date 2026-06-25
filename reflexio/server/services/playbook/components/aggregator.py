@@ -66,12 +66,20 @@ class PlaybookAggregator:
         self.agent_version = agent_version
         self.user_detail_stripper = user_detail_stripper
         self.aggregation_prompt_extra_instructions = (
-            aggregation_prompt_extra_instructions or ""
+            self._format_prompt_extra_instructions(
+                aggregation_prompt_extra_instructions
+            )
         )
 
     # ===============================
     # private methods - operation state
     # ===============================
+
+    @staticmethod
+    def _format_prompt_extra_instructions(instructions: str | None) -> str:
+        if not instructions or not instructions.strip():
+            return ""
+        return f"{instructions.strip()}\n"
 
     def _create_state_manager(self) -> OperationStateManager:
         """

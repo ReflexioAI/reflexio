@@ -92,7 +92,7 @@ class BaseConfigurator(ABC):
         return None
 
     def get_playbook_aggregation_prompt_extra_instructions(self) -> str | None:
-        """Return optional extra instructions for the aggregation prompt."""
+        """Return optional markdown injected before generic privacy guidance."""
         return None
 
     def get_agent_context(self) -> str:

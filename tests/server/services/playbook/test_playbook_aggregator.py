@@ -124,9 +124,7 @@ def test_user_detail_stripping_protocol_types_importable():
     )
 
     result = PassthroughStripper().strip_user_details("keep this")
-
-    assert result == StrippingResult(text="keep this", detections=[])
-    assert DetectedEntity(
+    entity = DetectedEntity(
         start=0,
         end=4,
         entity_type="PERSON",
@@ -134,6 +132,11 @@ def test_user_detail_stripping_protocol_types_importable():
         confidence=1.0,
         source="test",
     )
+
+    assert result == StrippingResult(text="keep this", detections=[])
+    assert entity.start == 0
+    assert entity.end == 4
+    assert entity.replacement == "[PERSON_1]"
 
 
 def test_user_detail_stripper_sanitizes_cluster_and_existing_playbooks_for_prompt():
@@ -360,6 +363,21 @@ def test_placeholder_leakage_is_replaced_before_dict_fallback_logging():
     logged_response = mock_log_model_response.call_args.args[2]
     assert "[PERSON_" not in repr(logged_response)
     assert "a user" in repr(logged_response)
+
+
+def test_placeholder_leakage_is_replaced_before_nested_sequence_logging():
+    agg = _make_aggregator()
+
+    sanitized, placeholder_count = agg._sanitize_aggregation_log_value(
+        (
+            "Ask [PERSON_1] to confirm.",
+            ["Notify [PERSON_2].", {"owner": "[PERSON_3]"}],
+        )
+    )
+
+    assert placeholder_count == 3
+    assert "[PERSON_" not in repr(sanitized)
+    assert "a user" in repr(sanitized)
 
 
 def test_placeholder_leakage_is_replaced_before_exception_logging(caplog):
@@ -1532,6 +1550,8 @@ def test_playbook_aggregation_prompt_does_not_mention_person_placeholders_by_def
 
     assert "[PERSON_N]" not in out
     assert "anonymized individuals" not in out
+    assert "behavior.\n- Preserve the reusable procedure" in out
+    assert "behavior.\n\n- Preserve the reusable procedure" not in out
 
 
 def test_aggregation_prompt_extra_instructions_are_rendered_when_injected():
