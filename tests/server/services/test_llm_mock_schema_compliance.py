@@ -157,14 +157,28 @@ class TestMockResponseSnapshots:
 class TestSchemaCompliance:
     """Validate that mock responses parse into expected Pydantic models."""
 
-    @pytest.mark.parametrize("entry_name", list(get_model_registry().keys()))
+    @pytest.mark.parametrize("entry_name", _registry_model_keys())
     def test_registry_minimal_values_validate(self, entry_name):
         """Each registry entry's minimal_valid JSON must validate against its model."""
         entry = get_model_registry()[entry_name]
-        if entry.model_class is None:
-            pytest.skip("No model class for raw string responses")
+        assert entry.model_class is not None
         result = entry.model_class.model_validate(entry.minimal_valid)
         assert isinstance(result, entry.model_class)
+
+    @pytest.mark.parametrize(
+        "entry_name",
+        [
+            name
+            for name, entry in get_model_registry().items()
+            if entry.model_class is None
+        ],
+    )
+    def test_registry_raw_string_entries_are_non_empty(self, entry_name):
+        """Raw-string registry entries are intentionally not Pydantic models."""
+        entry = get_model_registry()[entry_name]
+        assert entry.model_class is None
+        assert isinstance(entry.minimal_valid, str)
+        assert entry.minimal_valid.strip()
 
     def test_guard_finder_ignores_property_named_like_a_keyword(self):
         """The mock guard's finder must not flag a field NAMED oneOf/discriminator.
@@ -182,7 +196,7 @@ class TestSchemaCompliance:
         assert not _find_schema_key(schema, "oneOf")
         assert not _find_schema_key(schema, "discriminator")
 
-    @pytest.mark.parametrize("entry_name", list(get_model_registry().keys()))
+    @pytest.mark.parametrize("entry_name", _registry_model_keys())
     def test_registry_models_emit_strict_compatible_schema(self, entry_name):
         """Every structured-output model must produce a provider-strict schema.
 
@@ -193,8 +207,7 @@ class TestSchemaCompliance:
         This is the provider-agnostic invariant guard for the whole registry.
         """
         entry = get_model_registry()[entry_name]
-        if entry.model_class is None:
-            pytest.skip("No model class for raw string responses")
+        assert entry.model_class is not None
         rf = strict_response_format_for_model(entry.model_class)
         schema = rf["json_schema"]["schema"]
         assert not _find_schema_key(schema, "oneOf"), (

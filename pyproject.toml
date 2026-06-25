@@ -139,6 +139,9 @@ markers = [
     "e2e: Full workflow tests with real storage and services",
     "requires_credentials: Tests that need API keys (costs money)",
 ]
+filterwarnings = [
+    "ignore:This process \\(pid=.*\\) is multi-threaded, use of fork\\(\\) may lead to deadlocks in the child\\.:DeprecationWarning:multiprocessing\\.popen_fork",
+]
 
 [tool.coverage.run]
 # Measure branch coverage — ensures both if/else paths are tested, not just lines

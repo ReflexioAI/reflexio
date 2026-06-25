@@ -79,8 +79,7 @@ def reflexio_instance(
         storage_config=sqlite_storage_config,
         agent_context_prompt="this is a sales agent",
         # Single configured profile extractor (the list-valued field is retired and
-        # the Config constructor would ignore it, dropping tagging_definition_prompt
-        # and with it the mock's custom_features["metadata"]).
+        # the Config constructor would ignore it, dropping tagging_definition_prompt).
         profile_extractor_config=ProfileExtractorConfig(
             extractor_name="test_profile_extractor",
             context_prompt="""
@@ -284,6 +283,8 @@ def sample_interaction_requests() -> list[InteractionData]:
 
 def save_user_playbooks(reflexio_instance: Reflexio):
     """Load mock playbooks from CSV file."""
+    storage = reflexio_instance.request_context.storage
+    assert storage is not None
     user_playbooks = []
     csv_path = _TEST_DATA_DIR / "mock_playbooks.csv"
 
@@ -298,7 +299,7 @@ def save_user_playbooks(reflexio_instance: Reflexio):
             )
             for row in reader
         )
-    reflexio_instance.request_context.storage.save_user_playbooks(user_playbooks)
+    storage.save_user_playbooks(user_playbooks)
 
 
 def _get_playbook_names(instance: Reflexio) -> list[str]:
@@ -320,19 +321,17 @@ def _get_playbook_names(instance: Reflexio) -> list[str]:
 def _cleanup_storage(instance: Reflexio):
     """Helper function to cleanup storage for an Reflexio instance."""
     try:
+        storage = instance.request_context.storage
+        assert storage is not None
         # Only delete user_playbooks and agent_playbooks created by this instance's config
         for name in _get_playbook_names(instance):
-            instance.request_context.storage.delete_all_user_playbooks_by_playbook_name(
-                name
-            )
-            instance.request_context.storage.delete_all_agent_playbooks_by_playbook_name(
-                name
-            )
-        instance.request_context.storage.delete_all_interactions()
-        instance.request_context.storage.delete_all_profiles()
-        instance.request_context.storage.delete_all_agent_success_evaluation_results()
-        instance.request_context.storage.delete_all_requests()
-        instance.request_context.storage.delete_all_operation_states()
+            storage.delete_all_user_playbooks_by_playbook_name(name)
+            storage.delete_all_agent_playbooks_by_playbook_name(name)
+        storage.delete_all_interactions()
+        storage.delete_all_profiles()
+        storage.delete_all_agent_success_evaluation_results()
+        storage.delete_all_requests()
+        storage.delete_all_operation_states()
     except Exception as e:
         print(f"Error during cleanup: {str(e)}")
 
@@ -459,7 +458,6 @@ def reflexio_instance_manual_playbook(
 
     This config has:
     - window_size set (required for manual generation)
-    - manual_trigger=True on the extractor
     """
     config = Config(
         storage_config=sqlite_storage_config,
@@ -471,7 +469,6 @@ def reflexio_instance_manual_playbook(
 playbook should be something user told you to do differently in the next session. something sales rep did that makes user not satisfied.
 playbook content is what agent should do differently in the next session based on the conversation history and be actionable as much as possible.
 """,
-            manual_trigger=True,  # Required for manual generation
         ),
     )
     configurator = DefaultConfigurator(org_id=test_org_id, config=config)
