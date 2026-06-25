@@ -249,21 +249,21 @@ def test_build_sample_candidates_uses_one_bulk_first_request_lookup(
     for i in range(5):
         _seed(storage, f"bulk-{i}", ts, "candidate")
 
-    real_get = storage.get_first_requests_by_session_ids
-    calls: list[list[str]] = []
+    real_get = storage.get_first_requests_by_user_session_pairs
+    calls: list[list[tuple[str, str]]] = []
 
-    def spy(session_ids: list[str]):
-        calls.append(session_ids)
-        return real_get(session_ids)
+    def spy(pairs: list[tuple[str, str]]):
+        calls.append(pairs)
+        return real_get(pairs)
 
-    monkeypatch.setattr(storage, "get_first_requests_by_session_ids", spy)
+    monkeypatch.setattr(storage, "get_first_requests_by_user_session_pairs", spy)
 
     descriptors = storage.get_session_ids_in_window(ts - 1, ts + 1)
     candidates = regen_jobs._build_sample_candidates(storage, descriptors)  # noqa: SLF001
 
     assert len(candidates) == 5
     assert len(calls) == 1
-    assert sorted(calls[0]) == [f"bulk-{i}" for i in range(5)]
+    assert sorted(calls[0]) == [("u1", f"bulk-{i}") for i in range(5)]
 
 
 def test_run_regen_continues_when_bulk_first_request_lookup_fails(
@@ -277,11 +277,12 @@ def test_run_regen_continues_when_bulk_first_request_lookup_fails(
     for i in range(5):
         _seed(storage, f"ok-{i}", ts, "candidate")
 
-    def flaky_first_requests(session_ids: list[str]) -> dict:
+    def flaky_first_requests(pairs: list[tuple[str, str]]) -> dict:
+        del pairs
         raise RuntimeError("simulated transient DB error")
 
     monkeypatch.setattr(
-        storage, "get_first_requests_by_session_ids", flaky_first_requests
+        storage, "get_first_requests_by_user_session_pairs", flaky_first_requests
     )
 
     calls: list[str] = []
