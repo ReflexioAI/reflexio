@@ -47,7 +47,7 @@ logger = logging.getLogger(__name__)
 
 
 def read_user_playbook_as_of_for_learning(
-    storage: "BaseStorage", *, user_playbook_id: int, served_at: int
+    storage: BaseStorage, *, user_playbook_id: int, served_at: int
 ) -> UserPlaybook | None:
     """Return the exact cited playbook row iff its body is still attributable.
 
@@ -61,14 +61,14 @@ def read_user_playbook_as_of_for_learning(
     )
     if playbook is None:
         return None
-    if playbook.created_at > served_at:
+    if playbook.created_at >= served_at:
         return None
     if not playbook.content.strip():
         return None
     events = storage.get_lineage_events(
         entity_type="user_playbook", entity_id=str(user_playbook_id)
     )
-    if any(event.op == "revise" and event.created_at > served_at for event in events):
+    if any(event.op == "revise" and event.created_at >= served_at for event in events):
         return None
     return playbook
 
@@ -361,6 +361,7 @@ class PlaybookGenerationService(
                     str(e),
                     type(e).__name__,
                 )
+                raise
 
             # Trigger playbook aggregation
             if not self.output_pending_status and not self.skip_aggregation:
@@ -423,10 +424,9 @@ class PlaybookGenerationService(
                 logger.info(
                     "Superseded %d split-source existing entries", superseded_count
                 )
-            except Exception as e:
-                logger.error(
-                    "Failed to supersede split-source existing entries: %s", str(e)
-                )
+            except Exception:
+                logger.exception("Failed to supersede split-source existing entries")
+                raise
 
     def _enqueue_user_playbook_optimization(
         self, saved_playbooks: list[UserPlaybook]

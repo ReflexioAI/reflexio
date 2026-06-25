@@ -105,6 +105,39 @@ def test_read_user_playbook_as_of_for_learning_rejects_post_serve_revise(tmp_pat
     assert got is None
 
 
+def test_read_user_playbook_as_of_for_learning_rejects_same_second_revise(tmp_path):
+    helper = getattr(
+        playbook_generation_service,
+        "read_user_playbook_as_of_for_learning",
+        None,
+    )
+    assert helper is not None
+
+    s = _store(tmp_path)
+    pb = UserPlaybook(
+        user_id="u",
+        agent_version="v",
+        request_id="r",
+        created_at=100,
+        content="v1",
+    )
+    s.save_user_playbooks([pb])
+
+    s.update_user_playbook(pb.user_playbook_id, content="v2")
+    events = s.get_lineage_events(
+        entity_type="user_playbook",
+        entity_id=str(pb.user_playbook_id),
+    )
+    assert events[-1].created_at >= 100
+
+    got = helper(
+        s,
+        user_playbook_id=pb.user_playbook_id,
+        served_at=events[-1].created_at,
+    )
+    assert got is None
+
+
 def test_read_user_playbook_as_of_for_learning_allows_metadata_only_edit(tmp_path):
     helper = getattr(
         playbook_generation_service,
@@ -174,6 +207,30 @@ def test_read_user_playbook_as_of_for_learning_rejects_future_created_row(tmp_pa
         request_id="r",
         created_at=200,
         content="future guidance",
+    )
+    s.save_user_playbooks([pb])
+
+    got = helper(s, user_playbook_id=pb.user_playbook_id, served_at=150)
+    assert got is None
+
+
+def test_read_user_playbook_as_of_for_learning_rejects_same_second_created_row(
+    tmp_path,
+):
+    helper = getattr(
+        playbook_generation_service,
+        "read_user_playbook_as_of_for_learning",
+        None,
+    )
+    assert helper is not None
+
+    s = _store(tmp_path)
+    pb = UserPlaybook(
+        user_id="u",
+        agent_version="v",
+        request_id="r",
+        created_at=150,
+        content="same-second guidance",
     )
     s.save_user_playbooks([pb])
 

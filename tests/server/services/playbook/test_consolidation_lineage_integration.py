@@ -252,3 +252,51 @@ def test_consolidation_differentiate_tombstones_split_source(
     assert tombstone is not None, "differentiate split source was hard-deleted"
     assert tombstone.status == Status.SUPERSEDED
     assert tombstone.content == "Recommend X."
+
+
+def test_consolidation_differentiate_propagates_tombstone_failure(
+    sqlite_storage, generation_service
+):
+    """A failed split-source tombstone must abort before aggregation."""
+    existing = _seed_existing(sqlite_storage)
+    decision_output = PlaybookConsolidationOutput(
+        decisions=[
+            DifferentiateDecision(
+                new_id="NEW-0",
+                existing_id=0,
+                refined_new_trigger="when user asks for canonical guidance",
+                refined_existing_trigger="when user asks for quick advice",
+                reason="same advice, different situations",
+            )
+        ]
+    )
+
+    with (
+        patch(
+            "reflexio.server.site_var.feature_flags.is_deduplicator_enabled",
+            return_value=True,
+        ),
+        patch.object(
+            PlaybookGenerationService,
+            "_configured_playbook_config",
+            return_value=None,
+        ),
+        patch(
+            "reflexio.server.services.playbook.playbook_consolidator.PlaybookConsolidator._retrieve_existing_playbooks",
+            return_value=[existing],
+        ),
+        patch(
+            "reflexio.server.services.playbook.playbook_consolidator.PlaybookConsolidator._consolidation_decisions",
+            return_value=decision_output,
+        ),
+        patch.object(
+            sqlite_storage,
+            "supersede_user_playbooks_by_ids",
+            side_effect=RuntimeError("tombstone failed"),
+        ),
+        patch.dict("os.environ", {"MOCK_LLM_RESPONSE": "false"}),
+        pytest.raises(RuntimeError, match="tombstone failed"),
+    ):
+        generation_service._finalize_extracted_items([_candidate()])
+
+    generation_service._trigger_playbook_aggregation.assert_not_called()

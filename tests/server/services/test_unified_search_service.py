@@ -6,6 +6,7 @@ and reformulated_query propagation.
 
 import unittest
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import MagicMock, patch
 
 from reflexio.models.api_schema.domain.entities import (
@@ -18,6 +19,7 @@ from reflexio.models.api_schema.retriever_schema import (
 )
 from reflexio.models.config_schema import RetrievalFloorConfig, SearchOptions
 from reflexio.server.services.pre_retrieval import ReformulationResult
+from reflexio.server.services.storage.storage_base import BaseStorage
 from reflexio.server.services.unified_search_service import (
     _search_agent_playbooks_via_storage,
     configure_retrieval_capture_hook,
@@ -191,19 +193,22 @@ class TestRunUnifiedSearch(unittest.TestCase):
         )
         captured = []
 
-        with patch(
-            "reflexio.server.services.unified_search_service._run_phase_b",
-            return_value=(
-                [],
-                [pre_floor_agent, _agent_playbook(11, PlaybookStatus.APPROVED)],
-                [suppressed_user_playbook, kept_user_playbook],
+        with (
+            patch(
+                "reflexio.server.services.unified_search_service._run_phase_b",
+                return_value=(
+                    [],
+                    [pre_floor_agent, _agent_playbook(11, PlaybookStatus.APPROVED)],
+                    [suppressed_user_playbook, kept_user_playbook],
+                ),
             ),
-        ), patch(
-            "reflexio.server.services.unified_search_service._apply_floors",
-            return_value=(
-                [],
-                [pre_floor_agent],
-                [suppressed_user_playbook, kept_user_playbook],
+            patch(
+                "reflexio.server.services.unified_search_service._apply_floors",
+                return_value=(
+                    [],
+                    [pre_floor_agent],
+                    [suppressed_user_playbook, kept_user_playbook],
+                ),
             ),
         ):
             configure_retrieval_capture_hook(
@@ -260,7 +265,7 @@ def test_search_agent_playbooks_allows_pending_and_approved_but_not_rejected() -
     storage = SimpleNamespace(search_agent_playbooks=search_agent_playbooks)
 
     results = _search_agent_playbooks_via_storage(
-        storage=storage,
+        storage=cast(BaseStorage, storage),
         query="formatting",
         top_k=5,
         threshold=0.3,
@@ -290,7 +295,7 @@ def test_search_agent_playbooks_default_excludes_rejected() -> None:
     storage = SimpleNamespace(search_agent_playbooks=search_agent_playbooks)
 
     _search_agent_playbooks_via_storage(
-        storage=storage,
+        storage=cast(BaseStorage, storage),
         query="formatting",
         top_k=5,
         threshold=0.3,

@@ -1623,11 +1623,24 @@ def set_config(
     Returns:
         dict: Response containing success status and message
     """
+    from pydantic import ValidationError
+
     # Create Reflexio instance to access the configurator through request_context
     reflexio = get_reflexio(org_id=org_id)
+    configurator = reflexio.request_context.configurator
+    normalized_config = configurator.normalize_config_payload(config)
+    if not isinstance(normalized_config, dict):
+        normalized_config = config
+    try:
+        Config.model_validate(normalized_config)
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=exc.errors(),
+        ) from exc
 
     # Set the config using Reflexio's set_config method
-    response = reflexio.set_config(config)
+    response = reflexio.set_config(normalized_config)
 
     # Invalidate cache on successful config change to ensure fresh instance next request
     if response.success:
