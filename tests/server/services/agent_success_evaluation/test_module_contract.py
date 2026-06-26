@@ -27,6 +27,18 @@ def test_agent_success_service_canonical_imports_work() -> None:
     assert AgentSuccessEvaluator.__name__ == "AgentSuccessEvaluator"
 
 
+def test_agent_success_package_root_init_exists() -> None:
+    module_dir = (
+        Path(__file__).resolve().parents[4]
+        / "reflexio"
+        / "server"
+        / "services"
+        / "agent_success_evaluation"
+    )
+
+    assert (module_dir / "__init__.py").exists()
+
+
 def test_agent_success_legacy_service_and_evaluator_files_removed() -> None:
     module_dir = (
         Path(__file__).resolve().parents[4]
