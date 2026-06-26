@@ -789,10 +789,6 @@ class PlaybookAggregator:
                     len(archived_playbook_ids),
                 )
 
-                # Selectively archive only playbooks from changed/disappeared clusters
-                if archived_playbook_ids:
-                    self.storage.archive_agent_playbooks_by_ids(archived_playbook_ids)  # type: ignore[reportOptionalMemberAccess]
-
         try:
             # Emit the started event inside the protected block so any failure
             # from here on is paired with an aggregation_failed event.
@@ -940,9 +936,15 @@ class PlaybookAggregator:
                                 agent_version=self.agent_version,
                                 request_id=_run_id,
                             )
-                    elif archived_playbook_ids:
+                    elif archived_playbook_ids and new_playbooks:
                         self.storage.supersede_agent_playbooks_by_ids(  # type: ignore[reportOptionalMemberAccess]
                             archived_playbook_ids, request_id=_run_id
+                        )
+                    elif archived_playbook_ids:
+                        logger.info(
+                            "Skipping selective supersede of %s (agent_version=%s): LLM produced 0 new playbooks; existing PENDING/APPROVED playbooks preserved",
+                            archived_playbook_ids,
+                            self.agent_version,
                         )
                 except Exception:
                     with sentry_tags(

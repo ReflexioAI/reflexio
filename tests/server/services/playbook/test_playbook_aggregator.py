@@ -948,10 +948,36 @@ class TestRun:
             req = PlaybookAggregatorRequest(agent_version="v1")
             agg.run(req)
 
-        agg.storage.archive_agent_playbooks_by_ids.assert_called_once_with([50])
+        agg.storage.archive_agent_playbooks_by_ids.assert_not_called()
         agg.storage.supersede_agent_playbooks_by_ids.assert_called_once_with(
             [50], request_id=ANY
         )
+        agg.storage.delete_agent_playbooks_by_ids.assert_not_called()
+
+    @patch.object(PlaybookAggregator, "get_clusters")
+    @patch.object(PlaybookAggregator, "_generate_playbooks_with_source_clusters")
+    def test_incremental_null_generation_preserves_existing_playbooks(
+        self, mock_gen, mock_clust
+    ):
+        """Incremental mode preserves existing playbooks when LLM produces no replacement."""
+        agg = self._make_runnable_aggregator()
+        raws_new = [_raw(rid=5), _raw(rid=6)]
+        agg.storage.get_user_playbooks.return_value = raws_new
+        mock_clust.return_value = {0: raws_new}
+        mock_gen.return_value = []
+
+        with patch.object(PlaybookAggregator, "_create_state_manager") as mock_csm:
+            mgr = MagicMock()
+            mgr.get_cluster_fingerprints.return_value = {
+                "old_fp": {"agent_playbook_id": 50, "user_playbook_ids": [1, 2]}
+            }
+            mock_csm.return_value = mgr
+
+            req = PlaybookAggregatorRequest(agent_version="v1")
+            agg.run(req)
+
+        agg.storage.archive_agent_playbooks_by_ids.assert_not_called()
+        agg.storage.supersede_agent_playbooks_by_ids.assert_not_called()
         agg.storage.delete_agent_playbooks_by_ids.assert_not_called()
 
     @patch.object(PlaybookAggregator, "get_clusters")
@@ -1666,9 +1692,7 @@ def test_aggregation_prompt_extra_instructions_ignore_non_string_values():
     class StripperWithInvalidPromptInstructions(_MappingAwareStripper):
         prompt_extra_instructions: Any = object()
 
-    agg = _make_aggregator(
-        user_detail_stripper=StripperWithInvalidPromptInstructions()
-    )
+    agg = _make_aggregator(user_detail_stripper=StripperWithInvalidPromptInstructions())
 
     assert agg.aggregation_prompt_extra_instructions == ""
 
