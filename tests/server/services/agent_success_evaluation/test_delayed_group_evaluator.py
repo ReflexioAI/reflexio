@@ -5,8 +5,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from reflexio.server.services.agent_success_evaluation import delayed_group_evaluator
-from reflexio.server.services.agent_success_evaluation.delayed_group_evaluator import (
+from reflexio.server.services.agent_success_evaluation import scheduler
+from reflexio.server.services.agent_success_evaluation.scheduler import (
     GroupEvaluationScheduler,
     GroupKey,
 )
@@ -98,16 +98,16 @@ class TestSchedule:
 
     def test_schedule_uses_configured_delay(self, monkeypatch: pytest.MonkeyPatch):
         """schedule() waits for the configured inactivity delay before firing."""
-        monkeypatch.setattr(delayed_group_evaluator, "_EFFECTIVE_DELAY_SECONDS", 5)
-        scheduler = GroupEvaluationScheduler.get_instance()
+        monkeypatch.setattr(scheduler, "_EFFECTIVE_DELAY_SECONDS", 5)
+        scheduler_instance = GroupEvaluationScheduler.get_instance()
         callback = MagicMock()
         key: GroupKey = ("org_1", "user_1", "session_1")
 
         before = time.monotonic()
-        scheduler.schedule(key, callback)
+        scheduler_instance.schedule(key, callback)
         after = time.monotonic()
 
-        fire_time, stored_callback = scheduler._scheduled[key]
+        fire_time, stored_callback = scheduler_instance._scheduled[key]
         assert stored_callback is callback
         assert fire_time >= before + 5
         assert fire_time <= after + 5.1
@@ -194,7 +194,7 @@ class TestRunCallback:
         key: GroupKey = ("org_1", "user_1", "session_1")
 
         with patch(
-            "reflexio.server.services.agent_success_evaluation.delayed_group_evaluator.logger"
+            "reflexio.server.services.agent_success_evaluation.scheduler.logger"
         ) as mock_logger:
             GroupEvaluationScheduler._run_callback(key, callback)
 

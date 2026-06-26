@@ -182,7 +182,7 @@ from reflexio.server.operation_limiter import (
     log_publish_hardware_capacity,
     run_with_operation_limit,
 )
-from reflexio.server.services.agent_success_evaluation.group_evaluation_runner import (
+from reflexio.server.services.agent_success_evaluation.runner import (
     run_group_evaluation,
 )
 from reflexio.server.services.agent_success_evaluation.regen_jobs import (

@@ -1,10 +1,10 @@
-"""Tests for group_evaluation_runner behavior."""
+"""Tests for runner behavior."""
 
 from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
 from reflexio.models.api_schema.service_schemas import Interaction, Request
-from reflexio.server.services.agent_success_evaluation.group_evaluation_runner import (
+from reflexio.server.services.agent_success_evaluation.runner import (
     _build_state_key,
     run_group_evaluation,
 )
@@ -79,7 +79,7 @@ def test_run_group_evaluation_skips_mark_when_service_has_failures() -> None:
     llm_client = MagicMock()
 
     with patch(
-        "reflexio.server.services.agent_success_evaluation.group_evaluation_runner.AgentSuccessEvaluationService"
+        "reflexio.server.services.agent_success_evaluation.runner.AgentSuccessEvaluationService"
     ) as service_cls:
         service = MagicMock()
         service.has_run_failures.return_value = True
@@ -123,7 +123,7 @@ def test_run_group_evaluation_marks_state_when_service_succeeds() -> None:
     llm_client = MagicMock()
 
     with patch(
-        "reflexio.server.services.agent_success_evaluation.group_evaluation_runner.AgentSuccessEvaluationService"
+        "reflexio.server.services.agent_success_evaluation.runner.AgentSuccessEvaluationService"
     ) as service_cls:
         service = MagicMock()
         service.has_run_failures.return_value = False
@@ -160,16 +160,16 @@ def test_effective_delay_seconds_symbol_exists() -> None:
     on import-path drift.
     """
     from reflexio.server.services.agent_success_evaluation import (
-        group_evaluation_runner,
+        runner,
     )
 
-    assert hasattr(group_evaluation_runner, "_EFFECTIVE_DELAY_SECONDS"), (
+    assert hasattr(runner, "_EFFECTIVE_DELAY_SECONDS"), (
         "tests/e2e_tests/conftest.py patches "
         "reflexio.server.services.agent_success_evaluation."
-        "group_evaluation_runner._EFFECTIVE_DELAY_SECONDS — keep that "
+        "runner._EFFECTIVE_DELAY_SECONDS — keep that "
         "symbol name in sync if you rename it."
     )
-    assert isinstance(group_evaluation_runner._EFFECTIVE_DELAY_SECONDS, int)
+    assert isinstance(runner._EFFECTIVE_DELAY_SECONDS, int)
 
 
 def test_run_group_evaluation_waits_for_recent_evaluation_only_session() -> None:
@@ -194,7 +194,7 @@ def test_run_group_evaluation_waits_for_recent_evaluation_only_session() -> None
     llm_client = MagicMock()
 
     with patch(
-        "reflexio.server.services.agent_success_evaluation.group_evaluation_runner.AgentSuccessEvaluationService"
+        "reflexio.server.services.agent_success_evaluation.runner.AgentSuccessEvaluationService"
     ) as service_cls:
         run_group_evaluation(
             org_id=org_id,
@@ -232,7 +232,7 @@ def test_run_group_evaluation_skips_mark_when_nothing_saved() -> None:
     llm_client = MagicMock()
 
     with patch(
-        "reflexio.server.services.agent_success_evaluation.group_evaluation_runner.AgentSuccessEvaluationService"
+        "reflexio.server.services.agent_success_evaluation.runner.AgentSuccessEvaluationService"
     ) as service_cls:
         service = MagicMock()
         service.has_run_failures.return_value = False

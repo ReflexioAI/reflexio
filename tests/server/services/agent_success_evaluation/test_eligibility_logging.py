@@ -3,7 +3,7 @@
 from unittest.mock import MagicMock
 
 from reflexio.server.services.agent_success_evaluation import _eval_health
-from reflexio.server.services.agent_success_evaluation.group_evaluation_runner import (
+from reflexio.server.services.agent_success_evaluation.runner import (
     run_group_evaluation,
 )
 

@@ -12,7 +12,7 @@ These tests focus on the handler contract:
 
 The actual judge call inside ``run_group_evaluation`` is mocked at the
 runner boundary — the runner is exercised exhaustively in its own
-``test_group_evaluation_runner_*`` suite, and end-to-end LLM behaviour is
+``test_runner_*`` suite, and end-to-end LLM behaviour is
 covered by the e2e tier. Here we only verify the endpoint correctly
 wires storage → runner → cache → response.
 """

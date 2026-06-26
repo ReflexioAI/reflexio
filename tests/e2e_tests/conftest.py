@@ -42,7 +42,7 @@ def _zero_group_evaluation_delay():
     passes.
     """
     with patch(
-        "reflexio.server.services.agent_success_evaluation.group_evaluation_runner._EFFECTIVE_DELAY_SECONDS",
+        "reflexio.server.services.agent_success_evaluation.runner._EFFECTIVE_DELAY_SECONDS",
         0,
     ):
         yield

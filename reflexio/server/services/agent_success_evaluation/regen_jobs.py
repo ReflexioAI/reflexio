@@ -18,7 +18,7 @@ from typing import Literal
 from reflexio.models.api_schema.internal_schema import SessionDescriptor
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient
-from reflexio.server.services.agent_success_evaluation.group_evaluation_runner import (
+from reflexio.server.services.agent_success_evaluation.runner import (
     run_group_evaluation,
 )
 from reflexio.server.services.evaluation_overview.eval_sampler import (

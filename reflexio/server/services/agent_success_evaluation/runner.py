@@ -21,7 +21,7 @@ from reflexio.server.services.agent_success_evaluation.service import (
 from reflexio.server.services.agent_success_evaluation.agent_success_evaluation_utils import (
     AgentSuccessEvaluationRequest,
 )
-from reflexio.server.services.agent_success_evaluation.delayed_group_evaluator import (
+from reflexio.server.services.agent_success_evaluation.scheduler import (
     _EFFECTIVE_DELAY_SECONDS,
 )
 from reflexio.server.services.extractor_config_utils import get_extractor_name
