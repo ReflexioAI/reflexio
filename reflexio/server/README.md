@@ -543,8 +543,8 @@ flowchart TB
         E --> F1[ProfileExtractor 1]
         E --> F2[ProfileExtractor N]
         F1 --> PC[ProfileConsolidator]
-        F2 --> PD
-        PD --> PU[ProfileUpdater]
+        F2 --> PC
+        PC --> PU[ProfileUpdater]
     end
 
     subgraph PlaybookService["PlaybookGenerationService"]
@@ -574,7 +574,7 @@ flowchart TB
     J -.-> F1
     J -.-> G1
     J -.-> H1
-    J -.-> PD
+    J -.-> PC
     J -.-> FD
     K -.-> F1
     K -.-> G1
