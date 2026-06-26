@@ -28,12 +28,12 @@ from reflexio.server.services.base_generation_service import (
     BaseGenerationService,
     PreparedGenerationRun,
 )
+from reflexio.server.services.profile.profile_generation_service_utils import (
+    ProfileGenerationRequest,
+)
 from reflexio.server.services.profile.service import (
     ProfileGenerationService,
     ProfileGenerationServiceConfig,
-)
-from reflexio.server.services.profile.profile_generation_service_utils import (
-    ProfileGenerationRequest,
 )
 from reflexio.server.services.service_utils import format_sessions_to_history_string
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage

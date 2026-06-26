@@ -16,12 +16,13 @@ from reflexio.models.config_schema import ProfileExtractorConfig
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.services.generation_service import GenerationService
-from reflexio.server.services.profile.service import (
-    ProfileGenerationService,
-)
 from reflexio.server.services.profile.profile_generation_service_utils import (
     ProfileGenerationRequest,
 )
+from reflexio.server.services.profile.service import (
+    ProfileGenerationService,
+)
+from reflexio.server.services.storage.storage_base import BaseStorage
 
 
 @pytest.fixture
@@ -47,6 +48,12 @@ def mock_chat_completion():
         side_effect=mock_generate_chat_response_side_effect,
     ):
         yield
+
+
+def _storage(service: ProfileGenerationService) -> BaseStorage:
+    storage = service.storage
+    assert storage is not None
+    return storage
 
 
 def test_profile_extractor_filters_by_source_api(mock_chat_completion):
@@ -99,11 +106,9 @@ def test_profile_extractor_filters_by_source_api(mock_chat_completion):
             session_id="test_session",
             source="api",
         )
-        profile_generation_service.storage.add_request(request_obj)
+        _storage(profile_generation_service).add_request(request_obj)
         for interaction_obj in interactions:
-            profile_generation_service.storage.add_user_interaction(
-                user_id, interaction_obj
-            )
+            _storage(profile_generation_service).add_user_interaction(user_id, interaction_obj)
 
         profile_generation_request = ProfileGenerationRequest(
             user_id=user_id,
@@ -115,7 +120,7 @@ def test_profile_extractor_filters_by_source_api(mock_chat_completion):
         profile_generation_service.run(profile_generation_request)
 
         # Profile should be created (config1 should run)
-        profiles = profile_generation_service.storage.get_user_profile(user_id)
+        profiles = _storage(profile_generation_service).get_user_profile(user_id)
         assert len(profiles) == 1
 
 
@@ -167,11 +172,9 @@ def test_profile_extractor_filters_by_source_webhook(mock_chat_completion):
             session_id="test_session",
             source="webhook",
         )
-        profile_generation_service.storage.add_request(request_obj)
+        _storage(profile_generation_service).add_request(request_obj)
         for interaction_obj in interactions:
-            profile_generation_service.storage.add_user_interaction(
-                user_id, interaction_obj
-            )
+            _storage(profile_generation_service).add_user_interaction(user_id, interaction_obj)
 
         profile_generation_request = ProfileGenerationRequest(
             user_id=user_id,
@@ -183,7 +186,7 @@ def test_profile_extractor_filters_by_source_webhook(mock_chat_completion):
         profile_generation_service.run(profile_generation_request)
 
         # No profile should be created (config should be filtered out)
-        profiles = profile_generation_service.storage.get_user_profile(user_id)
+        profiles = _storage(profile_generation_service).get_user_profile(user_id)
         assert len(profiles) == 0
 
 
@@ -235,11 +238,9 @@ def test_profile_extractor_none_enables_all_sources(mock_chat_completion):
             session_id="test_session",
             source="random_source",
         )
-        profile_generation_service.storage.add_request(request_obj)
+        _storage(profile_generation_service).add_request(request_obj)
         for interaction_obj in interactions:
-            profile_generation_service.storage.add_user_interaction(
-                user_id, interaction_obj
-            )
+            _storage(profile_generation_service).add_user_interaction(user_id, interaction_obj)
 
         profile_generation_request = ProfileGenerationRequest(
             user_id=user_id,
@@ -251,7 +252,7 @@ def test_profile_extractor_none_enables_all_sources(mock_chat_completion):
         profile_generation_service.run(profile_generation_request)
 
         # Profile should be created (None means all sources enabled)
-        profiles = profile_generation_service.storage.get_user_profile(user_id)
+        profiles = _storage(profile_generation_service).get_user_profile(user_id)
         assert len(profiles) == 1
 
 
@@ -303,11 +304,9 @@ def test_profile_extractor_empty_list_enables_all_sources(mock_chat_completion):
             session_id="test_session",
             source="another_random_source",
         )
-        profile_generation_service.storage.add_request(request_obj)
+        _storage(profile_generation_service).add_request(request_obj)
         for interaction_obj in interactions:
-            profile_generation_service.storage.add_user_interaction(
-                user_id, interaction_obj
-            )
+            _storage(profile_generation_service).add_user_interaction(user_id, interaction_obj)
 
         profile_generation_request = ProfileGenerationRequest(
             user_id=user_id,
@@ -319,7 +318,7 @@ def test_profile_extractor_empty_list_enables_all_sources(mock_chat_completion):
         profile_generation_service.run(profile_generation_request)
 
         # Profile should be created (empty list means all sources enabled)
-        profiles = profile_generation_service.storage.get_user_profile(user_id)
+        profiles = _storage(profile_generation_service).get_user_profile(user_id)
         assert len(profiles) == 1
 
 
