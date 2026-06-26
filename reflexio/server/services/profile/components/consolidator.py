@@ -1,5 +1,5 @@
 """
-Profile deduplication service that merges duplicate profiles from multiple extractors
+Profile consolidation service that merges duplicate profiles from multiple extractors
 and against existing profiles in the database using hybrid search and LLM.
 """
 
@@ -166,9 +166,9 @@ class ProfileDeduplicationOutput(StrictStructuredOutput):
     )
 
 
-class ProfileDeduplicator(BaseDeduplicator):
+class ProfileConsolidator(BaseDeduplicator):
     """
-    Deduplicates new profiles against each other and against existing profiles
+    Consolidates new profiles against each other and against existing profiles
     in the database using hybrid search (vector + FTS) and LLM-based merging.
 
     Follows the same pattern as PlaybookConsolidator.
@@ -183,12 +183,12 @@ class ProfileDeduplicator(BaseDeduplicator):
         output_pending_status: bool = False,
     ):
         """
-        Initialize the profile deduplicator.
+        Initialize the profile consolidator.
 
         Args:
             request_context: Request context with storage and prompt manager
             llm_client: Unified LLM client for LLM calls
-            output_pending_status: When True (rerun preview mode), the deduplicator
+            output_pending_status: When True (rerun preview mode), the consolidator
                 searches against existing PENDING profiles instead of CURRENT
                 profiles. This makes rerun idempotent against pending state and
                 leaves the user's current profile set untouched. When False

@@ -1,5 +1,5 @@
 """
-Unit tests for ProfileDeduplicator.
+Unit tests for ProfileConsolidator.
 
 Tests the deduplicator's responsibilities for:
 - Pydantic output schema validation
@@ -29,9 +29,9 @@ from reflexio.models.api_schema.service_schemas import (
 )
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.services.deduplication_utils import parse_item_id
-from reflexio.server.services.profile.profile_deduplicator import (
+from reflexio.server.services.profile.components.consolidator import (
     ProfileDeduplicationOutput,
-    ProfileDeduplicator,
+    ProfileConsolidator,
     ProfileDeletionDirective,
     ProfileDuplicateGroup,
     _format_profile_timestamp,
@@ -246,18 +246,18 @@ class TestPydanticModels:
 
 
 # ===============================
-# Test: ProfileDeduplicator Init
+# Test: ProfileConsolidator Init
 # ===============================
 
 
-class TestProfileDeduplicatorInit:
-    """Tests for ProfileDeduplicator initialization."""
+class TestProfileConsolidatorInit:
+    """Tests for ProfileConsolidator initialization."""
 
     def test_init_sets_attributes(
         self, mock_request_context, mock_llm_client, mock_site_var_manager
     ):
         """Test that __init__ sets all required attributes."""
-        deduplicator = ProfileDeduplicator(
+        deduplicator = ProfileConsolidator(
             request_context=mock_request_context,
             llm_client=mock_llm_client,
         )
@@ -290,7 +290,7 @@ class TestProfileDeduplicatorInit:
         ) as mock:
             instance = mock.return_value
             instance.get_site_var.return_value = {}
-            deduplicator = ProfileDeduplicator(
+            deduplicator = ProfileConsolidator(
                 request_context=mock_request_context,
                 llm_client=mock_llm_client,
             )
@@ -313,7 +313,7 @@ class TestFormatProfilesForPrompt:
         sample_profiles,
     ):
         """Test that profiles are formatted correctly with NEW prefix."""
-        deduplicator = ProfileDeduplicator(
+        deduplicator = ProfileConsolidator(
             request_context=mock_request_context,
             llm_client=mock_llm_client,
         )
@@ -344,7 +344,7 @@ class TestFormatProfilesForPrompt:
                 profile_time_to_live=ProfileTimeToLive.ONE_QUARTER,
             )
         ]
-        deduplicator = ProfileDeduplicator(
+        deduplicator = ProfileConsolidator(
             request_context=mock_request_context,
             llm_client=mock_llm_client,
         )
@@ -366,7 +366,7 @@ class TestFormatProfilesForPrompt:
                 source=None,
             )
         ]
-        deduplicator = ProfileDeduplicator(
+        deduplicator = ProfileConsolidator(
             request_context=mock_request_context,
             llm_client=mock_llm_client,
         )
@@ -381,7 +381,7 @@ class TestFormatProfilesForPrompt:
         sample_profiles,
     ):
         """Test that existing profiles are formatted with EXISTING prefix."""
-        deduplicator = ProfileDeduplicator(
+        deduplicator = ProfileConsolidator(
             request_context=mock_request_context,
             llm_client=mock_llm_client,
         )
@@ -393,7 +393,7 @@ class TestFormatProfilesForPrompt:
         self, mock_request_context, mock_llm_client, mock_site_var_manager
     ):
         """Test formatting empty profile list returns (None)."""
-        deduplicator = ProfileDeduplicator(
+        deduplicator = ProfileConsolidator(
             request_context=mock_request_context,
             llm_client=mock_llm_client,
         )
@@ -416,7 +416,7 @@ class TestFormatProfilesForPrompt:
                 source="extractor_a",
             )
         ]
-        deduplicator = ProfileDeduplicator(
+        deduplicator = ProfileConsolidator(
             request_context=mock_request_context,
             llm_client=mock_llm_client,
         )
@@ -441,7 +441,7 @@ class TestFormatProfilesForPrompt:
                 source="extractor_a",
             )
         ]
-        deduplicator = ProfileDeduplicator(
+        deduplicator = ProfileConsolidator(
             request_context=mock_request_context,
             llm_client=mock_llm_client,
         )
@@ -489,7 +489,7 @@ class TestMergeCustomFeatures:
                 custom_features=None,
             ),
         ]
-        deduplicator = ProfileDeduplicator(
+        deduplicator = ProfileConsolidator(
             request_context=mock_request_context,
             llm_client=mock_llm_client,
         )
@@ -519,7 +519,7 @@ class TestMergeCustomFeatures:
                 custom_features=None,
             ),
         ]
-        deduplicator = ProfileDeduplicator(
+        deduplicator = ProfileConsolidator(
             request_context=mock_request_context,
             llm_client=mock_llm_client,
         )
@@ -549,7 +549,7 @@ class TestMergeCustomFeatures:
                 custom_features={"key2": "new_value", "key3": "value3"},
             ),
         ]
-        deduplicator = ProfileDeduplicator(
+        deduplicator = ProfileConsolidator(
             request_context=mock_request_context,
             llm_client=mock_llm_client,
         )
@@ -584,7 +584,7 @@ class TestBuildDeduplicatedResults:
             unique_ids=["NEW-2"],
         )
 
-        deduplicator = ProfileDeduplicator(
+        deduplicator = ProfileConsolidator(
             request_context=mock_request_context,
             llm_client=mock_llm_client,
         )
@@ -627,7 +627,7 @@ class TestBuildDeduplicatedResults:
             unique_ids=["NEW-0", "NEW-1", "NEW-2"],
         )
 
-        deduplicator = ProfileDeduplicator(
+        deduplicator = ProfileConsolidator(
             request_context=mock_request_context,
             llm_client=mock_llm_client,
         )
@@ -662,7 +662,7 @@ class TestBuildDeduplicatedResults:
             unique_ids=["NEW-2"],
         )
 
-        deduplicator = ProfileDeduplicator(
+        deduplicator = ProfileConsolidator(
             request_context=mock_request_context,
             llm_client=mock_llm_client,
         )
@@ -702,7 +702,7 @@ class TestBuildDeduplicatedResults:
             unique_ids=[],  # LLM forgot to mention index 2
         )
 
-        deduplicator = ProfileDeduplicator(
+        deduplicator = ProfileConsolidator(
             request_context=mock_request_context,
             llm_client=mock_llm_client,
         )
@@ -745,7 +745,7 @@ class TestBuildDeduplicatedResults:
             unique_ids=["NEW-1", "NEW-2"],
         )
 
-        deduplicator = ProfileDeduplicator(
+        deduplicator = ProfileConsolidator(
             request_context=mock_request_context,
             llm_client=mock_llm_client,
         )
@@ -802,7 +802,7 @@ class TestBuildDeduplicatedResults:
             ],
         )
 
-        deduplicator = ProfileDeduplicator(
+        deduplicator = ProfileConsolidator(
             request_context=mock_request_context,
             llm_client=mock_llm_client,
         )
@@ -858,7 +858,7 @@ class TestBuildDeduplicatedResults:
             ],
         )
 
-        deduplicator = ProfileDeduplicator(
+        deduplicator = ProfileConsolidator(
             request_context=mock_request_context,
             llm_client=mock_llm_client,
         )
@@ -894,7 +894,7 @@ class TestDeduplicate:
         mock_site_var_manager,
     ):
         """Test that empty input returns empty output."""
-        deduplicator = ProfileDeduplicator(
+        deduplicator = ProfileConsolidator(
             request_context=mock_request_context,
             llm_client=mock_llm_client,
         )
@@ -923,7 +923,7 @@ class TestDeduplicate:
             )
         )
 
-        deduplicator = ProfileDeduplicator(
+        deduplicator = ProfileConsolidator(
             request_context=mock_request_context,
             llm_client=mock_llm_client,
         )
@@ -947,7 +947,7 @@ class TestDeduplicate:
         """Test that original profiles are returned when LLM call fails."""
         mock_llm_client.generate_chat_response.side_effect = Exception("LLM Error")
 
-        deduplicator = ProfileDeduplicator(
+        deduplicator = ProfileConsolidator(
             request_context=mock_request_context,
             llm_client=mock_llm_client,
         )
@@ -982,7 +982,7 @@ class TestDeduplicate:
             )
         )
 
-        deduplicator = ProfileDeduplicator(
+        deduplicator = ProfileConsolidator(
             request_context=mock_request_context,
             llm_client=mock_llm_client,
         )
@@ -1031,7 +1031,7 @@ class TestDeduplicate:
             )
         )
 
-        deduplicator = ProfileDeduplicator(
+        deduplicator = ProfileConsolidator(
             request_context=mock_request_context,
             llm_client=mock_llm_client,
         )
@@ -1098,7 +1098,7 @@ class TestDeduplicate:
             )
         )
 
-        deduplicator = ProfileDeduplicator(
+        deduplicator = ProfileConsolidator(
             request_context=mock_request_context,
             llm_client=mock_llm_client,
         )
@@ -1156,7 +1156,7 @@ class TestDeduplicate:
             "LLM unavailable"
         )
 
-        deduplicator = ProfileDeduplicator(
+        deduplicator = ProfileConsolidator(
             request_context=mock_request_context,
             llm_client=mock_llm_client,
         )
@@ -1211,7 +1211,7 @@ class TestDeduplicate:
             )
         )
 
-        deduplicator = ProfileDeduplicator(
+        deduplicator = ProfileConsolidator(
             request_context=mock_request_context,
             llm_client=mock_llm_client,
         )
@@ -1289,7 +1289,7 @@ class TestIntegration:
             )
         )
 
-        deduplicator = ProfileDeduplicator(
+        deduplicator = ProfileConsolidator(
             request_context=mock_request_context,
             llm_client=mock_llm_client,
         )
@@ -1351,7 +1351,7 @@ class TestRetrieveExistingProfilesStatusFilter:
         self, mock_request_context, mock_llm_client, mock_site_var_manager
     ):
         """Default (output_pending_status=False) searches CURRENT profiles."""
-        deduplicator = ProfileDeduplicator(
+        deduplicator = ProfileConsolidator(
             request_context=mock_request_context,
             llm_client=mock_llm_client,
         )
@@ -1370,7 +1370,7 @@ class TestRetrieveExistingProfilesStatusFilter:
         """output_pending_status=True searches PENDING profiles, not CURRENT."""
         from reflexio.models.api_schema.service_schemas import Status
 
-        deduplicator = ProfileDeduplicator(
+        deduplicator = ProfileConsolidator(
             request_context=mock_request_context,
             llm_client=mock_llm_client,
             output_pending_status=True,
@@ -1387,9 +1387,9 @@ class TestRetrieveExistingProfilesStatusFilter:
     def test_rerun_mode_default_init_value_is_false(
         self, mock_request_context, mock_llm_client, mock_site_var_manager
     ):
-        """ProfileDeduplicator.output_pending_status defaults to False to
+        """ProfileConsolidator.output_pending_status defaults to False to
         preserve the pre-R1-fix behavior for normal extraction callers."""
-        deduplicator = ProfileDeduplicator(
+        deduplicator = ProfileConsolidator(
             request_context=mock_request_context,
             llm_client=mock_llm_client,
         )
@@ -1404,7 +1404,7 @@ class TestRetrieveExistingProfilesStatusFilter:
         mock_request_context.storage.embedding_dimensions = 768
         mock_llm_client.get_embeddings.return_value = [[0.1] * 768]
 
-        deduplicator = ProfileDeduplicator(
+        deduplicator = ProfileConsolidator(
             request_context=mock_request_context,
             llm_client=mock_llm_client,
         )
@@ -1436,7 +1436,7 @@ class TestRetrieveExistingProfilesStatusFilter:
             existing_pending
         ]
 
-        deduplicator = ProfileDeduplicator(
+        deduplicator = ProfileConsolidator(
             request_context=mock_request_context,
             llm_client=mock_llm_client,
             output_pending_status=True,

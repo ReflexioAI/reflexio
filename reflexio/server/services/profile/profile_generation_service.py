@@ -160,17 +160,17 @@ class ProfileGenerationService(
             from reflexio.server.site_var.feature_flags import is_deduplicator_enabled
 
             if is_deduplicator_enabled(self.org_id):
-                from reflexio.server.services.profile.profile_deduplicator import (
-                    ProfileDeduplicator,
+                from reflexio.server.services.profile.components.consolidator import (
+                    ProfileConsolidator,
                 )
 
-                deduplicator = ProfileDeduplicator(
+                consolidator = ProfileConsolidator(
                     request_context=self.request_context,
                     llm_client=self.client,
                     output_pending_status=self.output_pending_status,
                 )
                 all_new_profiles, existing_ids_to_delete, _superseded_profiles = (
-                    deduplicator.deduplicate(all_new_profiles, user_id, request_id)
+                    consolidator.deduplicate(all_new_profiles, user_id, request_id)
                 )
                 logger.info(
                     "Profile updates after deduplication: %d profiles, %d existing to delete",

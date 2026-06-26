@@ -41,7 +41,7 @@ def _build_registry() -> dict[str, ModelRegistryEntry]:
         StructuredPlaybookList,
     )
     from reflexio.server.services.playbook_optimizer.models import JudgeOutput
-    from reflexio.server.services.profile.profile_deduplicator import (
+    from reflexio.server.services.profile.components.consolidator import (
         ProfileDeduplicationOutput,
     )
     from reflexio.server.services.profile.profile_generation_service_utils import (

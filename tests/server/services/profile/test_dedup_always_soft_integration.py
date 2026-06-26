@@ -44,7 +44,7 @@ from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 pytestmark = pytest.mark.integration
 
 _DEDUP_FLAG = "reflexio.server.site_var.feature_flags.is_deduplicator_enabled"
-_DEDUP_CLS = "reflexio.server.services.profile.profile_deduplicator.ProfileDeduplicator"
+_DEDUP_CLS = "reflexio.server.services.profile.components.consolidator.ProfileConsolidator"
 _CAPTURE_ANOMALY = (
     "reflexio.server.services.profile.profile_generation_service.capture_anomaly"
 )
@@ -106,7 +106,7 @@ def _build_service(
 
 
 def _patch_dedup(*, all_new, existing_ids, superseded):
-    """Patch is_deduplicator_enabled=True and the ProfileDeduplicator class.
+    """Patch is_deduplicator_enabled=True and the ProfileConsolidator class.
 
     Returns a context-manager-yielding helper used as ``with _patch_dedup(...):``.
     """
