@@ -41,7 +41,7 @@ strings before deleting old import paths in the same PR.
 
 | Directory | Purpose |
 |-----------|---------|
-| `extraction/` | Resumable extraction agent: `resumable_agent.py`, `resume_scheduler.py`, `resume_worker.py`, `pending_tool_call_dispatch.py` (`ask_human`), `tools.py`, `plan.py`, `agent_run_records.py`, `invariants.py`. Long-horizon / tool-mediated extraction continues outside the request path. |
+| `extraction/` | Shared async extraction runtime: `resumable_agent.py`, `resume_scheduler.py`, `resume_worker.py`, `pending_tool_call_dispatch.py` (`ask_human`), `prior_answer_search.py`, `agent_run_records.py`, and `outcome.py`. Long-horizon / tool-mediated extraction continues outside the request path. See [README](extraction/README.md). |
 
 ## Evaluation, Search & Integrations
 

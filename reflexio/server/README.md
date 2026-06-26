@@ -407,10 +407,10 @@ Key files:
 - `reflection/components/extractor.py`: LLM extractor used by the reflection service
 - `extraction/resumable_agent.py`: Resumable extraction agent runtime
 - `extraction/resume_scheduler.py` and `extraction/resume_worker.py`: Background scheduling/worker loop for paused extraction runs
-- `extraction/tools.py` and `extraction/prior_answer_search.py`: Tool surface for async extraction agents
+- `extraction/pending_tool_call_dispatch.py` and `extraction/prior_answer_search.py`: Tool surface and prior-answer context for async extraction agents
 - `extraction/agent_run_records.py`: Persistence helpers for extraction-agent run state
 
-**Pattern**: Synchronous profile/playbook/evaluation services still follow `BaseGenerationService`; async extraction uses resumable agent-run records and worker scheduling so long-running or tool-mediated extraction can continue outside the request path.
+**Pattern**: Synchronous profile/playbook/evaluation services still follow `BaseGenerationService`; async extraction is a shared runtime package that uses resumable agent-run records and worker scheduling so long-running or tool-mediated extraction can continue outside the request path.
 
 ### Shadow Comparison and Evaluation Overview
 
