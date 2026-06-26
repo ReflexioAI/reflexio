@@ -427,6 +427,7 @@ def _row_to_interaction(row: sqlite3.Row) -> Interaction:
         user_action=UserActionType(d["user_action"]),
         user_action_description=d["user_action_description"],
         interacted_image_url=d["interacted_image_url"],
+        image_encoding=d.get("image_encoding") or "",
         shadow_content=d.get("shadow_content") or "",
         expert_content=d.get("expert_content") or "",
         tools_used=tools_used,
@@ -973,6 +974,14 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             logger.info("Adding citations column to interactions table.")
             with self._lock:
                 self.conn.execute("ALTER TABLE interactions ADD COLUMN citations TEXT")
+                self.conn.commit()
+
+        if "image_encoding" not in columns:
+            logger.info("Adding image_encoding column to interactions table.")
+            with self._lock:
+                self.conn.execute(
+                    "ALTER TABLE interactions ADD COLUMN image_encoding TEXT NOT NULL DEFAULT ''"
+                )
                 self.conn.commit()
 
     def _migrate_feedback_schema(self) -> None:
@@ -1983,6 +1992,7 @@ CREATE TABLE IF NOT EXISTS interactions (
     user_action TEXT NOT NULL DEFAULT 'none',
     user_action_description TEXT NOT NULL DEFAULT '',
     interacted_image_url TEXT NOT NULL DEFAULT '',
+    image_encoding TEXT NOT NULL DEFAULT '',
     shadow_content TEXT NOT NULL DEFAULT '',
     expert_content TEXT NOT NULL DEFAULT '',
     tools_used TEXT,

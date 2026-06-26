@@ -11,6 +11,7 @@ from reflexio.models.api_schema.service_schemas import (
     DeleteUserProfileRequest,
     Interaction,
     ProfileTimeToLive,
+    Request,
     UserActionType,
     UserProfile,
 )
@@ -399,3 +400,52 @@ class TestInteractionCRUD:
         result = storage.get_user_interaction("u1")
         assert len(result) == 1
         assert result[0].citations == []
+
+    def test_interaction_image_encoding_round_trips_through_extraction_reads(
+        self, storage: BaseStorage
+    ) -> None:
+        timestamp = int(datetime.now(UTC).timestamp())
+        request = Request(
+            request_id="req-image",
+            user_id="u1",
+            created_at=timestamp,
+            source="api",
+            agent_version="v1",
+            session_id="session-image",
+        )
+        storage.add_request(request)
+        interaction = Interaction(
+            interaction_id=1,
+            user_id="u1",
+            request_id=request.request_id,
+            content="describe this",
+            created_at=timestamp,
+            user_action=UserActionType.NONE,
+            user_action_description="",
+            image_encoding="base64-image-data",
+        )
+        storage.add_user_interaction("u1", interaction)
+
+        direct_rows = storage.get_user_interaction("u1")
+        assert len(direct_rows) == 1
+        assert direct_rows[0].image_encoding == "base64-image-data"
+
+        grouped, flat = storage.get_last_k_interactions_grouped(
+            "u1", 10, sources=["api"]
+        )
+        assert flat[0].image_encoding == "base64-image-data"
+        assert grouped[0].interactions[0].image_encoding == "base64-image-data"
+
+        storage.upsert_operation_state(
+            "image-extraction-test",
+            {
+                "last_processed_timestamp": timestamp - 1,
+                "last_processed_interaction_ids": [],
+            },
+        )
+        _state, new_groups = storage.get_operation_state_with_new_request_interaction(
+            "image-extraction-test",
+            "u1",
+            sources=["api"],
+        )
+        assert new_groups[0].interactions[0].image_encoding == "base64-image-data"

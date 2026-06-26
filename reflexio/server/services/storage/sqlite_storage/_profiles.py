@@ -748,9 +748,9 @@ class ProfileMixin:
                     """INSERT OR REPLACE INTO interactions
                        (interaction_id, user_id, content, request_id, created_at,
                         role, user_action, user_action_description,
-                        interacted_image_url, shadow_content, expert_content,
-                        tools_used, citations, embedding)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        interacted_image_url, image_encoding, shadow_content,
+                        expert_content, tools_used, citations, embedding)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         interaction.interaction_id,
                         interaction.user_id,
@@ -761,6 +761,7 @@ class ProfileMixin:
                         interaction.user_action.value,
                         interaction.user_action_description,
                         interaction.interacted_image_url,
+                        interaction.image_encoding,
                         interaction.shadow_content,
                         interaction.expert_content,
                         _json_dumps([t.model_dump() for t in interaction.tools_used]),
@@ -774,9 +775,9 @@ class ProfileMixin:
                     """INSERT INTO interactions
                        (user_id, content, request_id, created_at,
                         role, user_action, user_action_description,
-                        interacted_image_url, shadow_content, expert_content,
-                        tools_used, citations, embedding)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        interacted_image_url, image_encoding, shadow_content,
+                        expert_content, tools_used, citations, embedding)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         interaction.user_id,
                         interaction.content,
@@ -786,6 +787,7 @@ class ProfileMixin:
                         interaction.user_action.value,
                         interaction.user_action_description,
                         interaction.interacted_image_url,
+                        interaction.image_encoding,
                         interaction.shadow_content,
                         interaction.expert_content,
                         _json_dumps([t.model_dump() for t in interaction.tools_used]),

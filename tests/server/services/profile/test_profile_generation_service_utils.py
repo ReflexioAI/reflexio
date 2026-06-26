@@ -1,6 +1,9 @@
 """Tests for profile generation service utility functions."""
 
+import tempfile
 from datetime import UTC, datetime
+from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -10,6 +13,7 @@ from reflexio.models.api_schema.service_schemas import (
     Interaction,
     ProfileTimeToLive,
     Request,
+    UserActionType,
     UserProfile,
 )
 from reflexio.server.prompt.prompt_manager import PromptManager
@@ -17,6 +21,9 @@ from reflexio.server.services.profile.profile_generation_service_utils import (
     calculate_expiration_timestamp,
     construct_profile_extraction_messages_from_sessions,
 )
+from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
+from tests import test_data
+from tests.server.test_utils import encode_image_to_base64
 
 
 def test_construct_profile_extraction_messages_with_sessions():
@@ -31,7 +38,7 @@ def test_construct_profile_extraction_messages_with_sessions():
             content="I love Italian food",
             role="user",
             created_at=timestamp,
-            user_action="none",
+            user_action=UserActionType.NONE,
             user_action_description="",
         ),
         Interaction(
@@ -41,7 +48,7 @@ def test_construct_profile_extraction_messages_with_sessions():
             content="I also enjoy sushi",
             role="user",
             created_at=timestamp,
-            user_action="click",
+            user_action=UserActionType.CLICK,
             user_action_description="restaurant menu",
         ),
     ]
@@ -133,6 +140,63 @@ def test_construct_profile_extraction_messages_with_sessions():
                 break
 
     assert found_interactions, "Did not find interactions in the rendered prompt"
+
+
+def test_profile_extraction_prompt_keeps_image_encoding_after_storage_round_trip():
+    timestamp = int(datetime.now(UTC).timestamp())
+    user_id = "visual-user"
+    request = Request(
+        request_id="visual-request",
+        user_id=user_id,
+        created_at=timestamp,
+        source="api",
+        agent_version="v1",
+        session_id="visual-session",
+    )
+    image_fp = str(Path(test_data.__file__).parent / "sushi.png")
+    image_encoding = encode_image_to_base64(image_fp)
+    interaction = Interaction(
+        interaction_id=1,
+        user_id=user_id,
+        request_id=request.request_id,
+        content="what I had for lunch today",
+        role="user",
+        created_at=timestamp,
+        image_encoding=image_encoding,
+    )
+
+    with (
+        tempfile.TemporaryDirectory() as temp_dir,
+        patch.object(SQLiteStorage, "_get_embedding", return_value=[0.0] * 512),
+    ):
+        storage = SQLiteStorage(org_id="visual-test", db_path=f"{temp_dir}/test.db")
+        storage.add_request(request)
+        storage.add_user_interaction(user_id, interaction)
+
+        sessions, flat = storage.get_last_k_interactions_grouped(user_id, 10)
+        assert flat[0].image_encoding == image_encoding
+
+        messages = construct_profile_extraction_messages_from_sessions(
+            prompt_manager=PromptManager(),
+            request_interaction_data_models=sessions,
+            existing_profiles=[],
+            agent_context_prompt="Test agent context",
+            context_prompt="Test context",
+            extraction_definition_prompt="food preferences",
+        )
+
+    user_message = messages[-1]
+    assert isinstance(user_message["content"], list)
+    image_blocks = [
+        block
+        for block in user_message["content"]
+        if isinstance(block, dict) and block.get("type") == "image_url"
+    ]
+    assert len(image_blocks) == 1
+    assert (
+        image_blocks[0]["image_url"]["url"]
+        == f"data:image/jpeg;base64,{image_encoding}"
+    )
 
 
 def test_construct_profile_extraction_messages_with_empty_sessions():
