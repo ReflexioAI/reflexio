@@ -3,7 +3,7 @@
 import time
 
 from reflexio.server.services.agent_success_evaluation import _eval_health
-from reflexio.server.services.agent_success_evaluation.delayed_group_evaluator import (
+from reflexio.server.services.agent_success_evaluation.scheduler import (
     GroupEvaluationScheduler,
 )
 

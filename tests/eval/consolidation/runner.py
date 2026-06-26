@@ -34,7 +34,7 @@ from tests.eval.consolidation.judge import judge_consolidation_decision
 
 if TYPE_CHECKING:
     from reflexio.server.llm.litellm_client import LiteLLMClient
-    from reflexio.server.services.playbook.playbook_consolidator import (
+    from reflexio.server.services.playbook.components.consolidator import (
         ConsolidationDecision,
     )
 

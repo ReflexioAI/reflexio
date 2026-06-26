@@ -4,7 +4,7 @@ and records a failure into EvalHealth when retries are exhausted."""
 from unittest.mock import MagicMock
 
 from reflexio.server.services.agent_success_evaluation import _eval_health
-from reflexio.server.services.agent_success_evaluation.agent_success_evaluation_service import (
+from reflexio.server.services.agent_success_evaluation.service import (
     AgentSuccessEvaluationService,
 )
 
@@ -28,7 +28,7 @@ def test_save_retried_three_times_with_backoff(monkeypatch) -> None:
 
     slept: list[float] = []
     monkeypatch.setattr(
-        "reflexio.server.services.agent_success_evaluation.agent_success_evaluation_service.time.sleep",
+        "reflexio.server.services.agent_success_evaluation.service.time.sleep",
         lambda s: slept.append(s),
     )
 
@@ -54,7 +54,7 @@ def test_save_succeeds_on_second_attempt(monkeypatch) -> None:
     storage = MagicMock()
     storage.save_agent_success_evaluation_results.side_effect = flaky
     monkeypatch.setattr(
-        "reflexio.server.services.agent_success_evaluation.agent_success_evaluation_service.time.sleep",
+        "reflexio.server.services.agent_success_evaluation.service.time.sleep",
         lambda _: None,
     )
 

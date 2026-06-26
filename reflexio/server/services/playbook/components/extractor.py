@@ -36,7 +36,7 @@ from reflexio.server.services.service_utils import (
 from reflexio.server.site_var.site_var_manager import SiteVarManager
 
 if TYPE_CHECKING:
-    from reflexio.server.services.playbook.playbook_generation_service import (
+    from reflexio.server.services.playbook.service import (
         PlaybookGenerationServiceConfig,
     )
 

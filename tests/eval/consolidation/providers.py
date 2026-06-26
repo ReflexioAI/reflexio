@@ -25,7 +25,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from reflexio.models.api_schema.domain.entities import UserPlaybook
-from reflexio.server.services.playbook.playbook_consolidator import (
+from reflexio.server.services.playbook.components.consolidator import (
     IndependentDecision,
     PlaybookConsolidator,
 )
@@ -35,7 +35,7 @@ if TYPE_CHECKING:
 
     from reflexio.server.api_endpoints.request_context import RequestContext
     from reflexio.server.llm.litellm_client import LiteLLMClient
-    from reflexio.server.services.playbook.playbook_consolidator import (
+    from reflexio.server.services.playbook.components.consolidator import (
         ConsolidationDecision,
     )
     from tests.eval.consolidation.case import ConsolidationEvalCase

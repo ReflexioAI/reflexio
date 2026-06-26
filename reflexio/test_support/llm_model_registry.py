@@ -33,7 +33,7 @@ def _build_registry() -> dict[str, ModelRegistryEntry]:
     from reflexio.server.services.agent_success_evaluation.agent_success_evaluation_constants import (
         AgentSuccessEvaluationOutput,
     )
-    from reflexio.server.services.playbook.playbook_consolidator import (
+    from reflexio.server.services.playbook.components.consolidator import (
         PlaybookConsolidationOutput,
     )
     from reflexio.server.services.playbook.playbook_service_utils import (

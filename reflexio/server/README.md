@@ -183,7 +183,7 @@ python -m reflexio.server.scripts.manage_invitation_codes list --show-used
 - **Publish pipeline**: `generation_service.py` coordinates interaction persistence, profile generation, playbook generation, reflection, and deferred evaluation scheduling.
 - **Profile memory**: `profile/` extracts, deduplicates, and applies user profile updates.
 - **Playbook memory**: `playbook/` extracts user playbooks, consolidates them against existing rows, aggregates them into agent playbooks, and tracks aggregation change logs.
-- **Evaluation**: `agent_success_evaluation/`, `shadow_comparison/`, and `evaluation_overview/` handle session grading, per-turn shadow verdicts, regeneration jobs, and dashboard-facing rollups.
+- **Evaluation**: `agent_success_evaluation/service.py`, `agent_success_evaluation/runner.py`, `agent_success_evaluation/scheduler.py`, `agent_success_evaluation/components/evaluator.py`, `shadow_comparison/`, and `evaluation_overview/` handle session grading, per-turn shadow verdicts, regeneration jobs, and dashboard-facing rollups.
 - **Async clarification**: `extraction/` and `reflection/` manage resumable agent runs, pending tool calls, prior-answer search, and long-horizon reflection updates.
 - **Search preparation**: `pre_retrieval/` and `unified_search_service.py` handle query reformulation, document expansion, embeddings, and cross-entity search orchestration.
 - **Optimization/integrations**: `playbook_optimizer/` and `braintrust/` run candidate playbook optimization, rollout support, and Braintrust export/sync.
@@ -310,10 +310,10 @@ Users can regenerate and manage profile versions using a four-state system:
 **Detailed Documentation**: See [`services/playbook/README.md`](services/playbook/README.md) for detailed component documentation.
 
 Key files:
-- `playbook_generation_service.py`: Service orchestrator
-- `playbook_extractor.py`: Extractor that extracts user playbooks
-- `playbook_aggregator.py`: Aggregates similar user playbooks (with cluster-level change detection to skip unchanged clusters)
-- `playbook_consolidator.py`: Reconciles newly extracted playbooks against existing DB playbooks using LLM
+- `service.py`: Service orchestrator
+- `components/extractor.py`: Extractor that extracts user playbooks
+- `components/aggregator.py`: Aggregates similar user playbooks (with cluster-level change detection to skip unchanged clusters)
+- `components/consolidator.py`: Reconciles newly extracted playbooks against existing DB playbooks using LLM
 
 **Flow**:
 - Interactions → PlaybookExtractor (extraction-only) → PlaybookConsolidator (consolidates new vs existing DB playbooks) → UserPlaybook (with optional `blocking_issue`) → Storage
@@ -323,7 +323,7 @@ Key files:
 
 **Rerun Behavior**: Groups interactions by `user_id` for per-user playbook extraction (fetches all users, then processes each user's interactions together)
 
-**Playbook Aggregation with Cluster Change Detection** (`playbook_aggregator.py`):
+**Playbook Aggregation with Cluster Change Detection** (`components/aggregator.py`):
 
 Aggregation clusters user playbooks by embedding similarity, then calls LLM per cluster to produce aggregated agent playbooks. Cluster-level change detection avoids redundant LLM calls on subsequent runs:
 
@@ -383,14 +383,14 @@ Similar to profiles, user playbooks support versioning:
 **Directory**: `services/agent_success_evaluation/`
 
 Key files:
-- `agent_success_evaluation_service.py`: Service orchestrator (tracks run outcome flags: `last_run_result_count`, `has_run_failures()`)
-- `agent_success_evaluator.py`: Evaluates success at session level (all interactions as one group)
+- `service.py`: `AgentSuccessEvaluationService`, the request-path service orchestrator (tracks run outcome flags: `last_run_result_count`, `has_run_failures()`)
+- `components/evaluator.py`: `AgentSuccessEvaluator`, evaluates success at session level (all interactions as one group)
 - `agent_success_evaluation_constants.py`: Output schema (`AgentSuccessEvaluationOutput`)
 - `agent_success_evaluation_utils.py`: Message construction utilities
-- `delayed_group_evaluator.py`: `GroupEvaluationScheduler` singleton - min-heap priority queue with daemon thread, defers evaluation until 10 min after last request in session
-- `group_evaluation_runner.py`: `run_group_evaluation()` - fetches all requests/interactions for a session, builds `RequestInteractionDataModel` list, runs evaluation
+- `scheduler.py`: `GroupEvaluationScheduler` singleton - min-heap priority queue with daemon thread, defers evaluation until 10 min after last request in session
+- `runner.py`: `run_group_evaluation()` - fetches all requests/interactions for a session, builds `RequestInteractionDataModel` list, runs `service.py`
 
-**Flow**: Interactions → (deferred 10 min) → GroupEvaluationScheduler → run_group_evaluation → AgentSuccessEvaluator → AgentSuccessEvaluationResult → Storage
+**Flow**: Interactions → `agent_success_evaluation/scheduler.py` → `agent_success_evaluation/runner.py` → `agent_success_evaluation/service.py` → `agent_success_evaluation/components/evaluator.py` → `AgentSuccessEvaluationResult` → Storage
 
 **Session-Level Evaluation**: Evaluator treats one user's `request_interaction_data_models` in a session as a single conversation. Sampling rate checked once per session (not per-request). Results are keyed by `(user_id, session_id, evaluation_name)` so reused session IDs across users do not clobber each other.
 
@@ -407,10 +407,10 @@ Key files:
 - `reflection/components/extractor.py`: LLM extractor used by the reflection service
 - `extraction/resumable_agent.py`: Resumable extraction agent runtime
 - `extraction/resume_scheduler.py` and `extraction/resume_worker.py`: Background scheduling/worker loop for paused extraction runs
-- `extraction/tools.py` and `extraction/prior_answer_search.py`: Tool surface for async extraction agents
+- `extraction/pending_tool_call_dispatch.py` and `extraction/prior_answer_search.py`: Tool surface and prior-answer context for async extraction agents
 - `extraction/agent_run_records.py`: Persistence helpers for extraction-agent run state
 
-**Pattern**: Synchronous profile/playbook/evaluation services still follow `BaseGenerationService`; async extraction uses resumable agent-run records and worker scheduling so long-running or tool-mediated extraction can continue outside the request path.
+**Pattern**: Synchronous profile/playbook/evaluation services still follow `BaseGenerationService`; async extraction is a shared runtime package that uses resumable agent-run records and worker scheduling so long-running or tool-mediated extraction can continue outside the request path.
 
 ### Shadow Comparison and Evaluation Overview
 
@@ -527,7 +527,7 @@ API Request (api.py)
         -> GenerationService
           ├─> ProfileGenerationService → Storage
           ├─> PlaybookGenerationService → Storage
-          └─> GroupEvaluationScheduler (deferred 10 min) → run_group_evaluation → Storage
+          └─> agent_success_evaluation/scheduler.py:GroupEvaluationScheduler (deferred 10 min) → agent_success_evaluation/runner.py:run_group_evaluation → agent_success_evaluation/service.py → Storage
 ```
 
 ```mermaid
@@ -556,7 +556,7 @@ flowchart TB
     end
 
     subgraph EvalService["AgentSuccessEvaluationService"]
-        E -.->|deferred 10 min| SCH[GroupEvaluationScheduler]
+        E -.->|deferred 10 min| SCH[agent_success_evaluation/scheduler.py<br/>GroupEvaluationScheduler]
         SCH --> H1[AgentSuccessEvaluator 1]
         SCH --> H2[AgentSuccessEvaluator N]
     end

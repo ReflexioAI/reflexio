@@ -17,7 +17,7 @@ from reflexio.models.api_schema.service_schemas import (
     Interaction,
     Request,
 )
-from reflexio.server.services.agent_success_evaluation.group_evaluation_runner import (
+from reflexio.server.services.agent_success_evaluation.runner import (
     run_group_evaluation,
 )
 
@@ -178,7 +178,7 @@ def test_force_regenerate_bypasses_already_evaluated_short_circuit() -> None:
 
     with patch(
         "reflexio.server.services.agent_success_evaluation"
-        ".group_evaluation_runner.AgentSuccessEvaluationService"
+        ".runner.AgentSuccessEvaluationService"
     ) as service_cls:
         service = MagicMock()
         service.has_run_failures.return_value = False
@@ -209,7 +209,7 @@ def test_force_regenerate_builds_evaluation_request() -> None:
 
     with patch(
         "reflexio.server.services.agent_success_evaluation"
-        ".group_evaluation_runner.AgentSuccessEvaluationService"
+        ".runner.AgentSuccessEvaluationService"
     ) as service_cls:
         service = MagicMock()
         service.has_run_failures.return_value = False
@@ -255,11 +255,11 @@ def test_force_regenerate_deletes_prior_results() -> None:
     with (
         patch(
             "reflexio.server.services.agent_success_evaluation"
-            ".group_evaluation_runner.AgentSuccessEvaluationService"
+            ".runner.AgentSuccessEvaluationService"
         ) as service_cls,
         patch(
             "reflexio.server.services.agent_success_evaluation"
-            ".group_evaluation_runner.get_extractor_name",
+            ".runner.get_extractor_name",
             return_value="overall_success",
         ),
     ):
@@ -301,7 +301,7 @@ def test_force_regenerate_with_no_prior_rows_does_not_delete() -> None:
 
     with patch(
         "reflexio.server.services.agent_success_evaluation"
-        ".group_evaluation_runner.AgentSuccessEvaluationService"
+        ".runner.AgentSuccessEvaluationService"
     ) as service_cls:
         service = MagicMock()
         service.has_run_failures.return_value = False
@@ -346,7 +346,7 @@ def test_regenerate_preserves_old_rows_when_llm_run_fails() -> None:
 
     with patch(
         "reflexio.server.services.agent_success_evaluation"
-        ".group_evaluation_runner.AgentSuccessEvaluationService"
+        ".runner.AgentSuccessEvaluationService"
     ) as service_cls:
         service = MagicMock()
         # Simulate an LLM/save failure.
@@ -392,7 +392,7 @@ def test_regenerate_preserves_old_rows_when_zero_results_saved() -> None:
 
     with patch(
         "reflexio.server.services.agent_success_evaluation"
-        ".group_evaluation_runner.AgentSuccessEvaluationService"
+        ".runner.AgentSuccessEvaluationService"
     ) as service_cls:
         service = MagicMock()
         service.has_run_failures.return_value = False
@@ -499,11 +499,11 @@ def test_regenerate_happy_path_with_real_sqlite_storage(tmp_path) -> None:
         with (
             patch(
                 "reflexio.server.services.agent_success_evaluation"
-                ".group_evaluation_runner.AgentSuccessEvaluationService"
+                ".runner.AgentSuccessEvaluationService"
             ) as service_cls,
             patch(
                 "reflexio.server.services.agent_success_evaluation"
-                ".group_evaluation_runner.get_extractor_name",
+                ".runner.get_extractor_name",
                 return_value="overall_success",
             ),
         ):
@@ -601,11 +601,11 @@ def test_regenerate_failure_preserves_old_rows_with_real_sqlite_storage(
         with (
             patch(
                 "reflexio.server.services.agent_success_evaluation"
-                ".group_evaluation_runner.AgentSuccessEvaluationService"
+                ".runner.AgentSuccessEvaluationService"
             ) as service_cls,
             patch(
                 "reflexio.server.services.agent_success_evaluation"
-                ".group_evaluation_runner.get_extractor_name",
+                ".runner.get_extractor_name",
                 return_value="overall_success",
             ),
         ):
@@ -661,7 +661,7 @@ def test_force_regenerate_bypasses_completeness_delay_gate() -> None:
 
     with patch(
         "reflexio.server.services.agent_success_evaluation"
-        ".group_evaluation_runner.AgentSuccessEvaluationService"
+        ".runner.AgentSuccessEvaluationService"
     ) as service_cls:
         service = MagicMock()
         service.has_run_failures.return_value = False

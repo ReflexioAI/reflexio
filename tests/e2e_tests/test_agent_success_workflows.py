@@ -13,12 +13,19 @@ from reflexio.models.api_schema.retriever_schema import (
 from reflexio.models.api_schema.service_schemas import (
     InteractionData,
 )
-from reflexio.server.services.agent_success_evaluation.group_evaluation_runner import (
+from reflexio.server.services.agent_success_evaluation.runner import (
     run_group_evaluation,
 )
+from reflexio.server.services.storage.storage_base import BaseStorage
 from tests.server.test_utils import skip_in_precommit, skip_low_priority
 
 pytestmark = pytest.mark.e2e
+
+
+def _storage(instance: Reflexio) -> BaseStorage:
+    storage = instance.request_context.storage
+    assert storage is not None
+    return storage
 
 
 def _trigger_group_evaluation(
@@ -30,12 +37,12 @@ def _trigger_group_evaluation(
 ) -> None:
     """Trigger group evaluation synchronously for e2e tests.
 
-    In production, evaluation is scheduled via the delayed group evaluator.
+    In production, evaluation is scheduled via GroupEvaluationScheduler.
     This helper calls the runner directly so tests don't have to wait.
     The delay guard is bypassed since we're invoking the runner directly.
     """
     with patch(
-        "reflexio.server.services.agent_success_evaluation.group_evaluation_runner._EFFECTIVE_DELAY_SECONDS",
+        "reflexio.server.services.agent_success_evaluation.runner._EFFECTIVE_DELAY_SECONDS",
         0,
     ):
         run_group_evaluation(
@@ -76,7 +83,8 @@ def test_publish_interaction_agent_success_only(
     assert response.message == "Interaction published successfully"
 
     # Verify interactions were added to storage
-    final_interactions = reflexio_instance_agent_success_only.request_context.storage.get_all_interactions()
+    storage = _storage(reflexio_instance_agent_success_only)
+    final_interactions = storage.get_all_interactions()
     assert len(final_interactions) == len(sample_interaction_requests)
 
     # Trigger group evaluation synchronously (normally delayed)
@@ -89,7 +97,7 @@ def test_publish_interaction_agent_success_only(
     )
 
     # Verify agent success evaluation results were created
-    agent_success_results = reflexio_instance_agent_success_only.request_context.storage.get_agent_success_evaluation_results(
+    agent_success_results = storage.get_agent_success_evaluation_results(
         agent_version=agent_version
     )
     assert len(agent_success_results) > 0
@@ -241,9 +249,9 @@ def test_agent_success_evaluation_statistics(
     )
 
     # Verify evaluations were created
-    evaluations = reflexio_instance_agent_success_only.request_context.storage.get_agent_success_evaluation_results(
-        agent_version=agent_version
-    )
+    evaluations = _storage(
+        reflexio_instance_agent_success_only
+    ).get_agent_success_evaluation_results(agent_version=agent_version)
     assert len(evaluations) > 0
 
     # Step 2: Get dashboard statistics

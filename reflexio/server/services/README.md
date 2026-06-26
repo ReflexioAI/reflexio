@@ -33,15 +33,15 @@ strings before deleting old import paths in the same PR.
 | Directory | Entry class | Key files |
 |-----------|-------------|-----------|
 | `profile/` | `ProfileGenerationService` | `profile_extractor.py`, `components/consolidator.py`, `profile_updater.py` |
-| `playbook/` | `PlaybookGenerationService` | `playbook_extractor.py`, `playbook_consolidator.py`, `playbook_aggregator.py` (cluster-fingerprint change detection) — has its own [README](playbook/README.md) |
-| `agent_success_evaluation/` | `AgentSuccessEvaluationService` | `agent_success_evaluator.py` (session-level), `delayed_group_evaluator.py` (`GroupEvaluationScheduler`, 10-min defer), `group_evaluation_runner.py`, `regen_jobs.py` |
+| `playbook/` | `PlaybookGenerationService` | `components/extractor.py`, `components/consolidator.py`, `components/aggregator.py` (cluster-fingerprint change detection) — has its own [README](playbook/README.md) |
+| `agent_success_evaluation/` | `AgentSuccessEvaluationService` | `service.py` (session-level service), `runner.py` (`run_group_evaluation`), `scheduler.py` (`GroupEvaluationScheduler`, 10-min defer), `regen_jobs.py`, `components/evaluator.py` |
 | `reflection/` | `ReflectionService` | `service.py`, `components/extractor.py` — post-horizon reflection; runs **before** extraction so extractors read post-reflection state |
 
 ## Async Extraction
 
 | Directory | Purpose |
 |-----------|---------|
-| `extraction/` | Resumable extraction agent: `resumable_agent.py`, `resume_scheduler.py`, `resume_worker.py`, `pending_tool_call_dispatch.py` (`ask_human`), `tools.py`, `plan.py`, `agent_run_records.py`, `invariants.py`. Long-horizon / tool-mediated extraction continues outside the request path. |
+| `extraction/` | Shared async extraction runtime: `resumable_agent.py`, `resume_scheduler.py`, `resume_worker.py`, `pending_tool_call_dispatch.py` (`ask_human`), `prior_answer_search.py`, `agent_run_records.py`, and `outcome.py`. Long-horizon / tool-mediated extraction continues outside the request path. See [README](extraction/README.md). |
 
 ## Evaluation, Search & Integrations
 

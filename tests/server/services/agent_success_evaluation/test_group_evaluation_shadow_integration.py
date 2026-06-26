@@ -1,4 +1,4 @@
-"""F1 integration: group_evaluation_runner dispatches the per-turn shadow judge.
+"""F1 integration: runner dispatches the per-turn shadow judge.
 
 When session interactions carry ``shadow_content`` and the regular success
 eval succeeds, the runner must invoke
@@ -27,7 +27,7 @@ from reflexio.models.api_schema.eval_overview_schema import (
     ShadowComparisonVerdict,
 )
 from reflexio.models.config_schema import Config, StorageConfigSQLite
-from reflexio.server.services.agent_success_evaluation.group_evaluation_runner import (
+from reflexio.server.services.agent_success_evaluation.runner import (
     run_group_evaluation,
 )
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
@@ -121,7 +121,7 @@ def test_runner_writes_verdicts_for_interactions_with_shadow_content(
     fake_service.last_run_save_failed = False
     monkeypatch.setattr(
         "reflexio.server.services.agent_success_evaluation."
-        "group_evaluation_runner.AgentSuccessEvaluationService",
+        "runner.AgentSuccessEvaluationService",
         MagicMock(return_value=fake_service),
     )
 
@@ -208,7 +208,7 @@ def test_runner_does_not_dispatch_judge_when_success_eval_failed(
     fake_service.last_run_save_failed = False
     monkeypatch.setattr(
         "reflexio.server.services.agent_success_evaluation."
-        "group_evaluation_runner.AgentSuccessEvaluationService",
+        "runner.AgentSuccessEvaluationService",
         MagicMock(return_value=fake_service),
     )
 
@@ -267,7 +267,7 @@ def test_runner_continues_when_individual_judge_call_raises(
     fake_service.last_run_save_failed = False
     monkeypatch.setattr(
         "reflexio.server.services.agent_success_evaluation."
-        "group_evaluation_runner.AgentSuccessEvaluationService",
+        "runner.AgentSuccessEvaluationService",
         MagicMock(return_value=fake_service),
     )
 

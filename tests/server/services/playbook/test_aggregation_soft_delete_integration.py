@@ -32,7 +32,7 @@ from reflexio.models.api_schema.service_schemas import (
 )
 from reflexio.models.config_schema import PlaybookAggregatorConfig, PlaybookConfig
 from reflexio.server.api_endpoints.request_context import RequestContext
-from reflexio.server.services.playbook.playbook_aggregator import PlaybookAggregator
+from reflexio.server.services.playbook.components.aggregator import PlaybookAggregator
 from reflexio.server.services.playbook.playbook_service_utils import (
     PlaybookAggregatorRequest,
 )
@@ -590,7 +590,7 @@ class TestEmptyRunIdFailLoud:
             def __str__(self) -> str:
                 return ""
 
-        uuid_path = "reflexio.server.services.playbook.playbook_aggregator.uuid.uuid4"
+        uuid_path = "reflexio.server.services.playbook.components.aggregator.uuid.uuid4"
 
         with (
             patch.object(

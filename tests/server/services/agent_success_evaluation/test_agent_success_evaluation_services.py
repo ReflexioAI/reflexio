@@ -29,12 +29,12 @@ from reflexio.models.config_schema import (
 )
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
-from reflexio.server.services.agent_success_evaluation.agent_success_evaluation_service import (
-    AgentSuccessEvaluationService,
-    AgentSuccessGenerationServiceConfig,
-)
 from reflexio.server.services.agent_success_evaluation.agent_success_evaluation_utils import (
     AgentSuccessEvaluationRequest,
+)
+from reflexio.server.services.agent_success_evaluation.service import (
+    AgentSuccessEvaluationService,
+    AgentSuccessGenerationServiceConfig,
 )
 
 

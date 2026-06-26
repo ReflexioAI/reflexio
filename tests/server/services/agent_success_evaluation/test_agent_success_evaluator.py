@@ -23,11 +23,11 @@ from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.services.agent_success_evaluation.agent_success_evaluation_constants import (
     AgentSuccessEvaluationOutput,
 )
-from reflexio.server.services.agent_success_evaluation.agent_success_evaluation_service import (
-    AgentSuccessGenerationServiceConfig,
-)
-from reflexio.server.services.agent_success_evaluation.agent_success_evaluator import (
+from reflexio.server.services.agent_success_evaluation.components.evaluator import (
     AgentSuccessEvaluator,
+)
+from reflexio.server.services.agent_success_evaluation.service import (
+    AgentSuccessGenerationServiceConfig,
 )
 
 # ===============================

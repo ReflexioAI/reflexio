@@ -11,8 +11,8 @@ These tests focus on the handler contract:
   - Unknown session → returns ``skipped_reason`` instead of 5xx.
 
 The actual judge call inside ``run_group_evaluation`` is mocked at the
-runner boundary — the runner is exercised exhaustively in its own
-``test_group_evaluation_runner_*`` suite, and end-to-end LLM behaviour is
+runner boundary — the runner is exercised exhaustively in its focused
+agent-success evaluation runner test suites, and end-to-end LLM behaviour is
 covered by the e2e tier. Here we only verify the endpoint correctly
 wires storage → runner → cache → response.
 """

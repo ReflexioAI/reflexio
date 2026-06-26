@@ -40,7 +40,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from reflexio.server.services.playbook.playbook_consolidator import (
+from reflexio.server.services.playbook.components.consolidator import (
     ConsolidationDecision,
 )
 

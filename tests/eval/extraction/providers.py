@@ -41,8 +41,8 @@ from typing import TYPE_CHECKING
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
 from reflexio.models.api_schema.service_schemas import Interaction, Request
 from reflexio.models.config_schema import PlaybookConfig, ProfileExtractorConfig
-from reflexio.server.services.playbook.playbook_extractor import PlaybookExtractor
-from reflexio.server.services.playbook.playbook_generation_service import (
+from reflexio.server.services.playbook.components.extractor import PlaybookExtractor
+from reflexio.server.services.playbook.service import (
     PlaybookGenerationServiceConfig,
 )
 from reflexio.server.services.profile.profile_extractor import ProfileExtractor

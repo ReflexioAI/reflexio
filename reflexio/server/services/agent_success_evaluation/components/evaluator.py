@@ -33,7 +33,7 @@ from reflexio.server.services.service_utils import (
 from reflexio.server.site_var.site_var_manager import SiteVarManager
 
 if TYPE_CHECKING:
-    from reflexio.server.services.agent_success_evaluation.agent_success_evaluation_service import (
+    from reflexio.server.services.agent_success_evaluation.service import (
         AgentSuccessGenerationServiceConfig,
     )
 

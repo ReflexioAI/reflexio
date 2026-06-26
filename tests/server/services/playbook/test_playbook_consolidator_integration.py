@@ -31,7 +31,7 @@ import pytest
 from reflexio.models.api_schema.service_schemas import UserPlaybook
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
-from reflexio.server.services.playbook.playbook_consolidator import (
+from reflexio.server.services.playbook.components.consolidator import (
     DifferentiateDecision,
     IndependentDecision,
     PlaybookConsolidationOutput,

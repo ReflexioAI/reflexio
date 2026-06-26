@@ -14,7 +14,7 @@ from reflexio.models.api_schema.service_schemas import (
     InteractionData,
 )
 from reflexio.models.config_schema import SINGLETON_USER_PLAYBOOK_NAME
-from reflexio.server.services.agent_success_evaluation.group_evaluation_runner import (
+from reflexio.server.services.agent_success_evaluation.runner import (
     run_group_evaluation,
 )
 from tests.server.test_utils import skip_in_precommit, skip_low_priority

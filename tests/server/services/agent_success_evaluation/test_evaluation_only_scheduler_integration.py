@@ -14,18 +14,15 @@ from reflexio.models.config_schema import (
     Config,
     StorageConfigSQLite,
 )
-from reflexio.server.services.agent_success_evaluation import (
-    delayed_group_evaluator,
-    group_evaluation_runner,
-)
-from reflexio.server.services.agent_success_evaluation.agent_success_evaluation_service import (
-    AgentSuccessEvaluationService,
-)
+from reflexio.server.services.agent_success_evaluation import runner, scheduler
 from reflexio.server.services.agent_success_evaluation.agent_success_evaluation_utils import (
     AgentSuccessEvaluationRequest,
 )
-from reflexio.server.services.agent_success_evaluation.delayed_group_evaluator import (
+from reflexio.server.services.agent_success_evaluation.scheduler import (
     GroupEvaluationScheduler,
+)
+from reflexio.server.services.agent_success_evaluation.service import (
+    AgentSuccessEvaluationService,
 )
 from reflexio.server.services.configurator.configurator import DefaultConfigurator
 from reflexio.test_support.llm_mock import patched_litellm
@@ -65,8 +62,8 @@ def test_evaluation_only_publish_waits_and_batches_followup_session_requests(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Evaluation-only publishes wait for inactivity and evaluate the session."""
-    monkeypatch.setattr(delayed_group_evaluator, "_EFFECTIVE_DELAY_SECONDS", 1)
-    monkeypatch.setattr(group_evaluation_runner, "_EFFECTIVE_DELAY_SECONDS", 1)
+    monkeypatch.setattr(scheduler, "_EFFECTIVE_DELAY_SECONDS", 1)
+    monkeypatch.setattr(runner, "_EFFECTIVE_DELAY_SECONDS", 1)
 
     config = Config(
         storage_config=StorageConfigSQLite(db_path=str(tmp_path / "reflexio.db")),

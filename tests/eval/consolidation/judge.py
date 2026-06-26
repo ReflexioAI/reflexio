@@ -30,7 +30,7 @@ from tests.eval.consolidation.case import ConsolidationEvalCase, kind_for_decisi
 
 if TYPE_CHECKING:
     from reflexio.server.llm.litellm_client import LiteLLMClient
-    from reflexio.server.services.playbook.playbook_consolidator import (
+    from reflexio.server.services.playbook.components.consolidator import (
         ConsolidationDecision,
     )
 
