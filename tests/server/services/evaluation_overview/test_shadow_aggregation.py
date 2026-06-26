@@ -8,7 +8,7 @@ from reflexio.models.api_schema.eval_overview_schema import (
     ShadowComparisonOutput,
     ShadowComparisonVerdict,
 )
-from reflexio.server.services.evaluation_overview.shadow_aggregation import (
+from reflexio.server.services.evaluation_overview.components.shadow_aggregation import (
     compute_shadow_win_rate_trend,
 )
 

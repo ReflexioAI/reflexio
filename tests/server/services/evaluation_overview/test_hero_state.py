@@ -1,6 +1,6 @@
 """Unit tests for hero state derivation (the 4 states from spec §3.2)."""
 
-from reflexio.server.services.evaluation_overview.hero_state import (
+from reflexio.server.services.evaluation_overview.components.hero_state import (
     HeroState,
     compute_hero_state,
 )

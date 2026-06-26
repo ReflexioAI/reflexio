@@ -39,17 +39,17 @@ from reflexio.models.api_schema.eval_overview_schema import (
     SourceSetEvaluationMetrics,
 )
 from reflexio.models.config_schema import Config
-from reflexio.server.services.evaluation_overview.distribution import (
+from reflexio.server.services.evaluation_overview.components.distribution import (
     BUCKET_LABELS,
     bucket_corrections,
 )
-from reflexio.server.services.evaluation_overview.hero_state import (
+from reflexio.server.services.evaluation_overview.components.hero_state import (
     compute_hero_state,
 )
-from reflexio.server.services.evaluation_overview.rule_attribution import (
+from reflexio.server.services.evaluation_overview.components.rule_attribution import (
     compute_net_sessions,
 )
-from reflexio.server.services.evaluation_overview.shadow_aggregation import (
+from reflexio.server.services.evaluation_overview.components.shadow_aggregation import (
     compute_shadow_win_rate_trend,
 )
 

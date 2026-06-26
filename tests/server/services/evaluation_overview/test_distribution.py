@@ -1,6 +1,6 @@
 """Bucket evaluation results into a 6-bin corrections-per-session histogram."""
 
-from reflexio.server.services.evaluation_overview.distribution import (
+from reflexio.server.services.evaluation_overview.components.distribution import (
     BUCKET_LABELS,
     bucket_corrections,
 )

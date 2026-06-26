@@ -1,6 +1,6 @@
 """Compute net sessions per rule by joining PlaybookApplicationStat with success outcomes."""
 
-from reflexio.server.services.evaluation_overview.rule_attribution import (
+from reflexio.server.services.evaluation_overview.components.rule_attribution import (
     RuleAttribution,
     compute_net_sessions,
 )
