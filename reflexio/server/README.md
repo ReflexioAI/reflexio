@@ -183,7 +183,7 @@ python -m reflexio.server.scripts.manage_invitation_codes list --show-used
 - **Publish pipeline**: `generation_service.py` coordinates interaction persistence, profile generation, playbook generation, reflection, and deferred evaluation scheduling.
 - **Profile memory**: `profile/` extracts, deduplicates, and applies user profile updates.
 - **Playbook memory**: `playbook/` extracts user playbooks, consolidates them against existing rows, aggregates them into agent playbooks, and tracks aggregation change logs.
-- **Evaluation**: `agent_success_evaluation/`, `shadow_comparison/`, and `evaluation_overview/` handle session grading, per-turn shadow verdicts, regeneration jobs, and dashboard-facing rollups.
+- **Evaluation**: `agent_success_evaluation/service.py`, `agent_success_evaluation/runner.py`, `agent_success_evaluation/scheduler.py`, `agent_success_evaluation/components/evaluator.py`, `shadow_comparison/`, and `evaluation_overview/` handle session grading, per-turn shadow verdicts, regeneration jobs, and dashboard-facing rollups.
 - **Async clarification**: `extraction/` and `reflection/` manage resumable agent runs, pending tool calls, prior-answer search, and long-horizon reflection updates.
 - **Search preparation**: `pre_retrieval/` and `unified_search_service.py` handle query reformulation, document expansion, embeddings, and cross-entity search orchestration.
 - **Optimization/integrations**: `playbook_optimizer/` and `braintrust/` run candidate playbook optimization, rollout support, and Braintrust export/sync.
@@ -383,14 +383,14 @@ Similar to profiles, user playbooks support versioning:
 **Directory**: `services/agent_success_evaluation/`
 
 Key files:
-- `service.py`: Service orchestrator (tracks run outcome flags: `last_run_result_count`, `has_run_failures()`)
-- `components/evaluator.py`: Evaluates success at session level (all interactions as one group)
+- `service.py`: `AgentSuccessEvaluationService`, the request-path service orchestrator (tracks run outcome flags: `last_run_result_count`, `has_run_failures()`)
+- `components/evaluator.py`: `AgentSuccessEvaluator`, evaluates success at session level (all interactions as one group)
 - `agent_success_evaluation_constants.py`: Output schema (`AgentSuccessEvaluationOutput`)
 - `agent_success_evaluation_utils.py`: Message construction utilities
 - `scheduler.py`: `GroupEvaluationScheduler` singleton - min-heap priority queue with daemon thread, defers evaluation until 10 min after last request in session
-- `runner.py`: `run_group_evaluation()` - fetches all requests/interactions for a session, builds `RequestInteractionDataModel` list, runs evaluation
+- `runner.py`: `run_group_evaluation()` - fetches all requests/interactions for a session, builds `RequestInteractionDataModel` list, runs `service.py`
 
-**Flow**: Interactions → (deferred 10 min) → GroupEvaluationScheduler → run_group_evaluation → AgentSuccessEvaluator → AgentSuccessEvaluationResult → Storage
+**Flow**: Interactions → `agent_success_evaluation/scheduler.py` → `agent_success_evaluation/runner.py` → `agent_success_evaluation/service.py` → `agent_success_evaluation/components/evaluator.py` → `AgentSuccessEvaluationResult` → Storage
 
 **Session-Level Evaluation**: Evaluator treats one user's `request_interaction_data_models` in a session as a single conversation. Sampling rate checked once per session (not per-request). Results are keyed by `(user_id, session_id, evaluation_name)` so reused session IDs across users do not clobber each other.
 
@@ -527,7 +527,7 @@ API Request (api.py)
         -> GenerationService
           ├─> ProfileGenerationService → Storage
           ├─> PlaybookGenerationService → Storage
-          └─> GroupEvaluationScheduler (deferred 10 min) → run_group_evaluation → Storage
+          └─> agent_success_evaluation/scheduler.py:GroupEvaluationScheduler (deferred 10 min) → agent_success_evaluation/runner.py:run_group_evaluation → agent_success_evaluation/service.py → Storage
 ```
 
 ```mermaid
@@ -556,7 +556,7 @@ flowchart TB
     end
 
     subgraph EvalService["AgentSuccessEvaluationService"]
-        E -.->|deferred 10 min| SCH[GroupEvaluationScheduler]
+        E -.->|deferred 10 min| SCH[agent_success_evaluation/scheduler.py<br/>GroupEvaluationScheduler]
         SCH --> H1[AgentSuccessEvaluator 1]
         SCH --> H2[AgentSuccessEvaluator N]
     end

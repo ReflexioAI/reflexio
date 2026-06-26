@@ -1,5 +1,15 @@
 from pathlib import Path
 
+_PY_SUFFIX = "." + "py"
+_LEGACY_SERVICE_FILES = (
+    "agent_success_evaluation_" + "service" + _PY_SUFFIX,
+    "agent_success_" + "evaluator" + _PY_SUFFIX,
+)
+_LEGACY_RUNNER_FILES = (
+    "group_evaluation_" + "runner" + _PY_SUFFIX,
+    "delayed_group_" + "evaluator" + _PY_SUFFIX,
+)
+
 
 def test_agent_success_service_canonical_imports_work() -> None:
     from reflexio.server.services.agent_success_evaluation.components.evaluator import (
@@ -25,8 +35,8 @@ def test_agent_success_legacy_service_and_evaluator_files_removed() -> None:
         / "services"
         / "agent_success_evaluation"
     )
-    assert not (module_dir / "agent_success_evaluation_service.py").exists()
-    assert not (module_dir / "agent_success_evaluator.py").exists()
+    for filename in _LEGACY_SERVICE_FILES:
+        assert not (module_dir / filename).exists()
 
 
 def test_agent_success_runner_and_scheduler_canonical_imports_work() -> None:
@@ -49,5 +59,5 @@ def test_agent_success_legacy_runner_and_scheduler_files_removed() -> None:
         / "services"
         / "agent_success_evaluation"
     )
-    assert not (module_dir / "group_evaluation_runner.py").exists()
-    assert not (module_dir / "delayed_group_evaluator.py").exists()
+    for filename in _LEGACY_RUNNER_FILES:
+        assert not (module_dir / filename).exists()

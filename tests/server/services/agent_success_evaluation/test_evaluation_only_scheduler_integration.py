@@ -15,14 +15,14 @@ from reflexio.models.config_schema import (
     StorageConfigSQLite,
 )
 from reflexio.server.services.agent_success_evaluation import runner, scheduler
-from reflexio.server.services.agent_success_evaluation.service import (
-    AgentSuccessEvaluationService,
-)
 from reflexio.server.services.agent_success_evaluation.agent_success_evaluation_utils import (
     AgentSuccessEvaluationRequest,
 )
 from reflexio.server.services.agent_success_evaluation.scheduler import (
     GroupEvaluationScheduler,
+)
+from reflexio.server.services.agent_success_evaluation.service import (
+    AgentSuccessEvaluationService,
 )
 from reflexio.server.services.configurator.configurator import DefaultConfigurator
 from reflexio.test_support.llm_mock import patched_litellm

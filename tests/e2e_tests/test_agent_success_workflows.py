@@ -30,7 +30,7 @@ def _trigger_group_evaluation(
 ) -> None:
     """Trigger group evaluation synchronously for e2e tests.
 
-    In production, evaluation is scheduled via the delayed group evaluator.
+    In production, evaluation is scheduled via GroupEvaluationScheduler.
     This helper calls the runner directly so tests don't have to wait.
     The delay guard is bypassed since we're invoking the runner directly.
     """

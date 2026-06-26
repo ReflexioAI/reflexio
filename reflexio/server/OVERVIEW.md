@@ -23,7 +23,7 @@ Client (SDK/Web)
         -> GenerationService (server/services/)
           ├─> ProfileGenerationService -> ProfileExtractor(s) -> Storage
           ├─> PlaybookGenerationService -> PlaybookExtractor(s) -> Storage
-          └─> GroupEvaluationScheduler (deferred 10 min) -> Evaluator(s) -> Storage
+          └─> agent_success_evaluation/scheduler.py:GroupEvaluationScheduler (deferred 10 min) -> agent_success_evaluation/runner.py:run_group_evaluation -> agent_success_evaluation/service.py -> agent_success_evaluation/components/evaluator.py -> Storage
 ```
 
 ## Prerequisites

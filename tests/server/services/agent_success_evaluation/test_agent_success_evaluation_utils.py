@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 
 import pytest
 
+from reflexio.models.api_schema.domain.enums import UserActionType
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
 from reflexio.models.api_schema.service_schemas import Interaction, Request
 from reflexio.server.prompt.prompt_manager import PromptManager
@@ -23,7 +24,7 @@ def test_construct_agent_success_evaluation_messages_with_sessions():
             content="The agent helped me complete my task successfully",
             role="user",
             created_at=int(datetime.now(UTC).timestamp()),
-            user_action="none",
+            user_action=UserActionType.NONE,
             user_action_description="",
         ),
         Interaction(
@@ -33,7 +34,7 @@ def test_construct_agent_success_evaluation_messages_with_sessions():
             content="I used the search tool",
             role="assistant",
             created_at=int(datetime.now(UTC).timestamp()),
-            user_action="none",
+            user_action=UserActionType.NONE,
             user_action_description="",
         ),
         Interaction(
@@ -43,7 +44,7 @@ def test_construct_agent_success_evaluation_messages_with_sessions():
             content="Great!",
             role="user",
             created_at=int(datetime.now(UTC).timestamp()),
-            user_action="click",
+            user_action=UserActionType.CLICK,
             user_action_description="search button",
         ),
     ]
