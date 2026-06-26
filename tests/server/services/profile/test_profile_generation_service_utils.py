@@ -26,6 +26,19 @@ from tests import test_data
 from tests.server.test_utils import encode_image_to_base64
 
 
+def _mime_type_from_image_fixture(image_path: Path) -> str:
+    image_bytes = image_path.read_bytes()
+    if image_bytes.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if image_bytes.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if image_bytes.startswith(b"RIFF") and image_bytes[8:12] == b"WEBP":
+        return "image/webp"
+    raise AssertionError(f"Unsupported test fixture image type: {image_path}")
+
+
 def test_construct_profile_extraction_messages_with_sessions():
     """Test that construct_profile_extraction_messages_from_sessions formats interactions correctly in the rendered prompt."""
     # Create test interactions with both content and actions
@@ -153,8 +166,9 @@ def test_profile_extraction_prompt_keeps_image_encoding_after_storage_round_trip
         agent_version="v1",
         session_id="visual-session",
     )
-    image_fp = str(Path(test_data.__file__).parent / "sushi.png")
-    image_encoding = encode_image_to_base64(image_fp)
+    image_path = Path(test_data.__file__).parent / "sushi.png"
+    expected_mime_type = _mime_type_from_image_fixture(image_path)
+    image_encoding = encode_image_to_base64(str(image_path))
     interaction = Interaction(
         interaction_id=1,
         user_id=user_id,
@@ -195,7 +209,7 @@ def test_profile_extraction_prompt_keeps_image_encoding_after_storage_round_trip
     assert len(image_blocks) == 1
     assert (
         image_blocks[0]["image_url"]["url"]
-        == f"data:image/jpeg;base64,{image_encoding}"
+        == f"data:{expected_mime_type};base64,{image_encoding}"
     )
 
 

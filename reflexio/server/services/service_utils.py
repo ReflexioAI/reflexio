@@ -3,6 +3,8 @@ Utils for service layer
 """
 
 import ast
+import base64
+import binascii
 import json
 import logging
 import os
@@ -43,6 +45,35 @@ _CONTENT_ENCODING_NAME = "cl100k_base"
 _content_token_encoding: tiktoken.Encoding | None = None
 # Guards against logging the same malformed env value on every call.
 _INVALID_MAX_TOKENS_WARNED = False
+
+
+def _image_mime_type_from_bytes(image_bytes: bytes) -> str:
+    if image_bytes.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if image_bytes.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if image_bytes.startswith(b"RIFF") and image_bytes[8:12] == b"WEBP":
+        return "image/webp"
+    return "image/jpeg"
+
+
+def _image_data_url_from_encoding(image_encoding: str) -> str:
+    image_encoding = image_encoding.strip()
+    if image_encoding.startswith("data:image/"):
+        return image_encoding
+
+    compact_encoding = "".join(image_encoding.split())
+    prefix = compact_encoding[:64]
+    prefix += "=" * (-len(prefix) % 4)
+    try:
+        image_header = base64.b64decode(prefix)
+    except (binascii.Error, ValueError):
+        return f"data:image/jpeg;base64,{compact_encoding}"
+
+    mime_type = _image_mime_type_from_bytes(image_header)
+    return f"data:{mime_type};base64,{compact_encoding}"
 
 
 def _get_content_token_encoding() -> tiktoken.Encoding:
@@ -500,7 +531,9 @@ def construct_messages_from_interactions(
                 {
                     "type": "image_url",
                     "image_url": {
-                        "url": f"data:image/jpeg;base64,{last_interaction.image_encoding}"
+                        "url": _image_data_url_from_encoding(
+                            last_interaction.image_encoding
+                        )
                     },
                 }
             )

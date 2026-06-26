@@ -1,5 +1,6 @@
 """Extended tests for service_utils -- covers functions not tested in test_service_utils.py."""
 
+import base64
 from datetime import UTC, datetime
 from unittest.mock import MagicMock
 
@@ -112,6 +113,7 @@ def test_construct_messages_with_image_url():
 
 def test_construct_messages_with_image_encoding():
     pm = _make_prompt_manager()
+    image_encoding = base64.b64encode(b"RIFF\x00\x00\x00\x00WEBP").decode("ascii")
     interaction = Interaction(
         interaction_id=1,
         user_id="u1",
@@ -119,7 +121,7 @@ def test_construct_messages_with_image_encoding():
         content="describe this",
         role="user",
         created_at=int(datetime.now(UTC).timestamp()),
-        image_encoding="abc123base64data",
+        image_encoding=image_encoding,
     )
     config = MessageConstructionConfig(
         prompt_manager=pm,
@@ -132,7 +134,7 @@ def test_construct_messages_with_image_encoding():
     image_blocks = [b for b in user_msg["content"] if b.get("type") == "image_url"]
     assert len(image_blocks) == 1
     assert (
-        image_blocks[0]["image_url"]["url"] == "data:image/jpeg;base64,abc123base64data"
+        image_blocks[0]["image_url"]["url"] == f"data:image/webp;base64,{image_encoding}"
     )
 
 
