@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -26,14 +26,23 @@ class UserDetailDetector(Protocol):
 
 
 class UserDetailStripper(Protocol):
+    prompt_extra_instructions: str | None
+
     def strip_user_details(
         self,
         text: str,
         shared_mapping: dict[str, int] | None = None,
     ) -> StrippingResult: ...
 
+    def sanitize_aggregation_output_text(
+        self,
+        text: str | None,
+    ) -> tuple[str | None, int]: ...
+
 
 class PassthroughStripper:
+    prompt_extra_instructions: str | None = None
+
     def strip_user_details(
         self,
         text: str,
@@ -41,27 +50,35 @@ class PassthroughStripper:
     ) -> StrippingResult:
         return StrippingResult(text=text, detections=[])
 
-
-_STRIPPING_PLACEHOLDER_RE = re.compile(r"\[(EMAIL|PHONE|PERSON)_\d+\]")
-
-_PLACEHOLDER_GENERIC_TEXT: dict[str, str] = {
-    "EMAIL": "an email address",
-    "PHONE": "a phone number",
-    "PERSON": "a user",
-}
+    def sanitize_aggregation_output_text(
+        self,
+        text: str | None,
+    ) -> tuple[str | None, int]:
+        return text, 0
 
 
-def count_stripping_placeholders(text: str | None) -> int:
-    if text is None:
-        return 0
-    return len(_STRIPPING_PLACEHOLDER_RE.findall(text))
+UserDetailStripperFactory = Callable[[object], UserDetailStripper | None]
 
 
-def replace_stripping_placeholders(text: str | None) -> str | None:
-    if text is None:
-        return None
+def _default_user_detail_stripper_factory(
+    _configurator: object,
+) -> UserDetailStripper | None:
+    return None
 
-    def _replace(match: re.Match[str]) -> str:
-        return _PLACEHOLDER_GENERIC_TEXT.get(match.group(1), "a user")
 
-    return _STRIPPING_PLACEHOLDER_RE.sub(_replace, text)
+_user_detail_stripper_factory: UserDetailStripperFactory = (
+    _default_user_detail_stripper_factory
+)
+
+
+def set_user_detail_stripper_factory(factory: UserDetailStripperFactory) -> None:
+    """Register the deployment-specific aggregation stripper factory."""
+    global _user_detail_stripper_factory  # noqa: PLW0603
+    _user_detail_stripper_factory = factory
+
+
+def create_aggregation_user_detail_stripper(
+    configurator: object,
+) -> UserDetailStripper | None:
+    """Create the deployment-specific stripper for aggregation, if any."""
+    return _user_detail_stripper_factory(configurator)

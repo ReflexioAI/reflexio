@@ -537,19 +537,16 @@ class PlaybookGenerationService(
         )
 
         # Initialize and run aggregator (synchronous)
-        user_detail_stripper = (
-            self.request_context.configurator.create_user_detail_stripper()
+        from reflexio.server.services.playbook.user_detail_stripping import (
+            create_aggregation_user_detail_stripper,
         )
-        aggregation_prompt_extra_instructions = (
-            self.request_context.configurator.get_playbook_aggregation_prompt_extra_instructions()
+
+        user_detail_stripper = create_aggregation_user_detail_stripper(
+            self.request_context.configurator
         )
         aggregator_kwargs = {}
         if user_detail_stripper is not None:
             aggregator_kwargs["user_detail_stripper"] = user_detail_stripper
-        if aggregation_prompt_extra_instructions:
-            aggregator_kwargs["aggregation_prompt_extra_instructions"] = (
-                aggregation_prompt_extra_instructions
-            )
         aggregator = PlaybookAggregator(
             llm_client=self.client,
             request_context=self.request_context,

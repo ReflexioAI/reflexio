@@ -12,6 +12,7 @@ Targets coverage gaps in:
 """
 
 import logging
+import re
 from typing import Any
 from unittest.mock import ANY, MagicMock, call, patch
 
@@ -43,7 +44,6 @@ def _make_aggregator(
     storage: MagicMock | None = None,
     configurator: MagicMock | None = None,
     user_detail_stripper: Any | None = None,
-    aggregation_prompt_extra_instructions: str | None = None,
 ) -> Any:
     """Build an aggregator with fully mocked dependencies."""
     llm = MagicMock()
@@ -56,7 +56,6 @@ def _make_aggregator(
         request_context=ctx,
         agent_version="v1",
         user_detail_stripper=user_detail_stripper,
-        aggregation_prompt_extra_instructions=aggregation_prompt_extra_instructions,
     )
 
 
@@ -95,6 +94,9 @@ def _agent_playbook(
 
 
 class _MappingAwareStripper:
+    prompt_extra_instructions: str | None = None
+    _OUTPUT_MARKER_RE = re.compile(r"<<DETAIL_\d+>>")
+
     def __init__(self) -> None:
         self.calls: list[tuple[str, int]] = []
 
@@ -108,18 +110,29 @@ class _MappingAwareStripper:
         assert shared_mapping is not None
         if "Sarah" in text:
             shared_mapping.setdefault("sarah", len(shared_mapping) + 1)
-            text = text.replace("Sarah", f"[PERSON_{shared_mapping['sarah']}]")
+            text = text.replace("Sarah", f"<<DETAIL_{shared_mapping['sarah']}>>")
         if "Mike" in text:
             shared_mapping.setdefault("mike", len(shared_mapping) + 1)
-            text = text.replace("Mike", f"[PERSON_{shared_mapping['mike']}]")
+            text = text.replace("Mike", f"<<DETAIL_{shared_mapping['mike']}>>")
         if "sarah@acme.com" in text:
             shared_mapping.setdefault("email", len(shared_mapping) + 1)
-            text = text.replace("sarah@acme.com", f"[EMAIL_{shared_mapping['email']}]")
+            text = text.replace(
+                "sarah@acme.com", f"<<DETAIL_{shared_mapping['email']}>>"
+            )
         if "555-1234" in text:
             shared_mapping.setdefault("phone", len(shared_mapping) + 1)
-            text = text.replace("555-1234", f"[PHONE_{shared_mapping['phone']}]")
+            text = text.replace("555-1234", f"<<DETAIL_{shared_mapping['phone']}>>")
         self.calls.append((text, id(shared_mapping)))
         return StrippingResult(text=text, detections=[])
+
+    def sanitize_aggregation_output_text(
+        self,
+        text: str | None,
+    ) -> tuple[str | None, int]:
+        if text is None:
+            return None, 0
+        marker_count = len(self._OUTPUT_MARKER_RE.findall(text))
+        return self._OUTPUT_MARKER_RE.sub("a user detail", text), marker_count
 
 
 def test_user_detail_stripping_protocol_types_importable():
@@ -127,42 +140,54 @@ def test_user_detail_stripping_protocol_types_importable():
         DetectedEntity,
         PassthroughStripper,
         StrippingResult,
-        count_stripping_placeholders,
-        replace_stripping_placeholders,
+        create_aggregation_user_detail_stripper,
+        set_user_detail_stripper_factory,
     )
 
     result = PassthroughStripper().strip_user_details("keep this")
+    sanitized, sanitized_count = PassthroughStripper().sanitize_aggregation_output_text(
+        "keep this"
+    )
     entity = DetectedEntity(
         start=0,
         end=4,
-        entity_type="PERSON",
-        replacement="[PERSON_1]",
+        entity_type="USER_DETAIL",
+        replacement="<<DETAIL_1>>",
         confidence=1.0,
         source="test",
     )
 
     assert result == StrippingResult(text="keep this", detections=[])
+    assert sanitized == "keep this"
+    assert sanitized_count == 0
     assert entity.start == 0
     assert entity.end == 4
-    assert entity.replacement == "[PERSON_1]"
-    assert count_stripping_placeholders("[EMAIL_1] [PHONE_2] [PERSON_3]") == 3
-    assert (
-        replace_stripping_placeholders("[EMAIL_1] called [PHONE_2] for [PERSON_3]")
-        == "an email address called a phone number for a user"
-    )
+    assert entity.replacement == "<<DETAIL_1>>"
+    assert create_aggregation_user_detail_stripper(object()) is None
+
+    set_user_detail_stripper_factory(lambda _configurator: PassthroughStripper())
+    try:
+        assert isinstance(
+            create_aggregation_user_detail_stripper(object()), PassthroughStripper
+        )
+    finally:
+        set_user_detail_stripper_factory(lambda _configurator: None)
 
 
-def test_user_detail_stripper_sanitizes_cluster_and_existing_playbooks_for_prompt():
+def test_user_detail_stripper_sanitizes_cluster_playbooks_but_not_existing_agent_playbooks():
     stripper = _MappingAwareStripper()
     agg = _make_aggregator(user_detail_stripper=stripper)
     captured_messages: list[dict[str, str]] = []
+    captured_variables: dict[str, str] = {}
 
-    agg.request_context.prompt_manager.render_prompt.side_effect = (
-        lambda _prompt_id, variables: (
+    def render_prompt(_prompt_id: str, variables: dict[str, str]) -> str:
+        captured_variables.update(variables)
+        return (
             f"{variables['user_playbooks']}\n\nEXISTING:\n"
             f"{variables['existing_approved_playbooks']}"
         )
-    )
+
+    agg.request_context.prompt_manager.render_prompt.side_effect = render_prompt
     agg.client.generate_chat_response.side_effect = lambda messages, **_kwargs: (
         captured_messages.extend(messages)
         or PlaybookAggregationOutput(
@@ -210,10 +235,13 @@ def test_user_detail_stripper_sanitizes_cluster_and_existing_playbooks_for_promp
 
     assert len(result) == 1
     rendered_prompt = captured_messages[0]["content"]
-    assert "Sarah" not in rendered_prompt
-    assert "Mike" not in rendered_prompt
-    assert "[PERSON_1]" in rendered_prompt
-    assert "[PERSON_2]" in rendered_prompt
+    user_prompt = captured_variables["user_playbooks"]
+    existing_prompt = captured_variables["existing_approved_playbooks"]
+    assert "Sarah" not in user_prompt
+    assert "Mike" not in user_prompt
+    assert "<<DETAIL_1>>" in rendered_prompt
+    assert "<<DETAIL_2>>" in rendered_prompt
+    assert "Sarah already has a checklist playbook." in existing_prompt
     assert len({mapping_id for _text, mapping_id in stripper.calls}) == 1
     assert clusters[0][0].content == "Sarah prefers the safety checklist."
     assert existing[0].content == "Sarah already has a checklist playbook."
@@ -268,8 +296,8 @@ def test_user_detail_stripper_sanitizes_grouped_prompt_input():
     assert "Group 1" in rendered_prompt
     assert "Sarah" not in rendered_prompt
     assert "Mike" not in rendered_prompt
-    assert "[PERSON_1]" in rendered_prompt
-    assert "[PERSON_2]" in rendered_prompt
+    assert "<<DETAIL_1>>" in rendered_prompt
+    assert "<<DETAIL_2>>" in rendered_prompt
 
 
 def test_mock_llm_response_sanitizes_stripping_placeholders_before_storage():
@@ -294,24 +322,19 @@ def test_mock_llm_response_sanitizes_stripping_placeholders_before_storage():
 
     assert len(result) == 1
     playbook, _sources = result[0]
-    assert "[PERSON_" not in playbook.content
-    assert "[EMAIL_" not in playbook.content
-    assert "[PHONE_" not in playbook.content
-    assert "[PERSON_" not in (playbook.trigger or "")
-    assert "[PHONE_" not in (playbook.trigger or "")
-    assert "a user" in playbook.content
-    assert "an email address" in playbook.content
-    assert "a phone number" in playbook.content
+    assert "<<DETAIL_" not in playbook.content
+    assert "<<DETAIL_" not in (playbook.trigger or "")
+    assert "a user detail" in playbook.content
 
 
 def test_placeholder_leakage_is_replaced_before_response_logging_and_storage():
-    agg = _make_aggregator()
+    agg = _make_aggregator(user_detail_stripper=_MappingAwareStripper())
     agg.request_context.prompt_manager.render_prompt.return_value = "prompt"
     raw_response = PlaybookAggregationOutput(
         playbook=StructuredPlaybookContent(
-            content="- Ask [PERSON_1] to confirm via [EMAIL_2].",
-            trigger="When [PHONE_3] requests access.",
-            rationale="[PERSON_1], [EMAIL_2], and [PHONE_3] all hit this case.",
+            content="- Ask <<DETAIL_1>> to confirm via <<DETAIL_2>>.",
+            trigger="When <<DETAIL_3>> requests access.",
+            rationale="<<DETAIL_1>>, <<DETAIL_2>>, and <<DETAIL_3>> all hit this case.",
         )
     )
     agg.client.generate_chat_response.return_value = raw_response
@@ -319,50 +342,35 @@ def test_placeholder_leakage_is_replaced_before_response_logging_and_storage():
 
     with (
         patch(
-            "reflexio.server.services.playbook.playbook_aggregator.log_model_response"
+            "reflexio.server.services.playbook.components.aggregator.log_model_response"
         ) as mock_log_model_response,
         patch.dict("os.environ", {"MOCK_LLM_RESPONSE": ""}),
     ):
         result = agg._generate_playbook_from_cluster(cluster, "None")
 
     assert result is not None
-    assert "[PERSON_" not in result.content
-    assert "[EMAIL_" not in result.content
-    assert "[PHONE_" not in result.content
-    assert "[PERSON_" not in (result.trigger or "")
-    assert "[EMAIL_" not in (result.trigger or "")
-    assert "[PHONE_" not in (result.trigger or "")
-    assert "[PERSON_" not in (result.rationale or "")
-    assert "[EMAIL_" not in (result.rationale or "")
-    assert "[PHONE_" not in (result.rationale or "")
-    assert "a user" in result.content
-    assert "an email address" in result.content
-    assert "a phone number" in (result.trigger or "")
+    assert "<<DETAIL_" not in result.content
+    assert "<<DETAIL_" not in (result.trigger or "")
+    assert "<<DETAIL_" not in (result.rationale or "")
+    assert "a user detail" in result.content
+    assert "a user detail" in (result.trigger or "")
     logged_response = mock_log_model_response.call_args.args[2]
     assert isinstance(logged_response, PlaybookAggregationOutput)
     assert logged_response.playbook is not None
-    assert "[PERSON_" not in (logged_response.playbook.content or "")
-    assert "[EMAIL_" not in (logged_response.playbook.content or "")
-    assert "[PHONE_" not in (logged_response.playbook.content or "")
-    assert "[PERSON_" not in (logged_response.playbook.trigger or "")
-    assert "[EMAIL_" not in (logged_response.playbook.trigger or "")
-    assert "[PHONE_" not in (logged_response.playbook.trigger or "")
-    assert "[PERSON_" not in (logged_response.playbook.rationale or "")
-    assert "[EMAIL_" not in (logged_response.playbook.rationale or "")
-    assert "[PHONE_" not in (logged_response.playbook.rationale or "")
+    assert "<<DETAIL_" not in (logged_response.playbook.content or "")
+    assert "<<DETAIL_" not in (logged_response.playbook.trigger or "")
+    assert "<<DETAIL_" not in (logged_response.playbook.rationale or "")
 
 
 def test_placeholder_leakage_is_replaced_before_string_fallback_logging():
-    agg = _make_aggregator()
+    agg = _make_aggregator(user_detail_stripper=_MappingAwareStripper())
     agg.request_context.prompt_manager.render_prompt.return_value = "prompt"
-    agg.client.generate_chat_response.return_value = (
-        "invalid [EMAIL_7] and [PHONE_8] response"
-    )
+    agg.client.generate_chat_response.return_value = "invalid <<DETAIL_7>> response"
     cluster = [_raw(rid=1)]
 
     with (
         patch(
-            "reflexio.server.services.playbook.playbook_aggregator.log_model_response"
+            "reflexio.server.services.playbook.components.aggregator.log_model_response"
         ) as mock_log_model_response,
         patch.dict("os.environ", {"MOCK_LLM_RESPONSE": ""}),
     ):
@@ -370,24 +378,24 @@ def test_placeholder_leakage_is_replaced_before_string_fallback_logging():
 
     assert result is None
     logged_response = mock_log_model_response.call_args.args[2]
-    assert logged_response == "invalid an email address and a phone number response"
+    assert logged_response == "invalid a user detail response"
 
 
 def test_placeholder_leakage_is_replaced_before_dict_fallback_logging():
-    agg = _make_aggregator()
+    agg = _make_aggregator(user_detail_stripper=_MappingAwareStripper())
     agg.request_context.prompt_manager.render_prompt.return_value = "prompt"
     agg.client.generate_chat_response.return_value = {
         "playbook": {
-            "content": "Ask [EMAIL_1] to confirm.",
-            "rationale": ["[PHONE_2] saw this before."],
+            "content": "Ask <<DETAIL_1>> to confirm.",
+            "rationale": ["<<DETAIL_2>> saw this before."],
         },
-        "[PERSON_3]": "key should not leak either",
+        "<<DETAIL_3>>": "key should not leak either",
     }
     cluster = [_raw(rid=1)]
 
     with (
         patch(
-            "reflexio.server.services.playbook.playbook_aggregator.log_model_response"
+            "reflexio.server.services.playbook.components.aggregator.log_model_response"
         ) as mock_log_model_response,
         patch.dict("os.environ", {"MOCK_LLM_RESPONSE": ""}),
     ):
@@ -395,53 +403,63 @@ def test_placeholder_leakage_is_replaced_before_dict_fallback_logging():
 
     assert result is None
     logged_response = mock_log_model_response.call_args.args[2]
-    assert "[PERSON_" not in repr(logged_response)
-    assert "[EMAIL_" not in repr(logged_response)
-    assert "[PHONE_" not in repr(logged_response)
-    assert "a user" in repr(logged_response)
-    assert "an email address" in repr(logged_response)
-    assert "a phone number" in repr(logged_response)
+    assert "<<DETAIL_" not in repr(logged_response)
+    assert "a user detail" in repr(logged_response)
 
 
 def test_placeholder_leakage_is_replaced_before_nested_sequence_logging():
-    agg = _make_aggregator()
+    agg = _make_aggregator(user_detail_stripper=_MappingAwareStripper())
 
     sanitized, placeholder_count = agg._sanitize_aggregation_log_value(
         (
-            "Ask [PERSON_1] to confirm.",
-            ["Notify [EMAIL_2].", {"owner": "[PHONE_3]"}],
+            "Ask <<DETAIL_1>> to confirm.",
+            ["Notify <<DETAIL_2>>.", {"owner": "<<DETAIL_3>>"}],
         )
     )
 
     assert placeholder_count == 3
-    assert "[PERSON_" not in repr(sanitized)
-    assert "[EMAIL_" not in repr(sanitized)
-    assert "[PHONE_" not in repr(sanitized)
-    assert "a user" in repr(sanitized)
-    assert "an email address" in repr(sanitized)
-    assert "a phone number" in repr(sanitized)
+    assert "<<DETAIL_" not in repr(sanitized)
+    assert "a user detail" in repr(sanitized)
+
+
+def test_placeholder_leakage_warning_does_not_write_usage_event(caplog):
+    agg = _make_aggregator()
+
+    with (
+        caplog.at_level(
+            logging.WARNING,
+            logger="reflexio.server.services.playbook.components.aggregator",
+        ),
+        patch(
+            "reflexio.server.services.playbook.components.aggregator.record_usage_event"
+        ) as mock_record_usage_event,
+    ):
+        agg._record_placeholder_leakage(3)
+
+    assert "Replaced 3 residual user-detail placeholders" in caplog.text
+    mock_record_usage_event.assert_not_called()
 
 
 def test_placeholder_leakage_is_replaced_before_exception_logging(caplog):
-    agg = _make_aggregator()
+    agg = _make_aggregator(user_detail_stripper=_MappingAwareStripper())
     agg.request_context.prompt_manager.render_prompt.return_value = "prompt"
     agg.client.generate_chat_response.side_effect = RuntimeError(
-        "failed after [PHONE_9] appeared in parse error"
+        "failed after <<DETAIL_9>> appeared in parse error"
     )
     cluster = [_raw(rid=1)]
 
     with (
         caplog.at_level(
             logging.ERROR,
-            logger="reflexio.server.services.playbook.playbook_aggregator",
+            logger="reflexio.server.services.playbook.components.aggregator",
         ),
         patch.dict("os.environ", {"MOCK_LLM_RESPONSE": ""}),
     ):
         result = agg._generate_playbook_from_cluster(cluster, "None")
 
     assert result is None
-    assert "[PHONE_" not in caplog.text
-    assert "a phone number" in caplog.text
+    assert "<<DETAIL_" not in caplog.text
+    assert "a user detail" in caplog.text
 
 
 # ---------------------------------------------------------------------------
@@ -1577,23 +1595,19 @@ def test_playbook_aggregation_prompt_generalizes_direct_identifiers():
     assert 'Return {"playbook": null}' in out
 
 
-def test_playbook_aggregation_prompt_does_not_mention_stripping_placeholders_by_default():
-    """Default OSS prompt should stay generic because OSS does not create placeholders."""
+def test_playbook_aggregation_prompt_does_not_add_stripping_guidance_by_default():
+    """Default OSS prompt should stay generic because OSS does not create markers."""
     from reflexio.server.prompt.prompt_manager import PromptManager
 
     out = PromptManager().render_prompt(
         "playbook_aggregation",
         {
             "existing_approved_playbooks": "[]",
-            "user_playbooks": "TRIGGER conditions:\n- When [PERSON_1] opens a support ticket with [PHONE_1] and [EMAIL_1]",
+            "user_playbooks": "TRIGGER conditions:\n- When direct identifiers appear in source notes",
             "aggregation_prompt_extra_instructions": "",
         },
     )
 
-    assert "[PERSON_N]" not in out
-    assert "[PHONE_N]" not in out
-    assert "[EMAIL_N]" not in out
-    assert "anonymized individuals" not in out
     assert "behavior.\n\n- Preserve the reusable procedure" in out
 
 
@@ -1619,11 +1633,12 @@ def test_aggregation_prompt_extra_instructions_render_before_next_bullet():
 
 
 def test_aggregation_prompt_extra_instructions_are_rendered_when_injected():
-    agg = _make_aggregator(
-        aggregation_prompt_extra_instructions=(
-            "Anonymized placeholders like `[PERSON_N]` represent anonymized individuals."
+    class StripperWithPromptInstructions(_MappingAwareStripper):
+        prompt_extra_instructions = (
+            "Anonymized markers from this stripper represent user details."
         )
-    )
+
+    agg = _make_aggregator(user_detail_stripper=StripperWithPromptInstructions())
     captured_variables: dict[str, str] = {}
 
     def render_prompt(_prompt_id: str, variables: dict[str, str]) -> str:
@@ -1643,8 +1658,19 @@ def test_aggregation_prompt_extra_instructions_are_rendered_when_injected():
 
     assert result is not None
     assert captured_variables["aggregation_prompt_extra_instructions"].startswith(
-        "Anonymized placeholders"
+        "Anonymized markers"
     )
+
+
+def test_aggregation_prompt_extra_instructions_ignore_non_string_values():
+    class StripperWithInvalidPromptInstructions(_MappingAwareStripper):
+        prompt_extra_instructions: Any = object()
+
+    agg = _make_aggregator(
+        user_detail_stripper=StripperWithInvalidPromptInstructions()
+    )
+
+    assert agg.aggregation_prompt_extra_instructions == ""
 
 
 def test_playbook_aggregation_prompt_has_privacy_self_check_before_output():

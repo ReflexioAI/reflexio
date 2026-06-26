@@ -33,11 +33,7 @@ from reflexio.server.services.playbook.playbook_service_utils import (
     StructuredPlaybookContent,
     ensure_playbook_content,
 )
-from reflexio.server.services.playbook.user_detail_stripping import (
-    UserDetailStripper,
-    count_stripping_placeholders,
-    replace_stripping_placeholders,
-)
+from reflexio.server.services.playbook.user_detail_stripping import UserDetailStripper
 from reflexio.server.services.service_utils import log_model_response
 from reflexio.server.tracing import capture_anomaly, sentry_tags
 from reflexio.server.usage_metrics import record_usage_event
@@ -57,7 +53,6 @@ class PlaybookAggregator:
         request_context: RequestContext,
         agent_version: str,
         user_detail_stripper: UserDetailStripper | None = None,
-        aggregation_prompt_extra_instructions: str | None = None,
     ) -> None:
         self.client = llm_client
         self.storage = request_context.storage
@@ -65,10 +60,13 @@ class PlaybookAggregator:
         self.request_context = request_context
         self.agent_version = agent_version
         self.user_detail_stripper = user_detail_stripper
+        prompt_extra_instructions = getattr(
+            user_detail_stripper, "prompt_extra_instructions", None
+        )
+        if not isinstance(prompt_extra_instructions, str):
+            prompt_extra_instructions = None
         self.aggregation_prompt_extra_instructions = (
-            self._format_prompt_extra_instructions(
-                aggregation_prompt_extra_instructions
-            )
+            self._format_prompt_extra_instructions(prompt_extra_instructions)
         )
 
     # ===============================
@@ -241,29 +239,13 @@ class PlaybookAggregator:
             }
         )
 
-    def _strip_agent_playbook_for_prompt(
+    def _sanitize_aggregation_output_text(
         self,
-        playbook: AgentPlaybook,
-        shared_mapping: dict[str, int],
-    ) -> AgentPlaybook:
+        text: str | None,
+    ) -> tuple[str | None, int]:
         if self.user_detail_stripper is None:
-            return playbook
-        return playbook.model_copy(
-            update={
-                "content": self._strip_prompt_field(playbook.content, shared_mapping)
-                or ""
-            }
-        )
-
-    @staticmethod
-    def _format_existing_approved_playbooks(
-        existing_approved_playbooks: list[AgentPlaybook],
-    ) -> str:
-        return (
-            "\n".join([f"- {fb.content}" for fb in existing_approved_playbooks])
-            if existing_approved_playbooks
-            else "None"
-        )
+            return text, 0
+        return self.user_detail_stripper.sanitize_aggregation_output_text(text)
 
     def _sanitize_aggregation_response(
         self, response: PlaybookAggregationOutput
@@ -277,8 +259,8 @@ class PlaybookAggregator:
         for field_name, value in structured.model_dump().items():
             if not isinstance(value, str):
                 continue
-            placeholder_count += count_stripping_placeholders(value)
-            sanitized = replace_stripping_placeholders(value)
+            sanitized, field_count = self._sanitize_aggregation_output_text(value)
+            placeholder_count += field_count
             if sanitized != value:
                 updates[field_name] = sanitized
 
@@ -290,8 +272,7 @@ class PlaybookAggregator:
 
     def _sanitize_aggregation_log_value(self, value: object) -> tuple[object, int]:
         if isinstance(value, str):
-            placeholder_count = count_stripping_placeholders(value)
-            return replace_stripping_placeholders(value), placeholder_count
+            return self._sanitize_aggregation_output_text(value)
 
         if isinstance(value, dict):
             sanitized: dict[object, object] = {}
@@ -329,15 +310,6 @@ class PlaybookAggregator:
         logger.warning(
             "Replaced %d residual user-detail placeholders in aggregated playbook output",
             placeholder_count,
-        )
-        record_usage_event(
-            org_id=self.request_context.org_id,
-            event_name="placeholder_leakage_count",
-            event_category="aggregation",
-            pipeline="playbook",
-            agent_version=self.agent_version,
-            outcome="replaced",
-            count_value=placeholder_count,
         )
 
     @staticmethod
@@ -1268,28 +1240,20 @@ class PlaybookAggregator:
     ) -> list[tuple[AgentPlaybook, list[UserPlaybook]]]:
         """Generate agent playbooks while preserving their exact source cluster."""
         new_playbooks: list[tuple[AgentPlaybook, list[UserPlaybook]]] = []
-        unstripped_existing_playbooks_str = (
-            self._format_existing_approved_playbooks(existing_approved_playbooks)
-            if self.user_detail_stripper is None
-            else None
+        approved_playbooks_str = (
+            "\n".join([f"- {fb.content}" for fb in existing_approved_playbooks])
+            if existing_approved_playbooks
+            else "None"
         )
         for cluster_playbooks in clusters.values():
             shared_mapping: dict[str, int] = {}
             if self.user_detail_stripper is None:
                 prompt_cluster_playbooks = cluster_playbooks
-                approved_playbooks_str = unstripped_existing_playbooks_str or "None"
             else:
                 prompt_cluster_playbooks = [
                     self._strip_user_playbook_for_prompt(playbook, shared_mapping)
                     for playbook in cluster_playbooks
                 ]
-                prompt_existing_playbooks = [
-                    self._strip_agent_playbook_for_prompt(playbook, shared_mapping)
-                    for playbook in existing_approved_playbooks
-                ]
-                approved_playbooks_str = self._format_existing_approved_playbooks(
-                    prompt_existing_playbooks
-                )
 
             playbook = self._generate_playbook_from_cluster(
                 prompt_cluster_playbooks,
