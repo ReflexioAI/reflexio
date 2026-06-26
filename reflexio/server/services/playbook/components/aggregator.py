@@ -291,7 +291,7 @@ class PlaybookAggregator:
     def _sanitize_aggregation_log_value(self, value: object) -> tuple[object, int]:
         if isinstance(value, str):
             placeholder_count = count_stripping_placeholders(value)
-            return replace_stripping_placeholders(value) or "", placeholder_count
+            return replace_stripping_placeholders(value), placeholder_count
 
         if isinstance(value, dict):
             sanitized: dict[object, object] = {}

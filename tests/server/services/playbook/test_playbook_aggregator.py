@@ -112,6 +112,12 @@ class _MappingAwareStripper:
         if "Mike" in text:
             shared_mapping.setdefault("mike", len(shared_mapping) + 1)
             text = text.replace("Mike", f"[PERSON_{shared_mapping['mike']}]")
+        if "sarah@acme.com" in text:
+            shared_mapping.setdefault("email", len(shared_mapping) + 1)
+            text = text.replace("sarah@acme.com", f"[EMAIL_{shared_mapping['email']}]")
+        if "555-1234" in text:
+            shared_mapping.setdefault("phone", len(shared_mapping) + 1)
+            text = text.replace("555-1234", f"[PHONE_{shared_mapping['phone']}]")
         self.calls.append((text, id(shared_mapping)))
         return StrippingResult(text=text, detections=[])
 
@@ -266,7 +272,7 @@ def test_user_detail_stripper_sanitizes_grouped_prompt_input():
     assert "[PERSON_2]" in rendered_prompt
 
 
-def test_mock_llm_response_sanitizes_person_placeholders_before_storage():
+def test_mock_llm_response_sanitizes_stripping_placeholders_before_storage():
     stripper = _MappingAwareStripper()
     agg = _make_aggregator(user_detail_stripper=stripper)
     clusters = {
@@ -276,9 +282,9 @@ def test_mock_llm_response_sanitizes_person_placeholders_before_storage():
                 agent_version="v1",
                 request_id="req-1",
                 playbook_name="test_fb",
-                content="Sarah prefers the safety checklist.",
-                trigger="When Sarah opens a ticket.",
-                rationale="Sarah missed one step.",
+                content="Sarah prefers the safety checklist for sarah@acme.com and 555-1234.",
+                trigger="When Sarah opens a ticket with 555-1234.",
+                rationale="Sarah missed one step for sarah@acme.com.",
             )
         ]
     }
@@ -289,8 +295,13 @@ def test_mock_llm_response_sanitizes_person_placeholders_before_storage():
     assert len(result) == 1
     playbook, _sources = result[0]
     assert "[PERSON_" not in playbook.content
+    assert "[EMAIL_" not in playbook.content
+    assert "[PHONE_" not in playbook.content
     assert "[PERSON_" not in (playbook.trigger or "")
+    assert "[PHONE_" not in (playbook.trigger or "")
     assert "a user" in playbook.content
+    assert "an email address" in playbook.content
+    assert "a phone number" in playbook.content
 
 
 def test_placeholder_leakage_is_replaced_before_response_logging_and_storage():
@@ -1566,7 +1577,7 @@ def test_playbook_aggregation_prompt_generalizes_direct_identifiers():
     assert 'Return {"playbook": null}' in out
 
 
-def test_playbook_aggregation_prompt_does_not_mention_person_placeholders_by_default():
+def test_playbook_aggregation_prompt_does_not_mention_stripping_placeholders_by_default():
     """Default OSS prompt should stay generic because OSS does not create placeholders."""
     from reflexio.server.prompt.prompt_manager import PromptManager
 
@@ -1574,15 +1585,37 @@ def test_playbook_aggregation_prompt_does_not_mention_person_placeholders_by_def
         "playbook_aggregation",
         {
             "existing_approved_playbooks": "[]",
-            "user_playbooks": "TRIGGER conditions:\n- When [PERSON_1] opens a support ticket",
+            "user_playbooks": "TRIGGER conditions:\n- When [PERSON_1] opens a support ticket with [PHONE_1] and [EMAIL_1]",
             "aggregation_prompt_extra_instructions": "",
         },
     )
 
     assert "[PERSON_N]" not in out
+    assert "[PHONE_N]" not in out
+    assert "[EMAIL_N]" not in out
     assert "anonymized individuals" not in out
-    assert "behavior.\n- Preserve the reusable procedure" in out
-    assert "behavior.\n\n- Preserve the reusable procedure" not in out
+    assert "behavior.\n\n- Preserve the reusable procedure" in out
+
+
+def test_aggregation_prompt_extra_instructions_render_before_next_bullet():
+    from reflexio.server.prompt.prompt_manager import PromptManager
+
+    out = PromptManager().render_prompt(
+        "playbook_aggregation",
+        {
+            "existing_approved_playbooks": "[]",
+            "user_playbooks": "sample",
+            "aggregation_prompt_extra_instructions": (
+                "Extra guidance without trailing newline"
+            ),
+        },
+    )
+
+    assert (
+        "Extra guidance without trailing newline\n- Preserve the reusable procedure"
+        in out
+    )
+    assert "newline- Preserve the reusable procedure" not in out
 
 
 def test_aggregation_prompt_extra_instructions_are_rendered_when_injected():
