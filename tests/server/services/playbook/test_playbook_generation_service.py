@@ -80,6 +80,8 @@ def _service_for_inline_aggregation(configurator: Any) -> PlaybookGenerationServ
 def test_inline_aggregation_default_path_does_not_inject_stripper():
     configurator = MagicMock()
     configurator.get_config.return_value = _aggregation_enabled_config()
+    configurator.create_user_detail_stripper.return_value = None
+    configurator.get_playbook_aggregation_prompt_extra_instructions.return_value = None
     service = _service_for_inline_aggregation(configurator)
     created_kwargs: list[dict[str, Any]] = []
 
@@ -116,6 +118,9 @@ def test_inline_aggregation_injects_configured_stripper():
         def create_user_detail_stripper(self) -> PassthroughStripper:
             return stripper
 
+        def get_playbook_aggregation_prompt_extra_instructions(self) -> None:
+            return None
+
     service = _service_for_inline_aggregation(ConfiguratorWithStripper())
     created_kwargs: list[dict[str, Any]] = []
 
@@ -146,6 +151,9 @@ def test_inline_aggregation_injects_configured_prompt_extra_instructions():
     class ConfiguratorWithExtraInstructions:
         def get_config(self) -> Config:
             return _aggregation_enabled_config()
+
+        def create_user_detail_stripper(self) -> None:
+            return None
 
         def get_playbook_aggregation_prompt_extra_instructions(self) -> str:
             return "Extra aggregation instruction."

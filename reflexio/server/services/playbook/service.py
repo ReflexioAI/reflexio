@@ -38,10 +38,6 @@ from reflexio.server.services.playbook.playbook_service_utils import (
     format_expert_comparison_pairs,
     has_expert_content,
 )
-from reflexio.server.services.playbook.user_detail_stripping import (
-    create_configured_user_detail_stripper,
-    get_configured_playbook_aggregation_prompt_extra_instructions,
-)
 from reflexio.server.services.service_utils import (
     extract_interactions_from_request_interaction_data_models,
     format_sessions_to_history_string,
@@ -541,13 +537,11 @@ class PlaybookGenerationService(
         )
 
         # Initialize and run aggregator (synchronous)
-        user_detail_stripper = create_configured_user_detail_stripper(
-            self.request_context.configurator
+        user_detail_stripper = (
+            self.request_context.configurator.create_user_detail_stripper()
         )
         aggregation_prompt_extra_instructions = (
-            get_configured_playbook_aggregation_prompt_extra_instructions(
-                self.request_context.configurator
-            )
+            self.request_context.configurator.get_playbook_aggregation_prompt_extra_instructions()
         )
         aggregator_kwargs = {}
         if user_detail_stripper is not None:

@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Protocol, cast
+from typing import Protocol
 
 
 @dataclass(frozen=True)
@@ -43,48 +42,26 @@ class PassthroughStripper:
         return StrippingResult(text=text, detections=[])
 
 
-def create_configured_user_detail_stripper(
-    configurator: object,
-) -> UserDetailStripper | None:
-    if not hasattr(type(configurator), "create_user_detail_stripper"):
-        return None
-    create_stripper = getattr(configurator, "create_user_detail_stripper", None)
-    if not callable(create_stripper):
-        return None
-    typed_create_stripper = cast(
-        "Callable[[], UserDetailStripper | None]", create_stripper
-    )
-    return typed_create_stripper()
+_STRIPPING_PLACEHOLDER_RE = re.compile(r"\[(EMAIL|PHONE|PERSON)_\d+\]")
+
+_PLACEHOLDER_GENERIC_TEXT: dict[str, str] = {
+    "EMAIL": "an email address",
+    "PHONE": "a phone number",
+    "PERSON": "a user",
+}
 
 
-def get_configured_playbook_aggregation_prompt_extra_instructions(
-    configurator: object,
-) -> str | None:
-    if not hasattr(
-        type(configurator), "get_playbook_aggregation_prompt_extra_instructions"
-    ):
-        return None
-    get_instructions = getattr(
-        configurator,
-        "get_playbook_aggregation_prompt_extra_instructions",
-        None,
-    )
-    if not callable(get_instructions):
-        return None
-    typed_get_instructions = cast("Callable[[], str | None]", get_instructions)
-    return typed_get_instructions()
-
-
-_PERSON_PLACEHOLDER_RE = re.compile(r"\[PERSON_\d+\]")
-
-
-def count_person_placeholders(text: str | None) -> int:
+def count_stripping_placeholders(text: str | None) -> int:
     if text is None:
         return 0
-    return len(_PERSON_PLACEHOLDER_RE.findall(text))
+    return len(_STRIPPING_PLACEHOLDER_RE.findall(text))
 
 
-def replace_person_placeholders(text: str | None) -> str | None:
+def replace_stripping_placeholders(text: str | None) -> str | None:
     if text is None:
         return None
-    return _PERSON_PLACEHOLDER_RE.sub("a user", text)
+
+    def _replace(match: re.Match[str]) -> str:
+        return _PLACEHOLDER_GENERIC_TEXT.get(match.group(1), "a user")
+
+    return _STRIPPING_PLACEHOLDER_RE.sub(_replace, text)

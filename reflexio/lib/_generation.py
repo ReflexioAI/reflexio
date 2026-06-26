@@ -44,18 +44,12 @@ class GenerationMixin(ReflexioBase):
         from reflexio.server.services.playbook.playbook_service_utils import (
             PlaybookAggregatorRequest,
         )
-        from reflexio.server.services.playbook.user_detail_stripping import (
-            create_configured_user_detail_stripper,
-            get_configured_playbook_aggregation_prompt_extra_instructions,
-        )
 
-        user_detail_stripper = create_configured_user_detail_stripper(
-            self.request_context.configurator
+        user_detail_stripper = (
+            self.request_context.configurator.create_user_detail_stripper()
         )
         aggregation_prompt_extra_instructions = (
-            get_configured_playbook_aggregation_prompt_extra_instructions(
-                self.request_context.configurator
-            )
+            self.request_context.configurator.get_playbook_aggregation_prompt_extra_instructions()
         )
         aggregator_kwargs = {}
         if user_detail_stripper is not None:

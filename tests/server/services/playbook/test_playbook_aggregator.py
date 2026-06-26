@@ -121,6 +121,8 @@ def test_user_detail_stripping_protocol_types_importable():
         DetectedEntity,
         PassthroughStripper,
         StrippingResult,
+        count_stripping_placeholders,
+        replace_stripping_placeholders,
     )
 
     result = PassthroughStripper().strip_user_details("keep this")
@@ -137,6 +139,11 @@ def test_user_detail_stripping_protocol_types_importable():
     assert entity.start == 0
     assert entity.end == 4
     assert entity.replacement == "[PERSON_1]"
+    assert count_stripping_placeholders("[EMAIL_1] [PHONE_2] [PERSON_3]") == 3
+    assert (
+        replace_stripping_placeholders("[EMAIL_1] called [PHONE_2] for [PERSON_3]")
+        == "an email address called a phone number for a user"
+    )
 
 
 def test_user_detail_stripper_sanitizes_cluster_and_existing_playbooks_for_prompt():
@@ -291,9 +298,9 @@ def test_placeholder_leakage_is_replaced_before_response_logging_and_storage():
     agg.request_context.prompt_manager.render_prompt.return_value = "prompt"
     raw_response = PlaybookAggregationOutput(
         playbook=StructuredPlaybookContent(
-            content="- Ask [PERSON_1] to confirm the workflow.",
-            trigger="When [PERSON_2] requests access.",
-            rationale="[PERSON_1] and [PERSON_2] both hit this case.",
+            content="- Ask [PERSON_1] to confirm via [EMAIL_2].",
+            trigger="When [PHONE_3] requests access.",
+            rationale="[PERSON_1], [EMAIL_2], and [PHONE_3] all hit this case.",
         )
     )
     agg.client.generate_chat_response.return_value = raw_response
@@ -309,21 +316,37 @@ def test_placeholder_leakage_is_replaced_before_response_logging_and_storage():
 
     assert result is not None
     assert "[PERSON_" not in result.content
+    assert "[EMAIL_" not in result.content
+    assert "[PHONE_" not in result.content
     assert "[PERSON_" not in (result.trigger or "")
+    assert "[EMAIL_" not in (result.trigger or "")
+    assert "[PHONE_" not in (result.trigger or "")
     assert "[PERSON_" not in (result.rationale or "")
+    assert "[EMAIL_" not in (result.rationale or "")
+    assert "[PHONE_" not in (result.rationale or "")
     assert "a user" in result.content
+    assert "an email address" in result.content
+    assert "a phone number" in (result.trigger or "")
     logged_response = mock_log_model_response.call_args.args[2]
     assert isinstance(logged_response, PlaybookAggregationOutput)
     assert logged_response.playbook is not None
     assert "[PERSON_" not in (logged_response.playbook.content or "")
+    assert "[EMAIL_" not in (logged_response.playbook.content or "")
+    assert "[PHONE_" not in (logged_response.playbook.content or "")
     assert "[PERSON_" not in (logged_response.playbook.trigger or "")
+    assert "[EMAIL_" not in (logged_response.playbook.trigger or "")
+    assert "[PHONE_" not in (logged_response.playbook.trigger or "")
     assert "[PERSON_" not in (logged_response.playbook.rationale or "")
+    assert "[EMAIL_" not in (logged_response.playbook.rationale or "")
+    assert "[PHONE_" not in (logged_response.playbook.rationale or "")
 
 
 def test_placeholder_leakage_is_replaced_before_string_fallback_logging():
     agg = _make_aggregator()
     agg.request_context.prompt_manager.render_prompt.return_value = "prompt"
-    agg.client.generate_chat_response.return_value = "invalid [PERSON_7] response"
+    agg.client.generate_chat_response.return_value = (
+        "invalid [EMAIL_7] and [PHONE_8] response"
+    )
     cluster = [_raw(rid=1)]
 
     with (
@@ -336,7 +359,7 @@ def test_placeholder_leakage_is_replaced_before_string_fallback_logging():
 
     assert result is None
     logged_response = mock_log_model_response.call_args.args[2]
-    assert logged_response == "invalid a user response"
+    assert logged_response == "invalid an email address and a phone number response"
 
 
 def test_placeholder_leakage_is_replaced_before_dict_fallback_logging():
@@ -344,8 +367,8 @@ def test_placeholder_leakage_is_replaced_before_dict_fallback_logging():
     agg.request_context.prompt_manager.render_prompt.return_value = "prompt"
     agg.client.generate_chat_response.return_value = {
         "playbook": {
-            "content": "Ask [PERSON_1] to confirm.",
-            "rationale": ["[PERSON_2] saw this before."],
+            "content": "Ask [EMAIL_1] to confirm.",
+            "rationale": ["[PHONE_2] saw this before."],
         },
         "[PERSON_3]": "key should not leak either",
     }
@@ -362,7 +385,11 @@ def test_placeholder_leakage_is_replaced_before_dict_fallback_logging():
     assert result is None
     logged_response = mock_log_model_response.call_args.args[2]
     assert "[PERSON_" not in repr(logged_response)
+    assert "[EMAIL_" not in repr(logged_response)
+    assert "[PHONE_" not in repr(logged_response)
     assert "a user" in repr(logged_response)
+    assert "an email address" in repr(logged_response)
+    assert "a phone number" in repr(logged_response)
 
 
 def test_placeholder_leakage_is_replaced_before_nested_sequence_logging():
@@ -371,20 +398,24 @@ def test_placeholder_leakage_is_replaced_before_nested_sequence_logging():
     sanitized, placeholder_count = agg._sanitize_aggregation_log_value(
         (
             "Ask [PERSON_1] to confirm.",
-            ["Notify [PERSON_2].", {"owner": "[PERSON_3]"}],
+            ["Notify [EMAIL_2].", {"owner": "[PHONE_3]"}],
         )
     )
 
     assert placeholder_count == 3
     assert "[PERSON_" not in repr(sanitized)
+    assert "[EMAIL_" not in repr(sanitized)
+    assert "[PHONE_" not in repr(sanitized)
     assert "a user" in repr(sanitized)
+    assert "an email address" in repr(sanitized)
+    assert "a phone number" in repr(sanitized)
 
 
 def test_placeholder_leakage_is_replaced_before_exception_logging(caplog):
     agg = _make_aggregator()
     agg.request_context.prompt_manager.render_prompt.return_value = "prompt"
     agg.client.generate_chat_response.side_effect = RuntimeError(
-        "failed after [PERSON_9] appeared in parse error"
+        "failed after [PHONE_9] appeared in parse error"
     )
     cluster = [_raw(rid=1)]
 
@@ -398,8 +429,8 @@ def test_placeholder_leakage_is_replaced_before_exception_logging(caplog):
         result = agg._generate_playbook_from_cluster(cluster, "None")
 
     assert result is None
-    assert "[PERSON_" not in caplog.text
-    assert "a user" in caplog.text
+    assert "[PHONE_" not in caplog.text
+    assert "a phone number" in caplog.text
 
 
 # ---------------------------------------------------------------------------

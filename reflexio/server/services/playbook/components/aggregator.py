@@ -35,8 +35,8 @@ from reflexio.server.services.playbook.playbook_service_utils import (
 )
 from reflexio.server.services.playbook.user_detail_stripping import (
     UserDetailStripper,
-    count_person_placeholders,
-    replace_person_placeholders,
+    count_stripping_placeholders,
+    replace_stripping_placeholders,
 )
 from reflexio.server.services.service_utils import log_model_response
 from reflexio.server.tracing import capture_anomaly, sentry_tags
@@ -277,8 +277,8 @@ class PlaybookAggregator:
         for field_name, value in structured.model_dump().items():
             if not isinstance(value, str):
                 continue
-            placeholder_count += count_person_placeholders(value)
-            sanitized = replace_person_placeholders(value)
+            placeholder_count += count_stripping_placeholders(value)
+            sanitized = replace_stripping_placeholders(value)
             if sanitized != value:
                 updates[field_name] = sanitized
 
@@ -290,8 +290,8 @@ class PlaybookAggregator:
 
     def _sanitize_aggregation_log_value(self, value: object) -> tuple[object, int]:
         if isinstance(value, str):
-            placeholder_count = count_person_placeholders(value)
-            return replace_person_placeholders(value) or "", placeholder_count
+            placeholder_count = count_stripping_placeholders(value)
+            return replace_stripping_placeholders(value) or "", placeholder_count
 
         if isinstance(value, dict):
             sanitized: dict[object, object] = {}

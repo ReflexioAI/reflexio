@@ -38,6 +38,8 @@ def _make_mixin(*, storage_configured: bool = True) -> GenerationMixin:
     mock_request_context.org_id = "test_org"
     mock_request_context.storage = mock_storage if storage_configured else None
     mock_request_context.is_storage_configured.return_value = storage_configured
+    mock_request_context.configurator.create_user_detail_stripper.return_value = None
+    mock_request_context.configurator.get_playbook_aggregation_prompt_extra_instructions.return_value = None
 
     mixin.request_context = mock_request_context
     mixin.llm_client = MagicMock()
@@ -80,6 +82,9 @@ class TestRunPlaybookAggregation:
             def create_user_detail_stripper(self) -> PassthroughStripper:
                 return stripper
 
+            def get_playbook_aggregation_prompt_extra_instructions(self) -> None:
+                return None
+
         cast(Any, mixin.request_context).configurator = ConfiguratorWithStripper()
         mock_agg_instance = MagicMock()
         mock_agg_cls.return_value = mock_agg_instance
@@ -101,6 +106,9 @@ class TestRunPlaybookAggregation:
         mixin = _make_mixin()
 
         class ConfiguratorWithExtraInstructions:
+            def create_user_detail_stripper(self) -> None:
+                return None
+
             def get_playbook_aggregation_prompt_extra_instructions(self) -> str:
                 return "Extra aggregation instruction."
 
