@@ -941,7 +941,7 @@ class TestRun:
         with patch.object(PlaybookAggregator, "_create_state_manager") as mock_csm:
             mgr = MagicMock()
             mgr.get_cluster_fingerprints.return_value = {
-                "old_fp": {"agent_playbook_id": 50, "user_playbook_ids": [1, 2]}
+                "old_fp": {"agent_playbook_id": 50, "user_playbook_ids": [5]}
             }
             mock_csm.return_value = mgr
 
@@ -979,6 +979,56 @@ class TestRun:
         agg.storage.archive_agent_playbooks_by_ids.assert_not_called()
         agg.storage.supersede_agent_playbooks_by_ids.assert_not_called()
         agg.storage.delete_agent_playbooks_by_ids.assert_not_called()
+
+    @patch.object(PlaybookAggregator, "get_clusters")
+    @patch.object(PlaybookAggregator, "_generate_playbooks_with_source_clusters")
+    def test_incremental_mixed_generation_supersedes_only_replaced_cluster(
+        self, mock_gen, mock_clust
+    ):
+        """A null changed cluster keeps its old playbook when a sibling generates."""
+        agg = self._make_runnable_aggregator()
+        null_cluster = [_raw(rid=1), _raw(rid=2), _raw(rid=5)]
+        generated_cluster = [_raw(rid=3), _raw(rid=4), _raw(rid=6)]
+        agg.storage.get_user_playbooks.return_value = null_cluster + generated_cluster
+        mock_clust.return_value = {0: null_cluster, 1: generated_cluster}
+        generated = _agent_playbook(fid=200)
+        generated.agent_playbook_id = 200
+        mock_gen.return_value = [(generated, generated_cluster)]
+        agg.storage.save_agent_playbook_with_aggregate_event.return_value = generated
+        fp_null_old = PlaybookAggregator._compute_cluster_fingerprint(
+            [_raw(rid=1), _raw(rid=2)]
+        )
+        fp_generated_old = PlaybookAggregator._compute_cluster_fingerprint(
+            [_raw(rid=3), _raw(rid=4)]
+        )
+        fp_generated_new = PlaybookAggregator._compute_cluster_fingerprint(
+            generated_cluster
+        )
+
+        with patch.object(PlaybookAggregator, "_create_state_manager") as mock_csm:
+            mgr = MagicMock()
+            mgr.get_cluster_fingerprints.return_value = {
+                fp_null_old: {"agent_playbook_id": 50, "user_playbook_ids": [1, 2]},
+                fp_generated_old: {
+                    "agent_playbook_id": 60,
+                    "user_playbook_ids": [3, 4],
+                },
+            }
+            mock_csm.return_value = mgr
+
+            req = PlaybookAggregatorRequest(agent_version="v1")
+            agg.run(req)
+
+        agg.storage.supersede_agent_playbooks_by_ids.assert_called_once_with(
+            [60], request_id=ANY
+        )
+        call_kwargs = mgr.update_cluster_fingerprints.call_args
+        new_fps = call_kwargs.kwargs.get("fingerprints") or call_kwargs[1].get(
+            "fingerprints"
+        )
+        assert new_fps[fp_null_old]["agent_playbook_id"] == 50
+        assert new_fps[fp_generated_new]["agent_playbook_id"] == 200
+        assert fp_generated_old not in new_fps
 
     @patch.object(PlaybookAggregator, "get_clusters")
     @patch.object(PlaybookAggregator, "_generate_playbooks_with_source_clusters")
