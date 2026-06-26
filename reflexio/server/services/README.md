@@ -48,7 +48,7 @@ strings before deleting old import paths in the same PR.
 | Path | Purpose |
 |------|---------|
 | `shadow_comparison/` | `ShadowComparisonJudge` (`judge.py`) plus pure outcome helpers (`outcome.py`) - per-turn regular-vs-shadow verdicts written to a separate table. Compact by design; see [README](shadow_comparison/README.md). |
-| `evaluation_overview/` | Dashboard rollups: `service.py`, `hero_state.py`, `distribution.py`, `rule_attribution.py`, `shadow_aggregation.py`, `eval_sampler.py`. |
+| `evaluation_overview/` | Dashboard rollups: `service.py`, `components/hero_state.py`, `components/distribution.py`, `components/rule_attribution.py`, `components/shadow_aggregation.py`, `eval_sampler.py`. |
 | `playbook_optimizer/` | Scenario-based playbook optimization: `optimizer.py`, `scheduler.py`, `rollout.py`, `judge.py`, `scenario_resolver.py`, `gepa_adapter.py`, `assistant_webhook.py`. |
 | `braintrust/` | Braintrust export/sync: `service.py`, `client.py`, `_cron.py`, `_encryption.py`. |
 | `lineage/` | Current-record resolution and tombstone GC: `resolve.py`, `gc_scheduler.py`. |

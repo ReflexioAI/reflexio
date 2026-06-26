@@ -420,7 +420,8 @@ Key files:
 - `shadow_comparison/judge.py`: Per-turn regular-vs-shadow judge that writes shadow verdicts through storage
 - `shadow_comparison/outcome.py`: Verdict outcome model helpers
 - `evaluation_overview/service.py`: Aggregates evaluation-page metrics
-- `evaluation_overview/hero_state.py`, `distribution.py`, `rule_attribution.py`, `shadow_aggregation.py`: Focused aggregation helpers
+- `evaluation_overview/components/hero_state.py`, `components/distribution.py`, `components/rule_attribution.py`, `components/shadow_aggregation.py`: Focused aggregation helpers
+- `evaluation_overview/eval_sampler.py`: Evaluation sampling helpers that remain root-level
 
 **Pattern**: Session-level agent success evaluation remains in `agent_success_evaluation/`; dashboard-facing rollups and per-turn shadow verdict analysis live in these companion directories.
 
