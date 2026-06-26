@@ -29,11 +29,11 @@ from reflexio.server.services.agent_success_evaluation.scheduler import (
     GroupEvaluationScheduler,
 )
 from reflexio.server.services.operation_state_utils import OperationStateManager
-from reflexio.server.services.playbook.playbook_generation_service import (
-    PlaybookGenerationService,
-)
 from reflexio.server.services.playbook.playbook_service_utils import (
     PlaybookGenerationRequest,
+)
+from reflexio.server.services.playbook.service import (
+    PlaybookGenerationService,
 )
 from reflexio.server.services.profile.profile_generation_service import (
     ProfileGenerationService,

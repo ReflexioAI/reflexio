@@ -26,7 +26,7 @@ from reflexio.models.config_schema import (
     PlaybookAggregatorConfig,
     PlaybookConfig,
 )
-from reflexio.server.services.playbook.playbook_aggregator import PlaybookAggregator
+from reflexio.server.services.playbook.components.aggregator import PlaybookAggregator
 from reflexio.server.services.playbook.playbook_service_utils import (
     PlaybookAggregatorRequest,
 )

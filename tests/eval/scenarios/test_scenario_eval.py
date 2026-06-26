@@ -23,7 +23,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from reflexio.server.services.playbook.playbook_consolidator import (
+from reflexio.server.services.playbook.components.consolidator import (
     ConsolidationDecision,
     DifferentiateDecision,
     IndependentDecision,

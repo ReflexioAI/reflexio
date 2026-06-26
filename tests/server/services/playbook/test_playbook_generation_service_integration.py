@@ -29,13 +29,13 @@ from reflexio.models.config_schema import (
     PlaybookConfig,
 )
 from reflexio.server.api_endpoints.request_context import RequestContext
-from reflexio.server.services.playbook.playbook_generation_service import (
-    PlaybookGenerationService,
-)
 from reflexio.server.services.playbook.playbook_service_utils import (
     PlaybookGenerationRequest,
     StructuredPlaybookContent,
     StructuredPlaybookList,
+)
+from reflexio.server.services.playbook.service import (
+    PlaybookGenerationService,
 )
 from tests.server.test_utils import skip_in_precommit, skip_low_priority
 

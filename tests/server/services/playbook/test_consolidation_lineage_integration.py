@@ -26,12 +26,12 @@ from reflexio.models.api_schema.domain.enums import Status
 from reflexio.models.api_schema.service_schemas import UserPlaybook
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.services.lineage.resolve import resolve_current
-from reflexio.server.services.playbook.playbook_consolidator import (
+from reflexio.server.services.playbook.components.consolidator import (
     DifferentiateDecision,
     PlaybookConsolidationOutput,
     UnifyDecision,
 )
-from reflexio.server.services.playbook.playbook_generation_service import (
+from reflexio.server.services.playbook.service import (
     PlaybookGenerationService,
     PlaybookGenerationServiceConfig,
 )
@@ -163,11 +163,11 @@ def test_consolidation_merge_routes_through_merge_records(
             return_value=None,
         ),
         patch(
-            "reflexio.server.services.playbook.playbook_consolidator.PlaybookConsolidator._retrieve_existing_playbooks",
+            "reflexio.server.services.playbook.components.consolidator.PlaybookConsolidator._retrieve_existing_playbooks",
             return_value=[existing],
         ),
         patch(
-            "reflexio.server.services.playbook.playbook_consolidator.PlaybookConsolidator._consolidation_decisions",
+            "reflexio.server.services.playbook.components.consolidator.PlaybookConsolidator._consolidation_decisions",
             return_value=decision_output,
         ),
         patch.dict("os.environ", {"MOCK_LLM_RESPONSE": "false"}),
@@ -237,11 +237,11 @@ def test_consolidation_differentiate_tombstones_split_source(
             return_value=None,
         ),
         patch(
-            "reflexio.server.services.playbook.playbook_consolidator.PlaybookConsolidator._retrieve_existing_playbooks",
+            "reflexio.server.services.playbook.components.consolidator.PlaybookConsolidator._retrieve_existing_playbooks",
             return_value=[existing],
         ),
         patch(
-            "reflexio.server.services.playbook.playbook_consolidator.PlaybookConsolidator._consolidation_decisions",
+            "reflexio.server.services.playbook.components.consolidator.PlaybookConsolidator._consolidation_decisions",
             return_value=decision_output,
         ),
         patch.dict("os.environ", {"MOCK_LLM_RESPONSE": "false"}),
@@ -282,11 +282,11 @@ def test_consolidation_differentiate_propagates_tombstone_failure(
             return_value=None,
         ),
         patch(
-            "reflexio.server.services.playbook.playbook_consolidator.PlaybookConsolidator._retrieve_existing_playbooks",
+            "reflexio.server.services.playbook.components.consolidator.PlaybookConsolidator._retrieve_existing_playbooks",
             return_value=[existing],
         ),
         patch(
-            "reflexio.server.services.playbook.playbook_consolidator.PlaybookConsolidator._consolidation_decisions",
+            "reflexio.server.services.playbook.components.consolidator.PlaybookConsolidator._consolidation_decisions",
             return_value=decision_output,
         ),
         patch.object(

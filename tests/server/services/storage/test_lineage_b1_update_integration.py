@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-import reflexio.server.services.playbook.playbook_generation_service as playbook_generation_service
+import reflexio.server.services.playbook.service as playbook_generation_service
 from reflexio.models.api_schema.domain.entities import (
     AgentPlaybook,
     LineageContext,

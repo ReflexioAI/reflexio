@@ -32,7 +32,7 @@ Everything in this module is small and pure: no I/O, no LLM.
 
 from __future__ import annotations
 
-from reflexio.server.services.playbook.playbook_consolidator import (
+from reflexio.server.services.playbook.components.consolidator import (
     ConsolidationDecision,
     DifferentiateDecision,
     UnifyDecision,
