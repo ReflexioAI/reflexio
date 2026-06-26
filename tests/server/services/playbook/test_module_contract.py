@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 _PY_SUFFIX = "." + "py"
@@ -80,4 +81,18 @@ def test_playbook_prompt_ids_remain_durable() -> None:
     )
     assert PlaybookServiceConstants.PLAYBOOK_AGGREGATION_PROMPT_ID == (
         "playbook_aggregation"
+    )
+
+
+def test_playbook_service_import_preserves_lazy_consolidator_boundary() -> None:
+    sys.modules.pop(
+        "reflexio.server.services.playbook.components.consolidator",
+        None,
+    )
+
+    from reflexio.server.services.playbook.service import PlaybookGenerationService
+
+    assert PlaybookGenerationService.__name__ == "PlaybookGenerationService"
+    assert "reflexio.server.services.playbook.components.consolidator" not in (
+        sys.modules
     )

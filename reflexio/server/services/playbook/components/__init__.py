@@ -1,13 +1,5 @@
-"""Playbook service components."""
+"""Playbook service components.
 
-from reflexio.server.services.playbook.components.aggregator import PlaybookAggregator
-from reflexio.server.services.playbook.components.consolidator import (
-    PlaybookConsolidator,
-)
-from reflexio.server.services.playbook.components.extractor import PlaybookExtractor
-
-__all__ = [
-    "PlaybookAggregator",
-    "PlaybookConsolidator",
-    "PlaybookExtractor",
-]
+Import component classes from their concrete modules. Keeping this package
+import-free preserves the lazy consolidator import in the generation service.
+"""
