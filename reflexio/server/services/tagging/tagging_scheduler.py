@@ -23,7 +23,7 @@ from collections.abc import Callable
 
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient
-from reflexio.server.services.tagging.tagging_service import TaggingService
+from reflexio.server.services.tagging.service import TaggingService
 
 logger = logging.getLogger(__name__)
 

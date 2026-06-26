@@ -51,7 +51,7 @@ def _build_registry() -> dict[str, ModelRegistryEntry]:
     from reflexio.server.services.reflection.reflection_service_utils import (
         ReflectionOutput,
     )
-    from reflexio.server.services.tagging.tagging_service import TagsOutput
+    from reflexio.server.services.tagging.service import TagsOutput
 
     return {
         "playbook_extraction": ModelRegistryEntry(
