@@ -27,11 +27,11 @@ def test_legacy_profile_deduplicator_file_removed() -> None:
 
 def test_profile_consolidator_preserves_durable_names() -> None:
     from reflexio.models.config_schema import UserPlaybookExtractorConfig
-    from reflexio.server.site_var import feature_flags
     from reflexio.server.services.profile.components.consolidator import (
         ProfileConsolidator,
         ProfileDeduplicationOutput,
     )
+    from reflexio.server.site_var import feature_flags
     from reflexio.test_support.llm_model_registry import _build_registry
 
     registry = _build_registry()

@@ -30,8 +30,8 @@ from reflexio.models.api_schema.service_schemas import (
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.services.deduplication_utils import parse_item_id
 from reflexio.server.services.profile.components.consolidator import (
-    ProfileDeduplicationOutput,
     ProfileConsolidator,
+    ProfileDeduplicationOutput,
     ProfileDeletionDirective,
     ProfileDuplicateGroup,
     _format_profile_timestamp,

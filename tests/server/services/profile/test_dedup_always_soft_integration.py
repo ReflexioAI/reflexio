@@ -44,7 +44,9 @@ from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 pytestmark = pytest.mark.integration
 
 _DEDUP_FLAG = "reflexio.server.site_var.feature_flags.is_deduplicator_enabled"
-_DEDUP_CLS = "reflexio.server.services.profile.components.consolidator.ProfileConsolidator"
+_DEDUP_CLS = (
+    "reflexio.server.services.profile.components.consolidator.ProfileConsolidator"
+)
 _CAPTURE_ANOMALY = (
     "reflexio.server.services.profile.profile_generation_service.capture_anomaly"
 )
