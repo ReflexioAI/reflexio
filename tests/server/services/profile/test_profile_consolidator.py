@@ -1,7 +1,7 @@
 """
 Unit tests for ProfileConsolidator.
 
-Tests the deduplicator's responsibilities for:
+Tests the consolidator's responsibilities for:
 - Pydantic output schema validation
 - Profile deduplication with LLM and hybrid search
 - Profile formatting for prompts
@@ -16,10 +16,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
-# Disable mock mode for deduplicator tests so LLM mocks are actually used
+# Disable mock mode for consolidator tests so LLM mocks are actually used
 @pytest.fixture(autouse=True)
 def disable_mock_llm_response(monkeypatch):
-    """Disable MOCK_LLM_RESPONSE env var so deduplicator tests use their own mocks."""
+    """Disable MOCK_LLM_RESPONSE env var so consolidator tests use their own mocks."""
     monkeypatch.delenv("MOCK_LLM_RESPONSE", raising=False)
 
 
@@ -1329,7 +1329,7 @@ class TestRetrieveExistingProfilesStatusFilter:
     """Tests for the status_filter selection in _retrieve_existing_profiles.
 
     These cover the R1 fix: when output_pending_status=True (rerun preview
-    mode), the deduplicator must NOT search against existing CURRENT
+    mode), the consolidator must NOT search against existing CURRENT
     profiles, otherwise newly-extracted profiles get flagged as duplicates
     and the downstream deletion step in
     ProfileGenerationService._process_results collapses the user's CURRENT
