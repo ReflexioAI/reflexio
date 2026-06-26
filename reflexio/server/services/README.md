@@ -47,12 +47,13 @@ strings before deleting old import paths in the same PR.
 
 | Path | Purpose |
 |------|---------|
-| `shadow_comparison/` | `ShadowComparisonJudge` — per-turn regular-vs-shadow verdicts written to a separate table (session-level shadow was retracted due to trajectory contamination). |
+| `shadow_comparison/` | `ShadowComparisonJudge` (`judge.py`) plus pure outcome helpers (`outcome.py`) - per-turn regular-vs-shadow verdicts written to a separate table. Compact by design; see [README](shadow_comparison/README.md). |
 | `evaluation_overview/` | Dashboard rollups: `service.py`, `hero_state.py`, `distribution.py`, `rule_attribution.py`, `shadow_aggregation.py`, `eval_sampler.py`. |
 | `playbook_optimizer/` | Scenario-based playbook optimization: `optimizer.py`, `scheduler.py`, `rollout.py`, `judge.py`, `scenario_resolver.py`, `gepa_adapter.py`, `assistant_webhook.py`. |
 | `braintrust/` | Braintrust export/sync: `service.py`, `client.py`, `_cron.py`, `_encryption.py`. |
 | `lineage/` | Current-record resolution and tombstone GC: `resolve.py`, `gc_scheduler.py`. |
-| `pre_retrieval/` | `QueryReformulator` (`_query_reformulator.py`) + `_document_expander.py` — query rewrite & doc expansion for recall. |
+| `pre_retrieval/` | `QueryReformulator` (`_query_reformulator.py`) + `DocumentExpander` (`_document_expander.py`) - query rewrite and doc expansion for recall. Compact by design; see [README](pre_retrieval/README.md). |
+| `tagging/` | `TaggingService` (`service.py`) + deferred `tagging_scheduler.py` - post-generation profile/playbook tagging. Compact by design; see [README](tagging/README.md). |
 | `unified_search_service.py` | `run_unified_search()` — two-phase parallel search across profiles / agent playbooks / user playbooks. |
 | `retrieval/` | `relevance_floor.py` — result relevance thresholding. |
 
