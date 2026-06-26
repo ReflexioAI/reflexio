@@ -27,7 +27,7 @@ from reflexio.server.services.base_generation_service import (
     BaseGenerationService,
     StatusChangeOperation,
 )
-from reflexio.server.services.profile.profile_extractor import ProfileExtractor
+from reflexio.server.services.profile.components.extractor import ProfileExtractor
 from reflexio.server.services.profile.profile_generation_service_utils import (
     ProfileGenerationRequest,
     ProfileGenerationServiceConstants,

@@ -30,12 +30,12 @@ from reflexio.models.config_schema import (
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.services.extraction.outcome import ExtractionOutcome
-from reflexio.server.services.profile.profile_extractor import ProfileExtractor
-from reflexio.server.services.profile.profile_generation_service import (
-    ProfileGenerationServiceConfig,
-)
+from reflexio.server.services.profile.components.extractor import ProfileExtractor
 from reflexio.server.services.profile.profile_generation_service_utils import (
     StructuredProfilesOutput,
+)
+from reflexio.server.services.profile.service import (
+    ProfileGenerationServiceConfig,
 )
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 from reflexio.server.services.storage.storage_base import (

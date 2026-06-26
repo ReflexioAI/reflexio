@@ -29,7 +29,7 @@ from reflexio.models.api_schema.service_schemas import (
 from reflexio.models.config_schema import ProfileExtractorConfig
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.services.generation_service import GenerationService
-from reflexio.server.services.profile.profile_generation_service import (
+from reflexio.server.services.profile.service import (
     ProfileGenerationService,
 )
 from reflexio.server.services.profile.profile_generation_service_utils import (

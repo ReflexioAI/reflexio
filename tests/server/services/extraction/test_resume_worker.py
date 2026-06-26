@@ -220,7 +220,7 @@ def test_resume_worker_retries_finalization_without_rerunning_agent(
     with (
         patch("litellm.completion", side_effect=[response]),
         patch(
-            "reflexio.server.services.profile.profile_generation_service."
+            "reflexio.server.services.profile.service."
             "ProfileGenerationService._finalize_extracted_items",
             side_effect=RuntimeError("storage write failed"),
         ),
@@ -247,7 +247,7 @@ def test_resume_worker_retries_finalization_without_rerunning_agent(
             side_effect=AssertionError("finalization retry must not call LLM"),
         ),
         patch(
-            "reflexio.server.services.profile.profile_generation_service."
+            "reflexio.server.services.profile.service."
             "ProfileGenerationService._finalize_extracted_items",
             return_value=None,
         ) as finalize,

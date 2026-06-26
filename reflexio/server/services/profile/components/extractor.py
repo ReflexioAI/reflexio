@@ -26,7 +26,7 @@ from reflexio.server.services.extractor_interaction_utils import (
 from reflexio.server.services.operation_state_utils import OperationStateManager
 
 if TYPE_CHECKING:
-    from reflexio.server.services.profile.profile_generation_service import (
+    from reflexio.server.services.profile.service import (
         ProfileGenerationServiceConfig,
     )
 from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name

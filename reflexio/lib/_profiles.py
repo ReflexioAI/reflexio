@@ -43,7 +43,7 @@ from reflexio.models.api_schema.service_schemas import (
     UpgradeProfilesRequest,
     UpgradeProfilesResponse,
 )
-from reflexio.server.services.profile.profile_generation_service import (
+from reflexio.server.services.profile.service import (
     ProfileGenerationService,
 )
 from reflexio.server.tracing import profile_step

@@ -45,8 +45,8 @@ from reflexio.server.services.playbook.components.extractor import PlaybookExtra
 from reflexio.server.services.playbook.service import (
     PlaybookGenerationServiceConfig,
 )
-from reflexio.server.services.profile.profile_extractor import ProfileExtractor
-from reflexio.server.services.profile.profile_generation_service import (
+from reflexio.server.services.profile.components.extractor import ProfileExtractor
+from reflexio.server.services.profile.service import (
     ProfileGenerationServiceConfig,
 )
 

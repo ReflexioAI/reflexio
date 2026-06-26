@@ -28,7 +28,7 @@ from reflexio.server.services.base_generation_service import (
     BaseGenerationService,
     PreparedGenerationRun,
 )
-from reflexio.server.services.profile.profile_generation_service import (
+from reflexio.server.services.profile.service import (
     ProfileGenerationService,
     ProfileGenerationServiceConfig,
 )

@@ -39,17 +39,17 @@ from reflexio.server.services.playbook.service import (
     PlaybookGenerationService,
     PlaybookGenerationServiceConfig,
 )
-from reflexio.server.services.profile.profile_extractor import (
+from reflexio.server.services.profile.components.extractor import (
     MAX_EXISTING_PROFILES_FOR_CONTEXT,
     ProfileExtractor,
-)
-from reflexio.server.services.profile.profile_generation_service import (
-    ProfileGenerationService,
-    ProfileGenerationServiceConfig,
 )
 from reflexio.server.services.profile.profile_generation_service_utils import (
     StructuredProfilesOutput,
     construct_profile_extraction_messages_from_sessions,
+)
+from reflexio.server.services.profile.service import (
+    ProfileGenerationService,
+    ProfileGenerationServiceConfig,
 )
 from reflexio.server.services.service_utils import (
     extract_interactions_from_request_interaction_data_models,

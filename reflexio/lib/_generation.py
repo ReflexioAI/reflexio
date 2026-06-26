@@ -99,7 +99,7 @@ class GenerationMixin(ReflexioBase):
         Returns:
             RerunProfileGenerationResponse: Response containing success status, message, and count of profiles generated
         """
-        from reflexio.server.services.profile.profile_generation_service import (
+        from reflexio.server.services.profile.service import (
             ProfileGenerationService,
         )
 
@@ -124,7 +124,7 @@ class GenerationMixin(ReflexioBase):
         Returns:
             ManualProfileGenerationResponse: Response containing success status, message, and count of profiles generated
         """
-        from reflexio.server.services.profile.profile_generation_service import (
+        from reflexio.server.services.profile.service import (
             ProfileGenerationService,
         )
 

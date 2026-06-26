@@ -244,8 +244,8 @@ Called by API endpoints via `Reflexio`
 **Directory**: `services/profile/`
 
 Key files:
-- `profile_generation_service.py`: Service orchestrator
-- `profile_extractor.py`: Extractor that generates profile updates
+- `profile/service.py`: Service orchestrator
+- `profile/components/extractor.py`: Extractor that generates profile updates
 - `profile_updater.py`: Applies updates (add/delete/mention) to storage
 - `components/consolidator.py`: Consolidates newly extracted profiles against existing DB profiles using LLM
 

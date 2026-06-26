@@ -35,11 +35,11 @@ from reflexio.server.services.playbook.playbook_service_utils import (
 from reflexio.server.services.playbook.service import (
     PlaybookGenerationService,
 )
-from reflexio.server.services.profile.profile_generation_service import (
-    ProfileGenerationService,
-)
 from reflexio.server.services.profile.profile_generation_service_utils import (
     ProfileGenerationRequest,
+)
+from reflexio.server.services.profile.service import (
+    ProfileGenerationService,
 )
 from reflexio.server.services.reflection.reflection_service_utils import (
     ReflectionServiceRequest,

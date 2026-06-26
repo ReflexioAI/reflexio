@@ -27,7 +27,7 @@ from reflexio.models.api_schema.service_schemas import (
     Status,
     UpgradeProfilesRequest,
 )
-from reflexio.server.services.profile.profile_extractor import (
+from reflexio.server.services.profile.components.extractor import (
     ProfileExtractorConfig,
 )
 

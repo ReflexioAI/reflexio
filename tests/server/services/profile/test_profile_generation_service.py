@@ -24,12 +24,12 @@ from reflexio.models.config_schema import ProfileExtractorConfig
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.services.base_generation_service import StatusChangeOperation
-from reflexio.server.services.profile.profile_generation_service import (
-    ProfileGenerationService,
-    ProfileGenerationServiceConfig,
-)
 from reflexio.server.services.profile.profile_generation_service_utils import (
     ProfileGenerationRequest,
+)
+from reflexio.server.services.profile.service import (
+    ProfileGenerationService,
+    ProfileGenerationServiceConfig,
 )
 
 # ===============================

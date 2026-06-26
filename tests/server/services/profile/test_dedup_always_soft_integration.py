@@ -35,7 +35,7 @@ import pytest
 from reflexio.lib._profiles import reconstruct_profile_change_log
 from reflexio.models.api_schema.domain.enums import ProfileTimeToLive, Status
 from reflexio.models.api_schema.service_schemas import UserProfile
-from reflexio.server.services.profile.profile_generation_service import (
+from reflexio.server.services.profile.service import (
     ProfileGenerationService,
     ProfileGenerationServiceConfig,
 )
@@ -48,7 +48,7 @@ _DEDUP_CLS = (
     "reflexio.server.services.profile.components.consolidator.ProfileConsolidator"
 )
 _CAPTURE_ANOMALY = (
-    "reflexio.server.services.profile.profile_generation_service.capture_anomaly"
+    "reflexio.server.services.profile.service.capture_anomaly"
 )
 
 
