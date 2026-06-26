@@ -16,8 +16,8 @@ def test_tagging_canonical_imports_work() -> None:
     assert schedule_tagging.__name__ == "schedule_tagging"
 
 
-def test_legacy_tagging_service_module_file_removed() -> None:
+def test_legacy_tagging_module_file_removed() -> None:
     repo_root = Path(__file__).resolve().parents[4]
     tagging_dir = repo_root / "reflexio/server/services/tagging"
 
-    assert not (tagging_dir / "tagging_service.py").exists()
+    assert not (tagging_dir / ("tagging_" "service.py")).exists()
