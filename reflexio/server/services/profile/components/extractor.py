@@ -245,10 +245,17 @@ class ProfileExtractor:
             ) from e
 
         logger.info("Generated raw profiles: %s", raw_profiles)
+        source_interaction_ids = [
+            interaction.interaction_id
+            for request_model in request_interaction_data_models
+            for interaction in request_model.interactions
+            if interaction.interaction_id
+        ]
         user_profiles = self._convert_raw_to_user_profiles(
             raw_profiles=raw_profiles or [],
             user_id=self.service_config.user_id,
             request_id=self.service_config.request_id,
+            source_interaction_ids=source_interaction_ids,
         )
         if raw_profiles:
             # Update operation state (bookmark) only when output was produced.
@@ -272,6 +279,7 @@ class ProfileExtractor:
         raw_profiles: list[dict],
         user_id: str,
         request_id: str,
+        source_interaction_ids: list[int],
     ) -> list[UserProfile]:
         """
         Convert raw profile dicts from LLM to UserProfile objects.
@@ -280,6 +288,7 @@ class ProfileExtractor:
             raw_profiles: List of profile dicts with content, time_to_live, and optional metadata
             user_id: User ID
             request_id: Request ID
+            source_interaction_ids: Stored interaction ids used as the extraction window
 
         Returns:
             List of UserProfile objects
@@ -313,6 +322,7 @@ class ProfileExtractor:
                 expiration_timestamp=calculate_expiration_timestamp(now_ts, ttl),
                 custom_features=custom_features or None,
                 extractor_names=None,
+                source_interaction_ids=source_interaction_ids,
             )
 
             new_profiles.append(added_profile)

@@ -65,6 +65,7 @@ class ProfileView(BaseModel):
     status: Status | None = None
     extractor_names: list[str] | None = None
     source_span: str | None = None
+    source_interaction_ids: list[int] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
 
 

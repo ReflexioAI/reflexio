@@ -398,6 +398,7 @@ def _row_to_profile(row: sqlite3.Row) -> UserProfile:
         notes=d.get("notes"),
         reader_angle=d.get("reader_angle"),
         tags=_json_loads(d.get("tags")),
+        source_interaction_ids=_json_loads(d.get("source_interaction_ids")) or [],
         merged_into=d.get("merged_into"),
         superseded_by=d.get("superseded_by"),
     )
@@ -642,6 +643,8 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         self._migrate_pending_tool_calls_schema()
         self._migrate_expanded_terms()
         self._migrate_tags()
+        self._migrate_profile_source_interaction_ids()
+        self._migrate_interaction_window_indexes()
         self._migrate_agentic_signals()
         self._migrate_agent_playbook_source_windows()
         self._migrate_request_evaluation_only()
@@ -1156,6 +1159,27 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             if "tags" not in cols:
                 self.conn.execute(f"ALTER TABLE {table} ADD COLUMN tags TEXT")
                 logger.info("Added tags column to %s", table)
+        self.conn.commit()
+
+    def _migrate_profile_source_interaction_ids(self) -> None:
+        """Add profile source interaction ids for provenance on existing DBs."""
+        cols = {
+            row["name"]
+            for row in self.conn.execute("PRAGMA table_info(profiles)").fetchall()
+        }
+        if "source_interaction_ids" not in cols:
+            self.conn.execute(
+                "ALTER TABLE profiles ADD COLUMN source_interaction_ids TEXT"
+            )
+            logger.info("Added source_interaction_ids column to profiles")
+        self.conn.commit()
+
+    def _migrate_interaction_window_indexes(self) -> None:
+        """Add composite indexes used by sliding-window provenance lookups."""
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_interactions_user_created_at_desc "
+            "ON interactions(user_id, created_at DESC, interaction_id DESC)"
+        )
         self.conn.commit()
 
     def _migrate_agent_runs_schema(self) -> None:
@@ -1971,6 +1995,7 @@ CREATE TABLE IF NOT EXISTS profiles (
     extractor_names TEXT,
     expanded_terms TEXT,
     tags TEXT,
+    source_interaction_ids TEXT,
     source_span TEXT,
     notes TEXT,
     reader_angle TEXT,
@@ -2002,6 +2027,8 @@ CREATE TABLE IF NOT EXISTS interactions (
 CREATE INDEX IF NOT EXISTS idx_interactions_user_id ON interactions(user_id);
 CREATE INDEX IF NOT EXISTS idx_interactions_request_id ON interactions(request_id);
 CREATE INDEX IF NOT EXISTS idx_interactions_created_at ON interactions(created_at);
+CREATE INDEX IF NOT EXISTS idx_interactions_user_created_at_desc
+    ON interactions(user_id, created_at DESC, interaction_id DESC);
 
 CREATE TABLE IF NOT EXISTS requests (
     request_id TEXT PRIMARY KEY,

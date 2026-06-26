@@ -254,6 +254,30 @@ class GetAgentPlaybooksResponse(BaseModel):
     msg: str | None = None
 
 
+class GetLearningProvenanceRequest(BaseModel):
+    kind: Literal["profile", "user_playbook", "agent_playbook"]
+    id: str
+
+
+class SourceUserPlaybookProvenanceView(BaseModel):
+    user_playbook: UserPlaybookView
+    interactions: list[InteractionView] = Field(default_factory=list)
+    source_interaction_ids: list[int] = Field(default_factory=list)
+
+
+class LearningProvenanceViewResponse(BaseModel):
+    success: bool
+    target_kind: Literal["profile", "user_playbook", "agent_playbook"]
+    target_id: str
+    provenance_status: Literal["exact", "best_effort", "unavailable"] = "unavailable"
+    trigger_request_id: str | None = None
+    interactions: list[InteractionView] = Field(default_factory=list)
+    source_user_playbooks: list[SourceUserPlaybookProvenanceView] = Field(
+        default_factory=list
+    )
+    msg: str | None = None
+
+
 class SearchUserPlaybookRequest(BaseModel):
     """Request for searching user playbooks with semantic/text search and filtering.
 

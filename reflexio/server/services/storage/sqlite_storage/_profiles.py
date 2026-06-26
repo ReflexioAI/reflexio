@@ -156,10 +156,10 @@ class ProfileMixin:
                    (profile_id, user_id, content, last_modified_timestamp,
                     generated_from_request_id, profile_time_to_live,
                     expiration_timestamp, custom_features, embedding, source,
-                    status, extractor_names, expanded_terms,
-                    source_span, notes, reader_angle, tags, created_at,
+                   status, extractor_names, expanded_terms,
+                    source_span, notes, reader_angle, tags, source_interaction_ids, created_at,
                     merged_into, superseded_by)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     profile.profile_id,
                     profile.user_id,
@@ -178,6 +178,7 @@ class ProfileMixin:
                     profile.notes,
                     profile.reader_angle,
                     _json_dumps(profile.tags),
+                    _json_dumps(profile.source_interaction_ids),
                     _iso_now(),
                     profile.merged_into,
                     profile.superseded_by,
@@ -227,7 +228,7 @@ class ProfileMixin:
                    generated_from_request_id=?, profile_time_to_live=?,
                    expiration_timestamp=?, custom_features=?, embedding=?,
                    source=?, status=?, extractor_names=?, expanded_terms=?,
-                   source_span=?, notes=?, reader_angle=?, tags=?
+                   source_span=?, notes=?, reader_angle=?, tags=?, source_interaction_ids=?
                    WHERE profile_id=?""",
                 (
                     new_profile.content,
@@ -245,6 +246,7 @@ class ProfileMixin:
                     new_profile.notes,
                     new_profile.reader_angle,
                     _json_dumps(new_profile.tags),
+                    _json_dumps(new_profile.source_interaction_ids),
                     profile_id,
                 ),
             )

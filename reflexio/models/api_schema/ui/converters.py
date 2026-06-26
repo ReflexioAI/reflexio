@@ -78,6 +78,7 @@ def to_profile_view(profile: UserProfile) -> ProfileView:
         status=profile.status,
         extractor_names=profile.extractor_names,
         source_span=profile.source_span,
+        source_interaction_ids=profile.source_interaction_ids,
         tags=profile.tags or [],
     )
 

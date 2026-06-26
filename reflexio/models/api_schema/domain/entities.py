@@ -227,6 +227,7 @@ class UserProfile(BaseModel):
     )
     expanded_terms: str | None = None
     tags: list[str] | None = None  # None = not yet tagged; [] = tagged, no match
+    source_interaction_ids: list[int] = Field(default_factory=list)
     embedding: EmbeddingVector = []
     source_span: str | None = None
     notes: str | None = None
