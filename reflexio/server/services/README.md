@@ -26,13 +26,13 @@ strings before deleting old import paths in the same PR.
 | `base_generation_service.py` | `BaseGenerationService` — abstract base; the **Service Pattern** (load configs → create actors → run in parallel → save results). Per-extractor timeout `EXTRACTOR_TIMEOUT_SECONDS = 300`. |
 | `operation_state_utils.py` | `OperationStateManager` — all `_operation_state` access (progress, concurrency locks, extractor/aggregator bookmarks, cluster fingerprints, cancellation). |
 | `extractor_config_utils.py`, `extractor_interaction_utils.py` | Filter extractors by source / `allow_manual_trigger` / names; per-extractor stride + window + bookmark handling. |
-| `deduplication_utils.py`, `service_utils.py`, `embedding_text.py` | LLM dedup helpers (used by `ProfileDeduplicator` + `PlaybookConsolidator`), message construction / JSON extraction / response logging, embedding text builders. |
+| `deduplication_utils.py`, `service_utils.py`, `embedding_text.py` | LLM dedup helpers (used by `ProfileConsolidator` + `PlaybookConsolidator`), message construction / JSON extraction / response logging, embedding text builders. |
 
 ## Generation Services
 
 | Directory | Entry class | Key files |
 |-----------|-------------|-----------|
-| `profile/` | `ProfileGenerationService` | `profile_extractor.py`, `profile_deduplicator.py`, `profile_updater.py` |
+| `profile/` | `ProfileGenerationService` | `profile_extractor.py`, `components/consolidator.py`, `profile_updater.py` |
 | `playbook/` | `PlaybookGenerationService` | `playbook_extractor.py`, `playbook_consolidator.py`, `playbook_aggregator.py` (cluster-fingerprint change detection) — has its own [README](playbook/README.md) |
 | `agent_success_evaluation/` | `AgentSuccessEvaluationService` | `agent_success_evaluator.py` (session-level), `delayed_group_evaluator.py` (`GroupEvaluationScheduler`, 10-min defer), `group_evaluation_runner.py`, `regen_jobs.py` |
 | `reflection/` | `ReflectionService` | `service.py`, `components/extractor.py` — post-horizon reflection; runs **before** extraction so extractors read post-reflection state |

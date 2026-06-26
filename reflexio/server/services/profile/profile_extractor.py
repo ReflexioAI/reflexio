@@ -70,7 +70,7 @@ class ProfileExtractor:
 
     This class analyzes user interactions to extract new user profile information.
     It focuses purely on extraction — deduplication against existing profiles
-    is handled separately by ProfileDeduplicator.
+    is handled separately by ProfileConsolidator.
     """
 
     def __init__(

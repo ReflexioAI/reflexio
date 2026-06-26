@@ -223,7 +223,7 @@ Called by API endpoints via `Reflexio`
 - `extractor_config_utils.py`: Shared utility for filtering extractor configs by source, `allow_manual_trigger`, and extractor names
 - `extractor_interaction_utils.py`: Per-extractor utilities for stride_size checking and source filtering
 - `operation_state_utils.py`: Centralized `OperationStateManager` for all `_operation_state` table interactions (progress tracking, concurrency locks, extractor/aggregator bookmarks, simple locks)
-- `deduplication_utils.py`: Shared utilities for LLM-based deduplication (used by ProfileDeduplicator and PlaybookConsolidator)
+- `deduplication_utils.py`: Shared utilities for LLM-based deduplication (used by ProfileConsolidator and PlaybookConsolidator)
 - `service_utils.py`: Utilities (`construct_messages_from_interactions()`, `format_interactions_to_history_string()` (prepends tool usage info when `tools_used` is present), `extract_json_from_string()`, `log_model_response()` for colored LLM response logging)
 
 **Operation State Management** (via `OperationStateManager` in `operation_state_utils.py`):
@@ -247,9 +247,9 @@ Key files:
 - `profile_generation_service.py`: Service orchestrator
 - `profile_extractor.py`: Extractor that generates profile updates
 - `profile_updater.py`: Applies updates (add/delete/mention) to storage
-- `profile_deduplicator.py`: Deduplicates newly extracted profiles against existing DB profiles using LLM
+- `components/consolidator.py`: Consolidates newly extracted profiles against existing DB profiles using LLM
 
-**Flow**: Interactions → ProfileExtractor (extraction-only) → ProfileDeduplicator (deduplicates new vs existing DB profiles) → ProfileUpdater → Storage
+**Flow**: Interactions → ProfileExtractor (extraction-only) → ProfileConsolidator (deduplicates new vs existing DB profiles) → ProfileUpdater → Storage
 
 **Generation Modes** (detailed comparison):
 
@@ -542,7 +542,7 @@ flowchart TB
     subgraph ProfileService["ProfileGenerationService"]
         E --> F1[ProfileExtractor 1]
         E --> F2[ProfileExtractor N]
-        F1 --> PD[ProfileDeduplicator]
+        F1 --> PC[ProfileConsolidator]
         F2 --> PD
         PD --> PU[ProfileUpdater]
     end

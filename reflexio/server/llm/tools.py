@@ -554,7 +554,7 @@ def run_tool_loop(
     pending_tool_call_ids: list[str] = []
 
     # Lazily import the llm_io helpers only when logging is requested —
-    # matches classic's per-call lazy-import pattern in profile_deduplicator.py.
+    # matches classic's per-call lazy-import pattern in profile/components/consolidator.py.
     if log_label:
         from reflexio.server.services.service_utils import (
             log_llm_messages,
