@@ -34,7 +34,7 @@ strings before deleting old import paths in the same PR.
 |-----------|-------------|-----------|
 | `profile/` | `ProfileGenerationService` | `profile_extractor.py`, `components/consolidator.py`, `profile_updater.py` |
 | `playbook/` | `PlaybookGenerationService` | `playbook_extractor.py`, `playbook_consolidator.py`, `playbook_aggregator.py` (cluster-fingerprint change detection) — has its own [README](playbook/README.md) |
-| `agent_success_evaluation/` | `AgentSuccessEvaluationService` | `agent_success_evaluator.py` (session-level), `delayed_group_evaluator.py` (`GroupEvaluationScheduler`, 10-min defer), `group_evaluation_runner.py`, `regen_jobs.py` |
+| `agent_success_evaluation/` | `AgentSuccessEvaluationService` | `components/evaluator.py` (session-level), `delayed_group_evaluator.py` (`GroupEvaluationScheduler`, 10-min defer), `group_evaluation_runner.py`, `regen_jobs.py` |
 | `reflection/` | `ReflectionService` | `service.py`, `components/extractor.py` — post-horizon reflection; runs **before** extraction so extractors read post-reflection state |
 
 ## Async Extraction

@@ -15,7 +15,7 @@ from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.services.agent_success_evaluation import _eval_health
 from reflexio.server.services.agent_success_evaluation._eval_health import SkipReason
-from reflexio.server.services.agent_success_evaluation.agent_success_evaluation_service import (
+from reflexio.server.services.agent_success_evaluation.service import (
     AgentSuccessEvaluationService,
 )
 from reflexio.server.services.agent_success_evaluation.agent_success_evaluation_utils import (

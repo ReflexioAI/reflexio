@@ -18,7 +18,7 @@ from reflexio.server.services.agent_success_evaluation import (
     delayed_group_evaluator,
     group_evaluation_runner,
 )
-from reflexio.server.services.agent_success_evaluation.agent_success_evaluation_service import (
+from reflexio.server.services.agent_success_evaluation.service import (
     AgentSuccessEvaluationService,
 )
 from reflexio.server.services.agent_success_evaluation.agent_success_evaluation_utils import (

@@ -383,8 +383,8 @@ Similar to profiles, user playbooks support versioning:
 **Directory**: `services/agent_success_evaluation/`
 
 Key files:
-- `agent_success_evaluation_service.py`: Service orchestrator (tracks run outcome flags: `last_run_result_count`, `has_run_failures()`)
-- `agent_success_evaluator.py`: Evaluates success at session level (all interactions as one group)
+- `service.py`: Service orchestrator (tracks run outcome flags: `last_run_result_count`, `has_run_failures()`)
+- `components/evaluator.py`: Evaluates success at session level (all interactions as one group)
 - `agent_success_evaluation_constants.py`: Output schema (`AgentSuccessEvaluationOutput`)
 - `agent_success_evaluation_utils.py`: Message construction utilities
 - `delayed_group_evaluator.py`: `GroupEvaluationScheduler` singleton - min-heap priority queue with daemon thread, defers evaluation until 10 min after last request in session

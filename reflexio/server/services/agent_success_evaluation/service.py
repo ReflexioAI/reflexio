@@ -10,7 +10,7 @@ from reflexio.server.services.agent_success_evaluation import _eval_health
 from reflexio.server.services.agent_success_evaluation.agent_success_evaluation_utils import (
     AgentSuccessEvaluationRequest,
 )
-from reflexio.server.services.agent_success_evaluation.agent_success_evaluator import (
+from reflexio.server.services.agent_success_evaluation.components.evaluator import (
     AgentSuccessEvaluator,
 )
 from reflexio.server.services.base_generation_service import BaseGenerationService
