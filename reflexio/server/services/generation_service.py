@@ -22,11 +22,11 @@ from reflexio.models.api_schema.service_schemas import (
 from reflexio.models.config_schema import Config
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient
-from reflexio.server.services.agent_success_evaluation.scheduler import (
-    GroupEvaluationScheduler,
-)
 from reflexio.server.services.agent_success_evaluation.runner import (
     run_group_evaluation,
+)
+from reflexio.server.services.agent_success_evaluation.scheduler import (
+    GroupEvaluationScheduler,
 )
 from reflexio.server.services.operation_state_utils import OperationStateManager
 from reflexio.server.services.playbook.playbook_generation_service import (
