@@ -4,6 +4,8 @@ import base64
 from datetime import UTC, datetime
 from unittest.mock import MagicMock
 
+import pytest
+
 from reflexio.models.api_schema.service_schemas import (
     Interaction,
     ToolUsed,
@@ -11,6 +13,7 @@ from reflexio.models.api_schema.service_schemas import (
 from reflexio.server.services.service_utils import (
     MessageConstructionConfig,
     PromptConfig,
+    _image_data_url_from_encoding,
     construct_messages_from_interactions,
     extract_json_from_string,
     format_interactions_to_history_string,
@@ -134,8 +137,16 @@ def test_construct_messages_with_image_encoding():
     image_blocks = [b for b in user_msg["content"] if b.get("type") == "image_url"]
     assert len(image_blocks) == 1
     assert (
-        image_blocks[0]["image_url"]["url"] == f"data:image/webp;base64,{image_encoding}"
+        image_blocks[0]["image_url"]["url"]
+        == f"data:image/webp;base64,{image_encoding}"
     )
+
+
+def test_image_data_url_from_encoding_rejects_unknown_signature():
+    image_encoding = base64.b64encode(b"not-an-image").decode("ascii")
+
+    with pytest.raises(ValueError, match="Unsupported image signature"):
+        _image_data_url_from_encoding(image_encoding)
 
 
 def test_construct_messages_text_flattening():

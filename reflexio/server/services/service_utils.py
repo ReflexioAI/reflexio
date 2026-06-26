@@ -47,7 +47,7 @@ _content_token_encoding: tiktoken.Encoding | None = None
 _INVALID_MAX_TOKENS_WARNED = False
 
 
-def _image_mime_type_from_bytes(image_bytes: bytes) -> str:
+def _image_mime_type_from_bytes(image_bytes: bytes) -> str | None:
     if image_bytes.startswith(b"\xff\xd8\xff"):
         return "image/jpeg"
     if image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
@@ -56,7 +56,7 @@ def _image_mime_type_from_bytes(image_bytes: bytes) -> str:
         return "image/gif"
     if image_bytes.startswith(b"RIFF") and image_bytes[8:12] == b"WEBP":
         return "image/webp"
-    return "image/jpeg"
+    return None
 
 
 def _image_data_url_from_encoding(image_encoding: str) -> str:
@@ -68,11 +68,13 @@ def _image_data_url_from_encoding(image_encoding: str) -> str:
     prefix = compact_encoding[:64]
     prefix += "=" * (-len(prefix) % 4)
     try:
-        image_header = base64.b64decode(prefix)
+        image_header = base64.b64decode(prefix, validate=True)
     except (binascii.Error, ValueError):
-        return f"data:image/jpeg;base64,{compact_encoding}"
+        raise ValueError("image_encoding must be valid base64 image data") from None
 
     mime_type = _image_mime_type_from_bytes(image_header)
+    if mime_type is None:
+        raise ValueError("Unsupported image signature in image_encoding")
     return f"data:{mime_type};base64,{compact_encoding}"
 
 
