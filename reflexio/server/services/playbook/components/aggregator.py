@@ -811,6 +811,9 @@ class PlaybookAggregator:
             new_playbooks = [playbook for playbook, _ in generated_pairs]
 
             previous_fingerprints_for_changed_clusters = {}
+            changed_fps_by_previous_fp = {}
+            changed_fps_with_replacements = set()
+            previous_playbook_id_by_fp = {}
             if not playbook_aggregator_request.rerun and prev_fingerprints:
                 for cluster_playbooks in changed_clusters.values():
                     fp = self._compute_cluster_fingerprint(cluster_playbooks)
@@ -830,6 +833,13 @@ class PlaybookAggregator:
                         previous_fingerprints_for_changed_clusters[fp] = (
                             matched_prev_fingerprints
                         )
+                        for prev_fp, fp_data in matched_prev_fingerprints.items():
+                            changed_fps_by_previous_fp.setdefault(prev_fp, set()).add(
+                                fp
+                            )
+                            playbook_id = fp_data.get("agent_playbook_id")
+                            if playbook_id is not None:
+                                previous_playbook_id_by_fp[prev_fp] = playbook_id
 
             # Lazy archive: only full-archive when the LLM produced replacements.
             # Skipping the archive when new_playbooks is empty preserves existing
@@ -896,21 +906,25 @@ class PlaybookAggregator:
                 saved_playbook_list.append(saved_fb)
                 if saved_fb and saved_fb.agent_playbook_id:
                     fp_key = self._compute_cluster_fingerprint(cluster_playbooks)
+                    changed_fps_with_replacements.add(fp_key)
                     raw_ids = sorted(fb.user_playbook_id for fb in cluster_playbooks)
                     new_fingerprints[fp_key] = {
                         "agent_playbook_id": saved_fb.agent_playbook_id,
                         "user_playbook_ids": raw_ids,
                     }
-                    for (
-                        prev_fp,
-                        fp_data,
-                    ) in previous_fingerprints_for_changed_clusters.get(
+                    for prev_fp in previous_fingerprints_for_changed_clusters.get(
                         fp_key, {}
-                    ).items():
-                        playbook_id = fp_data.get("agent_playbook_id")
-                        if playbook_id is not None:
-                            selective_supersede_playbook_ids.add(playbook_id)
+                    ):
+                        all_overlapping_clusters_replaced = (
+                            changed_fps_by_previous_fp.get(prev_fp, set()).issubset(
+                                changed_fps_with_replacements
+                            )
+                        )
+                        playbook_id = previous_playbook_id_by_fp.get(prev_fp)
+                        if all_overlapping_clusters_replaced:
                             replaced_previous_fingerprints.add(prev_fp)
+                            if playbook_id is not None:
+                                selective_supersede_playbook_ids.add(playbook_id)
                     self.storage.set_source_windows_for_agent_playbook(  # type: ignore[reportOptionalMemberAccess]
                         saved_fb.agent_playbook_id,
                         [
