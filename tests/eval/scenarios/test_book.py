@@ -9,7 +9,7 @@ and the reflection content/trigger/no-change paths.
 
 from __future__ import annotations
 
-from reflexio.server.services.playbook.playbook_consolidator import (
+from reflexio.server.services.playbook.components.consolidator import (
     DifferentiateDecision,
     IndependentDecision,
     RejectNewDecision,

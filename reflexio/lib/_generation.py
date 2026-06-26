@@ -38,7 +38,7 @@ class GenerationMixin(ReflexioBase):
         """
         if not self._is_storage_configured():
             raise ValueError(STORAGE_NOT_CONFIGURED_MSG)
-        from reflexio.server.services.playbook.playbook_aggregator import (
+        from reflexio.server.services.playbook.components.aggregator import (
             PlaybookAggregator,
         )
         from reflexio.server.services.playbook.playbook_service_utils import (
@@ -138,7 +138,7 @@ class GenerationMixin(ReflexioBase):
         Returns:
             RerunPlaybookGenerationResponse: Response containing success status, message, and count of playbooks generated
         """
-        from reflexio.server.services.playbook.playbook_generation_service import (
+        from reflexio.server.services.playbook.service import (
             PlaybookGenerationService,
         )
 
@@ -163,7 +163,7 @@ class GenerationMixin(ReflexioBase):
         Returns:
             ManualPlaybookGenerationResponse: Response containing success status, message, and count of playbooks generated
         """
-        from reflexio.server.services.playbook.playbook_generation_service import (
+        from reflexio.server.services.playbook.service import (
             PlaybookGenerationService,
         )
 

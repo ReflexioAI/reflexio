@@ -18,12 +18,12 @@ from reflexio.models.config_schema import (
 )
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
-from reflexio.server.services.playbook.playbook_generation_service import (
-    PlaybookGenerationService,
-    PlaybookGenerationServiceConfig,
-)
 from reflexio.server.services.playbook.playbook_service_utils import (
     PlaybookGenerationRequest,
+)
+from reflexio.server.services.playbook.service import (
+    PlaybookGenerationService,
+    PlaybookGenerationServiceConfig,
 )
 
 

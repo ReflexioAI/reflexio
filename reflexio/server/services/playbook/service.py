@@ -27,8 +27,8 @@ from reflexio.server.services.base_generation_service import (
     BaseGenerationService,
     StatusChangeOperation,
 )
-from reflexio.server.services.playbook.playbook_aggregator import PlaybookAggregator
-from reflexio.server.services.playbook.playbook_extractor import PlaybookExtractor
+from reflexio.server.services.playbook.components.aggregator import PlaybookAggregator
+from reflexio.server.services.playbook.components.extractor import PlaybookExtractor
 from reflexio.server.services.playbook.playbook_service_constants import (
     PlaybookServiceConstants,
 )
@@ -300,7 +300,7 @@ class PlaybookGenerationService(
         from reflexio.server.site_var.feature_flags import is_deduplicator_enabled
 
         if is_deduplicator_enabled(self.org_id):
-            from reflexio.server.services.playbook.playbook_consolidator import (
+            from reflexio.server.services.playbook.components.consolidator import (
                 PlaybookConsolidator,
             )
 

@@ -310,10 +310,10 @@ Users can regenerate and manage profile versions using a four-state system:
 **Detailed Documentation**: See [`services/playbook/README.md`](services/playbook/README.md) for detailed component documentation.
 
 Key files:
-- `playbook_generation_service.py`: Service orchestrator
-- `playbook_extractor.py`: Extractor that extracts user playbooks
-- `playbook_aggregator.py`: Aggregates similar user playbooks (with cluster-level change detection to skip unchanged clusters)
-- `playbook_consolidator.py`: Reconciles newly extracted playbooks against existing DB playbooks using LLM
+- `service.py`: Service orchestrator
+- `components/extractor.py`: Extractor that extracts user playbooks
+- `components/aggregator.py`: Aggregates similar user playbooks (with cluster-level change detection to skip unchanged clusters)
+- `components/consolidator.py`: Reconciles newly extracted playbooks against existing DB playbooks using LLM
 
 **Flow**:
 - Interactions → PlaybookExtractor (extraction-only) → PlaybookConsolidator (consolidates new vs existing DB playbooks) → UserPlaybook (with optional `blocking_issue`) → Storage
@@ -323,7 +323,7 @@ Key files:
 
 **Rerun Behavior**: Groups interactions by `user_id` for per-user playbook extraction (fetches all users, then processes each user's interactions together)
 
-**Playbook Aggregation with Cluster Change Detection** (`playbook_aggregator.py`):
+**Playbook Aggregation with Cluster Change Detection** (`components/aggregator.py`):
 
 Aggregation clusters user playbooks by embedding similarity, then calls LLM per cluster to produce aggregated agent playbooks. Cluster-level change detection avoids redundant LLM calls on subsequent runs:
 

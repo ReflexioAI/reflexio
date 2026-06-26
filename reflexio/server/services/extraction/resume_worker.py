@@ -28,16 +28,16 @@ from reflexio.server.services.extraction.resumable_agent import (
     ResumableExtractionAgent,
     create_pending_info_tools_for_extractor_kind,
 )
-from reflexio.server.services.playbook.playbook_extractor import PlaybookExtractor
-from reflexio.server.services.playbook.playbook_generation_service import (
-    PlaybookGenerationService,
-    PlaybookGenerationServiceConfig,
-)
+from reflexio.server.services.playbook.components.extractor import PlaybookExtractor
 from reflexio.server.services.playbook.playbook_service_utils import (
     StructuredPlaybookList,
     construct_expert_playbook_extraction_messages,
     construct_playbook_extraction_messages_from_sessions,
     has_expert_content,
+)
+from reflexio.server.services.playbook.service import (
+    PlaybookGenerationService,
+    PlaybookGenerationServiceConfig,
 )
 from reflexio.server.services.profile.profile_extractor import (
     MAX_EXISTING_PROFILES_FOR_CONTEXT,

@@ -5,10 +5,10 @@ Description: Playbook extraction, aggregation, and consolidation pipeline
 
 ## Main Entry Points
 
-- **Service Orchestrator**: `playbook_generation_service.py` - Manages playbook extraction lifecycle (regular, rerun, manual modes)
-- **Playbook Extractor**: `playbook_extractor.py` - Extracts user playbooks from interactions via LLM
-- **Playbook Aggregator**: `playbook_aggregator.py` - Clusters similar user playbooks and generates aggregated insights
-- **Playbook Consolidator**: `playbook_consolidator.py` - Reconciles newly extracted playbooks against existing storage via LLM. Decides per pair to merge as duplicates, prefer the new entry, prefer the existing entry, differentiate (split with refined triggers), or keep both as independent
+- **Service Orchestrator**: `service.py` - Manages playbook extraction lifecycle (regular, rerun, manual modes)
+- **Playbook Extractor**: `components/extractor.py` - Extracts user playbooks from interactions via LLM
+- **Playbook Aggregator**: `components/aggregator.py` - Clusters similar user playbooks and generates aggregated insights
+- **Playbook Consolidator**: `components/consolidator.py` - Reconciles newly extracted playbooks against existing storage via LLM. Decides per pair to merge as duplicates, prefer the new entry, prefer the existing entry, differentiate (split with refined triggers), or keep both as independent
 
 ## Supporting Files
 
@@ -30,7 +30,7 @@ Interactions
           -> AgentPlaybook (aggregated insights) -> Storage
 ```
 
-### Playbook Extraction (`playbook_extractor.py`)
+### Playbook Extraction (`components/extractor.py`)
 
 Extends `BaseGenerationService` extractor pattern. Each extractor:
 1. Checks stride_size threshold before running
@@ -41,7 +41,7 @@ Extends `BaseGenerationService` extractor pattern. Each extractor:
 
 **Tool Analysis**: Reads `tool_can_use` from root `Config` for tool usage analysis and blocking issue detection.
 
-### Playbook Aggregation (`playbook_aggregator.py`)
+### Playbook Aggregation (`components/aggregator.py`)
 
 Triggered manually via `/api/run_playbook_aggregation`. Clusters user playbooks and generates consolidated insights.
 
@@ -52,7 +52,7 @@ Triggered manually via `/api/run_playbook_aggregation`. Clusters user playbooks 
 
 **Clustering**: Embeds user playbooks -> HDBSCAN clustering -> falls back to Agglomerative if too few clusters
 
-### Playbook Consolidation (`playbook_consolidator.py`)
+### Playbook Consolidation (`components/consolidator.py`)
 
 Consolidates newly extracted playbooks against existing playbooks in the database via LLM semantic matching. For each NEW vs EXISTING pair the LLM returns one of five decision kinds, and the consolidator applies the chosen kind:
 
@@ -68,10 +68,10 @@ A safety fallback inserts any new candidate that no decision consumed, so extrac
 
 | Constant | Prompt ID | Used By |
 |----------|-----------|---------|
-| `PLAYBOOK_EXTRACTION_SHOULD_GENERATE_PROMPT_ID` | `playbook_should_generate` | PlaybookExtractor |
+| `PLAYBOOK_SHOULD_GENERATE_PROMPT_ID` | `playbook_should_generate` | PlaybookExtractor |
 | `PLAYBOOK_EXTRACTION_CONTEXT_PROMPT_ID` | `playbook_extraction_context` | PlaybookExtractor |
 | `PLAYBOOK_EXTRACTION_PROMPT_ID` | `playbook_extraction_main` | PlaybookExtractor |
-| `PLAYBOOK_GENERATION_PROMPT_ID` | `playbook_generation` | PlaybookAggregator |
+| `PLAYBOOK_AGGREGATION_PROMPT_ID` | `playbook_aggregation` | PlaybookAggregator |
 
 ## Key Output Schemas (in `playbook_service_utils.py`)
 

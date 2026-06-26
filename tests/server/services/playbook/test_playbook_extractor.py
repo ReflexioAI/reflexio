@@ -29,13 +29,13 @@ from reflexio.models.config_schema import (
 )
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
-from reflexio.server.services.playbook.playbook_extractor import PlaybookExtractor
-from reflexio.server.services.playbook.playbook_generation_service import (
-    PlaybookGenerationServiceConfig,
-)
+from reflexio.server.services.playbook.components.extractor import PlaybookExtractor
 from reflexio.server.services.playbook.playbook_service_utils import (
     StructuredPlaybookContent,
     StructuredPlaybookList,
+)
+from reflexio.server.services.playbook.service import (
+    PlaybookGenerationServiceConfig,
 )
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 from reflexio.server.services.storage.storage_base import AgentRunStatus
