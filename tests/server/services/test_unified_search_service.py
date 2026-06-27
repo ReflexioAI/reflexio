@@ -19,6 +19,7 @@ from reflexio.models.api_schema.retriever_schema import (
 )
 from reflexio.models.config_schema import RetrievalFloorConfig, SearchOptions
 from reflexio.server.services.pre_retrieval import ReformulationResult
+from reflexio.server.services.retrieval.recency import RecencyConfig, ScoredItem
 from reflexio.server.services.storage.storage_base import BaseStorage
 from reflexio.server.services.unified_search_service import (
     _search_agent_playbooks_via_storage,
@@ -240,6 +241,155 @@ class TestRunUnifiedSearch(unittest.TestCase):
 
         self.assertTrue(result.success)
         self.assertEqual(captured, [("req-1", "test-org", [10], [102])])
+
+    @patch("reflexio.server.services.unified_search_service.QueryReformulator")
+    def test_recency_uses_pool_and_combined_score_after_phase_b(
+        self, _reformulator_cls
+    ):
+        _reformulator_cls.return_value.rewrite.return_value = ReformulationResult(
+            standalone_query="same query"
+        )
+        storage = _mock_storage()
+        old = UserPlaybook(
+            user_playbook_id=1,
+            user_id="user-1",
+            agent_version="v1",
+            request_id="r1",
+            playbook_name="pb",
+            content="old",
+            created_at=1,
+        )
+        fresh = UserPlaybook(
+            user_playbook_id=2,
+            user_id="user-1",
+            agent_version="v1",
+            request_id="r2",
+            playbook_name="pb",
+            content="fresh",
+            created_at=4_102_444_800,
+        )
+        seen_top_k = []
+
+        def fake_phase_b(**kwargs):
+            seen_top_k.append(kwargs["top_k"])
+            return ([], [], [ScoredItem(old, 1.0), ScoredItem(fresh, 0.9)])
+
+        with patch(
+            "reflexio.server.services.unified_search_service._run_phase_b",
+            side_effect=fake_phase_b,
+        ):
+            result = run_unified_search(
+                request=UnifiedSearchRequest(
+                    query="same query", user_id="user-1", top_k=1
+                ),
+                org_id="test-org",
+                storage=storage,
+                llm_client=MagicMock(),
+                prompt_manager=MagicMock(),
+                retrieval_floor=RetrievalFloorConfig(enabled=False),
+                recency=RecencyConfig(enabled=True, max_penalty_frac=1.0, pool_size=2),
+            )
+
+        self.assertTrue(result.success)
+        self.assertEqual(seen_top_k, [2])
+        self.assertEqual([pb.content for pb in result.user_playbooks], ["fresh"])
+
+    @patch("reflexio.server.services.unified_search_service.QueryReformulator")
+    def test_recency_does_not_overtake_clearly_more_relevant_combined_score(
+        self, _reformulator_cls
+    ):
+        # Invariant on the default (combined_score) arm: at the default penalty
+        # fraction, an ancient but clearly-more-relevant item is never overtaken
+        # by a fresher, weaker one (0.040 vs 0.024 is a 1.67x gap >> 15%).
+        _reformulator_cls.return_value.rewrite.return_value = ReformulationResult(
+            standalone_query="q"
+        )
+        storage = _mock_storage()
+        relevant = UserPlaybook(
+            user_playbook_id=1,
+            user_id="user-1",
+            agent_version="v1",
+            request_id="r1",
+            playbook_name="pb",
+            content="relevant",
+            created_at=1,
+        )
+        fresh = UserPlaybook(
+            user_playbook_id=2,
+            user_id="user-1",
+            agent_version="v1",
+            request_id="r2",
+            playbook_name="pb",
+            content="fresh",
+            created_at=4_102_444_800,
+        )
+
+        def fake_phase_b(**_kwargs):
+            return ([], [], [ScoredItem(relevant, 0.040), ScoredItem(fresh, 0.024)])
+
+        with patch(
+            "reflexio.server.services.unified_search_service._run_phase_b",
+            side_effect=fake_phase_b,
+        ):
+            result = run_unified_search(
+                request=UnifiedSearchRequest(query="q", user_id="user-1", top_k=2),
+                org_id="test-org",
+                storage=storage,
+                llm_client=MagicMock(),
+                prompt_manager=MagicMock(),
+                retrieval_floor=RetrievalFloorConfig(enabled=False),
+                recency=RecencyConfig(enabled=True, max_penalty_frac=0.15, pool_size=2),
+            )
+
+        self.assertEqual(
+            [pb.content for pb in result.user_playbooks], ["relevant", "fresh"]
+        )
+
+    @patch("reflexio.server.services.unified_search_service.QueryReformulator")
+    def test_recency_routes_scored_single_rpc_without_support_flag(
+        self, _reformulator_cls
+    ):
+        # Native-Postgres shape: supports_unified_hybrid_search=False but the
+        # inherited unified_hybrid_search_scored is present. Recency must still
+        # route through the scored single-RPC path (not silently no-op).
+        _reformulator_cls.return_value.rewrite.return_value = ReformulationResult(
+            standalone_query="q"
+        )
+
+        class _PgLikeStorage:
+            supports_embedding = False
+            supports_unified_hybrid_search = False
+
+            def unified_hybrid_search_scored(self, **_kwargs):
+                return ([], [], [])
+
+        seen: dict[str, object] = {}
+
+        def fake_single_rpc(**kwargs):
+            seen["recency_on"] = kwargs.get("recency_on")
+            return ([], [], [])
+
+        with (
+            patch(
+                "reflexio.server.services.unified_search_service._run_phase_a",
+                return_value=("q", None),
+            ),
+            patch(
+                "reflexio.server.services.unified_search_service._run_phase_b_single_rpc",
+                side_effect=fake_single_rpc,
+            ),
+        ):
+            run_unified_search(
+                request=UnifiedSearchRequest(query="q", user_id="u", top_k=2),
+                org_id="o",
+                storage=cast(BaseStorage, _PgLikeStorage()),
+                llm_client=MagicMock(),
+                prompt_manager=MagicMock(),
+                retrieval_floor=RetrievalFloorConfig(enabled=False),
+                recency=RecencyConfig(enabled=True, pool_size=2),
+            )
+
+        self.assertTrue(seen.get("recency_on"))
 
 
 def _agent_playbook(agent_playbook_id: int, status: PlaybookStatus) -> AgentPlaybook:

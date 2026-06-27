@@ -1,6 +1,6 @@
 """Device selection for the cross-encoder reranker singleton."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 
@@ -41,4 +41,23 @@ def test_score_pairs_disables_progress_bar():
     model.predict.return_value = [0.5]
     reranker._MODEL = model
     reranker.score_pairs("query", ["doc"])
-    model.predict.assert_called_once_with([("query", "doc")], show_progress_bar=False)
+    model.predict.assert_called_once_with(
+        [("query", "doc")],
+        show_progress_bar=False,
+        activation_fn=ANY,
+    )
+
+
+def test_score_pairs_forces_identity_activation_for_raw_logits():
+    # The recency additive-logit math and the relevance floor both depend on
+    # raw, signed logits — not a sigmoid-activated [0, 1] score. Pin the
+    # activation to Identity so a library default can't silently change it.
+    from torch import nn
+
+    model = MagicMock()
+    model.predict.return_value = [-3.5]  # raw logits can be negative
+    reranker._MODEL = model
+    scores = reranker.score_pairs("query", ["doc"])
+    assert scores == [-3.5]
+    _, kwargs = model.predict.call_args
+    assert isinstance(kwargs["activation_fn"], nn.Identity)

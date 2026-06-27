@@ -80,8 +80,10 @@ def test_batched_floors_score_once_and_apply_per_arm_floors():
     ) as mock_score:
         out = apply_relevance_floors("q", arms, top_k=10)
     mock_score.assert_called_once_with("q", ["p1", "p2", "q1"])
-    assert [i.content for i in out[0]] == ["p1"]  # -7.0 below -5.0 floor
-    assert out[1] == []  # 0.0 below the 0.5 floor
+    assert [i.content for i in out[0].items] == ["p1"]  # -7.0 below -5.0 floor
+    assert out[0].scores == [1.0]
+    assert out[1].items == []  # 0.0 below the 0.5 floor
+    assert out[1].scores == []
 
 
 def test_batched_floors_sort_desc_and_cap_per_arm():
@@ -91,7 +93,8 @@ def test_batched_floors_sort_desc_and_cap_per_arm():
         return_value=[1.0, 3.0, 2.0],
     ):
         out = apply_relevance_floors("q", arms, top_k=2)
-    assert [i.content for i in out[0]] == ["y", "z"]
+    assert [i.content for i in out[0].items] == ["y", "z", "x"]
+    assert out[0].scores == [3.0, 2.0, 1.0]
 
 
 def test_batched_floors_unavailable_degrades_each_arm():
@@ -108,8 +111,10 @@ def test_batched_floors_unavailable_degrades_each_arm():
         side_effect=CrossEncoderUnavailableError("no model"),
     ):
         out = apply_relevance_floors("q", arms, top_k=2)
-    assert [i.content for i in out[0]] == ["a", "b"]
-    assert [i.content for i in out[1]] == ["d"]
+    assert [i.content for i in out[0].items] == ["a", "b", "c"]
+    assert out[0].scores is None
+    assert [i.content for i in out[1].items] == ["d"]
+    assert out[1].scores is None
 
 
 def test_batched_floors_all_empty_skips_scoring():
@@ -117,7 +122,8 @@ def test_batched_floors_all_empty_skips_scoring():
         "reflexio.server.services.retrieval.relevance_floor.score_pairs"
     ) as mock_score:
         out = apply_relevance_floors("q", [("a1", [], -5.0), ("a2", [], -5.0)], top_k=5)
-    assert out == [[], []]
+    assert [result.items for result in out] == [[], []]
+    assert [result.scores for result in out] == [[], []]
     mock_score.assert_not_called()
 
 
@@ -131,5 +137,7 @@ def test_batched_floors_empty_arm_keeps_offsets_aligned():
         return_value=[2.0],
     ):
         out = apply_relevance_floors("q", arms, top_k=5)
-    assert out[0] == []
-    assert [i.content for i in out[1]] == ["x"]
+    assert out[0].items == []
+    assert out[0].scores == []
+    assert [i.content for i in out[1].items] == ["x"]
+    assert out[1].scores == [2.0]

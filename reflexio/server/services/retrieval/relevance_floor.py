@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 from reflexio.server.llm.rerank import score_pairs
@@ -21,12 +22,20 @@ from reflexio.server.tracing import profile_step
 logger = logging.getLogger(__name__)
 
 
-def _floor_and_sort[T](items: list[T], scores: list[float], floor: float) -> list[T]:
-    """Return items scoring >= ``floor``, sorted by score descending."""
+@dataclass(frozen=True)
+class RelevanceFloorResult:
+    items: list[Any]
+    scores: list[float] | None
+
+
+def _floor_and_sort[T](
+    items: list[T], scores: list[float], floor: float
+) -> list[tuple[T, float]]:
+    """Return ``(item, score)`` pairs scoring >= ``floor``, sorted descending."""
     ranked = sorted(
         zip(items, scores, strict=True), key=lambda pair: pair[1], reverse=True
     )
-    return [item for item, score in ranked if score >= floor]
+    return [(item, score) for item, score in ranked if score >= floor]
 
 
 def apply_relevance_floor[T](
@@ -71,7 +80,7 @@ def apply_relevance_floor[T](
             return items[:top_k]
         span.set_data("available", True)
 
-        survivors = _floor_and_sort(items, scores, floor)
+        survivors = [item for item, _score in _floor_and_sort(items, scores, floor)]
         dropped = len(items) - len(survivors)
         span.set_data("kept", len(survivors))
         span.set_data("dropped", dropped)
@@ -92,7 +101,7 @@ def apply_relevance_floors(
     top_k: int,
     *,
     content_of: Callable[[Any], str] = lambda item: item.content,
-) -> list[list[Any]]:
+) -> list[RelevanceFloorResult]:
     """Floor every arm with a single cross-encoder batch.
 
     CPU cross-encoder inference does not parallelize across threads, so
@@ -108,12 +117,13 @@ def apply_relevance_floors(
         content_of: Extracts the text to score for an item.
 
     Returns:
-        One survivor list per arm, in input order — each sorted by score
-        descending and capped at ``top_k``. On reranker unavailability,
-        every arm returns ``items[:top_k]`` unchanged (logged).
+        One result per arm, in input order. Available reranker results are
+        sorted by score descending and left uncapped with the paired raw logits.
+        On reranker unavailability, every arm returns the original full item
+        pool with a ``None`` score sentinel (logged).
     """
     if not any(items for _, items, _ in arms):
-        return [[] for _ in arms]
+        return [RelevanceFloorResult([], []) for _ in arms]
     arm_names = [name for name, _, _ in arms]
     contents: list[str] = []
     for _, items, _ in arms:
@@ -123,20 +133,21 @@ def apply_relevance_floors(
         arm="all",
         arms=arm_names,
         items=len(contents),
+        top_k=top_k,
     ) as span:
         try:
             scores = score_pairs(query, contents)
         except CrossEncoderUnavailableError:
             span.set_data("available", False)
             logger.warning(
-                "event=relevance_floor_unavailable arms=%s items=%d (returning unfiltered top_k)",
+                "event=relevance_floor_unavailable arms=%s items=%d (returning unfiltered pool)",
                 arm_names,
                 len(contents),
             )
-            return [items[:top_k] for _, items, _ in arms]
+            return [RelevanceFloorResult(list(items), None) for _, items, _ in arms]
         span.set_data("available", True)
 
-        results: list[list[Any]] = []
+        results: list[RelevanceFloorResult] = []
         offset = 0
         for name, items, floor in arms:
             arm_scores = scores[offset : offset + len(items)]
@@ -153,5 +164,10 @@ def apply_relevance_floors(
                     dropped,
                     floor,
                 )
-            results.append(survivors[:top_k])
+            results.append(
+                RelevanceFloorResult(
+                    [item for item, _score in survivors],
+                    [score for _item, score in survivors],
+                )
+            )
         return results

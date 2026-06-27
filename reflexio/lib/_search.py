@@ -162,6 +162,7 @@ class SearchMixin(ReflexioBase):
             storage = self._get_storage()
             prompt_manager = self.request_context.prompt_manager
             retrieval_floor = config.retrieval_floor if config else None
+            recency = getattr(storage, "recency", None)
 
         from reflexio.server.services.unified_search_service import run_unified_search
 
@@ -173,4 +174,5 @@ class SearchMixin(ReflexioBase):
             prompt_manager=prompt_manager,
             pre_retrieval_model_name=pre_retrieval_model_name,
             retrieval_floor=retrieval_floor,
+            recency=recency,
         )

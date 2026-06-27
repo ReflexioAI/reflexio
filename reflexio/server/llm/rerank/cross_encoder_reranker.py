@@ -150,7 +150,18 @@ def score_pairs(query: str, docs: list[str]) -> list[float]:
         return []
     model = _get_model()
     pairs = [(query, doc) for doc in docs]
-    raw_scores = model.predict(pairs, show_progress_bar=False)
+    try:
+        from torch import nn
+    except ImportError as e:
+        raise CrossEncoderUnavailableError(
+            "torch is not installed; cannot use the cross-encoder reranker"
+        ) from e
+
+    raw_scores = model.predict(
+        pairs,
+        show_progress_bar=False,
+        activation_fn=nn.Identity(),
+    )
     # ``predict`` returns a numpy array; convert to plain Python floats so
     # the caller can serialise the result without numpy as a dependency.
     return [float(s) for s in raw_scores]
