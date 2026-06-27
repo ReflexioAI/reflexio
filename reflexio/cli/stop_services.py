@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import argparse
 
-from dotenv import load_dotenv
-
-from reflexio.cli.run_services import parse_only_flag, resolve_ports
+from reflexio.cli.env_loader import load_reflexio_env
+from reflexio.cli.run_services import (
+    DEFAULT_OSS_PORTS,
+    parse_only_flag,
+    resolve_ports,
+)
 from reflexio.cli.utils import stop_services
 
 
@@ -16,19 +19,19 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         "--backend-port",
         type=int,
         default=None,
-        help="Backend port (default: 8081, env: BACKEND_PORT)",
+        help="Backend port (default: 8061, env: BACKEND_PORT)",
     )
     parser.add_argument(
         "--docs-port",
         type=int,
         default=None,
-        help="Docs port (default: 8082, env: DOCS_PORT)",
+        help="Docs port (default: 8062, env: DOCS_PORT)",
     )
     parser.add_argument(
         "--embedding-port",
         type=int,
         default=None,
-        help="Embedding service port (default: 8072, env: EMBEDDING_PORT)",
+        help="Embedding service port (default: 8069, env: EMBEDDING_PORT)",
     )
     parser.add_argument(
         "--only",
@@ -79,11 +82,11 @@ def build_stop_targets(
 
 def execute(args: argparse.Namespace) -> None:
     """Execute the stop-services command."""
-    load_dotenv()
+    # Use reflexio's scoped loader (./.env + ~/.reflexio/.env), not a bare
+    # ``dotenv.load_dotenv()`` which walks up to a parent ``.env``.
+    load_reflexio_env()
 
-    ports = resolve_ports(
-        args, defaults={"backend": 8081, "docs": 8082, "embedding": 8072}
-    )
+    ports = resolve_ports(args, defaults=DEFAULT_OSS_PORTS)
     only = parse_only_flag(args.only, {"backend", "docs", "embedding"})
     port_map, process_patterns = build_stop_targets(only, ports)
 

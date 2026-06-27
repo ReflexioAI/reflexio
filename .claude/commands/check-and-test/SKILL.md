@@ -84,7 +84,7 @@ pytest reflexio/tests/ --ignore=reflexio/tests/e2e_tests/ -n 0 -v
 
 ### Step 2: Run E2E Tests
 
-E2E tests require the server to be running at http://localhost:8081. Run them separately:
+E2E tests require the server to be running at http://localhost:8061. Run them separately:
 ```bash
 pytest reflexio/tests/e2e_tests/ -n 0 -v
 ```
@@ -194,7 +194,7 @@ Location: Check `reflexio/tests/server/test_utils.py` for the decorator definiti
 ### E2E Tests
 
 End-to-end tests in `reflexio/tests/e2e_tests/`:
-- Require server running at http://localhost:8081
+- Require server running at http://localhost:8061
 - Use real database and external services
 - Test complete user workflows
 
@@ -216,7 +216,7 @@ Fast, isolated tests that:
 - E2E tests require running database (SQLite by default)
 
 ### Server Not Running
-- E2E tests need server at http://localhost:8081
+- E2E tests need server at http://localhost:8061
 - Start with appropriate command before running e2e tests
 
 ## Summary

@@ -7,7 +7,7 @@ export function generatePythonCode(
   const lines: string[] = [
     "from reflexio import ReflexioClient",
     "",
-    'client = ReflexioClient(url_endpoint="http://localhost:8081")',
+    'client = ReflexioClient(url_endpoint="http://localhost:8061")',
     "",
   ];
 

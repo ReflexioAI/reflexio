@@ -35,7 +35,7 @@ export function TopBar() {
         <Input
           value={apiEndpoint}
           onChange={(e) => setApiEndpoint(e.target.value)}
-          placeholder="http://localhost:8081"
+          placeholder="http://localhost:8061"
           className="h-8 text-xs max-w-xs font-mono"
         />
       </div>

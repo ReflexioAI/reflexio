@@ -23,7 +23,7 @@ Ports are allocated in groups of 3 with a +10 offset between groups:
 
 | Group | Frontend | Backend | Docs |
 |-------|----------|---------|------|
-| Default | 8080 | 8081 | 8082 |
+| Default | 8080 | 8061 | 8062 |
 | +10 | 8090 | 8091 | 8092 |
 | +20 | 8100 | 8101 | 8102 |
 | +30 | 8110 | 8111 | 8112 |
@@ -32,8 +32,8 @@ Ports are allocated in groups of 3 with a +10 offset between groups:
 | Service | Env Var | Base Port |
 |---------|---------|-----------|
 | Frontend (Next.js) | `FRONTEND_PORT` | 8080 |
-| Backend (FastAPI) | `BACKEND_PORT` | 8081 |
-| Docs (Fumadocs) | `DOCS_PORT` | 8082 |
+| Backend (FastAPI) | `BACKEND_PORT` | 8061 |
+| Docs (Fumadocs) | `DOCS_PORT` | 8062 |
 Step 0 (Smart Port Selection) determines which group to use automatically, unless ports are already set via environment variables.
 
 ## Execution Steps
@@ -72,14 +72,14 @@ Then classify:
 **0.4** Export the chosen ports:
 ```bash
 export FRONTEND_PORT=<8080+N>
-export BACKEND_PORT=<8081+N>
-export DOCS_PORT=<8082+N>
+export BACKEND_PORT=<8061+N>
+export DOCS_PORT=<8062+N>
 export API_BACKEND_URL="http://localhost:${BACKEND_PORT}"
 ```
 
 Report which group was selected and why, e.g.:
-- "Using default ports (8080/8081/8082) — all free"
-- "Using default ports (8080/8081/8082) — restarting own services"
+- "Using default ports (8080/8061/8062) — all free"
+- "Using default ports (8080/8061/8062) — restarting own services"
 - "Using offset +10 ports (8090/8091/8092) — default ports occupied by another worktree"
 
 Also record whether any ports in the chosen group were "own" (needs stop) or all "free" (skip stop).

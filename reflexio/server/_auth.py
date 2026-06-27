@@ -18,14 +18,25 @@ DEFAULT_ORG_ID = "self-host-org"
 def default_get_org_id() -> str:
     """Return the default organization ID for local hosting.
 
-    Enterprise deployments override this via
+    Reads ``REFLEXIO_DEFAULT_ORG_ID`` (unset/blank falls back to
+    :data:`DEFAULT_ORG_ID`) so a no-auth deployment can run under a distinct
+    org id without colliding with another local backend that shares
+    ``~/.reflexio/configs/``. claude-smart and the self-host backend otherwise
+    both default to ``self-host-org`` and fight over the same
+    ``config_self-host-org.json``.
+
+    Enterprise deployments never reach this: they override the dependency via
     ``app.dependency_overrides[default_get_org_id] = <bearer_auth_resolver>``
     inside :func:`reflexio.server.api.create_app`.
 
     Returns:
         str: The default org identifier used for self-hosted deployments.
     """
-    return DEFAULT_ORG_ID
+    # Lazy import keeps this deliberately cycle-free module independent of the
+    # ``reflexio.server`` package init (see module docstring).
+    from reflexio.server.env_utils import env_str
+
+    return env_str("REFLEXIO_DEFAULT_ORG_ID", DEFAULT_ORG_ID)
 
 
 def default_get_caller_type() -> str:

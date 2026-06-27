@@ -5,7 +5,7 @@
 #
 # Port choice: openclaw-smart shares 8071/8072 with the sibling claude-smart
 # plugin so the two plugins coexist on a single shared backend (one SQLite
-# store, one extractor process) — not reflexio's 8081 default, which is
+# store, one extractor process) — not reflexio's 8061 default, which is
 # reserved for a developer's own local reflexio instance.
 #
 # Subcommands:

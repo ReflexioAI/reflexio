@@ -182,7 +182,7 @@ def _load_live_e2e_settings() -> tuple[str, str]:
     base_url = (
         os.environ.get("REFLEXIO_URL")
         or dotenv_values_from_file.get("REFLEXIO_URL")
-        or "http://localhost:8081"
+        or "http://localhost:8061"
     )
 
     if not api_key:

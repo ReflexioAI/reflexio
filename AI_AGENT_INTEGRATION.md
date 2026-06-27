@@ -146,11 +146,11 @@ For local development, start the backend:
 reflexio services start
 ```
 
-The local API defaults to `http://localhost:8081/`. If you need a different
+The local API defaults to `http://localhost:8061/`. If you need a different
 backend, read these values from environment or `~/.reflexio/.env`:
 
 ```shell
-REFLEXIO_URL="http://localhost:8081/"
+REFLEXIO_URL="http://localhost:8061/"
 REFLEXIO_API_KEY=""
 ```
 
@@ -203,7 +203,7 @@ end to end using the bundled `reflexio` CLI. This is the quickest onboarding
 smoke test:
 
 ```shell
-reflexio services start                        # backend on :8081 (+ docs), SQLite storage
+reflexio services start                        # backend on :8061 (+ docs), SQLite storage
 
 reflexio publish --user-id alice --wait --data '{
   "interactions": [
@@ -292,7 +292,7 @@ from reflexio import ReflexioClient
 
 def reflexio_client() -> ReflexioClient:
     return ReflexioClient(
-        url_endpoint=os.environ.get("REFLEXIO_URL", "http://localhost:8081/"),
+        url_endpoint=os.environ.get("REFLEXIO_URL", "http://localhost:8061/"),
         api_key=os.environ.get("REFLEXIO_API_KEY", ""),
         timeout=5,
     )

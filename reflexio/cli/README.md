@@ -62,7 +62,7 @@ Example: `uv run reflexio --json search "refund policy"`.
 Start and stop the backend, docs server, and optional local embedding daemon.
 
 ```shell
-uv run reflexio services start                          # backend :8081, docs :8082
+uv run reflexio services start                          # backend :8061, docs :8062
 uv run reflexio services start --storage sqlite         # sqlite (default) | supabase | postgres
 uv run reflexio services start --backend-port 9000 --docs-port 9001
 uv run reflexio services start --only backend --no-reload
@@ -216,7 +216,7 @@ uv run reflexio config pull                              # pull server config to
 ## Auth
 
 ```shell
-uv run reflexio auth login --api-key $REFLEXIO_API_KEY --server-url http://localhost:8081
+uv run reflexio auth login --api-key $REFLEXIO_API_KEY --server-url http://localhost:8061
 uv run reflexio auth status
 uv run reflexio auth logout
 ```

@@ -275,12 +275,13 @@ def _write_embedding_model_to_org_config(model_name: str) -> None:
         model_name: Canonical model name to persist
             (e.g. ``"local/minilm-l6-v2"``).
     """
+    from reflexio.cli.bootstrap_config import default_org_id
     from reflexio.models.config_schema import LLMConfig
     from reflexio.server.services.configurator.local_file_config_storage import (
         LocalFileConfigStorage,
     )
 
-    storage = LocalFileConfigStorage("self-host-org")
+    storage = LocalFileConfigStorage(default_org_id())
     config = storage.load_config()
     if config.llm_config is None:
         config.llm_config = LLMConfig(embedding_model_name=model_name)
@@ -385,7 +386,7 @@ def _choose_embedding_provider(env_path: Path, *, embedding_flag: str) -> str | 
     return _provider_display(provider_key)
 
 
-_LOCAL_SERVER_URL = "http://localhost:8081"
+_LOCAL_SERVER_URL = "http://localhost:8061"
 
 
 def _prompt_local_sqlite(env_path: Path) -> str:

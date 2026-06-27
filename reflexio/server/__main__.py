@@ -3,10 +3,10 @@
 Run the FastAPI backend with Reflexio's uvicorn log config applied upfront::
 
     # Dev mode (autoreload, single process):
-    python -m reflexio.server --port 8081 --reload
+    python -m reflexio.server --port 8061 --reload
 
     # Daemon mode (multi-worker with recycling):
-    python -m reflexio.server --port 8081 --workers 2 --max-requests 10000
+    python -m reflexio.server --port 8061 --workers 2 --max-requests 10000
 
 Flags mirror the subset of ``uvicorn`` CLI options that
 :func:`reflexio.cli.run_services.build_backend_service` uses.

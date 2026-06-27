@@ -45,7 +45,7 @@ def load_env() -> tuple[str, str]:
             break
 
     url = os.environ.get(
-        "REFLEXIO_URL", f"http://localhost:{os.environ.get('BACKEND_PORT', '8081')}"
+        "REFLEXIO_URL", f"http://localhost:{os.environ.get('BACKEND_PORT', '8061')}"
     )
     api_key = os.environ.get("REFLEXIO_API_KEY", "")
 

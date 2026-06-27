@@ -166,13 +166,13 @@ def validate_storage_backend(storage: str | None) -> None:
 @app.command()
 def start(
     backend_port: Annotated[
-        int | None, typer.Option(help="Backend server port (default: 8081)")
+        int | None, typer.Option(help="Backend server port (default: 8061)")
     ] = None,
     docs_port: Annotated[
-        int | None, typer.Option(help="Docs server port (default: 8082)")
+        int | None, typer.Option(help="Docs server port (default: 8062)")
     ] = None,
     embedding_port: Annotated[
-        int | None, typer.Option(help="Embedding service port (default: 8072)")
+        int | None, typer.Option(help="Embedding service port (default: 8069)")
     ] = None,
     only: Annotated[
         str | None,
@@ -271,13 +271,13 @@ def start(
 @app.command()
 def stop(
     backend_port: Annotated[
-        int | None, typer.Option(help="Backend server port (default: 8081)")
+        int | None, typer.Option(help="Backend server port (default: 8061)")
     ] = None,
     docs_port: Annotated[
-        int | None, typer.Option(help="Docs server port (default: 8082)")
+        int | None, typer.Option(help="Docs server port (default: 8062)")
     ] = None,
     embedding_port: Annotated[
-        int | None, typer.Option(help="Embedding service port (default: 8072)")
+        int | None, typer.Option(help="Embedding service port (default: 8069)")
     ] = None,
     only: Annotated[
         str | None,

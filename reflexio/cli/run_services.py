@@ -27,6 +27,13 @@ _PACKAGE_DIR = Path(reflexio.__file__).resolve().parent
 _EDITABLE_REPO_ROOT = _PACKAGE_DIR.parent
 DOCS_DIR = _EDITABLE_REPO_ROOT / "docs"
 
+# Default local ports for the OSS launcher. OSS occupies the 806* range so it
+# never collides with claude-smart / openclaw-smart (807*), enterprise self-host
+# (808*), or enterprise platform (809*). Embedding sits in the *9 slot to mirror
+# the enterprise convention (8089 self-host, 8099 platform). Override per service
+# with the matching CLI flag or {BACKEND,DOCS,EMBEDDING}_PORT env var.
+DEFAULT_OSS_PORTS: dict[str, int] = {"backend": 8061, "docs": 8062, "embedding": 8069}
+
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
     """Add run-services arguments to the parser.
@@ -39,19 +46,19 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         "--backend-port",
         type=int,
         default=None,
-        help="Backend port (default: 8081, env: BACKEND_PORT)",
+        help="Backend port (default: 8061, env: BACKEND_PORT)",
     )
     parser.add_argument(
         "--docs-port",
         type=int,
         default=None,
-        help="Docs port (default: 8082, env: DOCS_PORT)",
+        help="Docs port (default: 8062, env: DOCS_PORT)",
     )
     parser.add_argument(
         "--embedding-port",
         type=int,
         default=None,
-        help="Embedding service port (default: 8072, env: EMBEDDING_PORT)",
+        help="Embedding service port (default: 8069, env: EMBEDDING_PORT)",
     )
     parser.add_argument(
         "--only",
@@ -323,9 +330,7 @@ def execute(args: argparse.Namespace) -> None:
     ts = time.strftime("%Y-%m-%d %H:%M:%S %Z")
     print(f"\n{bar}\n=== NEW REFLEXIO SERVER START — {ts} ===\n{bar}\n")
 
-    ports = resolve_ports(
-        args, defaults={"backend": 8081, "docs": 8082, "embedding": 8072}
-    )
+    ports = resolve_ports(args, defaults=DEFAULT_OSS_PORTS)
     os.environ["API_BACKEND_URL"] = os.environ.get(
         "API_BACKEND_URL", f"http://localhost:{ports['backend']}"
     )

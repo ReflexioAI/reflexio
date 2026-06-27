@@ -40,6 +40,68 @@ def get_env_path() -> Path:
     return _USER_ENV_FILE
 
 
+def block_implicit_dotenv_walkup() -> None:
+    """Neutralize path-less ``dotenv.load_dotenv()`` autoloads (the walk-up).
+
+    Third-party libraries — notably ``litellm`` at import time
+    (``litellm/__init__.py``) — call ``load_dotenv()`` with no arguments. With
+    no path, python-dotenv runs ``find_dotenv()``, which walks **up** the
+    directory tree and loads the first ``.env`` it finds. Run from the
+    ``open_source/reflexio`` submodule inside the enterprise monorepo, that
+    climbs to the enterprise-root ``.env`` (platform-configured) and leaks
+    ``BACKEND_PORT`` / ``DEPLOYMENT_MODE`` / ``REFLEXIO_STORAGE`` into the
+    process — silently overriding the OSS launcher's own ``806*`` defaults.
+
+    Reflexio loads env deliberately via :func:`load_reflexio_env`, scoped to
+    ``./.env`` + ``~/.reflexio/.env`` and never walking up, so a library's
+    implicit autoload is redundant. This installs a shim on
+    ``dotenv.load_dotenv`` that no-ops the path-less form while passing explicit
+    ``load_dotenv(dotenv_path=...)`` / ``stream=...`` calls through unchanged.
+    Reflexio's own loader binds ``load_dotenv`` at import and always passes an
+    explicit path, so it is unaffected regardless.
+
+    Must run before the first ``import litellm`` in the process — the CLI entry
+    point (:func:`reflexio.cli.__main__.main`) calls it first thing. Idempotent.
+    Only the CLI launcher installs this: the spawned server subprocesses bind
+    the parent-resolved ``--port`` and the OSS server never reads
+    ``DEPLOYMENT_MODE``, so the launcher process is the only place the leak
+    changes behavior.
+    """
+    import functools
+    from typing import IO
+
+    import dotenv
+
+    original = dotenv.load_dotenv
+    if getattr(original, "__reflexio_walkup_guarded__", False):
+        return
+
+    @functools.wraps(original)
+    def _guarded(
+        dotenv_path: str | os.PathLike[str] | None = None,
+        stream: IO[str] | None = None,
+        verbose: bool = False,
+        override: bool = False,
+        interpolate: bool = True,
+        encoding: str | None = "utf-8",
+    ) -> bool:
+        if dotenv_path is None and stream is None:
+            # Path-less call would walk up past reflexio's controlled search
+            # scope (./.env + ~/.reflexio/.env). Ignore it.
+            return False
+        return original(
+            dotenv_path,
+            stream,
+            verbose=verbose,
+            override=override,
+            interpolate=interpolate,
+            encoding=encoding,
+        )
+
+    _guarded.__reflexio_walkup_guarded__ = True  # type: ignore[attr-defined]
+    dotenv.load_dotenv = _guarded
+
+
 def get_loaded_env_path() -> Path | None:
     """Return the .env path that the most recent ``load_reflexio_env`` call
     resolved, or None if the loader hasn't run yet.

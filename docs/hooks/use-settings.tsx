@@ -21,7 +21,7 @@ interface SettingsContextValue extends Settings {
 const SettingsContext = createContext<SettingsContextValue | null>(null);
 
 const STORAGE_KEY = "reflexio-docs-settings";
-const DEFAULT_SETTINGS: Settings = { apiEndpoint: "http://localhost:8081" };
+const DEFAULT_SETTINGS: Settings = { apiEndpoint: "http://localhost:8061" };
 
 function loadSettings(): Settings {
   if (typeof window === "undefined") {

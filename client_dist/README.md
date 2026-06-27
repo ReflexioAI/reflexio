@@ -44,7 +44,7 @@ client = ReflexioClient(api_key="your-api-key")
 # Or connect to a self-hosted instance
 client = ReflexioClient(
     api_key="your-api-key",
-    url_endpoint="http://localhost:8081",
+    url_endpoint="http://localhost:8061",
 )
 ```
 

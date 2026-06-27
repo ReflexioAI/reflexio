@@ -20,6 +20,19 @@ _VALID_STORAGE_BACKENDS = frozenset({"sqlite", "supabase", "postgres"})
 _DEFAULT_ORG_ID = "self-host-org"
 _DEFAULT_STORAGE = "sqlite"
 
+
+def default_org_id() -> str:
+    """Resolve the default org id, honoring ``REFLEXIO_DEFAULT_ORG_ID``.
+
+    Mirrors :func:`reflexio.server._auth.default_get_org_id` so the local CLI
+    helpers (``setup``, ``config show`` / ``config local``) resolve the same
+    ``config_<org>.json`` the running no-auth server reads. Uses ``os.environ``
+    directly (not ``env_utils``) to keep this module's import lightweight — see
+    the ``_TYPE_TO_BACKEND`` note above.
+    """
+    return os.environ.get("REFLEXIO_DEFAULT_ORG_ID", "").strip() or _DEFAULT_ORG_ID
+
+
 # Maps StorageConfig subclass to backend string.  Lazy-imported in functions
 # that need it so module-level import stays lightweight (no Pydantic at import).
 _TYPE_TO_BACKEND: dict[type, str] = {}  # populated on first use
@@ -71,24 +84,26 @@ def default_config_path(base_dir: str | None = None) -> Path:
     Returns:
         Path: Absolute path to the default-org config file (may not exist).
     """
-    return _config_dir(base_dir) / f"config_{_DEFAULT_ORG_ID}.json"
+    return _config_dir(base_dir) / f"config_{default_org_id()}.json"
 
 
 def load_storage_from_config(
-    org_id: str = _DEFAULT_ORG_ID,
+    org_id: str | None = None,
     *,
     base_dir: str | None = None,
 ) -> str | None:
     """Read storage type from the local config file.
 
     Args:
-        org_id: Organization ID for the config file name.
+        org_id: Organization ID for the config file name. Defaults to the
+            ``REFLEXIO_DEFAULT_ORG_ID``-aware default org.
         base_dir: Override base directory (for testing). If None, uses ~/.reflexio/.
 
     Returns:
         Storage backend string ("sqlite", "supabase", "postgres") or None if
         no config file exists or storage_config is unset.
     """
+    org_id = org_id or default_org_id()
     config_path = _config_dir(base_dir) / f"config_{org_id}.json"
     if not config_path.exists():
         return None
@@ -114,7 +129,7 @@ def load_storage_from_config(
 
 def save_storage_to_config(
     storage_type: str,
-    org_id: str = _DEFAULT_ORG_ID,
+    org_id: str | None = None,
     *,
     base_dir: str | None = None,
 ) -> None:
@@ -125,7 +140,8 @@ def save_storage_to_config(
 
     Args:
         storage_type: Backend name ("sqlite", "supabase", "postgres").
-        org_id: Organization ID for the config file name.
+        org_id: Organization ID for the config file name. Defaults to the
+            ``REFLEXIO_DEFAULT_ORG_ID``-aware default org.
         base_dir: Override base directory (for testing).
     """
     from reflexio.models.config_schema import (
@@ -137,6 +153,7 @@ def save_storage_to_config(
         LocalFileConfigStorage,
     )
 
+    org_id = org_id or default_org_id()
     storage_obj = LocalFileConfigStorage(org_id, base_dir=base_dir)
     config = storage_obj.load_config()
 

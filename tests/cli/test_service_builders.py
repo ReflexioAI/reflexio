@@ -12,6 +12,7 @@ import typer
 
 from reflexio.cli.commands.services import validate_storage_backend
 from reflexio.cli.run_services import (
+    DEFAULT_OSS_PORTS,
     _ensure_nextjs_dependencies,
     build_backend_service,
     build_embedding_service,
@@ -77,6 +78,60 @@ class TestResolvePorts:
         with patch.dict(os.environ, env, clear=True):
             result = resolve_ports(args, {"backend": 8081})
         assert result["backend"] == 8081
+
+
+class TestDefaultOssPorts:
+    """The OSS launcher defaults live in the 806* range, distinct from
+    claude-smart/openclaw (807*), enterprise self-host (808*), and platform
+    (809*), so OSS never collides with a co-located claude-smart backend."""
+
+    def test_default_values(self) -> None:
+        assert DEFAULT_OSS_PORTS == {
+            "backend": 8061,
+            "docs": 8062,
+            "embedding": 8069,
+        }
+
+    def test_resolve_uses_defaults_when_no_override(self) -> None:
+        args = argparse.Namespace(
+            backend_port=None, docs_port=None, embedding_port=None
+        )
+        env = {
+            k: v
+            for k, v in os.environ.items()
+            if k not in {"BACKEND_PORT", "DOCS_PORT", "EMBEDDING_PORT"}
+        }
+        with patch.dict(os.environ, env, clear=True):
+            result = resolve_ports(args, DEFAULT_OSS_PORTS)
+        assert result == {"backend": 8061, "docs": 8062, "embedding": 8069}
+
+    def test_env_and_cli_still_override_defaults(self) -> None:
+        args = argparse.Namespace(
+            backend_port=9001, docs_port=None, embedding_port=None
+        )
+        # Start from an env with the port vars stripped so the test is hermetic
+        # regardless of what the developer's shell exports, then set only
+        # DOCS_PORT to exercise the env-override path.
+        base_env = {
+            k: v
+            for k, v in os.environ.items()
+            if k not in {"BACKEND_PORT", "DOCS_PORT", "EMBEDDING_PORT"}
+        }
+        with patch.dict(os.environ, {**base_env, "DOCS_PORT": "9002"}, clear=True):
+            result = resolve_ports(args, DEFAULT_OSS_PORTS)
+        assert result["backend"] == 9001  # CLI flag wins
+        assert result["docs"] == 9002  # env var wins
+        assert result["embedding"] == 8069  # falls through to default
+
+    def test_stop_targets_stay_in_806x_never_claude_smart(self) -> None:
+        """`stop` with default ports must target 806*, never claude-smart's
+        8071/8072 — the safety property behind moving OSS off the 807* range."""
+        port_map, _ = build_stop_targets(
+            {"backend", "docs", "embedding"}, DEFAULT_OSS_PORTS
+        )
+        assert port_map == {"backend": 8061, "docs": 8062, "embedding": 8069}
+        assert 8071 not in port_map.values()
+        assert 8072 not in port_map.values()
 
 
 # ---------------------------------------------------------------------------

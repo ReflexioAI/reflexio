@@ -47,11 +47,11 @@ DEFAULT_PHASES = ["p1", "p2", "p3"]
 DEFAULT_TASK_LIST = OPENSPACE_ROOT / "gdpval_bench" / "tasks_50.json"
 
 # Reflexio backend. Honors `REFLEXIO_URL` first, then `BACKEND_PORT` (worktree
-# deployments export this to avoid colliding with the main checkout's 8081),
-# then falls back to the standard 8081.
+# deployments export this to avoid colliding with the main checkout's 8061),
+# then falls back to the standard 8061.
 DEFAULT_REFLEXIO_URL = os.environ.get(
     "REFLEXIO_URL",
-    f"http://localhost:{os.environ.get('BACKEND_PORT', '8081')}",
+    f"http://localhost:{os.environ.get('BACKEND_PORT', '8061')}",
 )
 DEFAULT_TOP_K = 10
 DEFAULT_SEARCH_THRESHOLD = 0.3
@@ -59,10 +59,23 @@ DEFAULT_SEARCH_THRESHOLD = 0.3
 # Evaluation (ClawWork LLMEvaluator).
 EVAL_MIN_THRESHOLD = 0.6  # 0.6 payment cliff, same as gdpval_bench
 EVAL_ARTIFACT_EXTENSIONS = {
-    ".pdf", ".docx", ".xlsx", ".pptx",
-    ".txt", ".csv", ".json", ".md",
-    ".py", ".js", ".html", ".css",
-    ".png", ".jpg", ".jpeg", ".gif", ".webp",
+    ".pdf",
+    ".docx",
+    ".xlsx",
+    ".pptx",
+    ".txt",
+    ".csv",
+    ".json",
+    ".md",
+    ".py",
+    ".js",
+    ".html",
+    ".css",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".webp",
 }
 
 # Output layout.

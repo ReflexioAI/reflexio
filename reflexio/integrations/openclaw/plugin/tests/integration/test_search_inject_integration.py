@@ -24,7 +24,7 @@ pytestmark = pytest.mark.integration
 
 
 def _reflexio_url() -> str:
-    return os.environ.get("REFLEXIO_URL", "http://localhost:8081/")
+    return os.environ.get("REFLEXIO_URL", "http://localhost:8061/")
 
 
 def _backend_alive(url: str) -> bool:

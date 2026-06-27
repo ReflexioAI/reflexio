@@ -18,7 +18,7 @@ npm install
 npm run dev
 ```
 
-The site runs on **port 3000** by default. When started via `run_services.sh` from the project root, it runs on port 8082 instead.
+The site runs on **port 3000** by default. When started via `run_services.sh` from the project root, it runs on port 8062 instead.
 
 ## Build
 

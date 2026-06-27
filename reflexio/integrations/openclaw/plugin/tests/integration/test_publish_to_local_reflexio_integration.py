@@ -1,7 +1,7 @@
 """Integration: publish buffered turns to a local SQLite-backed reflexio.
 
 Requires a reflexio backend reachable at ``REFLEXIO_URL`` (default
-``http://localhost:8081/``). Skipped automatically when the backend is
+``http://localhost:8061/``). Skipped automatically when the backend is
 unreachable so the suite is portable across machines.
 """
 
@@ -16,7 +16,7 @@ pytestmark = pytest.mark.integration
 
 
 def _reflexio_url() -> str:
-    return os.environ.get("REFLEXIO_URL", "http://localhost:8081/")
+    return os.environ.get("REFLEXIO_URL", "http://localhost:8061/")
 
 
 def _backend_alive(url: str) -> bool:

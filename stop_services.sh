@@ -1,9 +1,9 @@
 #!/bin/bash
 
 # Configurable ports (must match what was used in run_services.sh)
-BACKEND_PORT=${BACKEND_PORT:-8081}
-DOCS_PORT=${DOCS_PORT:-8082}
-EMBEDDING_PORT=${EMBEDDING_PORT:-8072}
+BACKEND_PORT=${BACKEND_PORT:-8061}
+DOCS_PORT=${DOCS_PORT:-8062}
+EMBEDDING_PORT=${EMBEDDING_PORT:-8069}
 
 echo "Stopping services..."
 

@@ -118,7 +118,7 @@ Publish conversations from your agent, and Reflexio closes the self-improvement 
 pip install reflexio-ai
 
 # start/stop services. data saved under ~/.reflexio
-reflexio services start           # API (8081), Docs (8082), SQLite storage
+reflexio services start           # API (8061), Docs (8062), SQLite storage
 reflexio services stop            # Stop all services
 ```
 
@@ -137,13 +137,13 @@ uv sync                                    # Python (includes workspace packages
 npm --prefix docs install                  # API docs
 
 # start/stop services. data saved under ~/.reflexio
-uv run reflexio services start             # API (8081), Docs (8082), SQLite storage
+uv run reflexio services start             # API (8061), Docs (8062), SQLite storage
 uv run reflexio services stop              # Stop all services
 ```
 
 > Alternative: `python -m reflexio.cli services start` or `./run_services.sh`
 
-Once running, open **[http://localhost:8082](http://localhost:8082)** to interactively browse and try out the API.
+Once running, open **[http://localhost:8062](http://localhost:8062)** to interactively browse and try out the API.
 <p align="center">
   <img src="docs/images/doc_website.png" width="800px" alt="Reflexio Doc Website">
 </p>
@@ -174,7 +174,7 @@ One conversation, two artifacts: a user profile (`production region is us-west-2
 import reflexio
 
 client = reflexio.ReflexioClient(
-    url_endpoint="http://localhost:8081/"
+    url_endpoint="http://localhost:8061/"
 )
 
 # Publish a multi-turn conversation where the user corrects the agent —
@@ -256,7 +256,7 @@ pip install reflexio-client
 import reflexio
 
 client = reflexio.ReflexioClient(
-    url_endpoint="http://localhost:8081/"
+    url_endpoint="http://localhost:8061/"
 )
 
 # Publish interactions

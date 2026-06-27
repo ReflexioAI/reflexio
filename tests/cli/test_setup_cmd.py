@@ -12,6 +12,7 @@ import typer
 from reflexio.cli.commands.setup_cmd import (
     _prompt_storage,
     _set_env_var,
+    _write_embedding_model_to_org_config,
 )
 from reflexio.models.api_schema.service_schemas import WhoamiResponse
 
@@ -127,7 +128,7 @@ class TestPromptStorage:
         with patch("typer.prompt", return_value=1):
             label = _prompt_storage(env)
         assert label == "SQLite (local)"
-        assert 'REFLEXIO_URL="http://localhost:8081"' in env.read_text()
+        assert 'REFLEXIO_URL="http://localhost:8061"' in env.read_text()
 
     def test_option_2_cloud_writes_reflexio_url_and_api_key(
         self, tmp_path: Path
@@ -814,3 +815,30 @@ class TestEnsureUserEnvForSetup:
         assert resolved is not None and resolved.exists()
         # CWD .env was untouched.
         assert cwd_env.read_text() == "CWD_ONLY=ignored\n"
+
+
+class TestWriteEmbeddingModelToOrgConfig:
+    """The embedding-choice writer must target the same org the running no-auth
+    server resolves (``REFLEXIO_DEFAULT_ORG_ID``-aware), not a hardcoded
+    ``self-host-org`` — otherwise the storage backend and the embedding model
+    land in different ``config_<org>.json`` files."""
+
+    _STORAGE_PATCH = (
+        "reflexio.server.services.configurator."
+        "local_file_config_storage.LocalFileConfigStorage"
+    )
+
+    def test_writes_to_env_resolved_org(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("REFLEXIO_DEFAULT_ORG_ID", "claude-smart")
+        with patch(self._STORAGE_PATCH) as mock_storage:
+            _write_embedding_model_to_org_config("local/minilm-l6-v2")
+        mock_storage.assert_called_once_with("claude-smart")
+        mock_storage.return_value.save_config.assert_called_once()
+
+    def test_defaults_to_self_host_org_when_unset(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("REFLEXIO_DEFAULT_ORG_ID", raising=False)
+        with patch(self._STORAGE_PATCH) as mock_storage:
+            _write_embedding_model_to_org_config("local/minilm-l6-v2")
+        mock_storage.assert_called_once_with("self-host-org")

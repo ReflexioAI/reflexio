@@ -36,8 +36,17 @@ def main(argv: list[str] | None = None) -> None:
     ``reflexio.cli`` entry-point group before falling back to the
     default open-source app factory.
     """
-    from reflexio.cli.env_loader import load_reflexio_env
+    from reflexio.cli.env_loader import (
+        block_implicit_dotenv_walkup,
+        load_reflexio_env,
+    )
 
+    # Stop third-party import-time ``load_dotenv()`` calls (notably litellm)
+    # from walking UP the tree and loading a parent ``.env`` — e.g. the
+    # enterprise-root ``.env`` when the OSS launcher runs from the
+    # ``open_source/reflexio`` submodule. Must precede any import that pulls in
+    # litellm. Reflexio's own scoped loader runs right after.
+    block_implicit_dotenv_walkup()
     load_reflexio_env()
 
     from importlib.metadata import entry_points

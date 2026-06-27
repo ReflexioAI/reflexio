@@ -68,7 +68,7 @@ def test_cors_local_mode_allows_any_origin(monkeypatch):
     response = client.options(
         "/health",
         headers={
-            "Origin": "http://localhost:8082",
+            "Origin": "http://localhost:8062",
             "Access-Control-Request-Method": "GET",
         },
     )

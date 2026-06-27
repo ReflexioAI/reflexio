@@ -32,8 +32,8 @@ Two services, started together via `./run_services.sh`:
 
 | Service | Framework | Default Port | Env Var |
 |---------|-----------|-------------|---------|
-| Backend | FastAPI (uvicorn) | 8081 | `BACKEND_PORT` |
-| Docs | Next.js 16 | 8082 | `DOCS_PORT` |
+| Backend | FastAPI (uvicorn) | 8061 | `BACKEND_PORT` |
+| Docs | Next.js 16 | 8062 | `DOCS_PORT` |
 
 `API_BACKEND_URL` is derived automatically as `http://localhost:${BACKEND_PORT}`.
 
@@ -213,7 +213,7 @@ When working in a git worktree, services must run on different ports to avoid co
 
 | Problem | Solution |
 |---------|----------|
-| Port already in use | `./stop_services.sh` or `lsof -i :8081` to find the process |
+| Port already in use | `./stop_services.sh` or `lsof -i :8061` to find the process |
 | Services won't start | Check `.env` has at least one LLM API key set |
 | `uv sync` fails | Ensure Python >= 3.14, try `uv self update` |
 | Docs frontend won't start | Run `npm --prefix docs install` first |
