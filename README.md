@@ -7,7 +7,7 @@
 
 [![Python >= 3.12](https://img.shields.io/badge/python-%3E%3D3.12-blue)](https://www.python.org/)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-green)](LICENSE)
-[![PyPI](https://img.shields.io/pypi/v/reflexio-client)](https://pypi.org/project/reflexio-client/)
+[![PyPI](https://img.shields.io/pypi/v/reflexio-ai)](https://pypi.org/project/reflexio-ai/)
 [![Downloads](https://static.pepy.tech/badge/reflexio-ai/month)](https://pepy.tech/project/reflexio-ai)
 [![Search p50 57ms](https://img.shields.io/badge/search-57ms%20p50-brightgreen)](reflexio/benchmarks/retrieval_latency/results/report.md)
 [![GitHub stars](https://img.shields.io/github/stars/ReflexioAI/reflexio)](https://github.com/ReflexioAI/reflexio/stargazers)
@@ -244,10 +244,10 @@ Reflexio will automatically generate profiles and extract playbooks in the backg
 
 For detailed API documentation, see the [full API reference](https://www.reflexio.ai/docs/api-reference).
 
-Install the client:
+Install the package:
 
 ```shell
-pip install reflexio-client
+pip install reflexio-ai
 ```
 
 ### Basic usage
