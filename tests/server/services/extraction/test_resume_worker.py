@@ -114,7 +114,7 @@ def _seed_ready_run(storage: SQLiteStorage) -> None:
             generation_request_snapshot={"request_id": "request_1"},
         )
     )
-    now = datetime(2026, 5, 28, tzinfo=UTC)
+    now = datetime.now(UTC)
     question = "What is the deployment target?"
     scope = human_feedback_scope("org_1")
     storage.create_pending_tool_call(

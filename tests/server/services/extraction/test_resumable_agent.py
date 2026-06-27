@@ -339,7 +339,7 @@ def test_resumable_agent_resume_injects_resolved_tool_result(
     run = storage.create_agent_run(_agent_run("run_resume"))
     question = "Which deployment standard should be treated as canonical?"
     scope = human_feedback_scope("org_1")
-    now = datetime(2026, 5, 28, tzinfo=UTC)
+    now = datetime.now(UTC)
     pending = storage.create_pending_tool_call(
         PendingToolCallRecord(
             id="ptc_resume",
@@ -434,7 +434,7 @@ def test_resumable_agent_resume_uses_persisted_step_budget(
             max_steps_remaining=1,
         )
     )
-    now = datetime(2026, 5, 28, tzinfo=UTC)
+    now = datetime.now(UTC)
     resolved = PendingToolCallRecord(
         id="ptc_budget",
         org_id="org_1",

@@ -194,6 +194,11 @@ def make_extraction_provider(
             raw_profiles=raw_profiles,
             user_id=_EVAL_USER_ID,
             request_id=_EVAL_REQUEST_ID,
+            source_interaction_ids=[
+                interaction.interaction_id
+                for interaction in ridm.interactions
+                if interaction.interaction_id
+            ],
         )
         return (profiles, playbooks)
 

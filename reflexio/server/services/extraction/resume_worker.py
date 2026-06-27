@@ -484,11 +484,18 @@ class ExtractionResumeWorker:
         raw_profiles = [
             profile.model_dump() for profile in result.output.profiles or []
         ]
+        source_interaction_ids = [
+            interaction.interaction_id
+            for request_model in request_interaction_data_models
+            for interaction in request_model.interactions
+            if interaction.interaction_id
+        ]
         return (
             extractor._convert_raw_to_user_profiles(
                 raw_profiles=raw_profiles,
                 user_id=run.binding.user_id,
                 request_id=run.binding.request_id,
+                source_interaction_ids=source_interaction_ids,
             ),
             result.pending_tool_call_ids,
         )
@@ -698,6 +705,7 @@ class ExtractionResumeWorker:
                 raw_profiles=raw_profiles,
                 user_id=run.binding.user_id,
                 request_id=run.binding.request_id,
+                source_interaction_ids=list(run.binding.source_interaction_ids),
             ),
             run.pending_tool_call_ids,
         )

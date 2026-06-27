@@ -124,6 +124,7 @@ from .cache import InMemoryCache
 class _ClientConfigPayload(Config):
     model_config = ConfigDict(extra="allow")
 
+
 T = TypeVar("T")
 
 logger = logging.getLogger(__name__)

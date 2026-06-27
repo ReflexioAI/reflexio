@@ -279,7 +279,7 @@ class ProfileExtractor:
         raw_profiles: list[dict],
         user_id: str,
         request_id: str,
-        source_interaction_ids: list[int],
+        source_interaction_ids: list[int] | None = None,
     ) -> list[UserProfile]:
         """
         Convert raw profile dicts from LLM to UserProfile objects.
@@ -294,6 +294,7 @@ class ProfileExtractor:
             List of UserProfile objects
         """
         new_profiles = []
+        profile_source_interaction_ids = list(source_interaction_ids or [])
         for profile_content in raw_profiles:
             if (
                 not isinstance(profile_content, dict)
@@ -322,7 +323,7 @@ class ProfileExtractor:
                 expiration_timestamp=calculate_expiration_timestamp(now_ts, ttl),
                 custom_features=custom_features or None,
                 extractor_names=None,
-                source_interaction_ids=source_interaction_ids,
+                source_interaction_ids=profile_source_interaction_ids,
             )
 
             new_profiles.append(added_profile)

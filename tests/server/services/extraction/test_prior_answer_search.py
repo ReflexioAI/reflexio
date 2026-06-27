@@ -33,7 +33,7 @@ class _ExtractorConfig:
 
 
 def test_append_prior_knowledge_context_adds_resolved_and_pending_entries(storage):
-    now = datetime(2026, 5, 28, tzinfo=UTC)
+    now = datetime.now(UTC)
     scope = human_feedback_scope("org_1")
     storage.create_pending_tool_call(
         PendingToolCallRecord(
@@ -115,7 +115,7 @@ def test_append_prior_knowledge_context_returns_original_messages_without_matche
 
 
 def test_append_prior_knowledge_context_filters_below_similarity_threshold(storage):
-    now = datetime(2026, 5, 28, tzinfo=UTC)
+    now = datetime.now(UTC)
     scope = human_feedback_scope("org_1")
     storage.create_pending_tool_call(
         PendingToolCallRecord(

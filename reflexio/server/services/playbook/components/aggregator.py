@@ -979,6 +979,22 @@ class PlaybookAggregator:
             # Remove archived playbooks after successful aggregation. ALWAYS soft-supersede
             # (never hard-delete) so the removal is reconstructable from lineage — mirrors the
             # profile dedup always-soft path (#206).
+            archived_ids_without_overlapping_changed_cluster: set[int] = set()
+            if new_playbooks and prev_fingerprints:
+                archived_id_set = set(archived_playbook_ids)
+                for prev_fp, fp_data in prev_fingerprints.items():
+                    playbook_id = fp_data.get("agent_playbook_id")
+                    if (
+                        playbook_id in archived_id_set
+                        and prev_fp not in changed_fps_by_previous_fp
+                    ):
+                        archived_ids_without_overlapping_changed_cluster.add(
+                            playbook_id
+                        )
+            ids_to_supersede = {
+                *selective_supersede_playbook_ids,
+                *archived_ids_without_overlapping_changed_cluster,
+            }
             if not _run_id:
                 # Empty request_id makes the removal unreconstructable (lineage events are keyed
                 # on it). Fail loud and skip removal — never silently hard-delete.
@@ -996,9 +1012,9 @@ class PlaybookAggregator:
                                 agent_version=self.agent_version,
                                 request_id=_run_id,
                             )
-                    elif selective_supersede_playbook_ids:
+                    elif ids_to_supersede:
                         self.storage.supersede_agent_playbooks_by_ids(  # type: ignore[reportOptionalMemberAccess]
-                            sorted(selective_supersede_playbook_ids),
+                            sorted(ids_to_supersede),
                             request_id=_run_id,
                         )
                     elif archived_playbook_ids:

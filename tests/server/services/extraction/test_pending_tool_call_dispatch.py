@@ -181,7 +181,7 @@ def test_soft_cap_logs_but_still_accepts_human_request(storage, caplog):
 
 
 def test_attach_pending_info_request_links_existing_org_scoped_request(storage):
-    now = datetime(2026, 5, 28, tzinfo=UTC)
+    now = datetime.now(UTC)
     storage.create_agent_run(_agent_run("run_1", user_id="user_1"))
     scope = human_feedback_scope("org_1")
     pending = storage.create_pending_tool_call(
@@ -221,7 +221,7 @@ def test_attach_pending_info_request_links_existing_org_scoped_request(storage):
 def test_attach_pending_info_request_returns_resolved_result_without_dependency(
     storage,
 ):
-    now = datetime(2026, 5, 28, tzinfo=UTC)
+    now = datetime.now(UTC)
     storage.create_agent_run(_agent_run("run_1"))
     scope = human_feedback_scope("org_1")
     resolved = storage.create_pending_tool_call(
