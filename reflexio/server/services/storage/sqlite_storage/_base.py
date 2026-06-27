@@ -631,6 +631,14 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
     def migrate(self) -> bool:
         self._migrate_feedback_schema()
         self._migrate_interactions_schema()
+        # Backfill columns that _DDL indexes depend on BEFORE running _DDL.
+        # _DDL builds idx_eval_identity_created_at_desc on
+        # agent_success_evaluation_result(user_id, ...). On a pre-existing DB that
+        # table predates user_id, so executescript(_DDL) raises "no such column:
+        # user_id" and migrate() never reaches the backfill below — leaving the DB
+        # permanently stuck. The helper is guarded (no-ops when the table is
+        # absent), so running it before _DDL is safe on fresh databases too.
+        self._migrate_eval_result_user_id()
         with self._lock:
             cur = self.conn.cursor()
             cur.executescript(_DDL)
@@ -649,7 +657,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         self._migrate_agent_playbook_source_windows()
         self._migrate_request_evaluation_only()
         self._migrate_request_session_id_required()
-        self._migrate_eval_result_user_id()
+        # _migrate_eval_result_user_id() runs before _DDL (see above).
         self._migrate_shadow_comparison_verdicts()
         self._migrate_user_playbook_polarity()
         self._migrate_lineage()

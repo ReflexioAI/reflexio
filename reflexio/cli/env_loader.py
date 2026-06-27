@@ -24,6 +24,21 @@ _USER_ENV_DIR = reflexio_home()
 _USER_ENV_FILE = _USER_ENV_DIR / ".env"
 
 
+def user_env_file() -> Path:
+    """Return the user-level .env path, honoring ``REFLEXIO_ENV_FILE``.
+
+    When ``REFLEXIO_ENV_FILE`` is set (and non-blank) it overrides the default
+    ``~/.reflexio/.env``. This lets a second local backend keep its env separate
+    from the OSS reflexio default that also lives under ``~/.reflexio`` — e.g.
+    claude-smart points this at ``~/.claude-smart/.env`` so an OSS reflexio
+    ``.env`` (with its own ``REFLEXIO_STORAGE`` etc.) can't leak into it. The data
+    directory is independent (see ``LOCAL_STORAGE_PATH``), so both backends can
+    still share ``~/.reflexio/data``.
+    """
+    override = os.environ.get("REFLEXIO_ENV_FILE", "").strip()
+    return Path(override).expanduser() if override else _USER_ENV_FILE
+
+
 # Path to the .env file that load_reflexio_env last resolved — None until
 # load_reflexio_env runs for the first time. Exposed via get_loaded_env_path
 # so the startup banner can show the operator exactly which dotenv was
@@ -34,10 +49,10 @@ _loaded_env_path: Path | None = None
 def get_env_path() -> Path:
     """Return the canonical path to the user-level .env file.
 
-    Returns:
-        Path: ``~/.reflexio/.env``
+    Honors ``REFLEXIO_ENV_FILE`` (see :func:`user_env_file`); defaults to
+    ``~/.reflexio/.env``.
     """
-    return _USER_ENV_FILE
+    return user_env_file()
 
 
 def block_implicit_dotenv_walkup() -> None:
@@ -150,10 +165,12 @@ def set_env_var(env_path: Path, key: str, value: str) -> None:
     env_path.chmod(0o600)
 
 
-_ENV_SEARCH_PATHS = [
-    Path(".env"),  # 1. Current directory (local dev / project-level)
-    _USER_ENV_FILE,  # 2. User home default (~/.reflexio/.env)
-]
+def _env_search_paths() -> list[Path]:
+    """OSS .env search order, resolved at call time so ``REFLEXIO_ENV_FILE`` is honored."""
+    return [
+        Path(".env"),  # 1. Current directory (local dev / project-level)
+        user_env_file(),  # 2. User-level file (REFLEXIO_ENV_FILE override, else ~/.reflexio/.env)
+    ]
 
 
 def _load_dotenv_pruned(path: Path, *, override: bool = False) -> None:
@@ -210,7 +227,7 @@ def load_reflexio_env(
         Path to the loaded .env file, or None if no .env was found/created.
     """
     global _loaded_env_path
-    for env_path in _ENV_SEARCH_PATHS:
+    for env_path in _env_search_paths():
         if env_path.exists():
             _load_dotenv_pruned(env_path)
             resolved = env_path.resolve()
@@ -507,10 +524,12 @@ def _create_default_env(
         sys.stdout.flush()
         return None
 
-    created_dir = not _USER_ENV_DIR.exists()
-    _USER_ENV_DIR.mkdir(parents=True, exist_ok=True)
+    target = user_env_file()  # honors REFLEXIO_ENV_FILE (e.g. ~/.claude-smart/.env)
+    target_dir = target.parent
+    created_dir = not target_dir.exists()
+    target_dir.mkdir(parents=True, exist_ok=True)
     if created_dir:
-        sys.stdout.write(f"Created directory: {_USER_ENV_DIR}\n")
+        sys.stdout.write(f"Created directory: {target_dir}\n")
 
     # Auto-generate secret keys
     for key in auto_generate_keys:
@@ -523,13 +542,13 @@ def _create_default_env(
             flags=re.MULTILINE,
         )
 
-    _USER_ENV_FILE.write_text(content)
-    _USER_ENV_FILE.chmod(0o600)
-    _load_dotenv_pruned(_USER_ENV_FILE)
+    target.write_text(content)
+    target.chmod(0o600)
+    _load_dotenv_pruned(target)
 
-    sys.stdout.write(f"Created env file: {_USER_ENV_FILE}\n")
+    sys.stdout.write(f"Created env file: {target}\n")
     if auto_generate_keys:
         sys.stdout.write(f"  Auto-generated: {', '.join(auto_generate_keys)}\n")
-    sys.stdout.write(f"  Edit {_USER_ENV_FILE} to add your API keys.\n\n")
+    sys.stdout.write(f"  Edit {target} to add your API keys.\n\n")
     sys.stdout.flush()
-    return _USER_ENV_FILE
+    return target

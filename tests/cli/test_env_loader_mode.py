@@ -59,7 +59,7 @@ def test_load_drops_blank_assignments(tmp_path, monkeypatch):
     # cache-in-repo-root bug class).
     env_file = tmp_path / ".env"
     env_file.write_text("BLANK=\nWS=   \nREAL=value\n")
-    monkeypatch.setattr(env_loader, "_ENV_SEARCH_PATHS", [env_file])
+    monkeypatch.setattr(env_loader, "_env_search_paths", lambda: [env_file])
     monkeypatch.delenv("BLANK", raising=False)
     monkeypatch.delenv("WS", raising=False)
     monkeypatch.delenv("REAL", raising=False)
@@ -74,7 +74,7 @@ def test_blank_assignment_does_not_clobber_process_env(tmp_path, monkeypatch):
     # file assignment of the same key.
     env_file = tmp_path / ".env"
     env_file.write_text("KEEP=\n")
-    monkeypatch.setattr(env_loader, "_ENV_SEARCH_PATHS", [env_file])
+    monkeypatch.setattr(env_loader, "_env_search_paths", lambda: [env_file])
     monkeypatch.setenv("KEEP", "real")
     env_loader.load_reflexio_env()
     assert os.environ["KEEP"] == "real"
