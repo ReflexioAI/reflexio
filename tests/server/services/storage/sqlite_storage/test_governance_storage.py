@@ -143,6 +143,22 @@ def test_audit_event_idempotency(storage):
     assert rows[0].idempotency_key == "export_1"
 
 
+def test_append_audit_event_rejects_mismatched_org_id(storage):
+    event = AuditEvent(
+        org_id="org2",
+        operation="EXPORT",
+        entity_type="request",
+        subject_ref=SUBJECT_REF,
+        request_ref=REQUEST_REF,
+        idempotency_key="export_wrong_org",
+    )
+
+    with pytest.raises(ValueError, match="org_id"):
+        storage.append_audit_event(event)
+
+    assert storage.list_audit_events(subject_ref=SUBJECT_REF) == []
+
+
 def test_purge_targets_require_snapshot_marker(storage):
     purge = storage.begin_purge_operation(
         purge_id="purge_1",
@@ -449,6 +465,28 @@ def test_record_purge_target_validates_governance_fields(storage, kwargs, match)
 
     with pytest.raises(ValueError, match=match):
         storage.record_purge_target(**params)
+
+
+@pytest.mark.parametrize(
+    ("deleted_count", "match"),
+    [
+        pytest.param(cast(Any, True), "deleted_count", id="bool"),
+        pytest.param(cast(Any, 1.5), "deleted_count", id="float"),
+        pytest.param(-1, "deleted_count", id="negative"),
+    ],
+)
+def test_record_purge_target_rejects_invalid_deleted_count(storage, deleted_count, match):
+    purge_id = _begin_purge(storage, "purge_deleted_count")
+
+    with pytest.raises(ValueError, match=match):
+        storage.record_purge_target(
+            purge_id=purge_id,
+            target_name="request",
+            target_ref="all",
+            phase="delete",
+            status="complete",
+            deleted_count=deleted_count,
+        )
 
 
 @pytest.mark.parametrize(
@@ -923,6 +961,31 @@ def test_apply_governance_user_data_delete_rejects_unsafe_purge_id_before_side_e
         "profiles": 1,
         "user_playbooks": 1,
     }
+
+
+def test_apply_governance_user_data_delete_rejects_unexpected_target_name_from_internal_counts(
+    storage, monkeypatch
+):
+    purge_id = _begin_purge(storage, "purge_internal_target_name")
+
+    def _stub_clear_user_data(self: SQLiteStorage, user_id: str) -> dict[str, int]:
+        del self, user_id
+        return {"requests": 1, "surprise_target": 2}
+
+    monkeypatch.setattr(
+        SQLiteStorage,
+        "clear_user_data",
+        _stub_clear_user_data,
+    )
+
+    with pytest.raises(ValueError, match="target_name"):
+        storage.apply_governance_user_data_delete(
+            purge_id=purge_id,
+            user_id="user-delete-seed",
+        )
+
+    delete_targets = storage.list_purge_targets(purge_id, phase="delete")
+    assert all(target.target_name != "surprise_target" for target in delete_targets)
 
 
 def test_apply_governance_agent_playbook_rebuild_rejects_unsafe_purge_id_before_side_effects(

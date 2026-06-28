@@ -281,6 +281,13 @@ def _validate_governance_int(field_name: str, value: Any) -> None:
         _raise_governance_validation_error(field_name, "expected int")
 
 
+def _validate_governance_deleted_count(value: Any) -> int:
+    _validate_governance_int("deleted_count", value)
+    if value < 0:
+        _raise_governance_validation_error("deleted_count", "must be nonnegative")
+    return cast(int, value)
+
+
 def _validate_governance_int_list(field_name: str, value: Any) -> None:
     if not isinstance(value, list):
         _raise_governance_validation_error(field_name, "expected list[int]")
@@ -674,9 +681,25 @@ class SQLiteGovernanceMixin:
         error_detail: str | None,
     ) -> None:
         purge_id = _validate_governance_purge_id("purge_id", purge_id)
+        _validate_governance_enum(
+            "target_name",
+            target_name,
+            allowed=_ALLOWED_PURGE_TARGET_NAMES,
+        )
+        _validate_governance_enum(
+            "phase",
+            phase,
+            allowed=_ALLOWED_PURGE_TARGET_PHASES,
+        )
+        _validate_governance_enum(
+            "status",
+            status,
+            allowed=_ALLOWED_PURGE_TARGET_STATUSES,
+        )
         detail = _validate_governance_detail("detail", detail)
         error_detail = _validate_governance_error_detail(error_detail)
         _validate_governance_target_ref(target_ref)
+        deleted_count = _validate_governance_deleted_count(deleted_count)
         now = _epoch_now()
         existing = self.conn.execute(
             """SELECT started_at, completed_at
@@ -733,6 +756,8 @@ class SQLiteGovernanceMixin:
                 "Successful ERASE audit rows may only be written by "
                 "complete_purge_operation_with_audit()"
             )
+        if event.org_id != self.org_id:
+            raise ValueError("Audit event org_id must match storage org_id")
         _validate_audit_event_for_persistence(event)
         with self._lock:
             inserted = self._append_audit_event_with_cursor(self.conn, event)
