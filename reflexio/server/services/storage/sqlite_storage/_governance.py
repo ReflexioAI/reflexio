@@ -5,13 +5,20 @@ import re
 import sqlite3
 import threading
 from datetime import UTC, datetime
-from typing import Any, Literal, NoReturn, Protocol, cast
+from typing import Any, Literal, NoReturn, Protocol, cast, get_args
 
 from reflexio.models.api_schema.domain import AgentPlaybookSourceWindow
 from reflexio.models.api_schema.domain.governance import (
+    AuditActorType,
+    AuditEntityType,
     AuditEvent,
+    AuditOperation,
+    AuditStatus,
     PurgeOperation,
     PurgeOperationTarget,
+    PurgeOperationType,
+    PurgeScopeType,
+    PurgeTargetStatus,
 )
 
 GOVERNANCE_DDL = """
@@ -74,6 +81,26 @@ CREATE INDEX IF NOT EXISTS idx_purge_targets_purge_phase
 
 _PREPARE_PHASE = "prepare_targets"
 _SNAPSHOT_TARGET_NAME = "target_snapshot"
+_ALLOWED_AUDIT_ACTOR_TYPES = frozenset(get_args(AuditActorType))
+_ALLOWED_AUDIT_OPERATIONS = frozenset(get_args(AuditOperation))
+_ALLOWED_AUDIT_ENTITY_TYPES = frozenset(get_args(AuditEntityType))
+_ALLOWED_AUDIT_STATUSES = frozenset(get_args(AuditStatus))
+_ALLOWED_PURGE_OPERATION_TYPES = frozenset(get_args(PurgeOperationType))
+_ALLOWED_PURGE_SCOPE_TYPES = frozenset(get_args(PurgeScopeType))
+_ALLOWED_PURGE_TARGET_STATUSES = frozenset(get_args(PurgeTargetStatus))
+_ALLOWED_PURGE_TARGET_NAMES = frozenset(
+    {
+        _SNAPSHOT_TARGET_NAME,
+        "request",
+        "interaction",
+        "profile",
+        "user_playbook",
+        "agent_playbook",
+        "profile_purge",
+        "user_playbook_purge",
+    }
+)
+_ALLOWED_PURGE_TARGET_PHASES = frozenset({_PREPARE_PHASE, "delete", "rebuild"})
 _ALLOWED_DETAIL_KEYS = frozenset(
     {
         "affected_agent_playbook_ids",
@@ -392,7 +419,57 @@ def _validate_governance_error_code(error_code: str) -> str:
     return _validate_governance_code_like("error_code", error_code)
 
 
+def _validate_governance_enum(
+    field_name: str, value: str, *, allowed: frozenset[str]
+) -> str:
+    if value not in allowed:
+        _raise_governance_validation_error(
+            field_name,
+            f"must be one of {', '.join(sorted(allowed))}",
+        )
+    return value
+
+
+def _normalize_governance_detail_for_identity(
+    detail: dict[str, object] | None,
+) -> str | None:
+    if detail is None:
+        return None
+    normalized_detail: dict[str, object] = {}
+    for key, value in detail.items():
+        normalized_key = str(key).strip().lower()
+        if normalized_key in {"original_source_windows", "remaining_source_windows"}:
+            normalized_windows = [
+                _normalize_governance_window_item(normalized_key, index, item)
+                for index, item in enumerate(cast(list[object], value))
+            ]
+            normalized_detail[normalized_key] = normalized_windows
+            continue
+        normalized_detail[normalized_key] = value
+    return json.dumps(normalized_detail, sort_keys=True, separators=(",", ":"))
+
+
 def _validate_audit_event_for_persistence(event: AuditEvent) -> None:
+    _validate_governance_enum(
+        "actor_type",
+        event.actor_type,
+        allowed=_ALLOWED_AUDIT_ACTOR_TYPES,
+    )
+    _validate_governance_enum(
+        "operation",
+        event.operation,
+        allowed=_ALLOWED_AUDIT_OPERATIONS,
+    )
+    _validate_governance_enum(
+        "entity_type",
+        event.entity_type,
+        allowed=_ALLOWED_AUDIT_ENTITY_TYPES,
+    )
+    _validate_governance_enum(
+        "status",
+        event.status,
+        allowed=_ALLOWED_AUDIT_STATUSES,
+    )
     _validate_governance_prefixed_ref("actor_ref", event.actor_ref, prefix="actref_v1_")
     _validate_governance_prefixed_ref(
         "subject_ref", event.subject_ref, prefix="subref_v1_"
@@ -422,15 +499,35 @@ def _is_successful_erase_event(event: AuditEvent, *, purge_id: str | None = None
     )
 
 
-def _successful_erase_identity(event: AuditEvent) -> tuple[str, str, str, str | None, str | None, str, str | None]:
+def _successful_erase_identity(
+    event: AuditEvent,
+) -> tuple[
+    str,
+    str,
+    str | None,
+    str,
+    str,
+    str | None,
+    str | None,
+    str | None,
+    str,
+    str | None,
+    str | None,
+]:
     return (
         event.org_id,
+        event.actor_type,
+        event.actor_ref,
         event.operation,
         event.entity_type,
+        event.entity_id,
         event.subject_ref,
         event.request_ref,
         event.status,
         event.idempotency_key,
+        _normalize_governance_detail_for_identity(
+            cast(dict[str, object] | None, event.detail)
+        ),
     )
 
 
@@ -638,6 +735,16 @@ class SQLiteGovernanceMixin:
         subject_ref: str | None,
         request_ref: str,
     ) -> PurgeOperation:
+        _validate_governance_enum(
+            "operation_type",
+            operation_type,
+            allowed=_ALLOWED_PURGE_OPERATION_TYPES,
+        )
+        _validate_governance_enum(
+            "scope_type",
+            scope_type,
+            allowed=_ALLOWED_PURGE_SCOPE_TYPES,
+        )
         _validate_governance_prefixed_ref(
             "subject_ref", subject_ref, prefix="subref_v1_"
         )
@@ -688,6 +795,21 @@ class SQLiteGovernanceMixin:
         deleted_count: int = 0,
         error_detail: str | None = None,
     ) -> None:
+        _validate_governance_enum(
+            "target_name",
+            target_name,
+            allowed=_ALLOWED_PURGE_TARGET_NAMES,
+        )
+        _validate_governance_enum(
+            "phase",
+            phase,
+            allowed=_ALLOWED_PURGE_TARGET_PHASES,
+        )
+        _validate_governance_enum(
+            "status",
+            status,
+            allowed=_ALLOWED_PURGE_TARGET_STATUSES,
+        )
         with self._lock:
             self._record_purge_target_locked(
                 purge_id=purge_id,

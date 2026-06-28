@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
@@ -225,6 +227,10 @@ def test_complete_purge_operation_requires_matching_existing_erase_row(
         pytest.param("entity_type", {"entity_type": "session"}, id="entity-type"),
         pytest.param("subject_ref", {"subject_ref": OTHER_SUBJECT_REF}, id="subject-ref"),
         pytest.param("request_ref", {"request_ref": OTHER_REQUEST_REF}, id="request-ref"),
+        pytest.param("actor_type", {"actor_type": "jwt"}, id="actor-type"),
+        pytest.param("actor_ref", {"actor_ref": ACTOR_REF}, id="actor-ref"),
+        pytest.param("entity_id", {"entity_id": "17"}, id="entity-id"),
+        pytest.param("detail", {"detail": {"count": 2}}, id="detail"),
     ],
 )
 def test_complete_purge_operation_rejects_mismatched_existing_erase_row(
@@ -248,7 +254,7 @@ def test_complete_purge_operation_rejects_mismatched_existing_erase_row(
             seeded_event.request_ref,
             seeded_event.idempotency_key,
             seeded_event.status,
-            None,
+            json.dumps(seeded_event.detail) if seeded_event.detail is not None else None,
             seeded_event.created_at,
         ),
     )
@@ -568,6 +574,38 @@ def test_append_audit_event_validates_top_level_governance_fields(storage, event
         storage.append_audit_event(event)
 
 
+@pytest.mark.parametrize(
+    ("field_name", "value"),
+    [
+        pytest.param("actor_type", "person", id="actor-type"),
+        pytest.param("operation", "PURGE", id="operation"),
+        pytest.param("entity_type", "message", id="entity-type"),
+        pytest.param("status", "done", id="status"),
+    ],
+)
+def test_append_audit_event_rejects_invalid_top_level_enum_values(
+    storage, field_name, value
+):
+    event = AuditEvent.model_construct(
+        org_id="org1",
+        actor_type="system",
+        actor_ref=None,
+        operation="EXPORT",
+        entity_type="request",
+        entity_id=None,
+        subject_ref=SUBJECT_REF,
+        request_ref=REQUEST_REF,
+        idempotency_key=f"invalid_{field_name}",
+        status="ok",
+        detail=None,
+        created_at=1,
+    )
+    setattr(event, field_name, value)
+
+    with pytest.raises(ValueError, match=field_name):
+        storage.append_audit_event(event)
+
+
 def test_append_audit_event_requires_minimized_request_ref(storage):
     event = AuditEvent(
         org_id="org1",
@@ -600,6 +638,27 @@ def test_begin_purge_operation_validates_top_level_refs(
             scope_type="user",
             subject_ref=subject_ref,
             request_ref=request_ref,
+        )
+
+
+@pytest.mark.parametrize(
+    ("operation_type", "scope_type", "match"),
+    [
+        pytest.param(cast(Any, "erase_user"), "user", "operation_type", id="operation-type"),
+        pytest.param("user_erasure", cast(Any, "workspace"), "scope_type", id="scope-type"),
+    ],
+)
+def test_begin_purge_operation_rejects_invalid_enum_values(
+    storage, operation_type, scope_type, match
+):
+    with pytest.raises(ValueError, match=match):
+        storage.begin_purge_operation(
+            purge_id="purge_invalid_enum",
+            idempotency_key="idem_purge_invalid_enum",
+            operation_type=operation_type,
+            scope_type=scope_type,
+            subject_ref=SUBJECT_REF,
+            request_ref=REQUEST_REF,
         )
 
 
@@ -667,6 +726,29 @@ def test_record_purge_target_validates_target_ref_contract(storage, target_ref, 
             target_ref=target_ref,
             phase="delete",
             status="running",
+        )
+
+
+@pytest.mark.parametrize(
+    ("target_name", "phase", "status", "match"),
+    [
+        pytest.param(cast(Any, "session"), "delete", "running", "target_name", id="target-name"),
+        pytest.param("request", cast(Any, "archive"), "running", "phase", id="phase"),
+        pytest.param("request", "delete", cast(Any, "done"), "status", id="status"),
+    ],
+)
+def test_record_purge_target_rejects_invalid_enum_values(
+    storage, target_name, phase, status, match
+):
+    purge_id = _begin_purge(storage, "purge_target_invalid_enum")
+
+    with pytest.raises(ValueError, match=match):
+        storage.record_purge_target(
+            purge_id=purge_id,
+            target_name=target_name,
+            target_ref="all",
+            phase=phase,
+            status=status,
         )
 
 
