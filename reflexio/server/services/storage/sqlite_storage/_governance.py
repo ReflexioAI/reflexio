@@ -45,8 +45,8 @@ CREATE INDEX IF NOT EXISTS idx_audit_events_subject_created
     ON audit_events(org_id, subject_ref, created_at, event_id);
 
 CREATE TABLE IF NOT EXISTS purge_operations (
-    purge_id TEXT PRIMARY KEY,
     org_id TEXT NOT NULL,
+    purge_id TEXT NOT NULL,
     operation_type TEXT NOT NULL,
     scope_type TEXT NOT NULL,
     subject_ref TEXT,
@@ -57,12 +57,14 @@ CREATE TABLE IF NOT EXISTS purge_operations (
     error_detail TEXT,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
-    completed_at INTEGER
+    completed_at INTEGER,
+    PRIMARY KEY (org_id, purge_id)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_purge_operations_org_idem
     ON purge_operations(org_id, idempotency_key);
 
 CREATE TABLE IF NOT EXISTS purge_operation_targets (
+    org_id TEXT NOT NULL,
     purge_id TEXT NOT NULL,
     target_name TEXT NOT NULL,
     target_ref TEXT NOT NULL DEFAULT '',
@@ -73,11 +75,11 @@ CREATE TABLE IF NOT EXISTS purge_operation_targets (
     error_detail TEXT,
     started_at INTEGER,
     completed_at INTEGER,
-    PRIMARY KEY (purge_id, target_name, target_ref, phase),
-    FOREIGN KEY (purge_id) REFERENCES purge_operations(purge_id) ON DELETE CASCADE
+    PRIMARY KEY (org_id, purge_id, target_name, target_ref, phase),
+    FOREIGN KEY (org_id, purge_id) REFERENCES purge_operations(org_id, purge_id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_purge_targets_purge_phase
-    ON purge_operation_targets(purge_id, phase, status);
+    ON purge_operation_targets(org_id, purge_id, phase, status);
 """
 
 _PREPARE_PHASE = "prepare_targets"
@@ -721,8 +723,8 @@ class SQLiteGovernanceMixin:
         existing = self.conn.execute(
             """SELECT started_at, completed_at
                FROM purge_operation_targets
-               WHERE purge_id = ? AND target_name = ? AND target_ref = ? AND phase = ?""",
-            (purge_id, target_name, target_ref, phase),
+               WHERE org_id = ? AND purge_id = ? AND target_name = ? AND target_ref = ? AND phase = ?""",
+            (self.org_id, purge_id, target_name, target_ref, phase),
         ).fetchone()
         started_at = existing["started_at"] if existing else None
         completed_at = existing["completed_at"] if existing else None
@@ -732,17 +734,18 @@ class SQLiteGovernanceMixin:
             completed_at = now
         self.conn.execute(
             """INSERT INTO purge_operation_targets (
-                   purge_id, target_name, target_ref, phase, status, detail,
+                   org_id, purge_id, target_name, target_ref, phase, status, detail,
                    deleted_count, error_detail, started_at, completed_at
-               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-               ON CONFLICT(purge_id, target_name, target_ref, phase) DO UPDATE SET
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(org_id, purge_id, target_name, target_ref, phase) DO UPDATE SET
                    status = excluded.status,
-                   detail = excluded.detail,
+                   detail = COALESCE(excluded.detail, purge_operation_targets.detail),
                    deleted_count = excluded.deleted_count,
                    error_detail = excluded.error_detail,
                    started_at = COALESCE(purge_operation_targets.started_at, excluded.started_at),
                    completed_at = excluded.completed_at""",
             (
+                self.org_id,
                 purge_id,
                 target_name,
                 target_ref,
@@ -912,8 +915,8 @@ class SQLiteGovernanceMixin:
     ) -> list[PurgeOperationTarget]:
         purge_id = _validate_governance_purge_id("purge_id", purge_id)
         deps = self._deps()
-        sql = "SELECT * FROM purge_operation_targets WHERE purge_id = ?"
-        params: list[Any] = [purge_id]
+        sql = "SELECT * FROM purge_operation_targets WHERE org_id = ? AND purge_id = ?"
+        params: list[Any] = [self.org_id, purge_id]
         if phase is not None:
             sql += " AND phase = ?"
             params.append(phase)
@@ -925,9 +928,9 @@ class SQLiteGovernanceMixin:
         purge_id = _validate_governance_purge_id("purge_id", purge_id)
         row = self._deps()._fetchone(
             """SELECT 1 FROM purge_operation_targets
-               WHERE purge_id = ? AND target_name = ? AND target_ref = 'all'
+               WHERE org_id = ? AND purge_id = ? AND target_name = ? AND target_ref = 'all'
                  AND phase = ? AND status = 'complete'""",
-            (purge_id, _SNAPSHOT_TARGET_NAME, _PREPARE_PHASE),
+            (self.org_id, purge_id, _SNAPSHOT_TARGET_NAME, _PREPARE_PHASE),
         )
         return row is not None
 
@@ -1175,9 +1178,9 @@ class SQLiteGovernanceMixin:
                     raise ValueError(f"Purge operation {purge_id!r} not found")
                 snapshot = self.conn.execute(
                     """SELECT 1 FROM purge_operation_targets
-                       WHERE purge_id = ? AND target_name = ? AND target_ref = 'all'
+                       WHERE org_id = ? AND purge_id = ? AND target_name = ? AND target_ref = 'all'
                          AND phase = ? AND status = 'complete'""",
-                    (purge_id, _SNAPSHOT_TARGET_NAME, _PREPARE_PHASE),
+                    (self.org_id, purge_id, _SNAPSHOT_TARGET_NAME, _PREPARE_PHASE),
                 ).fetchone()
                 if snapshot is None:
                     raise ValueError(
@@ -1185,9 +1188,9 @@ class SQLiteGovernanceMixin:
                     )
                 incomplete = self.conn.execute(
                     """SELECT 1 FROM purge_operation_targets
-                       WHERE purge_id = ? AND status != 'complete'
+                       WHERE org_id = ? AND purge_id = ? AND status != 'complete'
                        LIMIT 1""",
-                    (purge_id,),
+                    (self.org_id, purge_id),
                 ).fetchone()
                 if incomplete is not None:
                     raise ValueError("Cannot complete purge with incomplete targets")

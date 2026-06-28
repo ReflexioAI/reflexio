@@ -33,6 +33,15 @@ def storage(tmp_path):
         yield SQLiteStorage(org_id="org1", db_path=str(tmp_path / "g.db"))
 
 
+@pytest.fixture
+def storage_factory(tmp_path):
+    def _make_storage(org_id: str) -> SQLiteStorage:
+        return SQLiteStorage(org_id=org_id, db_path=str(tmp_path / "shared-g.db"))
+
+    with patch.object(SQLiteStorage, "_get_embedding", return_value=[0.0] * 512):
+        yield _make_storage
+
+
 def _begin_purge(storage: SQLiteStorage, purge_id: str) -> str:
     purge = storage.begin_purge_operation(
         purge_id=purge_id,
@@ -485,6 +494,15 @@ def test_hide_governance_agent_playbooks_for_rebuild_sets_archive_in_progress_an
         user_id="user-hide-rebuild",
         owned_user_playbook_ids={7},
     )
+    expected_detail = {
+        "original_source_windows": [
+            {"user_playbook_id": 7, "source_interaction_ids": [101]},
+            {"user_playbook_id": 9, "source_interaction_ids": [201]},
+        ],
+        "remaining_source_windows": [
+            {"user_playbook_id": 9, "source_interaction_ids": [201]},
+        ],
+    }
 
     hidden_ids = storage.hide_governance_agent_playbooks_for_rebuild(purge_id)
 
@@ -510,6 +528,7 @@ def test_hide_governance_agent_playbooks_for_rebuild_sets_archive_in_progress_an
         and target.target_ref == str(agent_playbook_id)
     )
     assert rebuild_target.status == "running"
+    assert rebuild_target.detail == expected_detail
 
 
 def test_apply_governance_agent_playbook_rebuild_completes_planned_phase(storage):
@@ -546,6 +565,15 @@ def test_apply_governance_agent_playbook_rebuild_completes_planned_phase(storage
             ],
         },
     )
+    expected_detail = {
+        "original_source_windows": [
+            {"user_playbook_id": 7, "source_interaction_ids": [101]},
+            {"user_playbook_id": 9, "source_interaction_ids": [201]},
+        ],
+        "remaining_source_windows": [
+            {"user_playbook_id": 9, "source_interaction_ids": [201]},
+        ],
+    }
 
     storage.apply_governance_agent_playbook_rebuild(
         purge_id=purge_id,
@@ -570,6 +598,88 @@ def test_apply_governance_agent_playbook_rebuild_completes_planned_phase(storage
         and target.target_ref == str(agent_playbook_id)
     )
     assert rebuild_target.status == "complete"
+    assert rebuild_target.detail == expected_detail
+
+
+def test_purge_targets_are_scoped_by_org_for_same_purge_id(storage_factory):
+    storage_org1 = storage_factory("org1")
+    storage_org2 = storage_factory("org2")
+    purge_id = "purge_shared_scope"
+
+    for storage_instance, request_ref in (
+        (storage_org1, REQUEST_REF),
+        (storage_org2, OTHER_REQUEST_REF),
+    ):
+        storage_instance.begin_purge_operation(
+            purge_id=purge_id,
+            idempotency_key=f"idem_{storage_instance.org_id}_{purge_id}",
+            operation_type="user_erasure",
+            scope_type="user",
+            subject_ref=SUBJECT_REF,
+            request_ref=request_ref,
+        )
+
+    storage_org1.record_purge_target(
+        purge_id=purge_id,
+        target_name="target_snapshot",
+        target_ref="all",
+        phase="prepare_targets",
+        status="complete",
+        detail={"prepared": True},
+    )
+    storage_org1.record_purge_target(
+        purge_id=purge_id,
+        target_name="request",
+        target_ref=REQUEST_REF,
+        phase="delete",
+        status="pending",
+        detail={"count": 1},
+    )
+    storage_org2.record_purge_target(
+        purge_id=purge_id,
+        target_name="request",
+        target_ref=OTHER_REQUEST_REF,
+        phase="delete",
+        status="complete",
+        detail={"count": 2},
+        deleted_count=2,
+    )
+
+    org1_targets = storage_org1.list_purge_targets(purge_id)
+    org2_targets = storage_org2.list_purge_targets(purge_id)
+
+    assert {(target.phase, target.target_ref, target.status) for target in org1_targets} == {
+        ("delete", REQUEST_REF, "pending"),
+        ("prepare_targets", "all", "complete"),
+    }
+    assert {(target.phase, target.target_ref, target.status) for target in org2_targets} == {
+        ("delete", OTHER_REQUEST_REF, "complete"),
+    }
+    assert storage_org1.purge_targets_prepared(purge_id) is True
+    assert storage_org2.purge_targets_prepared(purge_id) is False
+
+    storage_org2.record_purge_target(
+        purge_id=purge_id,
+        target_name="request",
+        target_ref=REQUEST_REF,
+        phase="delete",
+        status="running",
+        detail={"count": 3},
+    )
+
+    org1_request_target = next(
+        target
+        for target in storage_org1.list_purge_targets(purge_id, phase="delete")
+        if target.target_ref == REQUEST_REF
+    )
+    org2_delete_targets = storage_org2.list_purge_targets(purge_id, phase="delete")
+
+    assert org1_request_target.status == "pending"
+    assert org1_request_target.detail == {"count": 1}
+    assert {(target.target_ref, target.status, target.deleted_count) for target in org2_delete_targets} == {
+        (OTHER_REQUEST_REF, "complete", 2),
+        (REQUEST_REF, "running", 0),
+    }
 
 
 @pytest.mark.parametrize(
