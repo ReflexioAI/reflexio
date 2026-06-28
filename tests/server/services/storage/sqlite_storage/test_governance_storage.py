@@ -537,6 +537,19 @@ def test_begin_purge_operation_rejects_numeric_idempotency_key(storage):
         storage.get_purge_operation("purge_numeric_idem")
 
 
+def test_begin_purge_operation_accepts_code_shaped_idempotency_key_with_content(storage):
+    purge = storage.begin_purge_operation(
+        purge_id="purge_content_retry",
+        idempotency_key="content_purge_retry_1",
+        operation_type="user_erasure",
+        scope_type="user",
+        subject_ref=SUBJECT_REF,
+        request_ref=REQUEST_REF,
+    )
+
+    assert purge.idempotency_key == "content_purge_retry_1"
+
+
 @pytest.mark.parametrize("purge_id", ["purge_1", "purge_123"])
 def test_begin_purge_operation_rejects_raw_numeric_purge_suffix(storage, purge_id):
     with pytest.raises(ValueError, match="purge_id"):
@@ -2142,6 +2155,35 @@ def test_fail_purge_operation_persists_code_shaped_error_detail(storage):
 
     assert failed.status == "failed"
     assert failed.error_detail == "target_delete_failed"
+
+
+@pytest.mark.parametrize("error_code", ["content_purge_failed", "prompt_redaction_route"])
+def test_fail_purge_operation_accepts_code_shaped_error_code_with_prompt_or_content(
+    storage, error_code
+):
+    purge_id = _begin_purge(storage, f"purge_error_code_{error_code}")
+
+    failed = storage.fail_purge_operation(
+        purge_id,
+        error_code=error_code,
+        error_detail="target_delete_failed",
+    )
+
+    assert failed.status == "failed"
+    assert failed.error_code == error_code
+
+
+def test_fail_purge_operation_rejects_prompt_content_prose_error_detail(storage):
+    purge_id = _begin_purge(storage, "purge_fail_prompt_content_prose")
+
+    with pytest.raises(ValueError, match="error_detail"):
+        storage.fail_purge_operation(
+            purge_id,
+            error_code="PURGE_TARGET_FAILED",
+            error_detail="prompt content leaked from upstream",
+        )
+
+    assert storage.get_purge_operation(purge_id).error_detail is None
 
 
 @pytest.mark.parametrize(

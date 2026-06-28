@@ -250,13 +250,17 @@ def _validate_governance_string(field_name: str, value: str) -> None:
         _raise_governance_validation_error(field_name, "email")
     if _REQUEST_ID_RE.search(value):
         _raise_governance_validation_error(field_name, "request_id")
-    lowered = value.lower()
-    if "prompt" in lowered or "content" in lowered:
-        _raise_governance_validation_error(field_name, "prompt/content")
     if _TOKEN_NAME_RE.search(value):
         _raise_governance_validation_error(field_name, "token")
     if _RAW_EXCEPTION_RE.search(value):
         _raise_governance_validation_error(field_name, "raw exception text")
+
+
+def _validate_governance_prose_string(field_name: str, value: str) -> None:
+    _validate_governance_string(field_name, value)
+    lowered = value.lower()
+    if "prompt" in lowered or "content" in lowered:
+        _raise_governance_validation_error(field_name, "prompt/content")
 
 
 def _validate_governance_prefixed_ref(
@@ -317,7 +321,7 @@ def _validate_governance_detail_enum(
 ) -> str:
     if not isinstance(value, str):
         _raise_governance_validation_error(field_name, "expected str")
-    _validate_governance_string(field_name, value)
+    _validate_governance_prose_string(field_name, value)
     if value not in allowed_values:
         _raise_governance_validation_error(field_name, "must be canonical")
     return value
