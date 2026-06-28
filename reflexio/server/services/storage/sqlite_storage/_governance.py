@@ -166,21 +166,23 @@ _IDENTIFIERISH_ERROR_CODE_RE = re.compile(
     r"^(?:user|subject|request|req|actor|email)[-_.:]?[A-Za-z0-9_.:-]+$",
     re.IGNORECASE,
 )
-_ALLOWED_ENUM_LIKE_VALUES = frozenset(
+_ALLOWED_DETAIL_STATUS_VALUES = frozenset(
     {
         "archive_in_progress",
-        "hide_for_rebuild",
-        "archived",
         "complete",
-        "delete",
         "error",
         "failed",
         "ok",
         "pending",
-        "prepare_targets",
-        "rebuild",
-        "rebuild_without_erased_sources",
         "running",
+    }
+)
+_ALLOWED_DETAIL_ROUTE_VALUES = frozenset(
+    {
+        "prepare_targets",
+        "delete",
+        "hide_for_rebuild",
+        "rebuild_without_erased_sources",
     }
 )
 _ALLOWED_DELETED_COUNTS_KEYS = frozenset(
@@ -250,7 +252,6 @@ def _validate_governance_code_shaped(
     value: str,
     *,
     allow_minimized_ref: bool,
-    allow_enum_like_word: bool,
 ) -> str:
     if not value:
         _raise_governance_validation_error(field_name, "required")
@@ -268,8 +269,6 @@ def _validate_governance_code_shaped(
         return value
     if _CODE_SHAPED_VALUE_RE.fullmatch(value):
         return value
-    if allow_enum_like_word and value in _ALLOWED_ENUM_LIKE_VALUES:
-        return value
     if _USER_LIKE_TARGET_REF_RE.fullmatch(value):
         _raise_governance_validation_error(field_name, "user-like identifier")
     _raise_governance_validation_error(field_name, "must be minimized, internal, or code-shaped")
@@ -285,8 +284,18 @@ def _validate_governance_idempotency_key(
         field_name,
         value,
         allow_minimized_ref=False,
-        allow_enum_like_word=False,
     )
+
+
+def _validate_governance_detail_enum(
+    field_name: str, value: Any, *, allowed_values: frozenset[str]
+) -> str:
+    if not isinstance(value, str):
+        _raise_governance_validation_error(field_name, "expected str")
+    _validate_governance_string(field_name, value)
+    if value not in allowed_values:
+        _raise_governance_validation_error(field_name, "must be canonical")
+    return value
 
 
 def _validate_governance_purge_id(field_name: str, value: str) -> str:
@@ -493,14 +502,17 @@ def _validate_governance_detail_entry(field_name: str, key: str, value: Any) -> 
         if not isinstance(value, bool):
             _raise_governance_validation_error(field_name, "expected bool")
         return value
-    if key in {"route", "status"}:
-        if not isinstance(value, str):
-            _raise_governance_validation_error(field_name, "expected str")
-        return _validate_governance_code_shaped(
+    if key == "route":
+        return _validate_governance_detail_enum(
             field_name,
             value,
-            allow_minimized_ref=False,
-            allow_enum_like_word=True,
+            allowed_values=_ALLOWED_DETAIL_ROUTE_VALUES,
+        )
+    if key == "status":
+        return _validate_governance_detail_enum(
+            field_name,
+            value,
+            allowed_values=_ALLOWED_DETAIL_STATUS_VALUES,
         )
     _raise_governance_validation_error(field_name, key)
 
@@ -615,7 +627,6 @@ def _validate_audit_event_for_persistence(event: AuditEvent) -> None:
             "entity_id",
             event.entity_id,
             allow_minimized_ref=True,
-            allow_enum_like_word=False,
         )
     _validate_governance_idempotency_key("idempotency_key", event.idempotency_key)
     _validate_governance_detail("audit_event.detail", event.detail)

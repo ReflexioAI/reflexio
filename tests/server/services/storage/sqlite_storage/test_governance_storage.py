@@ -1553,6 +1553,46 @@ def test_governance_detail_rejects_user_like_status_and_route(storage, detail):
 
 
 @pytest.mark.parametrize(
+    "detail",
+    [
+        pytest.param({"status": "archived"}, id="status-archived"),
+        pytest.param({"route": "rebuild"}, id="route-rebuild"),
+        pytest.param({"route": "custom.route"}, id="route-custom-dot"),
+        pytest.param({"route": "alice.team"}, id="route-alice-team"),
+    ],
+)
+@pytest.mark.parametrize("persistence_path", ["audit_event", "purge_target"])
+def test_governance_detail_rejects_noncanonical_status_and_route(
+    storage, detail, persistence_path
+):
+    if persistence_path == "audit_event":
+        event = AuditEvent(
+            org_id="org1",
+            operation="EXPORT",
+            entity_type="request",
+            subject_ref=SUBJECT_REF,
+            request_ref=REQUEST_REF,
+            idempotency_key=f"export_noncanonical_{next(iter(detail))}",
+            detail=detail,
+        )
+
+        with pytest.raises(ValueError, match="status|route"):
+            storage.append_audit_event(event)
+        return
+
+    purge_id = _begin_purge(storage, f"purge_noncanonical_{next(iter(detail))}")
+    with pytest.raises(ValueError, match="status|route"):
+        storage.record_purge_target(
+            purge_id=purge_id,
+            target_name="request",
+            target_ref="all",
+            phase="delete",
+            status="running",
+            detail=detail,
+        )
+
+
+@pytest.mark.parametrize(
     "purge_id",
     ["purge_user_123", "purge_subject_42", "purge_actor_alpha"],
 )
