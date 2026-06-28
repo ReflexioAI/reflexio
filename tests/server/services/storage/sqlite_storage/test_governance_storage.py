@@ -1363,6 +1363,108 @@ def test_apply_governance_agent_playbook_rebuild_restores_previous_lifecycle_sta
     assert rebuilt_status == Status.SUPERSEDED.value
 
 
+def test_apply_governance_agent_playbook_rebuild_rejects_second_call_after_completion(
+    storage,
+):
+    purge_id = "purge_rebuild_second_call"
+    storage.begin_purge_operation(
+        purge_id=purge_id,
+        idempotency_key="idem_purge_rebuild_second_call",
+        operation_type="user_erasure",
+        scope_type="user",
+        subject_ref=SUBJECT_REF,
+        request_ref=REQUEST_REF,
+    )
+    agent_playbook_id = _seed_agent_playbook(
+        storage,
+        status=Status.ARCHIVED,
+        source_windows=[
+            AgentPlaybookSourceWindow(user_playbook_id=7, source_interaction_ids=[101]),
+            AgentPlaybookSourceWindow(user_playbook_id=9, source_interaction_ids=[201]),
+        ],
+    )
+    storage.prepare_governance_erase_targets(
+        purge_id=purge_id,
+        user_id="user-rebuild-second-call",
+        owned_user_playbook_ids={7},
+    )
+    storage.hide_governance_agent_playbooks_for_rebuild(purge_id)
+    storage.apply_governance_agent_playbook_rebuild(
+        purge_id=purge_id,
+        agent_playbook_id=agent_playbook_id,
+        remaining_source_windows=[
+            {"user_playbook_id": 9, "source_interaction_ids": [201]},
+        ],
+        content="rebuilt content",
+        trigger="rebuilt trigger",
+        rationale="rebuilt rationale",
+        blocking_issue=None,
+        expanded_terms="rebuilt terms",
+        tags=["rebuilt"],
+    )
+
+    before_row = storage.conn.execute(
+        """SELECT content, trigger, rationale, blocking_issue, expanded_terms, tags, status
+           FROM agent_playbooks
+           WHERE agent_playbook_id = ?""",
+        (agent_playbook_id,),
+    ).fetchone()
+    assert before_row is not None
+    before_windows = storage.get_source_windows_for_agent_playbook(agent_playbook_id)
+    before_hide_target = next(
+        target
+        for target in storage.list_purge_targets(purge_id, phase="hide_for_rebuild")
+        if target.target_name == "agent_playbook"
+        and target.target_ref == str(agent_playbook_id)
+    )
+    before_rebuild_target = next(
+        target
+        for target in storage.list_purge_targets(
+            purge_id, phase="rebuild_without_erased_sources"
+        )
+        if target.target_name == "agent_playbook"
+        and target.target_ref == str(agent_playbook_id)
+    )
+
+    with pytest.raises(ValueError, match="already complete"):
+        storage.apply_governance_agent_playbook_rebuild(
+            purge_id=purge_id,
+            agent_playbook_id=agent_playbook_id,
+            remaining_source_windows=[
+                {"user_playbook_id": 9, "source_interaction_ids": [201]},
+            ],
+            content="mutated content",
+            trigger="mutated trigger",
+            rationale="mutated rationale",
+            blocking_issue={"issue": "should not persist"},
+            expanded_terms="mutated terms",
+            tags=["mutated"],
+        )
+
+    after_row = storage.conn.execute(
+        """SELECT content, trigger, rationale, blocking_issue, expanded_terms, tags, status
+           FROM agent_playbooks
+           WHERE agent_playbook_id = ?""",
+        (agent_playbook_id,),
+    ).fetchone()
+    assert after_row == before_row
+    assert storage.get_source_windows_for_agent_playbook(agent_playbook_id) == before_windows
+    assert next(
+        target
+        for target in storage.list_purge_targets(purge_id, phase="hide_for_rebuild")
+        if target.target_name == "agent_playbook"
+        and target.target_ref == str(agent_playbook_id)
+    ) == before_hide_target
+    assert next(
+        target
+        for target in storage.list_purge_targets(
+            purge_id, phase="rebuild_without_erased_sources"
+        )
+        if target.target_name == "agent_playbook"
+        and target.target_ref == str(agent_playbook_id)
+    ) == before_rebuild_target
+
+
 def test_hide_governance_agent_playbooks_for_rebuild_is_idempotent_after_completed_rebuild(
     storage,
 ):
@@ -1449,6 +1551,104 @@ def test_hide_governance_agent_playbooks_for_rebuild_is_idempotent_after_complet
     assert storage.get_source_windows_for_agent_playbook(agent_playbook_id) == before_windows
     assert after_hide_target == before_hide_target
     assert after_rebuild_target == before_rebuild_target
+
+
+def test_hide_governance_agent_playbooks_for_rebuild_does_not_reopen_complete_target_from_stale_prelock_state(
+    storage, monkeypatch
+):
+    purge_id = "purge_hide_stale_prelock"
+    storage.begin_purge_operation(
+        purge_id=purge_id,
+        idempotency_key="idem_purge_hide_stale_prelock",
+        operation_type="user_erasure",
+        scope_type="user",
+        subject_ref=SUBJECT_REF,
+        request_ref=REQUEST_REF,
+    )
+    agent_playbook_id = _seed_agent_playbook(
+        storage,
+        status=Status.ARCHIVED,
+        source_windows=[
+            AgentPlaybookSourceWindow(user_playbook_id=7, source_interaction_ids=[101]),
+            AgentPlaybookSourceWindow(user_playbook_id=9, source_interaction_ids=[201]),
+        ],
+    )
+    storage.prepare_governance_erase_targets(
+        purge_id=purge_id,
+        user_id="user-hide-stale-prelock",
+        owned_user_playbook_ids={7},
+    )
+    storage.hide_governance_agent_playbooks_for_rebuild(purge_id)
+    storage.apply_governance_agent_playbook_rebuild(
+        purge_id=purge_id,
+        agent_playbook_id=agent_playbook_id,
+        remaining_source_windows=[
+            {"user_playbook_id": 9, "source_interaction_ids": [201]},
+        ],
+        content="rebuilt content",
+        trigger="rebuilt trigger",
+        rationale="rebuilt rationale",
+        blocking_issue=None,
+        expanded_terms="rebuilt terms",
+        tags=["rebuilt"],
+    )
+
+    before_status = storage.conn.execute(
+        "SELECT status FROM agent_playbooks WHERE agent_playbook_id = ?",
+        (agent_playbook_id,),
+    ).fetchone()[0]
+    before_windows = storage.get_source_windows_for_agent_playbook(agent_playbook_id)
+    before_hide_target = next(
+        target
+        for target in storage.list_purge_targets(purge_id, phase="hide_for_rebuild")
+        if target.target_name == "agent_playbook"
+        and target.target_ref == str(agent_playbook_id)
+    )
+    before_rebuild_target = next(
+        target
+        for target in storage.list_purge_targets(
+            purge_id, phase="rebuild_without_erased_sources"
+        )
+        if target.target_name == "agent_playbook"
+        and target.target_ref == str(agent_playbook_id)
+    )
+
+    stale_targets = [
+        before_rebuild_target.model_copy(update={"status": "pending"}),
+    ]
+    original_list_purge_targets = storage.list_purge_targets
+
+    def stale_list_purge_targets(*_args, **_kwargs):
+        return stale_targets
+
+    monkeypatch.setattr(storage, "list_purge_targets", stale_list_purge_targets)
+
+    hidden_ids = storage.hide_governance_agent_playbooks_for_rebuild(purge_id)
+
+    assert hidden_ids == []
+    assert (
+        storage.conn.execute(
+            "SELECT status FROM agent_playbooks WHERE agent_playbook_id = ?",
+            (agent_playbook_id,),
+        ).fetchone()[0]
+        == before_status
+        == Status.ARCHIVED.value
+    )
+    assert storage.get_source_windows_for_agent_playbook(agent_playbook_id) == before_windows
+    assert next(
+        target
+        for target in original_list_purge_targets(purge_id, phase="hide_for_rebuild")
+        if target.target_name == "agent_playbook"
+        and target.target_ref == str(agent_playbook_id)
+    ) == before_hide_target
+    assert next(
+        target
+        for target in original_list_purge_targets(
+            purge_id, phase="rebuild_without_erased_sources"
+        )
+        if target.target_name == "agent_playbook"
+        and target.target_ref == str(agent_playbook_id)
+    ) == before_rebuild_target
 
 
 def test_purge_targets_are_scoped_by_org_for_same_purge_id(storage_factory):

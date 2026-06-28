@@ -1550,49 +1550,56 @@ class SQLiteGovernanceMixin:
 
     def hide_governance_agent_playbooks_for_rebuild(self, purge_id: str) -> list[int]:
         purge_id = _validate_governance_purge_id("purge_id", purge_id)
-        targets = self.list_purge_targets(
-            purge_id, phase="rebuild_without_erased_sources"
-        )
-        eligible_targets = [
-            target
-            for target in targets
-            if target.target_name == "agent_playbook"
-            and target.target_ref
-            and target.status != "complete"
-        ]
-        agent_playbook_ids = [int(target.target_ref) for target in eligible_targets]
-        if not agent_playbook_ids:
-            return []
-        placeholders = ",".join("?" for _ in agent_playbook_ids)
         with self._lock:
-            self.conn.execute(
-                f"""UPDATE agent_playbooks
-                    SET status = ?
-                    WHERE agent_playbook_id IN ({placeholders})""",
-                [Status.ARCHIVE_IN_PROGRESS.value, *agent_playbook_ids],
-            )
-            for agent_playbook_id in agent_playbook_ids:
-                self._record_purge_target_locked(
-                    purge_id=purge_id,
-                    target_name="agent_playbook",
-                    target_ref=str(agent_playbook_id),
-                    phase="hide_for_rebuild",
-                    status="complete",
-                    detail=None,
-                    deleted_count=0,
-                    error_detail=None,
+            try:
+                self.conn.execute("BEGIN IMMEDIATE")
+                target_rows = self.conn.execute(
+                    """SELECT target_ref
+                       FROM purge_operation_targets
+                       WHERE org_id = ? AND purge_id = ?
+                         AND target_name = 'agent_playbook'
+                         AND phase = 'rebuild_without_erased_sources'
+                         AND target_ref != ''
+                         AND status != 'complete'
+                       ORDER BY CAST(target_ref AS INTEGER) ASC""",
+                    (self.org_id, purge_id),
+                ).fetchall()
+                agent_playbook_ids = [int(row["target_ref"]) for row in target_rows]
+                if not agent_playbook_ids:
+                    self.conn.commit()
+                    return []
+                placeholders = ",".join("?" for _ in agent_playbook_ids)
+                self.conn.execute(
+                    f"""UPDATE agent_playbooks
+                        SET status = ?
+                        WHERE agent_playbook_id IN ({placeholders})""",
+                    [Status.ARCHIVE_IN_PROGRESS.value, *agent_playbook_ids],
                 )
-                self._record_purge_target_locked(
-                    purge_id=purge_id,
-                    target_name="agent_playbook",
-                    target_ref=str(agent_playbook_id),
-                    phase="rebuild_without_erased_sources",
-                    status="running",
-                    detail=None,
-                    deleted_count=0,
-                    error_detail=None,
-                )
-            self.conn.commit()
+                for agent_playbook_id in agent_playbook_ids:
+                    self._record_purge_target_locked(
+                        purge_id=purge_id,
+                        target_name="agent_playbook",
+                        target_ref=str(agent_playbook_id),
+                        phase="hide_for_rebuild",
+                        status="complete",
+                        detail=None,
+                        deleted_count=0,
+                        error_detail=None,
+                    )
+                    self._record_purge_target_locked(
+                        purge_id=purge_id,
+                        target_name="agent_playbook",
+                        target_ref=str(agent_playbook_id),
+                        phase="rebuild_without_erased_sources",
+                        status="running",
+                        detail=None,
+                        deleted_count=0,
+                        error_detail=None,
+                    )
+                self.conn.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
         return agent_playbook_ids
 
     def apply_governance_user_data_delete(
@@ -1651,7 +1658,7 @@ class SQLiteGovernanceMixin:
             try:
                 self.conn.execute("BEGIN")
                 rebuild_target_row = self.conn.execute(
-                    """SELECT detail
+                    """SELECT status, detail
                        FROM purge_operation_targets
                        WHERE org_id = ? AND purge_id = ? AND target_name = 'agent_playbook'
                          AND target_ref = ? AND phase = 'rebuild_without_erased_sources'""",
@@ -1659,6 +1666,8 @@ class SQLiteGovernanceMixin:
                 ).fetchone()
                 if rebuild_target_row is None:
                     raise ValueError("planned rebuild target does not exist")
+                if rebuild_target_row["status"] == "complete":
+                    raise ValueError("planned rebuild target is already complete")
                 rebuild_detail = _json_loads(rebuild_target_row["detail"])
                 if not isinstance(rebuild_detail, dict) or not {
                     "original_source_windows",
