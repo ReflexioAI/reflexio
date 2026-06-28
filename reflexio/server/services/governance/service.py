@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import suppress
 from typing import Any
 
 from reflexio.models.api_schema.domain.governance import (
@@ -24,6 +25,7 @@ _DELETE_TARGET_NAME_TO_RESULT_KEY = {
     "user_playbook_purge": "purged_user_playbooks",
 }
 _REQUIRED_DELETE_TARGET_NAMES = tuple(_DELETE_TARGET_NAME_TO_RESULT_KEY)
+_USER_PLAYBOOK_PAGE_SIZE = 1000
 
 
 class GovernanceService:
@@ -49,11 +51,7 @@ class GovernanceService:
             "requests": [request.model_dump() for request in requests],
             "sessions": sessions,
             "user_playbooks": [
-                playbook.model_dump()
-                for playbook in self.storage.get_user_playbooks(
-                    user_id=user_id,
-                    limit=1_000_000,
-                )
+                playbook.model_dump() for playbook in self._iter_user_playbooks(user_id)
             ],
         }
         self.storage.append_audit_event(
@@ -90,43 +88,49 @@ class GovernanceService:
                 subject_ref=subref, purge_id=purge_id, status="complete"
             )
 
-        if not self.storage.purge_targets_prepared(purge_id):
-            owned_user_playbook_ids = {
-                int(playbook.user_playbook_id)
-                for playbook in self.storage.get_user_playbooks(
-                    user_id=user_id,
-                    limit=1_000_000,
+        try:
+            if not self.storage.purge_targets_prepared(purge_id):
+                owned_user_playbook_ids = {
+                    int(playbook.user_playbook_id)
+                    for playbook in self._iter_user_playbooks(user_id)
+                    if playbook.user_playbook_id
+                }
+                self.storage.prepare_governance_erase_targets(
+                    purge_id,
+                    user_id,
+                    owned_user_playbook_ids,
                 )
-                if playbook.user_playbook_id
-            }
-            self.storage.prepare_governance_erase_targets(
+
+            self.storage.hide_governance_agent_playbooks_for_rebuild(purge_id)
+
+            if not self._delete_targets_complete(purge_id):
+                self.storage.apply_governance_user_data_delete(purge_id, user_id)
+            deleted_counts = self._deleted_counts_from_targets(purge_id)
+
+            rebuilt_agent_playbook_ids = self._rebuild_agent_playbooks(purge_id)
+            completed = self.storage.complete_purge_operation_with_audit(
                 purge_id,
-                user_id,
-                owned_user_playbook_ids,
+                AuditEvent(
+                    org_id=self.org_id,
+                    operation="ERASE",
+                    entity_type="request",
+                    subject_ref=subref,
+                    request_ref=reqref,
+                    idempotency_key=purge_id,
+                    detail={
+                        "deleted_counts": deleted_counts,
+                        "rebuilt_agent_playbook_ids": rebuilt_agent_playbook_ids,
+                    },
+                ),
             )
-
-        self.storage.hide_governance_agent_playbooks_for_rebuild(purge_id)
-
-        if not self._delete_targets_complete(purge_id):
-            self.storage.apply_governance_user_data_delete(purge_id, user_id)
-        deleted_counts = self._deleted_counts_from_targets(purge_id)
-
-        rebuilt_agent_playbook_ids = self._rebuild_agent_playbooks(purge_id)
-        completed = self.storage.complete_purge_operation_with_audit(
-            purge_id,
-            AuditEvent(
-                org_id=self.org_id,
-                operation="ERASE",
-                entity_type="request",
-                subject_ref=subref,
-                request_ref=reqref,
-                idempotency_key=purge_id,
-                detail={
-                    "deleted_counts": deleted_counts,
-                    "rebuilt_agent_playbook_ids": rebuilt_agent_playbook_ids,
-                },
-            ),
-        )
+        except Exception as exc:
+            with suppress(Exception):
+                self.storage.fail_purge_operation(
+                    purge_id,
+                    error_code="governance_erase_failed",
+                    error_detail=type(exc).__name__,
+                )
+            raise
         return UserEraseResult(
             subject_ref=subref,
             purge_id=purge_id,
@@ -149,16 +153,16 @@ class GovernanceService:
                 top_k=page_size,
                 offset=offset,
             )
-            page_count = 0
+            returned_rows = 0
             for session_id, rows in grouped_sessions.items():
+                returned_rows += len(rows)
                 request_ids = sessions_by_id.setdefault(session_id, [])
                 for row in rows:
                     if row.request is None:
                         continue
                     requests.append(row.request)
                     request_ids.append(row.request.request_id)
-                    page_count += 1
-            if page_count < page_size:
+            if returned_rows < page_size:
                 break
             offset += page_size
 
@@ -167,6 +171,21 @@ class GovernanceService:
             for session_id, request_ids in sessions_by_id.items()
         ]
         return requests, sessions
+
+    def _iter_user_playbooks(self, user_id: str) -> list[Any]:
+        playbooks: list[Any] = []
+        offset = 0
+        while True:
+            page = self.storage.get_user_playbooks(
+                user_id=user_id,
+                limit=_USER_PLAYBOOK_PAGE_SIZE,
+                offset=offset,
+            )
+            playbooks.extend(page)
+            if len(page) < _USER_PLAYBOOK_PAGE_SIZE:
+                break
+            offset += _USER_PLAYBOOK_PAGE_SIZE
+        return playbooks
 
     def _delete_targets_complete(self, purge_id: str) -> bool:
         delete_targets = {

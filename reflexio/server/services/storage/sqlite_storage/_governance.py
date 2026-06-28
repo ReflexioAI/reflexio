@@ -1866,6 +1866,8 @@ class SQLiteGovernanceMixin:
                         embedding=embedding,
                     )
                 else:
+                    from ._playbook import _emit_hard_delete_playbook
+
                     self._delete_agent_playbook_search_rows_locked(agent_playbook_id)
                     self.conn.execute(
                         "DELETE FROM agent_playbook_source_user_playbooks WHERE agent_playbook_id = ?",
@@ -1879,6 +1881,13 @@ class SQLiteGovernanceMixin:
                         raise ValueError(
                             f"Agent playbook with ID {agent_playbook_id} not found"
                         )
+                    _emit_hard_delete_playbook(
+                        self.conn,
+                        org_id=self.org_id,
+                        entity_type="agent_playbook",
+                        entity_id=str(agent_playbook_id),
+                        request_id=purge_id,
+                    )
                 self._record_purge_target_locked(
                     purge_id=purge_id,
                     target_name="agent_playbook",

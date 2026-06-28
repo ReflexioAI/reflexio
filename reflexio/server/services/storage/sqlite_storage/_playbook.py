@@ -285,6 +285,7 @@ class PlaybookMixin:
         end_time: int | None = None,
         include_embedding: bool = False,
         tags: list[str] | None = None,
+        offset: int = 0,
     ) -> list[UserPlaybook]:
         sql = "SELECT * FROM user_playbooks WHERE 1=1"
         params: list[Any] = []
@@ -317,8 +318,8 @@ class PlaybookMixin:
             sql += f" AND {tag_frag}"
             params.extend(tag_params)
 
-        sql += " ORDER BY created_at DESC LIMIT ?"
-        params.append(limit)
+        sql += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
         rows = self._fetchall(sql, params)
         return [
             _row_to_user_playbook(r, include_embedding=include_embedding) for r in rows

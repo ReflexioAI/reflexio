@@ -56,6 +56,7 @@ class PlaybookMixin:
         end_time: int | None = None,
         include_embedding: bool = False,
         tags: list[str] | None = None,
+        offset: int = 0,
     ) -> list[UserPlaybook]:
         """Get user playbooks from storage.
 
@@ -71,6 +72,7 @@ class PlaybookMixin:
             end_time (int, optional): Unix timestamp. Only return playbooks created at or before this time.
             include_embedding (bool): If True, fetch and parse embedding vectors. Defaults to False.
             tags (list[str], optional): Match playbooks having any of these tags.
+            offset (int): Number of matching rows to skip. Defaults to 0.
 
         Returns:
             list[UserPlaybook]: List of user playbook objects

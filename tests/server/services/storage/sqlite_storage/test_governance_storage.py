@@ -6,6 +6,7 @@ from typing import Any, Literal, cast
 from unittest.mock import patch
 
 import pytest
+from pydantic import ValidationError
 
 from reflexio.models.api_schema.domain.entities import (
     AgentPlaybook,
@@ -2597,18 +2598,17 @@ def test_append_audit_event_rejects_invalid_top_level_enum_values(
         storage.append_audit_event(event)
 
 
-def test_append_audit_event_requires_minimized_request_ref(storage):
-    event = AuditEvent(
-        org_id="org1",
-        operation="EXPORT",
-        entity_type="request",
-        subject_ref=SUBJECT_REF,
-        request_ref=None,
-        idempotency_key="missing_request_ref",
-    )
-
-    with pytest.raises(ValueError, match="request_ref"):
-        storage.append_audit_event(event)
+def test_audit_event_requires_request_ref():
+    with pytest.raises(ValidationError, match="request_ref"):
+        AuditEvent.model_validate(
+            {
+                "org_id": "org1",
+                "operation": "EXPORT",
+                "entity_type": "request",
+                "subject_ref": SUBJECT_REF,
+                "idempotency_key": "missing_request_ref",
+            }
+        )
 
 
 @pytest.mark.parametrize(

@@ -34,11 +34,7 @@ _ENTITY_TYPES = ("user_playbook", "agent_playbook", "profile")
 def _is_governance_retention_enabled(
     governance_retention: GovernanceRetentionConfig,
 ) -> bool:
-    return (
-        governance_retention.purge_expired_profiles_enabled
-        or governance_retention.row_count_retention_enabled
-        or governance_retention.audit_events_retention_enabled
-    )
+    return governance_retention.audit_events_retention_enabled
 
 
 class LineageGCScheduler:

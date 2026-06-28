@@ -709,8 +709,6 @@ class LineageGCConfig(BaseModel):
 
 
 class GovernanceRetentionConfig(BaseModel):
-    purge_expired_profiles_enabled: bool = False
-    row_count_retention_enabled: bool = False
     audit_events_retention_enabled: bool = False
     audit_events_retention_days: int = Field(default=365, gt=0)
     audit_events_delete_batch_limit: int = Field(default=500, gt=0)

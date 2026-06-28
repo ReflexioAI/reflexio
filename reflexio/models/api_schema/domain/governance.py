@@ -53,7 +53,7 @@ class AuditEvent(BaseModel):
     entity_type: AuditEntityType
     entity_id: str | None = None
     subject_ref: str | None = None
-    request_ref: str | None = None
+    request_ref: str
     idempotency_key: str | None = None
     status: AuditStatus = "ok"
     detail: dict[str, Any] | None = None

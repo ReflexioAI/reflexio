@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Generator
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -19,6 +20,7 @@ from reflexio.models.api_schema.domain.entities import (
 from reflexio.models.api_schema.domain.enums import PlaybookStatus
 from reflexio.models.api_schema.retriever_schema import SearchAgentPlaybookRequest
 from reflexio.models.config_schema import SearchMode
+from reflexio.server.services.governance import service as governance_service_module
 from reflexio.server.services.governance.service import GovernanceService
 from reflexio.server.services.governance.subject_refs import subject_ref
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
@@ -122,7 +124,9 @@ def storage(tmp_path: Path) -> Generator[SQLiteStorage, None, None]:
 
 def test_local_governance_e2e_erases_exports_audits_and_rebuilds_shared_aggregate(
     storage: SQLiteStorage,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(governance_service_module, "_USER_PLAYBOOK_PAGE_SIZE", 1)
     alice_request_id = "req-alice"
     bob_request_id = "req-bob"
 
@@ -356,6 +360,16 @@ def test_local_governance_e2e_erases_exports_audits_and_rebuilds_shared_aggregat
         storage.get_source_windows_for_agent_playbook(orphan_playbook.agent_playbook_id)
         == []
     )
+    hard_delete_events = [
+        event
+        for event in storage.get_lineage_events(
+            entity_type="agent_playbook",
+            entity_id=str(orphan_playbook.agent_playbook_id),
+        )
+        if event.op == "hard_delete"
+    ]
+    assert len(hard_delete_events) == 1
+    assert hard_delete_events[0].request_id == erased.purge_id
 
     assert (
         storage.search_agent_playbooks(
@@ -411,3 +425,59 @@ def test_local_governance_e2e_erases_exports_audits_and_rebuilds_shared_aggregat
         if event.operation == "ERASE" and event.status == "ok"
     ]
     assert len(erase_events_after_retry) == 1
+
+
+def test_governance_erase_marks_purge_failed_when_workflow_raises(
+    storage: SQLiteStorage,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = GovernanceService(
+        storage=storage,
+        org_id=storage.org_id,
+        ref_secret="test-governance-secret",
+    )
+
+    def _raise_prepare(*args, **kwargs) -> None:
+        raise RuntimeError("forced prepare failure")
+
+    monkeypatch.setattr(storage, "prepare_governance_erase_targets", _raise_prepare)
+
+    with pytest.raises(RuntimeError, match="forced prepare failure"):
+        service.erase_user(user_id="alice", request_id="erase-failure-request")
+
+    failed_purges = [
+        row
+        for row in storage.conn.execute(
+            "SELECT status, error_code, error_detail FROM purge_operations"
+        ).fetchall()
+        if row["status"] == "failed"
+    ]
+    assert len(failed_purges) == 1
+    assert failed_purges[0]["error_code"] == "governance_erase_failed"
+    assert failed_purges[0]["error_detail"] == "RuntimeError"
+
+
+def test_session_export_paginates_by_returned_rows_when_requests_are_missing() -> None:
+    class _Storage:
+        def __init__(self) -> None:
+            self.calls: list[int] = []
+
+        def get_sessions(self, *, user_id: str, top_k: int, offset: int):
+            self.calls.append(offset)
+            if offset == 0:
+                return {
+                    "session-a": [
+                        *[SimpleNamespace(request=None) for _ in range(999)],
+                        SimpleNamespace(request=SimpleNamespace(request_id="req-1")),
+                    ]
+                }
+            return {}
+
+    storage = _Storage()
+    service = GovernanceService(storage=storage, org_id="org", ref_secret="secret")
+
+    requests, sessions = service._load_user_requests_and_sessions("user-1")
+
+    assert storage.calls == [0, 1000]
+    assert [request.request_id for request in requests] == ["req-1"]
+    assert sessions == [{"session_id": "session-a", "request_ids": ["req-1"]}]
