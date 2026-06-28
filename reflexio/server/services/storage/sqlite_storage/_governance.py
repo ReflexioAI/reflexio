@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import threading
 from datetime import UTC, datetime
@@ -73,6 +74,30 @@ CREATE INDEX IF NOT EXISTS idx_purge_targets_purge_phase
 
 _PREPARE_PHASE = "prepare_targets"
 _SNAPSHOT_TARGET_NAME = "target_snapshot"
+_ALLOWED_DETAIL_KEYS = frozenset(
+    {
+        "affected_agent_playbook_ids",
+        "agent_playbook_id",
+        "count",
+        "deleted_count",
+        "owned_user_playbook_ids",
+        "source_interaction_ids",
+        "user_playbook_id",
+    }
+)
+_DISALLOWED_DETAIL_KEYS = frozenset(
+    {
+        "content",
+        "email",
+        "prompt",
+        "request_id",
+        "request_ref",
+        "user_id",
+    }
+)
+_EMAIL_RE = re.compile(r"\b[^@\s]+@[^@\s]+\.[^@\s]+\b")
+_REQUEST_ID_RE = re.compile(r"\b(?:reqref|request)[_-][A-Za-z0-9_-]+\b", re.IGNORECASE)
+_RAW_EXCEPTION_RE = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*(?:Error|Exception)\s*:")
 
 
 def init_governance_tables(conn: sqlite3.Connection) -> None:
@@ -93,6 +118,74 @@ def _json_loads(text: str | None) -> Any:
     if not text:
         return None
     return json.loads(text)
+
+
+def _raise_governance_validation_error(field_name: str, reason: str) -> None:
+    raise ValueError(f"Unsafe governance {field_name}: {reason}")
+
+
+def _validate_governance_string(field_name: str, value: str) -> None:
+    if _EMAIL_RE.search(value):
+        _raise_governance_validation_error(field_name, "email")
+    if _REQUEST_ID_RE.search(value):
+        _raise_governance_validation_error(field_name, "request_id")
+    if _RAW_EXCEPTION_RE.search(value):
+        _raise_governance_validation_error(field_name, "raw exception text")
+
+
+def _validate_governance_detail_value(field_name: str, value: Any) -> None:
+    if value is None or isinstance(value, bool | int | float):
+        return
+    if isinstance(value, str):
+        _validate_governance_string(field_name, value)
+        return
+    if isinstance(value, list):
+        for item in value:
+            _validate_governance_detail_value(field_name, item)
+        return
+    if isinstance(value, dict):
+        for key, nested_value in value.items():
+            normalized_key = str(key).strip().lower()
+            if normalized_key in _DISALLOWED_DETAIL_KEYS:
+                _raise_governance_validation_error(field_name, normalized_key)
+            if (
+                normalized_key not in _ALLOWED_DETAIL_KEYS
+                and ("prompt" in normalized_key or "content" in normalized_key)
+            ):
+                _raise_governance_validation_error(field_name, normalized_key)
+            _validate_governance_detail_value(field_name, nested_value)
+        return
+    _raise_governance_validation_error(
+        field_name, f"unsupported value type {type(value).__name__}"
+    )
+
+
+def _validate_governance_detail(
+    field_name: str, detail: dict[str, object] | None
+) -> dict[str, object] | None:
+    if detail is None:
+        return None
+    _validate_governance_detail_value(field_name, detail)
+    return detail
+
+
+def _validate_governance_error_detail(error_detail: str | None) -> str | None:
+    if error_detail is None:
+        return None
+    _validate_governance_string("error_detail", error_detail)
+    lowered = error_detail.lower()
+    if "prompt" in lowered or "content" in lowered:
+        _raise_governance_validation_error("error_detail", "prompt/content")
+    return error_detail
+
+
+def _is_successful_erase_event(event: AuditEvent, *, purge_id: str | None = None) -> bool:
+    return (
+        event.operation == "ERASE"
+        and event.status == "ok"
+        and event.idempotency_key is not None
+        and (purge_id is None or event.idempotency_key == purge_id)
+    )
 
 
 def _row_to_audit_event(row: sqlite3.Row) -> AuditEvent:
@@ -189,6 +282,8 @@ class SQLiteGovernanceMixin:
         deleted_count: int,
         error_detail: str | None,
     ) -> None:
+        detail = _validate_governance_detail("detail", detail)
+        error_detail = _validate_governance_error_detail(error_detail)
         now = _epoch_now()
         existing = self.conn.execute(
             """SELECT started_at, completed_at
@@ -240,6 +335,12 @@ class SQLiteGovernanceMixin:
         )
 
     def append_audit_event(self, event: AuditEvent) -> bool:
+        if _is_successful_erase_event(event):
+            raise ValueError(
+                "Successful ERASE audit rows may only be written by "
+                "complete_purge_operation_with_audit()"
+            )
+        _validate_governance_detail("audit_event.detail", event.detail)
         with self._lock:
             inserted = self._append_audit_event_with_cursor(self.conn, event)
             self.conn.commit()
@@ -403,7 +504,6 @@ class SQLiteGovernanceMixin:
                 phase=_PREPARE_PHASE,
                 status="complete",
                 detail={
-                    "user_id": user_id,
                     "owned_user_playbook_ids": sorted(owned_user_playbook_ids),
                     "affected_agent_playbook_ids": affected_agent_playbook_ids,
                 },
@@ -464,7 +564,7 @@ class SQLiteGovernanceMixin:
                     target_ref="all",
                     phase="delete",
                     status="complete",
-                    detail={"user_id": user_id},
+                    detail={"count": int(value)},
                     deleted_count=int(value),
                     error_detail=None,
                 )
@@ -526,6 +626,15 @@ class SQLiteGovernanceMixin:
     def complete_purge_operation_with_audit(
         self, purge_id: str, audit_event: AuditEvent
     ) -> PurgeOperation:
+        if audit_event.org_id != self.org_id:
+            raise ValueError("Audit event org_id must match storage org_id")
+        if audit_event.idempotency_key != purge_id:
+            raise ValueError("Audit event idempotency key must match purge_id")
+        if not _is_successful_erase_event(audit_event, purge_id=purge_id):
+            raise ValueError(
+                "Completion requires a successful ERASE audit event for this purge"
+            )
+        _validate_governance_detail("audit_event.detail", audit_event.detail)
         now = _epoch_now()
         with self._lock:
             try:
@@ -553,7 +662,36 @@ class SQLiteGovernanceMixin:
                 ).fetchone()
                 if incomplete is not None:
                     raise ValueError("Cannot complete purge with incomplete targets")
-                self._append_audit_event_with_cursor(self.conn, audit_event)
+                existing_audit_row = self.conn.execute(
+                    """SELECT * FROM audit_events
+                       WHERE org_id = ? AND idempotency_key = ?""",
+                    (self.org_id, purge_id),
+                ).fetchone()
+                if existing_audit_row is not None:
+                    existing_event = _row_to_audit_event(existing_audit_row)
+                    if not _is_successful_erase_event(existing_event, purge_id=purge_id):
+                        raise ValueError(
+                            "Existing audit row for purge_id must be the matching "
+                            "successful ERASE row"
+                        )
+                else:
+                    self._append_audit_event_with_cursor(self.conn, audit_event)
+                    existing_audit_row = self.conn.execute(
+                        """SELECT * FROM audit_events
+                           WHERE org_id = ? AND idempotency_key = ?""",
+                        (self.org_id, purge_id),
+                    ).fetchone()
+                if existing_audit_row is None:
+                    raise ValueError(
+                        "Completion requires exactly one successful ERASE audit row "
+                        "for the purge_id"
+                    )
+                existing_event = _row_to_audit_event(existing_audit_row)
+                if not _is_successful_erase_event(existing_event, purge_id=purge_id):
+                    raise ValueError(
+                        "Completion requires exactly one matching successful ERASE "
+                        "audit row for the purge_id"
+                    )
                 self.conn.execute(
                     """UPDATE purge_operations
                        SET status = 'complete',
@@ -573,6 +711,7 @@ class SQLiteGovernanceMixin:
     def fail_purge_operation(
         self, purge_id: str, error_code: str, error_detail: str
     ) -> PurgeOperation:
+        error_detail = _validate_governance_error_detail(error_detail)
         now = _epoch_now()
         with self._lock:
             cur = self.conn.execute(
