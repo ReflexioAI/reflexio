@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from typing import Any, Literal, NoReturn, Protocol, cast, get_args
 
 from reflexio.models.api_schema.domain import AgentPlaybookSourceWindow
+from reflexio.models.api_schema.domain.enums import Status
 from reflexio.models.api_schema.domain.governance import (
     AuditActorType,
     AuditEntityType,
@@ -100,7 +101,15 @@ _ALLOWED_PURGE_TARGET_NAMES = frozenset(
         "user_playbook_purge",
     }
 )
-_ALLOWED_PURGE_TARGET_PHASES = frozenset({_PREPARE_PHASE, "delete", "rebuild"})
+_ALLOWED_PURGE_TARGET_PHASES = frozenset(
+    {
+        _PREPARE_PHASE,
+        "delete",
+        "rebuild",
+        "hide_for_rebuild",
+        "rebuild_without_erased_sources",
+    }
+)
 _ALLOWED_DETAIL_KEYS = frozenset(
     {
         "affected_agent_playbook_ids",
@@ -153,6 +162,8 @@ _IDENTIFIERISH_ERROR_CODE_RE = re.compile(
 )
 _ALLOWED_ENUM_LIKE_VALUES = frozenset(
     {
+        "archive_in_progress",
+        "hide_for_rebuild",
         "archived",
         "complete",
         "delete",
@@ -162,6 +173,7 @@ _ALLOWED_ENUM_LIKE_VALUES = frozenset(
         "pending",
         "prepare_targets",
         "rebuild",
+        "rebuild_without_erased_sources",
         "running",
     }
 )
@@ -632,6 +644,11 @@ class _SQLiteGovernanceDeps(Protocol):
     ) -> None:
         ...
 
+    def get_source_windows_for_agent_playbook(
+        self, agent_playbook_id: int
+    ) -> list[AgentPlaybookSourceWindow]:
+        ...
+
 
 class SQLiteGovernanceMixin:
     """SQLite governance storage primitives."""
@@ -938,6 +955,7 @@ class SQLiteGovernanceMixin:
         profile_count = profile_row["cnt"]
         playbook_count = len(owned_user_playbook_ids)
         affected_agent_playbook_ids: list[int] = []
+        rebuild_details_by_agent_playbook_id: dict[int, dict[str, object]] = {}
         if owned_user_playbook_ids:
             placeholders = ",".join("?" for _ in owned_user_playbook_ids)
             rows = deps._fetchall(
@@ -948,6 +966,29 @@ class SQLiteGovernanceMixin:
                 sorted(owned_user_playbook_ids),
             )
             affected_agent_playbook_ids = [int(row["agent_playbook_id"]) for row in rows]
+            for agent_playbook_id in affected_agent_playbook_ids:
+                original_windows = deps.get_source_windows_for_agent_playbook(
+                    agent_playbook_id
+                )
+                original_window_dicts = [
+                    {
+                        "user_playbook_id": int(window.user_playbook_id),
+                        "source_interaction_ids": [
+                            int(source_id)
+                            for source_id in (window.source_interaction_ids or [])
+                        ],
+                    }
+                    for window in original_windows
+                ]
+                remaining_window_dicts = [
+                    window
+                    for window in original_window_dicts
+                    if int(window["user_playbook_id"]) not in owned_user_playbook_ids
+                ]
+                rebuild_details_by_agent_playbook_id[agent_playbook_id] = {
+                    "original_source_windows": original_window_dicts,
+                    "remaining_source_windows": remaining_window_dicts,
+                }
         targets = {
             "request": request_count,
             "interaction": interaction_count,
@@ -971,9 +1012,9 @@ class SQLiteGovernanceMixin:
                     purge_id=purge_id,
                     target_name="agent_playbook",
                     target_ref=str(agent_playbook_id),
-                    phase="rebuild",
+                    phase="rebuild_without_erased_sources",
                     status="pending",
-                    detail=None,
+                    detail=rebuild_details_by_agent_playbook_id[agent_playbook_id],
                     deleted_count=0,
                     error_detail=None,
                 )
@@ -994,7 +1035,9 @@ class SQLiteGovernanceMixin:
 
     def hide_governance_agent_playbooks_for_rebuild(self, purge_id: str) -> list[int]:
         purge_id = _validate_governance_purge_id("purge_id", purge_id)
-        targets = self.list_purge_targets(purge_id, phase="rebuild")
+        targets = self.list_purge_targets(
+            purge_id, phase="rebuild_without_erased_sources"
+        )
         agent_playbook_ids = [
             int(target.target_ref)
             for target in targets
@@ -1006,17 +1049,26 @@ class SQLiteGovernanceMixin:
         with self._lock:
             self.conn.execute(
                 f"""UPDATE agent_playbooks
-                    SET status = 'archived'
-                    WHERE agent_playbook_id IN ({placeholders})
-                      AND status IS NULL""",
-                agent_playbook_ids,
+                    SET status = ?
+                    WHERE agent_playbook_id IN ({placeholders})""",
+                [Status.ARCHIVE_IN_PROGRESS.value, *agent_playbook_ids],
             )
             for agent_playbook_id in agent_playbook_ids:
                 self._record_purge_target_locked(
                     purge_id=purge_id,
                     target_name="agent_playbook",
                     target_ref=str(agent_playbook_id),
-                    phase="rebuild",
+                    phase="hide_for_rebuild",
+                    status="complete",
+                    detail=None,
+                    deleted_count=0,
+                    error_detail=None,
+                )
+                self._record_purge_target_locked(
+                    purge_id=purge_id,
+                    target_name="agent_playbook",
+                    target_ref=str(agent_playbook_id),
+                    phase="rebuild_without_erased_sources",
                     status="running",
                     detail=None,
                     deleted_count=0,
@@ -1095,7 +1147,7 @@ class SQLiteGovernanceMixin:
             purge_id=purge_id,
             target_name="agent_playbook",
             target_ref=str(agent_playbook_id),
-            phase="rebuild",
+            phase="rebuild_without_erased_sources",
             status="complete",
         )
 
