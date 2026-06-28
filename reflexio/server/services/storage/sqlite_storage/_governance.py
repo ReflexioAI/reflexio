@@ -319,11 +319,15 @@ def _validate_governance_int(field_name: str, value: Any) -> None:
         _raise_governance_validation_error(field_name, "expected int")
 
 
-def _validate_governance_deleted_count(value: Any) -> int:
-    _validate_governance_int("deleted_count", value)
+def _validate_governance_nonnegative_int(field_name: str, value: Any) -> int:
+    _validate_governance_int(field_name, value)
     if value < 0:
-        _raise_governance_validation_error("deleted_count", "must be nonnegative")
+        _raise_governance_validation_error(field_name, "must be nonnegative")
     return cast(int, value)
+
+
+def _validate_governance_deleted_count(value: Any) -> int:
+    return _validate_governance_nonnegative_int("deleted_count", value)
 
 
 def _validate_governance_int_list(field_name: str, value: Any) -> list[int]:
@@ -483,7 +487,9 @@ def _validate_governance_detail_entry(field_name: str, key: str, value: Any) -> 
         _raise_governance_validation_error(field_name, key)
     if key not in _ALLOWED_DETAIL_KEYS:
         _raise_governance_validation_error(field_name, key)
-    if key in {"count", "deleted_count", "agent_playbook_id", "user_playbook_id"}:
+    if key in {"count", "deleted_count"}:
+        return _validate_governance_nonnegative_int(field_name, value)
+    if key in {"agent_playbook_id", "user_playbook_id"}:
         _validate_governance_int(field_name, value)
         return cast(int, value)
     if key == "deleted_counts":

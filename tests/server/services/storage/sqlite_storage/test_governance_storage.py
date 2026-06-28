@@ -1007,6 +1007,42 @@ def test_record_purge_target_rejects_invalid_deleted_count(storage, deleted_coun
         )
 
 
+@pytest.mark.parametrize("detail_deleted_count", [0, 2])
+def test_record_purge_target_accepts_nonnegative_detail_deleted_count(
+    storage, detail_deleted_count
+):
+    purge_id = _begin_purge(storage, f"purge_detail_deleted_count_{detail_deleted_count}")
+
+    storage.record_purge_target(
+        purge_id=purge_id,
+        target_name="request",
+        target_ref="all",
+        phase="delete",
+        status="complete",
+        detail={"deleted_count": detail_deleted_count},
+    )
+
+    target = next(
+        row for row in storage.list_purge_targets(purge_id, phase="delete")
+        if row.target_name == "request"
+    )
+    assert target.detail == {"deleted_count": detail_deleted_count}
+
+
+def test_record_purge_target_rejects_negative_detail_deleted_count(storage):
+    purge_id = _begin_purge(storage, "purge_detail_deleted_count_negative")
+
+    with pytest.raises(ValueError, match="deleted_count"):
+        storage.record_purge_target(
+            purge_id=purge_id,
+            target_name="request",
+            target_ref="all",
+            phase="delete",
+            status="complete",
+            detail={"deleted_count": -1},
+        )
+
+
 @pytest.mark.parametrize(
     ("detail", "match"),
     [
@@ -1040,6 +1076,39 @@ def test_append_audit_event_validates_governance_detail(storage, detail, match):
         return
 
     with pytest.raises(ValueError, match=match):
+        storage.append_audit_event(event)
+
+
+@pytest.mark.parametrize("count", [0, 2])
+def test_append_audit_event_accepts_nonnegative_detail_count(storage, count):
+    event = AuditEvent(
+        org_id="org1",
+        operation="EXPORT",
+        entity_type="request",
+        subject_ref=SUBJECT_REF,
+        request_ref=REQUEST_REF,
+        idempotency_key=f"export_detail_count_{count}",
+        detail={"count": count},
+    )
+
+    assert storage.append_audit_event(event) is True
+    rows = storage.list_audit_events(subject_ref=SUBJECT_REF)
+    stored = next(row for row in rows if row.idempotency_key == event.idempotency_key)
+    assert stored.detail == {"count": count}
+
+
+def test_append_audit_event_rejects_negative_detail_count(storage):
+    event = AuditEvent(
+        org_id="org1",
+        operation="EXPORT",
+        entity_type="request",
+        subject_ref=SUBJECT_REF,
+        request_ref=REQUEST_REF,
+        idempotency_key="export_detail_count_negative",
+        detail={"count": -1},
+    )
+
+    with pytest.raises(ValueError, match="count"):
         storage.append_audit_event(event)
 
 
