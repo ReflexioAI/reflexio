@@ -80,8 +80,15 @@ _ALLOWED_DETAIL_KEYS = frozenset(
         "agent_playbook_id",
         "count",
         "deleted_count",
+        "erased_source_ids",
         "owned_user_playbook_ids",
+        "original_source_windows",
+        "prepared",
+        "rebuilt_agent_playbook_ids",
+        "remaining_source_windows",
+        "route",
         "source_interaction_ids",
+        "status",
         "user_playbook_id",
     }
 )
@@ -96,7 +103,14 @@ _DISALLOWED_DETAIL_KEYS = frozenset(
     }
 )
 _EMAIL_RE = re.compile(r"\b[^@\s]+@[^@\s]+\.[^@\s]+\b")
-_REQUEST_ID_RE = re.compile(r"\b(?:reqref|request)[_-][A-Za-z0-9_-]+\b", re.IGNORECASE)
+_REQUEST_ID_RE = re.compile(
+    r"\b(?:reqref_(?!v1_)|request[_-]|req[_-])[A-Za-z0-9_-]*\b",
+    re.IGNORECASE,
+)
+_TOKEN_NAME_RE = re.compile(
+    r"\b(?:api[-_ ]?token|token[-_ ]?name|bearer|secret[-_ ]?key)\b",
+    re.IGNORECASE,
+)
 _RAW_EXCEPTION_RE = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*(?:Error|Exception)\s*:")
 
 
@@ -129,35 +143,91 @@ def _validate_governance_string(field_name: str, value: str) -> None:
         _raise_governance_validation_error(field_name, "email")
     if _REQUEST_ID_RE.search(value):
         _raise_governance_validation_error(field_name, "request_id")
+    lowered = value.lower()
+    if "prompt" in lowered or "content" in lowered:
+        _raise_governance_validation_error(field_name, "prompt/content")
+    if _TOKEN_NAME_RE.search(value):
+        _raise_governance_validation_error(field_name, "token")
     if _RAW_EXCEPTION_RE.search(value):
         _raise_governance_validation_error(field_name, "raw exception text")
 
 
-def _validate_governance_detail_value(field_name: str, value: Any) -> None:
-    if value is None or isinstance(value, bool | int | float):
+def _validate_governance_prefixed_ref(
+    field_name: str, value: str | None, *, prefix: str
+) -> None:
+    if value is None:
         return
-    if isinstance(value, str):
+    if not value.startswith(prefix):
+        _raise_governance_validation_error(field_name, f"must start with {prefix}")
+
+
+def _validate_governance_int(field_name: str, value: Any) -> None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        _raise_governance_validation_error(field_name, "expected int")
+
+
+def _validate_governance_int_list(field_name: str, value: Any) -> None:
+    if not isinstance(value, list):
+        _raise_governance_validation_error(field_name, "expected list[int]")
+    for item in value:
+        _validate_governance_int(field_name, item)
+
+
+def _validate_governance_window_list(field_name: str, value: Any) -> None:
+    if not isinstance(value, list):
+        _raise_governance_validation_error(field_name, "expected list[window]")
+    for index, item in enumerate(value):
+        if not isinstance(item, dict):
+            _raise_governance_validation_error(
+                f"{field_name}[{index}]", "expected window dict"
+            )
+        normalized_keys = {str(key).strip().lower() for key in item}
+        unexpected_keys = normalized_keys - {"user_playbook_id", "source_interaction_ids"}
+        if unexpected_keys:
+            _raise_governance_validation_error(
+                f"{field_name}[{index}]", sorted(unexpected_keys)[0]
+            )
+        if "user_playbook_id" in item:
+            _validate_governance_int(
+                f"{field_name}[{index}].user_playbook_id", item["user_playbook_id"]
+            )
+        if "source_interaction_ids" in item:
+            _validate_governance_int_list(
+                f"{field_name}[{index}].source_interaction_ids",
+                item["source_interaction_ids"],
+            )
+
+
+def _validate_governance_detail_entry(field_name: str, key: str, value: Any) -> None:
+    if key in _DISALLOWED_DETAIL_KEYS:
+        _raise_governance_validation_error(field_name, key)
+    if key not in _ALLOWED_DETAIL_KEYS:
+        _raise_governance_validation_error(field_name, key)
+    if key in {"count", "deleted_count", "agent_playbook_id", "user_playbook_id"}:
+        _validate_governance_int(field_name, value)
+        return
+    if key in {
+        "affected_agent_playbook_ids",
+        "erased_source_ids",
+        "owned_user_playbook_ids",
+        "rebuilt_agent_playbook_ids",
+        "source_interaction_ids",
+    }:
+        _validate_governance_int_list(field_name, value)
+        return
+    if key in {"original_source_windows", "remaining_source_windows"}:
+        _validate_governance_window_list(field_name, value)
+        return
+    if key == "prepared":
+        if not isinstance(value, bool):
+            _raise_governance_validation_error(field_name, "expected bool")
+        return
+    if key in {"route", "status"}:
+        if not isinstance(value, str):
+            _raise_governance_validation_error(field_name, "expected str")
         _validate_governance_string(field_name, value)
         return
-    if isinstance(value, list):
-        for item in value:
-            _validate_governance_detail_value(field_name, item)
-        return
-    if isinstance(value, dict):
-        for key, nested_value in value.items():
-            normalized_key = str(key).strip().lower()
-            if normalized_key in _DISALLOWED_DETAIL_KEYS:
-                _raise_governance_validation_error(field_name, normalized_key)
-            if (
-                normalized_key not in _ALLOWED_DETAIL_KEYS
-                and ("prompt" in normalized_key or "content" in normalized_key)
-            ):
-                _raise_governance_validation_error(field_name, normalized_key)
-            _validate_governance_detail_value(field_name, nested_value)
-        return
-    _raise_governance_validation_error(
-        field_name, f"unsupported value type {type(value).__name__}"
-    )
+    _raise_governance_validation_error(field_name, key)
 
 
 def _validate_governance_detail(
@@ -165,7 +235,11 @@ def _validate_governance_detail(
 ) -> dict[str, object] | None:
     if detail is None:
         return None
-    _validate_governance_detail_value(field_name, detail)
+    if not isinstance(detail, dict):
+        _raise_governance_validation_error(field_name, "expected dict")
+    for key, value in detail.items():
+        normalized_key = str(key).strip().lower()
+        _validate_governance_detail_entry(f"{field_name}.{normalized_key}", normalized_key, value)
     return detail
 
 
@@ -173,10 +247,20 @@ def _validate_governance_error_detail(error_detail: str | None) -> str | None:
     if error_detail is None:
         return None
     _validate_governance_string("error_detail", error_detail)
-    lowered = error_detail.lower()
-    if "prompt" in lowered or "content" in lowered:
-        _raise_governance_validation_error("error_detail", "prompt/content")
     return error_detail
+
+
+def _validate_audit_event_for_persistence(event: AuditEvent) -> None:
+    _validate_governance_prefixed_ref("actor_ref", event.actor_ref, prefix="actref_v1_")
+    _validate_governance_prefixed_ref(
+        "subject_ref", event.subject_ref, prefix="subref_v1_"
+    )
+    _validate_governance_prefixed_ref(
+        "request_ref", event.request_ref, prefix="reqref_v1_"
+    )
+    if event.entity_id is not None:
+        _validate_governance_string("entity_id", event.entity_id)
+    _validate_governance_detail("audit_event.detail", event.detail)
 
 
 def _is_successful_erase_event(event: AuditEvent, *, purge_id: str | None = None) -> bool:
@@ -340,7 +424,7 @@ class SQLiteGovernanceMixin:
                 "Successful ERASE audit rows may only be written by "
                 "complete_purge_operation_with_audit()"
             )
-        _validate_governance_detail("audit_event.detail", event.detail)
+        _validate_audit_event_for_persistence(event)
         with self._lock:
             inserted = self._append_audit_event_with_cursor(self.conn, event)
             self.conn.commit()
@@ -367,6 +451,12 @@ class SQLiteGovernanceMixin:
         subject_ref: str | None,
         request_ref: str,
     ) -> PurgeOperation:
+        _validate_governance_prefixed_ref(
+            "subject_ref", subject_ref, prefix="subref_v1_"
+        )
+        _validate_governance_prefixed_ref(
+            "request_ref", request_ref, prefix="reqref_v1_"
+        )
         now = _epoch_now()
         with self._lock:
             existing = self.conn.execute(
@@ -634,7 +724,7 @@ class SQLiteGovernanceMixin:
             raise ValueError(
                 "Completion requires a successful ERASE audit event for this purge"
             )
-        _validate_governance_detail("audit_event.detail", audit_event.detail)
+        _validate_audit_event_for_persistence(audit_event)
         now = _epoch_now()
         with self._lock:
             try:
