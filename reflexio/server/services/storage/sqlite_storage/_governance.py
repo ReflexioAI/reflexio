@@ -1389,6 +1389,32 @@ class SQLiteGovernanceMixin:
         with self._lock:
             try:
                 self.conn.execute("BEGIN")
+                rebuild_target_row = self.conn.execute(
+                    """SELECT detail
+                       FROM purge_operation_targets
+                       WHERE org_id = ? AND purge_id = ? AND target_name = 'agent_playbook'
+                         AND target_ref = ? AND phase = 'rebuild_without_erased_sources'""",
+                    (self.org_id, purge_id, str(agent_playbook_id)),
+                ).fetchone()
+                if rebuild_target_row is None:
+                    raise ValueError("planned rebuild target does not exist")
+                rebuild_detail = _json_loads(rebuild_target_row["detail"])
+                if not isinstance(rebuild_detail, dict) or not {
+                    "original_source_windows",
+                    "remaining_source_windows",
+                }.issubset(rebuild_detail):
+                    raise ValueError(
+                        "planned rebuild target is missing source window detail"
+                    )
+                hide_target_row = self.conn.execute(
+                    """SELECT status
+                       FROM purge_operation_targets
+                       WHERE org_id = ? AND purge_id = ? AND target_name = 'agent_playbook'
+                         AND target_ref = ? AND phase = 'hide_for_rebuild'""",
+                    (self.org_id, purge_id, str(agent_playbook_id)),
+                ).fetchone()
+                if hide_target_row is None or hide_target_row["status"] != "complete":
+                    raise ValueError("hide_for_rebuild target must be complete")
                 cur = self.conn.execute(
                     """UPDATE agent_playbooks
                        SET content = ?, trigger = ?, rationale = ?, blocking_issue = ?,
