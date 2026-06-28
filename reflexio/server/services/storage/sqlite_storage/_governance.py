@@ -93,6 +93,7 @@ _CANONICAL_DELETE_TARGET_NAMES = (
     "interaction",
     "profile",
     "user_playbook",
+    "agent_success_evaluation_result",
     "profile_purge",
     "user_playbook_purge",
 )
@@ -110,6 +111,7 @@ _ALLOWED_PURGE_TARGET_NAMES = frozenset(
         "interaction",
         "profile",
         "user_playbook",
+        "agent_success_evaluation_result",
         "agent_playbook",
         "profile_purge",
         "user_playbook_purge",
@@ -214,6 +216,7 @@ _ALLOWED_DELETED_COUNTS_KEYS = frozenset(
         "user_playbooks",
         "profiles",
         "requests",
+        "agent_success_evaluation_results",
         "purged_profiles",
         "purged_user_playbooks",
     }
@@ -298,7 +301,9 @@ def _validate_governance_code_shaped(
         return value
     if _USER_LIKE_TARGET_REF_RE.fullmatch(value):
         _raise_governance_validation_error(field_name, "user-like identifier")
-    _raise_governance_validation_error(field_name, "must be minimized, internal, or code-shaped")
+    _raise_governance_validation_error(
+        field_name, "must be minimized, internal, or code-shaped"
+    )
     raise AssertionError("unreachable")
 
 
@@ -371,9 +376,7 @@ def _validate_governance_int_list(field_name: str, value: Any) -> list[int]:
     return normalized_items
 
 
-def _validate_governance_deleted_counts(
-    field_name: str, value: Any
-) -> dict[str, int]:
+def _validate_governance_deleted_counts(field_name: str, value: Any) -> dict[str, int]:
     if not isinstance(value, dict):
         _raise_governance_validation_error(field_name, "expected dict[str, int]")
     normalized_counts: dict[str, int] = {}
@@ -415,7 +418,10 @@ def _validate_governance_window_list(
     for index, item in enumerate(value):
         normalized_item = _normalize_governance_window_item(field_name, index, item)
         normalized_keys = set(normalized_item)
-        unexpected_keys = normalized_keys - {"user_playbook_id", "source_interaction_ids"}
+        unexpected_keys = normalized_keys - {
+            "user_playbook_id",
+            "source_interaction_ids",
+        }
         if unexpected_keys:
             _raise_governance_validation_error(
                 f"{field_name}[{index}]", sorted(unexpected_keys)[0]
@@ -446,7 +452,9 @@ def _parse_governance_window_list(
     windows: list[AgentPlaybookSourceWindow] = []
     for normalized_item in _validate_governance_window_list(field_name, value):
         user_playbook_id = cast(int, normalized_item["user_playbook_id"])
-        source_ids = cast(list[int], normalized_item.get("source_interaction_ids") or [])
+        source_ids = cast(
+            list[int], normalized_item.get("source_interaction_ids") or []
+        )
         windows.append(
             AgentPlaybookSourceWindow(
                 user_playbook_id=user_playbook_id,
@@ -742,7 +750,9 @@ def _upgrade_legacy_purge_operation_targets_table(conn: sqlite3.Connection) -> N
     ]
     if not target_columns or "org_id" in target_columns:
         return
-    conn.execute("ALTER TABLE purge_operation_targets RENAME TO purge_operation_targets_legacy")
+    conn.execute(
+        "ALTER TABLE purge_operation_targets RENAME TO purge_operation_targets_legacy"
+    )
     conn.executescript(_PURGE_OPERATION_TARGETS_TABLE_DDL)
     conn.execute(
         """INSERT INTO purge_operation_targets (
@@ -765,7 +775,9 @@ def _upgrade_legacy_purge_operation_targets_table(conn: sqlite3.Connection) -> N
     conn.execute("DROP TABLE purge_operation_targets_legacy")
 
 
-def _is_successful_erase_event(event: AuditEvent, *, purge_id: str | None = None) -> bool:
+def _is_successful_erase_event(
+    event: AuditEvent, *, purge_id: str | None = None
+) -> bool:
     return (
         event.operation == "ERASE"
         and event.status == "ok"
@@ -862,50 +874,44 @@ class _SQLiteGovernanceDeps(Protocol):
     org_id: str
     _has_sqlite_vec: bool
 
-    def _fetchall(self, sql: str, params: list[Any] | tuple[Any, ...]) -> list[sqlite3.Row]:
-        ...
+    def _fetchall(
+        self, sql: str, params: list[Any] | tuple[Any, ...]
+    ) -> list[sqlite3.Row]: ...
 
-    def _fetchone(self, sql: str, params: list[Any] | tuple[Any, ...]) -> sqlite3.Row | None:
-        ...
+    def _fetchone(
+        self, sql: str, params: list[Any] | tuple[Any, ...]
+    ) -> sqlite3.Row | None: ...
 
     def _partition_purge_vs_delete(
         self, entity_type: Literal["profile", "user_playbook"], ids: list[str]
-    ) -> tuple[list[str], list[str]]:
-        ...
+    ) -> tuple[list[str], list[str]]: ...
 
     def _delete_in_chunks(
         self, table_name: str, column_name: str, values: list[Any]
-    ) -> None:
-        ...
+    ) -> None: ...
 
     def _delete_source_windows_for_user_playbook_ids(
         self, user_playbook_ids: list[int]
-    ) -> None:
-        ...
+    ) -> None: ...
 
-    def _get_embedding(self, text: str) -> list[float]:
-        ...
+    def _get_embedding(self, text: str) -> list[float]: ...
 
     def set_source_windows_for_agent_playbook(
         self, agent_playbook_id: int, windows: list[AgentPlaybookSourceWindow]
-    ) -> None:
-        ...
+    ) -> None: ...
 
     def get_source_windows_for_agent_playbook(
         self, agent_playbook_id: int
-    ) -> list[AgentPlaybookSourceWindow]:
-        ...
+    ) -> list[AgentPlaybookSourceWindow]: ...
 
     def get_agent_playbook_by_id(
         self,
         agent_playbook_id: int,
         *,
         include_tombstones: bool = False,
-    ) -> AgentPlaybook | None:
-        ...
+    ) -> AgentPlaybook | None: ...
 
-    def _index_agent_playbook_fts_vec(self, ap: AgentPlaybook) -> None:
-        ...
+    def _index_agent_playbook_fts_vec(self, ap: AgentPlaybook) -> None: ...
 
 
 class SQLiteGovernanceMixin:
@@ -1045,21 +1051,32 @@ class SQLiteGovernanceMixin:
             "SELECT COUNT(*) AS cnt FROM interactions WHERE user_id = ?",
             (user_id,),
         ).fetchone()
+        eval_result_row = self.conn.execute(
+            """SELECT COUNT(*) AS cnt
+               FROM agent_success_evaluation_result
+               WHERE user_id = ?""",
+            (user_id,),
+        ).fetchone()
         profile_rows = self.conn.execute(
             "SELECT profile_id FROM profiles WHERE user_id = ?",
             (user_id,),
         ).fetchall()
-        if request_row is None or interaction_row is None:
+        if request_row is None or interaction_row is None or eval_result_row is None:
             raise ValueError("Missing governance count rows")
         profile_ids = [str(row["profile_id"]) for row in profile_rows]
         purge_profile_ids, delete_profile_ids = self._deps()._partition_purge_vs_delete(
             "profile",
             profile_ids,
         )
-        playbook_ids = [str(user_playbook_id) for user_playbook_id in sorted(owned_user_playbook_ids)]
-        purge_playbook_ids, delete_playbook_ids = self._deps()._partition_purge_vs_delete(
-            "user_playbook",
-            playbook_ids,
+        playbook_ids = [
+            str(user_playbook_id)
+            for user_playbook_id in sorted(owned_user_playbook_ids)
+        ]
+        purge_playbook_ids, delete_playbook_ids = (
+            self._deps()._partition_purge_vs_delete(
+                "user_playbook",
+                playbook_ids,
+            )
         )
         return {
             "request": int(request_row["cnt"]),
@@ -1067,6 +1084,7 @@ class SQLiteGovernanceMixin:
             "profile": len(delete_profile_ids),
             "profile_purge": len(purge_profile_ids),
             "user_playbook": len(delete_playbook_ids),
+            "agent_success_evaluation_result": int(eval_result_row["cnt"]),
             "user_playbook_purge": len(purge_playbook_ids),
         }
 
@@ -1315,6 +1333,11 @@ class SQLiteGovernanceMixin:
             "DELETE FROM interactions WHERE user_id = ?",
             (user_id,),
         )
+        eval_results_cur = self.conn.execute(
+            """DELETE FROM agent_success_evaluation_result
+               WHERE user_id = ?""",
+            (user_id,),
+        )
         requests_cur = self.conn.execute(
             "DELETE FROM requests WHERE user_id = ?",
             (user_id,),
@@ -1353,6 +1376,7 @@ class SQLiteGovernanceMixin:
             "user_playbooks": len(delete_upb_ids),
             "profiles": len(delete_profile_ids),
             "requests": requests_cur.rowcount,
+            "agent_success_evaluation_results": eval_results_cur.rowcount,
             "purged_profiles": purged_profiles,
             "purged_user_playbooks": purged_user_playbooks,
         }
@@ -1668,6 +1692,7 @@ class SQLiteGovernanceMixin:
             "user_playbooks": "user_playbook",
             "profiles": "profile",
             "requests": "request",
+            "agent_success_evaluation_results": "agent_success_evaluation_result",
             "purged_profiles": "profile_purge",
             "purged_user_playbooks": "user_playbook_purge",
         }
@@ -1714,7 +1739,9 @@ class SQLiteGovernanceMixin:
         content_value = content or ""
         trigger_value = trigger or None
         embedding_text = trigger_value or content_value
-        embedding = self._deps()._get_embedding(embedding_text) if embedding_text else []
+        embedding = (
+            self._deps()._get_embedding(embedding_text) if embedding_text else []
+        )
         with self._lock:
             try:
                 self.conn.execute("BEGIN")
@@ -1740,7 +1767,10 @@ class SQLiteGovernanceMixin:
                     )
                 planned_remaining_windows = _canonicalize_governance_windows(
                     "planned remaining_source_windows",
-                    cast(list[dict[str, object]], rebuild_detail["remaining_source_windows"]),
+                    cast(
+                        list[dict[str, object]],
+                        rebuild_detail["remaining_source_windows"],
+                    ),
                 )
                 if planned_remaining_windows != canonical_remaining_windows:
                     raise ValueError(
@@ -1768,7 +1798,9 @@ class SQLiteGovernanceMixin:
                             content_value,
                             trigger_value,
                             rationale,
-                            json.dumps(blocking_issue) if blocking_issue is not None else None,
+                            json.dumps(blocking_issue)
+                            if blocking_issue is not None
+                            else None,
                             _json_dumps(embedding),
                             expanded_terms,
                             _json_dumps(tags),
@@ -1895,14 +1927,16 @@ class SQLiteGovernanceMixin:
                 ).fetchone()
                 if existing_audit_row is not None:
                     existing_event = _row_to_audit_event(existing_audit_row)
-                    if not _is_successful_erase_event(existing_event, purge_id=purge_id):
+                    if not _is_successful_erase_event(
+                        existing_event, purge_id=purge_id
+                    ):
                         raise ValueError(
                             "Existing audit row for purge_id must be the matching "
                             "successful ERASE row"
                         )
-                    if _successful_erase_identity(existing_event) != _successful_erase_identity(
-                        audit_event
-                    ):
+                    if _successful_erase_identity(
+                        existing_event
+                    ) != _successful_erase_identity(audit_event):
                         raise ValueError(
                             "Existing audit row for purge_id must be the matching "
                             "successful ERASE row"
@@ -1925,9 +1959,9 @@ class SQLiteGovernanceMixin:
                         "Completion requires exactly one matching successful ERASE "
                         "audit row for the purge_id"
                     )
-                if _successful_erase_identity(existing_event) != _successful_erase_identity(
-                    audit_event
-                ):
+                if _successful_erase_identity(
+                    existing_event
+                ) != _successful_erase_identity(audit_event):
                     raise ValueError(
                         "Completion requires exactly one matching successful ERASE "
                         "audit row for the purge_id"

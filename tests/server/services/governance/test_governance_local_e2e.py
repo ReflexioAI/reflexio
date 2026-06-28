@@ -10,6 +10,7 @@ import pytest
 from reflexio.models.api_schema.domain.entities import (
     AgentPlaybook,
     AgentPlaybookSourceWindow,
+    AgentSuccessEvaluationResult,
     Interaction,
     Request,
     UserPlaybook,
@@ -56,7 +57,9 @@ def _interaction(
     )
 
 
-def _profile(*, profile_id: str, user_id: str, content: str, request_id: str) -> UserProfile:
+def _profile(
+    *, profile_id: str, user_id: str, content: str, request_id: str
+) -> UserProfile:
     return UserProfile(
         profile_id=profile_id,
         user_id=user_id,
@@ -99,6 +102,18 @@ def _agent_playbook(*, content: str, trigger: str, rationale: str) -> AgentPlayb
     )
 
 
+def _eval_result(
+    *, user_id: str, session_id: str, agent_version: str
+) -> AgentSuccessEvaluationResult:
+    return AgentSuccessEvaluationResult(
+        user_id=user_id,
+        session_id=session_id,
+        agent_version=agent_version,
+        evaluation_name="governance-local-e2e",
+        is_success=True,
+    )
+
+
 @pytest.fixture
 def storage(tmp_path: Path) -> Generator[SQLiteStorage, None, None]:
     with patch.object(SQLiteStorage, "_get_embedding", return_value=[0.0] * 512):
@@ -113,6 +128,13 @@ def test_local_governance_e2e_erases_exports_audits_and_rebuilds_shared_aggregat
 
     storage.add_request(
         _request(request_id=alice_request_id, user_id="alice", session_id="sess-alice")
+    )
+    storage.save_agent_success_evaluation_results(
+        [
+            _eval_result(
+                user_id="alice", session_id="sess-alice", agent_version="agent-v1"
+            )
+        ]
     )
     storage.add_user_interaction(
         "alice",
@@ -152,6 +174,9 @@ def test_local_governance_e2e_erases_exports_audits_and_rebuilds_shared_aggregat
 
     storage.add_request(
         _request(request_id=bob_request_id, user_id="bob", session_id="sess-bob")
+    )
+    storage.save_agent_success_evaluation_results(
+        [_eval_result(user_id="bob", session_id="sess-bob", agent_version="agent-v1")]
     )
     storage.add_user_interaction(
         "bob",
@@ -235,13 +260,15 @@ def test_local_governance_e2e_erases_exports_audits_and_rebuilds_shared_aggregat
     assert [profile["profile_id"] for profile in exported.bundle["profiles"]] == [
         "profile-alice"
     ]
-    assert [interaction["request_id"] for interaction in exported.bundle["interactions"]] == [
-        alice_request_id
-    ]
+    assert [
+        interaction["request_id"] for interaction in exported.bundle["interactions"]
+    ] == [alice_request_id]
     assert [request["request_id"] for request in exported.bundle["requests"]] == [
         alice_request_id
     ]
-    assert {playbook["user_playbook_id"] for playbook in exported.bundle["user_playbooks"]} == {
+    assert {
+        playbook["user_playbook_id"] for playbook in exported.bundle["user_playbooks"]
+    } == {
         alice_playbook.user_playbook_id,
         alice_orphan_playbook.user_playbook_id,
     }
@@ -265,6 +292,7 @@ def test_local_governance_e2e_erases_exports_audits_and_rebuilds_shared_aggregat
     assert erased.deleted_counts["profiles"] == 1
     assert erased.deleted_counts["requests"] == 1
     assert erased.deleted_counts["user_playbooks"] == 2
+    assert erased.deleted_counts["agent_success_evaluation_results"] == 1
     assert set(erased.rebuilt_agent_playbook_ids) == {
         shared_playbook.agent_playbook_id,
         orphan_playbook.agent_playbook_id,
@@ -274,19 +302,47 @@ def test_local_governance_e2e_erases_exports_audits_and_rebuilds_shared_aggregat
     assert storage.get_user_profile("alice") == []
     assert storage.get_requests_by_session("alice", "sess-alice") == []
     assert storage.get_user_playbooks(user_id="alice", limit=10) == []
+    assert (
+        storage.get_agent_success_evaluation_result_ids(
+            "alice",
+            "sess-alice",
+            "governance-local-e2e",
+            "agent-v1",
+        )
+        == []
+    )
 
     assert len(storage.get_user_interaction("bob")) == 1
     assert len(storage.get_user_profile("bob")) == 1
     assert len(storage.get_requests_by_session("bob", "sess-bob")) == 1
+    assert (
+        storage.get_agent_success_evaluation_result_ids(
+            "bob",
+            "sess-bob",
+            "governance-local-e2e",
+            "agent-v1",
+        )
+        != []
+    )
+    delete_targets = {
+        target.target_name: target
+        for target in storage.list_purge_targets(erased.purge_id, phase="delete")
+    }
+    assert delete_targets["agent_success_evaluation_result"].status == "complete"
+    assert delete_targets["agent_success_evaluation_result"].deleted_count == 1
     assert len(storage.get_user_playbooks(user_id="bob", limit=10)) == 1
 
-    rebuilt_playbook = storage.get_agent_playbook_by_id(shared_playbook.agent_playbook_id)
+    rebuilt_playbook = storage.get_agent_playbook_by_id(
+        shared_playbook.agent_playbook_id
+    )
     assert rebuilt_playbook is not None
     assert "aliceuniquesourcetoken" not in rebuilt_playbook.content
     assert rebuilt_playbook.content == "bobuniquesourcetoken"
     assert rebuilt_playbook.trigger == "bobtriggerunique"
     assert rebuilt_playbook.rationale == "bobrationaleunique"
-    assert storage.get_source_windows_for_agent_playbook(shared_playbook.agent_playbook_id) == [
+    assert storage.get_source_windows_for_agent_playbook(
+        shared_playbook.agent_playbook_id
+    ) == [
         AgentPlaybookSourceWindow(
             user_playbook_id=bob_playbook.user_playbook_id,
             source_interaction_ids=[202],
@@ -301,20 +357,26 @@ def test_local_governance_e2e_erases_exports_audits_and_rebuilds_shared_aggregat
         == []
     )
 
-    assert storage.search_agent_playbooks(
-        SearchAgentPlaybookRequest(
-            query="aliceuniquesourcetoken",
-            top_k=10,
-            search_mode=SearchMode.FTS,
+    assert (
+        storage.search_agent_playbooks(
+            SearchAgentPlaybookRequest(
+                query="aliceuniquesourcetoken",
+                top_k=10,
+                search_mode=SearchMode.FTS,
+            )
         )
-    ) == []
-    assert storage.search_agent_playbooks(
-        SearchAgentPlaybookRequest(
-            query="aliceorphansourcetoken",
-            top_k=10,
-            search_mode=SearchMode.FTS,
+        == []
+    )
+    assert (
+        storage.search_agent_playbooks(
+            SearchAgentPlaybookRequest(
+                query="aliceorphansourcetoken",
+                top_k=10,
+                search_mode=SearchMode.FTS,
+            )
         )
-    ) == []
+        == []
+    )
     bob_search_results = storage.search_agent_playbooks(
         SearchAgentPlaybookRequest(
             query="bobuniquesourcetoken",

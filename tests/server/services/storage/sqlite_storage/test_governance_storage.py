@@ -10,6 +10,7 @@ import pytest
 from reflexio.models.api_schema.domain.entities import (
     AgentPlaybook,
     AgentPlaybookSourceWindow,
+    AgentSuccessEvaluationResult,
 )
 from reflexio.models.api_schema.domain.enums import Status
 from reflexio.models.api_schema.domain.governance import (
@@ -35,6 +36,7 @@ CANONICAL_DELETE_TARGET_NAMES = (
     "interaction",
     "profile",
     "user_playbook",
+    "agent_success_evaluation_result",
     "profile_purge",
     "user_playbook_purge",
 )
@@ -134,7 +136,15 @@ def _seed_user_scoped_rows(storage: SQLiteStorage, *, user_id: str) -> None:
                generated_from_request_id, profile_time_to_live, expiration_timestamp,
                embedding, source_interaction_ids, created_at
            ) VALUES (?, ?, ?, ?, ?, 'infinity', ?, '[]', '[]', ?)""",
-        ("profile_seed", user_id, "profile-content", 1, "request_seed", 4102444800, created_at),
+        (
+            "profile_seed",
+            user_id,
+            "profile-content",
+            1,
+            "request_seed",
+            4102444800,
+            created_at,
+        ),
     )
     storage.conn.execute(
         """INSERT INTO user_playbooks (
@@ -244,6 +254,27 @@ def _seed_prepare_counts_user_data(storage: SQLiteStorage, *, user_id: str) -> s
     return {delete_playbook_id, purge_playbook_id}
 
 
+def _seed_eval_result(
+    storage: SQLiteStorage,
+    *,
+    user_id: str,
+    session_id: str,
+    evaluation_name: str,
+    agent_version: str = "agent-v1",
+) -> None:
+    storage.save_agent_success_evaluation_results(
+        [
+            AgentSuccessEvaluationResult(
+                user_id=user_id,
+                session_id=session_id,
+                evaluation_name=evaluation_name,
+                agent_version=agent_version,
+                is_success=True,
+            )
+        ]
+    )
+
+
 def _seed_agent_playbook(
     storage: SQLiteStorage,
     *,
@@ -263,7 +294,9 @@ def _seed_agent_playbook(
     storage.set_source_windows_for_agent_playbook(
         saved.agent_playbook_id,
         source_windows
-        or [AgentPlaybookSourceWindow(user_playbook_id=7, source_interaction_ids=[101])],
+        or [
+            AgentPlaybookSourceWindow(user_playbook_id=7, source_interaction_ids=[101])
+        ],
     )
     return saved.agent_playbook_id
 
@@ -467,8 +500,12 @@ def test_complete_purge_operation_with_audit_accepts_planned_success_detail(stor
 @pytest.mark.parametrize(
     ("event_kwargs", "match"),
     [
-        pytest.param({"subject_ref": OTHER_SUBJECT_REF}, "subject_ref", id="subject-ref"),
-        pytest.param({"request_ref": OTHER_REQUEST_REF}, "request_ref", id="request-ref"),
+        pytest.param(
+            {"subject_ref": OTHER_SUBJECT_REF}, "subject_ref", id="subject-ref"
+        ),
+        pytest.param(
+            {"request_ref": OTHER_REQUEST_REF}, "request_ref", id="request-ref"
+        ),
     ],
 )
 def test_complete_purge_operation_rejects_audit_refs_that_mismatch_persisted_purge(
@@ -489,8 +526,12 @@ def test_complete_purge_operation_rejects_audit_refs_that_mismatch_persisted_pur
 @pytest.mark.parametrize(
     ("retry_kwargs", "match"),
     [
-        pytest.param({"purge_id": "purge_begin_retry_other"}, "purge_id", id="purge-id"),
-        pytest.param({"request_ref": OTHER_REQUEST_REF}, "request_ref", id="request-ref"),
+        pytest.param(
+            {"purge_id": "purge_begin_retry_other"}, "purge_id", id="purge-id"
+        ),
+        pytest.param(
+            {"request_ref": OTHER_REQUEST_REF}, "request_ref", id="request-ref"
+        ),
         pytest.param({"scope_type": "org"}, "scope_type", id="scope-type"),
     ],
 )
@@ -537,7 +578,9 @@ def test_begin_purge_operation_rejects_numeric_idempotency_key(storage):
         storage.get_purge_operation("purge_numeric_idem")
 
 
-def test_begin_purge_operation_accepts_code_shaped_idempotency_key_with_content(storage):
+def test_begin_purge_operation_accepts_code_shaped_idempotency_key_with_content(
+    storage,
+):
     purge = storage.begin_purge_operation(
         purge_id="purge_content_retry",
         idempotency_key="content_purge_retry_1",
@@ -654,8 +697,12 @@ def test_complete_purge_operation_requires_matching_existing_erase_row(
     ("field_name", "seed_kwargs"),
     [
         pytest.param("entity_type", {"entity_type": "session"}, id="entity-type"),
-        pytest.param("subject_ref", {"subject_ref": OTHER_SUBJECT_REF}, id="subject-ref"),
-        pytest.param("request_ref", {"request_ref": OTHER_REQUEST_REF}, id="request-ref"),
+        pytest.param(
+            "subject_ref", {"subject_ref": OTHER_SUBJECT_REF}, id="subject-ref"
+        ),
+        pytest.param(
+            "request_ref", {"request_ref": OTHER_REQUEST_REF}, id="request-ref"
+        ),
         pytest.param("actor_type", {"actor_type": "jwt"}, id="actor-type"),
         pytest.param("actor_ref", {"actor_ref": ACTOR_REF}, id="actor-ref"),
         pytest.param("entity_id", {"entity_id": "17"}, id="entity-id"),
@@ -683,7 +730,9 @@ def test_complete_purge_operation_rejects_mismatched_existing_erase_row(
             seeded_event.request_ref,
             seeded_event.idempotency_key,
             seeded_event.status,
-            json.dumps(seeded_event.detail) if seeded_event.detail is not None else None,
+            json.dumps(seeded_event.detail)
+            if seeded_event.detail is not None
+            else None,
             seeded_event.created_at,
         ),
     )
@@ -735,7 +784,9 @@ def test_prepare_governance_erase_targets_sanitizes_snapshot_detail(storage):
 
     snapshot = next(
         target
-        for target in storage.list_purge_targets("purge_detail", phase="prepare_targets")
+        for target in storage.list_purge_targets(
+            "purge_detail", phase="prepare_targets"
+        )
         if target.target_name == "target_snapshot"
     )
     assert snapshot.detail == {
@@ -756,7 +807,9 @@ def test_prepare_governance_erase_targets_persists_rebuild_source_windows(storag
     agent_playbook_id = _seed_agent_playbook(
         storage,
         source_windows=[
-            AgentPlaybookSourceWindow(user_playbook_id=7, source_interaction_ids=[101, 102]),
+            AgentPlaybookSourceWindow(
+                user_playbook_id=7, source_interaction_ids=[101, 102]
+            ),
             AgentPlaybookSourceWindow(user_playbook_id=9, source_interaction_ids=[201]),
         ],
     )
@@ -792,6 +845,12 @@ def test_prepare_governance_erase_targets_records_full_delete_matrix_counts(stor
     purge_id = "purge_prepare_counts"
     user_id = "user_prepare_counts"
     owned_user_playbook_ids = _seed_prepare_counts_user_data(storage, user_id=user_id)
+    _seed_eval_result(
+        storage,
+        user_id=user_id,
+        session_id="session_seed",
+        evaluation_name="governance_prepare_counts",
+    )
     storage.begin_purge_operation(
         purge_id=purge_id,
         idempotency_key="idem_purge_prepare_counts",
@@ -821,6 +880,8 @@ def test_prepare_governance_erase_targets_records_full_delete_matrix_counts(stor
     assert delete_targets["profile_purge"].detail == {"count": 1}
     assert delete_targets["user_playbook"].target_ref == "all"
     assert delete_targets["user_playbook"].detail == {"count": 1}
+    assert delete_targets["agent_success_evaluation_result"].target_ref == "all"
+    assert delete_targets["agent_success_evaluation_result"].detail == {"count": 1}
     assert delete_targets["user_playbook_purge"].target_ref == "all"
     assert delete_targets["user_playbook_purge"].detail == {"count": 1}
 
@@ -1025,9 +1086,7 @@ def test_apply_governance_agent_playbook_rebuild_rejects_ad_hoc_rebuild_without_
     assert original_row is not None
     original_windows = storage.get_source_windows_for_agent_playbook(agent_playbook_id)
 
-    with pytest.raises(
-        ValueError, match="planned rebuild target does not exist"
-    ):
+    with pytest.raises(ValueError, match="planned rebuild target does not exist"):
         storage.apply_governance_agent_playbook_rebuild(
             purge_id=purge_id,
             agent_playbook_id=agent_playbook_id,
@@ -1051,8 +1110,14 @@ def test_apply_governance_agent_playbook_rebuild_rejects_ad_hoc_rebuild_without_
         ).fetchone()
         == original_row
     )
-    assert storage.get_source_windows_for_agent_playbook(agent_playbook_id) == original_windows
-    assert storage.list_purge_targets(purge_id, phase="rebuild_without_erased_sources") == []
+    assert (
+        storage.get_source_windows_for_agent_playbook(agent_playbook_id)
+        == original_windows
+    )
+    assert (
+        storage.list_purge_targets(purge_id, phase="rebuild_without_erased_sources")
+        == []
+    )
 
 
 def test_apply_governance_agent_playbook_rebuild_rejects_rebuild_before_hide_phase_complete(
@@ -1101,9 +1166,7 @@ def test_apply_governance_agent_playbook_rebuild_rejects_rebuild_before_hide_pha
     assert original_row is not None
     original_windows = storage.get_source_windows_for_agent_playbook(agent_playbook_id)
 
-    with pytest.raises(
-        ValueError, match="hide_for_rebuild target must be complete"
-    ):
+    with pytest.raises(ValueError, match="hide_for_rebuild target must be complete"):
         storage.apply_governance_agent_playbook_rebuild(
             purge_id=purge_id,
             agent_playbook_id=agent_playbook_id,
@@ -1127,7 +1190,10 @@ def test_apply_governance_agent_playbook_rebuild_rejects_rebuild_before_hide_pha
         ).fetchone()
         == original_row
     )
-    assert storage.get_source_windows_for_agent_playbook(agent_playbook_id) == original_windows
+    assert (
+        storage.get_source_windows_for_agent_playbook(agent_playbook_id)
+        == original_windows
+    )
     rebuild_target = next(
         target
         for target in storage.list_purge_targets(
@@ -1305,7 +1371,10 @@ def test_apply_governance_agent_playbook_rebuild_does_not_complete_target_when_s
         ).fetchone()
         == original_row
     )
-    assert storage.get_source_windows_for_agent_playbook(agent_playbook_id) == original_windows
+    assert (
+        storage.get_source_windows_for_agent_playbook(agent_playbook_id)
+        == original_windows
+    )
     assert (
         storage.conn.execute(
             "SELECT search_text FROM agent_playbooks_fts WHERE rowid = ?",
@@ -1387,10 +1456,13 @@ def test_apply_governance_agent_playbook_rebuild_removes_orphaned_aggregate_when
     )
     assert rebuild_target.status == "complete"
     assert storage.get_agent_playbook_by_id(agent_playbook_id) is None
-    assert storage.get_agent_playbook_by_id(
-        agent_playbook_id,
-        include_tombstones=True,
-    ) is None
+    assert (
+        storage.get_agent_playbook_by_id(
+            agent_playbook_id,
+            include_tombstones=True,
+        )
+        is None
+    )
     assert storage.get_source_windows_for_agent_playbook(agent_playbook_id) == []
     assert (
         storage.conn.execute(
@@ -1414,9 +1486,12 @@ def test_apply_governance_agent_playbook_rebuild_removes_orphaned_aggregate_when
             ).fetchone()[0]
             == 0
         )
-    assert storage.search_agent_playbooks(
-        SearchAgentPlaybookRequest(query="original content", top_k=10)
-    ) == []
+    assert (
+        storage.search_agent_playbooks(
+            SearchAgentPlaybookRequest(query="original content", top_k=10)
+        )
+        == []
+    )
 
 
 def test_apply_governance_agent_playbook_rebuild_restores_previous_lifecycle_status(
@@ -1570,21 +1645,30 @@ def test_apply_governance_agent_playbook_rebuild_rejects_second_call_after_compl
         (agent_playbook_id,),
     ).fetchone()
     assert after_row == before_row
-    assert storage.get_source_windows_for_agent_playbook(agent_playbook_id) == before_windows
-    assert next(
-        target
-        for target in storage.list_purge_targets(purge_id, phase="hide_for_rebuild")
-        if target.target_name == "agent_playbook"
-        and target.target_ref == str(agent_playbook_id)
-    ) == before_hide_target
-    assert next(
-        target
-        for target in storage.list_purge_targets(
-            purge_id, phase="rebuild_without_erased_sources"
+    assert (
+        storage.get_source_windows_for_agent_playbook(agent_playbook_id)
+        == before_windows
+    )
+    assert (
+        next(
+            target
+            for target in storage.list_purge_targets(purge_id, phase="hide_for_rebuild")
+            if target.target_name == "agent_playbook"
+            and target.target_ref == str(agent_playbook_id)
         )
-        if target.target_name == "agent_playbook"
-        and target.target_ref == str(agent_playbook_id)
-    ) == before_rebuild_target
+        == before_hide_target
+    )
+    assert (
+        next(
+            target
+            for target in storage.list_purge_targets(
+                purge_id, phase="rebuild_without_erased_sources"
+            )
+            if target.target_name == "agent_playbook"
+            and target.target_ref == str(agent_playbook_id)
+        )
+        == before_rebuild_target
+    )
 
 
 def test_hide_governance_agent_playbooks_for_rebuild_is_idempotent_after_completed_rebuild(
@@ -1670,7 +1754,10 @@ def test_hide_governance_agent_playbooks_for_rebuild_is_idempotent_after_complet
 
     assert hidden_ids == []
     assert after_status == before_status == Status.ARCHIVED.value
-    assert storage.get_source_windows_for_agent_playbook(agent_playbook_id) == before_windows
+    assert (
+        storage.get_source_windows_for_agent_playbook(agent_playbook_id)
+        == before_windows
+    )
     assert after_hide_target == before_hide_target
     assert after_rebuild_target == before_rebuild_target
 
@@ -1756,21 +1843,32 @@ def test_hide_governance_agent_playbooks_for_rebuild_does_not_reopen_complete_ta
         == before_status
         == Status.ARCHIVED.value
     )
-    assert storage.get_source_windows_for_agent_playbook(agent_playbook_id) == before_windows
-    assert next(
-        target
-        for target in original_list_purge_targets(purge_id, phase="hide_for_rebuild")
-        if target.target_name == "agent_playbook"
-        and target.target_ref == str(agent_playbook_id)
-    ) == before_hide_target
-    assert next(
-        target
-        for target in original_list_purge_targets(
-            purge_id, phase="rebuild_without_erased_sources"
+    assert (
+        storage.get_source_windows_for_agent_playbook(agent_playbook_id)
+        == before_windows
+    )
+    assert (
+        next(
+            target
+            for target in original_list_purge_targets(
+                purge_id, phase="hide_for_rebuild"
+            )
+            if target.target_name == "agent_playbook"
+            and target.target_ref == str(agent_playbook_id)
         )
-        if target.target_name == "agent_playbook"
-        and target.target_ref == str(agent_playbook_id)
-    ) == before_rebuild_target
+        == before_hide_target
+    )
+    assert (
+        next(
+            target
+            for target in original_list_purge_targets(
+                purge_id, phase="rebuild_without_erased_sources"
+            )
+            if target.target_name == "agent_playbook"
+            and target.target_ref == str(agent_playbook_id)
+        )
+        == before_rebuild_target
+    )
 
 
 def test_prepare_governance_erase_targets_is_idempotent_after_completed_snapshot_and_rebuild(
@@ -1787,6 +1885,12 @@ def test_prepare_governance_erase_targets_is_idempotent_after_completed_snapshot
         request_ref=REQUEST_REF,
     )
     owned_user_playbook_ids = _seed_prepare_counts_user_data(storage, user_id=user_id)
+    _seed_eval_result(
+        storage,
+        user_id=user_id,
+        session_id="session-delete-hide-complete",
+        evaluation_name="governance_delete_hide_complete",
+    )
     affected_user_playbook_id = min(owned_user_playbook_ids)
     agent_playbook_id = _seed_agent_playbook(
         storage,
@@ -1796,7 +1900,9 @@ def test_prepare_governance_erase_targets_is_idempotent_after_completed_snapshot
                 user_playbook_id=affected_user_playbook_id,
                 source_interaction_ids=[101],
             ),
-            AgentPlaybookSourceWindow(user_playbook_id=999999, source_interaction_ids=[201]),
+            AgentPlaybookSourceWindow(
+                user_playbook_id=999999, source_interaction_ids=[201]
+            ),
         ],
     )
     storage.prepare_governance_erase_targets(
@@ -1919,11 +2025,15 @@ def test_purge_targets_are_scoped_by_org_for_same_purge_id(storage_factory):
     org1_targets = storage_org1.list_purge_targets(purge_id)
     org2_targets = storage_org2.list_purge_targets(purge_id)
 
-    assert {(target.phase, target.target_ref, target.status) for target in org1_targets} == {
+    assert {
+        (target.phase, target.target_ref, target.status) for target in org1_targets
+    } == {
         ("delete", "all", "pending"),
         ("prepare_targets", "all", "complete"),
     }
-    assert {(target.phase, target.target_ref, target.status) for target in org2_targets} == {
+    assert {
+        (target.phase, target.target_ref, target.status) for target in org2_targets
+    } == {
         ("delete", "all", "complete"),
     }
     assert storage_org1.purge_targets_prepared(purge_id) is True
@@ -1947,7 +2057,10 @@ def test_purge_targets_are_scoped_by_org_for_same_purge_id(storage_factory):
 
     assert org1_request_target.status == "pending"
     assert org1_request_target.detail == {"count": 1}
-    assert {(target.target_ref, target.status, target.deleted_count) for target in org2_delete_targets} == {
+    assert {
+        (target.target_ref, target.status, target.deleted_count)
+        for target in org2_delete_targets
+    } == {
         ("all", "running", 0),
     }
 
@@ -2034,7 +2147,8 @@ def test_record_purge_target_validates_governance_fields(storage, kwargs, match)
     if match is None:
         storage.record_purge_target(**params)
         target = next(
-            row for row in storage.list_purge_targets(purge_id, phase="delete")
+            row
+            for row in storage.list_purge_targets(purge_id, phase="delete")
             if row.target_name == "request"
         )
         assert target.detail == kwargs["detail"]
@@ -2052,7 +2166,9 @@ def test_record_purge_target_validates_governance_fields(storage, kwargs, match)
         pytest.param(-1, "deleted_count", id="negative"),
     ],
 )
-def test_record_purge_target_rejects_invalid_deleted_count(storage, deleted_count, match):
+def test_record_purge_target_rejects_invalid_deleted_count(
+    storage, deleted_count, match
+):
     purge_id = _begin_purge(storage, "purge_deleted_count")
 
     with pytest.raises(ValueError, match=match):
@@ -2070,7 +2186,9 @@ def test_record_purge_target_rejects_invalid_deleted_count(storage, deleted_coun
 def test_record_purge_target_accepts_nonnegative_detail_deleted_count(
     storage, detail_deleted_count
 ):
-    purge_id = _begin_purge(storage, f"purge_detail_deleted_count_{detail_deleted_count}")
+    purge_id = _begin_purge(
+        storage, f"purge_detail_deleted_count_{detail_deleted_count}"
+    )
 
     storage.record_purge_target(
         purge_id=purge_id,
@@ -2082,7 +2200,8 @@ def test_record_purge_target_accepts_nonnegative_detail_deleted_count(
     )
 
     target = next(
-        row for row in storage.list_purge_targets(purge_id, phase="delete")
+        row
+        for row in storage.list_purge_targets(purge_id, phase="delete")
         if row.target_name == "request"
     )
     assert target.detail == {"deleted_count": detail_deleted_count}
@@ -2106,10 +2225,20 @@ def test_record_purge_target_rejects_negative_detail_deleted_count(storage):
     ("detail", "match"),
     [
         pytest.param({"email": "bob@example.com"}, "email", id="audit-detail-email"),
-        pytest.param({"request_id": "reqref_123"}, "request_id", id="audit-detail-request-id"),
-        pytest.param({"content": "verbatim prompt"}, "content", id="audit-detail-content"),
-        pytest.param({"note": "arbitrary string"}, "note", id="audit-detail-neutral-note"),
-        pytest.param({"status": "prompt-ready"}, "prompt/content", id="audit-detail-promptish-string"),
+        pytest.param(
+            {"request_id": "reqref_123"}, "request_id", id="audit-detail-request-id"
+        ),
+        pytest.param(
+            {"content": "verbatim prompt"}, "content", id="audit-detail-content"
+        ),
+        pytest.param(
+            {"note": "arbitrary string"}, "note", id="audit-detail-neutral-note"
+        ),
+        pytest.param(
+            {"status": "prompt-ready"},
+            "prompt/content",
+            id="audit-detail-promptish-string",
+        ),
         pytest.param(
             {"owned_user_playbook_ids": [7]},
             "owned_user_playbook_ids",
@@ -2121,19 +2250,35 @@ def test_record_purge_target_rejects_negative_detail_deleted_count(storage):
             id="audit-detail-rejects-source-interaction-ids",
         ),
         pytest.param(
-            {"original_source_windows": [{"user_playbook_id": 7, "source_interaction_ids": [1]}]},
+            {
+                "original_source_windows": [
+                    {"user_playbook_id": 7, "source_interaction_ids": [1]}
+                ]
+            },
             "original_source_windows",
             id="audit-detail-rejects-original-source-windows",
         ),
         pytest.param(
-            {"remaining_source_windows": [{"user_playbook_id": 7, "source_interaction_ids": [1]}]},
+            {
+                "remaining_source_windows": [
+                    {"user_playbook_id": 7, "source_interaction_ids": [1]}
+                ]
+            },
             "remaining_source_windows",
             id="audit-detail-rejects-remaining-source-windows",
         ),
         pytest.param({"count": 2}, None, id="audit-detail-allowed-count"),
-        pytest.param({"deleted_count": 1}, None, id="audit-detail-allowed-deleted-count"),
-        pytest.param({"deleted_counts": {"requests": 1}}, None, id="audit-detail-allowed-deleted-counts"),
-        pytest.param({"agent_playbook_id": 7}, None, id="audit-detail-allowed-agent-playbook-id"),
+        pytest.param(
+            {"deleted_count": 1}, None, id="audit-detail-allowed-deleted-count"
+        ),
+        pytest.param(
+            {"deleted_counts": {"requests": 1}},
+            None,
+            id="audit-detail-allowed-deleted-counts",
+        ),
+        pytest.param(
+            {"agent_playbook_id": 7}, None, id="audit-detail-allowed-agent-playbook-id"
+        ),
         pytest.param(
             {"rebuilt_agent_playbook_ids": [7, 8]},
             None,
@@ -2266,7 +2411,9 @@ def test_fail_purge_operation_persists_code_shaped_error_detail(storage):
     assert failed.error_detail == "target_delete_failed"
 
 
-@pytest.mark.parametrize("error_code", ["content_purge_failed", "prompt_redaction_route"])
+@pytest.mark.parametrize(
+    "error_code", ["content_purge_failed", "prompt_redaction_route"]
+)
 def test_fail_purge_operation_accepts_code_shaped_error_code_with_prompt_or_content(
     storage, error_code
 ):
@@ -2395,7 +2542,9 @@ def test_fail_purge_operation_validates_error_code(storage, error_code, match):
         ),
     ],
 )
-def test_append_audit_event_validates_top_level_governance_fields(storage, event, match):
+def test_append_audit_event_validates_top_level_governance_fields(
+    storage, event, match
+):
     with pytest.raises(ValueError, match=match):
         storage.append_audit_event(event)
 
@@ -2449,7 +2598,9 @@ def test_append_audit_event_requires_minimized_request_ref(storage):
 @pytest.mark.parametrize(
     ("subject_ref", "request_ref", "match"),
     [
-        pytest.param(SUBJECT_REF, "request_12345", "request_ref", id="purge-request-ref"),
+        pytest.param(
+            SUBJECT_REF, "request_12345", "request_ref", id="purge-request-ref"
+        ),
         pytest.param("raw-user-id", REQUEST_REF, "subject_ref", id="purge-subject-ref"),
     ],
 )
@@ -2470,8 +2621,12 @@ def test_begin_purge_operation_validates_top_level_refs(
 @pytest.mark.parametrize(
     ("operation_type", "scope_type", "match"),
     [
-        pytest.param(cast(Any, "erase_user"), "user", "operation_type", id="operation-type"),
-        pytest.param("user_erasure", cast(Any, "workspace"), "scope_type", id="scope-type"),
+        pytest.param(
+            cast(Any, "erase_user"), "user", "operation_type", id="operation-type"
+        ),
+        pytest.param(
+            "user_erasure", cast(Any, "workspace"), "scope_type", id="scope-type"
+        ),
     ],
 )
 def test_begin_purge_operation_rejects_invalid_enum_values(
@@ -2509,7 +2664,9 @@ def test_begin_purge_operation_rejects_unsafe_purge_id(storage, purge_id):
         )
 
 
-@pytest.mark.parametrize("detail_key", ["remaining_source_windows", "original_source_windows"])
+@pytest.mark.parametrize(
+    "detail_key", ["remaining_source_windows", "original_source_windows"]
+)
 def test_append_audit_event_rejects_mixed_case_window_keys(storage, detail_key):
     event = AuditEvent(
         org_id="org1",
@@ -2525,7 +2682,9 @@ def test_append_audit_event_rejects_mixed_case_window_keys(storage, detail_key):
         storage.append_audit_event(event)
 
 
-@pytest.mark.parametrize("detail_key", ["remaining_source_windows", "original_source_windows"])
+@pytest.mark.parametrize(
+    "detail_key", ["remaining_source_windows", "original_source_windows"]
+)
 def test_record_purge_target_rejects_mixed_case_window_keys(storage, detail_key):
     purge_id = _begin_purge(storage, f"purge_{detail_key}")
 
@@ -2540,7 +2699,9 @@ def test_record_purge_target_rejects_mixed_case_window_keys(storage, detail_key)
         )
 
 
-@pytest.mark.parametrize("detail_key", ["remaining_source_windows", "original_source_windows"])
+@pytest.mark.parametrize(
+    "detail_key", ["remaining_source_windows", "original_source_windows"]
+)
 def test_append_audit_event_requires_window_user_playbook_id(storage, detail_key):
     event = AuditEvent(
         org_id="org1",
@@ -2556,7 +2717,9 @@ def test_append_audit_event_requires_window_user_playbook_id(storage, detail_key
         storage.append_audit_event(event)
 
 
-@pytest.mark.parametrize("detail_key", ["remaining_source_windows", "original_source_windows"])
+@pytest.mark.parametrize(
+    "detail_key", ["remaining_source_windows", "original_source_windows"]
+)
 def test_record_purge_target_requires_window_user_playbook_id(storage, detail_key):
     purge_id = _begin_purge(storage, f"purge_missing_upb_{detail_key}")
 
@@ -2706,7 +2869,9 @@ def test_record_purge_target_validates_target_ref_contract(storage, target_ref, 
         )
 
 
-@pytest.mark.parametrize("purge_id", ["alice@example.com", "request_12345", "alice", SUBJECT_REF])
+@pytest.mark.parametrize(
+    "purge_id", ["alice@example.com", "request_12345", "alice", SUBJECT_REF]
+)
 def test_persistence_paths_reject_unsafe_purge_id(storage, purge_id):
     now = 1
     storage.conn.execute(
@@ -2864,10 +3029,7 @@ def test_apply_governance_user_data_delete_requires_complete_prepared_delete_mat
     assert clear_locked_called is False
     assert _user_scoped_row_counts(storage, user_id=user_id) == baseline_counts
     delete_targets = storage.list_purge_targets(purge_id, phase="delete")
-    assert {
-        (target.target_name, target.status)
-        for target in delete_targets
-    } == {
+    assert {(target.target_name, target.status) for target in delete_targets} == {
         ("request", "pending"),
         ("interaction", "complete"),
     }
@@ -2887,6 +3049,12 @@ def test_apply_governance_user_data_delete_requires_hide_targets_for_planned_reb
         request_ref=REQUEST_REF,
     )
     owned_user_playbook_ids = _seed_prepare_counts_user_data(storage, user_id=user_id)
+    _seed_eval_result(
+        storage,
+        user_id=user_id,
+        session_id="session-delete-hide-complete",
+        evaluation_name="governance_delete_hide_complete",
+    )
     affected_user_playbook_id = min(owned_user_playbook_ids)
     _seed_agent_playbook(
         storage,
@@ -2936,6 +3104,12 @@ def test_apply_governance_user_data_delete_succeeds_after_hide_targets_complete(
         request_ref=REQUEST_REF,
     )
     owned_user_playbook_ids = _seed_prepare_counts_user_data(storage, user_id=user_id)
+    _seed_eval_result(
+        storage,
+        user_id=user_id,
+        session_id="session-delete-hide-complete",
+        evaluation_name="governance_delete_hide_complete",
+    )
     affected_user_playbook_id = min(owned_user_playbook_ids)
     _seed_agent_playbook(
         storage,
@@ -2964,6 +3138,7 @@ def test_apply_governance_user_data_delete_succeeds_after_hide_targets_complete(
         "user_playbooks": 1,
         "profiles": 1,
         "requests": 1,
+        "agent_success_evaluation_results": 1,
         "purged_profiles": 1,
         "purged_user_playbooks": 1,
     }
@@ -2973,31 +3148,36 @@ def test_apply_governance_user_data_delete_succeeds_after_hide_targets_complete(
         "profiles": 0,
         "user_playbooks": 0,
     }
-    assert storage.conn.execute(
-        """SELECT COUNT(*)
+    assert (
+        storage.conn.execute(
+            """SELECT COUNT(*)
            FROM profiles
            WHERE merged_into IS NOT NULL AND content = '' AND user_id = ''"""
-    ).fetchone()[0] == 1
-    assert storage.conn.execute(
-        """SELECT COUNT(*)
+        ).fetchone()[0]
+        == 1
+    )
+    assert (
+        storage.conn.execute(
+            """SELECT COUNT(*)
            FROM user_playbooks
            WHERE merged_into IS NOT NULL AND content = '' AND user_id IS NULL"""
-    ).fetchone()[0] == 1
+        ).fetchone()[0]
+        == 1
+    )
     delete_targets = storage.list_purge_targets(purge_id, phase="delete")
     assert {target.target_name: target.deleted_count for target in delete_targets} == {
         "request": 1,
         "interaction": 1,
         "profile": 1,
         "user_playbook": 1,
+        "agent_success_evaluation_result": 1,
         "profile_purge": 1,
         "user_playbook_purge": 1,
     }
     assert all(target.status == "complete" for target in delete_targets)
 
 
-def test_apply_governance_user_data_delete_is_failure_atomic(
-    storage, monkeypatch
-):
+def test_apply_governance_user_data_delete_is_failure_atomic(storage, monkeypatch):
     purge_id = "purge_delete_atomic"
     user_id = "user-delete-atomic"
     storage.begin_purge_operation(
@@ -3120,7 +3300,9 @@ def test_apply_governance_agent_playbook_rebuild_rejects_unsafe_purge_id_before_
         storage.apply_governance_agent_playbook_rebuild(
             purge_id="request_12345",
             agent_playbook_id=agent_playbook_id,
-            remaining_source_windows=[{"user_playbook_id": 99, "source_interaction_ids": [202]}],
+            remaining_source_windows=[
+                {"user_playbook_id": 99, "source_interaction_ids": [202]}
+            ],
             content="updated content",
             trigger="updated trigger",
             rationale="updated rationale",
@@ -3228,7 +3410,7 @@ def test_apply_governance_agent_playbook_rebuild_rejects_mismatched_remaining_so
            FROM agent_playbooks
            WHERE agent_playbook_id = ?""",
         (agent_playbook_id,),
-        ).fetchone()
+    ).fetchone()
     assert rebuilt_row == original_row
 
 
@@ -3259,8 +3441,7 @@ def test_get_agent_playbooks_default_excludes_archive_in_progress(storage):
     )
 
     default_ids = {
-        playbook.agent_playbook_id
-        for playbook in storage.get_agent_playbooks(limit=10)
+        playbook.agent_playbook_id for playbook in storage.get_agent_playbooks(limit=10)
     }
     hidden_only_ids = {
         playbook.agent_playbook_id
@@ -3311,9 +3492,7 @@ def test_search_agent_playbooks_default_excludes_archive_in_progress_and_explici
         SearchAgentPlaybookRequest(query="visible-search-token", top_k=10)
     )
 
-    assert hidden_id not in {
-        playbook.agent_playbook_id for playbook in default_results
-    }
+    assert hidden_id not in {playbook.agent_playbook_id for playbook in default_results}
     assert [playbook.agent_playbook_id for playbook in explicit_hidden_results] == [
         hidden_id
     ]
@@ -3323,7 +3502,9 @@ def test_search_agent_playbooks_default_excludes_archive_in_progress_and_explici
 @pytest.mark.parametrize(
     ("target_name", "phase", "status", "match"),
     [
-        pytest.param(cast(Any, "session"), "delete", "running", "target_name", id="target-name"),
+        pytest.param(
+            cast(Any, "session"), "delete", "running", "target_name", id="target-name"
+        ),
         pytest.param("request", cast(Any, "archive"), "running", "phase", id="phase"),
         pytest.param("request", "delete", cast(Any, "done"), "status", id="status"),
     ],
@@ -3377,7 +3558,9 @@ def test_append_audit_event_rejects_prefix_only_refs(storage, field_name, value)
         "actor.alpha",
     ],
 )
-def test_governance_persistence_rejects_unsafe_idempotency_keys(storage, idempotency_key):
+def test_governance_persistence_rejects_unsafe_idempotency_keys(
+    storage, idempotency_key
+):
     event = AuditEvent(
         org_id="org1",
         operation="EXPORT",
@@ -3854,7 +4037,14 @@ def test_init_governance_tables_skips_ambiguous_legacy_purge_target_rows(tmp_pat
     conn.close()
 
     assert upgraded_rows == [
-        ("org1", "purge_unique", "target_snapshot", "all", "prepare_targets", "complete")
+        (
+            "org1",
+            "purge_unique",
+            "target_snapshot",
+            "all",
+            "prepare_targets",
+            "complete",
+        )
     ]
 
 

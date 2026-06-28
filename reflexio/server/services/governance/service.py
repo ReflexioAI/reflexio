@@ -19,6 +19,7 @@ _DELETE_TARGET_NAME_TO_RESULT_KEY = {
     "user_playbook": "user_playbooks",
     "profile": "profiles",
     "request": "requests",
+    "agent_success_evaluation_result": "agent_success_evaluation_results",
     "profile_purge": "purged_profiles",
     "user_playbook_purge": "purged_user_playbooks",
 }
@@ -38,7 +39,8 @@ class GovernanceService:
         requests, sessions = self._load_user_requests_and_sessions(user_id)
         bundle: dict[str, Any] = {
             "profiles": [
-                profile.model_dump() for profile in self.storage.get_user_profile(user_id)
+                profile.model_dump()
+                for profile in self.storage.get_user_profile(user_id)
             ],
             "interactions": [
                 interaction.model_dump()
@@ -84,7 +86,9 @@ class GovernanceService:
             request_ref=reqref,
         )
         if purge.status == "complete":
-            return UserEraseResult(subject_ref=subref, purge_id=purge_id, status="complete")
+            return UserEraseResult(
+                subject_ref=subref, purge_id=purge_id, status="complete"
+            )
 
         if not self.storage.purge_targets_prepared(purge_id):
             owned_user_playbook_ids = {
@@ -131,7 +135,9 @@ class GovernanceService:
             rebuilt_agent_playbook_ids=rebuilt_agent_playbook_ids,
         )
 
-    def _load_user_requests_and_sessions(self, user_id: str) -> tuple[list[Any], list[dict[str, Any]]]:
+    def _load_user_requests_and_sessions(
+        self, user_id: str
+    ) -> tuple[list[Any], list[dict[str, Any]]]:
         requests: list[Any] = []
         sessions_by_id: dict[str, list[str]] = {}
         offset = 0
