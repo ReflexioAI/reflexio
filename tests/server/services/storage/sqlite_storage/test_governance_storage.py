@@ -211,6 +211,42 @@ def test_complete_purge_operation_with_audit_is_atomic_success_path(storage):
 
 
 @pytest.mark.parametrize(
+    ("retry_kwargs", "match"),
+    [
+        pytest.param({"purge_id": "purge_begin_retry_other"}, "purge_id", id="purge-id"),
+        pytest.param({"request_ref": OTHER_REQUEST_REF}, "request_ref", id="request-ref"),
+        pytest.param({"scope_type": "org"}, "scope_type", id="scope-type"),
+    ],
+)
+def test_begin_purge_operation_rejects_mismatched_idempotent_retry(
+    storage, retry_kwargs, match
+):
+    storage.begin_purge_operation(
+        purge_id="purge_begin_retry",
+        idempotency_key="idem_begin_retry",
+        operation_type="user_erasure",
+        scope_type="user",
+        subject_ref=SUBJECT_REF,
+        request_ref=REQUEST_REF,
+    )
+
+    with pytest.raises(ValueError, match=match):
+        storage.begin_purge_operation(
+            purge_id=retry_kwargs.get("purge_id", "purge_begin_retry"),
+            idempotency_key="idem_begin_retry",
+            operation_type=retry_kwargs.get("operation_type", "user_erasure"),
+            scope_type=retry_kwargs.get("scope_type", "user"),
+            subject_ref=retry_kwargs.get("subject_ref", SUBJECT_REF),
+            request_ref=retry_kwargs.get("request_ref", REQUEST_REF),
+        )
+
+    purge = storage.get_purge_operation("purge_begin_retry")
+    assert purge.request_ref == REQUEST_REF
+    assert purge.scope_type == "user"
+    assert purge.purge_id == "purge_begin_retry"
+
+
+@pytest.mark.parametrize(
     ("event", "match"),
     [
         pytest.param(

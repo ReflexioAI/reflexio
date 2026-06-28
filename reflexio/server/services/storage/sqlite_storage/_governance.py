@@ -815,6 +815,20 @@ class SQLiteGovernanceMixin:
                 (self.org_id, validated_idempotency_key),
             ).fetchone()
             if existing is not None:
+                existing_operation = _row_to_purge_operation(existing)
+                expected_identity = {
+                    "purge_id": validated_purge_id,
+                    "operation_type": operation_type,
+                    "scope_type": scope_type,
+                    "subject_ref": subject_ref,
+                    "request_ref": request_ref,
+                }
+                for field_name, expected_value in expected_identity.items():
+                    if getattr(existing_operation, field_name) != expected_value:
+                        raise ValueError(
+                            "Existing purge operation for idempotency_key has "
+                            f"mismatched {field_name}"
+                        )
                 return _row_to_purge_operation(existing)
             self.conn.execute(
                 """INSERT INTO purge_operations (
