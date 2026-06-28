@@ -1651,6 +1651,105 @@ def test_hide_governance_agent_playbooks_for_rebuild_does_not_reopen_complete_ta
     ) == before_rebuild_target
 
 
+def test_prepare_governance_erase_targets_is_idempotent_after_completed_snapshot_and_rebuild(
+    storage,
+):
+    purge_id = "purge_prepare_idempotent_after_rebuild"
+    user_id = "user-prepare-idempotent-after-rebuild"
+    storage.begin_purge_operation(
+        purge_id=purge_id,
+        idempotency_key="idem_purge_prepare_idempotent_after_rebuild",
+        operation_type="user_erasure",
+        scope_type="user",
+        subject_ref=SUBJECT_REF,
+        request_ref=REQUEST_REF,
+    )
+    owned_user_playbook_ids = _seed_prepare_counts_user_data(storage, user_id=user_id)
+    affected_user_playbook_id = min(owned_user_playbook_ids)
+    agent_playbook_id = _seed_agent_playbook(
+        storage,
+        status=Status.ARCHIVED,
+        source_windows=[
+            AgentPlaybookSourceWindow(
+                user_playbook_id=affected_user_playbook_id,
+                source_interaction_ids=[101],
+            ),
+            AgentPlaybookSourceWindow(user_playbook_id=999999, source_interaction_ids=[201]),
+        ],
+    )
+    storage.prepare_governance_erase_targets(
+        purge_id=purge_id,
+        user_id=user_id,
+        owned_user_playbook_ids=owned_user_playbook_ids,
+    )
+    storage.hide_governance_agent_playbooks_for_rebuild(purge_id)
+    storage.apply_governance_agent_playbook_rebuild(
+        purge_id=purge_id,
+        agent_playbook_id=agent_playbook_id,
+        remaining_source_windows=[
+            {"user_playbook_id": 999999, "source_interaction_ids": [201]},
+        ],
+        content="rebuilt content",
+        trigger="rebuilt trigger",
+        rationale="rebuilt rationale",
+        blocking_issue=None,
+        expanded_terms="rebuilt terms",
+        tags=["rebuilt"],
+    )
+
+    before_targets = [
+        (
+            target.target_name,
+            target.target_ref,
+            target.phase,
+            target.status,
+            target.detail,
+            target.deleted_count,
+        )
+        for target in storage.list_purge_targets(purge_id)
+        if target.target_name
+        in {*CANONICAL_DELETE_TARGET_NAMES, "agent_playbook", "target_snapshot"}
+    ]
+    before_playbook_row = storage.conn.execute(
+        """SELECT status, content, trigger, rationale, tags
+           FROM agent_playbooks
+           WHERE agent_playbook_id = ?""",
+        (agent_playbook_id,),
+    ).fetchone()
+    before_windows = storage.get_source_windows_for_agent_playbook(agent_playbook_id)
+
+    storage.prepare_governance_erase_targets(
+        purge_id=purge_id,
+        user_id=user_id,
+        owned_user_playbook_ids=owned_user_playbook_ids,
+    )
+
+    after_targets = [
+        (
+            target.target_name,
+            target.target_ref,
+            target.phase,
+            target.status,
+            target.detail,
+            target.deleted_count,
+        )
+        for target in storage.list_purge_targets(purge_id)
+        if target.target_name
+        in {*CANONICAL_DELETE_TARGET_NAMES, "agent_playbook", "target_snapshot"}
+    ]
+    after_playbook_row = storage.conn.execute(
+        """SELECT status, content, trigger, rationale, tags
+           FROM agent_playbooks
+           WHERE agent_playbook_id = ?""",
+        (agent_playbook_id,),
+    ).fetchone()
+    after_windows = storage.get_source_windows_for_agent_playbook(agent_playbook_id)
+
+    assert after_targets == before_targets
+    assert after_playbook_row == before_playbook_row
+    assert after_windows == before_windows
+
+
 def test_purge_targets_are_scoped_by_org_for_same_purge_id(storage_factory):
     storage_org1 = storage_factory("org1")
     storage_org2 = storage_factory("org2")

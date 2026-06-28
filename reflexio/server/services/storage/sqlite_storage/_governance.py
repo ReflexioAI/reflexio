@@ -1444,6 +1444,8 @@ class SQLiteGovernanceMixin:
     ) -> None:
         purge_id = _validate_governance_purge_id("purge_id", purge_id)
         with self._lock:
+            if self.purge_targets_prepared(purge_id):
+                return
             try:
                 self.conn.execute("BEGIN")
                 targets = self._planned_governance_delete_counts(
