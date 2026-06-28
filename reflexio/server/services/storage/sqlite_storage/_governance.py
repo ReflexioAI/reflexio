@@ -844,6 +844,7 @@ class _SQLiteGovernanceDeps(Protocol):
     conn: sqlite3.Connection
     _lock: threading.RLock
     org_id: str
+    _has_sqlite_vec: bool
 
     def _fetchall(self, sql: str, params: list[Any] | tuple[Any, ...]) -> list[sqlite3.Row]:
         ...
@@ -851,12 +852,19 @@ class _SQLiteGovernanceDeps(Protocol):
     def _fetchone(self, sql: str, params: list[Any] | tuple[Any, ...]) -> sqlite3.Row | None:
         ...
 
-    def clear_user_data(self, user_id: str) -> dict[str, int]:
-        ...
-
     def _partition_purge_vs_delete(
         self, entity_type: Literal["profile", "user_playbook"], ids: list[str]
     ) -> tuple[list[str], list[str]]:
+        ...
+
+    def _delete_in_chunks(
+        self, table_name: str, column_name: str, values: list[Any]
+    ) -> None:
+        ...
+
+    def _delete_source_windows_for_user_playbook_ids(
+        self, user_playbook_ids: list[int]
+    ) -> None:
         ...
 
     def set_source_windows_for_agent_playbook(
@@ -925,6 +933,38 @@ class SQLiteGovernanceMixin:
             raise ValueError(
                 "Cannot delete user data without complete delete target matrix: "
                 + ", ".join(missing_delete_targets)
+            )
+
+    def _validate_hide_for_rebuild_targets_locked(self, purge_id: str) -> None:
+        rebuild_rows = self.conn.execute(
+            """SELECT DISTINCT target_ref
+               FROM purge_operation_targets
+               WHERE org_id = ? AND purge_id = ? AND target_name = 'agent_playbook'
+                 AND phase = 'rebuild_without_erased_sources' AND target_ref != ''
+               ORDER BY target_ref ASC""",
+            (self.org_id, purge_id),
+        ).fetchall()
+        if not rebuild_rows:
+            return
+        hidden_refs = {
+            str(row["target_ref"])
+            for row in self.conn.execute(
+                """SELECT target_ref
+                   FROM purge_operation_targets
+                   WHERE org_id = ? AND purge_id = ? AND target_name = 'agent_playbook'
+                     AND phase = 'hide_for_rebuild' AND status = 'complete'""",
+                (self.org_id, purge_id),
+            ).fetchall()
+        }
+        missing_hidden_refs = [
+            str(row["target_ref"])
+            for row in rebuild_rows
+            if str(row["target_ref"]) not in hidden_refs
+        ]
+        if missing_hidden_refs:
+            raise ValueError(
+                "Cannot delete user data before hide_for_rebuild completes for "
+                f"planned agent_playbooks: {', '.join(missing_hidden_refs)}"
             )
 
     def _planned_governance_delete_counts(
@@ -1107,6 +1147,148 @@ class SQLiteGovernanceMixin:
         sql += " ORDER BY created_at ASC, event_id ASC"
         rows = deps._fetchall(sql, params)
         return [_row_to_audit_event(row) for row in rows]
+
+    def _purge_governance_entity_content_locked(
+        self,
+        *,
+        entity_type: Literal["profile", "user_playbook"],
+        entity_id: str,
+        rowid: int,
+    ) -> bool:
+        from ._lineage import _PURGE_SQL, _append_event_stmt
+
+        sql = _PURGE_SQL[entity_type]
+        cur = self.conn.execute(sql, (entity_id,))
+        if cur.rowcount <= 0:
+            return False
+        _append_event_stmt(
+            self.conn,
+            org_id=self.org_id,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            op="purge",
+            prov="wasPurged",
+            source_ids=[],
+            actor="erasure",
+            request_id=f"purge_{entity_id}",
+            reason="content_purge",
+        )
+        if entity_type == "profile":
+            self.conn.execute(
+                "DELETE FROM profiles_fts WHERE profile_id = ?",
+                (entity_id,),
+            )
+            if self._deps()._has_sqlite_vec:
+                self.conn.execute(
+                    "DELETE FROM profiles_vec WHERE rowid = ?",
+                    (rowid,),
+                )
+        else:
+            self.conn.execute(
+                "DELETE FROM user_playbooks_fts WHERE rowid = ?",
+                (rowid,),
+            )
+            if self._deps()._has_sqlite_vec:
+                self.conn.execute(
+                    "DELETE FROM user_playbooks_vec WHERE rowid = ?",
+                    (rowid,),
+                )
+        return True
+
+    def _clear_user_data_for_governance_locked(self, user_id: str) -> dict[str, int]:
+        deps = self._deps()
+        interaction_ids = [
+            int(row["interaction_id"])
+            for row in self.conn.execute(
+                "SELECT interaction_id FROM interactions WHERE user_id = ?",
+                (user_id,),
+            ).fetchall()
+        ]
+        raw_upb_ids = [
+            int(row["user_playbook_id"])
+            for row in self.conn.execute(
+                "SELECT user_playbook_id FROM user_playbooks WHERE user_id = ?",
+                (user_id,),
+            ).fetchall()
+        ]
+        profile_rows = self.conn.execute(
+            "SELECT rowid, profile_id FROM profiles WHERE user_id = ?",
+            (user_id,),
+        ).fetchall()
+        profile_rowid_by_id = {
+            str(row["profile_id"]): int(row["rowid"]) for row in profile_rows
+        }
+        all_profile_ids = list(profile_rowid_by_id)
+
+        purge_profile_ids, delete_profile_ids = deps._partition_purge_vs_delete(
+            "profile",
+            all_profile_ids,
+        )
+        purge_upb_str_ids, delete_upb_str_ids = deps._partition_purge_vs_delete(
+            "user_playbook",
+            [str(user_playbook_id) for user_playbook_id in raw_upb_ids],
+        )
+        purge_upb_ids = [int(entity_id) for entity_id in purge_upb_str_ids]
+        delete_upb_ids = [int(entity_id) for entity_id in delete_upb_str_ids]
+        delete_profile_rowids = [
+            profile_rowid_by_id[profile_id]
+            for profile_id in delete_profile_ids
+            if profile_id in profile_rowid_by_id
+        ]
+
+        deps._delete_in_chunks("interactions_fts", "rowid", interaction_ids)
+        deps._delete_in_chunks("user_playbooks_fts", "rowid", delete_upb_ids)
+        deps._delete_in_chunks("profiles_fts", "profile_id", delete_profile_ids)
+        if deps._has_sqlite_vec:
+            deps._delete_in_chunks("interactions_vec", "rowid", interaction_ids)
+            deps._delete_in_chunks("user_playbooks_vec", "rowid", delete_upb_ids)
+            deps._delete_in_chunks("profiles_vec", "rowid", delete_profile_rowids)
+
+        interactions_cur = self.conn.execute(
+            "DELETE FROM interactions WHERE user_id = ?",
+            (user_id,),
+        )
+        requests_cur = self.conn.execute(
+            "DELETE FROM requests WHERE user_id = ?",
+            (user_id,),
+        )
+        if delete_upb_ids:
+            deps._delete_source_windows_for_user_playbook_ids(delete_upb_ids)
+            deps._delete_in_chunks("user_playbooks", "user_playbook_id", delete_upb_ids)
+        if delete_profile_ids:
+            deps._delete_in_chunks("profiles", "profile_id", delete_profile_ids)
+
+        purged_profiles = 0
+        for profile_id in purge_profile_ids:
+            rowid = profile_rowid_by_id.get(profile_id)
+            if rowid is None:
+                continue
+            purged_profiles += int(
+                self._purge_governance_entity_content_locked(
+                    entity_type="profile",
+                    entity_id=profile_id,
+                    rowid=rowid,
+                )
+            )
+
+        purged_user_playbooks = 0
+        for user_playbook_id in purge_upb_ids:
+            purged_user_playbooks += int(
+                self._purge_governance_entity_content_locked(
+                    entity_type="user_playbook",
+                    entity_id=str(user_playbook_id),
+                    rowid=user_playbook_id,
+                )
+            )
+
+        return {
+            "interactions": interactions_cur.rowcount,
+            "user_playbooks": len(delete_upb_ids),
+            "profiles": len(delete_profile_ids),
+            "requests": requests_cur.rowcount,
+            "purged_profiles": purged_profiles,
+            "purged_user_playbooks": purged_user_playbooks,
+        }
 
     def begin_purge_operation(
         self,
@@ -1397,20 +1579,26 @@ class SQLiteGovernanceMixin:
             "purged_user_playbooks": "user_playbook_purge",
         }
         with self._lock:
-            self._validate_prepared_delete_target_matrix_locked(purge_id)
-            counts = self._deps().clear_user_data(user_id)
-            for key, value in counts.items():
-                self._record_purge_target_locked(
-                    purge_id=purge_id,
-                    target_name=name_map.get(key, key),
-                    target_ref="all",
-                    phase="delete",
-                    status="complete",
-                    detail={"count": int(value)},
-                    deleted_count=int(value),
-                    error_detail=None,
-                )
-            self.conn.commit()
+            try:
+                self.conn.execute("BEGIN")
+                self._validate_prepared_delete_target_matrix_locked(purge_id)
+                self._validate_hide_for_rebuild_targets_locked(purge_id)
+                counts = self._clear_user_data_for_governance_locked(user_id)
+                for key, value in counts.items():
+                    self._record_purge_target_locked(
+                        purge_id=purge_id,
+                        target_name=name_map.get(key, key),
+                        target_ref="all",
+                        phase="delete",
+                        status="complete",
+                        detail={"count": int(value)},
+                        deleted_count=int(value),
+                        error_detail=None,
+                    )
+                self.conn.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
         return counts
 
     def apply_governance_agent_playbook_rebuild(

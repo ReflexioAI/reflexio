@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from typing import Any, cast
+from typing import Any, Literal, cast
 from unittest.mock import patch
 
 import pytest
@@ -17,6 +17,7 @@ from reflexio.models.api_schema.domain.governance import (
     AuditOperation,
     AuditStatus,
 )
+from reflexio.models.api_schema.retriever_schema import SearchAgentPlaybookRequest
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 from reflexio.server.services.storage.sqlite_storage._governance import (
     init_governance_tables,
@@ -143,6 +144,27 @@ def _seed_user_scoped_rows(storage: SQLiteStorage, *, user_id: str) -> None:
         (user_id, created_at, "request_seed", "playbook-content"),
     )
     storage.conn.commit()
+
+
+def _user_scoped_row_counts(storage: SQLiteStorage, *, user_id: str) -> dict[str, int]:
+    return {
+        "requests": storage.conn.execute(
+            "SELECT COUNT(*) FROM requests WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()[0],
+        "interactions": storage.conn.execute(
+            "SELECT COUNT(*) FROM interactions WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()[0],
+        "profiles": storage.conn.execute(
+            "SELECT COUNT(*) FROM profiles WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()[0],
+        "user_playbooks": storage.conn.execute(
+            "SELECT COUNT(*) FROM user_playbooks WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()[0],
+    }
 
 
 def _seed_prepare_counts_user_data(storage: SQLiteStorage, *, user_id: str) -> set[int]:
@@ -2033,24 +2055,7 @@ def test_apply_governance_user_data_delete_rejects_unsafe_purge_id_before_side_e
             user_id=user_id,
         )
 
-    remaining = {
-        "requests": storage.conn.execute(
-            "SELECT COUNT(*) FROM requests WHERE user_id = ?",
-            (user_id,),
-        ).fetchone()[0],
-        "interactions": storage.conn.execute(
-            "SELECT COUNT(*) FROM interactions WHERE user_id = ?",
-            (user_id,),
-        ).fetchone()[0],
-        "profiles": storage.conn.execute(
-            "SELECT COUNT(*) FROM profiles WHERE user_id = ?",
-            (user_id,),
-        ).fetchone()[0],
-        "user_playbooks": storage.conn.execute(
-            "SELECT COUNT(*) FROM user_playbooks WHERE user_id = ?",
-            (user_id,),
-        ).fetchone()[0],
-    }
+    remaining = _user_scoped_row_counts(storage, user_id=user_id)
     assert remaining == {
         "requests": 1,
         "interactions": 1,
@@ -2073,14 +2078,16 @@ def test_apply_governance_user_data_delete_rejects_unexpected_target_name_from_i
             detail={"count": 0},
         )
 
-    def _stub_clear_user_data(self: SQLiteStorage, user_id: str) -> dict[str, int]:
+    def _stub_clear_user_data_for_governance_locked(
+        self: SQLiteStorage, user_id: str
+    ) -> dict[str, int]:
         del self, user_id
         return {"requests": 1, "surprise_target": 2}
 
     monkeypatch.setattr(
         SQLiteStorage,
-        "clear_user_data",
-        _stub_clear_user_data,
+        "_clear_user_data_for_governance_locked",
+        _stub_clear_user_data_for_governance_locked,
     )
 
     with pytest.raises(ValueError, match="target_name"):
@@ -2139,6 +2146,236 @@ def test_apply_governance_user_data_delete_requires_complete_prepared_delete_mat
     } == {
         ("request", "pending"),
         ("interaction", "complete"),
+    }
+
+
+def test_apply_governance_user_data_delete_requires_hide_targets_for_planned_rebuilds(
+    storage,
+):
+    purge_id = "purge_delete_requires_hide"
+    user_id = "user-delete-hide-required"
+    storage.begin_purge_operation(
+        purge_id=purge_id,
+        idempotency_key="idem_purge_delete_requires_hide",
+        operation_type="user_erasure",
+        scope_type="user",
+        subject_ref=SUBJECT_REF,
+        request_ref=REQUEST_REF,
+    )
+    owned_user_playbook_ids = _seed_prepare_counts_user_data(storage, user_id=user_id)
+    affected_user_playbook_id = min(owned_user_playbook_ids)
+    _seed_agent_playbook(
+        storage,
+        status=None,
+        source_windows=[
+            AgentPlaybookSourceWindow(
+                user_playbook_id=affected_user_playbook_id,
+                source_interaction_ids=[101],
+            )
+        ],
+    )
+    storage.prepare_governance_erase_targets(
+        purge_id=purge_id,
+        user_id=user_id,
+        owned_user_playbook_ids=owned_user_playbook_ids,
+    )
+
+    with pytest.raises(ValueError, match="hide_for_rebuild"):
+        storage.apply_governance_user_data_delete(
+            purge_id=purge_id,
+            user_id=user_id,
+        )
+
+    assert _user_scoped_row_counts(storage, user_id=user_id) == {
+        "requests": 1,
+        "interactions": 1,
+        "profiles": 2,
+        "user_playbooks": 2,
+    }
+    delete_targets = storage.list_purge_targets(purge_id, phase="delete")
+    assert {(target.target_name, target.status) for target in delete_targets} == {
+        (target_name, "pending") for target_name in CANONICAL_DELETE_TARGET_NAMES
+    }
+
+
+def test_apply_governance_user_data_delete_succeeds_after_hide_targets_complete(
+    storage,
+):
+    purge_id = "purge_delete_after_hide"
+    user_id = "user-delete-hide-complete"
+    storage.begin_purge_operation(
+        purge_id=purge_id,
+        idempotency_key="idem_purge_delete_after_hide",
+        operation_type="user_erasure",
+        scope_type="user",
+        subject_ref=SUBJECT_REF,
+        request_ref=REQUEST_REF,
+    )
+    owned_user_playbook_ids = _seed_prepare_counts_user_data(storage, user_id=user_id)
+    affected_user_playbook_id = min(owned_user_playbook_ids)
+    _seed_agent_playbook(
+        storage,
+        status=None,
+        source_windows=[
+            AgentPlaybookSourceWindow(
+                user_playbook_id=affected_user_playbook_id,
+                source_interaction_ids=[101],
+            )
+        ],
+    )
+    storage.prepare_governance_erase_targets(
+        purge_id=purge_id,
+        user_id=user_id,
+        owned_user_playbook_ids=owned_user_playbook_ids,
+    )
+    storage.hide_governance_agent_playbooks_for_rebuild(purge_id)
+
+    counts = storage.apply_governance_user_data_delete(
+        purge_id=purge_id,
+        user_id=user_id,
+    )
+
+    assert counts == {
+        "interactions": 1,
+        "user_playbooks": 1,
+        "profiles": 1,
+        "requests": 1,
+        "purged_profiles": 1,
+        "purged_user_playbooks": 1,
+    }
+    assert _user_scoped_row_counts(storage, user_id=user_id) == {
+        "requests": 0,
+        "interactions": 0,
+        "profiles": 0,
+        "user_playbooks": 0,
+    }
+    assert storage.conn.execute(
+        """SELECT COUNT(*)
+           FROM profiles
+           WHERE merged_into IS NOT NULL AND content = '' AND user_id = ''"""
+    ).fetchone()[0] == 1
+    assert storage.conn.execute(
+        """SELECT COUNT(*)
+           FROM user_playbooks
+           WHERE merged_into IS NOT NULL AND content = '' AND user_id IS NULL"""
+    ).fetchone()[0] == 1
+    delete_targets = storage.list_purge_targets(purge_id, phase="delete")
+    assert {target.target_name: target.deleted_count for target in delete_targets} == {
+        "request": 1,
+        "interaction": 1,
+        "profile": 1,
+        "user_playbook": 1,
+        "profile_purge": 1,
+        "user_playbook_purge": 1,
+    }
+    assert all(target.status == "complete" for target in delete_targets)
+
+
+def test_apply_governance_user_data_delete_is_failure_atomic(
+    storage, monkeypatch
+):
+    purge_id = "purge_delete_atomic"
+    user_id = "user-delete-atomic"
+    storage.begin_purge_operation(
+        purge_id=purge_id,
+        idempotency_key="idem_purge_delete_atomic",
+        operation_type="user_erasure",
+        scope_type="user",
+        subject_ref=SUBJECT_REF,
+        request_ref=REQUEST_REF,
+    )
+    owned_user_playbook_ids = _seed_prepare_counts_user_data(storage, user_id=user_id)
+    affected_user_playbook_id = min(owned_user_playbook_ids)
+    _seed_agent_playbook(
+        storage,
+        status=None,
+        source_windows=[
+            AgentPlaybookSourceWindow(
+                user_playbook_id=affected_user_playbook_id,
+                source_interaction_ids=[101],
+            )
+        ],
+    )
+    storage.prepare_governance_erase_targets(
+        purge_id=purge_id,
+        user_id=user_id,
+        owned_user_playbook_ids=owned_user_playbook_ids,
+    )
+    storage.hide_governance_agent_playbooks_for_rebuild(purge_id)
+
+    before_counts = _user_scoped_row_counts(storage, user_id=user_id)
+    before_profile_rows = storage.conn.execute(
+        """SELECT profile_id, content, user_id
+           FROM profiles
+           WHERE profile_id IN ('profile_seed', 'profile_purge_seed')
+           ORDER BY profile_id ASC"""
+    ).fetchall()
+    before_playbook_rows = storage.conn.execute(
+        """SELECT user_playbook_id, content, user_id
+           FROM user_playbooks
+           WHERE user_id = ?
+           ORDER BY user_playbook_id ASC""",
+        (user_id,),
+    ).fetchall()
+    original_record_purge_target_locked = SQLiteStorage._record_purge_target_locked
+
+    def _raising_record_purge_target_locked(
+        self: SQLiteStorage,
+        *,
+        purge_id: str,
+        target_name: str,
+        target_ref: str,
+        phase: str,
+        status: Literal["pending", "running", "failed", "complete"],
+        detail: dict[str, object] | None,
+        deleted_count: int,
+        error_detail: str | None,
+    ) -> None:
+        if phase == "delete" and status == "complete" and target_name == "request":
+            raise RuntimeError("inject target completion failure")
+        original_record_purge_target_locked(
+            self,
+            purge_id=purge_id,
+            target_name=target_name,
+            target_ref=target_ref,
+            phase=phase,
+            status=status,
+            detail=detail,
+            deleted_count=deleted_count,
+            error_detail=error_detail,
+        )
+
+    monkeypatch.setattr(
+        SQLiteStorage,
+        "_record_purge_target_locked",
+        _raising_record_purge_target_locked,
+    )
+
+    with pytest.raises(RuntimeError, match="inject target completion failure"):
+        storage.apply_governance_user_data_delete(
+            purge_id=purge_id,
+            user_id=user_id,
+        )
+
+    assert _user_scoped_row_counts(storage, user_id=user_id) == before_counts
+    after_profile_rows = storage.conn.execute(
+        """SELECT profile_id, content, user_id
+           FROM profiles
+           WHERE profile_id IN ('profile_seed', 'profile_purge_seed')
+           ORDER BY profile_id ASC"""
+    ).fetchall()
+    after_playbook_rows = storage.conn.execute(
+        """SELECT user_playbook_id, content, user_id
+           FROM user_playbooks
+           WHERE user_id = ?
+           ORDER BY user_playbook_id ASC""",
+        (user_id,),
+    ).fetchall()
+    assert after_profile_rows == before_profile_rows
+    assert after_playbook_rows == before_playbook_rows
+    delete_targets = storage.list_purge_targets(purge_id, phase="delete")
+    assert {(target.target_name, target.status) for target in delete_targets} == {
+        (target_name, "pending") for target_name in CANONICAL_DELETE_TARGET_NAMES
     }
 
 
@@ -2245,7 +2482,6 @@ def test_apply_governance_agent_playbook_rebuild_rejects_mismatched_remaining_so
         (agent_playbook_id,),
     ).fetchone()
     assert original_row is not None
-    original_windows = storage.get_source_windows_for_agent_playbook(agent_playbook_id)
 
     with pytest.raises(ValueError, match="remaining_source_windows"):
         storage.apply_governance_agent_playbook_rebuild(
@@ -2267,18 +2503,96 @@ def test_apply_governance_agent_playbook_rebuild_rejects_mismatched_remaining_so
            FROM agent_playbooks
            WHERE agent_playbook_id = ?""",
         (agent_playbook_id,),
-    ).fetchone()
+        ).fetchone()
     assert rebuilt_row == original_row
-    assert storage.get_source_windows_for_agent_playbook(agent_playbook_id) == original_windows
-    rebuild_target = next(
-        target
-        for target in storage.list_purge_targets(
-            purge_id, phase="rebuild_without_erased_sources"
-        )
-        if target.target_name == "agent_playbook"
-        and target.target_ref == str(agent_playbook_id)
+
+
+def test_get_agent_playbook_by_id_default_excludes_archive_in_progress(storage):
+    agent_playbook_id = _seed_agent_playbook(
+        storage,
+        status=Status.ARCHIVE_IN_PROGRESS,
     )
-    assert rebuild_target.status == "running"
+
+    assert storage.get_agent_playbook_by_id(agent_playbook_id) is None
+    included = storage.get_agent_playbook_by_id(
+        agent_playbook_id,
+        include_tombstones=True,
+    )
+    assert included is not None
+    assert included.agent_playbook_id == agent_playbook_id
+    assert included.status == Status.ARCHIVE_IN_PROGRESS
+
+
+def test_get_agent_playbooks_default_excludes_archive_in_progress(storage):
+    hidden_id = _seed_agent_playbook(
+        storage,
+        status=Status.ARCHIVE_IN_PROGRESS,
+    )
+    visible_id = _seed_agent_playbook(
+        storage,
+        status=None,
+    )
+
+    default_ids = {
+        playbook.agent_playbook_id
+        for playbook in storage.get_agent_playbooks(limit=10)
+    }
+    hidden_only_ids = {
+        playbook.agent_playbook_id
+        for playbook in storage.get_agent_playbooks(
+            limit=10,
+            status_filter=[Status.ARCHIVE_IN_PROGRESS],
+        )
+    }
+
+    assert visible_id in default_ids
+    assert hidden_id not in default_ids
+    assert hidden_only_ids == {hidden_id}
+
+
+def test_search_agent_playbooks_default_excludes_archive_in_progress_and_explicit_filter_includes_it(
+    storage,
+):
+    hidden_playbook = AgentPlaybook(
+        playbook_name="governance-hidden-search",
+        agent_version="test-agent",
+        content="hidden-search-token",
+        trigger="hidden-search-token",
+        rationale="hidden-search-rationale",
+        status=Status.ARCHIVE_IN_PROGRESS,
+    )
+    visible_playbook = AgentPlaybook(
+        playbook_name="governance-visible-search",
+        agent_version="test-agent",
+        content="visible-search-token",
+        trigger="visible-search-token",
+        rationale="visible-search-rationale",
+        status=None,
+    )
+    hidden_id = storage.save_agent_playbooks([hidden_playbook])[0].agent_playbook_id
+    visible_id = storage.save_agent_playbooks([visible_playbook])[0].agent_playbook_id
+
+    default_results = storage.search_agent_playbooks(
+        SearchAgentPlaybookRequest(query="hidden-search-token", top_k=10)
+    )
+    explicit_hidden_results = storage.search_agent_playbooks(
+        SearchAgentPlaybookRequest(
+            query="hidden-search-token",
+            top_k=10,
+            status_filter=[Status.ARCHIVE_IN_PROGRESS],
+        )
+    )
+    visible_results = storage.search_agent_playbooks(
+        SearchAgentPlaybookRequest(query="visible-search-token", top_k=10)
+    )
+
+    assert hidden_id not in {
+        playbook.agent_playbook_id for playbook in default_results
+    }
+    assert [playbook.agent_playbook_id for playbook in explicit_hidden_results] == [
+        hidden_id
+    ]
+    assert [playbook.agent_playbook_id for playbook in visible_results] == [visible_id]
 
 
 @pytest.mark.parametrize(

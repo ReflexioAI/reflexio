@@ -50,6 +50,11 @@ from ._base import (
 )
 from ._lineage import _GC_ELIGIBLE_STATUSES, _append_event_stmt
 
+_AGENT_PLAYBOOK_DEFAULT_EXCLUDED_STATUSES = (
+    *_TOMBSTONE_STATUS_VALUES,
+    Status.ARCHIVE_IN_PROGRESS.value,
+)
+
 
 def _emit_hard_delete_playbook(
     conn: sqlite3.Connection,
@@ -1007,8 +1012,11 @@ class PlaybookMixin:
     ) -> AgentPlaybook | None:
         sql = "SELECT * FROM agent_playbooks WHERE agent_playbook_id = ?"
         if not include_tombstones:
-            sql += " AND (status IS NULL OR status NOT IN (?, ?))"
-            row = self._fetchone(sql, (agent_playbook_id, *_TOMBSTONE_STATUS_VALUES))
+            sql += " AND (status IS NULL OR status NOT IN (?, ?, ?))"
+            row = self._fetchone(
+                sql,
+                (agent_playbook_id, *_AGENT_PLAYBOOK_DEFAULT_EXCLUDED_STATUSES),
+            )
         else:
             row = self._fetchone(sql, (agent_playbook_id,))
         return _row_to_agent_playbook(row) if row else None
@@ -1950,9 +1958,8 @@ class PlaybookMixin:
             conditions.append(frag)
             params.extend(sparams)
         else:
-            # Default: exclude tombstone statuses (MERGED/SUPERSEDED)
-            conditions.append("(ap.status IS NULL OR ap.status NOT IN (?, ?))")
-            params.extend(_TOMBSTONE_STATUS_VALUES)
+            conditions.append("(ap.status IS NULL OR ap.status NOT IN (?, ?, ?))")
+            params.extend(_AGENT_PLAYBOOK_DEFAULT_EXCLUDED_STATUSES)
         tag_frag, tag_params = _build_tags_sql("ap", request.tags)
         if tag_frag:
             conditions.append(tag_frag)
