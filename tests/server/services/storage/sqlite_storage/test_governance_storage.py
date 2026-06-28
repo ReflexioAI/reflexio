@@ -2016,6 +2016,15 @@ def test_apply_governance_user_data_delete_rejects_unexpected_target_name_from_i
     storage, monkeypatch
 ):
     purge_id = _begin_purge(storage, "purge_internal_target_name")
+    for target_name in CANONICAL_DELETE_TARGET_NAMES:
+        storage.record_purge_target(
+            purge_id=purge_id,
+            target_name=target_name,
+            target_ref="all",
+            phase="delete",
+            status="pending",
+            detail={"count": 0},
+        )
 
     def _stub_clear_user_data(self: SQLiteStorage, user_id: str) -> dict[str, int]:
         del self, user_id
@@ -2035,6 +2044,55 @@ def test_apply_governance_user_data_delete_rejects_unexpected_target_name_from_i
 
     delete_targets = storage.list_purge_targets(purge_id, phase="delete")
     assert all(target.target_name != "surprise_target" for target in delete_targets)
+
+
+def test_apply_governance_user_data_delete_requires_complete_prepared_delete_matrix(
+    storage, monkeypatch
+):
+    purge_id = _begin_purge(storage, "purge_delete_requires_prepared_matrix")
+    storage.record_purge_target(
+        purge_id=purge_id,
+        target_name="request",
+        target_ref="all",
+        phase="delete",
+        status="pending",
+        detail={"count": 1},
+    )
+    storage.record_purge_target(
+        purge_id=purge_id,
+        target_name="interaction",
+        target_ref="all",
+        phase="delete",
+        status="complete",
+        detail={"count": 0},
+        deleted_count=0,
+    )
+
+    clear_user_data_called = False
+
+    def _stub_clear_user_data(self: SQLiteStorage, user_id: str) -> dict[str, int]:
+        nonlocal clear_user_data_called
+        del self, user_id
+        clear_user_data_called = True
+        return {"requests": 1}
+
+    monkeypatch.setattr(SQLiteStorage, "clear_user_data", _stub_clear_user_data)
+
+    with pytest.raises(ValueError, match="complete delete target matrix"):
+        storage.apply_governance_user_data_delete(
+            purge_id=purge_id,
+            user_id="user-delete-seed",
+        )
+
+    assert clear_user_data_called is False
+    delete_targets = storage.list_purge_targets(purge_id, phase="delete")
+    assert {
+        (target.target_name, target.status)
+        for target in delete_targets
+    } == {
+        ("request", "pending"),
+        ("interaction", "complete"),
+    }
 
 
 def test_apply_governance_agent_playbook_rebuild_rejects_unsafe_purge_id_before_side_effects(
@@ -2088,6 +2146,92 @@ def test_fail_purge_operation_rejects_unsafe_purge_id_before_side_effects(storag
     assert failed.status == "running"
     assert failed.error_code is None
     assert failed.error_detail is None
+
+
+def test_apply_governance_agent_playbook_rebuild_rejects_mismatched_remaining_source_windows(
+    storage,
+):
+    purge_id = "purge_rebuild_windows_mismatch"
+    storage.begin_purge_operation(
+        purge_id=purge_id,
+        idempotency_key="idem_purge_rebuild_windows_mismatch",
+        operation_type="user_erasure",
+        scope_type="user",
+        subject_ref=SUBJECT_REF,
+        request_ref=REQUEST_REF,
+    )
+    agent_playbook_id = _seed_agent_playbook(
+        storage,
+        status=Status.ARCHIVE_IN_PROGRESS,
+        source_windows=[
+            AgentPlaybookSourceWindow(user_playbook_id=7, source_interaction_ids=[101]),
+            AgentPlaybookSourceWindow(user_playbook_id=9, source_interaction_ids=[201]),
+        ],
+    )
+    storage.record_purge_target(
+        purge_id=purge_id,
+        target_name="agent_playbook",
+        target_ref=str(agent_playbook_id),
+        phase="rebuild_without_erased_sources",
+        status="running",
+        detail={
+            "original_source_windows": [
+                {"user_playbook_id": 7, "source_interaction_ids": [101]},
+                {"user_playbook_id": 9, "source_interaction_ids": [201]},
+            ],
+            "remaining_source_windows": [
+                {"user_playbook_id": 9, "source_interaction_ids": [201]},
+            ],
+        },
+    )
+    storage.record_purge_target(
+        purge_id=purge_id,
+        target_name="agent_playbook",
+        target_ref=str(agent_playbook_id),
+        phase="hide_for_rebuild",
+        status="complete",
+    )
+    original_row = storage.conn.execute(
+        """SELECT content, trigger, rationale, blocking_issue, expanded_terms, tags, status
+           FROM agent_playbooks
+           WHERE agent_playbook_id = ?""",
+        (agent_playbook_id,),
+    ).fetchone()
+    assert original_row is not None
+    original_windows = storage.get_source_windows_for_agent_playbook(agent_playbook_id)
+
+    with pytest.raises(ValueError, match="remaining_source_windows"):
+        storage.apply_governance_agent_playbook_rebuild(
+            purge_id=purge_id,
+            agent_playbook_id=agent_playbook_id,
+            remaining_source_windows=[
+                {"user_playbook_id": 9, "source_interaction_ids": [999]},
+            ],
+            content="rebuilt content",
+            trigger="rebuilt trigger",
+            rationale="rebuilt rationale",
+            blocking_issue=None,
+            expanded_terms="rebuilt terms",
+            tags=["rebuilt"],
+        )
+
+    rebuilt_row = storage.conn.execute(
+        """SELECT content, trigger, rationale, blocking_issue, expanded_terms, tags, status
+           FROM agent_playbooks
+           WHERE agent_playbook_id = ?""",
+        (agent_playbook_id,),
+    ).fetchone()
+    assert rebuilt_row == original_row
+    assert storage.get_source_windows_for_agent_playbook(agent_playbook_id) == original_windows
+    rebuild_target = next(
+        target
+        for target in storage.list_purge_targets(
+            purge_id, phase="rebuild_without_erased_sources"
+        )
+        if target.target_name == "agent_playbook"
+        and target.target_ref == str(agent_playbook_id)
+    )
+    assert rebuild_target.status == "running"
 
 
 @pytest.mark.parametrize(

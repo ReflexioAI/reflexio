@@ -444,6 +444,15 @@ def _parse_governance_window_list(
     return windows
 
 
+def _canonicalize_governance_windows(
+    field_name: str, value: list[dict[str, object]]
+) -> list[dict[str, object]]:
+    return [
+        window.model_dump()
+        for window in _parse_governance_window_list(field_name, value)
+    ]
+
+
 def _build_agent_playbook_source_window_rows(
     agent_playbook_id: int, windows: list[AgentPlaybookSourceWindow]
 ) -> list[tuple[int, int, str]]:
@@ -883,6 +892,35 @@ class SQLiteGovernanceMixin:
                    (agent_playbook_id, user_playbook_id, source_interaction_ids)
                    VALUES (?, ?, ?)""",
                 source_window_rows,
+            )
+
+    def _validate_prepared_delete_target_matrix_locked(self, purge_id: str) -> None:
+        snapshot = self.conn.execute(
+            """SELECT 1 FROM purge_operation_targets
+               WHERE org_id = ? AND purge_id = ? AND target_name = ? AND target_ref = 'all'
+                 AND phase = ? AND status = 'complete'""",
+            (self.org_id, purge_id, _SNAPSHOT_TARGET_NAME, _PREPARE_PHASE),
+        ).fetchone()
+        if snapshot is None:
+            raise ValueError("Cannot delete user data without target snapshot marker")
+        delete_rows = self.conn.execute(
+            """SELECT target_name, status FROM purge_operation_targets
+               WHERE org_id = ? AND purge_id = ? AND phase = 'delete'
+                 AND target_ref = 'all'""",
+            (self.org_id, purge_id),
+        ).fetchall()
+        delete_statuses = {
+            str(row["target_name"]): str(row["status"]) for row in delete_rows
+        }
+        missing_delete_targets = [
+            target_name
+            for target_name in _CANONICAL_DELETE_TARGET_NAMES
+            if delete_statuses.get(target_name) not in {"pending", "complete"}
+        ]
+        if missing_delete_targets:
+            raise ValueError(
+                "Cannot delete user data without complete delete target matrix: "
+                + ", ".join(missing_delete_targets)
             )
 
     def _planned_governance_delete_counts(
@@ -1346,7 +1384,6 @@ class SQLiteGovernanceMixin:
         self, purge_id: str, user_id: str
     ) -> dict[str, int]:
         purge_id = _validate_governance_purge_id("purge_id", purge_id)
-        counts = self._deps().clear_user_data(user_id)
         name_map = {
             "interactions": "interaction",
             "user_playbooks": "user_playbook",
@@ -1356,6 +1393,8 @@ class SQLiteGovernanceMixin:
             "purged_user_playbooks": "user_playbook_purge",
         }
         with self._lock:
+            self._validate_prepared_delete_target_matrix_locked(purge_id)
+            counts = self._deps().clear_user_data(user_id)
             for key, value in counts.items():
                 self._record_purge_target_locked(
                     purge_id=purge_id,
@@ -1386,6 +1425,7 @@ class SQLiteGovernanceMixin:
         windows = _parse_governance_window_list(
             "remaining_source_windows", remaining_source_windows
         )
+        canonical_remaining_windows = [window.model_dump() for window in windows]
         with self._lock:
             try:
                 self.conn.execute("BEGIN")
@@ -1405,6 +1445,14 @@ class SQLiteGovernanceMixin:
                 }.issubset(rebuild_detail):
                     raise ValueError(
                         "planned rebuild target is missing source window detail"
+                    )
+                planned_remaining_windows = _canonicalize_governance_windows(
+                    "planned remaining_source_windows",
+                    cast(list[dict[str, object]], rebuild_detail["remaining_source_windows"]),
+                )
+                if planned_remaining_windows != canonical_remaining_windows:
+                    raise ValueError(
+                        "remaining_source_windows must match the planned rebuild target"
                     )
                 hide_target_row = self.conn.execute(
                     """SELECT status
