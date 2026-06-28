@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from typing import Any, cast
 from unittest.mock import patch
 
@@ -17,6 +18,9 @@ from reflexio.models.api_schema.domain.governance import (
     AuditStatus,
 )
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
+from reflexio.server.services.storage.sqlite_storage._governance import (
+    init_governance_tables,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -1538,3 +1542,217 @@ def test_begin_purge_operation_rejects_identifier_like_purge_suffix(storage, pur
             subject_ref=SUBJECT_REF,
             request_ref=REQUEST_REF,
         )
+
+
+def test_append_audit_event_canonicalizes_detail_keys_before_persistence(storage):
+    event = AuditEvent(
+        org_id="org1",
+        operation="EXPORT",
+        entity_type="request",
+        subject_ref=SUBJECT_REF,
+        request_ref=REQUEST_REF,
+        idempotency_key="export_canonical_detail",
+        detail={" Deleted_Counts ": {"requests": 1}},
+    )
+
+    storage.append_audit_event(event)
+
+    rows = storage.list_audit_events(subject_ref=SUBJECT_REF)
+    assert rows[-1].detail == {"deleted_counts": {"requests": 1}}
+
+
+def test_record_purge_target_canonicalizes_detail_keys_before_persistence(storage):
+    purge_id = _begin_purge(storage, "purge_canonical_detail")
+
+    storage.record_purge_target(
+        purge_id=purge_id,
+        target_name="request",
+        target_ref="all",
+        phase="delete",
+        status="complete",
+        detail={" Deleted_Counts ": {"requests": 2}},
+        deleted_count=2,
+    )
+
+    rows = storage.list_purge_targets(purge_id, phase="delete")
+    assert len(rows) == 1
+    assert rows[0].detail == {"deleted_counts": {"requests": 2}}
+
+
+@pytest.mark.parametrize("persistence_path", ["audit_event", "purge_target"])
+def test_governance_detail_rejects_duplicate_normalized_keys(storage, persistence_path):
+    detail = {"status": "complete", " Status ": "complete"}
+
+    if persistence_path == "audit_event":
+        event = AuditEvent(
+            org_id="org1",
+            operation="EXPORT",
+            entity_type="request",
+            subject_ref=SUBJECT_REF,
+            request_ref=REQUEST_REF,
+            idempotency_key="export_duplicate_detail_key",
+            detail=detail,
+        )
+        with pytest.raises(ValueError, match="duplicate key status"):
+            storage.append_audit_event(event)
+        return
+
+    purge_id = _begin_purge(storage, "purge_duplicate_detail_key")
+    with pytest.raises(ValueError, match="duplicate key status"):
+        storage.record_purge_target(
+            purge_id=purge_id,
+            target_name="request",
+            target_ref="all",
+            phase="delete",
+            status="complete",
+            detail=detail,
+        )
+
+
+@pytest.mark.parametrize(
+    ("target_name", "phase", "target_ref", "match"),
+    [
+        pytest.param(
+            "target_snapshot",
+            "prepare_targets",
+            "all",
+            None,
+            id="snapshot-marker-all",
+        ),
+        pytest.param("request", "delete", "all", None, id="aggregate-delete-all"),
+        pytest.param(
+            "agent_playbook",
+            "hide_for_rebuild",
+            "17",
+            None,
+            id="row-target-hide-internal-id",
+        ),
+        pytest.param(
+            "agent_playbook",
+            "rebuild_without_erased_sources",
+            "19",
+            None,
+            id="row-target-rebuild-internal-id",
+        ),
+        pytest.param(
+            "agent_playbook",
+            "hide_for_rebuild",
+            "all",
+            "target_ref",
+            id="row-target-hide-rejects-all",
+        ),
+        pytest.param(
+            "agent_playbook",
+            "rebuild_without_erased_sources",
+            "all",
+            "target_ref",
+            id="row-target-rebuild-rejects-all",
+        ),
+        pytest.param(
+            "agent_playbook",
+            "rebuild_without_erased_sources",
+            REQUEST_REF,
+            "target_ref",
+            id="row-target-rebuild-rejects-minimized-ref",
+        ),
+    ],
+)
+def test_record_purge_target_validates_target_ref_by_phase_and_name(
+    storage, target_name, phase, target_ref, match
+):
+    purge_id = _begin_purge(storage, "purge_target_ref_phase_specific")
+
+    if match is None:
+        storage.record_purge_target(
+            purge_id=purge_id,
+            target_name=target_name,
+            target_ref=target_ref,
+            phase=phase,
+            status="running",
+        )
+        return
+
+    with pytest.raises(ValueError, match=match):
+        storage.record_purge_target(
+            purge_id=purge_id,
+            target_name=target_name,
+            target_ref=target_ref,
+            phase=phase,
+            status="running",
+        )
+
+
+def test_init_governance_tables_upgrades_legacy_purge_target_table(tmp_path):
+    db_path = tmp_path / "legacy-governance.db"
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        CREATE TABLE purge_operations (
+            org_id TEXT NOT NULL,
+            purge_id TEXT NOT NULL,
+            operation_type TEXT NOT NULL,
+            scope_type TEXT NOT NULL,
+            subject_ref TEXT,
+            request_ref TEXT NOT NULL,
+            idempotency_key TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            error_code TEXT,
+            error_detail TEXT,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            completed_at INTEGER,
+            PRIMARY KEY (org_id, purge_id)
+        );
+        CREATE TABLE purge_operation_targets (
+            purge_id TEXT NOT NULL,
+            target_name TEXT NOT NULL,
+            target_ref TEXT NOT NULL DEFAULT '',
+            phase TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            detail TEXT,
+            deleted_count INTEGER NOT NULL DEFAULT 0,
+            error_detail TEXT,
+            started_at INTEGER,
+            completed_at INTEGER,
+            PRIMARY KEY (purge_id, target_name, target_ref, phase)
+        );
+        """
+    )
+    conn.commit()
+
+    init_governance_tables(conn)
+
+    target_columns = {
+        row[1]: {"pk": row[5], "notnull": row[3]}
+        for row in conn.execute("PRAGMA table_info(purge_operation_targets)")
+    }
+    assert "org_id" in target_columns
+    assert target_columns["org_id"]["pk"] == 1
+    assert target_columns["org_id"]["notnull"] == 1
+
+    index_names = {
+        row[1] for row in conn.execute("PRAGMA index_list(purge_operation_targets)")
+    }
+    assert "idx_purge_targets_purge_phase" in index_names
+    conn.close()
+
+    with patch.object(SQLiteStorage, "_get_embedding", return_value=[0.0] * 512):
+        storage = SQLiteStorage(org_id="org1", db_path=str(db_path))
+
+    purge_id = storage.begin_purge_operation(
+        purge_id="purge_legacy_upgrade",
+        idempotency_key="idem_legacy_upgrade",
+        operation_type="user_erasure",
+        scope_type="user",
+        subject_ref=SUBJECT_REF,
+        request_ref=REQUEST_REF,
+    ).purge_id
+    storage.record_purge_target(
+        purge_id=purge_id,
+        target_name="target_snapshot",
+        target_ref="all",
+        phase="prepare_targets",
+        status="complete",
+    )
+
+    assert storage.purge_targets_prepared(purge_id) is True

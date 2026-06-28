@@ -22,7 +22,25 @@ from reflexio.models.api_schema.domain.governance import (
     PurgeTargetStatus,
 )
 
-GOVERNANCE_DDL = """
+_PURGE_OPERATION_TARGETS_TABLE_DDL = """
+CREATE TABLE IF NOT EXISTS purge_operation_targets (
+    org_id TEXT NOT NULL,
+    purge_id TEXT NOT NULL,
+    target_name TEXT NOT NULL,
+    target_ref TEXT NOT NULL DEFAULT '',
+    phase TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    detail TEXT,
+    deleted_count INTEGER NOT NULL DEFAULT 0,
+    error_detail TEXT,
+    started_at INTEGER,
+    completed_at INTEGER,
+    PRIMARY KEY (org_id, purge_id, target_name, target_ref, phase),
+    FOREIGN KEY (org_id, purge_id) REFERENCES purge_operations(org_id, purge_id) ON DELETE CASCADE
+);
+"""
+
+GOVERNANCE_DDL = f"""
 CREATE TABLE IF NOT EXISTS audit_events (
     event_id INTEGER PRIMARY KEY AUTOINCREMENT,
     org_id TEXT NOT NULL,
@@ -63,21 +81,7 @@ CREATE TABLE IF NOT EXISTS purge_operations (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_purge_operations_org_idem
     ON purge_operations(org_id, idempotency_key);
 
-CREATE TABLE IF NOT EXISTS purge_operation_targets (
-    org_id TEXT NOT NULL,
-    purge_id TEXT NOT NULL,
-    target_name TEXT NOT NULL,
-    target_ref TEXT NOT NULL DEFAULT '',
-    phase TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'pending',
-    detail TEXT,
-    deleted_count INTEGER NOT NULL DEFAULT 0,
-    error_detail TEXT,
-    started_at INTEGER,
-    completed_at INTEGER,
-    PRIMARY KEY (org_id, purge_id, target_name, target_ref, phase),
-    FOREIGN KEY (org_id, purge_id) REFERENCES purge_operations(org_id, purge_id) ON DELETE CASCADE
-);
+{_PURGE_OPERATION_TARGETS_TABLE_DDL}
 CREATE INDEX IF NOT EXISTS idx_purge_targets_purge_phase
     ON purge_operation_targets(org_id, purge_id, phase, status);
 """
@@ -193,6 +197,7 @@ _ALLOWED_DELETED_COUNTS_KEYS = frozenset(
 
 
 def init_governance_tables(conn: sqlite3.Connection) -> None:
+    _upgrade_legacy_purge_operation_targets_table(conn)
     conn.executescript(GOVERNANCE_DDL)
 
 
@@ -313,11 +318,14 @@ def _validate_governance_deleted_count(value: Any) -> int:
     return cast(int, value)
 
 
-def _validate_governance_int_list(field_name: str, value: Any) -> None:
+def _validate_governance_int_list(field_name: str, value: Any) -> list[int]:
     if not isinstance(value, list):
         _raise_governance_validation_error(field_name, "expected list[int]")
+    normalized_items: list[int] = []
     for item in value:
         _validate_governance_int(field_name, item)
+        normalized_items.append(cast(int, item))
+    return normalized_items
 
 
 def _validate_governance_deleted_counts(
@@ -327,7 +335,9 @@ def _validate_governance_deleted_counts(
         _raise_governance_validation_error(field_name, "expected dict[str, int]")
     normalized_counts: dict[str, int] = {}
     for raw_key, raw_value in value.items():
-        key = str(raw_key).strip()
+        key = str(raw_key).strip().lower()
+        if key in normalized_counts:
+            _raise_governance_validation_error(field_name, f"duplicate key {key}")
         if key not in _ALLOWED_DELETED_COUNTS_KEYS:
             _raise_governance_validation_error(field_name, key)
         normalized_counts[key] = _validate_governance_deleted_count(raw_value)
@@ -353,9 +363,12 @@ def _normalize_governance_window_item(
     return normalized_item
 
 
-def _validate_governance_window_list(field_name: str, value: Any) -> None:
+def _validate_governance_window_list(
+    field_name: str, value: Any
+) -> list[dict[str, object]]:
     if not isinstance(value, list):
         _raise_governance_validation_error(field_name, "expected list[window]")
+    normalized_windows: list[dict[str, object]] = []
     for index, item in enumerate(value):
         normalized_item = _normalize_governance_window_item(field_name, index, item)
         normalized_keys = set(normalized_item)
@@ -372,22 +385,25 @@ def _validate_governance_window_list(field_name: str, value: Any) -> None:
             f"{field_name}[{index}].user_playbook_id",
             normalized_item["user_playbook_id"],
         )
+        canonical_item: dict[str, object] = {
+            "user_playbook_id": cast(int, normalized_item["user_playbook_id"])
+        }
         if "source_interaction_ids" in normalized_item:
-            _validate_governance_int_list(
+            canonical_item["source_interaction_ids"] = _validate_governance_int_list(
                 f"{field_name}[{index}].source_interaction_ids",
                 normalized_item["source_interaction_ids"],
             )
+        normalized_windows.append(canonical_item)
+    return normalized_windows
 
 
 def _parse_governance_window_list(
     field_name: str, value: list[dict[str, object]]
 ) -> list[AgentPlaybookSourceWindow]:
-    _validate_governance_window_list(field_name, value)
     windows: list[AgentPlaybookSourceWindow] = []
-    for index, item in enumerate(value):
-        normalized_item = _normalize_governance_window_item(field_name, index, item)
-        user_playbook_id = int(normalized_item["user_playbook_id"])
-        source_ids = normalized_item.get("source_interaction_ids") or []
+    for normalized_item in _validate_governance_window_list(field_name, value):
+        user_playbook_id = cast(int, normalized_item["user_playbook_id"])
+        source_ids = cast(list[int], normalized_item.get("source_interaction_ids") or [])
         windows.append(
             AgentPlaybookSourceWindow(
                 user_playbook_id=user_playbook_id,
@@ -397,14 +413,25 @@ def _parse_governance_window_list(
     return windows
 
 
-def _validate_governance_target_ref(target_ref: str) -> None:
+def _validate_governance_target_ref(
+    *, target_name: str, phase: str, target_ref: str
+) -> str:
+    if (
+        target_name == "agent_playbook"
+        and phase in {"hide_for_rebuild", "rebuild_without_erased_sources"}
+    ):
+        if _SAFE_INTERNAL_ID_RE.fullmatch(target_ref):
+            return target_ref
+        _raise_governance_validation_error(
+            "target_ref", "must be a numeric internal id"
+        )
     if target_ref in {"", "all"}:
-        return
+        return target_ref
     if _SAFE_INTERNAL_ID_RE.fullmatch(target_ref):
-        return
+        return target_ref
     for prefix in ("reqref_v1_", "subref_v1_", "actref_v1_"):
         if re.fullmatch(rf"{re.escape(prefix)}[0-9a-f]{{32}}", target_ref):
-            return
+            return target_ref
         if target_ref.startswith(prefix):
             _raise_governance_validation_error(
                 "target_ref", f"must match {prefix}<32 lowercase hex chars>"
@@ -413,19 +440,19 @@ def _validate_governance_target_ref(target_ref: str) -> None:
     if _USER_LIKE_TARGET_REF_RE.fullmatch(target_ref):
         _raise_governance_validation_error("target_ref", "user-like identifier")
     _raise_governance_validation_error("target_ref", "must be minimized or internal")
+    raise AssertionError("unreachable")
 
 
-def _validate_governance_detail_entry(field_name: str, key: str, value: Any) -> None:
+def _validate_governance_detail_entry(field_name: str, key: str, value: Any) -> object:
     if key in _DISALLOWED_DETAIL_KEYS:
         _raise_governance_validation_error(field_name, key)
     if key not in _ALLOWED_DETAIL_KEYS:
         _raise_governance_validation_error(field_name, key)
     if key in {"count", "deleted_count", "agent_playbook_id", "user_playbook_id"}:
         _validate_governance_int(field_name, value)
-        return
+        return cast(int, value)
     if key == "deleted_counts":
-        _validate_governance_deleted_counts(field_name, value)
-        return
+        return _validate_governance_deleted_counts(field_name, value)
     if key in {
         "affected_agent_playbook_ids",
         "erased_source_ids",
@@ -433,25 +460,22 @@ def _validate_governance_detail_entry(field_name: str, key: str, value: Any) -> 
         "rebuilt_agent_playbook_ids",
         "source_interaction_ids",
     }:
-        _validate_governance_int_list(field_name, value)
-        return
+        return _validate_governance_int_list(field_name, value)
     if key in {"original_source_windows", "remaining_source_windows"}:
-        _validate_governance_window_list(field_name, value)
-        return
+        return _validate_governance_window_list(field_name, value)
     if key == "prepared":
         if not isinstance(value, bool):
             _raise_governance_validation_error(field_name, "expected bool")
-        return
+        return value
     if key in {"route", "status"}:
         if not isinstance(value, str):
             _raise_governance_validation_error(field_name, "expected str")
-        _validate_governance_code_shaped(
+        return _validate_governance_code_shaped(
             field_name,
             value,
             allow_minimized_ref=False,
             allow_enum_like_word=True,
         )
-        return
     _raise_governance_validation_error(field_name, key)
 
 
@@ -462,10 +486,17 @@ def _validate_governance_detail(
         return None
     if not isinstance(detail, dict):
         _raise_governance_validation_error(field_name, "expected dict")
+    normalized_detail: dict[str, object] = {}
     for key, value in detail.items():
         normalized_key = str(key).strip().lower()
-        _validate_governance_detail_entry(f"{field_name}.{normalized_key}", normalized_key, value)
-    return detail
+        if normalized_key in normalized_detail:
+            _raise_governance_validation_error(
+                field_name, f"duplicate key {normalized_key}"
+            )
+        normalized_detail[normalized_key] = _validate_governance_detail_entry(
+            f"{field_name}.{normalized_key}", normalized_key, value
+        )
+    return normalized_detail
 
 
 def _validate_governance_code_like(field_name: str, value: str) -> str:
@@ -562,6 +593,36 @@ def _validate_audit_event_for_persistence(event: AuditEvent) -> None:
         )
     _validate_governance_idempotency_key("idempotency_key", event.idempotency_key)
     _validate_governance_detail("audit_event.detail", event.detail)
+
+
+def _canonicalize_audit_event_for_persistence(event: AuditEvent) -> AuditEvent:
+    _validate_audit_event_for_persistence(event)
+    return event.model_copy(
+        update={"detail": _validate_governance_detail("audit_event.detail", event.detail)}
+    )
+
+
+def _upgrade_legacy_purge_operation_targets_table(conn: sqlite3.Connection) -> None:
+    target_columns = [
+        row[1] for row in conn.execute("PRAGMA table_info(purge_operation_targets)")
+    ]
+    if not target_columns or "org_id" in target_columns:
+        return
+    conn.execute("ALTER TABLE purge_operation_targets RENAME TO purge_operation_targets_legacy")
+    conn.executescript(_PURGE_OPERATION_TARGETS_TABLE_DDL)
+    conn.execute(
+        """INSERT INTO purge_operation_targets (
+               org_id, purge_id, target_name, target_ref, phase, status, detail,
+               deleted_count, error_detail, started_at, completed_at
+           )
+           SELECT purge_operations.org_id, legacy.purge_id, legacy.target_name,
+                  legacy.target_ref, legacy.phase, legacy.status, legacy.detail,
+                  legacy.deleted_count, legacy.error_detail, legacy.started_at,
+                  legacy.completed_at
+           FROM purge_operation_targets_legacy AS legacy
+           JOIN purge_operations ON purge_operations.purge_id = legacy.purge_id"""
+    )
+    conn.execute("DROP TABLE purge_operation_targets_legacy")
 
 
 def _is_successful_erase_event(event: AuditEvent, *, purge_id: str | None = None) -> bool:
@@ -745,7 +806,11 @@ class SQLiteGovernanceMixin:
         )
         detail = _validate_governance_detail("detail", detail)
         error_detail = _validate_governance_error_detail(error_detail)
-        _validate_governance_target_ref(target_ref)
+        target_ref = _validate_governance_target_ref(
+            target_name=target_name,
+            phase=phase,
+            target_ref=target_ref,
+        )
         deleted_count = _validate_governance_deleted_count(deleted_count)
         now = _epoch_now()
         existing = self.conn.execute(
@@ -806,7 +871,7 @@ class SQLiteGovernanceMixin:
             )
         if event.org_id != self.org_id:
             raise ValueError("Audit event org_id must match storage org_id")
-        _validate_audit_event_for_persistence(event)
+        event = _canonicalize_audit_event_for_persistence(event)
         with self._lock:
             inserted = self._append_audit_event_with_cursor(self.conn, event)
             self.conn.commit()
@@ -1207,7 +1272,7 @@ class SQLiteGovernanceMixin:
             raise ValueError(
                 "Completion requires a successful ERASE audit event for this purge"
             )
-        _validate_audit_event_for_persistence(audit_event)
+        audit_event = _canonicalize_audit_event_for_persistence(audit_event)
         now = _epoch_now()
         with self._lock:
             try:
