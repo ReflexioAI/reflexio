@@ -7,7 +7,7 @@ import threading
 from datetime import UTC, datetime
 from typing import Any, Literal, NoReturn, Protocol, cast, get_args
 
-from reflexio.models.api_schema.domain import AgentPlaybookSourceWindow
+from reflexio.models.api_schema.domain import AgentPlaybook, AgentPlaybookSourceWindow
 from reflexio.models.api_schema.domain.enums import Status
 from reflexio.models.api_schema.domain.governance import (
     AuditActorType,
@@ -893,6 +893,17 @@ class _SQLiteGovernanceDeps(Protocol):
     ) -> list[AgentPlaybookSourceWindow]:
         ...
 
+    def get_agent_playbook_by_id(
+        self,
+        agent_playbook_id: int,
+        *,
+        include_tombstones: bool = False,
+    ) -> AgentPlaybook | None:
+        ...
+
+    def _index_agent_playbook_fts_vec(self, ap: AgentPlaybook) -> None:
+        ...
+
 
 class SQLiteGovernanceMixin:
     """SQLite governance storage primitives."""
@@ -1660,6 +1671,7 @@ class SQLiteGovernanceMixin:
             "remaining_source_windows", remaining_source_windows
         )
         canonical_remaining_windows = [window.model_dump() for window in windows]
+        rebuilt_playbook_id: int | None = None
         with self._lock:
             try:
                 self.conn.execute("BEGIN")
@@ -1737,9 +1749,19 @@ class SQLiteGovernanceMixin:
                     error_detail=None,
                 )
                 self.conn.commit()
+                rebuilt_playbook_id = agent_playbook_id
             except Exception:
                 self.conn.rollback()
                 raise
+        if rebuilt_playbook_id is None:
+            raise ValueError(f"Agent playbook with ID {agent_playbook_id} not found")
+        rebuilt_playbook = self._deps().get_agent_playbook_by_id(
+            rebuilt_playbook_id,
+            include_tombstones=True,
+        )
+        if rebuilt_playbook is None:
+            raise ValueError(f"Agent playbook with ID {agent_playbook_id} not found")
+        self._deps()._index_agent_playbook_fts_vec(rebuilt_playbook)
 
     def complete_purge_operation_with_audit(
         self, purge_id: str, audit_event: AuditEvent
