@@ -29,6 +29,14 @@ OTHER_SUBJECT_REF = "subref_v1_" + "c" * 32
 REQUEST_REF = "reqref_v1_" + "b" * 32
 OTHER_REQUEST_REF = "reqref_v1_" + "d" * 32
 ACTOR_REF = "actref_v1_" + "e" * 32
+CANONICAL_DELETE_TARGET_NAMES = (
+    "request",
+    "interaction",
+    "profile",
+    "user_playbook",
+    "profile_purge",
+    "user_playbook_purge",
+)
 
 
 @pytest.fixture
@@ -67,6 +75,23 @@ def _begin_purge(storage: SQLiteStorage, purge_id: str) -> str:
         },
     )
     return purge.purge_id
+
+
+def _add_complete_delete_target_matrix(storage: SQLiteStorage, purge_id: str) -> None:
+    for target_name in CANONICAL_DELETE_TARGET_NAMES:
+        storage.record_purge_target(
+            purge_id=purge_id,
+            target_name=target_name,
+            target_ref="all",
+            phase="delete",
+            status="complete",
+        )
+
+
+def _begin_completeable_purge(storage: SQLiteStorage, purge_id: str) -> str:
+    purge_id = _begin_purge(storage, purge_id)
+    _add_complete_delete_target_matrix(storage, purge_id)
+    return purge_id
 
 
 def _erase_event(
@@ -322,7 +347,7 @@ def test_purge_targets_require_snapshot_marker(storage):
 
 
 def test_complete_purge_operation_with_audit_is_atomic_success_path(storage):
-    purge_id = _begin_purge(storage, "purge_2")
+    purge_id = _begin_completeable_purge(storage, "purge_2")
     complete = storage.complete_purge_operation_with_audit(
         purge_id,
         _erase_event(purge_id=purge_id),
@@ -342,7 +367,7 @@ def test_complete_purge_operation_with_audit_is_atomic_success_path(storage):
 def test_complete_purge_operation_with_audit_begins_immediate_transaction_before_reads(
     storage,
 ):
-    purge_id = _begin_purge(storage, "purge_begin_immediate")
+    purge_id = _begin_completeable_purge(storage, "purge_begin_immediate")
     statements: list[str] = []
     storage.conn.set_trace_callback(statements.append)
     try:
@@ -365,7 +390,7 @@ def test_complete_purge_operation_with_audit_begins_immediate_transaction_before
 
 
 def test_complete_purge_operation_with_audit_accepts_planned_success_detail(storage):
-    purge_id = _begin_purge(storage, "purge_success_detail")
+    purge_id = _begin_completeable_purge(storage, "purge_success_detail")
     deleted_counts = {
         "interactions": 3,
         "user_playbooks": 2,
@@ -411,7 +436,7 @@ def test_complete_purge_operation_with_audit_accepts_planned_success_detail(stor
 def test_complete_purge_operation_rejects_audit_refs_that_mismatch_persisted_purge(
     storage, event_kwargs, match
 ):
-    purge_id = _begin_purge(storage, "purge_row_ref_mismatch")
+    purge_id = _begin_completeable_purge(storage, "purge_row_ref_mismatch")
     event = _erase_event(purge_id=purge_id).model_copy(update=event_kwargs)
 
     with pytest.raises(ValueError, match=match):
@@ -501,7 +526,7 @@ def test_begin_purge_operation_rejects_mismatched_idempotent_retry(
     ],
 )
 def test_complete_purge_operation_rejects_invalid_audit_event(storage, event, match):
-    purge_id = _begin_purge(storage, "purge_invalid")
+    purge_id = _begin_completeable_purge(storage, "purge_invalid")
 
     with pytest.raises(ValueError, match=match):
         storage.complete_purge_operation_with_audit(purge_id, event)
@@ -528,7 +553,7 @@ def test_complete_purge_operation_rejects_invalid_audit_event(storage, event, ma
 def test_complete_purge_operation_requires_matching_existing_erase_row(
     storage, seed_event, match
 ):
-    purge_id = _begin_purge(storage, "purge_seeded")
+    purge_id = _begin_completeable_purge(storage, "purge_seeded")
     assert storage.append_audit_event(seed_event) is True
 
     with pytest.raises(ValueError, match=match):
@@ -558,7 +583,7 @@ def test_complete_purge_operation_requires_matching_existing_erase_row(
 def test_complete_purge_operation_rejects_mismatched_existing_erase_row(
     storage, field_name, seed_kwargs
 ):
-    purge_id = _begin_purge(storage, "purge_seeded_mismatch")
+    purge_id = _begin_completeable_purge(storage, "purge_seeded_mismatch")
     seeded_event = _erase_event(purge_id=purge_id).model_copy(update=seed_kwargs)
     storage.conn.execute(
         """INSERT INTO audit_events (
@@ -596,6 +621,19 @@ def test_complete_purge_operation_rejects_mismatched_existing_erase_row(
 def test_append_audit_event_rejects_successful_erase(storage):
     with pytest.raises(ValueError, match="Successful ERASE audit rows"):
         storage.append_audit_event(_erase_event(purge_id="purge_append"))
+
+
+def test_complete_purge_operation_requires_full_delete_target_matrix(storage):
+    purge_id = _begin_purge(storage, "purge_snapshot_only")
+
+    with pytest.raises(ValueError, match="delete target matrix"):
+        storage.complete_purge_operation_with_audit(
+            purge_id,
+            _erase_event(purge_id=purge_id),
+        )
+
+    assert storage.get_purge_operation(purge_id).status == "running"
+    assert storage.list_audit_events(subject_ref=SUBJECT_REF) == []
 
 
 def test_prepare_governance_erase_targets_sanitizes_snapshot_detail(storage):
@@ -844,6 +882,113 @@ def test_apply_governance_agent_playbook_rebuild_completes_planned_phase(storage
     )
     assert rebuild_target.status == "complete"
     assert rebuild_target.detail == expected_detail
+    rebuilt_row = storage.conn.execute(
+        """SELECT content, trigger, rationale, blocking_issue, expanded_terms, tags, status
+           FROM agent_playbooks
+           WHERE agent_playbook_id = ?""",
+        (agent_playbook_id,),
+    ).fetchone()
+    assert rebuilt_row is not None
+    assert tuple(rebuilt_row) == (
+        "rebuilt content",
+        "rebuilt trigger",
+        "rebuilt rationale",
+        None,
+        "rebuilt terms",
+        json.dumps(["rebuilt"]),
+        None,
+    )
+    assert storage.get_source_windows_for_agent_playbook(agent_playbook_id) == [
+        AgentPlaybookSourceWindow(user_playbook_id=9, source_interaction_ids=[201])
+    ]
+
+
+def test_apply_governance_agent_playbook_rebuild_rolls_back_partial_updates_on_failure(
+    storage, monkeypatch
+):
+    purge_id = "purge_rebuild_rollback"
+    storage.begin_purge_operation(
+        purge_id=purge_id,
+        idempotency_key="idem_purge_rebuild_rollback",
+        operation_type="user_erasure",
+        scope_type="user",
+        subject_ref=SUBJECT_REF,
+        request_ref=REQUEST_REF,
+    )
+    agent_playbook_id = _seed_agent_playbook(
+        storage,
+        status=Status.ARCHIVE_IN_PROGRESS,
+        source_windows=[
+            AgentPlaybookSourceWindow(user_playbook_id=7, source_interaction_ids=[101]),
+            AgentPlaybookSourceWindow(user_playbook_id=9, source_interaction_ids=[201]),
+        ],
+    )
+    storage.record_purge_target(
+        purge_id=purge_id,
+        target_name="agent_playbook",
+        target_ref=str(agent_playbook_id),
+        phase="rebuild_without_erased_sources",
+        status="running",
+        detail={
+            "original_source_windows": [
+                {"user_playbook_id": 7, "source_interaction_ids": [101]},
+                {"user_playbook_id": 9, "source_interaction_ids": [201]},
+            ],
+            "remaining_source_windows": [
+                {"user_playbook_id": 9, "source_interaction_ids": [201]},
+            ],
+        },
+    )
+    original_row = storage.conn.execute(
+        """SELECT content, trigger, rationale, blocking_issue, expanded_terms, tags, status
+           FROM agent_playbooks
+           WHERE agent_playbook_id = ?""",
+        (agent_playbook_id,),
+    ).fetchone()
+    assert original_row is not None
+    original_windows = storage.get_source_windows_for_agent_playbook(agent_playbook_id)
+    original_record = storage._record_purge_target_locked
+
+    def fail_record_target(*args, **kwargs):
+        raise RuntimeError("target completion failed")
+
+    monkeypatch.setattr(storage, "_record_purge_target_locked", fail_record_target)
+
+    with pytest.raises(RuntimeError, match="target completion failed"):
+        storage.apply_governance_agent_playbook_rebuild(
+            purge_id=purge_id,
+            agent_playbook_id=agent_playbook_id,
+            remaining_source_windows=[
+                {"user_playbook_id": 9, "source_interaction_ids": [201]},
+            ],
+            content="rebuilt content",
+            trigger="rebuilt trigger",
+            rationale="rebuilt rationale",
+            blocking_issue=None,
+            expanded_terms="rebuilt terms",
+            tags=["rebuilt"],
+        )
+
+    monkeypatch.setattr(storage, "_record_purge_target_locked", original_record)
+    assert (
+        storage.conn.execute(
+            """SELECT content, trigger, rationale, blocking_issue, expanded_terms, tags, status
+               FROM agent_playbooks
+               WHERE agent_playbook_id = ?""",
+            (agent_playbook_id,),
+        ).fetchone()
+        == original_row
+    )
+    assert storage.get_source_windows_for_agent_playbook(agent_playbook_id) == original_windows
+    rebuild_target = next(
+        target
+        for target in storage.list_purge_targets(
+            purge_id, phase="rebuild_without_erased_sources"
+        )
+        if target.target_name == "agent_playbook"
+        and target.target_ref == str(agent_playbook_id)
+    )
+    assert rebuild_target.status == "running"
 
 
 def test_purge_targets_are_scoped_by_org_for_same_purge_id(storage_factory):

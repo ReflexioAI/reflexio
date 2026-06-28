@@ -88,6 +88,14 @@ CREATE INDEX IF NOT EXISTS idx_purge_targets_purge_phase
 
 _PREPARE_PHASE = "prepare_targets"
 _SNAPSHOT_TARGET_NAME = "target_snapshot"
+_CANONICAL_DELETE_TARGET_NAMES = (
+    "request",
+    "interaction",
+    "profile",
+    "user_playbook",
+    "profile_purge",
+    "user_playbook_purge",
+)
 _ALLOWED_AUDIT_ACTOR_TYPES = frozenset(get_args(AuditActorType))
 _ALLOWED_AUDIT_OPERATIONS = frozenset(get_args(AuditOperation))
 _ALLOWED_AUDIT_ENTITY_TYPES = frozenset(get_args(AuditEntityType))
@@ -434,6 +442,27 @@ def _parse_governance_window_list(
             )
         )
     return windows
+
+
+def _build_agent_playbook_source_window_rows(
+    agent_playbook_id: int, windows: list[AgentPlaybookSourceWindow]
+) -> list[tuple[int, int, str]]:
+    by_id: dict[int, list[int]] = {}
+    for window in windows:
+        ids = by_id.setdefault(window.user_playbook_id, [])
+        seen = set(ids)
+        for source_id in window.source_interaction_ids:
+            if source_id not in seen:
+                ids.append(source_id)
+                seen.add(source_id)
+    return [
+        (
+            agent_playbook_id,
+            user_playbook_id,
+            _json_dumps(source_interaction_ids) or "[]",
+        )
+        for user_playbook_id, source_interaction_ids in by_id.items()
+    ]
 
 
 def _validate_governance_target_ref(
@@ -837,6 +866,24 @@ class SQLiteGovernanceMixin:
 
     def _deps(self) -> _SQLiteGovernanceDeps:
         return cast(_SQLiteGovernanceDeps, self)
+
+    def _replace_agent_playbook_source_windows_locked(
+        self, agent_playbook_id: int, windows: list[AgentPlaybookSourceWindow]
+    ) -> None:
+        self.conn.execute(
+            "DELETE FROM agent_playbook_source_user_playbooks WHERE agent_playbook_id = ?",
+            (agent_playbook_id,),
+        )
+        source_window_rows = _build_agent_playbook_source_window_rows(
+            agent_playbook_id, windows
+        )
+        if source_window_rows:
+            self.conn.executemany(
+                """INSERT OR IGNORE INTO agent_playbook_source_user_playbooks
+                   (agent_playbook_id, user_playbook_id, source_interaction_ids)
+                   VALUES (?, ?, ?)""",
+                source_window_rows,
+            )
 
     def _planned_governance_delete_counts(
         self, user_id: str, owned_user_playbook_ids: set[int]
@@ -1340,34 +1387,44 @@ class SQLiteGovernanceMixin:
             "remaining_source_windows", remaining_source_windows
         )
         with self._lock:
-            cur = self.conn.execute(
-                """UPDATE agent_playbooks
-                   SET content = ?, trigger = ?, rationale = ?, blocking_issue = ?,
-                       expanded_terms = ?, tags = ?, status = NULL
-                   WHERE agent_playbook_id = ?""",
-                (
-                    content or "",
-                    trigger,
-                    rationale,
-                    json.dumps(blocking_issue) if blocking_issue is not None else None,
-                    expanded_terms,
-                    _json_dumps(tags),
-                    agent_playbook_id,
-                ),
-            )
-            if cur.rowcount == 0:
-                raise ValueError(
-                    f"Agent playbook with ID {agent_playbook_id} not found"
+            try:
+                self.conn.execute("BEGIN")
+                cur = self.conn.execute(
+                    """UPDATE agent_playbooks
+                       SET content = ?, trigger = ?, rationale = ?, blocking_issue = ?,
+                           expanded_terms = ?, tags = ?, status = NULL
+                       WHERE agent_playbook_id = ?""",
+                    (
+                        content or "",
+                        trigger,
+                        rationale,
+                        json.dumps(blocking_issue) if blocking_issue is not None else None,
+                        expanded_terms,
+                        _json_dumps(tags),
+                        agent_playbook_id,
+                    ),
                 )
-            self.conn.commit()
-        self._deps().set_source_windows_for_agent_playbook(agent_playbook_id, windows)
-        self.record_purge_target(
-            purge_id=purge_id,
-            target_name="agent_playbook",
-            target_ref=str(agent_playbook_id),
-            phase="rebuild_without_erased_sources",
-            status="complete",
-        )
+                if cur.rowcount == 0:
+                    raise ValueError(
+                        f"Agent playbook with ID {agent_playbook_id} not found"
+                    )
+                self._replace_agent_playbook_source_windows_locked(
+                    agent_playbook_id, windows
+                )
+                self._record_purge_target_locked(
+                    purge_id=purge_id,
+                    target_name="agent_playbook",
+                    target_ref=str(agent_playbook_id),
+                    phase="rebuild_without_erased_sources",
+                    status="complete",
+                    detail=None,
+                    deleted_count=0,
+                    error_detail=None,
+                )
+                self.conn.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
 
     def complete_purge_operation_with_audit(
         self, purge_id: str, audit_event: AuditEvent
@@ -1410,6 +1467,25 @@ class SQLiteGovernanceMixin:
                 if snapshot is None:
                     raise ValueError(
                         "Cannot complete purge without target snapshot marker"
+                    )
+                delete_rows = self.conn.execute(
+                    """SELECT target_name, status FROM purge_operation_targets
+                       WHERE org_id = ? AND purge_id = ? AND phase = 'delete'
+                         AND target_ref = 'all'""",
+                    (self.org_id, purge_id),
+                ).fetchall()
+                delete_statuses = {
+                    str(row["target_name"]): str(row["status"]) for row in delete_rows
+                }
+                missing_delete_targets = [
+                    target_name
+                    for target_name in _CANONICAL_DELETE_TARGET_NAMES
+                    if delete_statuses.get(target_name) != "complete"
+                ]
+                if missing_delete_targets:
+                    raise ValueError(
+                        "Cannot complete purge without complete delete target matrix: "
+                        + ", ".join(missing_delete_targets)
                     )
                 incomplete = self.conn.execute(
                     """SELECT 1 FROM purge_operation_targets
