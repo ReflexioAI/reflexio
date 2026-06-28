@@ -8,6 +8,7 @@ from ._base import (
     _vector_rank_rows,
 )
 from ._extras import ExtrasMixin
+from ._governance import SQLiteGovernanceMixin
 from ._lineage import SQLiteLineageMixin
 from ._operations import OperationMixin
 from ._playbook import PlaybookMixin
@@ -32,6 +33,7 @@ class SQLiteStorage(
     ProfileMixin,
     RequestMixin,
     PlaybookMixin,
+    SQLiteGovernanceMixin,
     SQLiteLineageMixin,
     OperationMixin,
     ExtrasMixin,

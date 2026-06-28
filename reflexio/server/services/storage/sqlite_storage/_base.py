@@ -62,6 +62,7 @@ from reflexio.server.services.storage.retention_mixin import (
 from reflexio.server.services.storage.storage_base import BaseStorage
 from reflexio.server.site_var.site_var_manager import SiteVarManager
 
+from ._governance import init_governance_tables
 from ._stall_state import init_stall_state_table
 
 logger = logging.getLogger(__name__)
@@ -642,6 +643,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         with self._lock:
             cur = self.conn.cursor()
             cur.executescript(_DDL)
+            init_governance_tables(self.conn)
             self.conn.commit()
         if self._has_sqlite_vec:
             self._create_vec_tables()

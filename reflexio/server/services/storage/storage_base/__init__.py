@@ -23,6 +23,7 @@ from ._agent_run import (
 )
 from ._base import BaseStorageCore, matches_status_filter
 from ._extras import ExtrasMixin
+from ._governance import GovernanceMixin
 from ._lineage import EntityType, LineageEventMixin
 from ._operations import OperationMixin
 from ._playbook import PlaybookMixin
@@ -40,6 +41,7 @@ class BaseStorage(
     RequestMixin,
     PlaybookMixin,
     RetrievalLogMixin,
+    GovernanceMixin,
     LineageEventMixin,
     OperationMixin,
     ExtrasMixin,
