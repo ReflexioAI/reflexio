@@ -5,7 +5,7 @@ import re
 import sqlite3
 import threading
 from datetime import UTC, datetime
-from typing import Any, Literal, Protocol, cast
+from typing import Any, Literal, NoReturn, Protocol, cast
 
 from reflexio.models.api_schema.domain import AgentPlaybookSourceWindow
 from reflexio.models.api_schema.domain.governance import (
@@ -114,10 +114,25 @@ _TOKEN_NAME_RE = re.compile(
 _RAW_EXCEPTION_RE = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*(?:Error|Exception)\s*:")
 _SAFE_INTERNAL_ID_RE = re.compile(r"^[0-9]+$")
 _USER_LIKE_TARGET_REF_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
+_CODE_SHAPED_VALUE_RE = re.compile(r"^[A-Za-z0-9]+(?:[_.:-][A-Za-z0-9]+)+$")
 _SAFE_ERROR_CODE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.:-]{0,127}$")
 _IDENTIFIERISH_ERROR_CODE_RE = re.compile(
     r"^(?:user|subject|request|req|actor|email)[-_.:]?[A-Za-z0-9_.:-]+$",
     re.IGNORECASE,
+)
+_ALLOWED_ENUM_LIKE_VALUES = frozenset(
+    {
+        "archived",
+        "complete",
+        "delete",
+        "error",
+        "failed",
+        "ok",
+        "pending",
+        "prepare_targets",
+        "rebuild",
+        "running",
+    }
 )
 
 
@@ -141,7 +156,7 @@ def _json_loads(text: str | None) -> Any:
     return json.loads(text)
 
 
-def _raise_governance_validation_error(field_name: str, reason: str) -> None:
+def _raise_governance_validation_error(field_name: str, reason: str) -> NoReturn:
     raise ValueError(f"Unsafe governance {field_name}: {reason}")
 
 
@@ -164,8 +179,52 @@ def _validate_governance_prefixed_ref(
 ) -> None:
     if value is None:
         return
-    if not value.startswith(prefix):
-        _raise_governance_validation_error(field_name, f"must start with {prefix}")
+    if re.fullmatch(rf"{re.escape(prefix)}[0-9a-f]{{32}}", value) is None:
+        _raise_governance_validation_error(
+            field_name, f"must match {prefix}<32 lowercase hex chars>"
+        )
+
+
+def _validate_governance_code_shaped(
+    field_name: str,
+    value: str,
+    *,
+    allow_minimized_ref: bool,
+    allow_enum_like_word: bool,
+) -> str:
+    if not value:
+        _raise_governance_validation_error(field_name, "required")
+    _validate_governance_string(field_name, value)
+    if allow_minimized_ref and any(
+        re.fullmatch(rf"{re.escape(prefix)}[0-9a-f]{{32}}", value)
+        for prefix in ("subref_v1_", "reqref_v1_", "actref_v1_")
+    ):
+        return value
+    if value.startswith(("subref_v1_", "reqref_v1_", "actref_v1_")):
+        _raise_governance_validation_error(field_name, "identifier")
+    if _SAFE_INTERNAL_ID_RE.fullmatch(value):
+        return value
+    if _CODE_SHAPED_VALUE_RE.fullmatch(value):
+        return value
+    if allow_enum_like_word and value in _ALLOWED_ENUM_LIKE_VALUES:
+        return value
+    if _USER_LIKE_TARGET_REF_RE.fullmatch(value):
+        _raise_governance_validation_error(field_name, "user-like identifier")
+    _raise_governance_validation_error(field_name, "must be minimized, internal, or code-shaped")
+    raise AssertionError("unreachable")
+
+
+def _validate_governance_idempotency_key(
+    field_name: str, value: str | None
+) -> str | None:
+    if value is None:
+        return None
+    return _validate_governance_code_shaped(
+        field_name,
+        value,
+        allow_minimized_ref=False,
+        allow_enum_like_word=False,
+    )
 
 
 def _validate_governance_int(field_name: str, value: Any) -> None:
@@ -245,8 +304,13 @@ def _validate_governance_target_ref(target_ref: str) -> None:
         return
     if _SAFE_INTERNAL_ID_RE.fullmatch(target_ref):
         return
-    if target_ref.startswith(("reqref_v1_", "subref_v1_", "actref_v1_")):
-        return
+    for prefix in ("reqref_v1_", "subref_v1_", "actref_v1_"):
+        if re.fullmatch(rf"{re.escape(prefix)}[0-9a-f]{{32}}", target_ref):
+            return
+        if target_ref.startswith(prefix):
+            _raise_governance_validation_error(
+                "target_ref", f"must match {prefix}<32 lowercase hex chars>"
+            )
     _validate_governance_string("target_ref", target_ref)
     if _USER_LIKE_TARGET_REF_RE.fullmatch(target_ref):
         _raise_governance_validation_error("target_ref", "user-like identifier")
@@ -280,7 +344,12 @@ def _validate_governance_detail_entry(field_name: str, key: str, value: Any) -> 
     if key in {"route", "status"}:
         if not isinstance(value, str):
             _raise_governance_validation_error(field_name, "expected str")
-        _validate_governance_string(field_name, value)
+        _validate_governance_code_shaped(
+            field_name,
+            value,
+            allow_minimized_ref=False,
+            allow_enum_like_word=True,
+        )
         return
     _raise_governance_validation_error(field_name, key)
 
@@ -334,7 +403,13 @@ def _validate_audit_event_for_persistence(event: AuditEvent) -> None:
         "request_ref", event.request_ref, prefix="reqref_v1_"
     )
     if event.entity_id is not None:
-        _validate_governance_string("entity_id", event.entity_id)
+        _validate_governance_code_shaped(
+            "entity_id",
+            event.entity_id,
+            allow_minimized_ref=True,
+            allow_enum_like_word=False,
+        )
+    _validate_governance_idempotency_key("idempotency_key", event.idempotency_key)
     _validate_governance_detail("audit_event.detail", event.detail)
 
 
@@ -569,12 +644,16 @@ class SQLiteGovernanceMixin:
         _validate_governance_prefixed_ref(
             "request_ref", request_ref, prefix="reqref_v1_"
         )
+        validated_idempotency_key = cast(
+            str,
+            _validate_governance_idempotency_key("idempotency_key", idempotency_key),
+        )
         now = _epoch_now()
         with self._lock:
             existing = self.conn.execute(
                 """SELECT * FROM purge_operations
                    WHERE org_id = ? AND idempotency_key = ?""",
-                (self.org_id, idempotency_key),
+                (self.org_id, validated_idempotency_key),
             ).fetchone()
             if existing is not None:
                 return _row_to_purge_operation(existing)
@@ -590,7 +669,7 @@ class SQLiteGovernanceMixin:
                     scope_type,
                     subject_ref,
                     request_ref,
-                    idempotency_key,
+                    validated_idempotency_key,
                     now,
                     now,
                 ),

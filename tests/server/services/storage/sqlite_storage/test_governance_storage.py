@@ -13,6 +13,12 @@ from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 
 pytestmark = pytest.mark.integration
 
+SUBJECT_REF = "subref_v1_" + "a" * 32
+OTHER_SUBJECT_REF = "subref_v1_" + "c" * 32
+REQUEST_REF = "reqref_v1_" + "b" * 32
+OTHER_REQUEST_REF = "reqref_v1_" + "d" * 32
+ACTOR_REF = "actref_v1_" + "e" * 32
+
 
 @pytest.fixture
 def storage(tmp_path):
@@ -26,8 +32,8 @@ def _begin_purge(storage: SQLiteStorage, purge_id: str) -> str:
         idempotency_key=f"idem_{purge_id}",
         operation_type="user_erasure",
         scope_type="user",
-        subject_ref="subref_v1_abc",
-        request_ref=f"reqref_v1_{purge_id}",
+        subject_ref=SUBJECT_REF,
+        request_ref=REQUEST_REF,
     )
     storage.record_purge_target(
         purge_id=purge.purge_id,
@@ -53,8 +59,8 @@ def _erase_event(
         org_id="org1",
         operation=operation,
         entity_type="request",
-        subject_ref="subref_v1_abc",
-        request_ref=f"reqref_v1_{purge_id}",
+        subject_ref=SUBJECT_REF,
+        request_ref=REQUEST_REF,
         idempotency_key=purge_id,
         status=status,
     )
@@ -65,15 +71,15 @@ def test_audit_event_idempotency(storage):
         org_id="org1",
         operation="EXPORT",
         entity_type="request",
-        subject_ref="subref_v1_abc",
-        request_ref="reqref_v1_r1",
+        subject_ref=SUBJECT_REF,
+        request_ref=REQUEST_REF,
         idempotency_key="export_1",
         detail={"count": 1},
     )
 
     assert storage.append_audit_event(event) is True
     assert storage.append_audit_event(event) is False
-    rows = storage.list_audit_events(subject_ref="subref_v1_abc")
+    rows = storage.list_audit_events(subject_ref=SUBJECT_REF)
     assert len(rows) == 1
     assert rows[0].idempotency_key == "export_1"
 
@@ -84,13 +90,13 @@ def test_purge_targets_require_snapshot_marker(storage):
         idempotency_key="idem_1",
         operation_type="user_erasure",
         scope_type="user",
-        subject_ref="subref_v1_abc",
-        request_ref="reqref_v1_r1",
+        subject_ref=SUBJECT_REF,
+        request_ref=REQUEST_REF,
     )
     storage.record_purge_target(
         purge_id=purge.purge_id,
         target_name="request",
-        target_ref="reqref_v1_r1",
+        target_ref=REQUEST_REF,
         phase="delete",
         status="complete",
         deleted_count=1,
@@ -104,8 +110,8 @@ def test_purge_targets_require_snapshot_marker(storage):
                 org_id="org1",
                 operation="ERASE",
                 entity_type="request",
-                subject_ref="subref_v1_abc",
-                request_ref="reqref_v1_r1",
+                subject_ref=SUBJECT_REF,
+                request_ref=REQUEST_REF,
                 idempotency_key=purge.purge_id,
             ),
         )
@@ -119,14 +125,14 @@ def test_complete_purge_operation_with_audit_is_atomic_success_path(storage):
     )
 
     assert complete.status == "complete"
-    rows = storage.list_audit_events(subject_ref="subref_v1_abc")
+    rows = storage.list_audit_events(subject_ref=SUBJECT_REF)
     assert [row.operation for row in rows] == ["ERASE"]
     same = storage.complete_purge_operation_with_audit(
         purge_id,
         _erase_event(purge_id=purge_id),
     )
     assert same.status == "complete"
-    assert len(storage.list_audit_events(subject_ref="subref_v1_abc")) == 1
+    assert len(storage.list_audit_events(subject_ref=SUBJECT_REF)) == 1
 
 
 @pytest.mark.parametrize(
@@ -147,8 +153,8 @@ def test_complete_purge_operation_with_audit_is_atomic_success_path(storage):
                 org_id="org1",
                 operation="ERASE",
                 entity_type="request",
-                subject_ref="subref_v1_abc",
-                request_ref="reqref_v1_purge_invalid",
+                subject_ref=SUBJECT_REF,
+                request_ref=REQUEST_REF,
                 idempotency_key="different_key",
                 status="ok",
             ),
@@ -160,8 +166,8 @@ def test_complete_purge_operation_with_audit_is_atomic_success_path(storage):
                 org_id="org1",
                 operation="ERASE",
                 entity_type="request",
-                subject_ref="subref_v1_abc",
-                request_ref="reqref_v1_purge_invalid",
+                subject_ref=SUBJECT_REF,
+                request_ref=REQUEST_REF,
                 idempotency_key=None,
                 status="ok",
             ),
@@ -177,7 +183,7 @@ def test_complete_purge_operation_rejects_invalid_audit_event(storage, event, ma
         storage.complete_purge_operation_with_audit(purge_id, event)
 
     assert storage.get_purge_operation(purge_id).status == "running"
-    assert storage.list_audit_events(subject_ref="subref_v1_abc") == []
+    assert storage.list_audit_events(subject_ref=SUBJECT_REF) == []
 
 
 @pytest.mark.parametrize(
@@ -207,7 +213,7 @@ def test_complete_purge_operation_requires_matching_existing_erase_row(
         )
 
     assert storage.get_purge_operation(purge_id).status == "running"
-    rows = storage.list_audit_events(subject_ref="subref_v1_abc")
+    rows = storage.list_audit_events(subject_ref=SUBJECT_REF)
     assert len(rows) == 1
     assert rows[0].operation == seed_event.operation
     assert rows[0].status == seed_event.status
@@ -217,8 +223,8 @@ def test_complete_purge_operation_requires_matching_existing_erase_row(
     ("field_name", "seed_kwargs"),
     [
         pytest.param("entity_type", {"entity_type": "session"}, id="entity-type"),
-        pytest.param("subject_ref", {"subject_ref": "subref_v1_other"}, id="subject-ref"),
-        pytest.param("request_ref", {"request_ref": "reqref_v1_other"}, id="request-ref"),
+        pytest.param("subject_ref", {"subject_ref": OTHER_SUBJECT_REF}, id="subject-ref"),
+        pytest.param("request_ref", {"request_ref": OTHER_REQUEST_REF}, id="request-ref"),
     ],
 )
 def test_complete_purge_operation_rejects_mismatched_existing_erase_row(
@@ -270,8 +276,8 @@ def test_prepare_governance_erase_targets_sanitizes_snapshot_detail(storage):
         idempotency_key="idem_purge_detail",
         operation_type="user_erasure",
         scope_type="user",
-        subject_ref="subref_v1_abc",
-        request_ref="reqref_v1_purge_detail",
+        subject_ref=SUBJECT_REF,
+        request_ref=REQUEST_REF,
     )
     storage.prepare_governance_erase_targets(
         purge_id="purge_detail",
@@ -399,13 +405,14 @@ def test_record_purge_target_validates_governance_fields(storage, kwargs, match)
     ],
 )
 def test_append_audit_event_validates_governance_detail(storage, detail, match):
+    detail_key = next(iter(detail))
     event = AuditEvent(
         org_id="org1",
         operation="EXPORT",
         entity_type="request",
-        subject_ref="subref_v1_abc",
-        request_ref="reqref_v1_safe",
-        idempotency_key=f"export_{hash(str(detail))}",
+        subject_ref=SUBJECT_REF,
+        request_ref=REQUEST_REF,
+        idempotency_key=f"export_detail_{detail_key}",
         detail=detail,
     )
 
@@ -494,11 +501,11 @@ def test_fail_purge_operation_validates_error_code(storage, error_code, match):
         pytest.param(
             AuditEvent(
                 org_id="org1",
-                actor_ref="token-name",
+                actor_ref=ACTOR_REF[:-1],
                 operation="EXPORT",
                 entity_type="request",
-                subject_ref="subref_v1_abc",
-                request_ref="reqref_v1_top_level",
+                subject_ref=SUBJECT_REF,
+                request_ref=REQUEST_REF,
                 idempotency_key="top_level_actor",
             ),
             "actor_ref",
@@ -510,7 +517,7 @@ def test_fail_purge_operation_validates_error_code(storage, error_code, match):
                 operation="EXPORT",
                 entity_type="request",
                 subject_ref="user@example.com",
-                request_ref="reqref_v1_top_level",
+                request_ref=REQUEST_REF,
                 idempotency_key="top_level_subject",
             ),
             "subject_ref",
@@ -521,7 +528,7 @@ def test_fail_purge_operation_validates_error_code(storage, error_code, match):
                 org_id="org1",
                 operation="EXPORT",
                 entity_type="request",
-                subject_ref="subref_v1_abc",
+                subject_ref=SUBJECT_REF,
                 request_ref="request_12345",
                 idempotency_key="top_level_request",
             ),
@@ -534,8 +541,8 @@ def test_fail_purge_operation_validates_error_code(storage, error_code, match):
                 operation="EXPORT",
                 entity_type="request",
                 entity_id="alice@example.com",
-                subject_ref="subref_v1_abc",
-                request_ref="reqref_v1_top_level",
+                subject_ref=SUBJECT_REF,
+                request_ref=REQUEST_REF,
                 idempotency_key="top_level_entity_email",
             ),
             "entity_id",
@@ -547,8 +554,8 @@ def test_fail_purge_operation_validates_error_code(storage, error_code, match):
                 operation="EXPORT",
                 entity_type="request",
                 entity_id="api-token-name",
-                subject_ref="subref_v1_abc",
-                request_ref="reqref_v1_top_level",
+                subject_ref=SUBJECT_REF,
+                request_ref=REQUEST_REF,
                 idempotency_key="top_level_entity_token",
             ),
             "entity_id",
@@ -566,7 +573,7 @@ def test_append_audit_event_requires_minimized_request_ref(storage):
         org_id="org1",
         operation="EXPORT",
         entity_type="request",
-        subject_ref="subref_v1_abc",
+        subject_ref=SUBJECT_REF,
         request_ref=None,
         idempotency_key="missing_request_ref",
     )
@@ -578,8 +585,8 @@ def test_append_audit_event_requires_minimized_request_ref(storage):
 @pytest.mark.parametrize(
     ("subject_ref", "request_ref", "match"),
     [
-        pytest.param("subref_v1_abc", "request_12345", "request_ref", id="purge-request-ref"),
-        pytest.param("raw-user-id", "reqref_v1_purge", "subject_ref", id="purge-subject-ref"),
+        pytest.param(SUBJECT_REF, "request_12345", "request_ref", id="purge-request-ref"),
+        pytest.param("raw-user-id", REQUEST_REF, "subject_ref", id="purge-subject-ref"),
     ],
 )
 def test_begin_purge_operation_validates_top_level_refs(
@@ -602,8 +609,8 @@ def test_append_audit_event_rejects_mixed_case_window_keys(storage, detail_key):
         org_id="org1",
         operation="EXPORT",
         entity_type="request",
-        subject_ref="subref_v1_abc",
-        request_ref="reqref_v1_mixed_case",
+        subject_ref=SUBJECT_REF,
+        request_ref=REQUEST_REF,
         idempotency_key=f"mixed_case_{detail_key}",
         detail={detail_key: [{"User_Playbook_Id": "alice@example.com"}]},
     )
@@ -632,8 +639,8 @@ def test_record_purge_target_rejects_mixed_case_window_keys(storage, detail_key)
     [
         pytest.param("all", None, id="marker-all"),
         pytest.param("17", None, id="internal-numeric-id"),
-        pytest.param("reqref_v1_target", None, id="minimized-request-ref"),
-        pytest.param("subref_v1_target", None, id="minimized-subject-ref"),
+        pytest.param(REQUEST_REF, None, id="minimized-request-ref"),
+        pytest.param(SUBJECT_REF, None, id="minimized-subject-ref"),
         pytest.param("", None, id="empty-default"),
         pytest.param("alice@example.com", "target_ref", id="raw-email"),
         pytest.param("request_12345", "target_ref", id="raw-request-id"),
@@ -661,3 +668,83 @@ def test_record_purge_target_validates_target_ref_contract(storage, target_ref, 
             phase="delete",
             status="running",
         )
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value"),
+    [
+        pytest.param("subject_ref", "subref_v1_alice@example.com", id="subject-email"),
+        pytest.param("request_ref", "reqref_v1_request_123", id="request-like"),
+        pytest.param("request_ref", "reqref_v1_target", id="request-placeholder"),
+    ],
+)
+def test_append_audit_event_rejects_prefix_only_refs(storage, field_name, value):
+    event = AuditEvent(
+        org_id="org1",
+        operation="EXPORT",
+        entity_type="request",
+        subject_ref=SUBJECT_REF,
+        request_ref=REQUEST_REF,
+        idempotency_key="export_2",
+    ).model_copy(update={field_name: value})
+
+    with pytest.raises(ValueError, match=field_name):
+        storage.append_audit_event(event)
+
+
+@pytest.mark.parametrize(
+    "idempotency_key",
+    ["alice@example.com", "request_123", "reqref_v1_target", "alice"],
+)
+def test_governance_persistence_rejects_unsafe_idempotency_keys(storage, idempotency_key):
+    event = AuditEvent(
+        org_id="org1",
+        operation="EXPORT",
+        entity_type="request",
+        subject_ref=SUBJECT_REF,
+        request_ref=REQUEST_REF,
+        idempotency_key=idempotency_key,
+    )
+    with pytest.raises(ValueError, match="idempotency_key"):
+        storage.append_audit_event(event)
+
+    with pytest.raises(ValueError, match="idempotency_key"):
+        storage.begin_purge_operation(
+            purge_id="purge_unsafe_idem",
+            idempotency_key=idempotency_key,
+            operation_type="user_erasure",
+            scope_type="user",
+            subject_ref=SUBJECT_REF,
+            request_ref=REQUEST_REF,
+        )
+
+
+def test_append_audit_event_rejects_user_like_entity_id(storage):
+    event = AuditEvent(
+        org_id="org1",
+        operation="EXPORT",
+        entity_type="request",
+        entity_id="alice",
+        subject_ref=SUBJECT_REF,
+        request_ref=REQUEST_REF,
+        idempotency_key="export_3",
+    )
+
+    with pytest.raises(ValueError, match="entity_id"):
+        storage.append_audit_event(event)
+
+
+@pytest.mark.parametrize("detail", [{"status": "alice"}, {"route": "alice"}])
+def test_governance_detail_rejects_user_like_status_and_route(storage, detail):
+    event = AuditEvent(
+        org_id="org1",
+        operation="EXPORT",
+        entity_type="request",
+        subject_ref=SUBJECT_REF,
+        request_ref=REQUEST_REF,
+        idempotency_key="export_4",
+        detail=detail,
+    )
+
+    with pytest.raises(ValueError, match="status|route"):
+        storage.append_audit_event(event)
