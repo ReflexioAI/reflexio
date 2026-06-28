@@ -14,6 +14,7 @@ import threading
 import time
 from collections.abc import Callable
 
+from reflexio.models.config_schema import GovernanceRetentionConfig
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.tracing import capture_anomaly
 
@@ -27,6 +28,16 @@ _MIN_POLL_SECONDS = 1
 _HIGH_VOLUME_THRESHOLD = 1000
 
 _ENTITY_TYPES = ("user_playbook", "agent_playbook", "profile")
+
+
+def _is_governance_retention_enabled(
+    governance_retention: GovernanceRetentionConfig,
+) -> bool:
+    return (
+        governance_retention.purge_expired_profiles_enabled
+        or governance_retention.row_count_retention_enabled
+        or governance_retention.audit_events_retention_enabled
+    )
 
 
 class LineageGCScheduler:
@@ -97,21 +108,31 @@ class LineageGCScheduler:
             try:
                 ctx = self.request_context_factory(org_id)
                 cfg = ctx.configurator.get_config()
-                if not cfg.lineage_gc.enabled:
-                    continue
                 if ctx.storage is None:
                     continue
-                older_than_epoch = (
-                    int(time.time())
-                    - cfg.lineage_gc.tombstone_grace_window_days * 86400
+                run_tombstone_gc = cfg.lineage_gc.enabled
+                run_governance_gc = _is_governance_retention_enabled(
+                    cfg.governance_retention
                 )
+                if not run_tombstone_gc and not run_governance_gc:
+                    continue
+
                 total_deleted = 0
-                for entity_type in _ENTITY_TYPES:
-                    count = ctx.storage.gc_expired_tombstones(
-                        entity_type=entity_type,
-                        older_than_epoch=older_than_epoch,
+                if run_tombstone_gc:
+                    older_than_epoch = (
+                        int(time.time())
+                        - cfg.lineage_gc.tombstone_grace_window_days * 86400
                     )
-                    total_deleted += count
+                    for entity_type in _ENTITY_TYPES:
+                        count = ctx.storage.gc_expired_tombstones(
+                            entity_type=entity_type,
+                            older_than_epoch=older_than_epoch,
+                        )
+                        total_deleted += count
+                if run_governance_gc:
+                    total_deleted += ctx.storage.gc_governance_retention(
+                        config=cfg.governance_retention
+                    )
                 if total_deleted:
                     logger.info(
                         "event=lineage_gc_tick org_id=%s deleted=%d",

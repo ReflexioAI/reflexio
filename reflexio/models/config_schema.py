@@ -708,6 +708,14 @@ class LineageGCConfig(BaseModel):
     poll_interval_seconds: int = Field(default=86400, gt=0)
 
 
+class GovernanceRetentionConfig(BaseModel):
+    purge_expired_profiles_enabled: bool = False
+    row_count_retention_enabled: bool = False
+    audit_events_retention_enabled: bool = False
+    audit_events_retention_days: int = Field(default=365, gt=0)
+    audit_events_delete_batch_limit: int = Field(default=500, gt=0)
+
+
 @dataclass(frozen=True)
 class EffectivePendingToolCallConfig:
     """Resolved pending-tool-call settings after applying tool overrides."""
@@ -847,6 +855,9 @@ class Config(BaseModel):
     )
     # Tombstone GC job gate (opt-in, off by default — see LineageGCConfig)
     lineage_gc: LineageGCConfig = Field(default_factory=LineageGCConfig)
+    governance_retention: GovernanceRetentionConfig = Field(
+        default_factory=GovernanceRetentionConfig
+    )
     # Optional non-blocking async information tools for classic extraction.
     pending_tool_call_config: PendingToolCallConfig = Field(
         default_factory=PendingToolCallConfig
@@ -905,6 +916,7 @@ class Config(BaseModel):
                 "reflection_config",
                 "playbook_optimizer_config",
                 "lineage_gc",
+                "governance_retention",
                 "pending_tool_call_config",
                 "retrieval_floor",
             ):

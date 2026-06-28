@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from abc import abstractmethod
-from typing import Any, Literal
+from typing import Literal
 
 from reflexio.models.api_schema.domain.governance import (
     AuditEvent,
     PurgeOperation,
     PurgeOperationTarget,
 )
+from reflexio.models.config_schema import GovernanceRetentionConfig
 
 
 class GovernanceMixin:
@@ -107,5 +108,5 @@ class GovernanceMixin:
         raise NotImplementedError
 
     @abstractmethod
-    def gc_governance_retention(self, *, config: Any) -> int:
+    def gc_governance_retention(self, *, config: GovernanceRetentionConfig) -> int:
         raise NotImplementedError
