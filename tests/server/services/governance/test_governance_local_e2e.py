@@ -141,6 +141,14 @@ def test_local_governance_e2e_erases_exports_audits_and_rebuilds_shared_aggregat
         rationale="alicerationaleunique",
     )
     storage.save_user_playbooks([alice_playbook])
+    alice_orphan_playbook = _user_playbook(
+        user_id="alice",
+        request_id=alice_request_id,
+        content="aliceorphansourcetoken",
+        trigger="aliceorphantrigger",
+        rationale="aliceorphanrationale",
+    )
+    storage.save_user_playbooks([alice_orphan_playbook])
 
     storage.add_request(
         _request(request_id=bob_request_id, user_id="bob", session_id="sess-bob")
@@ -195,6 +203,24 @@ def test_local_governance_e2e_erases_exports_audits_and_rebuilds_shared_aggregat
             ),
         ],
     )
+    orphan_playbook = storage.save_agent_playbooks(
+        [
+            _agent_playbook(
+                content="aliceorphansourcetoken",
+                trigger="aliceorphantrigger",
+                rationale="aliceorphanrationale",
+            )
+        ]
+    )[0]
+    storage.set_source_windows_for_agent_playbook(
+        orphan_playbook.agent_playbook_id,
+        [
+            AgentPlaybookSourceWindow(
+                user_playbook_id=alice_orphan_playbook.user_playbook_id,
+                source_interaction_ids=[303],
+            ),
+        ],
+    )
 
     service = GovernanceService(
         storage=storage,
@@ -215,9 +241,10 @@ def test_local_governance_e2e_erases_exports_audits_and_rebuilds_shared_aggregat
     assert [request["request_id"] for request in exported.bundle["requests"]] == [
         alice_request_id
     ]
-    assert [playbook["user_playbook_id"] for playbook in exported.bundle["user_playbooks"]] == [
-        alice_playbook.user_playbook_id
-    ]
+    assert {playbook["user_playbook_id"] for playbook in exported.bundle["user_playbooks"]} == {
+        alice_playbook.user_playbook_id,
+        alice_orphan_playbook.user_playbook_id,
+    }
 
     export_events = [
         event
@@ -225,7 +252,7 @@ def test_local_governance_e2e_erases_exports_audits_and_rebuilds_shared_aggregat
         if event.operation == "EXPORT"
     ]
     assert len(export_events) == 1
-    assert export_events[0].detail == {"count": 5}
+    assert export_events[0].detail == {"count": 6}
     export_dump = export_events[0].model_dump_json()
     assert "alice" not in export_dump
     assert alice_request_id not in export_dump
@@ -237,8 +264,11 @@ def test_local_governance_e2e_erases_exports_audits_and_rebuilds_shared_aggregat
     assert erased.deleted_counts["interactions"] == 1
     assert erased.deleted_counts["profiles"] == 1
     assert erased.deleted_counts["requests"] == 1
-    assert erased.deleted_counts["user_playbooks"] == 1
-    assert erased.rebuilt_agent_playbook_ids == [shared_playbook.agent_playbook_id]
+    assert erased.deleted_counts["user_playbooks"] == 2
+    assert set(erased.rebuilt_agent_playbook_ids) == {
+        shared_playbook.agent_playbook_id,
+        orphan_playbook.agent_playbook_id,
+    }
 
     assert storage.get_user_interaction("alice") == []
     assert storage.get_user_profile("alice") == []
@@ -262,10 +292,25 @@ def test_local_governance_e2e_erases_exports_audits_and_rebuilds_shared_aggregat
             source_interaction_ids=[202],
         )
     ]
+    assert storage.get_agent_playbook_by_id(orphan_playbook.agent_playbook_id) is None
+    assert orphan_playbook.agent_playbook_id not in {
+        playbook.agent_playbook_id for playbook in storage.get_agent_playbooks(limit=10)
+    }
+    assert (
+        storage.get_source_windows_for_agent_playbook(orphan_playbook.agent_playbook_id)
+        == []
+    )
 
     assert storage.search_agent_playbooks(
         SearchAgentPlaybookRequest(
             query="aliceuniquesourcetoken",
+            top_k=10,
+            search_mode=SearchMode.FTS,
+        )
+    ) == []
+    assert storage.search_agent_playbooks(
+        SearchAgentPlaybookRequest(
+            query="aliceorphansourcetoken",
             top_k=10,
             search_mode=SearchMode.FTS,
         )

@@ -883,6 +883,9 @@ class _SQLiteGovernanceDeps(Protocol):
     ) -> None:
         ...
 
+    def _get_embedding(self, text: str) -> list[float]:
+        ...
+
     def set_source_windows_for_agent_playbook(
         self, agent_playbook_id: int, windows: list[AgentPlaybookSourceWindow]
     ) -> None:
@@ -931,6 +934,43 @@ class SQLiteGovernanceMixin:
                    (agent_playbook_id, user_playbook_id, source_interaction_ids)
                    VALUES (?, ?, ?)""",
                 source_window_rows,
+            )
+
+    def _delete_agent_playbook_search_rows_locked(self, agent_playbook_id: int) -> None:
+        self.conn.execute(
+            "DELETE FROM agent_playbooks_fts WHERE rowid = ?",
+            (agent_playbook_id,),
+        )
+        if self._deps()._has_sqlite_vec:
+            self.conn.execute(
+                "DELETE FROM agent_playbooks_vec WHERE rowid = ?",
+                (agent_playbook_id,),
+            )
+
+    def _upsert_agent_playbook_search_rows_locked(
+        self,
+        *,
+        agent_playbook_id: int,
+        trigger: str | None,
+        content: str,
+        expanded_terms: str | None,
+        embedding: list[float],
+    ) -> None:
+        self._delete_agent_playbook_search_rows_locked(agent_playbook_id)
+        fts_parts = [trigger or "", content]
+        if expanded_terms:
+            fts_parts.append(expanded_terms)
+        self.conn.execute(
+            "INSERT INTO agent_playbooks_fts(rowid, search_text) VALUES (?, ?)",
+            (
+                agent_playbook_id,
+                " ".join(part for part in fts_parts if part) or "",
+            ),
+        )
+        if self._deps()._has_sqlite_vec and embedding:
+            self.conn.execute(
+                "INSERT INTO agent_playbooks_vec(rowid, embedding) VALUES (?, ?)",
+                (agent_playbook_id, json.dumps(embedding)),
             )
 
     def _validate_prepared_delete_target_matrix_locked(self, purge_id: str) -> None:
@@ -1671,7 +1711,10 @@ class SQLiteGovernanceMixin:
             "remaining_source_windows", remaining_source_windows
         )
         canonical_remaining_windows = [window.model_dump() for window in windows]
-        rebuilt_playbook_id: int | None = None
+        content_value = content or ""
+        trigger_value = trigger or None
+        embedding_text = trigger_value or content_value
+        embedding = self._deps()._get_embedding(embedding_text) if embedding_text else []
         with self._lock:
             try:
                 self.conn.execute("BEGIN")
@@ -1715,29 +1758,52 @@ class SQLiteGovernanceMixin:
                 ).fetchone()
                 if hide_target_row is None or hide_target_row["status"] != "complete":
                     raise ValueError("hide_for_rebuild target must be complete")
-                cur = self.conn.execute(
-                    """UPDATE agent_playbooks
-                       SET content = ?, trigger = ?, rationale = ?, blocking_issue = ?,
-                           expanded_terms = ?, tags = ?, status = ?
-                       WHERE agent_playbook_id = ?""",
-                    (
-                        content or "",
-                        trigger,
-                        rationale,
-                        json.dumps(blocking_issue) if blocking_issue is not None else None,
-                        expanded_terms,
-                        _json_dumps(tags),
-                        previous_lifecycle_status,
-                        agent_playbook_id,
-                    ),
-                )
-                if cur.rowcount == 0:
-                    raise ValueError(
-                        f"Agent playbook with ID {agent_playbook_id} not found"
+                if windows:
+                    cur = self.conn.execute(
+                        """UPDATE agent_playbooks
+                           SET content = ?, trigger = ?, rationale = ?, blocking_issue = ?,
+                               embedding = ?, expanded_terms = ?, tags = ?, status = ?
+                           WHERE agent_playbook_id = ?""",
+                        (
+                            content_value,
+                            trigger_value,
+                            rationale,
+                            json.dumps(blocking_issue) if blocking_issue is not None else None,
+                            _json_dumps(embedding),
+                            expanded_terms,
+                            _json_dumps(tags),
+                            previous_lifecycle_status,
+                            agent_playbook_id,
+                        ),
                     )
-                self._replace_agent_playbook_source_windows_locked(
-                    agent_playbook_id, windows
-                )
+                    if cur.rowcount == 0:
+                        raise ValueError(
+                            f"Agent playbook with ID {agent_playbook_id} not found"
+                        )
+                    self._replace_agent_playbook_source_windows_locked(
+                        agent_playbook_id, windows
+                    )
+                    self._upsert_agent_playbook_search_rows_locked(
+                        agent_playbook_id=agent_playbook_id,
+                        trigger=trigger_value,
+                        content=content_value,
+                        expanded_terms=expanded_terms,
+                        embedding=embedding,
+                    )
+                else:
+                    self._delete_agent_playbook_search_rows_locked(agent_playbook_id)
+                    self.conn.execute(
+                        "DELETE FROM agent_playbook_source_user_playbooks WHERE agent_playbook_id = ?",
+                        (agent_playbook_id,),
+                    )
+                    cur = self.conn.execute(
+                        "DELETE FROM agent_playbooks WHERE agent_playbook_id = ?",
+                        (agent_playbook_id,),
+                    )
+                    if cur.rowcount == 0:
+                        raise ValueError(
+                            f"Agent playbook with ID {agent_playbook_id} not found"
+                        )
                 self._record_purge_target_locked(
                     purge_id=purge_id,
                     target_name="agent_playbook",
@@ -1749,19 +1815,9 @@ class SQLiteGovernanceMixin:
                     error_detail=None,
                 )
                 self.conn.commit()
-                rebuilt_playbook_id = agent_playbook_id
             except Exception:
                 self.conn.rollback()
                 raise
-        if rebuilt_playbook_id is None:
-            raise ValueError(f"Agent playbook with ID {agent_playbook_id} not found")
-        rebuilt_playbook = self._deps().get_agent_playbook_by_id(
-            rebuilt_playbook_id,
-            include_tombstones=True,
-        )
-        if rebuilt_playbook is None:
-            raise ValueError(f"Agent playbook with ID {agent_playbook_id} not found")
-        self._deps()._index_agent_playbook_fts_vec(rebuilt_playbook)
 
     def complete_purge_operation_with_audit(
         self, purge_id: str, audit_event: AuditEvent

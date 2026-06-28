@@ -1214,13 +1214,13 @@ def test_apply_governance_agent_playbook_rebuild_succeeds_after_prepare_and_hide
     ]
 
 
-def test_apply_governance_agent_playbook_rebuild_rolls_back_partial_updates_on_failure(
+def test_apply_governance_agent_playbook_rebuild_does_not_complete_target_when_search_refresh_fails(
     storage, monkeypatch
 ):
-    purge_id = "purge_rebuild_rollback"
+    purge_id = "purge_rebuild_search_refresh_failure"
     storage.begin_purge_operation(
         purge_id=purge_id,
-        idempotency_key="idem_purge_rebuild_rollback",
+        idempotency_key="idem_purge_rebuild_search_refresh_failure",
         operation_type="user_erasure",
         scope_type="user",
         subject_ref=SUBJECT_REF,
@@ -1266,14 +1266,22 @@ def test_apply_governance_agent_playbook_rebuild_rolls_back_partial_updates_on_f
     ).fetchone()
     assert original_row is not None
     original_windows = storage.get_source_windows_for_agent_playbook(agent_playbook_id)
-    original_record = storage._record_purge_target_locked
+    original_fts_row = storage.conn.execute(
+        "SELECT search_text FROM agent_playbooks_fts WHERE rowid = ?",
+        (agent_playbook_id,),
+    ).fetchone()
+    assert original_fts_row is not None
 
-    def fail_record_target(*args, **kwargs):
-        raise RuntimeError("target completion failed")
+    def fail_search_refresh(*args, **kwargs):
+        raise RuntimeError("search refresh failed")
 
-    monkeypatch.setattr(storage, "_record_purge_target_locked", fail_record_target)
+    monkeypatch.setattr(
+        storage,
+        "_upsert_agent_playbook_search_rows_locked",
+        fail_search_refresh,
+    )
 
-    with pytest.raises(RuntimeError, match="target completion failed"):
+    with pytest.raises(RuntimeError, match="search refresh failed"):
         storage.apply_governance_agent_playbook_rebuild(
             purge_id=purge_id,
             agent_playbook_id=agent_playbook_id,
@@ -1288,7 +1296,6 @@ def test_apply_governance_agent_playbook_rebuild_rolls_back_partial_updates_on_f
             tags=["rebuilt"],
         )
 
-    monkeypatch.setattr(storage, "_record_purge_target_locked", original_record)
     assert (
         storage.conn.execute(
             """SELECT content, trigger, rationale, blocking_issue, expanded_terms, tags, status
@@ -1299,6 +1306,13 @@ def test_apply_governance_agent_playbook_rebuild_rolls_back_partial_updates_on_f
         == original_row
     )
     assert storage.get_source_windows_for_agent_playbook(agent_playbook_id) == original_windows
+    assert (
+        storage.conn.execute(
+            "SELECT search_text FROM agent_playbooks_fts WHERE rowid = ?",
+            (agent_playbook_id,),
+        ).fetchone()
+        == original_fts_row
+    )
     rebuild_target = next(
         target
         for target in storage.list_purge_targets(
@@ -1308,6 +1322,101 @@ def test_apply_governance_agent_playbook_rebuild_rolls_back_partial_updates_on_f
         and target.target_ref == str(agent_playbook_id)
     )
     assert rebuild_target.status == "running"
+
+
+def test_apply_governance_agent_playbook_rebuild_removes_orphaned_aggregate_when_no_sources_remain(
+    storage,
+):
+    purge_id = "purge_rebuild_remove_orphan"
+    storage.begin_purge_operation(
+        purge_id=purge_id,
+        idempotency_key="idem_purge_rebuild_remove_orphan",
+        operation_type="user_erasure",
+        scope_type="user",
+        subject_ref=SUBJECT_REF,
+        request_ref=REQUEST_REF,
+    )
+    agent_playbook_id = _seed_agent_playbook(
+        storage,
+        status=Status.ARCHIVE_IN_PROGRESS,
+        source_windows=[
+            AgentPlaybookSourceWindow(user_playbook_id=7, source_interaction_ids=[101]),
+        ],
+    )
+    storage.record_purge_target(
+        purge_id=purge_id,
+        target_name="agent_playbook",
+        target_ref=str(agent_playbook_id),
+        phase="rebuild_without_erased_sources",
+        status="running",
+        detail={
+            "original_source_windows": [
+                {"user_playbook_id": 7, "source_interaction_ids": [101]},
+            ],
+            "previous_lifecycle_status": Status.ARCHIVED.value,
+            "remaining_source_windows": [],
+        },
+    )
+    storage.record_purge_target(
+        purge_id=purge_id,
+        target_name="agent_playbook",
+        target_ref=str(agent_playbook_id),
+        phase="hide_for_rebuild",
+        status="complete",
+    )
+
+    storage.apply_governance_agent_playbook_rebuild(
+        purge_id=purge_id,
+        agent_playbook_id=agent_playbook_id,
+        remaining_source_windows=[],
+        content=None,
+        trigger=None,
+        rationale=None,
+        blocking_issue=None,
+        expanded_terms=None,
+        tags=None,
+    )
+
+    rebuild_target = next(
+        target
+        for target in storage.list_purge_targets(
+            purge_id, phase="rebuild_without_erased_sources"
+        )
+        if target.target_name == "agent_playbook"
+        and target.target_ref == str(agent_playbook_id)
+    )
+    assert rebuild_target.status == "complete"
+    assert storage.get_agent_playbook_by_id(agent_playbook_id) is None
+    assert storage.get_agent_playbook_by_id(
+        agent_playbook_id,
+        include_tombstones=True,
+    ) is None
+    assert storage.get_source_windows_for_agent_playbook(agent_playbook_id) == []
+    assert (
+        storage.conn.execute(
+            "SELECT COUNT(*) FROM agent_playbooks WHERE agent_playbook_id = ?",
+            (agent_playbook_id,),
+        ).fetchone()[0]
+        == 0
+    )
+    assert (
+        storage.conn.execute(
+            "SELECT COUNT(*) FROM agent_playbooks_fts WHERE rowid = ?",
+            (agent_playbook_id,),
+        ).fetchone()[0]
+        == 0
+    )
+    if storage._has_sqlite_vec:
+        assert (
+            storage.conn.execute(
+                "SELECT COUNT(*) FROM agent_playbooks_vec WHERE rowid = ?",
+                (agent_playbook_id,),
+            ).fetchone()[0]
+            == 0
+        )
+    assert storage.search_agent_playbooks(
+        SearchAgentPlaybookRequest(query="original content", top_k=10)
+    ) == []
 
 
 def test_apply_governance_agent_playbook_rebuild_restores_previous_lifecycle_status(
