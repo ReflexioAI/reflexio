@@ -1,0 +1,962 @@
+cases:
+  - id: p_customer_enterprise_refund
+    vertical: customer_support
+    description: Enterprise refund correction lacks the approved positive procedure.
+    agent_context_prompt: "Agent supports SaaS customer accounts across self-serve and enterprise plans."
+    extraction_definition_prompt: "Extract durable support playbooks that change future account-handling behavior."
+    tool_can_use:
+      - "lookup_account: Read customer account tier and contract metadata."
+      - "create_case: Create an internal follow-up case."
+    sessions:
+      - role: User
+        content: >-
+          The renewal invoice posted this morning even though procurement asked us
+          to hold it. Can you refund it today so our PO does not get tangled up?
+      - role: Assistant
+        content: >-
+          I checked the account and invoice record. It looks like the invoice is
+          still recent, so I can reverse the charge and note that procurement had
+          requested a hold.
+      - role: User
+        content: >-
+          Please do not reverse it directly. We are enterprise, and that bypasses
+          our refund process. I do not have the name of the internal route in
+          front of me, but finance gets very unhappy when support promises or
+          issues these immediately.
+      - role: Assistant
+        content: >-
+          Thanks for stopping me. I will not promise or issue the refund from
+          here, and I will keep the response limited to acknowledging the billing
+          issue while it goes through the proper enterprise refund process.
+    expected_ask_human: true
+    expected_playbooks_needed: true
+    expected_question_must_include: ["enterprise", "refund"]
+    label_rationale: "The transcript supports avoiding instant enterprise refunds, but the approved enterprise refund path is missing shared org policy."
+
+  - id: p_customer_outage_escalation_queue
+    vertical: customer_support
+    description: Support escalation correction lacks the correct outage queue or routing target.
+    agent_context_prompt: "Agent triages customer reports for a cloud communications product."
+    extraction_definition_prompt: "Extract durable support escalation playbooks."
+    tool_can_use:
+      - "status_page: Check public incident status."
+      - "create_case: Create support cases."
+    sessions:
+      - role: User
+        content: >-
+          Our SMS traffic has been down for about twenty minutes in EU West.
+          Messages are accepted by the API but nothing is delivering.
+      - role: Assistant
+        content: >-
+          I checked the public status page and do not see an active incident yet.
+          I can open a normal support case with the region, timestamps, and sample
+          message IDs, then keep watching for a status-page update.
+      - role: User
+        content: >-
+          A normal support case is too slow for regional traffic loss. There is a
+          special outage route for this, but I do not know the queue name.
+      - role: Assistant
+        content: >-
+          Understood. I should not treat regional message delivery loss as a
+          standard ticket just because the public status page is quiet. I will
+          avoid giving a wait-and-see answer and flag that this needs the outage
+          escalation route.
+    expected_ask_human: true
+    expected_playbooks_needed: true
+    expected_question_must_include: ["regional outage", "queue"]
+    label_rationale: "A durable escalation playbook needs the exact shared routing target; the transcript only says the normal ticket path is wrong."
+
+  - id: p_education_accommodation_policy
+    vertical: education
+    description: Tutoring correction names an accommodation category but not the approved handling policy.
+    agent_context_prompt: "Agent tutors students and coordinates with school staff when policies require it."
+    extraction_definition_prompt: "Extract durable tutoring and education-support playbooks."
+    tool_can_use:
+      - "lesson_notes: Review prior lesson notes."
+      - "message_teacher: Send teacher-facing notes."
+    sessions:
+      - role: User
+        content: >-
+          I keep freezing during timed algebra quizzes. Can we just skip the
+          timed parts when we practice?
+      - role: Assistant
+        content: >-
+          We can make practice feel less stressful. For today's session, I will
+          have you ignore the timer and focus on solving each problem accurately.
+      - role: User
+        content: >-
+          That is not how my accommodation works. There is a specific school
+          process for changing quiz conditions, and you should not improvise it
+          from my complaint.
+      - role: Assistant
+        content: >-
+          You are right. I can keep tutoring the algebra concept, but I should
+          not tell you to bypass or change timed-quiz conditions unless the
+          approved accommodation process says to do that.
+    expected_ask_human: true
+    expected_playbooks_needed: true
+    expected_question_must_include: ["accommodation", "process"]
+    label_rationale: "The future rule needs the school's approved accommodation process, which is shared context not present in the dialogue."
+
+  - id: p_education_grading_rubric
+    vertical: education
+    description: Grading feedback correction lacks the department's required rubric workflow.
+    agent_context_prompt: "Agent helps teaching assistants draft feedback for student writing."
+    extraction_definition_prompt: "Extract durable teaching-assistant playbooks."
+    tool_can_use:
+      - "course_materials: Search course policies and assignment sheets."
+    sessions:
+      - role: User
+        content: >-
+          This essay is disorganized and the citations are thin. Can you draft
+          feedback and suggest a grade for the TA notes?
+      - role: Assistant
+        content: >-
+          Based on the draft, I would mark it around a C: the thesis arrives late,
+          the topic sentences do not guide the reader, and the evidence is not
+          consistently cited.
+      - role: User
+        content: >-
+          We cannot assign grades from impressions like that. Composition uses a
+          departmental rubric and a calibration step before feedback goes out.
+      - role: Assistant
+        content: >-
+          Got it. I should not grade the essay from my own general writing
+          judgment when this course requires the department rubric and calibration
+          workflow.
+    expected_ask_human: true
+    expected_playbooks_needed: true
+    expected_question_must_include: ["rubric", "calibration"]
+    label_rationale: "The correction establishes a durable issue, but the rubric/calibration procedure is absent."
+
+  - id: p_finance_ips_review
+    vertical: finance
+    description: Portfolio advice correction lacks the firm's IPS review workflow.
+    agent_context_prompt: "Agent assists financial advisors with client-service drafts; it must not invent firm policy."
+    extraction_definition_prompt: "Extract durable financial-advisor support playbooks."
+    tool_can_use:
+      - "crm_profile: Read client profile facts."
+      - "portfolio_summary: Summarize holdings."
+    sessions:
+      - role: User
+        content: >-
+          Client asked whether we should move more cash into small-cap funds after
+          the rally. Can you draft a note for the advisor?
+      - role: Assistant
+        content: >-
+          I reviewed the portfolio summary. Since the current cash balance is
+          above target, I can draft a note saying a modest increase to small-cap
+          exposure may be reasonable if the client accepts the added volatility.
+      - role: User
+        content: >-
+          Stop. This client has an IPS. Allocation changes go through our review
+          process first, and the note should not imply a recommendation before
+          that happens.
+      - role: Assistant
+        content: >-
+          Understood. I should not draft or imply an allocation recommendation
+          for an IPS client before the firm's IPS review process is complete.
+    expected_ask_human: true
+    expected_playbooks_needed: true
+    expected_question_must_include: ["IPS", "review"]
+    label_rationale: "The extractor should not invent the firm's review process, but the missing shared process blocks a positive playbook."
+
+  - id: p_finance_options_approval
+    vertical: finance
+    description: Options-trading correction lacks the approval desk/procedure.
+    agent_context_prompt: "Agent supports a brokerage service team."
+    extraction_definition_prompt: "Extract durable brokerage service playbooks."
+    tool_can_use:
+      - "account_flags: Check account permissions."
+      - "secure_message: Send client messages."
+    sessions:
+      - role: User
+        content: >-
+          The client wants to write covered calls in the IRA. Can you send them
+          instructions for placing the order?
+      - role: Assistant
+        content: >-
+          I checked the account flags and see the IRA is active. I can draft a
+          secure message explaining where they would enter a covered-call order
+          and remind them to review the risks.
+      - role: User
+        content: >-
+          Do not send trading instructions yet. Options activity has to follow our
+          approval path first, and I do not want the message to get ahead of that.
+      - role: Assistant
+        content: >-
+          Thanks, I will not provide options-order instructions from this thread.
+          I should wait until the required options approval path is satisfied
+          before drafting anything that helps place the trade.
+    expected_ask_human: true
+    expected_playbooks_needed: true
+    expected_question_must_include: ["options", "approval"]
+    label_rationale: "A durable positive rule needs the approved options workflow, not just the avoidance."
+
+  - id: p_health_red_flag_triage
+    vertical: healthcare
+    description: Wellness assistant correction lacks the red-flag routing protocol.
+    agent_context_prompt: "Agent helps patients navigate a clinic portal but does not provide medical diagnosis."
+    extraction_definition_prompt: "Extract durable clinic-navigation playbooks."
+    tool_can_use:
+      - "book_visit: Book routine appointments."
+      - "message_care_team: Send portal messages."
+    sessions:
+      - role: User
+        content: >-
+          I have had chest tightness since this morning. Can you book the next
+          available visit with my primary-care doctor?
+      - role: Assistant
+        content: >-
+          I can help with scheduling. The next routine primary-care slot I see is
+          Thursday afternoon, and I can also send the care team a portal message
+          with your symptoms.
+      - role: User
+        content: >-
+          That should not be handled as routine scheduling. There is a red-flag
+          route for symptoms like this, but I do not remember the exact wording
+          the clinic wants us to use.
+      - role: Assistant
+        content: >-
+          You are right to call that out. I should not route chest tightness into
+          an ordinary appointment workflow, and I should avoid softening it into a
+          routine scheduling request.
+    expected_ask_human: true
+    expected_playbooks_needed: true
+    expected_question_must_include: ["red-flag", "route"]
+    label_rationale: "The transcript lacks the clinic's exact red-flag routing instruction needed for a positive playbook."
+
+  - id: p_health_proxy_privacy
+    vertical: healthcare
+    description: Caregiver privacy correction lacks the portal's proxy-consent policy.
+    agent_context_prompt: "Agent helps with patient portal account questions."
+    extraction_definition_prompt: "Extract durable patient-portal support playbooks."
+    tool_can_use:
+      - "account_access: Check portal access status."
+    sessions:
+      - role: User
+        content: >-
+          My dad asked me to check his lab appointment. Can you tell me what is on
+          his portal?
+      - role: Assistant
+        content: >-
+          I can help if the account shows you have access. If you give me his
+          portal email, I will look up the appointment details and summarize the
+          lab visit for you.
+      - role: User
+        content: >-
+          No, family relationship is not enough. Proxy access has a specific
+          consent policy, and I do not know the exact support script for it.
+      - role: Assistant
+        content: >-
+          Understood. I should not disclose or summarize patient portal details
+          just because someone says they are family, and I need to follow the
+          approved proxy-consent policy before discussing the account.
+    expected_ask_human: true
+    expected_playbooks_needed: true
+    expected_question_must_include: ["proxy", "consent"]
+    label_rationale: "The correction needs a durable proxy-consent procedure, which is missing shared policy."
+
+  - id: p_general_travel_policy
+    vertical: general_purpose
+    description: Travel booking correction lacks the company travel-policy approval path.
+    agent_context_prompt: "Agent acts as a general-purpose executive assistant for employees."
+    extraction_definition_prompt: "Extract durable executive-assistant playbooks."
+    tool_can_use:
+      - "calendar: Check calendar availability."
+      - "travel_search: Search flights and hotels."
+    sessions:
+      - role: User
+        content: >-
+          Book me the nonstop flight to Berlin. It is pricey, but it saves almost
+          five hours and I need to land before the partner dinner.
+      - role: Assistant
+        content: >-
+          I found a nonstop business fare that matches your calendar and arrives
+          in time. I can hold it now and complete the booking with your saved
+          traveler profile.
+      - role: User
+        content: >-
+          Pause before booking. Trips over the threshold need our travel-policy
+          approval flow first, and I do not remember which approver path applies
+          for international flights.
+      - role: Assistant
+        content: >-
+          Good catch. I will not book or hold the over-threshold fare yet. I
+          should treat this as requiring the company's travel approval flow before
+          taking action on the reservation.
+    expected_ask_human: true
+    expected_playbooks_needed: true
+    expected_question_must_include: ["travel", "approval"]
+    label_rationale: "The threshold workflow is shared company policy and is not present in the transcript."
+
+  - id: p_ops_canonical_deployment_target
+    vertical: digital_employee
+    description: Deployment correction lacks the canonical production target.
+    agent_context_prompt: "Agent works as a digital employee helping engineers operate internal services."
+    extraction_definition_prompt: "Extract durable internal-ops playbooks."
+    tool_can_use:
+      - "repo_search: Search repository files."
+      - "deploy_status: Read deployment status."
+    sessions:
+      - role: User
+        content: >-
+          Can you prep the release notes and deployment checklist for the payment
+          service?
+      - role: Assistant
+        content: >-
+          I searched the repository and saw Kubernetes manifests, so I drafted the
+          checklist around building the image, applying manifests, and watching
+          the rollout in the cluster.
+      - role: User
+        content: >-
+          That is the wrong production path for this service. We have one
+          canonical deployment target, but the repo has old artifacts that make it
+          easy to guess wrong.
+      - role: Assistant
+        content: >-
+          Thanks for the correction. I should not infer the production deployment
+          target from stray repo files when this service has a canonical path.
+    expected_ask_human: true
+    expected_playbooks_needed: true
+    expected_question_must_include: ["canonical", "deployment"]
+    label_rationale: "A positive deployment playbook must name the target/path, but it is not in the conversation, tools, or context."
+
+  - id: p_sales_discount_approval
+    vertical: sales
+    description: Discount correction lacks the required approval workflow.
+    agent_context_prompt: "Agent helps account executives draft renewal and expansion emails."
+    extraction_definition_prompt: "Extract durable sales-assistant playbooks."
+    tool_can_use:
+      - "crm_opportunity: Read opportunity fields."
+      - "email_draft: Draft customer emails."
+    sessions:
+      - role: User
+        content: >-
+          The customer is asking for 25 percent off if they sign this week. Draft
+          a reply that keeps the deal moving.
+      - role: Assistant
+        content: >-
+          I checked the opportunity and drafted a reply saying we can extend the
+          25 percent discount through Friday if they return the order form by
+          then.
+      - role: User
+        content: >-
+          Do not offer that. Discounts above our line require an approval path
+          first, and I do not know which approver chain this one needs.
+      - role: Assistant
+        content: >-
+          Understood. I should not commit to or imply approval for above-line
+          discounts in customer email until the required discount approval path is
+          complete.
+    expected_ask_human: true
+    expected_playbooks_needed: true
+    expected_question_must_include: ["discount", "approval"]
+    label_rationale: "The transcript lacks the concrete sales approval path needed to write a positive durable rule."
+
+  - id: p_legal_redline_policy
+    vertical: legal_compliance
+    description: Contract redline correction lacks the standard redline playbook.
+    agent_context_prompt: "Agent helps legal operations prepare contract review notes."
+    extraction_definition_prompt: "Extract durable legal-operations playbooks."
+    tool_can_use:
+      - "contract_search: Search contract templates."
+      - "matter_notes: Read matter notes."
+    sessions:
+      - role: User
+        content: >-
+          The vendor crossed out the data-processing addendum. Can you propose
+          fallback language so procurement has something to send back?
+      - role: Assistant
+        content: >-
+          I can draft a narrower fallback that keeps audit rights, breach notice,
+          and subprocessors in place while making the language shorter.
+      - role: User
+        content: >-
+          We do not freestyle DPA fallbacks. There is a standard redline policy
+          for this, but I do not have the policy text open right now.
+      - role: Assistant
+        content: >-
+          Understood. I should not invent replacement legal language when the DPA
+          has a standard redline policy. I will hold off on drafting fallback
+          terms until the approved approach is available.
+    expected_ask_human: true
+    expected_playbooks_needed: true
+    expected_question_must_include: ["DPA", "redline"]
+    label_rationale: "The exact standard redline policy is missing shared context; guessing it would hallucinate legal procedure."
+
+  - id: n_customer_refund_complete
+    vertical: customer_support
+    description: Complete enterprise refund procedure appears in the conversation.
+    agent_context_prompt: "Agent supports SaaS customer accounts."
+    extraction_definition_prompt: "Extract durable support playbooks."
+    tool_can_use:
+      - "lookup_account: Read customer account tier."
+      - "create_case: Create internal cases."
+    sessions:
+      - role: User
+        content: >-
+          Can you refund this enterprise renewal invoice? The customer says the
+          renewal was supposed to be on hold.
+      - role: Assistant
+        content: >-
+          I checked the account and see it is enterprise. I was going to reverse
+          the invoice directly since it posted today.
+      - role: User
+        content: >-
+          Use the enterprise refund workflow instead: open a Billing Review case,
+          tag it Finance Hold, include the renewal invoice ID and procurement
+          note, and wait for finance approval before promising a refund.
+      - role: Assistant
+        content: >-
+          Got it. I will open a Billing Review case tagged Finance Hold with the
+          invoice ID and procurement note, and I will not promise the refund until
+          finance approves it.
+    expected_ask_human: false
+    expected_playbooks_needed: true
+    label_rationale: "The positive action is explicitly grounded in the user correction, so no human question is needed."
+
+  - id: n_customer_avoid_order_status
+    vertical: customer_support
+    description: Only an avoidance rule is grounded for unavailable order status.
+    agent_context_prompt: "Agent handles ecommerce support without direct carrier-system access."
+    extraction_definition_prompt: "Extract durable support playbooks."
+    tool_can_use:
+      - "order_lookup: Read internal order records."
+    sessions:
+      - role: User
+        content: "Where is my replacement shipment? I need to know if it arrives tomorrow."
+      - role: Assistant
+        content: >-
+          I can see the replacement order was packed and handed off yesterday. It
+          should arrive tomorrow based on that timeline.
+      - role: User
+        content: >-
+          Please do not say that. You do not have live carrier status here, so you
+          cannot know the delivery date.
+      - role: Assistant
+        content: >-
+          You are right. I can say the internal record shows handoff happened, but
+          I should not claim a delivery date when live carrier status is not
+          connected.
+    expected_ask_human: false
+    expected_playbooks_needed: true
+    label_rationale: "A grounded avoidance playbook is enough; the missing shipment fact is user-specific and not a shared durable policy."
+
+  - id: n_education_hint_style_complete
+    vertical: education
+    description: The correct tutoring behavior is stated in the conversation.
+    agent_context_prompt: "Agent tutors middle-school math."
+    extraction_definition_prompt: "Extract durable tutoring playbooks."
+    tool_can_use:
+      - "lesson_notes: Review prior lessons."
+    sessions:
+      - role: User
+        content: "Can you solve this equation for me? 3x - 4 = 23."
+      - role: Assistant
+        content: "Sure. Add 4 to both sides to get 3x = 27, then divide by 3, so x = 9."
+      - role: User
+        content: >-
+          Do not jump to the final answer for practice problems. Give one hint at
+          a time, ask me to try the next step, and only reveal the answer if I ask
+          after trying.
+      - role: Assistant
+        content: >-
+          Understood. For practice problems, I should scaffold one hint at a time
+          and ask you to attempt the next step before I give the full solution.
+    expected_ask_human: false
+    expected_playbooks_needed: true
+    label_rationale: "The positive durable tutoring procedure is fully stated."
+
+  - id: n_education_no_answer_key
+    vertical: education
+    description: The missing answer key is task-specific, not a durable org policy.
+    agent_context_prompt: "Agent helps students study but cannot access hidden answer keys."
+    extraction_definition_prompt: "Extract durable tutoring playbooks."
+    tool_can_use:
+      - "lesson_notes: Review prior lessons."
+    sessions:
+      - role: User
+        content: >-
+          My worksheet says question 12 has a typo. What do you think the
+          intended answer was supposed to be?
+      - role: Assistant
+        content: >-
+          Looking at the numbers you typed, the intended answer was probably 42,
+          assuming the missing sign was a plus.
+      - role: User
+        content: >-
+          Please do not guess answer keys. If the worksheet is ambiguous, say it
+          is ambiguous and explain what information is missing.
+      - role: Assistant
+        content: >-
+          You are right. I should not invent an answer key when the prompt is
+          ambiguous; I should name the ambiguity and show what would be needed to
+          solve it.
+    expected_ask_human: false
+    expected_playbooks_needed: true
+    label_rationale: "The durable lesson is avoidance; asking Agent Builder for a private worksheet answer would be wrong."
+
+  - id: n_finance_tax_boundary_complete
+    vertical: finance
+    description: Tax-advice boundary and positive wording are complete.
+    agent_context_prompt: "Agent supports financial planning conversations but does not provide tax advice."
+    extraction_definition_prompt: "Extract durable finance-support playbooks."
+    tool_can_use:
+      - "portfolio_summary: Summarize holdings."
+    sessions:
+      - role: User
+        content: "Should I sell this fund before year end for tax reasons?"
+      - role: Assistant
+        content: >-
+          Selling before year end should reduce your tax bill if you can realize a
+          loss, so I would consider doing it soon.
+      - role: User
+        content: >-
+          Do not give tax advice. Say we can discuss investment tradeoffs, but
+          they should confirm tax impact with their tax professional.
+      - role: Assistant
+        content: >-
+          Understood. I can discuss the investment tradeoffs of holding or
+          selling, but I should refer the tax impact to the client's tax
+          professional.
+    expected_ask_human: false
+    expected_playbooks_needed: true
+    label_rationale: "The user supplies both the avoidance and the correct positive response."
+
+  - id: n_finance_private_risk_tolerance
+    vertical: finance
+    description: Missing fact is private client risk tolerance.
+    agent_context_prompt: "Agent drafts advisor notes from available client context."
+    extraction_definition_prompt: "Extract durable advisor-assistant playbooks."
+    tool_can_use:
+      - "crm_profile: Read client profile."
+    sessions:
+      - role: User
+        content: "Draft an allocation note for Priya based on the CRM profile."
+      - role: Assistant
+        content: >-
+          I drafted that Priya is comfortable with high volatility and may want a
+          larger equity allocation because she has a long time horizon.
+      - role: User
+        content: >-
+          Do not assume her risk tolerance. The CRM notes do not say that, and it
+          is specific to Priya rather than a firm-wide rule.
+      - role: Assistant
+        content: >-
+          Got it. I should not invent a client's risk tolerance when the profile
+          does not state it. I can only mention facts that are actually present in
+          the client record.
+    expected_ask_human: false
+    expected_playbooks_needed: true
+    label_rationale: "The missing risk tolerance is user/client-scoped, not shared org context for ask_human."
+
+  - id: n_health_emergency_boundary_complete
+    vertical: healthcare
+    description: Emergency-routing language is fully stated.
+    agent_context_prompt: "Agent supports a clinic portal."
+    extraction_definition_prompt: "Extract durable clinic-navigation playbooks."
+    tool_can_use:
+      - "book_visit: Book routine visits."
+    sessions:
+      - role: User
+        content: "I fainted twice today. Should I wait for an appointment?"
+      - role: Assistant
+        content: >-
+          I can look for a next available appointment and send your care team a
+          note about the fainting episodes.
+      - role: User
+        content: >-
+          For fainting or chest pain, tell the patient to seek urgent or emergency
+          care now instead of routine booking. Do not just send a portal note.
+      - role: Assistant
+        content: >-
+          Understood. For fainting or chest-pain symptoms, I should route away
+          from routine scheduling and tell the patient to seek urgent or emergency
+          care now.
+    expected_ask_human: false
+    expected_playbooks_needed: true
+    label_rationale: "The durable red-flag behavior is stated by the user, so asking would be unnecessary."
+
+  - id: n_general_citations_complete
+    vertical: general_purpose
+    description: Research sourcing standard is fully specified.
+    agent_context_prompt: "Agent performs general research and drafting."
+    extraction_definition_prompt: "Extract durable general-assistant playbooks."
+    tool_can_use:
+      - "web_search: Search the web."
+    sessions:
+      - role: User
+        content: "Can you summarize the current city permit rules for sidewalk seating?"
+      - role: Assistant
+        content: >-
+          From what I know, most cities require a permit, proof of insurance, and
+          a clear pedestrian path. I can draft the summary from that.
+      - role: User
+        content: >-
+          For current rules, browse official city pages and cite the page you
+          used. Do not answer from memory or from generic permit knowledge.
+      - role: Assistant
+        content: >-
+          Got it. For current local rules, I should browse official city sources
+          and cite the specific page instead of answering from memory.
+    expected_ask_human: false
+    expected_playbooks_needed: true
+    label_rationale: "The positive procedure and source standard are explicit."
+
+  - id: n_ops_incident_severity_complete
+    vertical: digital_employee
+    description: Incident severity mapping is complete in the correction.
+    agent_context_prompt: "Agent helps an SRE team triage service incidents."
+    extraction_definition_prompt: "Extract durable internal-ops playbooks."
+    tool_can_use:
+      - "logs: Read service logs."
+      - "pager: Page responders."
+    sessions:
+      - role: User
+        content: "Checkout error rate is over 20 percent and support is getting reports."
+      - role: Assistant
+        content: >-
+          I checked the logs and can open a low-priority follow-up ticket for the
+          checkout team with the error samples.
+      - role: User
+        content: >-
+          Checkout errors above 10 percent are SEV2. Page the on-call and open
+          the incident channel; do not file it as a normal follow-up.
+      - role: Assistant
+        content: >-
+          Understood. Checkout error rate above 10 percent should be treated as
+          SEV2, with on-call paged and an incident channel opened.
+    expected_ask_human: false
+    expected_playbooks_needed: true
+    label_rationale: "The exact threshold and actions are stated."
+
+  - id: n_ops_prior_pending_attach
+    vertical: digital_employee
+    description: Matching pending request exists, so fresh ask_human is wrong.
+    agent_context_prompt: "Agent helps engineers operate services."
+    extraction_definition_prompt: "Extract durable internal-ops playbooks."
+    tool_can_use:
+      - "repo_search: Search repository files."
+    prior_pending_tool_calls:
+      - pending_tool_call_id: ptc_existing_deployment_target
+        question_text: "What is the canonical production deployment target for payment services?"
+        answer_format: "short text"
+        tags: ["deployment"]
+    sessions:
+      - role: User
+        content: >-
+          The release helper assumed Kubernetes for payment-service deployment
+          because it found old manifests in the repo.
+      - role: Assistant
+        content: >-
+          I agree that is not enough evidence. I know not to infer from stale repo
+          artifacts, but I still do not know the canonical production deployment
+          target for payment services.
+      - role: User
+        content: >-
+          Right, and that exact deployment-target clarification is already
+          pending from last week. Do not create another duplicate request for the
+          same missing fact.
+    expected_ask_human: false
+    expected_playbooks_needed: true
+    label_rationale: "The same missing shared fact is already pending; the model should attach rather than create a fresh ask_human."
+
+  - id: n_sales_crm_source_complete
+    vertical: sales
+    description: CRM source-of-truth rule is fully grounded.
+    agent_context_prompt: "Agent helps customer-success managers prepare renewal notes."
+    extraction_definition_prompt: "Extract durable sales and success playbooks."
+    tool_can_use:
+      - "crm_opportunity: Read CRM opportunity fields."
+      - "email_draft: Draft customer emails."
+    sessions:
+      - role: User
+        content: "Draft the renewal recap. The spreadsheet says the expansion is 180K."
+      - role: Assistant
+        content: >-
+          I used the spreadsheet amount in the recap and framed the renewal as a
+          180K expansion with next steps for legal review.
+      - role: User
+        content: >-
+          Use the CRM opportunity amount as source of truth. Spreadsheets are
+          scratch notes only, even when they look newer.
+      - role: Assistant
+        content: >-
+          Understood. For renewal recaps, I should use the CRM opportunity amount
+          as the source of truth and not rely on scratch spreadsheets.
+    expected_ask_human: false
+    expected_playbooks_needed: true
+    label_rationale: "The durable source-of-truth rule is directly stated."
+
+  - id: n_legal_confidentiality_complete
+    vertical: legal_compliance
+    description: Legal confidentiality boundary is complete.
+    agent_context_prompt: "Agent assists legal operations with matter coordination."
+    extraction_definition_prompt: "Extract durable legal-operations playbooks."
+    tool_can_use:
+      - "matter_notes: Read matter notes."
+    sessions:
+      - role: User
+        content: >-
+          Send the vendor our internal negotiation notes so they understand why
+          legal is taking longer.
+      - role: Assistant
+        content: >-
+          I can draft an email that includes the internal notes as background and
+          explains which issues are still being debated.
+      - role: User
+        content: >-
+          Never send internal negotiation notes externally. Summarize only the
+          customer-safe status, such as that review is ongoing and we will respond
+          after counsel finishes.
+      - role: Assistant
+        content: >-
+          Got it. I should never send internal negotiation notes externally; I
+          should provide only a customer-safe status summary.
+    expected_ask_human: false
+    expected_playbooks_needed: true
+    label_rationale: "The correction includes both the prohibition and replacement behavior."
+
+  - id: z_customer_routine_password_reset
+    vertical: customer_support
+    description: Routine successful support exchange has no reusable correction or shortcut.
+    agent_context_prompt: "Agent handles account support."
+    extraction_definition_prompt: "Extract durable support playbooks."
+    tool_can_use:
+      - "send_reset: Send password reset emails."
+    sessions:
+      - role: User
+        content: "I forgot my password and cannot get into the dashboard."
+      - role: Assistant
+        content: >-
+          I found the account email on file and sent a password reset link. It
+          should arrive within a minute, and the link expires after the standard
+          security window.
+      - role: User
+        content: "Thanks, the link arrived and I am back in."
+    expected_ask_human: false
+    expected_playbooks_needed: false
+    label_rationale: "Clean routine success with no reusable decision boundary or correction."
+
+  - id: z_customer_one_off_address
+    vertical: customer_support
+    description: One-off address update does not support a durable playbook.
+    agent_context_prompt: "Agent handles ecommerce support."
+    extraction_definition_prompt: "Extract durable support playbooks."
+    tool_can_use:
+      - "update_address: Update shipping address before fulfillment."
+    sessions:
+      - role: User
+        content: >-
+          Please change this order to ship to my office instead. It has not
+          fulfilled yet.
+      - role: Assistant
+        content: >-
+          I checked the order status and it is still before fulfillment. I updated
+          the shipping address to your office and left the billing address
+          unchanged.
+      - role: User
+        content: "Perfect, that is all I needed."
+    expected_ask_human: false
+    expected_playbooks_needed: false
+    label_rationale: "The interaction is one-off task completion, not a reusable behavior correction or optimized path."
+
+  - id: z_education_simple_explanation
+    vertical: education
+    description: Normal tutoring explanation with no correction.
+    agent_context_prompt: "Agent tutors students."
+    extraction_definition_prompt: "Extract durable tutoring playbooks."
+    tool_can_use:
+      - "lesson_notes: Review lesson notes."
+    sessions:
+      - role: User
+        content: "Can you explain why dividing by a fraction means multiplying by the reciprocal?"
+      - role: Assistant
+        content: >-
+          Yes. Think of 3 divided by 1/2 as asking how many half-sized pieces fit
+          into 3 wholes. There are 6 half-pieces, which is the same result as 3
+          times 2.
+      - role: User
+        content: "That makes sense now."
+    expected_ask_human: false
+    expected_playbooks_needed: false
+    label_rationale: "No correction, failed tool path, or durable policy emerges."
+
+  - id: z_education_single_assignment_fact
+    vertical: education
+    description: Assignment-specific fact should not become a playbook.
+    agent_context_prompt: "Agent helps with class logistics."
+    extraction_definition_prompt: "Extract durable education-support playbooks."
+    tool_can_use:
+      - "course_calendar: Read course calendar."
+    sessions:
+      - role: User
+        content: "When is my biology lab report due?"
+      - role: Assistant
+        content: >-
+          I checked the course calendar. The biology lab report is due Friday at
+          5 PM, and the upload link is listed under Week 6.
+      - role: User
+        content: "Thanks, I will submit it before then."
+    expected_ask_human: false
+    expected_playbooks_needed: false
+    label_rationale: "A one-off due date is not durable agent behavior."
+
+  - id: z_finance_market_fact
+    vertical: finance
+    description: One-off market-data lookup has no durable extraction signal.
+    agent_context_prompt: "Agent helps with financial information requests."
+    extraction_definition_prompt: "Extract durable finance-support playbooks."
+    tool_can_use:
+      - "market_data: Read market prices."
+    sessions:
+      - role: User
+        content: "What did the S&P 500 close at yesterday?"
+      - role: Assistant
+        content: >-
+          I checked the market-data feed. The S&P 500 close shown for yesterday is
+          the latest official close in the feed.
+      - role: User
+        content: "Okay, that is what I needed for my notes."
+    expected_ask_human: false
+    expected_playbooks_needed: false
+    label_rationale: "The exchange is a one-off factual lookup with no reusable correction."
+
+  - id: z_finance_simple_budget_math
+    vertical: finance
+    description: Simple calculation is completed without reusable policy.
+    agent_context_prompt: "Agent helps users with basic budgeting."
+    extraction_definition_prompt: "Extract durable finance-assistant playbooks."
+    tool_can_use:
+      - "calculator: Perform arithmetic."
+    sessions:
+      - role: User
+        content: "If rent is 2100 and utilities are 240, what is my monthly housing cost?"
+      - role: Assistant
+        content: "Your monthly housing cost is 2340: 2100 for rent plus 240 for utilities."
+      - role: User
+        content: "Great, thanks."
+    expected_ask_human: false
+    expected_playbooks_needed: false
+    label_rationale: "No durable agent improvement signal exists."
+
+  - id: z_health_hours_lookup
+    vertical: healthcare
+    description: Clinic-hours lookup is routine.
+    agent_context_prompt: "Agent helps patients navigate clinic logistics."
+    extraction_definition_prompt: "Extract durable clinic-support playbooks."
+    tool_can_use:
+      - "clinic_directory: Read clinic hours."
+    sessions:
+      - role: User
+        content: "Is the downtown lab open on Saturday?"
+      - role: Assistant
+        content: >-
+          I checked the clinic directory. The downtown lab is open Saturday from
+          8 AM to noon, and walk-ins close fifteen minutes before noon.
+      - role: User
+        content: "Thanks, I will go in the morning."
+    expected_ask_human: false
+    expected_playbooks_needed: false
+    label_rationale: "Routine lookup, no correction or reusable decision structure."
+
+  - id: z_health_reschedule_success
+    vertical: healthcare
+    description: Successful appointment reschedule has no playbook signal.
+    agent_context_prompt: "Agent helps with clinic scheduling."
+    extraction_definition_prompt: "Extract durable scheduling playbooks."
+    tool_can_use:
+      - "book_visit: Book and reschedule visits."
+    sessions:
+      - role: User
+        content: "Can you move my physical therapy appointment to next Tuesday?"
+      - role: Assistant
+        content: >-
+          I found an opening next Tuesday at 10 AM with the same therapist and
+          moved the appointment. The old appointment is canceled.
+      - role: User
+        content: "That works. Thank you."
+    expected_ask_human: false
+    expected_playbooks_needed: false
+    label_rationale: "The task completed normally with no durable behavior lesson."
+
+  - id: z_general_calendar_hold
+    vertical: general_purpose
+    description: Simple calendar hold is not a reusable playbook.
+    agent_context_prompt: "Agent helps with general administrative tasks."
+    extraction_definition_prompt: "Extract durable assistant playbooks."
+    tool_can_use:
+      - "calendar: Create calendar events."
+    sessions:
+      - role: User
+        content: "Hold 30 minutes tomorrow afternoon for the vendor call."
+      - role: Assistant
+        content: >-
+          I found a free slot at 2 PM tomorrow and placed a 30-minute hold titled
+          Vendor call. I left it as tentative until you confirm the attendees.
+      - role: User
+        content: "Thanks, that is enough for now."
+    expected_ask_human: false
+    expected_playbooks_needed: false
+    label_rationale: "Routine task success, no correction or reusable shortcut."
+
+  - id: z_ops_log_lookup
+    vertical: digital_employee
+    description: Routine log lookup has no policy signal.
+    agent_context_prompt: "Agent helps engineers inspect internal services."
+    extraction_definition_prompt: "Extract durable internal-ops playbooks."
+    tool_can_use:
+      - "logs: Read service logs."
+    sessions:
+      - role: User
+        content: "Check whether worker-17 restarted in the last hour."
+      - role: Assistant
+        content: >-
+          I searched the worker logs for the last hour. Worker-17 restarted once
+          at 13:42 and then passed its readiness check thirty seconds later.
+      - role: User
+        content: "Thanks, that explains the brief blip."
+    expected_ask_human: false
+    expected_playbooks_needed: false
+    label_rationale: "No correction, detour, or reusable procedure was learned."
+
+  - id: z_sales_meeting_notes
+    vertical: sales
+    description: Routine meeting-note cleanup is not a playbook.
+    agent_context_prompt: "Agent helps sales teams with notes."
+    extraction_definition_prompt: "Extract durable sales-assistant playbooks."
+    tool_can_use:
+      - "crm_notes: Write CRM notes."
+    sessions:
+      - role: User
+        content: "Clean up these discovery-call notes and put them in CRM."
+      - role: Assistant
+        content: >-
+          I summarized the customer's goals, current tools, timeline, and open
+          questions, then saved the cleaned notes to the CRM activity record.
+      - role: User
+        content: "Looks good."
+    expected_ask_human: false
+    expected_playbooks_needed: false
+    label_rationale: "Normal successful task completion with no reusable decision point."
+
+  - id: z_legal_template_lookup
+    vertical: legal_compliance
+    description: Simple template lookup has no durable signal.
+    agent_context_prompt: "Agent helps legal operations find templates."
+    extraction_definition_prompt: "Extract durable legal-operations playbooks."
+    tool_can_use:
+      - "contract_search: Search approved templates."
+    sessions:
+      - role: User
+        content: "Find the latest mutual NDA template."
+      - role: Assistant
+        content: >-
+          I found the current mutual NDA template in the approved template
+          library and linked the latest version, not the archived 2024 copy.
+      - role: User
+        content: "Thanks, that is the one I needed."
+    expected_ask_human: false
+    expected_playbooks_needed: false
+    label_rationale: "Routine lookup, no correction or optimization lesson."
