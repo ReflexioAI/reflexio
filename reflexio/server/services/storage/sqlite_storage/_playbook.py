@@ -318,7 +318,7 @@ class PlaybookMixin:
             sql += f" AND {tag_frag}"
             params.extend(tag_params)
 
-        sql += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        sql += " ORDER BY created_at DESC, user_playbook_id DESC LIMIT ? OFFSET ?"
         params.extend([limit, offset])
         rows = self._fetchall(sql, params)
         return [

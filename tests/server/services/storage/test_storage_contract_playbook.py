@@ -70,6 +70,22 @@ class TestUserPlaybookCRUD:
         result = storage.get_user_playbooks(playbook_name="fb")
         assert len(result) == 2
 
+    def test_get_user_playbooks_orders_tied_timestamps_deterministically(self, storage):
+        rfs = [
+            _make_user_playbook(1, "u1", "fb", "v1"),
+            _make_user_playbook(2, "u1", "fb", "v1"),
+            _make_user_playbook(3, "u1", "fb", "v1"),
+        ]
+        for playbook in rfs:
+            playbook.created_at = 1_700_000_000
+        storage.save_user_playbooks(rfs)
+
+        first_page = storage.get_user_playbooks(user_id="u1", limit=2, offset=0)
+        second_page = storage.get_user_playbooks(user_id="u1", limit=2, offset=2)
+
+        assert [p.user_playbook_id for p in first_page] == [3, 2]
+        assert [p.user_playbook_id for p in second_page] == [1]
+
     def test_update_user_playbook_tags_round_trip(self, storage):
         storage.save_user_playbooks([_make_user_playbook(1, "u1", "fb", "v1")])
         saved = storage.get_user_playbooks(user_id="u1", status_filter=[None])

@@ -62,7 +62,10 @@ class GovernanceMixin:
 
     @abstractmethod
     def prepare_governance_erase_targets(
-        self, purge_id: str, user_id: str, owned_user_playbook_ids: set[int]
+        self,
+        purge_id: str,
+        user_id: str,
+        owned_user_playbook_ids: set[int] | None = None,
     ) -> None:
         raise NotImplementedError
 

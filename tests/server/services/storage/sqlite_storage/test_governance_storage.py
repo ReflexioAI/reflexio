@@ -22,6 +22,9 @@ from reflexio.models.api_schema.domain.governance import (
 from reflexio.models.api_schema.retriever_schema import SearchAgentPlaybookRequest
 from reflexio.models.config_schema import GovernanceRetentionConfig
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
+from reflexio.server.services.storage.sqlite_storage import (
+    _governance as governance_module,
+)
 from reflexio.server.services.storage.sqlite_storage._governance import (
     init_governance_tables,
 )
@@ -319,6 +322,50 @@ def test_audit_event_idempotency(storage):
     rows = storage.list_audit_events(subject_ref=SUBJECT_REF)
     assert len(rows) == 1
     assert rows[0].idempotency_key == "export_1"
+
+
+def test_init_governance_tables_backfills_legacy_null_audit_request_ref(tmp_path):
+    db_path = tmp_path / "legacy-audit.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """CREATE TABLE audit_events (
+               event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+               org_id TEXT NOT NULL,
+               actor_type TEXT NOT NULL DEFAULT 'system',
+               actor_ref TEXT,
+               operation TEXT NOT NULL,
+               entity_type TEXT NOT NULL,
+               entity_id TEXT,
+               subject_ref TEXT,
+               request_ref TEXT,
+               idempotency_key TEXT,
+               status TEXT NOT NULL DEFAULT 'ok',
+               detail TEXT,
+               created_at INTEGER NOT NULL
+           )"""
+    )
+    conn.execute(
+        """INSERT INTO audit_events (
+               org_id, actor_type, operation, entity_type, subject_ref,
+               request_ref, status, created_at
+           ) VALUES (?, 'system', 'EXPORT', 'request', ?, NULL, 'ok', 1)""",
+        ("org1", SUBJECT_REF),
+    )
+    conn.commit()
+    conn.close()
+
+    with patch.object(SQLiteStorage, "_get_embedding", return_value=[0.0] * 512):
+        storage = SQLiteStorage(org_id="org1", db_path=str(db_path))
+
+    events = storage.list_audit_events(subject_ref=SUBJECT_REF)
+    assert len(events) == 1
+    assert events[0].request_ref == "reqref_v1_legacy_unknown"
+    with pytest.raises(sqlite3.IntegrityError, match="request_ref"):
+        storage.conn.execute(
+            """INSERT INTO audit_events (
+                   org_id, actor_type, operation, entity_type, request_ref, status, created_at
+               ) VALUES ('org1', 'system', 'EXPORT', 'request', NULL, 'ok', 2)"""
+        )
 
 
 def test_append_audit_event_rejects_numeric_idempotency_key(storage):
@@ -784,6 +831,26 @@ def test_complete_purge_operation_requires_full_delete_target_matrix(storage):
     assert storage.list_audit_events(subject_ref=SUBJECT_REF) == []
 
 
+def test_complete_retry_replaces_failed_completed_at(storage):
+    purge_id = _begin_completeable_purge(storage, "purge_retry_completion_time")
+    with patch.object(governance_module, "_epoch_now", return_value=111):
+        failed = storage.fail_purge_operation(
+            purge_id,
+            error_code="governance_erase_failed",
+            error_detail="RuntimeError",
+        )
+    assert failed.completed_at == 111
+
+    with patch.object(governance_module, "_epoch_now", return_value=222):
+        completed = storage.complete_purge_operation_with_audit(
+            purge_id,
+            _erase_event(purge_id=purge_id),
+        )
+
+    assert completed.status == "complete"
+    assert completed.completed_at == 222
+
+
 def test_prepare_governance_erase_targets_sanitizes_snapshot_detail(storage):
     storage.begin_purge_operation(
         purge_id="purge_detail",
@@ -810,6 +877,48 @@ def test_prepare_governance_erase_targets_sanitizes_snapshot_detail(storage):
         "owned_user_playbook_ids": [7],
         "affected_agent_playbook_ids": [],
     }
+
+
+def test_apply_governance_user_data_delete_rejects_playbook_snapshot_drift(storage):
+    user_id = "user-snapshot-drift"
+    owned_user_playbook_ids = _seed_prepare_counts_user_data(storage, user_id=user_id)
+    storage.begin_purge_operation(
+        purge_id="purge_snapshot_drift",
+        idempotency_key="idem_purge_snapshot_drift",
+        operation_type="user_erasure",
+        scope_type="user",
+        subject_ref=SUBJECT_REF,
+        request_ref=REQUEST_REF,
+    )
+    storage.prepare_governance_erase_targets(
+        purge_id="purge_snapshot_drift",
+        user_id=user_id,
+    )
+    storage.conn.execute(
+        """INSERT INTO user_playbooks (
+               user_id, playbook_name, created_at, request_id, agent_version,
+               content, source_interaction_ids, embedding
+           ) VALUES (?, '', ?, ?, '', ?, '[]', '[]')""",
+        (
+            user_id,
+            "2026-01-01T00:00:00.000Z",
+            "request_seed",
+            "late-playbook-content",
+        ),
+    )
+    storage.conn.commit()
+
+    with pytest.raises(ValueError, match="prepared purge snapshot"):
+        storage.apply_governance_user_data_delete("purge_snapshot_drift", user_id)
+
+    remaining_ids = {
+        int(row["user_playbook_id"])
+        for row in storage.conn.execute(
+            "SELECT user_playbook_id FROM user_playbooks WHERE user_id = ?",
+            (user_id,),
+        ).fetchall()
+    }
+    assert owned_user_playbook_ids < remaining_ids
 
 
 def test_prepare_governance_erase_targets_persists_rebuild_source_windows(storage):
@@ -2972,9 +3081,12 @@ def test_apply_governance_user_data_delete_rejects_unexpected_target_name_from_i
         )
 
     def _stub_clear_user_data_for_governance_locked(
-        self: SQLiteStorage, user_id: str
+        self: SQLiteStorage,
+        user_id: str,
+        *,
+        expected_user_playbook_ids: set[int] | None = None,
     ) -> dict[str, int]:
-        del self, user_id
+        del self, user_id, expected_user_playbook_ids
         return {"requests": 1, "surprise_target": 2}
 
     monkeypatch.setattr(

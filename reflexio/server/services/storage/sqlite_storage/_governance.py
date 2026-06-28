@@ -23,6 +23,8 @@ from reflexio.models.api_schema.domain.governance import (
 )
 from reflexio.models.config_schema import GovernanceRetentionConfig
 
+_LEGACY_AUDIT_REQUEST_REF = "reqref_v1_legacy_unknown"
+
 _PURGE_OPERATION_TARGETS_TABLE_DDL = """
 CREATE TABLE IF NOT EXISTS purge_operation_targets (
     org_id TEXT NOT NULL,
@@ -51,7 +53,7 @@ CREATE TABLE IF NOT EXISTS audit_events (
     entity_type TEXT NOT NULL,
     entity_id TEXT,
     subject_ref TEXT,
-    request_ref TEXT,
+    request_ref TEXT NOT NULL,
     idempotency_key TEXT,
     status TEXT NOT NULL DEFAULT 'ok',
     detail TEXT,
@@ -229,6 +231,7 @@ _ALLOWED_DELETED_COUNTS_KEYS = frozenset(
 def init_governance_tables(conn: sqlite3.Connection) -> None:
     _upgrade_legacy_purge_operation_targets_table(conn)
     conn.executescript(GOVERNANCE_DDL)
+    _enforce_audit_request_ref_not_null(conn)
 
 
 def _epoch_now() -> int:
@@ -778,6 +781,26 @@ def _upgrade_legacy_purge_operation_targets_table(conn: sqlite3.Connection) -> N
     conn.execute("DROP TABLE purge_operation_targets_legacy")
 
 
+def _enforce_audit_request_ref_not_null(conn: sqlite3.Connection) -> None:
+    audit_columns = [row[1] for row in conn.execute("PRAGMA table_info(audit_events)")]
+    if not audit_columns:
+        return
+    conn.execute(
+        "UPDATE audit_events SET request_ref = ? WHERE request_ref IS NULL",
+        (_LEGACY_AUDIT_REQUEST_REF,),
+    )
+    conn.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS audit_events_request_ref_not_null
+        BEFORE INSERT ON audit_events
+        WHEN NEW.request_ref IS NULL
+        BEGIN
+            SELECT RAISE(ABORT, 'audit_events.request_ref is required');
+        END
+        """
+    )
+
+
 def _is_successful_erase_event(
     event: AuditEvent, *, purge_id: str | None = None
 ) -> bool:
@@ -1090,6 +1113,34 @@ class SQLiteGovernanceMixin:
             "user_playbook_purge": len(purge_playbook_ids),
         }
 
+    def _owned_user_playbook_ids_locked(self, user_id: str) -> set[int]:
+        return {
+            int(row["user_playbook_id"])
+            for row in self.conn.execute(
+                "SELECT user_playbook_id FROM user_playbooks WHERE user_id = ?",
+                (user_id,),
+            ).fetchall()
+        }
+
+    def _prepared_owned_user_playbook_ids_locked(self, purge_id: str) -> set[int]:
+        row = self.conn.execute(
+            """SELECT detail FROM purge_operation_targets
+               WHERE org_id = ? AND purge_id = ? AND target_name = ?
+                 AND target_ref = 'all' AND phase = ? AND status = 'complete'""",
+            (self.org_id, purge_id, _SNAPSHOT_TARGET_NAME, _PREPARE_PHASE),
+        ).fetchone()
+        if row is None:
+            raise ValueError("Prepared target snapshot is missing")
+        detail = _json_loads(row["detail"])
+        if not isinstance(detail, dict):
+            raise ValueError("Prepared target snapshot detail is missing")
+        return set(
+            _validate_governance_int_list(
+                "owned_user_playbook_ids",
+                detail.get("owned_user_playbook_ids"),
+            )
+        )
+
     def _append_audit_event_with_cursor(
         self, cur: sqlite3.Connection | sqlite3.Cursor, event: AuditEvent
     ) -> bool:
@@ -1282,7 +1333,12 @@ class SQLiteGovernanceMixin:
                 )
         return True
 
-    def _clear_user_data_for_governance_locked(self, user_id: str) -> dict[str, int]:
+    def _clear_user_data_for_governance_locked(
+        self,
+        user_id: str,
+        *,
+        expected_user_playbook_ids: set[int] | None = None,
+    ) -> dict[str, int]:
         deps = self._deps()
         interaction_ids = [
             int(row["interaction_id"])
@@ -1298,6 +1354,13 @@ class SQLiteGovernanceMixin:
                 (user_id,),
             ).fetchall()
         ]
+        if (
+            expected_user_playbook_ids is not None
+            and set(raw_upb_ids) != expected_user_playbook_ids
+        ):
+            raise ValueError(
+                "Current user playbooks no longer match prepared purge snapshot"
+            )
         request_ids = [
             str(row["request_id"])
             for row in self.conn.execute(
@@ -1562,14 +1625,22 @@ class SQLiteGovernanceMixin:
         return row is not None
 
     def prepare_governance_erase_targets(
-        self, purge_id: str, user_id: str, owned_user_playbook_ids: set[int]
+        self,
+        purge_id: str,
+        user_id: str,
+        owned_user_playbook_ids: set[int] | None = None,
     ) -> None:
         purge_id = _validate_governance_purge_id("purge_id", purge_id)
         with self._lock:
             if self.purge_targets_prepared(purge_id):
                 return
             try:
-                self.conn.execute("BEGIN")
+                self.conn.execute("BEGIN IMMEDIATE")
+                owned_user_playbook_ids = (
+                    set(owned_user_playbook_ids)
+                    if owned_user_playbook_ids is not None
+                    else self._owned_user_playbook_ids_locked(user_id)
+                )
                 targets = self._planned_governance_delete_counts(
                     user_id,
                     owned_user_playbook_ids,
@@ -1744,7 +1815,13 @@ class SQLiteGovernanceMixin:
                 self.conn.execute("BEGIN")
                 self._validate_prepared_delete_target_matrix_locked(purge_id)
                 self._validate_hide_for_rebuild_targets_locked(purge_id)
-                counts = self._clear_user_data_for_governance_locked(user_id)
+                expected_user_playbook_ids = (
+                    self._prepared_owned_user_playbook_ids_locked(purge_id)
+                )
+                counts = self._clear_user_data_for_governance_locked(
+                    user_id,
+                    expected_user_playbook_ids=expected_user_playbook_ids,
+                )
                 for key, value in counts.items():
                     self._record_purge_target_locked(
                         purge_id=purge_id,
@@ -2024,7 +2101,7 @@ class SQLiteGovernanceMixin:
                            error_code = NULL,
                            error_detail = NULL,
                            updated_at = ?,
-                           completed_at = COALESCE(completed_at, ?)
+                           completed_at = ?
                        WHERE purge_id = ? AND org_id = ?""",
                     (now, now, purge_id, self.org_id),
                 )

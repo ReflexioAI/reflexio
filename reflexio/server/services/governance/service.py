@@ -90,15 +90,9 @@ class GovernanceService:
 
         try:
             if not self.storage.purge_targets_prepared(purge_id):
-                owned_user_playbook_ids = {
-                    int(playbook.user_playbook_id)
-                    for playbook in self._iter_user_playbooks(user_id)
-                    if playbook.user_playbook_id
-                }
                 self.storage.prepare_governance_erase_targets(
                     purge_id,
                     user_id,
-                    owned_user_playbook_ids,
                 )
 
             self.storage.hide_governance_agent_playbooks_for_rebuild(purge_id)
