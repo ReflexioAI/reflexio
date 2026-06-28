@@ -1025,7 +1025,15 @@ def test_append_audit_event_rejects_prefix_only_refs(storage, field_name, value)
 
 @pytest.mark.parametrize(
     "idempotency_key",
-    ["alice@example.com", "request_123", "reqref_v1_target", "alice"],
+    [
+        "alice@example.com",
+        "request_123",
+        "reqref_v1_target",
+        "alice",
+        "user_123",
+        "subject_42",
+        "actor.alpha",
+    ],
 )
 def test_governance_persistence_rejects_unsafe_idempotency_keys(storage, idempotency_key):
     event = AuditEvent(
@@ -1065,7 +1073,35 @@ def test_append_audit_event_rejects_user_like_entity_id(storage):
         storage.append_audit_event(event)
 
 
-@pytest.mark.parametrize("detail", [{"status": "alice"}, {"route": "alice"}])
+@pytest.mark.parametrize(
+    "entity_id",
+    ["user_123", "subject_42", "actor.alpha"],
+)
+def test_append_audit_event_rejects_identifier_like_entity_id(storage, entity_id):
+    event = AuditEvent(
+        org_id="org1",
+        operation="EXPORT",
+        entity_type="request",
+        entity_id=entity_id,
+        subject_ref=SUBJECT_REF,
+        request_ref=REQUEST_REF,
+        idempotency_key="export_identifier_like_entity",
+    )
+
+    with pytest.raises(ValueError, match="entity_id"):
+        storage.append_audit_event(event)
+
+
+@pytest.mark.parametrize(
+    "detail",
+    [
+        {"status": "alice"},
+        {"route": "alice"},
+        {"status": "user_123"},
+        {"route": "subject_42"},
+        {"status": "actor.alpha"},
+    ],
+)
 def test_governance_detail_rejects_user_like_status_and_route(storage, detail):
     event = AuditEvent(
         org_id="org1",
@@ -1079,3 +1115,19 @@ def test_governance_detail_rejects_user_like_status_and_route(storage, detail):
 
     with pytest.raises(ValueError, match="status|route"):
         storage.append_audit_event(event)
+
+
+@pytest.mark.parametrize(
+    "purge_id",
+    ["purge_user_123", "purge_subject_42", "purge_actor_alpha"],
+)
+def test_begin_purge_operation_rejects_identifier_like_purge_suffix(storage, purge_id):
+    with pytest.raises(ValueError, match="purge_id"):
+        storage.begin_purge_operation(
+            purge_id=purge_id,
+            idempotency_key="idem_purge_identifier_suffix",
+            operation_type="user_erasure",
+            scope_type="user",
+            subject_ref=SUBJECT_REF,
+            request_ref=REQUEST_REF,
+        )

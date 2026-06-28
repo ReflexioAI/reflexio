@@ -142,6 +142,10 @@ _RAW_EXCEPTION_RE = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*(?:Error|Exception)\s*:
 _SAFE_INTERNAL_ID_RE = re.compile(r"^[0-9]+$")
 _USER_LIKE_TARGET_REF_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
 _CODE_SHAPED_VALUE_RE = re.compile(r"^[A-Za-z0-9]+(?:[_.:-][A-Za-z0-9]+)+$")
+_IDENTIFIERISH_CODE_VALUE_RE = re.compile(
+    r"^(?:user|subject|actor)[_.:-][A-Za-z0-9]+(?:[_.:-][A-Za-z0-9]+)*$",
+    re.IGNORECASE,
+)
 _SAFE_ERROR_CODE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.:-]{0,127}$")
 _IDENTIFIERISH_ERROR_CODE_RE = re.compile(
     r"^(?:user|subject|request|req|actor|email)[-_.:]?[A-Za-z0-9_.:-]+$",
@@ -229,6 +233,8 @@ def _validate_governance_code_shaped(
         return value
     if value.startswith(("subref_v1_", "reqref_v1_", "actref_v1_")):
         _raise_governance_validation_error(field_name, "identifier")
+    if _IDENTIFIERISH_CODE_VALUE_RE.fullmatch(value):
+        _raise_governance_validation_error(field_name, "identifier")
     if _SAFE_INTERNAL_ID_RE.fullmatch(value):
         return value
     if _CODE_SHAPED_VALUE_RE.fullmatch(value):
@@ -264,6 +270,9 @@ def _validate_governance_purge_id(field_name: str, value: str) -> str:
         _raise_governance_validation_error(field_name, "must start with purge_")
     if _CODE_SHAPED_VALUE_RE.fullmatch(value) is None:
         _raise_governance_validation_error(field_name, "must be code-shaped")
+    suffix = value[len("purge_") :]
+    if _IDENTIFIERISH_CODE_VALUE_RE.fullmatch(suffix):
+        _raise_governance_validation_error(field_name, "identifier")
     return value
 
 
