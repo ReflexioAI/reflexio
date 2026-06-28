@@ -100,7 +100,7 @@ _PROFILE_PURGE_SQL = (
 )
 _USER_PLAYBOOK_PURGE_SQL = (
     "UPDATE user_playbooks SET "
-    "content='', user_id=NULL, source=NULL, "
+    "content='', user_id=NULL, request_id='', source=NULL, "
     "trigger=NULL, rationale=NULL, blocking_issue=NULL, "
     "source_interaction_ids=NULL, embedding=NULL, expanded_terms=NULL, "
     "tags=NULL, source_span=NULL, notes=NULL, reader_angle=NULL "

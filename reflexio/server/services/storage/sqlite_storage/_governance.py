@@ -21,6 +21,7 @@ from reflexio.models.api_schema.domain.governance import (
     PurgeScopeType,
     PurgeTargetStatus,
 )
+from reflexio.models.config_schema import GovernanceRetentionConfig
 
 _PURGE_OPERATION_TARGETS_TABLE_DDL = """
 CREATE TABLE IF NOT EXISTS purge_operation_targets (
@@ -61,6 +62,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_audit_events_org_idem
     WHERE idempotency_key IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_audit_events_subject_created
     ON audit_events(org_id, subject_ref, created_at, event_id);
+CREATE INDEX IF NOT EXISTS idx_audit_events_org_created
+    ON audit_events(org_id, created_at, event_id);
 
 CREATE TABLE IF NOT EXISTS purge_operations (
     org_id TEXT NOT NULL,
@@ -1295,6 +1298,13 @@ class SQLiteGovernanceMixin:
                 (user_id,),
             ).fetchall()
         ]
+        request_ids = [
+            str(row["request_id"])
+            for row in self.conn.execute(
+                "SELECT request_id FROM requests WHERE user_id = ?",
+                (user_id,),
+            ).fetchall()
+        ]
         profile_rows = self.conn.execute(
             "SELECT rowid, profile_id FROM profiles WHERE user_id = ?",
             (user_id,),
@@ -1314,6 +1324,40 @@ class SQLiteGovernanceMixin:
         )
         purge_upb_ids = [int(entity_id) for entity_id in purge_upb_str_ids]
         delete_upb_ids = [int(entity_id) for entity_id in delete_upb_str_ids]
+        erased_entity_ids = [
+            *request_ids,
+            *[str(interaction_id) for interaction_id in interaction_ids],
+            *all_profile_ids,
+            *[str(user_playbook_id) for user_playbook_id in raw_upb_ids],
+        ]
+        if erased_entity_ids:
+            erased_entity_id_set = set(erased_entity_ids)
+            lineage_source_event_ids: list[int] = []
+            for row in self.conn.execute(
+                "SELECT event_id, source_ids FROM lineage_event WHERE org_id = ?",
+                (self.org_id,),
+            ).fetchall():
+                try:
+                    source_ids = json.loads(str(row["source_ids"] or "[]"))
+                except json.JSONDecodeError:
+                    source_ids = []
+                if any(
+                    str(source_id) in erased_entity_id_set for source_id in source_ids
+                ):
+                    lineage_source_event_ids.append(int(row["event_id"]))
+            deps._delete_in_chunks(
+                "lineage_event", "event_id", lineage_source_event_ids
+            )
+            placeholders = ",".join("?" for _ in erased_entity_ids)
+            self.conn.execute(
+                f"""DELETE FROM lineage_event
+                    WHERE org_id = ?
+                      AND (
+                        request_id IN ({placeholders})
+                        OR entity_id IN ({placeholders})
+                      )""",  # noqa: S608
+                [self.org_id, *erased_entity_ids, *erased_entity_ids],
+            )
         delete_profile_rowids = [
             profile_rowid_by_id[profile_id]
             for profile_id in delete_profile_ids
@@ -2018,6 +2062,26 @@ class SQLiteGovernanceMixin:
             raise ValueError(f"Purge operation {purge_id!r} not found")
         return _row_to_purge_operation(row)
 
-    def gc_governance_retention(self, *, config: Any) -> int:
-        del config
-        return 0
+    def gc_governance_retention(self, *, config: GovernanceRetentionConfig) -> int:
+        if not config.audit_events_retention_enabled:
+            return 0
+        cutoff_epoch = _epoch_now() - config.audit_events_retention_days * 24 * 60 * 60
+        with self._lock:
+            cur = self.conn.execute(
+                """DELETE FROM audit_events
+                   WHERE event_id IN (
+                       SELECT event_id
+                       FROM audit_events
+                       WHERE org_id = ? AND created_at < ?
+                       ORDER BY created_at ASC, event_id ASC
+                       LIMIT ?
+                   )""",
+                (
+                    self.org_id,
+                    cutoff_epoch,
+                    config.audit_events_delete_batch_limit,
+                ),
+            )
+            deleted = int(cur.rowcount or 0)
+            self.conn.commit()
+        return deleted

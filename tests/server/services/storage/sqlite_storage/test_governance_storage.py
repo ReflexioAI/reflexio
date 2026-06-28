@@ -19,6 +19,7 @@ from reflexio.models.api_schema.domain.governance import (
     AuditStatus,
 )
 from reflexio.models.api_schema.retriever_schema import SearchAgentPlaybookRequest
+from reflexio.models.config_schema import GovernanceRetentionConfig
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 from reflexio.server.services.storage.sqlite_storage._governance import (
     init_governance_tables,
@@ -3136,6 +3137,16 @@ def test_apply_governance_user_data_delete_succeeds_after_hide_targets_complete(
             )
         ],
     )
+    storage.conn.execute(
+        """INSERT INTO lineage_event (
+               org_id, entity_type, entity_id, op, prov_relation, source_ids,
+               actor, request_id, reason, created_at
+           )
+           VALUES (?, 'agent_playbook', 'agent_survivor', 'merge', 'wasDerivedFrom',
+                   ?, 'test', 'req-unrelated', 'source-user-playbook', 1)""",
+        (storage.org_id, json.dumps([str(affected_user_playbook_id)])),
+    )
+    storage.conn.commit()
     storage.prepare_governance_erase_targets(
         purge_id=purge_id,
         user_id=user_id,
@@ -3175,9 +3186,34 @@ def test_apply_governance_user_data_delete_succeeds_after_hide_targets_complete(
         storage.conn.execute(
             """SELECT COUNT(*)
            FROM user_playbooks
-           WHERE merged_into IS NOT NULL AND content = '' AND user_id IS NULL"""
+           WHERE merged_into IS NOT NULL
+             AND content = ''
+             AND user_id IS NULL
+             AND request_id = ''"""
         ).fetchone()[0]
         == 1
+    )
+    assert (
+        storage.conn.execute(
+            """SELECT COUNT(*)
+               FROM lineage_event
+               WHERE org_id = ?
+                 AND (
+                    request_id = ?
+                    OR entity_id IN (?, ?, ?, ?)
+                    OR source_ids = ?
+                 )""",
+            (
+                storage.org_id,
+                "req-delete-hide-complete",
+                "req-delete-hide-complete",
+                "101",
+                "profile_seed",
+                str(affected_user_playbook_id),
+                json.dumps([str(affected_user_playbook_id)]),
+            ),
+        ).fetchone()[0]
+        == 0
     )
     delete_targets = storage.list_purge_targets(purge_id, phase="delete")
     assert {target.target_name: target.deleted_count for target in delete_targets} == {
@@ -4063,5 +4099,67 @@ def test_init_governance_tables_skips_ambiguous_legacy_purge_target_rows(tmp_pat
     ]
 
 
-def test_gc_governance_retention_accepts_config_keyword(storage):
-    assert storage.gc_governance_retention(config=object()) == 0
+def test_gc_governance_retention_deletes_expired_audit_rows_in_batches(storage):
+    old_event = AuditEvent(
+        org_id=storage.org_id,
+        operation="EXPORT",
+        entity_type="request",
+        subject_ref=SUBJECT_REF,
+        request_ref=REQUEST_REF,
+        idempotency_key="audit_old",
+        created_at=1,
+    )
+    newer_event = AuditEvent(
+        org_id=storage.org_id,
+        operation="EXPORT",
+        entity_type="request",
+        subject_ref=SUBJECT_REF,
+        request_ref=REQUEST_REF,
+        idempotency_key="audit_new",
+    )
+    other_org_event = AuditEvent(
+        org_id="org2",
+        operation="EXPORT",
+        entity_type="request",
+        subject_ref=SUBJECT_REF,
+        request_ref=REQUEST_REF,
+        idempotency_key="audit_other",
+        created_at=1,
+    )
+    storage.append_audit_event(old_event)
+    storage.append_audit_event(newer_event)
+    other_storage = SQLiteStorage(org_id="org2", db_path=storage.db_path)
+    other_storage.append_audit_event(other_org_event)
+
+    deleted = storage.gc_governance_retention(
+        config=GovernanceRetentionConfig(
+            audit_events_retention_enabled=True,
+            audit_events_retention_days=1,
+            audit_events_delete_batch_limit=1,
+        )
+    )
+
+    assert deleted == 1
+    assert [event.idempotency_key for event in storage.list_audit_events()] == [
+        "audit_new"
+    ]
+    assert [event.idempotency_key for event in other_storage.list_audit_events()] == [
+        "audit_other"
+    ]
+
+
+def test_gc_governance_retention_noops_when_audit_retention_disabled(storage):
+    storage.append_audit_event(
+        AuditEvent(
+            org_id=storage.org_id,
+            operation="EXPORT",
+            entity_type="request",
+            subject_ref=SUBJECT_REF,
+            request_ref=REQUEST_REF,
+            idempotency_key="audit_disabled",
+            created_at=1,
+        )
+    )
+
+    assert storage.gc_governance_retention(config=GovernanceRetentionConfig()) == 0
+    assert len(storage.list_audit_events()) == 1

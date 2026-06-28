@@ -112,8 +112,11 @@ class LineageGCScheduler:
                 if ctx.storage is None:
                     continue
                 run_tombstone_gc = cfg.lineage_gc.enabled
+                governance_retention = getattr(
+                    cfg, "governance_retention", GovernanceRetentionConfig()
+                )
                 run_governance_gc = _is_governance_retention_enabled(
-                    cfg.governance_retention
+                    governance_retention
                 )
                 if not run_tombstone_gc and not run_governance_gc:
                     continue
@@ -133,7 +136,7 @@ class LineageGCScheduler:
                 governance_deleted = 0
                 if run_governance_gc:
                     governance_deleted = ctx.storage.gc_governance_retention(
-                        config=cfg.governance_retention
+                        config=governance_retention
                     )
                 total_deleted = tombstone_deleted + governance_deleted
                 if total_deleted:
@@ -205,8 +208,11 @@ def maybe_start_lineage_gc(
     try:
         ctx = request_context_factory(bootstrap_org_id)
         cfg = ctx.configurator.get_config()
+        governance_retention = getattr(
+            cfg, "governance_retention", GovernanceRetentionConfig()
+        )
         if not cfg.lineage_gc.enabled and not _is_governance_retention_enabled(
-            cfg.governance_retention
+            governance_retention
         ):
             return None
     except Exception as exc:
