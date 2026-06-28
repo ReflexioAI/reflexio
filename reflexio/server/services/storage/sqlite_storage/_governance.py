@@ -115,7 +115,18 @@ _ALLOWED_PURGE_TARGET_PHASES = frozenset(
         "rebuild_without_erased_sources",
     }
 )
-_ALLOWED_DETAIL_KEYS = frozenset(
+_ALLOWED_AUDIT_DETAIL_KEYS = frozenset(
+    {
+        "agent_playbook_id",
+        "count",
+        "deleted_counts",
+        "deleted_count",
+        "rebuilt_agent_playbook_ids",
+        "route",
+        "status",
+    }
+)
+_ALLOWED_PURGE_TARGET_DETAIL_KEYS = frozenset(
     {
         "affected_agent_playbook_ids",
         "agent_playbook_id",
@@ -482,10 +493,16 @@ def _validate_governance_target_ref(
     raise AssertionError("unreachable")
 
 
-def _validate_governance_detail_entry(field_name: str, key: str, value: Any) -> object:
+def _validate_governance_detail_entry(
+    field_name: str,
+    key: str,
+    value: Any,
+    *,
+    allowed_keys: frozenset[str],
+) -> object:
     if key in _DISALLOWED_DETAIL_KEYS:
         _raise_governance_validation_error(field_name, key)
-    if key not in _ALLOWED_DETAIL_KEYS:
+    if key not in allowed_keys:
         _raise_governance_validation_error(field_name, key)
     if key in {"count", "deleted_count"}:
         return _validate_governance_nonnegative_int(field_name, value)
@@ -524,7 +541,10 @@ def _validate_governance_detail_entry(field_name: str, key: str, value: Any) -> 
 
 
 def _validate_governance_detail(
-    field_name: str, detail: dict[str, object] | None
+    field_name: str,
+    detail: dict[str, object] | None,
+    *,
+    allowed_keys: frozenset[str],
 ) -> dict[str, object] | None:
     if detail is None:
         return None
@@ -538,7 +558,10 @@ def _validate_governance_detail(
                 field_name, f"duplicate key {normalized_key}"
             )
         normalized_detail[normalized_key] = _validate_governance_detail_entry(
-            f"{field_name}.{normalized_key}", normalized_key, value
+            f"{field_name}.{normalized_key}",
+            normalized_key,
+            value,
+            allowed_keys=allowed_keys,
         )
     return normalized_detail
 
@@ -635,13 +658,23 @@ def _validate_audit_event_for_persistence(event: AuditEvent) -> None:
             allow_minimized_ref=True,
         )
     _validate_governance_idempotency_key("idempotency_key", event.idempotency_key)
-    _validate_governance_detail("audit_event.detail", event.detail)
+    _validate_governance_detail(
+        "audit_event.detail",
+        event.detail,
+        allowed_keys=_ALLOWED_AUDIT_DETAIL_KEYS,
+    )
 
 
 def _canonicalize_audit_event_for_persistence(event: AuditEvent) -> AuditEvent:
     _validate_audit_event_for_persistence(event)
     return event.model_copy(
-        update={"detail": _validate_governance_detail("audit_event.detail", event.detail)}
+        update={
+            "detail": _validate_governance_detail(
+                "audit_event.detail",
+                event.detail,
+                allowed_keys=_ALLOWED_AUDIT_DETAIL_KEYS,
+            )
+        }
     )
 
 
@@ -894,7 +927,11 @@ class SQLiteGovernanceMixin:
             status,
             allowed=_ALLOWED_PURGE_TARGET_STATUSES,
         )
-        detail = _validate_governance_detail("detail", detail)
+        detail = _validate_governance_detail(
+            "detail",
+            detail,
+            allowed_keys=_ALLOWED_PURGE_TARGET_DETAIL_KEYS,
+        )
         error_detail = _validate_governance_error_detail(error_detail)
         target_ref = _validate_governance_target_ref(
             target_name=target_name,
@@ -971,8 +1008,10 @@ class SQLiteGovernanceMixin:
         self, subject_ref: str | None = None, *, org_id: str | None = None
     ) -> list[AuditEvent]:
         deps = self._deps()
+        if org_id is not None and org_id != self.org_id:
+            raise ValueError("Audit event org_id must match storage org_id")
         sql = "SELECT * FROM audit_events WHERE org_id = ?"
-        params: list[Any] = [org_id or deps.org_id]
+        params: list[Any] = [self.org_id]
         if subject_ref is not None:
             sql += " AND subject_ref = ?"
             params.append(subject_ref)

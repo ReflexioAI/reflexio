@@ -255,6 +255,39 @@ def test_append_audit_event_rejects_mismatched_org_id(storage):
     assert storage.list_audit_events(subject_ref=SUBJECT_REF) == []
 
 
+def test_list_audit_events_rejects_cross_org_override(storage_factory):
+    storage_org1 = storage_factory("org1")
+    storage_org2 = storage_factory("org2")
+
+    org1_event = AuditEvent(
+        org_id="org1",
+        operation="EXPORT",
+        entity_type="request",
+        subject_ref=SUBJECT_REF,
+        request_ref=REQUEST_REF,
+        idempotency_key="audit_scope_org1",
+        detail={"count": 1},
+    )
+    org2_event = AuditEvent(
+        org_id="org2",
+        operation="EXPORT",
+        entity_type="request",
+        subject_ref=OTHER_SUBJECT_REF,
+        request_ref=OTHER_REQUEST_REF,
+        idempotency_key="audit_scope_org2",
+        detail={"count": 2},
+    )
+
+    assert storage_org1.append_audit_event(org1_event) is True
+    assert storage_org2.append_audit_event(org2_event) is True
+
+    org1_rows = storage_org1.list_audit_events()
+
+    assert [row.idempotency_key for row in org1_rows] == ["audit_scope_org1"]
+    with pytest.raises(ValueError, match="org_id"):
+        storage_org1.list_audit_events(org_id="org2")
+
+
 def test_purge_targets_require_snapshot_marker(storage):
     purge = storage.begin_purge_operation(
         purge_id="purge_1",
@@ -1052,11 +1085,36 @@ def test_record_purge_target_rejects_negative_detail_deleted_count(storage):
         pytest.param({"note": "arbitrary string"}, "note", id="audit-detail-neutral-note"),
         pytest.param({"status": "prompt-ready"}, "prompt/content", id="audit-detail-promptish-string"),
         pytest.param(
-            {"remaining_source_windows": [{"user_playbook_id": 7, "source_interaction_ids": [1]}]},
-            None,
-            id="audit-detail-allowed-window-shape",
+            {"owned_user_playbook_ids": [7]},
+            "owned_user_playbook_ids",
+            id="audit-detail-rejects-owned-user-playbook-ids",
         ),
-        pytest.param({"agent_playbook_id": 7, "source_interaction_ids": [1]}, None, id="audit-detail-allowed-internal-ids"),
+        pytest.param(
+            {"source_interaction_ids": [1]},
+            "source_interaction_ids",
+            id="audit-detail-rejects-source-interaction-ids",
+        ),
+        pytest.param(
+            {"original_source_windows": [{"user_playbook_id": 7, "source_interaction_ids": [1]}]},
+            "original_source_windows",
+            id="audit-detail-rejects-original-source-windows",
+        ),
+        pytest.param(
+            {"remaining_source_windows": [{"user_playbook_id": 7, "source_interaction_ids": [1]}]},
+            "remaining_source_windows",
+            id="audit-detail-rejects-remaining-source-windows",
+        ),
+        pytest.param({"count": 2}, None, id="audit-detail-allowed-count"),
+        pytest.param({"deleted_count": 1}, None, id="audit-detail-allowed-deleted-count"),
+        pytest.param({"deleted_counts": {"requests": 1}}, None, id="audit-detail-allowed-deleted-counts"),
+        pytest.param({"agent_playbook_id": 7}, None, id="audit-detail-allowed-agent-playbook-id"),
+        pytest.param(
+            {"rebuilt_agent_playbook_ids": [7, 8]},
+            None,
+            id="audit-detail-allowed-rebuilt-agent-playbook-ids",
+        ),
+        pytest.param({"status": "ok"}, None, id="audit-detail-allowed-status"),
+        pytest.param({"route": "delete"}, None, id="audit-detail-allowed-route"),
     ],
 )
 def test_append_audit_event_validates_governance_detail(storage, detail, match):
@@ -1077,6 +1135,36 @@ def test_append_audit_event_validates_governance_detail(storage, detail, match):
 
     with pytest.raises(ValueError, match=match):
         storage.append_audit_event(event)
+
+
+def test_record_purge_target_accepts_target_detail_shapes(storage):
+    purge_id = _begin_purge(storage, "purge_target_detail_shapes")
+
+    detail = {
+        "owned_user_playbook_ids": [7],
+        "source_interaction_ids": [11, 12],
+        "original_source_windows": [
+            {"user_playbook_id": 7, "source_interaction_ids": [11, 12]}
+        ],
+        "remaining_source_windows": [
+            {"user_playbook_id": 7, "source_interaction_ids": [12]}
+        ],
+    }
+
+    storage.record_purge_target(
+        purge_id=purge_id,
+        target_name="agent_playbook",
+        target_ref="7",
+        phase="rebuild_without_erased_sources",
+        status="complete",
+        detail=detail,
+    )
+
+    targets = storage.list_purge_targets(
+        purge_id, phase="rebuild_without_erased_sources"
+    )
+    stored = next(target for target in targets if target.target_ref == "7")
+    assert stored.detail == detail
 
 
 @pytest.mark.parametrize("count", [0, 2])
@@ -1377,7 +1465,7 @@ def test_append_audit_event_rejects_mixed_case_window_keys(storage, detail_key):
         detail={detail_key: [{"User_Playbook_Id": "alice@example.com"}]},
     )
 
-    with pytest.raises(ValueError, match="user_playbook_id"):
+    with pytest.raises(ValueError, match=detail_key):
         storage.append_audit_event(event)
 
 
@@ -1408,7 +1496,7 @@ def test_append_audit_event_requires_window_user_playbook_id(storage, detail_key
         detail={detail_key: [{"source_interaction_ids": [1, 2]}]},
     )
 
-    with pytest.raises(ValueError, match="user_playbook_id"):
+    with pytest.raises(ValueError, match=detail_key):
         storage.append_audit_event(event)
 
 
