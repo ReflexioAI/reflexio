@@ -298,26 +298,29 @@ def _validate_governance_detail(
     return detail
 
 
+def _validate_governance_code_like(field_name: str, value: str) -> str:
+    if not value:
+        _raise_governance_validation_error(field_name, "required")
+    _validate_governance_string(field_name, value)
+    if value.startswith(("subref_v1_", "reqref_v1_", "actref_v1_")):
+        _raise_governance_validation_error(field_name, "identifier")
+    if _IDENTIFIERISH_ERROR_CODE_RE.fullmatch(value):
+        _raise_governance_validation_error(field_name, "identifier")
+    if not _SAFE_ERROR_CODE_RE.fullmatch(value):
+        _raise_governance_validation_error(
+            field_name, "must be a stable diagnostic code"
+        )
+    return value
+
+
 def _validate_governance_error_detail(error_detail: str | None) -> str | None:
     if error_detail is None:
         return None
-    _validate_governance_string("error_detail", error_detail)
-    return error_detail
+    return _validate_governance_code_like("error_detail", error_detail)
 
 
 def _validate_governance_error_code(error_code: str) -> str:
-    if not error_code:
-        _raise_governance_validation_error("error_code", "required")
-    _validate_governance_string("error_code", error_code)
-    if error_code.startswith(("subref_v1_", "reqref_v1_", "actref_v1_")):
-        _raise_governance_validation_error("error_code", "identifier")
-    if _IDENTIFIERISH_ERROR_CODE_RE.fullmatch(error_code):
-        _raise_governance_validation_error("error_code", "identifier")
-    if not _SAFE_ERROR_CODE_RE.fullmatch(error_code):
-        _raise_governance_validation_error(
-            "error_code", "must be a stable diagnostic code"
-        )
-    return error_code
+    return _validate_governance_code_like("error_code", error_code)
 
 
 def _validate_audit_event_for_persistence(event: AuditEvent) -> None:

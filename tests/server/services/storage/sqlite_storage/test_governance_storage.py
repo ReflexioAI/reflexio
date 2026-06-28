@@ -337,6 +337,13 @@ def test_prepare_governance_erase_targets_sanitizes_snapshot_detail(storage):
         ),
         pytest.param(
             {
+                "error_detail": "stable failure detail",
+            },
+            "error_detail",
+            id="error-detail-freeform-prose",
+        ),
+        pytest.param(
+            {
                 "error_detail": "Request reqref_123 failed for bob@example.com",
             },
             "error_detail",
@@ -423,6 +430,32 @@ def test_fail_purge_operation_rejects_raw_error_detail(storage):
     assert storage.get_purge_operation(purge_id).error_detail is None
 
 
+def test_fail_purge_operation_rejects_freeform_error_detail(storage):
+    purge_id = _begin_purge(storage, "purge_fail_freeform")
+
+    with pytest.raises(ValueError, match="error_detail"):
+        storage.fail_purge_operation(
+            purge_id,
+            error_code="PURGE_TARGET_FAILED",
+            error_detail="stable failure detail",
+        )
+
+    assert storage.get_purge_operation(purge_id).error_detail is None
+
+
+def test_fail_purge_operation_persists_code_shaped_error_detail(storage):
+    purge_id = _begin_purge(storage, "purge_fail_code_detail")
+
+    failed = storage.fail_purge_operation(
+        purge_id,
+        error_code="PURGE_TARGET_FAILED",
+        error_detail="target_delete_failed",
+    )
+
+    assert failed.status == "failed"
+    assert failed.error_detail == "target_delete_failed"
+
+
 @pytest.mark.parametrize(
     ("error_code", "match"),
     [
@@ -439,7 +472,7 @@ def test_fail_purge_operation_validates_error_code(storage, error_code, match):
         failed = storage.fail_purge_operation(
             purge_id,
             error_code=error_code,
-            error_detail="stable failure detail",
+            error_detail="target_delete_failed",
         )
         assert failed.status == "failed"
         assert failed.error_code == error_code
@@ -449,7 +482,7 @@ def test_fail_purge_operation_validates_error_code(storage, error_code, match):
         storage.fail_purge_operation(
             purge_id,
             error_code=error_code,
-            error_detail="stable failure detail",
+            error_detail="target_delete_failed",
         )
 
     assert storage.get_purge_operation(purge_id).error_code is None
