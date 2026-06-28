@@ -1,28 +1,40 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from typing import cast
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from reflexio.models import config_schema
 from reflexio.models.config_schema import Config, LineageGCConfig
+from reflexio.server.api_endpoints.request_context import RequestContext
+from reflexio.server.services.lineage import gc_scheduler
 from reflexio.server.services.lineage.gc_scheduler import (
     _ENTITY_TYPES,
+    _HIGH_VOLUME_THRESHOLD,
     LineageGCScheduler,
+    maybe_start_lineage_gc,
 )
 
 
-def _make_ctx(*, lineage_gc_enabled: bool, governance_gate_enabled: bool):
+def _make_ctx(
+    *,
+    lineage_gc_enabled: bool,
+    purge_expired_profiles_enabled: bool = False,
+    row_count_retention_enabled: bool = False,
+    audit_events_retention_enabled: bool = False,
+):
     storage = MagicMock()
     storage.gc_expired_tombstones.return_value = 0
     storage.gc_governance_retention.return_value = 0
     config = SimpleNamespace(
         lineage_gc=LineageGCConfig(enabled=lineage_gc_enabled),
         governance_retention=SimpleNamespace(
-            purge_expired_profiles_enabled=governance_gate_enabled,
-            row_count_retention_enabled=False,
-            audit_events_retention_enabled=False,
+            purge_expired_profiles_enabled=purge_expired_profiles_enabled,
+            row_count_retention_enabled=row_count_retention_enabled,
+            audit_events_retention_enabled=audit_events_retention_enabled,
         ),
     )
     return SimpleNamespace(
@@ -37,6 +49,10 @@ def _scheduler(ctx) -> LineageGCScheduler:
         request_context_factory=lambda _: ctx,
         bootstrap_org_id="org_1",
     )
+
+
+def _with_governance_flag(flag_name: str) -> dict[str, bool]:
+    return {flag_name: True}
 
 
 def test_config_exposes_governance_retention_defaults():
@@ -71,7 +87,7 @@ def test_gc_tick_gates_tombstone_and_governance_paths(
 ):
     ctx = _make_ctx(
         lineage_gc_enabled=lineage_gc_enabled,
-        governance_gate_enabled=governance_gate_enabled,
+        purge_expired_profiles_enabled=governance_gate_enabled,
     )
 
     sched = _scheduler(ctx)
@@ -88,3 +104,51 @@ def test_gc_tick_gates_tombstone_and_governance_paths(
         )
     else:
         ctx.storage.gc_governance_retention.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "flag_name",
+    [
+        "purge_expired_profiles_enabled",
+        "row_count_retention_enabled",
+        "audit_events_retention_enabled",
+    ],
+)
+def test_gc_tick_runs_governance_gc_for_each_individual_gate(flag_name: str):
+    ctx = _make_ctx(lineage_gc_enabled=False, **_with_governance_flag(flag_name))
+
+    sched = _scheduler(ctx)
+    sched._gc_tick(["org_1"])
+
+    ctx.storage.gc_expired_tombstones.assert_not_called()
+    ctx.storage.gc_governance_retention.assert_called_once_with(
+        config=ctx.configurator.get_config.return_value.governance_retention
+    )
+
+
+def test_gc_tick_high_volume_anomaly_ignores_governance_deletions():
+    ctx = _make_ctx(lineage_gc_enabled=False, purge_expired_profiles_enabled=True)
+    ctx.storage.gc_governance_retention.return_value = _HIGH_VOLUME_THRESHOLD + 1
+
+    sched = _scheduler(ctx)
+
+    with patch.object(gc_scheduler, "capture_anomaly") as mock_anomaly:
+        sched._gc_tick(["org_1"])
+
+    mock_anomaly.assert_not_called()
+
+
+def test_maybe_start_lineage_gc_starts_for_governance_retention_only():
+    ctx = _make_ctx(lineage_gc_enabled=False, row_count_retention_enabled=True)
+    request_context_factory = cast(
+        Callable[[str], RequestContext],
+        lambda _: ctx,
+    )
+
+    with patch.object(LineageGCScheduler, "start") as mock_start:
+        sched = maybe_start_lineage_gc(
+            request_context_factory, bootstrap_org_id="org_1"
+        )
+
+    assert sched is not None
+    mock_start.assert_called_once_with()
