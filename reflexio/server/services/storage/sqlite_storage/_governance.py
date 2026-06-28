@@ -5,7 +5,7 @@ import re
 import sqlite3
 import threading
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import Any, Literal, Protocol, cast
 
 from reflexio.models.api_schema.domain import AgentPlaybookSourceWindow
 from reflexio.models.api_schema.domain.governance import (
@@ -112,6 +112,8 @@ _TOKEN_NAME_RE = re.compile(
     re.IGNORECASE,
 )
 _RAW_EXCEPTION_RE = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*(?:Error|Exception)\s*:")
+_SAFE_INTERNAL_ID_RE = re.compile(r"^[0-9]+$")
+_USER_LIKE_TARGET_REF_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
 
 
 def init_governance_tables(conn: sqlite3.Connection) -> None:
@@ -173,29 +175,77 @@ def _validate_governance_int_list(field_name: str, value: Any) -> None:
         _validate_governance_int(field_name, item)
 
 
+def _normalize_governance_window_item(
+    field_name: str, index: int, item: object
+) -> dict[str, Any]:
+    if not isinstance(item, dict):
+        _raise_governance_validation_error(
+            f"{field_name}[{index}]", "expected window dict"
+        )
+    window_item = cast(dict[Any, Any], item)
+    normalized_item: dict[str, Any] = {}
+    for raw_key, raw_value in window_item.items():
+        normalized_key = str(raw_key).strip().lower()
+        if normalized_key in normalized_item:
+            _raise_governance_validation_error(
+                f"{field_name}[{index}]", f"duplicate key {normalized_key}"
+            )
+        normalized_item[normalized_key] = raw_value
+    return normalized_item
+
+
 def _validate_governance_window_list(field_name: str, value: Any) -> None:
     if not isinstance(value, list):
         _raise_governance_validation_error(field_name, "expected list[window]")
     for index, item in enumerate(value):
-        if not isinstance(item, dict):
-            _raise_governance_validation_error(
-                f"{field_name}[{index}]", "expected window dict"
-            )
-        normalized_keys = {str(key).strip().lower() for key in item}
+        normalized_item = _normalize_governance_window_item(field_name, index, item)
+        normalized_keys = set(normalized_item)
         unexpected_keys = normalized_keys - {"user_playbook_id", "source_interaction_ids"}
         if unexpected_keys:
             _raise_governance_validation_error(
                 f"{field_name}[{index}]", sorted(unexpected_keys)[0]
             )
-        if "user_playbook_id" in item:
+        if "user_playbook_id" in normalized_item:
             _validate_governance_int(
-                f"{field_name}[{index}].user_playbook_id", item["user_playbook_id"]
+                f"{field_name}[{index}].user_playbook_id",
+                normalized_item["user_playbook_id"],
             )
-        if "source_interaction_ids" in item:
+        if "source_interaction_ids" in normalized_item:
             _validate_governance_int_list(
                 f"{field_name}[{index}].source_interaction_ids",
-                item["source_interaction_ids"],
+                normalized_item["source_interaction_ids"],
             )
+
+
+def _parse_governance_window_list(
+    field_name: str, value: list[dict[str, object]]
+) -> list[AgentPlaybookSourceWindow]:
+    _validate_governance_window_list(field_name, value)
+    windows: list[AgentPlaybookSourceWindow] = []
+    for index, item in enumerate(value):
+        normalized_item = _normalize_governance_window_item(field_name, index, item)
+        user_playbook_id = int(normalized_item["user_playbook_id"])
+        source_ids = normalized_item.get("source_interaction_ids") or []
+        windows.append(
+            AgentPlaybookSourceWindow(
+                user_playbook_id=user_playbook_id,
+                source_interaction_ids=[int(source_id) for source_id in source_ids],
+            )
+        )
+    return windows
+
+
+def _validate_governance_target_ref(target_ref: str) -> None:
+    if target_ref in {"", "all"}:
+        return
+    if _SAFE_INTERNAL_ID_RE.fullmatch(target_ref):
+        return
+    if target_ref.startswith(("reqref_v1_", "subref_v1_", "actref_v1_")):
+        return
+    _validate_governance_string("target_ref", target_ref)
+    if _USER_LIKE_TARGET_REF_RE.fullmatch(target_ref):
+        _raise_governance_validation_error("target_ref", "user-like identifier")
+    _raise_governance_validation_error("target_ref", "must be minimized or internal")
 
 
 def _validate_governance_detail_entry(field_name: str, key: str, value: Any) -> None:
@@ -255,6 +305,8 @@ def _validate_audit_event_for_persistence(event: AuditEvent) -> None:
     _validate_governance_prefixed_ref(
         "subject_ref", event.subject_ref, prefix="subref_v1_"
     )
+    if event.request_ref is None:
+        _raise_governance_validation_error("request_ref", "required")
     _validate_governance_prefixed_ref(
         "request_ref", event.request_ref, prefix="reqref_v1_"
     )
@@ -322,6 +374,26 @@ def _row_to_purge_target(row: sqlite3.Row) -> PurgeOperationTarget:
     )
 
 
+class _SQLiteGovernanceDeps(Protocol):
+    conn: sqlite3.Connection
+    _lock: threading.RLock
+    org_id: str
+
+    def _fetchall(self, sql: str, params: list[Any] | tuple[Any, ...]) -> list[sqlite3.Row]:
+        ...
+
+    def _fetchone(self, sql: str, params: list[Any] | tuple[Any, ...]) -> sqlite3.Row | None:
+        ...
+
+    def clear_user_data(self, user_id: str) -> dict[str, int]:
+        ...
+
+    def set_source_windows_for_agent_playbook(
+        self, agent_playbook_id: int, windows: list[AgentPlaybookSourceWindow]
+    ) -> None:
+        ...
+
+
 class SQLiteGovernanceMixin:
     """SQLite governance storage primitives."""
 
@@ -329,8 +401,11 @@ class SQLiteGovernanceMixin:
     _lock: threading.RLock
     org_id: str
 
+    def _deps(self) -> _SQLiteGovernanceDeps:
+        return cast(_SQLiteGovernanceDeps, self)
+
     def _append_audit_event_with_cursor(
-        self, cur: sqlite3.Cursor, event: AuditEvent
+        self, cur: sqlite3.Connection | sqlite3.Cursor, event: AuditEvent
     ) -> bool:
         inserted = cur.execute(
             """INSERT OR IGNORE INTO audit_events (
@@ -368,6 +443,7 @@ class SQLiteGovernanceMixin:
     ) -> None:
         detail = _validate_governance_detail("detail", detail)
         error_detail = _validate_governance_error_detail(error_detail)
+        _validate_governance_target_ref(target_ref)
         now = _epoch_now()
         existing = self.conn.execute(
             """SELECT started_at, completed_at
@@ -433,13 +509,14 @@ class SQLiteGovernanceMixin:
     def list_audit_events(
         self, subject_ref: str | None = None, *, org_id: str | None = None
     ) -> list[AuditEvent]:
+        deps = self._deps()
         sql = "SELECT * FROM audit_events WHERE org_id = ?"
-        params: list[Any] = [org_id or self.org_id]
+        params: list[Any] = [org_id or deps.org_id]
         if subject_ref is not None:
             sql += " AND subject_ref = ?"
             params.append(subject_ref)
         sql += " ORDER BY created_at ASC, event_id ASC"
-        rows = self._fetchall(sql, params)
+        rows = deps._fetchall(sql, params)
         return [_row_to_audit_event(row) for row in rows]
 
     def begin_purge_operation(
@@ -513,17 +590,18 @@ class SQLiteGovernanceMixin:
     def list_purge_targets(
         self, purge_id: str, phase: str | None = None
     ) -> list[PurgeOperationTarget]:
+        deps = self._deps()
         sql = "SELECT * FROM purge_operation_targets WHERE purge_id = ?"
         params: list[Any] = [purge_id]
         if phase is not None:
             sql += " AND phase = ?"
             params.append(phase)
         sql += " ORDER BY phase ASC, target_name ASC, target_ref ASC"
-        rows = self._fetchall(sql, params)
+        rows = deps._fetchall(sql, params)
         return [_row_to_purge_target(row) for row in rows]
 
     def purge_targets_prepared(self, purge_id: str) -> bool:
-        row = self._fetchone(
+        row = self._deps()._fetchone(
             """SELECT 1 FROM purge_operation_targets
                WHERE purge_id = ? AND target_name = ? AND target_ref = 'all'
                  AND phase = ? AND status = 'complete'""",
@@ -534,23 +612,29 @@ class SQLiteGovernanceMixin:
     def prepare_governance_erase_targets(
         self, purge_id: str, user_id: str, owned_user_playbook_ids: set[int]
     ) -> None:
-        request_count = self._fetchone(
+        deps = self._deps()
+        request_row = deps._fetchone(
             "SELECT COUNT(*) AS cnt FROM requests WHERE user_id = ?",
             (user_id,),
-        )["cnt"]
-        interaction_count = self._fetchone(
+        )
+        interaction_row = deps._fetchone(
             "SELECT COUNT(*) AS cnt FROM interactions WHERE user_id = ?",
             (user_id,),
-        )["cnt"]
-        profile_count = self._fetchone(
+        )
+        profile_row = deps._fetchone(
             "SELECT COUNT(*) AS cnt FROM profiles WHERE user_id = ?",
             (user_id,),
-        )["cnt"]
+        )
+        if request_row is None or interaction_row is None or profile_row is None:
+            raise ValueError("Missing governance count rows")
+        request_count = request_row["cnt"]
+        interaction_count = interaction_row["cnt"]
+        profile_count = profile_row["cnt"]
         playbook_count = len(owned_user_playbook_ids)
         affected_agent_playbook_ids: list[int] = []
         if owned_user_playbook_ids:
             placeholders = ",".join("?" for _ in owned_user_playbook_ids)
-            rows = self._fetchall(
+            rows = deps._fetchall(
                 f"""SELECT DISTINCT agent_playbook_id
                     FROM agent_playbook_source_user_playbooks
                     WHERE user_playbook_id IN ({placeholders})
@@ -637,7 +721,7 @@ class SQLiteGovernanceMixin:
     def apply_governance_user_data_delete(
         self, purge_id: str, user_id: str
     ) -> dict[str, int]:
-        counts = self.clear_user_data(user_id)
+        counts = self._deps().clear_user_data(user_id)
         name_map = {
             "interactions": "interaction",
             "user_playbooks": "user_playbook",
@@ -673,16 +757,9 @@ class SQLiteGovernanceMixin:
         expanded_terms: str | None,
         tags: list[str] | None,
     ) -> None:
-        windows = [
-            AgentPlaybookSourceWindow(
-                user_playbook_id=int(window["user_playbook_id"]),
-                source_interaction_ids=[
-                    int(source_id)
-                    for source_id in (window.get("source_interaction_ids") or [])
-                ],
-            )
-            for window in remaining_source_windows
-        ]
+        windows = _parse_governance_window_list(
+            "remaining_source_windows", remaining_source_windows
+        )
         with self._lock:
             cur = self.conn.execute(
                 """UPDATE agent_playbooks
@@ -704,7 +781,7 @@ class SQLiteGovernanceMixin:
                     f"Agent playbook with ID {agent_playbook_id} not found"
                 )
             self.conn.commit()
-        self.set_source_windows_for_agent_playbook(agent_playbook_id, windows)
+        self._deps().set_source_windows_for_agent_playbook(agent_playbook_id, windows)
         self.record_purge_target(
             purge_id=purge_id,
             target_name="agent_playbook",
@@ -801,15 +878,15 @@ class SQLiteGovernanceMixin:
     def fail_purge_operation(
         self, purge_id: str, error_code: str, error_detail: str
     ) -> PurgeOperation:
-        error_detail = _validate_governance_error_detail(error_detail)
+        validated_error_detail = _validate_governance_error_detail(error_detail)
         now = _epoch_now()
         with self._lock:
             cur = self.conn.execute(
                 """UPDATE purge_operations
                    SET status = 'failed', error_code = ?, error_detail = ?,
-                       updated_at = ?, completed_at = ?
+                   updated_at = ?, completed_at = ?
                    WHERE purge_id = ? AND org_id = ?""",
-                (error_code, error_detail, now, now, purge_id, self.org_id),
+                (error_code, validated_error_detail, now, now, purge_id, self.org_id),
             )
             if cur.rowcount == 0:
                 raise ValueError(f"Purge operation {purge_id!r} not found")
@@ -817,7 +894,7 @@ class SQLiteGovernanceMixin:
         return self.get_purge_operation(purge_id)
 
     def get_purge_operation(self, purge_id: str) -> PurgeOperation:
-        row = self._fetchone(
+        row = self._deps()._fetchone(
             "SELECT * FROM purge_operations WHERE purge_id = ? AND org_id = ?",
             (purge_id, self.org_id),
         )

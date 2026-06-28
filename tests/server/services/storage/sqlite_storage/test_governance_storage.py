@@ -4,7 +4,11 @@ from unittest.mock import patch
 
 import pytest
 
-from reflexio.models.api_schema.domain.governance import AuditEvent
+from reflexio.models.api_schema.domain.governance import (
+    AuditEvent,
+    AuditOperation,
+    AuditStatus,
+)
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 
 pytestmark = pytest.mark.integration
@@ -39,7 +43,12 @@ def _begin_purge(storage: SQLiteStorage, purge_id: str) -> str:
     return purge.purge_id
 
 
-def _erase_event(*, purge_id: str, status: str = "ok", operation: str = "ERASE"):
+def _erase_event(
+    *,
+    purge_id: str,
+    status: AuditStatus = "ok",
+    operation: AuditOperation = "ERASE",
+):
     return AuditEvent(
         org_id="org1",
         operation=operation,
@@ -81,7 +90,7 @@ def test_purge_targets_require_snapshot_marker(storage):
     storage.record_purge_target(
         purge_id=purge.purge_id,
         target_name="request",
-        target_ref="req1",
+        target_ref="reqref_v1_r1",
         phase="delete",
         status="complete",
         deleted_count=1,
@@ -441,6 +450,20 @@ def test_append_audit_event_validates_top_level_governance_fields(storage, event
         storage.append_audit_event(event)
 
 
+def test_append_audit_event_requires_minimized_request_ref(storage):
+    event = AuditEvent(
+        org_id="org1",
+        operation="EXPORT",
+        entity_type="request",
+        subject_ref="subref_v1_abc",
+        request_ref=None,
+        idempotency_key="missing_request_ref",
+    )
+
+    with pytest.raises(ValueError, match="request_ref"):
+        storage.append_audit_event(event)
+
+
 @pytest.mark.parametrize(
     ("subject_ref", "request_ref", "match"),
     [
@@ -459,4 +482,71 @@ def test_begin_purge_operation_validates_top_level_refs(
             scope_type="user",
             subject_ref=subject_ref,
             request_ref=request_ref,
+        )
+
+
+@pytest.mark.parametrize("detail_key", ["remaining_source_windows", "original_source_windows"])
+def test_append_audit_event_rejects_mixed_case_window_keys(storage, detail_key):
+    event = AuditEvent(
+        org_id="org1",
+        operation="EXPORT",
+        entity_type="request",
+        subject_ref="subref_v1_abc",
+        request_ref="reqref_v1_mixed_case",
+        idempotency_key=f"mixed_case_{detail_key}",
+        detail={detail_key: [{"User_Playbook_Id": "alice@example.com"}]},
+    )
+
+    with pytest.raises(ValueError, match="user_playbook_id"):
+        storage.append_audit_event(event)
+
+
+@pytest.mark.parametrize("detail_key", ["remaining_source_windows", "original_source_windows"])
+def test_record_purge_target_rejects_mixed_case_window_keys(storage, detail_key):
+    purge_id = _begin_purge(storage, f"purge_{detail_key}")
+
+    with pytest.raises(ValueError, match="user_playbook_id"):
+        storage.record_purge_target(
+            purge_id=purge_id,
+            target_name="agent_playbook",
+            target_ref="7",
+            phase="rebuild",
+            status="running",
+            detail={detail_key: [{"User_Playbook_Id": "alice@example.com"}]},
+        )
+
+
+@pytest.mark.parametrize(
+    ("target_ref", "match"),
+    [
+        pytest.param("all", None, id="marker-all"),
+        pytest.param("17", None, id="internal-numeric-id"),
+        pytest.param("reqref_v1_target", None, id="minimized-request-ref"),
+        pytest.param("subref_v1_target", None, id="minimized-subject-ref"),
+        pytest.param("", None, id="empty-default"),
+        pytest.param("alice@example.com", "target_ref", id="raw-email"),
+        pytest.param("request_12345", "target_ref", id="raw-request-id"),
+        pytest.param("alice", "target_ref", id="raw-user-like"),
+    ],
+)
+def test_record_purge_target_validates_target_ref_contract(storage, target_ref, match):
+    purge_id = _begin_purge(storage, "purge_target_ref")
+
+    if match is None:
+        storage.record_purge_target(
+            purge_id=purge_id,
+            target_name="request",
+            target_ref=target_ref,
+            phase="delete",
+            status="running",
+        )
+        return
+
+    with pytest.raises(ValueError, match=match):
+        storage.record_purge_target(
+            purge_id=purge_id,
+            target_name="request",
+            target_ref=target_ref,
+            phase="delete",
+            status="running",
         )
