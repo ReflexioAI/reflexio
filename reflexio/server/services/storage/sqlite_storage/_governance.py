@@ -144,6 +144,7 @@ _ALLOWED_PURGE_TARGET_DETAIL_KEYS = frozenset(
         "erased_source_ids",
         "owned_user_playbook_ids",
         "original_source_windows",
+        "previous_lifecycle_status",
         "prepared",
         "rebuilt_agent_playbook_ids",
         "remaining_source_windows",
@@ -195,6 +196,9 @@ _ALLOWED_DETAIL_STATUS_VALUES = frozenset(
         "pending",
         "running",
     }
+)
+_ALLOWED_PREVIOUS_LIFECYCLE_STATUS_VALUES = frozenset(
+    status.value for status in Status if status.value is not None
 )
 _ALLOWED_DETAIL_ROUTE_VALUES = frozenset(
     {
@@ -563,6 +567,14 @@ def _validate_governance_detail_entry(
         return _validate_governance_int_list(field_name, value)
     if key in {"original_source_windows", "remaining_source_windows"}:
         return _validate_governance_window_list(field_name, value)
+    if key == "previous_lifecycle_status":
+        if value is None:
+            return None
+        return _validate_governance_detail_enum(
+            field_name,
+            value,
+            allowed_values=_ALLOWED_PREVIOUS_LIFECYCLE_STATUS_VALUES,
+        )
     if key == "prepared":
         if not isinstance(value, bool):
             _raise_governance_validation_error(field_name, "expected bool")
@@ -1443,16 +1455,29 @@ class SQLiteGovernanceMixin:
                 if owned_user_playbook_ids:
                     placeholders = ",".join("?" for _ in owned_user_playbook_ids)
                     rows = self.conn.execute(
-                        f"""SELECT DISTINCT agent_playbook_id
+                        f"""SELECT DISTINCT apsup.agent_playbook_id
                             FROM agent_playbook_source_user_playbooks
+                            AS apsup
+                            JOIN agent_playbooks ap
+                              ON ap.agent_playbook_id = apsup.agent_playbook_id
                             WHERE user_playbook_id IN ({placeholders})
-                            ORDER BY agent_playbook_id ASC""",
+                            ORDER BY apsup.agent_playbook_id ASC""",
                         sorted(owned_user_playbook_ids),
                     ).fetchall()
                     affected_agent_playbook_ids = [
                         int(row["agent_playbook_id"]) for row in rows
                     ]
                     for agent_playbook_id in affected_agent_playbook_ids:
+                        status_row = self.conn.execute(
+                            """SELECT status
+                               FROM agent_playbooks
+                               WHERE agent_playbook_id = ?""",
+                            (agent_playbook_id,),
+                        ).fetchone()
+                        if status_row is None:
+                            raise ValueError(
+                                f"Agent playbook with ID {agent_playbook_id} not found"
+                            )
                         window_rows = self.conn.execute(
                             """SELECT user_playbook_id, source_interaction_ids
                                FROM agent_playbook_source_user_playbooks
@@ -1480,6 +1505,7 @@ class SQLiteGovernanceMixin:
                         ]
                         rebuild_details_by_agent_playbook_id[agent_playbook_id] = {
                             "original_source_windows": original_window_dicts,
+                            "previous_lifecycle_status": status_row["status"],
                             "remaining_source_windows": remaining_window_dicts,
                         }
                 for target_name, count in targets.items():
@@ -1527,11 +1553,14 @@ class SQLiteGovernanceMixin:
         targets = self.list_purge_targets(
             purge_id, phase="rebuild_without_erased_sources"
         )
-        agent_playbook_ids = [
-            int(target.target_ref)
+        eligible_targets = [
+            target
             for target in targets
-            if target.target_name == "agent_playbook" and target.target_ref
+            if target.target_name == "agent_playbook"
+            and target.target_ref
+            and target.status != "complete"
         ]
+        agent_playbook_ids = [int(target.target_ref) for target in eligible_targets]
         if not agent_playbook_ids:
             return []
         placeholders = ",".join("?" for _ in agent_playbook_ids)
@@ -1633,6 +1662,7 @@ class SQLiteGovernanceMixin:
                 rebuild_detail = _json_loads(rebuild_target_row["detail"])
                 if not isinstance(rebuild_detail, dict) or not {
                     "original_source_windows",
+                    "previous_lifecycle_status",
                     "remaining_source_windows",
                 }.issubset(rebuild_detail):
                     raise ValueError(
@@ -1646,6 +1676,9 @@ class SQLiteGovernanceMixin:
                     raise ValueError(
                         "remaining_source_windows must match the planned rebuild target"
                     )
+                previous_lifecycle_status = cast(
+                    str | None, rebuild_detail["previous_lifecycle_status"]
+                )
                 hide_target_row = self.conn.execute(
                     """SELECT status
                        FROM purge_operation_targets
@@ -1658,7 +1691,7 @@ class SQLiteGovernanceMixin:
                 cur = self.conn.execute(
                     """UPDATE agent_playbooks
                        SET content = ?, trigger = ?, rationale = ?, blocking_issue = ?,
-                           expanded_terms = ?, tags = ?, status = NULL
+                           expanded_terms = ?, tags = ?, status = ?
                        WHERE agent_playbook_id = ?""",
                     (
                         content or "",
@@ -1667,6 +1700,7 @@ class SQLiteGovernanceMixin:
                         json.dumps(blocking_issue) if blocking_issue is not None else None,
                         expanded_terms,
                         _json_dumps(tags),
+                        previous_lifecycle_status,
                         agent_playbook_id,
                     ),
                 )

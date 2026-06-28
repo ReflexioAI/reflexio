@@ -768,6 +768,7 @@ def test_prepare_governance_erase_targets_persists_rebuild_source_windows(storag
             {"user_playbook_id": 7, "source_interaction_ids": [101, 102]},
             {"user_playbook_id": 9, "source_interaction_ids": [201]},
         ],
+        "previous_lifecycle_status": Status.ARCHIVED.value,
         "remaining_source_windows": [
             {"user_playbook_id": 9, "source_interaction_ids": [201]},
         ],
@@ -851,6 +852,7 @@ def test_hide_governance_agent_playbooks_for_rebuild_sets_archive_in_progress_an
             {"user_playbook_id": 7, "source_interaction_ids": [101]},
             {"user_playbook_id": 9, "source_interaction_ids": [201]},
         ],
+        "previous_lifecycle_status": None,
         "remaining_source_windows": [
             {"user_playbook_id": 9, "source_interaction_ids": [201]},
         ],
@@ -912,6 +914,7 @@ def test_apply_governance_agent_playbook_rebuild_completes_planned_phase(storage
                 {"user_playbook_id": 7, "source_interaction_ids": [101]},
                 {"user_playbook_id": 9, "source_interaction_ids": [201]},
             ],
+            "previous_lifecycle_status": Status.ARCHIVED.value,
             "remaining_source_windows": [
                 {"user_playbook_id": 9, "source_interaction_ids": [201]},
             ],
@@ -929,6 +932,7 @@ def test_apply_governance_agent_playbook_rebuild_completes_planned_phase(storage
             {"user_playbook_id": 7, "source_interaction_ids": [101]},
             {"user_playbook_id": 9, "source_interaction_ids": [201]},
         ],
+        "previous_lifecycle_status": Status.ARCHIVED.value,
         "remaining_source_windows": [
             {"user_playbook_id": 9, "source_interaction_ids": [201]},
         ],
@@ -972,7 +976,7 @@ def test_apply_governance_agent_playbook_rebuild_completes_planned_phase(storage
         None,
         "rebuilt terms",
         json.dumps(["rebuilt"]),
-        None,
+        Status.ARCHIVED.value,
     )
     assert storage.get_source_windows_for_agent_playbook(agent_playbook_id) == [
         AgentPlaybookSourceWindow(user_playbook_id=9, source_interaction_ids=[201])
@@ -1069,6 +1073,7 @@ def test_apply_governance_agent_playbook_rebuild_rejects_rebuild_before_hide_pha
                 {"user_playbook_id": 7, "source_interaction_ids": [101]},
                 {"user_playbook_id": 9, "source_interaction_ids": [201]},
             ],
+            "previous_lifecycle_status": Status.ARCHIVE_IN_PROGRESS.value,
             "remaining_source_windows": [
                 {"user_playbook_id": 9, "source_interaction_ids": [201]},
             ],
@@ -1124,6 +1129,7 @@ def test_apply_governance_agent_playbook_rebuild_rejects_rebuild_before_hide_pha
             {"user_playbook_id": 7, "source_interaction_ids": [101]},
             {"user_playbook_id": 9, "source_interaction_ids": [201]},
         ],
+        "previous_lifecycle_status": Status.ARCHIVE_IN_PROGRESS.value,
         "remaining_source_windows": [
             {"user_playbook_id": 9, "source_interaction_ids": [201]},
         ],
@@ -1185,6 +1191,7 @@ def test_apply_governance_agent_playbook_rebuild_succeeds_after_prepare_and_hide
             {"user_playbook_id": 7, "source_interaction_ids": [101]},
             {"user_playbook_id": 9, "source_interaction_ids": [201]},
         ],
+        "previous_lifecycle_status": None,
         "remaining_source_windows": [
             {"user_playbook_id": 9, "source_interaction_ids": [201]},
         ],
@@ -1225,6 +1232,7 @@ def test_apply_governance_agent_playbook_rebuild_rolls_back_partial_updates_on_f
                 {"user_playbook_id": 7, "source_interaction_ids": [101]},
                 {"user_playbook_id": 9, "source_interaction_ids": [201]},
             ],
+            "previous_lifecycle_status": Status.ARCHIVE_IN_PROGRESS.value,
             "remaining_source_windows": [
                 {"user_playbook_id": 9, "source_interaction_ids": [201]},
             ],
@@ -1287,6 +1295,160 @@ def test_apply_governance_agent_playbook_rebuild_rolls_back_partial_updates_on_f
         and target.target_ref == str(agent_playbook_id)
     )
     assert rebuild_target.status == "running"
+
+
+def test_apply_governance_agent_playbook_rebuild_restores_previous_lifecycle_status(
+    storage,
+):
+    purge_id = "purge_rebuild_restore_archived"
+    storage.begin_purge_operation(
+        purge_id=purge_id,
+        idempotency_key="idem_purge_rebuild_restore_archived",
+        operation_type="user_erasure",
+        scope_type="user",
+        subject_ref=SUBJECT_REF,
+        request_ref=REQUEST_REF,
+    )
+    agent_playbook_id = _seed_agent_playbook(
+        storage,
+        status=Status.ARCHIVE_IN_PROGRESS,
+        source_windows=[
+            AgentPlaybookSourceWindow(user_playbook_id=7, source_interaction_ids=[101]),
+            AgentPlaybookSourceWindow(user_playbook_id=9, source_interaction_ids=[201]),
+        ],
+    )
+    storage.record_purge_target(
+        purge_id=purge_id,
+        target_name="agent_playbook",
+        target_ref=str(agent_playbook_id),
+        phase="rebuild_without_erased_sources",
+        status="running",
+        detail={
+            "original_source_windows": [
+                {"user_playbook_id": 7, "source_interaction_ids": [101]},
+                {"user_playbook_id": 9, "source_interaction_ids": [201]},
+            ],
+            "previous_lifecycle_status": Status.SUPERSEDED.value,
+            "remaining_source_windows": [
+                {"user_playbook_id": 9, "source_interaction_ids": [201]},
+            ],
+        },
+    )
+    storage.record_purge_target(
+        purge_id=purge_id,
+        target_name="agent_playbook",
+        target_ref=str(agent_playbook_id),
+        phase="hide_for_rebuild",
+        status="complete",
+    )
+
+    storage.apply_governance_agent_playbook_rebuild(
+        purge_id=purge_id,
+        agent_playbook_id=agent_playbook_id,
+        remaining_source_windows=[
+            {"user_playbook_id": 9, "source_interaction_ids": [201]},
+        ],
+        content="rebuilt content",
+        trigger="rebuilt trigger",
+        rationale="rebuilt rationale",
+        blocking_issue=None,
+        expanded_terms="rebuilt terms",
+        tags=["rebuilt"],
+    )
+
+    rebuilt_status = storage.conn.execute(
+        "SELECT status FROM agent_playbooks WHERE agent_playbook_id = ?",
+        (agent_playbook_id,),
+    ).fetchone()[0]
+    assert rebuilt_status == Status.SUPERSEDED.value
+
+
+def test_hide_governance_agent_playbooks_for_rebuild_is_idempotent_after_completed_rebuild(
+    storage,
+):
+    purge_id = "purge_hide_after_complete"
+    storage.begin_purge_operation(
+        purge_id=purge_id,
+        idempotency_key="idem_purge_hide_after_complete",
+        operation_type="user_erasure",
+        scope_type="user",
+        subject_ref=SUBJECT_REF,
+        request_ref=REQUEST_REF,
+    )
+    agent_playbook_id = _seed_agent_playbook(
+        storage,
+        status=Status.ARCHIVED,
+        source_windows=[
+            AgentPlaybookSourceWindow(user_playbook_id=7, source_interaction_ids=[101]),
+            AgentPlaybookSourceWindow(user_playbook_id=9, source_interaction_ids=[201]),
+        ],
+    )
+    storage.prepare_governance_erase_targets(
+        purge_id=purge_id,
+        user_id="user-hide-after-complete",
+        owned_user_playbook_ids={7},
+    )
+    storage.hide_governance_agent_playbooks_for_rebuild(purge_id)
+    storage.apply_governance_agent_playbook_rebuild(
+        purge_id=purge_id,
+        agent_playbook_id=agent_playbook_id,
+        remaining_source_windows=[
+            {"user_playbook_id": 9, "source_interaction_ids": [201]},
+        ],
+        content="rebuilt content",
+        trigger="rebuilt trigger",
+        rationale="rebuilt rationale",
+        blocking_issue=None,
+        expanded_terms="rebuilt terms",
+        tags=["rebuilt"],
+    )
+
+    before_status = storage.conn.execute(
+        "SELECT status FROM agent_playbooks WHERE agent_playbook_id = ?",
+        (agent_playbook_id,),
+    ).fetchone()[0]
+    before_windows = storage.get_source_windows_for_agent_playbook(agent_playbook_id)
+    before_hide_target = next(
+        target
+        for target in storage.list_purge_targets(purge_id, phase="hide_for_rebuild")
+        if target.target_name == "agent_playbook"
+        and target.target_ref == str(agent_playbook_id)
+    )
+    before_rebuild_target = next(
+        target
+        for target in storage.list_purge_targets(
+            purge_id, phase="rebuild_without_erased_sources"
+        )
+        if target.target_name == "agent_playbook"
+        and target.target_ref == str(agent_playbook_id)
+    )
+
+    hidden_ids = storage.hide_governance_agent_playbooks_for_rebuild(purge_id)
+
+    after_status = storage.conn.execute(
+        "SELECT status FROM agent_playbooks WHERE agent_playbook_id = ?",
+        (agent_playbook_id,),
+    ).fetchone()[0]
+    after_hide_target = next(
+        target
+        for target in storage.list_purge_targets(purge_id, phase="hide_for_rebuild")
+        if target.target_name == "agent_playbook"
+        and target.target_ref == str(agent_playbook_id)
+    )
+    after_rebuild_target = next(
+        target
+        for target in storage.list_purge_targets(
+            purge_id, phase="rebuild_without_erased_sources"
+        )
+        if target.target_name == "agent_playbook"
+        and target.target_ref == str(agent_playbook_id)
+    )
+
+    assert hidden_ids == []
+    assert after_status == before_status == Status.ARCHIVED.value
+    assert storage.get_source_windows_for_agent_playbook(agent_playbook_id) == before_windows
+    assert after_hide_target == before_hide_target
+    assert after_rebuild_target == before_rebuild_target
 
 
 def test_purge_targets_are_scoped_by_org_for_same_purge_id(storage_factory):
@@ -1589,6 +1751,7 @@ def test_record_purge_target_accepts_target_detail_shapes(storage):
         "original_source_windows": [
             {"user_playbook_id": 7, "source_interaction_ids": [11, 12]}
         ],
+        "previous_lifecycle_status": Status.ARCHIVED.value,
         "remaining_source_windows": [
             {"user_playbook_id": 7, "source_interaction_ids": [12]}
         ],
@@ -1955,6 +2118,105 @@ def test_record_purge_target_requires_window_user_playbook_id(storage, detail_ke
             phase="rebuild_without_erased_sources",
             status="running",
             detail={detail_key: [{"source_interaction_ids": [1, 2]}]},
+        )
+
+
+@pytest.mark.parametrize(
+    "previous_lifecycle_status",
+    [None, Status.ARCHIVED.value, Status.SUPERSEDED.value],
+)
+def test_record_purge_target_accepts_previous_lifecycle_status_for_rebuild_targets(
+    storage, previous_lifecycle_status
+):
+    purge_id = _begin_purge(
+        storage, f"purge_prev_lifecycle_{previous_lifecycle_status or 'current'}"
+    )
+
+    storage.record_purge_target(
+        purge_id=purge_id,
+        target_name="agent_playbook",
+        target_ref="7",
+        phase="rebuild_without_erased_sources",
+        status="running",
+        detail={
+            "original_source_windows": [
+                {"user_playbook_id": 7, "source_interaction_ids": [11, 12]}
+            ],
+            "previous_lifecycle_status": previous_lifecycle_status,
+            "remaining_source_windows": [
+                {"user_playbook_id": 7, "source_interaction_ids": [12]}
+            ],
+        },
+    )
+
+    stored = next(
+        target
+        for target in storage.list_purge_targets(
+            purge_id, phase="rebuild_without_erased_sources"
+        )
+        if target.target_ref == "7"
+    )
+    assert stored.detail is not None
+    assert stored.detail["previous_lifecycle_status"] == previous_lifecycle_status
+
+
+@pytest.mark.parametrize(
+    ("detail", "match"),
+    [
+        pytest.param(
+            {
+                "original_source_windows": [
+                    {"user_playbook_id": 7, "source_interaction_ids": [11, 12]}
+                ],
+                "previous_lifecycle_status": "approved",
+                "remaining_source_windows": [
+                    {"user_playbook_id": 7, "source_interaction_ids": [12]}
+                ],
+            },
+            "previous_lifecycle_status",
+            id="rejects-non-lifecycle-status",
+        ),
+        pytest.param(
+            {
+                "original_source_windows": [
+                    {"user_playbook_id": 7, "source_interaction_ids": [11, 12]}
+                ],
+                "previous_lifecycle_status": {"status": Status.ARCHIVED.value},
+                "remaining_source_windows": [
+                    {"user_playbook_id": 7, "source_interaction_ids": [12]}
+                ],
+            },
+            "previous_lifecycle_status",
+            id="rejects-non-string-status-shape",
+        ),
+        pytest.param(
+            {
+                "original_source_windows": [
+                    {"user_playbook_id": 7, "source_interaction_ids": [11, 12]}
+                ],
+                "remaining_source_windows": [
+                    {"user_playbook_id": 7, "source_interaction_ids": [12]}
+                ],
+                "arbitrary_status_copy": Status.ARCHIVED.value,
+            },
+            "arbitrary_status_copy",
+            id="rejects-arbitrary-detail-key",
+        ),
+    ],
+)
+def test_record_purge_target_rejects_invalid_previous_lifecycle_status_detail(
+    storage, detail, match
+):
+    purge_id = _begin_purge(storage, "purge_prev_lifecycle_invalid")
+
+    with pytest.raises(ValueError, match=match):
+        storage.record_purge_target(
+            purge_id=purge_id,
+            target_name="agent_playbook",
+            target_ref="7",
+            phase="rebuild_without_erased_sources",
+            status="running",
+            detail=detail,
         )
 
 
@@ -2463,6 +2725,7 @@ def test_apply_governance_agent_playbook_rebuild_rejects_mismatched_remaining_so
                 {"user_playbook_id": 7, "source_interaction_ids": [101]},
                 {"user_playbook_id": 9, "source_interaction_ids": [201]},
             ],
+            "previous_lifecycle_status": Status.ARCHIVE_IN_PROGRESS.value,
             "remaining_source_windows": [
                 {"user_playbook_id": 9, "source_interaction_ids": [201]},
             ],
