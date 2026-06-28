@@ -662,6 +662,27 @@ def test_begin_purge_operation_rejects_invalid_enum_values(
         )
 
 
+@pytest.mark.parametrize(
+    "purge_id",
+    [
+        "alice@example.com",
+        "request_12345",
+        "alice",
+        SUBJECT_REF,
+    ],
+)
+def test_begin_purge_operation_rejects_unsafe_purge_id(storage, purge_id):
+    with pytest.raises(ValueError, match="purge_id"):
+        storage.begin_purge_operation(
+            purge_id=purge_id,
+            idempotency_key="idem_purge_invalid_id",
+            operation_type="user_erasure",
+            scope_type="user",
+            subject_ref=SUBJECT_REF,
+            request_ref=REQUEST_REF,
+        )
+
+
 @pytest.mark.parametrize("detail_key", ["remaining_source_windows", "original_source_windows"])
 def test_append_audit_event_rejects_mixed_case_window_keys(storage, detail_key):
     event = AuditEvent(
@@ -690,6 +711,37 @@ def test_record_purge_target_rejects_mixed_case_window_keys(storage, detail_key)
             phase="rebuild",
             status="running",
             detail={detail_key: [{"User_Playbook_Id": "alice@example.com"}]},
+        )
+
+
+@pytest.mark.parametrize("detail_key", ["remaining_source_windows", "original_source_windows"])
+def test_append_audit_event_requires_window_user_playbook_id(storage, detail_key):
+    event = AuditEvent(
+        org_id="org1",
+        operation="EXPORT",
+        entity_type="request",
+        subject_ref=SUBJECT_REF,
+        request_ref=REQUEST_REF,
+        idempotency_key=f"missing_upb_{detail_key}",
+        detail={detail_key: [{"source_interaction_ids": [1, 2]}]},
+    )
+
+    with pytest.raises(ValueError, match="user_playbook_id"):
+        storage.append_audit_event(event)
+
+
+@pytest.mark.parametrize("detail_key", ["remaining_source_windows", "original_source_windows"])
+def test_record_purge_target_requires_window_user_playbook_id(storage, detail_key):
+    purge_id = _begin_purge(storage, f"purge_missing_upb_{detail_key}")
+
+    with pytest.raises(ValueError, match="user_playbook_id"):
+        storage.record_purge_target(
+            purge_id=purge_id,
+            target_name="agent_playbook",
+            target_ref="7",
+            phase="rebuild",
+            status="running",
+            detail={detail_key: [{"source_interaction_ids": [1, 2]}]},
         )
 
 
@@ -727,6 +779,54 @@ def test_record_purge_target_validates_target_ref_contract(storage, target_ref, 
             phase="delete",
             status="running",
         )
+
+
+@pytest.mark.parametrize("purge_id", ["alice@example.com", "request_12345", "alice", SUBJECT_REF])
+def test_persistence_paths_reject_unsafe_purge_id(storage, purge_id):
+    now = 1
+    storage.conn.execute(
+        """INSERT INTO purge_operations (
+               purge_id, org_id, operation_type, scope_type, subject_ref, request_ref,
+               idempotency_key, status, created_at, updated_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, ?)""",
+        (
+            purge_id,
+            "org1",
+            "user_erasure",
+            "user",
+            SUBJECT_REF,
+            REQUEST_REF,
+            "idem_seeded_invalid_purge_id",
+            now,
+            now,
+        ),
+    )
+    storage.conn.commit()
+
+    with pytest.raises(ValueError, match="purge_id"):
+        storage.record_purge_target(
+            purge_id=purge_id,
+            target_name="request",
+            target_ref="all",
+            phase="delete",
+            status="running",
+        )
+
+    with pytest.raises(ValueError, match="purge_id"):
+        storage.complete_purge_operation_with_audit(
+            purge_id,
+            AuditEvent(
+                org_id="org1",
+                operation="ERASE",
+                entity_type="request",
+                subject_ref=SUBJECT_REF,
+                request_ref=REQUEST_REF,
+                idempotency_key=purge_id,
+            ),
+        )
+
+    assert storage.list_purge_targets(purge_id) == []
+    assert storage.list_audit_events(subject_ref=SUBJECT_REF) == []
 
 
 @pytest.mark.parametrize(

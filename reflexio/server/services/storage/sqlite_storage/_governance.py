@@ -254,6 +254,19 @@ def _validate_governance_idempotency_key(
     )
 
 
+def _validate_governance_purge_id(field_name: str, value: str) -> str:
+    if not value:
+        _raise_governance_validation_error(field_name, "required")
+    _validate_governance_string(field_name, value)
+    if value.startswith(("subref_v1_", "reqref_v1_", "actref_v1_")):
+        _raise_governance_validation_error(field_name, "identifier")
+    if not value.startswith("purge_"):
+        _raise_governance_validation_error(field_name, "must start with purge_")
+    if _CODE_SHAPED_VALUE_RE.fullmatch(value) is None:
+        _raise_governance_validation_error(field_name, "must be code-shaped")
+    return value
+
+
 def _validate_governance_int(field_name: str, value: Any) -> None:
     if isinstance(value, bool) or not isinstance(value, int):
         _raise_governance_validation_error(field_name, "expected int")
@@ -296,11 +309,14 @@ def _validate_governance_window_list(field_name: str, value: Any) -> None:
             _raise_governance_validation_error(
                 f"{field_name}[{index}]", sorted(unexpected_keys)[0]
             )
-        if "user_playbook_id" in normalized_item:
-            _validate_governance_int(
-                f"{field_name}[{index}].user_playbook_id",
-                normalized_item["user_playbook_id"],
+        if "user_playbook_id" not in normalized_item:
+            _raise_governance_validation_error(
+                f"{field_name}[{index}].user_playbook_id", "required"
             )
+        _validate_governance_int(
+            f"{field_name}[{index}].user_playbook_id",
+            normalized_item["user_playbook_id"],
+        )
         if "source_interaction_ids" in normalized_item:
             _validate_governance_int_list(
                 f"{field_name}[{index}].source_interaction_ids",
@@ -648,6 +664,7 @@ class SQLiteGovernanceMixin:
         deleted_count: int,
         error_detail: str | None,
     ) -> None:
+        purge_id = _validate_governance_purge_id("purge_id", purge_id)
         detail = _validate_governance_detail("detail", detail)
         error_detail = _validate_governance_error_detail(error_detail)
         _validate_governance_target_ref(target_ref)
@@ -751,6 +768,7 @@ class SQLiteGovernanceMixin:
         _validate_governance_prefixed_ref(
             "request_ref", request_ref, prefix="reqref_v1_"
         )
+        validated_purge_id = _validate_governance_purge_id("purge_id", purge_id)
         validated_idempotency_key = cast(
             str,
             _validate_governance_idempotency_key("idempotency_key", idempotency_key),
@@ -770,7 +788,7 @@ class SQLiteGovernanceMixin:
                        request_ref, idempotency_key, status, created_at, updated_at
                    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)""",
                 (
-                    purge_id,
+                    validated_purge_id,
                     self.org_id,
                     operation_type,
                     scope_type,
@@ -782,7 +800,7 @@ class SQLiteGovernanceMixin:
                 ),
             )
             self.conn.commit()
-        return self.get_purge_operation(purge_id)
+        return self.get_purge_operation(validated_purge_id)
 
     def record_purge_target(
         self,
@@ -1029,6 +1047,7 @@ class SQLiteGovernanceMixin:
     def complete_purge_operation_with_audit(
         self, purge_id: str, audit_event: AuditEvent
     ) -> PurgeOperation:
+        purge_id = _validate_governance_purge_id("purge_id", purge_id)
         if audit_event.org_id != self.org_id:
             raise ValueError("Audit event org_id must match storage org_id")
         if audit_event.idempotency_key != purge_id:
