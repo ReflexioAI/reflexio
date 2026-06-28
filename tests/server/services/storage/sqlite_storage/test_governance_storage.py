@@ -1756,3 +1756,73 @@ def test_init_governance_tables_upgrades_legacy_purge_target_table(tmp_path):
     )
 
     assert storage.purge_targets_prepared(purge_id) is True
+
+
+def test_init_governance_tables_skips_ambiguous_legacy_purge_target_rows(tmp_path):
+    db_path = tmp_path / "legacy-governance-ambiguous.db"
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        CREATE TABLE purge_operations (
+            org_id TEXT NOT NULL,
+            purge_id TEXT NOT NULL,
+            operation_type TEXT NOT NULL,
+            scope_type TEXT NOT NULL,
+            subject_ref TEXT,
+            request_ref TEXT NOT NULL,
+            idempotency_key TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            error_code TEXT,
+            error_detail TEXT,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            completed_at INTEGER,
+            PRIMARY KEY (org_id, purge_id)
+        );
+        INSERT INTO purge_operations (
+            org_id, purge_id, operation_type, scope_type, subject_ref, request_ref,
+            idempotency_key, status, created_at, updated_at
+        ) VALUES
+            ('org1', 'purge_shared', 'user_erasure', 'user', NULL, 'reqref_v1_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 'idem_org1', 'pending', 1, 1),
+            ('org2', 'purge_shared', 'user_erasure', 'user', NULL, 'reqref_v1_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 'idem_org2', 'pending', 1, 1),
+            ('org1', 'purge_unique', 'user_erasure', 'user', NULL, 'reqref_v1_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 'idem_unique', 'pending', 1, 1);
+        CREATE TABLE purge_operation_targets (
+            purge_id TEXT NOT NULL,
+            target_name TEXT NOT NULL,
+            target_ref TEXT NOT NULL DEFAULT '',
+            phase TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            detail TEXT,
+            deleted_count INTEGER NOT NULL DEFAULT 0,
+            error_detail TEXT,
+            started_at INTEGER,
+            completed_at INTEGER,
+            PRIMARY KEY (purge_id, target_name, target_ref, phase)
+        );
+        INSERT INTO purge_operation_targets (
+            purge_id, target_name, target_ref, phase, status
+        ) VALUES
+            ('purge_shared', 'target_snapshot', 'all', 'prepare_targets', 'complete'),
+            ('purge_unique', 'target_snapshot', 'all', 'prepare_targets', 'complete');
+        """
+    )
+    conn.commit()
+
+    init_governance_tables(conn)
+
+    upgraded_rows = conn.execute(
+        """
+        SELECT org_id, purge_id, target_name, target_ref, phase, status
+        FROM purge_operation_targets
+        ORDER BY purge_id, org_id
+        """
+    ).fetchall()
+    conn.close()
+
+    assert upgraded_rows == [
+        ("org1", "purge_unique", "target_snapshot", "all", "prepare_targets", "complete")
+    ]
+
+
+def test_gc_governance_retention_accepts_config_keyword(storage):
+    assert storage.gc_governance_retention(config=object()) == 0

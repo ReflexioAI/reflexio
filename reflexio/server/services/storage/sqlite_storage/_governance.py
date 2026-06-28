@@ -615,12 +615,18 @@ def _upgrade_legacy_purge_operation_targets_table(conn: sqlite3.Connection) -> N
                org_id, purge_id, target_name, target_ref, phase, status, detail,
                deleted_count, error_detail, started_at, completed_at
            )
-           SELECT purge_operations.org_id, legacy.purge_id, legacy.target_name,
+           SELECT uniquely_mapped_purges.org_id, legacy.purge_id, legacy.target_name,
                   legacy.target_ref, legacy.phase, legacy.status, legacy.detail,
                   legacy.deleted_count, legacy.error_detail, legacy.started_at,
                   legacy.completed_at
            FROM purge_operation_targets_legacy AS legacy
-           JOIN purge_operations ON purge_operations.purge_id = legacy.purge_id"""
+           JOIN (
+               SELECT MIN(org_id) AS org_id, purge_id
+               FROM purge_operations
+               GROUP BY purge_id
+               HAVING COUNT(*) = 1
+           ) AS uniquely_mapped_purges
+             ON uniquely_mapped_purges.purge_id = legacy.purge_id"""
     )
     conn.execute("DROP TABLE purge_operation_targets_legacy")
 
@@ -1397,5 +1403,6 @@ class SQLiteGovernanceMixin:
             raise ValueError(f"Purge operation {purge_id!r} not found")
         return _row_to_purge_operation(row)
 
-    def gc_governance_retention(self, *, _config: Any) -> int:
+    def gc_governance_retention(self, *, config: Any) -> int:
+        del config
         return 0
