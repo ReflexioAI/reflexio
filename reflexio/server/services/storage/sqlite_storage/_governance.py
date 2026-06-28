@@ -111,7 +111,6 @@ _ALLOWED_PURGE_TARGET_PHASES = frozenset(
     {
         _PREPARE_PHASE,
         "delete",
-        "rebuild",
         "hide_for_rebuild",
         "rebuild_without_erased_sources",
     }
@@ -416,6 +415,14 @@ def _parse_governance_window_list(
 def _validate_governance_target_ref(
     *, target_name: str, phase: str, target_ref: str
 ) -> str:
+    if target_name == _SNAPSHOT_TARGET_NAME:
+        if phase != _PREPARE_PHASE:
+            _raise_governance_validation_error(
+                _SNAPSHOT_TARGET_NAME, "must use prepare_targets phase"
+            )
+        if target_ref != "all":
+            _raise_governance_validation_error("target_ref", "must be all")
+        return target_ref
     if (
         target_name == "agent_playbook"
         and phase in {"hide_for_rebuild", "rebuild_without_erased_sources"}

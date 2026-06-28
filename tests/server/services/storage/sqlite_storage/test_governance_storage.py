@@ -1151,7 +1151,7 @@ def test_record_purge_target_rejects_mixed_case_window_keys(storage, detail_key)
             purge_id=purge_id,
             target_name="agent_playbook",
             target_ref="7",
-            phase="rebuild",
+            phase="rebuild_without_erased_sources",
             status="running",
             detail={detail_key: [{"User_Playbook_Id": "alice@example.com"}]},
         )
@@ -1182,7 +1182,7 @@ def test_record_purge_target_requires_window_user_playbook_id(storage, detail_ke
             purge_id=purge_id,
             target_name="agent_playbook",
             target_ref="7",
-            phase="rebuild",
+            phase="rebuild_without_erased_sources",
             status="running",
             detail={detail_key: [{"source_interaction_ids": [1, 2]}]},
         )
@@ -1619,6 +1619,20 @@ def test_governance_detail_rejects_duplicate_normalized_keys(storage, persistenc
             None,
             id="snapshot-marker-all",
         ),
+        pytest.param(
+            "target_snapshot",
+            "prepare_targets",
+            "17",
+            "target_ref",
+            id="snapshot-rejects-row-ref",
+        ),
+        pytest.param(
+            "target_snapshot",
+            "delete",
+            "all",
+            "target_snapshot",
+            id="snapshot-rejects-wrong-phase",
+        ),
         pytest.param("request", "delete", "all", None, id="aggregate-delete-all"),
         pytest.param(
             "agent_playbook",
@@ -1654,6 +1668,13 @@ def test_governance_detail_rejects_duplicate_normalized_keys(storage, persistenc
             REQUEST_REF,
             "target_ref",
             id="row-target-rebuild-rejects-minimized-ref",
+        ),
+        pytest.param(
+            "agent_playbook",
+            "rebuild",
+            "19",
+            "phase",
+            id="rebuild-phase-rejected",
         ),
     ],
 )
