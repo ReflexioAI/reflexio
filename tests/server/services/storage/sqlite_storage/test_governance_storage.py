@@ -754,6 +754,21 @@ def test_append_audit_event_rejects_successful_erase(storage):
         storage.append_audit_event(_erase_event(purge_id="purge_append"))
 
 
+def test_append_audit_event_rejects_successful_erase_without_idempotency_key(storage):
+    with pytest.raises(ValueError, match="Successful ERASE audit rows"):
+        storage.append_audit_event(
+            AuditEvent(
+                org_id="org1",
+                operation="ERASE",
+                entity_type="request",
+                subject_ref=SUBJECT_REF,
+                request_ref=REQUEST_REF,
+                idempotency_key=None,
+                status="ok",
+            )
+        )
+
+
 def test_complete_purge_operation_requires_full_delete_target_matrix(storage):
     purge_id = _begin_purge(storage, "purge_snapshot_only")
 

@@ -778,12 +778,11 @@ def _upgrade_legacy_purge_operation_targets_table(conn: sqlite3.Connection) -> N
 def _is_successful_erase_event(
     event: AuditEvent, *, purge_id: str | None = None
 ) -> bool:
-    return (
-        event.operation == "ERASE"
-        and event.status == "ok"
-        and event.idempotency_key is not None
-        and (purge_id is None or event.idempotency_key == purge_id)
-    )
+    if event.operation != "ERASE" or event.status != "ok":
+        return False
+    if purge_id is not None:
+        return event.idempotency_key == purge_id
+    return True
 
 
 def _successful_erase_identity(
