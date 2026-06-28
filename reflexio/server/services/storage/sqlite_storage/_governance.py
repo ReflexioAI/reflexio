@@ -332,7 +332,7 @@ def _validate_governance_purge_id(field_name: str, value: str) -> str:
     suffix = value[len("purge_") :]
     if _IDENTIFIERISH_CODE_VALUE_RE.fullmatch(suffix):
         _raise_governance_validation_error(field_name, "identifier")
-    if suffix.isdecimal() and len(suffix) > 1:
+    if suffix.isdecimal():
         _raise_governance_validation_error(field_name, "numeric identifier")
     return value
 

@@ -331,8 +331,8 @@ def test_list_audit_events_rejects_cross_org_override(storage_factory):
 
 def test_purge_targets_require_snapshot_marker(storage):
     purge = storage.begin_purge_operation(
-        purge_id="purge_1",
-        idempotency_key="idem_1",
+        purge_id="purge_snapshot_marker",
+        idempotency_key="idem_snapshot_marker",
         operation_type="user_erasure",
         scope_type="user",
         subject_ref=SUBJECT_REF,
@@ -363,7 +363,7 @@ def test_purge_targets_require_snapshot_marker(storage):
 
 
 def test_complete_purge_operation_with_audit_is_atomic_success_path(storage):
-    purge_id = _begin_completeable_purge(storage, "purge_2")
+    purge_id = _begin_completeable_purge(storage, "purge_atomic_success")
     complete = storage.complete_purge_operation_with_audit(
         purge_id,
         _erase_event(purge_id=purge_id),
@@ -515,11 +515,12 @@ def test_begin_purge_operation_rejects_numeric_idempotency_key(storage):
         storage.get_purge_operation("purge_numeric_idem")
 
 
-def test_begin_purge_operation_rejects_raw_numeric_purge_suffix(storage):
+@pytest.mark.parametrize("purge_id", ["purge_1", "purge_123"])
+def test_begin_purge_operation_rejects_raw_numeric_purge_suffix(storage, purge_id):
     with pytest.raises(ValueError, match="purge_id"):
         storage.begin_purge_operation(
-            purge_id="purge_123",
-            idempotency_key="idem_purge_123",
+            purge_id=purge_id,
+            idempotency_key=f"idem_{purge_id}",
             operation_type="user_erasure",
             scope_type="user",
             subject_ref=SUBJECT_REF,
@@ -527,7 +528,7 @@ def test_begin_purge_operation_rejects_raw_numeric_purge_suffix(storage):
         )
 
     with pytest.raises(ValueError, match="purge_id"):
-        storage.get_purge_operation("purge_123")
+        storage.get_purge_operation(purge_id)
 
 
 @pytest.mark.parametrize(
