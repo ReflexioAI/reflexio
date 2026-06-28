@@ -190,7 +190,7 @@ def test_purge_targets_require_snapshot_marker(storage):
     storage.record_purge_target(
         purge_id=purge.purge_id,
         target_name="request",
-        target_ref=REQUEST_REF,
+        target_ref="all",
         phase="delete",
         status="complete",
         deleted_count=1,
@@ -227,6 +227,31 @@ def test_complete_purge_operation_with_audit_is_atomic_success_path(storage):
     )
     assert same.status == "complete"
     assert len(storage.list_audit_events(subject_ref=SUBJECT_REF)) == 1
+
+
+def test_complete_purge_operation_with_audit_begins_immediate_transaction_before_reads(
+    storage,
+):
+    purge_id = _begin_purge(storage, "purge_begin_immediate")
+    statements: list[str] = []
+    storage.conn.set_trace_callback(statements.append)
+    try:
+        storage.complete_purge_operation_with_audit(
+            purge_id,
+            _erase_event(purge_id=purge_id),
+        )
+    finally:
+        storage.conn.set_trace_callback(None)
+
+    begin_index = next(
+        i for i, statement in enumerate(statements) if statement == "BEGIN IMMEDIATE"
+    )
+    first_validation_read_index = next(
+        i
+        for i, statement in enumerate(statements)
+        if "SELECT * FROM purge_operations" in statement
+    )
+    assert begin_index < first_validation_read_index
 
 
 def test_complete_purge_operation_with_audit_accepts_planned_success_detail(storage):
@@ -671,7 +696,7 @@ def test_purge_targets_are_scoped_by_org_for_same_purge_id(storage_factory):
     storage_org1.record_purge_target(
         purge_id=purge_id,
         target_name="request",
-        target_ref=REQUEST_REF,
+        target_ref="all",
         phase="delete",
         status="pending",
         detail={"count": 1},
@@ -679,7 +704,7 @@ def test_purge_targets_are_scoped_by_org_for_same_purge_id(storage_factory):
     storage_org2.record_purge_target(
         purge_id=purge_id,
         target_name="request",
-        target_ref=OTHER_REQUEST_REF,
+        target_ref="all",
         phase="delete",
         status="complete",
         detail={"count": 2},
@@ -690,11 +715,11 @@ def test_purge_targets_are_scoped_by_org_for_same_purge_id(storage_factory):
     org2_targets = storage_org2.list_purge_targets(purge_id)
 
     assert {(target.phase, target.target_ref, target.status) for target in org1_targets} == {
-        ("delete", REQUEST_REF, "pending"),
+        ("delete", "all", "pending"),
         ("prepare_targets", "all", "complete"),
     }
     assert {(target.phase, target.target_ref, target.status) for target in org2_targets} == {
-        ("delete", OTHER_REQUEST_REF, "complete"),
+        ("delete", "all", "complete"),
     }
     assert storage_org1.purge_targets_prepared(purge_id) is True
     assert storage_org2.purge_targets_prepared(purge_id) is False
@@ -702,7 +727,7 @@ def test_purge_targets_are_scoped_by_org_for_same_purge_id(storage_factory):
     storage_org2.record_purge_target(
         purge_id=purge_id,
         target_name="request",
-        target_ref=REQUEST_REF,
+        target_ref="all",
         phase="delete",
         status="running",
         detail={"count": 3},
@@ -711,15 +736,14 @@ def test_purge_targets_are_scoped_by_org_for_same_purge_id(storage_factory):
     org1_request_target = next(
         target
         for target in storage_org1.list_purge_targets(purge_id, phase="delete")
-        if target.target_ref == REQUEST_REF
+        if target.target_ref == "all"
     )
     org2_delete_targets = storage_org2.list_purge_targets(purge_id, phase="delete")
 
     assert org1_request_target.status == "pending"
     assert org1_request_target.detail == {"count": 1}
     assert {(target.target_ref, target.status, target.deleted_count) for target in org2_delete_targets} == {
-        (OTHER_REQUEST_REF, "complete", 2),
-        (REQUEST_REF, "running", 0),
+        ("all", "running", 0),
     }
 
 
@@ -1192,10 +1216,10 @@ def test_record_purge_target_requires_window_user_playbook_id(storage, detail_ke
     ("target_ref", "match"),
     [
         pytest.param("all", None, id="marker-all"),
-        pytest.param("17", None, id="internal-numeric-id"),
-        pytest.param(REQUEST_REF, None, id="minimized-request-ref"),
-        pytest.param(SUBJECT_REF, None, id="minimized-subject-ref"),
-        pytest.param("", None, id="empty-default"),
+        pytest.param("17", "target_ref", id="internal-numeric-id"),
+        pytest.param(REQUEST_REF, "target_ref", id="minimized-request-ref"),
+        pytest.param(SUBJECT_REF, "target_ref", id="minimized-subject-ref"),
+        pytest.param("", "target_ref", id="empty-default"),
         pytest.param("alice@example.com", "target_ref", id="raw-email"),
         pytest.param("request_12345", "target_ref", id="raw-request-id"),
         pytest.param("alice", "target_ref", id="raw-user-like"),
@@ -1628,18 +1652,60 @@ def test_governance_detail_rejects_duplicate_normalized_keys(storage, persistenc
         ),
         pytest.param(
             "target_snapshot",
+            "prepare_targets",
+            "",
+            "target_ref",
+            id="snapshot-rejects-empty-ref",
+        ),
+        pytest.param(
+            "target_snapshot",
             "delete",
             "all",
             "target_snapshot",
             id="snapshot-rejects-wrong-phase",
         ),
+        pytest.param(
+            "request",
+            "prepare_targets",
+            "all",
+            "prepare_targets",
+            id="request-rejects-prepare-targets",
+        ),
         pytest.param("request", "delete", "all", None, id="aggregate-delete-all"),
+        pytest.param(
+            "request",
+            "hide_for_rebuild",
+            "all",
+            "hide_for_rebuild",
+            id="request-rejects-hide",
+        ),
+        pytest.param(
+            "profile",
+            "rebuild_without_erased_sources",
+            "all",
+            "rebuild_without_erased_sources",
+            id="profile-rejects-rebuild",
+        ),
+        pytest.param(
+            "interaction",
+            "delete",
+            REQUEST_REF,
+            "target_ref",
+            id="interaction-delete-rejects-non-all-ref",
+        ),
         pytest.param(
             "agent_playbook",
             "hide_for_rebuild",
             "17",
             None,
             id="row-target-hide-internal-id",
+        ),
+        pytest.param(
+            "agent_playbook",
+            "prepare_targets",
+            "17",
+            "prepare_targets",
+            id="agent-playbook-rejects-prepare-targets",
         ),
         pytest.param(
             "agent_playbook",

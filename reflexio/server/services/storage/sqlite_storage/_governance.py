@@ -423,10 +423,29 @@ def _validate_governance_target_ref(
         if target_ref != "all":
             _raise_governance_validation_error("target_ref", "must be all")
         return target_ref
-    if (
-        target_name == "agent_playbook"
-        and phase in {"hide_for_rebuild", "rebuild_without_erased_sources"}
-    ):
+    if target_name in {
+        "request",
+        "interaction",
+        "profile",
+        "user_playbook",
+        "profile_purge",
+        "user_playbook_purge",
+    }:
+        if phase != "delete":
+            _raise_governance_validation_error(
+                phase,
+                f"{target_name} targets must use delete phase",
+            )
+        if target_ref != "all":
+            _raise_governance_validation_error("target_ref", "must be all")
+        return target_ref
+    if target_name == "agent_playbook":
+        if phase not in {"hide_for_rebuild", "rebuild_without_erased_sources"}:
+            _raise_governance_validation_error(
+                phase,
+                "agent_playbook targets must use hide_for_rebuild or "
+                "rebuild_without_erased_sources",
+            )
         if _SAFE_INTERNAL_ID_RE.fullmatch(target_ref):
             return target_ref
         _raise_governance_validation_error(
@@ -1289,6 +1308,7 @@ class SQLiteGovernanceMixin:
         now = _epoch_now()
         with self._lock:
             try:
+                self.conn.execute("BEGIN IMMEDIATE")
                 row = self.conn.execute(
                     "SELECT * FROM purge_operations WHERE purge_id = ? AND org_id = ?",
                     (purge_id, self.org_id),
