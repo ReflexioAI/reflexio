@@ -2707,6 +2707,10 @@ def test_apply_governance_user_data_delete_requires_complete_prepared_delete_mat
     storage, monkeypatch
 ):
     purge_id = _begin_purge(storage, "purge_delete_requires_prepared_matrix")
+    user_id = "user-delete-seed"
+    expected_user_id = user_id
+    _seed_user_scoped_rows(storage, user_id=user_id)
+    baseline_counts = _user_scoped_row_counts(storage, user_id=user_id)
     storage.record_purge_target(
         purge_id=purge_id,
         target_name="request",
@@ -2725,23 +2729,31 @@ def test_apply_governance_user_data_delete_requires_complete_prepared_delete_mat
         deleted_count=0,
     )
 
-    clear_user_data_called = False
+    clear_locked_called = False
 
-    def _stub_clear_user_data(self: SQLiteStorage, user_id: str) -> dict[str, int]:
-        nonlocal clear_user_data_called
-        del self, user_id
-        clear_user_data_called = True
+    def _stub_clear_user_data_for_governance_locked(
+        self: SQLiteStorage, patched_user_id: str
+    ) -> dict[str, int]:
+        nonlocal clear_locked_called
+        del self
+        clear_locked_called = True
+        assert patched_user_id == expected_user_id
         return {"requests": 1}
 
-    monkeypatch.setattr(SQLiteStorage, "clear_user_data", _stub_clear_user_data)
+    monkeypatch.setattr(
+        SQLiteStorage,
+        "_clear_user_data_for_governance_locked",
+        _stub_clear_user_data_for_governance_locked,
+    )
 
     with pytest.raises(ValueError, match="complete delete target matrix"):
         storage.apply_governance_user_data_delete(
             purge_id=purge_id,
-            user_id="user-delete-seed",
+            user_id=user_id,
         )
 
-    assert clear_user_data_called is False
+    assert clear_locked_called is False
+    assert _user_scoped_row_counts(storage, user_id=user_id) == baseline_counts
     delete_targets = storage.list_purge_targets(purge_id, phase="delete")
     assert {
         (target.target_name, target.status)
