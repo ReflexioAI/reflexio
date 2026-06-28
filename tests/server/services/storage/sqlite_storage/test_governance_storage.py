@@ -120,6 +120,83 @@ def _seed_user_scoped_rows(storage: SQLiteStorage, *, user_id: str) -> None:
     storage.conn.commit()
 
 
+def _seed_prepare_counts_user_data(storage: SQLiteStorage, *, user_id: str) -> set[int]:
+    created_at = "2026-01-01T00:00:00.000Z"
+    storage.conn.execute(
+        """INSERT INTO requests (
+               request_id, user_id, created_at, source, agent_version, session_id, evaluation_only
+           ) VALUES (?, ?, ?, '', '', ?, 0)""",
+        ("request_seed", user_id, created_at, "session_seed"),
+    )
+    storage.conn.execute(
+        """INSERT INTO interactions (
+               user_id, content, request_id, created_at, role, user_action,
+               user_action_description, interacted_image_url, image_encoding,
+               shadow_content, expert_content, tools_used, citations, embedding
+           ) VALUES (?, '', ?, ?, 'User', 'none', '', '', '', '', '', '[]', '[]', '[]')""",
+        (user_id, "request_seed", created_at),
+    )
+    storage.conn.execute(
+        """INSERT INTO profiles (
+               profile_id, user_id, content, last_modified_timestamp,
+               generated_from_request_id, profile_time_to_live, expiration_timestamp,
+               embedding, source_interaction_ids, created_at
+           ) VALUES (?, ?, ?, ?, ?, 'infinity', ?, '[]', '[]', ?)""",
+        (
+            "profile_seed",
+            user_id,
+            "profile-content",
+            1,
+            "request_seed",
+            4102444800,
+            created_at,
+        ),
+    )
+    storage.conn.execute(
+        """INSERT INTO profiles (
+               profile_id, user_id, content, last_modified_timestamp,
+               generated_from_request_id, profile_time_to_live, expiration_timestamp,
+               embedding, source_interaction_ids, merged_into, created_at
+           ) VALUES (?, ?, ?, ?, ?, 'infinity', ?, '[]', '[]', ?, ?)""",
+        (
+            "profile_purge_seed",
+            user_id,
+            "profile-purge-content",
+            2,
+            "request_seed",
+            4102444800,
+            "profile_external_survivor",
+            created_at,
+        ),
+    )
+    delete_cursor = storage.conn.execute(
+        """INSERT INTO user_playbooks (
+               user_id, playbook_name, created_at, request_id, agent_version,
+               content, source_interaction_ids, embedding
+           ) VALUES (?, '', ?, ?, '', ?, '[]', '[]')""",
+        (user_id, created_at, "request_seed", "playbook-delete-content"),
+    )
+    assert delete_cursor.lastrowid is not None
+    delete_playbook_id = int(delete_cursor.lastrowid)
+    purge_cursor = storage.conn.execute(
+        """INSERT INTO user_playbooks (
+               user_id, playbook_name, created_at, request_id, agent_version,
+               content, source_interaction_ids, embedding, merged_into
+           ) VALUES (?, '', ?, ?, '', ?, '[]', '[]', ?)""",
+        (
+            user_id,
+            created_at,
+            "request_seed",
+            "playbook-purge-content",
+            999999,
+        ),
+    )
+    assert purge_cursor.lastrowid is not None
+    purge_playbook_id = int(purge_cursor.lastrowid)
+    storage.conn.commit()
+    return {delete_playbook_id, purge_playbook_id}
+
+
 def _seed_agent_playbook(
     storage: SQLiteStorage,
     *,
@@ -289,6 +366,28 @@ def test_complete_purge_operation_with_audit_accepts_planned_success_detail(stor
         "deleted_counts": deleted_counts,
         "rebuilt_agent_playbook_ids": rebuilt_ids,
     }
+
+
+@pytest.mark.parametrize(
+    ("event_kwargs", "match"),
+    [
+        pytest.param({"subject_ref": OTHER_SUBJECT_REF}, "subject_ref", id="subject-ref"),
+        pytest.param({"request_ref": OTHER_REQUEST_REF}, "request_ref", id="request-ref"),
+    ],
+)
+def test_complete_purge_operation_rejects_audit_refs_that_mismatch_persisted_purge(
+    storage, event_kwargs, match
+):
+    purge_id = _begin_purge(storage, "purge_row_ref_mismatch")
+    event = _erase_event(purge_id=purge_id).model_copy(update=event_kwargs)
+
+    with pytest.raises(ValueError, match=match):
+        storage.complete_purge_operation_with_audit(purge_id, event)
+
+    assert storage.get_purge_operation(purge_id).status == "running"
+    assert storage.list_audit_events(subject_ref=SUBJECT_REF) == []
+    if event.subject_ref is not None:
+        assert storage.list_audit_events(subject_ref=event.subject_ref) == []
 
 
 @pytest.mark.parametrize(
@@ -532,6 +631,53 @@ def test_prepare_governance_erase_targets_persists_rebuild_source_windows(storag
         "remaining_source_windows": [
             {"user_playbook_id": 9, "source_interaction_ids": [201]},
         ],
+    }
+
+
+def test_prepare_governance_erase_targets_records_full_delete_matrix_counts(storage):
+    purge_id = "purge_prepare_counts"
+    user_id = "user_prepare_counts"
+    owned_user_playbook_ids = _seed_prepare_counts_user_data(storage, user_id=user_id)
+    storage.begin_purge_operation(
+        purge_id=purge_id,
+        idempotency_key="idem_purge_prepare_counts",
+        operation_type="user_erasure",
+        scope_type="user",
+        subject_ref=SUBJECT_REF,
+        request_ref=REQUEST_REF,
+    )
+
+    storage.prepare_governance_erase_targets(
+        purge_id=purge_id,
+        user_id=user_id,
+        owned_user_playbook_ids=owned_user_playbook_ids,
+    )
+
+    delete_targets = {
+        target.target_name: target
+        for target in storage.list_purge_targets(purge_id, phase="delete")
+    }
+    assert delete_targets["request"].target_ref == "all"
+    assert delete_targets["request"].detail == {"count": 1}
+    assert delete_targets["interaction"].target_ref == "all"
+    assert delete_targets["interaction"].detail == {"count": 1}
+    assert delete_targets["profile"].target_ref == "all"
+    assert delete_targets["profile"].detail == {"count": 1}
+    assert delete_targets["profile_purge"].target_ref == "all"
+    assert delete_targets["profile_purge"].detail == {"count": 1}
+    assert delete_targets["user_playbook"].target_ref == "all"
+    assert delete_targets["user_playbook"].detail == {"count": 1}
+    assert delete_targets["user_playbook_purge"].target_ref == "all"
+    assert delete_targets["user_playbook_purge"].detail == {"count": 1}
+
+    counts = storage.clear_user_data(user_id)
+    assert counts == {
+        "interactions": 1,
+        "user_playbooks": 1,
+        "profiles": 1,
+        "requests": 1,
+        "purged_profiles": 1,
+        "purged_user_playbooks": 1,
     }
 
 

@@ -773,6 +773,11 @@ class _SQLiteGovernanceDeps(Protocol):
     def clear_user_data(self, user_id: str) -> dict[str, int]:
         ...
 
+    def _partition_purge_vs_delete(
+        self, entity_type: Literal["profile", "user_playbook"], ids: list[str]
+    ) -> tuple[list[str], list[str]]:
+        ...
+
     def set_source_windows_for_agent_playbook(
         self, agent_playbook_id: int, windows: list[AgentPlaybookSourceWindow]
     ) -> None:
@@ -793,6 +798,42 @@ class SQLiteGovernanceMixin:
 
     def _deps(self) -> _SQLiteGovernanceDeps:
         return cast(_SQLiteGovernanceDeps, self)
+
+    def _planned_governance_delete_counts(
+        self, user_id: str, owned_user_playbook_ids: set[int]
+    ) -> dict[str, int]:
+        request_row = self.conn.execute(
+            "SELECT COUNT(*) AS cnt FROM requests WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+        interaction_row = self.conn.execute(
+            "SELECT COUNT(*) AS cnt FROM interactions WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+        profile_rows = self.conn.execute(
+            "SELECT profile_id FROM profiles WHERE user_id = ?",
+            (user_id,),
+        ).fetchall()
+        if request_row is None or interaction_row is None:
+            raise ValueError("Missing governance count rows")
+        profile_ids = [str(row["profile_id"]) for row in profile_rows]
+        purge_profile_ids, delete_profile_ids = self._deps()._partition_purge_vs_delete(
+            "profile",
+            profile_ids,
+        )
+        playbook_ids = [str(user_playbook_id) for user_playbook_id in sorted(owned_user_playbook_ids)]
+        purge_playbook_ids, delete_playbook_ids = self._deps()._partition_purge_vs_delete(
+            "user_playbook",
+            playbook_ids,
+        )
+        return {
+            "request": int(request_row["cnt"]),
+            "interaction": int(interaction_row["cnt"]),
+            "profile": len(delete_profile_ids),
+            "profile_purge": len(purge_profile_ids),
+            "user_playbook": len(delete_playbook_ids),
+            "user_playbook_purge": len(purge_playbook_ids),
+        }
 
     def _append_audit_event_with_cursor(
         self, cur: sqlite3.Connection | sqlite3.Cursor, event: AuditEvent
@@ -1077,24 +1118,10 @@ class SQLiteGovernanceMixin:
         with self._lock:
             try:
                 self.conn.execute("BEGIN")
-                request_row = self.conn.execute(
-                    "SELECT COUNT(*) AS cnt FROM requests WHERE user_id = ?",
-                    (user_id,),
-                ).fetchone()
-                interaction_row = self.conn.execute(
-                    "SELECT COUNT(*) AS cnt FROM interactions WHERE user_id = ?",
-                    (user_id,),
-                ).fetchone()
-                profile_row = self.conn.execute(
-                    "SELECT COUNT(*) AS cnt FROM profiles WHERE user_id = ?",
-                    (user_id,),
-                ).fetchone()
-                if request_row is None or interaction_row is None or profile_row is None:
-                    raise ValueError("Missing governance count rows")
-                request_count = int(request_row["cnt"])
-                interaction_count = int(interaction_row["cnt"])
-                profile_count = int(profile_row["cnt"])
-                playbook_count = len(owned_user_playbook_ids)
+                targets = self._planned_governance_delete_counts(
+                    user_id,
+                    owned_user_playbook_ids,
+                )
                 affected_agent_playbook_ids: list[int] = []
                 rebuild_details_by_agent_playbook_id: dict[int, dict[str, object]] = {}
                 if owned_user_playbook_ids:
@@ -1139,12 +1166,6 @@ class SQLiteGovernanceMixin:
                             "original_source_windows": original_window_dicts,
                             "remaining_source_windows": remaining_window_dicts,
                         }
-                targets = {
-                    "request": request_count,
-                    "interaction": interaction_count,
-                    "profile": profile_count,
-                    "user_playbook": playbook_count,
-                }
                 for target_name, count in targets.items():
                     self._record_purge_target_locked(
                         purge_id=purge_id,
@@ -1326,6 +1347,15 @@ class SQLiteGovernanceMixin:
                 ).fetchone()
                 if row is None:
                     raise ValueError(f"Purge operation {purge_id!r} not found")
+                purge_operation = _row_to_purge_operation(row)
+                if purge_operation.subject_ref != audit_event.subject_ref:
+                    raise ValueError(
+                        "Audit event subject_ref must match purge operation subject_ref"
+                    )
+                if purge_operation.request_ref != audit_event.request_ref:
+                    raise ValueError(
+                        "Audit event request_ref must match purge operation request_ref"
+                    )
                 snapshot = self.conn.execute(
                     """SELECT 1 FROM purge_operation_targets
                        WHERE org_id = ? AND purge_id = ? AND target_name = ? AND target_ref = 'all'
