@@ -225,6 +225,43 @@ def test_complete_purge_operation_with_audit_is_atomic_success_path(storage):
     assert len(storage.list_audit_events(subject_ref=SUBJECT_REF)) == 1
 
 
+def test_complete_purge_operation_with_audit_accepts_planned_success_detail(storage):
+    purge_id = _begin_purge(storage, "purge_success_detail")
+    deleted_counts = {
+        "interactions": 3,
+        "user_playbooks": 2,
+        "profiles": 1,
+        "requests": 1,
+        "purged_profiles": 0,
+        "purged_user_playbooks": 0,
+    }
+    rebuilt_ids = [17, 21]
+
+    complete = storage.complete_purge_operation_with_audit(
+        purge_id,
+        AuditEvent(
+            org_id="org1",
+            operation="ERASE",
+            entity_type="request",
+            subject_ref=SUBJECT_REF,
+            request_ref=REQUEST_REF,
+            idempotency_key=purge_id,
+            detail={
+                "deleted_counts": deleted_counts,
+                "rebuilt_agent_playbook_ids": rebuilt_ids,
+            },
+        ),
+    )
+
+    assert complete.status == "complete"
+    audit_rows = storage.list_audit_events(subject_ref=SUBJECT_REF)
+    assert len(audit_rows) == 1
+    assert audit_rows[0].detail == {
+        "deleted_counts": deleted_counts,
+        "rebuilt_agent_playbook_ids": rebuilt_ids,
+    }
+
+
 @pytest.mark.parametrize(
     ("retry_kwargs", "match"),
     [

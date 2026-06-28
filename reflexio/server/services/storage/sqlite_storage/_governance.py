@@ -117,6 +117,7 @@ _ALLOWED_DETAIL_KEYS = frozenset(
         "affected_agent_playbook_ids",
         "agent_playbook_id",
         "count",
+        "deleted_counts",
         "deleted_count",
         "erased_source_ids",
         "owned_user_playbook_ids",
@@ -177,6 +178,16 @@ _ALLOWED_ENUM_LIKE_VALUES = frozenset(
         "rebuild",
         "rebuild_without_erased_sources",
         "running",
+    }
+)
+_ALLOWED_DELETED_COUNTS_KEYS = frozenset(
+    {
+        "interactions",
+        "user_playbooks",
+        "profiles",
+        "requests",
+        "purged_profiles",
+        "purged_user_playbooks",
     }
 )
 
@@ -309,6 +320,20 @@ def _validate_governance_int_list(field_name: str, value: Any) -> None:
         _validate_governance_int(field_name, item)
 
 
+def _validate_governance_deleted_counts(
+    field_name: str, value: Any
+) -> dict[str, int]:
+    if not isinstance(value, dict):
+        _raise_governance_validation_error(field_name, "expected dict[str, int]")
+    normalized_counts: dict[str, int] = {}
+    for raw_key, raw_value in value.items():
+        key = str(raw_key).strip()
+        if key not in _ALLOWED_DELETED_COUNTS_KEYS:
+            _raise_governance_validation_error(field_name, key)
+        normalized_counts[key] = _validate_governance_deleted_count(raw_value)
+    return normalized_counts
+
+
 def _normalize_governance_window_item(
     field_name: str, index: int, item: object
 ) -> dict[str, Any]:
@@ -397,6 +422,9 @@ def _validate_governance_detail_entry(field_name: str, key: str, value: Any) -> 
         _raise_governance_validation_error(field_name, key)
     if key in {"count", "deleted_count", "agent_playbook_id", "user_playbook_id"}:
         _validate_governance_int(field_name, value)
+        return
+    if key == "deleted_counts":
+        _validate_governance_deleted_counts(field_name, value)
         return
     if key in {
         "affected_agent_playbook_ids",
@@ -938,103 +966,116 @@ class SQLiteGovernanceMixin:
         self, purge_id: str, user_id: str, owned_user_playbook_ids: set[int]
     ) -> None:
         purge_id = _validate_governance_purge_id("purge_id", purge_id)
-        deps = self._deps()
-        request_row = deps._fetchone(
-            "SELECT COUNT(*) AS cnt FROM requests WHERE user_id = ?",
-            (user_id,),
-        )
-        interaction_row = deps._fetchone(
-            "SELECT COUNT(*) AS cnt FROM interactions WHERE user_id = ?",
-            (user_id,),
-        )
-        profile_row = deps._fetchone(
-            "SELECT COUNT(*) AS cnt FROM profiles WHERE user_id = ?",
-            (user_id,),
-        )
-        if request_row is None or interaction_row is None or profile_row is None:
-            raise ValueError("Missing governance count rows")
-        request_count = request_row["cnt"]
-        interaction_count = interaction_row["cnt"]
-        profile_count = profile_row["cnt"]
-        playbook_count = len(owned_user_playbook_ids)
-        affected_agent_playbook_ids: list[int] = []
-        rebuild_details_by_agent_playbook_id: dict[int, dict[str, object]] = {}
-        if owned_user_playbook_ids:
-            placeholders = ",".join("?" for _ in owned_user_playbook_ids)
-            rows = deps._fetchall(
-                f"""SELECT DISTINCT agent_playbook_id
-                    FROM agent_playbook_source_user_playbooks
-                    WHERE user_playbook_id IN ({placeholders})
-                    ORDER BY agent_playbook_id ASC""",
-                sorted(owned_user_playbook_ids),
-            )
-            affected_agent_playbook_ids = [int(row["agent_playbook_id"]) for row in rows]
-            for agent_playbook_id in affected_agent_playbook_ids:
-                original_windows = deps.get_source_windows_for_agent_playbook(
-                    agent_playbook_id
-                )
-                original_window_dicts = [
-                    {
-                        "user_playbook_id": int(window.user_playbook_id),
-                        "source_interaction_ids": [
-                            int(source_id)
-                            for source_id in (window.source_interaction_ids or [])
-                        ],
-                    }
-                    for window in original_windows
-                ]
-                remaining_window_dicts = [
-                    window
-                    for window in original_window_dicts
-                    if int(window["user_playbook_id"]) not in owned_user_playbook_ids
-                ]
-                rebuild_details_by_agent_playbook_id[agent_playbook_id] = {
-                    "original_source_windows": original_window_dicts,
-                    "remaining_source_windows": remaining_window_dicts,
-                }
-        targets = {
-            "request": request_count,
-            "interaction": interaction_count,
-            "profile": profile_count,
-            "user_playbook": playbook_count,
-        }
         with self._lock:
-            for target_name, count in targets.items():
+            try:
+                self.conn.execute("BEGIN")
+                request_row = self.conn.execute(
+                    "SELECT COUNT(*) AS cnt FROM requests WHERE user_id = ?",
+                    (user_id,),
+                ).fetchone()
+                interaction_row = self.conn.execute(
+                    "SELECT COUNT(*) AS cnt FROM interactions WHERE user_id = ?",
+                    (user_id,),
+                ).fetchone()
+                profile_row = self.conn.execute(
+                    "SELECT COUNT(*) AS cnt FROM profiles WHERE user_id = ?",
+                    (user_id,),
+                ).fetchone()
+                if request_row is None or interaction_row is None or profile_row is None:
+                    raise ValueError("Missing governance count rows")
+                request_count = int(request_row["cnt"])
+                interaction_count = int(interaction_row["cnt"])
+                profile_count = int(profile_row["cnt"])
+                playbook_count = len(owned_user_playbook_ids)
+                affected_agent_playbook_ids: list[int] = []
+                rebuild_details_by_agent_playbook_id: dict[int, dict[str, object]] = {}
+                if owned_user_playbook_ids:
+                    placeholders = ",".join("?" for _ in owned_user_playbook_ids)
+                    rows = self.conn.execute(
+                        f"""SELECT DISTINCT agent_playbook_id
+                            FROM agent_playbook_source_user_playbooks
+                            WHERE user_playbook_id IN ({placeholders})
+                            ORDER BY agent_playbook_id ASC""",
+                        sorted(owned_user_playbook_ids),
+                    ).fetchall()
+                    affected_agent_playbook_ids = [
+                        int(row["agent_playbook_id"]) for row in rows
+                    ]
+                    for agent_playbook_id in affected_agent_playbook_ids:
+                        window_rows = self.conn.execute(
+                            """SELECT user_playbook_id, source_interaction_ids
+                               FROM agent_playbook_source_user_playbooks
+                               WHERE agent_playbook_id = ?
+                               ORDER BY user_playbook_id ASC""",
+                            (agent_playbook_id,),
+                        ).fetchall()
+                        original_window_dicts = [
+                            {
+                                "user_playbook_id": int(row["user_playbook_id"]),
+                                "source_interaction_ids": [
+                                    int(source_id)
+                                    for source_id in (
+                                        _json_loads(row["source_interaction_ids"]) or []
+                                    )
+                                ],
+                            }
+                            for row in window_rows
+                        ]
+                        remaining_window_dicts = [
+                            window
+                            for window in original_window_dicts
+                            if int(window["user_playbook_id"])
+                            not in owned_user_playbook_ids
+                        ]
+                        rebuild_details_by_agent_playbook_id[agent_playbook_id] = {
+                            "original_source_windows": original_window_dicts,
+                            "remaining_source_windows": remaining_window_dicts,
+                        }
+                targets = {
+                    "request": request_count,
+                    "interaction": interaction_count,
+                    "profile": profile_count,
+                    "user_playbook": playbook_count,
+                }
+                for target_name, count in targets.items():
+                    self._record_purge_target_locked(
+                        purge_id=purge_id,
+                        target_name=target_name,
+                        target_ref="all",
+                        phase="delete",
+                        status="pending",
+                        detail={"count": count},
+                        deleted_count=0,
+                        error_detail=None,
+                    )
+                for agent_playbook_id in affected_agent_playbook_ids:
+                    self._record_purge_target_locked(
+                        purge_id=purge_id,
+                        target_name="agent_playbook",
+                        target_ref=str(agent_playbook_id),
+                        phase="rebuild_without_erased_sources",
+                        status="pending",
+                        detail=rebuild_details_by_agent_playbook_id[agent_playbook_id],
+                        deleted_count=0,
+                        error_detail=None,
+                    )
                 self._record_purge_target_locked(
                     purge_id=purge_id,
-                    target_name=target_name,
+                    target_name=_SNAPSHOT_TARGET_NAME,
                     target_ref="all",
-                    phase="delete",
-                    status="pending",
-                    detail={"count": int(count)},
+                    phase=_PREPARE_PHASE,
+                    status="complete",
+                    detail={
+                        "owned_user_playbook_ids": sorted(owned_user_playbook_ids),
+                        "affected_agent_playbook_ids": affected_agent_playbook_ids,
+                    },
                     deleted_count=0,
                     error_detail=None,
                 )
-            for agent_playbook_id in affected_agent_playbook_ids:
-                self._record_purge_target_locked(
-                    purge_id=purge_id,
-                    target_name="agent_playbook",
-                    target_ref=str(agent_playbook_id),
-                    phase="rebuild_without_erased_sources",
-                    status="pending",
-                    detail=rebuild_details_by_agent_playbook_id[agent_playbook_id],
-                    deleted_count=0,
-                    error_detail=None,
-                )
-            self._record_purge_target_locked(
-                purge_id=purge_id,
-                target_name=_SNAPSHOT_TARGET_NAME,
-                target_ref="all",
-                phase=_PREPARE_PHASE,
-                status="complete",
-                detail={
-                    "owned_user_playbook_ids": sorted(owned_user_playbook_ids),
-                    "affected_agent_playbook_ids": affected_agent_playbook_ids,
-                },
-                deleted_count=0,
-                error_detail=None,
-            )
-            self.conn.commit()
+                self.conn.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
 
     def hide_governance_agent_playbooks_for_rebuild(self, purge_id: str) -> list[int]:
         purge_id = _validate_governance_purge_id("purge_id", purge_id)
