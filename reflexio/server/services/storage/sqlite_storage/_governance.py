@@ -114,6 +114,11 @@ _TOKEN_NAME_RE = re.compile(
 _RAW_EXCEPTION_RE = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*(?:Error|Exception)\s*:")
 _SAFE_INTERNAL_ID_RE = re.compile(r"^[0-9]+$")
 _USER_LIKE_TARGET_REF_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
+_SAFE_ERROR_CODE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.:-]{0,127}$")
+_IDENTIFIERISH_ERROR_CODE_RE = re.compile(
+    r"^(?:user|subject|request|req|actor|email)[-_.:]?[A-Za-z0-9_.:-]+$",
+    re.IGNORECASE,
+)
 
 
 def init_governance_tables(conn: sqlite3.Connection) -> None:
@@ -300,6 +305,21 @@ def _validate_governance_error_detail(error_detail: str | None) -> str | None:
     return error_detail
 
 
+def _validate_governance_error_code(error_code: str) -> str:
+    if not error_code:
+        _raise_governance_validation_error("error_code", "required")
+    _validate_governance_string("error_code", error_code)
+    if error_code.startswith(("subref_v1_", "reqref_v1_", "actref_v1_")):
+        _raise_governance_validation_error("error_code", "identifier")
+    if _IDENTIFIERISH_ERROR_CODE_RE.fullmatch(error_code):
+        _raise_governance_validation_error("error_code", "identifier")
+    if not _SAFE_ERROR_CODE_RE.fullmatch(error_code):
+        _raise_governance_validation_error(
+            "error_code", "must be a stable diagnostic code"
+        )
+    return error_code
+
+
 def _validate_audit_event_for_persistence(event: AuditEvent) -> None:
     _validate_governance_prefixed_ref("actor_ref", event.actor_ref, prefix="actref_v1_")
     _validate_governance_prefixed_ref(
@@ -321,6 +341,18 @@ def _is_successful_erase_event(event: AuditEvent, *, purge_id: str | None = None
         and event.status == "ok"
         and event.idempotency_key is not None
         and (purge_id is None or event.idempotency_key == purge_id)
+    )
+
+
+def _successful_erase_identity(event: AuditEvent) -> tuple[str, str, str, str | None, str | None, str, str | None]:
+    return (
+        event.org_id,
+        event.operation,
+        event.entity_type,
+        event.subject_ref,
+        event.request_ref,
+        event.status,
+        event.idempotency_key,
     )
 
 
@@ -841,6 +873,13 @@ class SQLiteGovernanceMixin:
                             "Existing audit row for purge_id must be the matching "
                             "successful ERASE row"
                         )
+                    if _successful_erase_identity(existing_event) != _successful_erase_identity(
+                        audit_event
+                    ):
+                        raise ValueError(
+                            "Existing audit row for purge_id must be the matching "
+                            "successful ERASE row"
+                        )
                 else:
                     self._append_audit_event_with_cursor(self.conn, audit_event)
                     existing_audit_row = self.conn.execute(
@@ -855,6 +894,13 @@ class SQLiteGovernanceMixin:
                     )
                 existing_event = _row_to_audit_event(existing_audit_row)
                 if not _is_successful_erase_event(existing_event, purge_id=purge_id):
+                    raise ValueError(
+                        "Completion requires exactly one matching successful ERASE "
+                        "audit row for the purge_id"
+                    )
+                if _successful_erase_identity(existing_event) != _successful_erase_identity(
+                    audit_event
+                ):
                     raise ValueError(
                         "Completion requires exactly one matching successful ERASE "
                         "audit row for the purge_id"
@@ -878,6 +924,7 @@ class SQLiteGovernanceMixin:
     def fail_purge_operation(
         self, purge_id: str, error_code: str, error_detail: str
     ) -> PurgeOperation:
+        validated_error_code = _validate_governance_error_code(error_code)
         validated_error_detail = _validate_governance_error_detail(error_detail)
         now = _epoch_now()
         with self._lock:
@@ -886,7 +933,14 @@ class SQLiteGovernanceMixin:
                    SET status = 'failed', error_code = ?, error_detail = ?,
                    updated_at = ?, completed_at = ?
                    WHERE purge_id = ? AND org_id = ?""",
-                (error_code, validated_error_detail, now, now, purge_id, self.org_id),
+                (
+                    validated_error_code,
+                    validated_error_detail,
+                    now,
+                    now,
+                    purge_id,
+                    self.org_id,
+                ),
             )
             if cur.rowcount == 0:
                 raise ValueError(f"Purge operation {purge_id!r} not found")

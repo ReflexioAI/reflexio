@@ -213,6 +213,52 @@ def test_complete_purge_operation_requires_matching_existing_erase_row(
     assert rows[0].status == seed_event.status
 
 
+@pytest.mark.parametrize(
+    ("field_name", "seed_kwargs"),
+    [
+        pytest.param("entity_type", {"entity_type": "session"}, id="entity-type"),
+        pytest.param("subject_ref", {"subject_ref": "subref_v1_other"}, id="subject-ref"),
+        pytest.param("request_ref", {"request_ref": "reqref_v1_other"}, id="request-ref"),
+    ],
+)
+def test_complete_purge_operation_rejects_mismatched_existing_erase_row(
+    storage, field_name, seed_kwargs
+):
+    purge_id = _begin_purge(storage, "purge_seeded_mismatch")
+    seeded_event = _erase_event(purge_id=purge_id).model_copy(update=seed_kwargs)
+    storage.conn.execute(
+        """INSERT INTO audit_events (
+               org_id, actor_type, actor_ref, operation, entity_type, entity_id,
+               subject_ref, request_ref, idempotency_key, status, detail, created_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            seeded_event.org_id,
+            seeded_event.actor_type,
+            seeded_event.actor_ref,
+            seeded_event.operation,
+            seeded_event.entity_type,
+            seeded_event.entity_id,
+            seeded_event.subject_ref,
+            seeded_event.request_ref,
+            seeded_event.idempotency_key,
+            seeded_event.status,
+            None,
+            seeded_event.created_at,
+        ),
+    )
+    storage.conn.commit()
+
+    with pytest.raises(ValueError, match="matching successful ERASE"):
+        storage.complete_purge_operation_with_audit(
+            purge_id, _erase_event(purge_id=purge_id)
+        )
+
+    assert storage.get_purge_operation(purge_id).status == "running"
+    rows = storage.list_audit_events(subject_ref=seeded_event.subject_ref)
+    assert len(rows) == 1
+    assert getattr(rows[0], field_name) == getattr(seeded_event, field_name)
+
+
 def test_append_audit_event_rejects_successful_erase(storage):
     with pytest.raises(ValueError, match="Successful ERASE audit rows"):
         storage.append_audit_event(_erase_event(purge_id="purge_append"))
@@ -375,6 +421,38 @@ def test_fail_purge_operation_rejects_raw_error_detail(storage):
         )
 
     assert storage.get_purge_operation(purge_id).error_detail is None
+
+
+@pytest.mark.parametrize(
+    ("error_code", "match"),
+    [
+        pytest.param("PURGE_TARGET_FAILED", None, id="stable-code"),
+        pytest.param("alice@example.com", "error_code", id="email"),
+        pytest.param("request_12345", "error_code", id="request-id"),
+        pytest.param("user_123", "error_code", id="user-like"),
+    ],
+)
+def test_fail_purge_operation_validates_error_code(storage, error_code, match):
+    purge_id = _begin_purge(storage, f"purge_error_code_{error_code.replace('@', '_')}")
+
+    if match is None:
+        failed = storage.fail_purge_operation(
+            purge_id,
+            error_code=error_code,
+            error_detail="stable failure detail",
+        )
+        assert failed.status == "failed"
+        assert failed.error_code == error_code
+        return
+
+    with pytest.raises(ValueError, match=match):
+        storage.fail_purge_operation(
+            purge_id,
+            error_code=error_code,
+            error_detail="stable failure detail",
+        )
+
+    assert storage.get_purge_operation(purge_id).error_code is None
 
 
 @pytest.mark.parametrize(
