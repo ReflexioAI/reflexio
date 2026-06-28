@@ -299,6 +299,8 @@ def _validate_governance_idempotency_key(
 ) -> str | None:
     if value is None:
         return None
+    if _SAFE_INTERNAL_ID_RE.fullmatch(value):
+        _raise_governance_validation_error(field_name, "numeric identifier")
     return _validate_governance_code_shaped(
         field_name,
         value,
@@ -330,6 +332,8 @@ def _validate_governance_purge_id(field_name: str, value: str) -> str:
     suffix = value[len("purge_") :]
     if _IDENTIFIERISH_CODE_VALUE_RE.fullmatch(suffix):
         _raise_governance_validation_error(field_name, "identifier")
+    if suffix.isdecimal() and len(suffix) > 1:
+        _raise_governance_validation_error(field_name, "numeric identifier")
     return value
 
 

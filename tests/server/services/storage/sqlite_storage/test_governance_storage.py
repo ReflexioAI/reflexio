@@ -264,6 +264,22 @@ def test_audit_event_idempotency(storage):
     assert rows[0].idempotency_key == "export_1"
 
 
+def test_append_audit_event_rejects_numeric_idempotency_key(storage):
+    event = AuditEvent(
+        org_id="org1",
+        operation="EXPORT",
+        entity_type="request",
+        subject_ref=SUBJECT_REF,
+        request_ref=REQUEST_REF,
+        idempotency_key="12345",
+    )
+
+    with pytest.raises(ValueError, match="idempotency_key"):
+        storage.append_audit_event(event)
+
+    assert storage.list_audit_events(subject_ref=SUBJECT_REF) == []
+
+
 def test_append_audit_event_rejects_mismatched_org_id(storage):
     event = AuditEvent(
         org_id="org2",
@@ -482,6 +498,36 @@ def test_begin_purge_operation_rejects_mismatched_idempotent_retry(
     assert purge.request_ref == REQUEST_REF
     assert purge.scope_type == "user"
     assert purge.purge_id == "purge_begin_retry"
+
+
+def test_begin_purge_operation_rejects_numeric_idempotency_key(storage):
+    with pytest.raises(ValueError, match="idempotency_key"):
+        storage.begin_purge_operation(
+            purge_id="purge_numeric_idem",
+            idempotency_key="12345",
+            operation_type="user_erasure",
+            scope_type="user",
+            subject_ref=SUBJECT_REF,
+            request_ref=REQUEST_REF,
+        )
+
+    with pytest.raises(ValueError, match="not found"):
+        storage.get_purge_operation("purge_numeric_idem")
+
+
+def test_begin_purge_operation_rejects_raw_numeric_purge_suffix(storage):
+    with pytest.raises(ValueError, match="purge_id"):
+        storage.begin_purge_operation(
+            purge_id="purge_123",
+            idempotency_key="idem_purge_123",
+            operation_type="user_erasure",
+            scope_type="user",
+            subject_ref=SUBJECT_REF,
+            request_ref=REQUEST_REF,
+        )
+
+    with pytest.raises(ValueError, match="purge_id"):
+        storage.get_purge_operation("purge_123")
 
 
 @pytest.mark.parametrize(
