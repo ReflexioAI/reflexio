@@ -813,6 +813,7 @@ class SQLiteGovernanceMixin:
         deleted_count: int = 0,
         error_detail: str | None = None,
     ) -> None:
+        purge_id = _validate_governance_purge_id("purge_id", purge_id)
         _validate_governance_enum(
             "target_name",
             target_name,
@@ -844,6 +845,7 @@ class SQLiteGovernanceMixin:
     def list_purge_targets(
         self, purge_id: str, phase: str | None = None
     ) -> list[PurgeOperationTarget]:
+        purge_id = _validate_governance_purge_id("purge_id", purge_id)
         deps = self._deps()
         sql = "SELECT * FROM purge_operation_targets WHERE purge_id = ?"
         params: list[Any] = [purge_id]
@@ -855,6 +857,7 @@ class SQLiteGovernanceMixin:
         return [_row_to_purge_target(row) for row in rows]
 
     def purge_targets_prepared(self, purge_id: str) -> bool:
+        purge_id = _validate_governance_purge_id("purge_id", purge_id)
         row = self._deps()._fetchone(
             """SELECT 1 FROM purge_operation_targets
                WHERE purge_id = ? AND target_name = ? AND target_ref = 'all'
@@ -866,6 +869,7 @@ class SQLiteGovernanceMixin:
     def prepare_governance_erase_targets(
         self, purge_id: str, user_id: str, owned_user_playbook_ids: set[int]
     ) -> None:
+        purge_id = _validate_governance_purge_id("purge_id", purge_id)
         deps = self._deps()
         request_row = deps._fetchone(
             "SELECT COUNT(*) AS cnt FROM requests WHERE user_id = ?",
@@ -941,6 +945,7 @@ class SQLiteGovernanceMixin:
             self.conn.commit()
 
     def hide_governance_agent_playbooks_for_rebuild(self, purge_id: str) -> list[int]:
+        purge_id = _validate_governance_purge_id("purge_id", purge_id)
         targets = self.list_purge_targets(purge_id, phase="rebuild")
         agent_playbook_ids = [
             int(target.target_ref)
@@ -975,6 +980,7 @@ class SQLiteGovernanceMixin:
     def apply_governance_user_data_delete(
         self, purge_id: str, user_id: str
     ) -> dict[str, int]:
+        purge_id = _validate_governance_purge_id("purge_id", purge_id)
         counts = self._deps().clear_user_data(user_id)
         name_map = {
             "interactions": "interaction",
@@ -1011,6 +1017,7 @@ class SQLiteGovernanceMixin:
         expanded_terms: str | None,
         tags: list[str] | None,
     ) -> None:
+        purge_id = _validate_governance_purge_id("purge_id", purge_id)
         windows = _parse_governance_window_list(
             "remaining_source_windows", remaining_source_windows
         )
@@ -1147,6 +1154,7 @@ class SQLiteGovernanceMixin:
     def fail_purge_operation(
         self, purge_id: str, error_code: str, error_detail: str
     ) -> PurgeOperation:
+        purge_id = _validate_governance_purge_id("purge_id", purge_id)
         validated_error_code = _validate_governance_error_code(error_code)
         validated_error_detail = _validate_governance_error_detail(error_detail)
         now = _epoch_now()
@@ -1171,6 +1179,7 @@ class SQLiteGovernanceMixin:
         return self.get_purge_operation(purge_id)
 
     def get_purge_operation(self, purge_id: str) -> PurgeOperation:
+        purge_id = _validate_governance_purge_id("purge_id", purge_id)
         row = self._deps()._fetchone(
             "SELECT * FROM purge_operations WHERE purge_id = ? AND org_id = ?",
             (purge_id, self.org_id),

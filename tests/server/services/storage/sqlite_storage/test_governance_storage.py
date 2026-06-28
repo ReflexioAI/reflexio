@@ -6,6 +6,11 @@ from unittest.mock import patch
 
 import pytest
 
+from reflexio.models.api_schema.domain.entities import (
+    AgentPlaybook,
+    AgentPlaybookSourceWindow,
+)
+from reflexio.models.api_schema.domain.enums import Status
 from reflexio.models.api_schema.domain.governance import (
     AuditEvent,
     AuditOperation,
@@ -66,6 +71,58 @@ def _erase_event(
         idempotency_key=purge_id,
         status=status,
     )
+
+
+def _seed_user_scoped_rows(storage: SQLiteStorage, *, user_id: str) -> None:
+    created_at = "2026-01-01T00:00:00.000Z"
+    storage.conn.execute(
+        """INSERT INTO requests (
+               request_id, user_id, created_at, source, agent_version, session_id, evaluation_only
+           ) VALUES (?, ?, ?, '', '', ?, 0)""",
+        ("request_seed", user_id, created_at, "session_seed"),
+    )
+    storage.conn.execute(
+        """INSERT INTO interactions (
+               user_id, content, request_id, created_at, role, user_action,
+               user_action_description, interacted_image_url, image_encoding,
+               shadow_content, expert_content, tools_used, citations, embedding
+           ) VALUES (?, '', ?, ?, 'User', 'none', '', '', '', '', '', '[]', '[]', '[]')""",
+        (user_id, "request_seed", created_at),
+    )
+    storage.conn.execute(
+        """INSERT INTO profiles (
+               profile_id, user_id, content, last_modified_timestamp,
+               generated_from_request_id, profile_time_to_live, expiration_timestamp,
+               embedding, source_interaction_ids, created_at
+           ) VALUES (?, ?, ?, ?, ?, 'infinity', ?, '[]', '[]', ?)""",
+        ("profile_seed", user_id, "profile-content", 1, "request_seed", 4102444800, created_at),
+    )
+    storage.conn.execute(
+        """INSERT INTO user_playbooks (
+               user_id, playbook_name, created_at, request_id, agent_version,
+               content, source_interaction_ids, embedding
+           ) VALUES (?, '', ?, ?, '', ?, '[]', '[]')""",
+        (user_id, created_at, "request_seed", "playbook-content"),
+    )
+    storage.conn.commit()
+
+
+def _seed_agent_playbook(storage: SQLiteStorage) -> int:
+    playbook = AgentPlaybook(
+        playbook_name="governance-rebuild",
+        agent_version="test-agent",
+        content="original content",
+        trigger="original trigger",
+        rationale="original rationale",
+        status=Status.ARCHIVED,
+        tags=["seed"],
+    )
+    saved = storage.save_agent_playbooks([playbook])[0]
+    storage.set_source_windows_for_agent_playbook(
+        saved.agent_playbook_id,
+        [AgentPlaybookSourceWindow(user_playbook_id=7, source_interaction_ids=[101])],
+    )
+    return saved.agent_playbook_id
 
 
 def test_audit_event_idempotency(storage):
@@ -825,8 +882,100 @@ def test_persistence_paths_reject_unsafe_purge_id(storage, purge_id):
             ),
         )
 
-    assert storage.list_purge_targets(purge_id) == []
+    with pytest.raises(ValueError, match="purge_id"):
+        storage.list_purge_targets(purge_id)
     assert storage.list_audit_events(subject_ref=SUBJECT_REF) == []
+
+
+def test_apply_governance_user_data_delete_rejects_unsafe_purge_id_before_side_effects(
+    storage,
+):
+    user_id = "user-delete-seed"
+    _seed_user_scoped_rows(storage, user_id=user_id)
+
+    with pytest.raises(ValueError, match="purge_id"):
+        storage.apply_governance_user_data_delete(
+            purge_id="alice@example.com",
+            user_id=user_id,
+        )
+
+    remaining = {
+        "requests": storage.conn.execute(
+            "SELECT COUNT(*) FROM requests WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()[0],
+        "interactions": storage.conn.execute(
+            "SELECT COUNT(*) FROM interactions WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()[0],
+        "profiles": storage.conn.execute(
+            "SELECT COUNT(*) FROM profiles WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()[0],
+        "user_playbooks": storage.conn.execute(
+            "SELECT COUNT(*) FROM user_playbooks WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()[0],
+    }
+    assert remaining == {
+        "requests": 1,
+        "interactions": 1,
+        "profiles": 1,
+        "user_playbooks": 1,
+    }
+
+
+def test_apply_governance_agent_playbook_rebuild_rejects_unsafe_purge_id_before_side_effects(
+    storage,
+):
+    agent_playbook_id = _seed_agent_playbook(storage)
+
+    before_row = storage.conn.execute(
+        """SELECT content, trigger, rationale, status, tags
+           FROM agent_playbooks
+           WHERE agent_playbook_id = ?""",
+        (agent_playbook_id,),
+    ).fetchone()
+    before_windows = storage.get_source_windows_for_agent_playbook(agent_playbook_id)
+
+    with pytest.raises(ValueError, match="purge_id"):
+        storage.apply_governance_agent_playbook_rebuild(
+            purge_id="request_12345",
+            agent_playbook_id=agent_playbook_id,
+            remaining_source_windows=[{"user_playbook_id": 99, "source_interaction_ids": [202]}],
+            content="updated content",
+            trigger="updated trigger",
+            rationale="updated rationale",
+            blocking_issue=None,
+            expanded_terms="updated terms",
+            tags=["updated"],
+        )
+
+    after_row = storage.conn.execute(
+        """SELECT content, trigger, rationale, status, tags
+           FROM agent_playbooks
+           WHERE agent_playbook_id = ?""",
+        (agent_playbook_id,),
+    ).fetchone()
+    after_windows = storage.get_source_windows_for_agent_playbook(agent_playbook_id)
+    assert tuple(before_row) == tuple(after_row)
+    assert before_windows == after_windows
+
+
+def test_fail_purge_operation_rejects_unsafe_purge_id_before_side_effects(storage):
+    purge_id = _begin_purge(storage, "purge_fail_unsafe_id")
+
+    with pytest.raises(ValueError, match="purge_id"):
+        storage.fail_purge_operation(
+            SUBJECT_REF,
+            "governance.error",
+            "detail.code",
+        )
+
+    failed = storage.get_purge_operation(purge_id)
+    assert failed.status == "running"
+    assert failed.error_code is None
+    assert failed.error_detail is None
 
 
 @pytest.mark.parametrize(
