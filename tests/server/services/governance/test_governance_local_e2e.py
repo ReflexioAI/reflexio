@@ -21,8 +21,9 @@ from reflexio.models.api_schema.domain.enums import PlaybookStatus
 from reflexio.models.api_schema.retriever_schema import SearchAgentPlaybookRequest
 from reflexio.models.config_schema import SearchMode
 from reflexio.server.services.governance import service as governance_service_module
+from reflexio.server.services.governance.config import governance_subject_ref
 from reflexio.server.services.governance.service import GovernanceService
-from reflexio.server.services.governance.subject_refs import subject_ref
+from reflexio.server.services.storage.error import SubjectWriteBarrierError
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 
 pytestmark = pytest.mark.integration
@@ -117,12 +118,16 @@ def _eval_result(
 
 
 @pytest.fixture
-def storage(tmp_path: Path) -> Generator[SQLiteStorage, None, None]:
+def storage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Generator[SQLiteStorage, None, None]:
+    monkeypatch.setenv("REFLEXIO_GOVERNANCE_REF_SECRET", "test-governance-secret")
     with patch.object(SQLiteStorage, "_get_embedding", return_value=[0.0] * 512):
         yield SQLiteStorage(org_id="org-local", db_path=str(tmp_path / "governance.db"))
 
 
-def test_local_governance_e2e_erases_exports_audits_and_rebuilds_shared_aggregate(
+def test_local_governance_e2e_erases_exports_audits_and_preserves_org_agent_playbooks(
     storage: SQLiteStorage,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -259,7 +264,11 @@ def test_local_governance_e2e_erases_exports_audits_and_rebuilds_shared_aggregat
 
     exported = service.export_user(user_id="alice", request_id="export-request-1")
 
-    assert exported.subject_ref == subject_ref("alice", "test-governance-secret")
+    assert exported.subject_ref == governance_subject_ref(
+        storage.org_id,
+        "alice",
+        "test-governance-secret",
+    )
     assert exported.export_id.startswith("export_")
     assert [profile["profile_id"] for profile in exported.bundle["profiles"]] == [
         "profile-alice"
@@ -297,10 +306,7 @@ def test_local_governance_e2e_erases_exports_audits_and_rebuilds_shared_aggregat
     assert erased.deleted_counts["requests"] == 1
     assert erased.deleted_counts["user_playbooks"] == 2
     assert erased.deleted_counts["agent_success_evaluation_results"] == 1
-    assert set(erased.rebuilt_agent_playbook_ids) == {
-        shared_playbook.agent_playbook_id,
-        orphan_playbook.agent_playbook_id,
-    }
+    assert erased.rebuilt_agent_playbook_ids == []
 
     assert storage.get_user_interaction("alice") == []
     assert storage.get_user_profile("alice") == []
@@ -336,14 +342,13 @@ def test_local_governance_e2e_erases_exports_audits_and_rebuilds_shared_aggregat
     assert delete_targets["agent_success_evaluation_result"].deleted_count == 1
     assert len(storage.get_user_playbooks(user_id="bob", limit=10)) == 1
 
-    rebuilt_playbook = storage.get_agent_playbook_by_id(
+    preserved_playbook = storage.get_agent_playbook_by_id(
         shared_playbook.agent_playbook_id
     )
-    assert rebuilt_playbook is not None
-    assert "aliceuniquesourcetoken" not in rebuilt_playbook.content
-    assert rebuilt_playbook.content == "bobuniquesourcetoken"
-    assert rebuilt_playbook.trigger == "bobtriggerunique"
-    assert rebuilt_playbook.rationale == "bobrationaleunique"
+    assert preserved_playbook is not None
+    assert preserved_playbook.content == shared_playbook.content
+    assert preserved_playbook.trigger == shared_playbook.trigger
+    assert preserved_playbook.rationale == shared_playbook.rationale
     assert storage.get_source_windows_for_agent_playbook(
         shared_playbook.agent_playbook_id
     ) == [
@@ -352,8 +357,14 @@ def test_local_governance_e2e_erases_exports_audits_and_rebuilds_shared_aggregat
             source_interaction_ids=[202],
         )
     ]
-    assert storage.get_agent_playbook_by_id(orphan_playbook.agent_playbook_id) is None
-    assert orphan_playbook.agent_playbook_id not in {
+    preserved_orphan_playbook = storage.get_agent_playbook_by_id(
+        orphan_playbook.agent_playbook_id
+    )
+    assert preserved_orphan_playbook is not None
+    assert preserved_orphan_playbook.content == orphan_playbook.content
+    assert preserved_orphan_playbook.trigger == orphan_playbook.trigger
+    assert preserved_orphan_playbook.rationale == orphan_playbook.rationale
+    assert orphan_playbook.agent_playbook_id in {
         playbook.agent_playbook_id for playbook in storage.get_agent_playbooks(limit=10)
     }
     assert (
@@ -368,29 +379,28 @@ def test_local_governance_e2e_erases_exports_audits_and_rebuilds_shared_aggregat
         )
         if event.op == "hard_delete"
     ]
-    assert len(hard_delete_events) == 1
-    assert hard_delete_events[0].request_id == erased.purge_id
+    assert hard_delete_events == []
 
-    assert (
-        storage.search_agent_playbooks(
-            SearchAgentPlaybookRequest(
-                query="aliceuniquesourcetoken",
-                top_k=10,
-                search_mode=SearchMode.FTS,
-            )
+    alice_search_results = storage.search_agent_playbooks(
+        SearchAgentPlaybookRequest(
+            query="aliceuniquesourcetoken",
+            top_k=10,
+            search_mode=SearchMode.FTS,
         )
-        == []
     )
-    assert (
-        storage.search_agent_playbooks(
-            SearchAgentPlaybookRequest(
-                query="aliceorphansourcetoken",
-                top_k=10,
-                search_mode=SearchMode.FTS,
-            )
+    assert [playbook.agent_playbook_id for playbook in alice_search_results] == [
+        shared_playbook.agent_playbook_id
+    ]
+    orphan_search_results = storage.search_agent_playbooks(
+        SearchAgentPlaybookRequest(
+            query="aliceorphansourcetoken",
+            top_k=10,
+            search_mode=SearchMode.FTS,
         )
-        == []
     )
+    assert [playbook.agent_playbook_id for playbook in orphan_search_results] == [
+        orphan_playbook.agent_playbook_id
+    ]
     bob_search_results = storage.search_agent_playbooks(
         SearchAgentPlaybookRequest(
             query="bobuniquesourcetoken",
@@ -417,14 +427,244 @@ def test_local_governance_e2e_erases_exports_audits_and_rebuilds_shared_aggregat
 
     assert retried.purge_id == erased.purge_id
     assert retried.status == "complete"
-    assert retried.deleted_counts == {}
-    assert retried.rebuilt_agent_playbook_ids == []
+    assert retried.deleted_counts == erased.deleted_counts
+    assert retried.rebuilt_agent_playbook_ids == erased.rebuilt_agent_playbook_ids
     erase_events_after_retry = [
         event
         for event in storage.list_audit_events(subject_ref=exported.subject_ref)
         if event.operation == "ERASE" and event.status == "ok"
     ]
     assert len(erase_events_after_retry) == 1
+
+
+def test_governance_service_persists_actor_context_in_audit(
+    storage: SQLiteStorage,
+) -> None:
+    service = GovernanceService(
+        storage=storage,
+        org_id=storage.org_id,
+        ref_secret="test-governance-secret",
+    )
+
+    service.export_user(
+        user_id="alice",
+        request_id="export-actor",
+        actor_context={
+            "actor_type": "jwt",
+            "actor_ref": "actref_v1_1234567890abcdef1234567890abcdef",
+        },
+    )
+
+    audit_events = storage.list_audit_events()
+    event = audit_events[-1]
+    assert event.actor_type == "jwt"
+    assert event.actor_ref == "actref_v1_1234567890abcdef1234567890abcdef"
+
+
+def test_governance_erase_persists_actor_context_in_audit(
+    storage: SQLiteStorage,
+) -> None:
+    storage.add_request(
+        _request(request_id="erase-actor-req", user_id="alice", session_id="sess-actor")
+    )
+    service = GovernanceService(
+        storage=storage,
+        org_id=storage.org_id,
+        ref_secret="test-governance-secret",
+    )
+
+    service.erase_user(
+        user_id="alice",
+        request_id="erase-actor",
+        actor_context={
+            "actor_type": "api_token",
+            "actor_ref": "actref_v1_1234567890abcdef1234567890abcdef",
+        },
+    )
+
+    erase_events = [
+        event for event in storage.list_audit_events() if event.operation == "ERASE"
+    ]
+    assert len(erase_events) == 1
+    assert erase_events[0].actor_type == "api_token"
+    assert erase_events[0].actor_ref == "actref_v1_1234567890abcdef1234567890abcdef"
+
+
+def test_completed_erase_retry_reconstructs_response(
+    storage: SQLiteStorage,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("REFLEXIO_GOVERNANCE_REF_SECRET", "test-governance-secret")
+    storage.add_request(
+        _request(request_id="retry-req", user_id="alice", session_id="retry-sess")
+    )
+    storage.add_user_interaction(
+        "alice",
+        _interaction(user_id="alice", request_id="retry-req", content="retry-token"),
+    )
+    service = GovernanceService(
+        storage=storage,
+        org_id=storage.org_id,
+        ref_secret="test-governance-secret",
+    )
+
+    first = service.erase_user(user_id="alice", request_id="erase-retry")
+    second = service.erase_user(user_id="alice", request_id="erase-retry")
+
+    assert second.status == "complete"
+    assert second.purge_id == first.purge_id
+    assert second.deleted_counts == first.deleted_counts
+    assert second.rebuilt_agent_playbook_ids == first.rebuilt_agent_playbook_ids
+
+
+def test_erase_fails_fast_when_service_and_storage_ref_secrets_differ(
+    storage: SQLiteStorage,
+) -> None:
+    service = GovernanceService(
+        storage=storage,
+        org_id=storage.org_id,
+        ref_secret="different-service-secret",
+    )
+
+    with pytest.raises(RuntimeError, match="ref_secret must match"):
+        service.erase_user(user_id="alice", request_id="erase-mismatch")
+
+
+def test_export_fails_fast_when_service_and_storage_ref_secrets_differ(
+    storage: SQLiteStorage,
+) -> None:
+    service = GovernanceService(
+        storage=storage,
+        org_id=storage.org_id,
+        ref_secret="different-service-secret",
+    )
+
+    with pytest.raises(RuntimeError, match="ref_secret must match"):
+        service.export_user(user_id="alice", request_id="export-mismatch")
+
+
+@pytest.mark.parametrize(
+    ("barrier_sql", "match"),
+    [
+        (
+            "DELETE FROM subject_write_barriers WHERE subject_ref = ?",
+            "matching subject barrier",
+        ),
+        (
+            "UPDATE subject_write_barriers SET status = 'failed' WHERE subject_ref = ?",
+            "erased subject barrier",
+        ),
+    ],
+)
+def test_completed_erase_retry_fails_closed_without_erased_barrier(
+    storage: SQLiteStorage,
+    monkeypatch: pytest.MonkeyPatch,
+    barrier_sql: str,
+    match: str,
+) -> None:
+    monkeypatch.setenv("REFLEXIO_GOVERNANCE_REF_SECRET", "test-governance-secret")
+    storage.add_request(
+        _request(
+            request_id="retry-closed-req",
+            user_id="alice",
+            session_id="retry-closed-sess",
+        )
+    )
+    service = GovernanceService(
+        storage=storage,
+        org_id=storage.org_id,
+        ref_secret="test-governance-secret",
+    )
+
+    first = service.erase_user(user_id="alice", request_id="erase-retry-closed")
+    storage.conn.execute(barrier_sql, (first.subject_ref,))
+    storage.conn.commit()
+
+    with pytest.raises(ValueError, match=match):
+        service.erase_user(user_id="alice", request_id="erase-retry-closed")
+
+
+def test_barrier_acquisition_failure_marks_purge_failed_where_possible(
+    storage: SQLiteStorage,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = GovernanceService(
+        storage=storage,
+        org_id=storage.org_id,
+        ref_secret="test-governance-secret",
+    )
+
+    def _raise_begin(*args, **kwargs):
+        raise RuntimeError("forced barrier begin failure")
+
+    monkeypatch.setattr(storage, "begin_subject_erasure_barrier", _raise_begin)
+
+    with pytest.raises(RuntimeError, match="forced barrier begin failure"):
+        service.erase_user(user_id="alice", request_id="erase-begin-failure")
+
+    failed_purges = [
+        row
+        for row in storage.conn.execute(
+            "SELECT status, error_code, error_detail FROM purge_operations"
+        ).fetchall()
+        if row["status"] == "failed"
+    ]
+    assert len(failed_purges) == 1
+    assert failed_purges[0]["error_code"] == "governance_erase_failed"
+    assert failed_purges[0]["error_detail"] == "RuntimeError"
+
+
+def test_second_erase_conflict_preserves_original_barrier_and_write_block(
+    storage: SQLiteStorage,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("REFLEXIO_GOVERNANCE_REF_SECRET", "test-governance-secret")
+    subject_ref = governance_subject_ref(
+        storage.org_id,
+        "alice",
+        "test-governance-secret",
+    )
+    first_purge = storage.begin_purge_operation(
+        purge_id="purge_conflict_first",
+        idempotency_key="idem_conflict_first",
+        operation_type="user_erasure",
+        scope_type="user",
+        subject_ref=subject_ref,
+        request_ref="reqref_v1_00000000000000000000000000000061",
+    )
+    storage.begin_subject_erasure_barrier(subject_ref, first_purge.purge_id)
+    service = GovernanceService(
+        storage=storage,
+        org_id=storage.org_id,
+        ref_secret="test-governance-secret",
+    )
+
+    with pytest.raises(
+        ValueError, match="Existing barrier purge_id must match the requested purge_id"
+    ):
+        service.erase_user(user_id="alice", request_id="erase-conflict-second")
+
+    barrier = storage.get_subject_write_barrier(subject_ref)
+    assert barrier is not None
+    assert barrier.purge_id == first_purge.purge_id
+    assert barrier.status == "erasing"
+    with pytest.raises(SubjectWriteBarrierError):
+        storage.add_request(
+            _request(
+                request_id="req-after-conflict",
+                user_id="alice",
+                session_id="sess-after-conflict",
+            )
+        )
+
+    failed_purges = list(
+        storage.conn.execute(
+            "SELECT purge_id, status FROM purge_operations WHERE status = 'failed'"
+        ).fetchall()
+    )
+    assert len(failed_purges) == 1
+    assert failed_purges[0]["purge_id"] != first_purge.purge_id
+    assert failed_purges[0]["status"] == "failed"
 
 
 def test_governance_erase_marks_purge_failed_when_workflow_raises(
@@ -455,6 +695,16 @@ def test_governance_erase_marks_purge_failed_when_workflow_raises(
     assert len(failed_purges) == 1
     assert failed_purges[0]["error_code"] == "governance_erase_failed"
     assert failed_purges[0]["error_detail"] == "RuntimeError"
+    failed_barriers = [
+        row
+        for row in storage.conn.execute(
+            "SELECT status, error_code, error_detail FROM subject_write_barriers"
+        ).fetchall()
+        if row["status"] == "failed"
+    ]
+    assert len(failed_barriers) == 1
+    assert failed_barriers[0]["error_code"] == "governance_erase_failed"
+    assert failed_barriers[0]["error_detail"] == "RuntimeError"
 
 
 def test_session_export_paginates_by_returned_rows_when_requests_are_missing() -> None:

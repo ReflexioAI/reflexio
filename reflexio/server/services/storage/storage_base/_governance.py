@@ -1,17 +1,18 @@
 from __future__ import annotations
 
-from abc import abstractmethod
+from abc import ABC, abstractmethod
 from typing import Literal
 
 from reflexio.models.api_schema.domain.governance import (
     AuditEvent,
     PurgeOperation,
     PurgeOperationTarget,
+    SubjectWriteBarrier,
 )
 from reflexio.models.config_schema import GovernanceRetentionConfig
 
 
-class GovernanceMixin:
+class GovernanceMixin(ABC):
     """Mixin for backend-neutral governance storage primitives."""
 
     @abstractmethod
@@ -98,6 +99,38 @@ class GovernanceMixin:
     def complete_purge_operation_with_audit(
         self, purge_id: str, audit_event: AuditEvent
     ) -> PurgeOperation:
+        raise NotImplementedError
+
+    @abstractmethod
+    def begin_subject_erasure_barrier(
+        self, subject_ref: str, purge_id: str
+    ) -> SubjectWriteBarrier:
+        raise NotImplementedError
+
+    @abstractmethod
+    def assert_subject_writable(self, subject_ref: str) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def complete_subject_erasure_barrier_after_empty_check(
+        self, purge_id: str, audit_event: AuditEvent
+    ) -> PurgeOperation:
+        raise NotImplementedError
+
+    @abstractmethod
+    def fail_subject_erasure_barrier(
+        self,
+        subject_ref: str,
+        purge_id: str,
+        error_code: str,
+        error_detail: str,
+    ) -> SubjectWriteBarrier:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_subject_write_barrier(
+        self, subject_ref: str
+    ) -> SubjectWriteBarrier | None:
         raise NotImplementedError
 
     @abstractmethod

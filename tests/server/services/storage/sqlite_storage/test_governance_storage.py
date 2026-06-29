@@ -48,13 +48,16 @@ CANONICAL_DELETE_TARGET_NAMES = (
 
 
 @pytest.fixture
-def storage(tmp_path):
+def storage(tmp_path, monkeypatch):
+    monkeypatch.setenv("REFLEXIO_GOVERNANCE_REF_SECRET", "test-governance-secret")
     with patch.object(SQLiteStorage, "_get_embedding", return_value=[0.0] * 512):
         yield SQLiteStorage(org_id="org1", db_path=str(tmp_path / "g.db"))
 
 
 @pytest.fixture
-def storage_factory(tmp_path):
+def storage_factory(tmp_path, monkeypatch):
+    monkeypatch.setenv("REFLEXIO_GOVERNANCE_REF_SECRET", "test-governance-secret")
+
     def _make_storage(org_id: str) -> SQLiteStorage:
         return SQLiteStorage(org_id=org_id, db_path=str(tmp_path / "shared-g.db"))
 
@@ -79,7 +82,6 @@ def _begin_purge(storage: SQLiteStorage, purge_id: str) -> str:
         status="complete",
         detail={
             "owned_user_playbook_ids": [11],
-            "affected_agent_playbook_ids": [22],
         },
     )
     return purge.purge_id
@@ -99,6 +101,7 @@ def _add_complete_delete_target_matrix(storage: SQLiteStorage, purge_id: str) ->
 def _begin_completeable_purge(storage: SQLiteStorage, purge_id: str) -> str:
     purge_id = _begin_purge(storage, purge_id)
     _add_complete_delete_target_matrix(storage, purge_id)
+    storage.begin_subject_erasure_barrier(SUBJECT_REF, purge_id)
     return purge_id
 
 
@@ -286,6 +289,24 @@ def _seed_agent_playbook(
     status: Status | None = Status.ARCHIVED,
     source_windows: list[AgentPlaybookSourceWindow] | None = None,
 ) -> int:
+    created_at = "2026-01-01T00:00:00.000Z"
+    for window in source_windows or [
+        AgentPlaybookSourceWindow(user_playbook_id=7, source_interaction_ids=[101])
+    ]:
+        storage.conn.execute(
+            """INSERT OR IGNORE INTO user_playbooks (
+                   user_playbook_id, user_id, playbook_name, created_at, request_id,
+                   agent_version, content, source_interaction_ids, embedding
+               ) VALUES (?, ?, '', ?, ?, '', ?, '[]', '[]')""",
+            (
+                window.user_playbook_id,
+                f"source-user-{window.user_playbook_id}",
+                created_at,
+                f"request-source-{window.user_playbook_id}",
+                f"source-playbook-{window.user_playbook_id}",
+            ),
+        )
+    storage.conn.commit()
     playbook = AgentPlaybook(
         playbook_name="governance-rebuild",
         agent_version="test-agent",
@@ -304,6 +325,35 @@ def _seed_agent_playbook(
         ],
     )
     return saved.agent_playbook_id
+
+
+def _record_agent_playbook_rebuild_target(
+    storage: SQLiteStorage,
+    *,
+    purge_id: str,
+    agent_playbook_id: int,
+    original_windows: list[dict[str, object]] | None = None,
+    remaining_windows: list[dict[str, object]] | None = None,
+    previous_lifecycle_status: str | None = Status.ARCHIVED.value,
+    status: Literal["pending", "running", "complete", "failed"] = "pending",
+) -> None:
+    storage.record_purge_target(
+        purge_id=purge_id,
+        target_name="agent_playbook",
+        target_ref=str(agent_playbook_id),
+        phase="rebuild_without_erased_sources",
+        status=status,
+        detail={
+            "original_source_windows": original_windows
+            or [
+                {"user_playbook_id": 7, "source_interaction_ids": [101]},
+                {"user_playbook_id": 9, "source_interaction_ids": [201]},
+            ],
+            "previous_lifecycle_status": previous_lifecycle_status,
+            "remaining_source_windows": remaining_windows
+            or [{"user_playbook_id": 9, "source_interaction_ids": [201]}],
+        },
+    )
 
 
 def test_audit_event_idempotency(storage):
@@ -452,6 +502,7 @@ def test_purge_targets_require_snapshot_marker(storage):
     )
 
     assert storage.purge_targets_prepared(purge.purge_id) is False
+    storage.begin_subject_erasure_barrier(SUBJECT_REF, purge.purge_id)
     with pytest.raises(ValueError, match="target snapshot"):
         storage.complete_purge_operation_with_audit(
             purge.purge_id,
@@ -820,6 +871,7 @@ def test_append_audit_event_rejects_successful_erase_without_idempotency_key(sto
 
 def test_complete_purge_operation_requires_full_delete_target_matrix(storage):
     purge_id = _begin_purge(storage, "purge_snapshot_only")
+    storage.begin_subject_erasure_barrier(SUBJECT_REF, purge_id)
 
     with pytest.raises(ValueError, match="delete target matrix"):
         storage.complete_purge_operation_with_audit(
@@ -873,10 +925,7 @@ def test_prepare_governance_erase_targets_sanitizes_snapshot_detail(storage):
         )
         if target.target_name == "target_snapshot"
     )
-    assert snapshot.detail == {
-        "owned_user_playbook_ids": [7],
-        "affected_agent_playbook_ids": [],
-    }
+    assert snapshot.detail == {"owned_user_playbook_ids": [7]}
 
 
 def test_apply_governance_user_data_delete_rejects_playbook_snapshot_drift(storage):
@@ -921,7 +970,9 @@ def test_apply_governance_user_data_delete_rejects_playbook_snapshot_drift(stora
     assert owned_user_playbook_ids < remaining_ids
 
 
-def test_prepare_governance_erase_targets_persists_rebuild_source_windows(storage):
+def test_prepare_governance_erase_targets_does_not_plan_org_agent_playbook_rebuilds(
+    storage,
+):
     storage.begin_purge_operation(
         purge_id="purge_rebuild_windows",
         idempotency_key="idem_purge_rebuild_windows",
@@ -946,25 +997,13 @@ def test_prepare_governance_erase_targets_persists_rebuild_source_windows(storag
         owned_user_playbook_ids={7},
     )
 
-    rebuild_target = next(
-        target
-        for target in storage.list_purge_targets(
+    assert (
+        storage.list_purge_targets(
             "purge_rebuild_windows", phase="rebuild_without_erased_sources"
         )
-        if target.target_name == "agent_playbook"
-        and target.target_ref == str(agent_playbook_id)
+        == []
     )
-    assert rebuild_target.status == "pending"
-    assert rebuild_target.detail == {
-        "original_source_windows": [
-            {"user_playbook_id": 7, "source_interaction_ids": [101, 102]},
-            {"user_playbook_id": 9, "source_interaction_ids": [201]},
-        ],
-        "previous_lifecycle_status": Status.ARCHIVED.value,
-        "remaining_source_windows": [
-            {"user_playbook_id": 9, "source_interaction_ids": [201]},
-        ],
-    }
+    assert storage.get_agent_playbook_by_id(agent_playbook_id) is not None
 
 
 def test_prepare_governance_erase_targets_records_full_delete_matrix_counts(storage):
@@ -1042,10 +1081,11 @@ def test_hide_governance_agent_playbooks_for_rebuild_sets_archive_in_progress_an
             AgentPlaybookSourceWindow(user_playbook_id=9, source_interaction_ids=[201]),
         ],
     )
-    storage.prepare_governance_erase_targets(
+    _record_agent_playbook_rebuild_target(
+        storage,
         purge_id=purge_id,
-        user_id="user-hide-rebuild",
-        owned_user_playbook_ids={7},
+        agent_playbook_id=agent_playbook_id,
+        previous_lifecycle_status=None,
     )
     expected_detail = {
         "original_source_windows": [
@@ -1361,10 +1401,11 @@ def test_apply_governance_agent_playbook_rebuild_succeeds_after_prepare_and_hide
             AgentPlaybookSourceWindow(user_playbook_id=9, source_interaction_ids=[201]),
         ],
     )
-    storage.prepare_governance_erase_targets(
+    _record_agent_playbook_rebuild_target(
+        storage,
         purge_id=purge_id,
-        user_id="user-hide-rebuild",
-        owned_user_playbook_ids={7},
+        agent_playbook_id=agent_playbook_id,
+        previous_lifecycle_status=None,
     )
     storage.hide_governance_agent_playbooks_for_rebuild(purge_id)
 
@@ -1706,10 +1747,11 @@ def test_apply_governance_agent_playbook_rebuild_rejects_second_call_after_compl
             AgentPlaybookSourceWindow(user_playbook_id=9, source_interaction_ids=[201]),
         ],
     )
-    storage.prepare_governance_erase_targets(
+    _record_agent_playbook_rebuild_target(
+        storage,
         purge_id=purge_id,
-        user_id="user-rebuild-second-call",
-        owned_user_playbook_ids={7},
+        agent_playbook_id=agent_playbook_id,
+        previous_lifecycle_status=Status.ARCHIVED.value,
     )
     storage.hide_governance_agent_playbooks_for_rebuild(purge_id)
     storage.apply_governance_agent_playbook_rebuild(
@@ -1817,10 +1859,11 @@ def test_hide_governance_agent_playbooks_for_rebuild_is_idempotent_after_complet
             AgentPlaybookSourceWindow(user_playbook_id=9, source_interaction_ids=[201]),
         ],
     )
-    storage.prepare_governance_erase_targets(
+    _record_agent_playbook_rebuild_target(
+        storage,
         purge_id=purge_id,
-        user_id="user-hide-after-complete",
-        owned_user_playbook_ids={7},
+        agent_playbook_id=agent_playbook_id,
+        previous_lifecycle_status=Status.ARCHIVED.value,
     )
     storage.hide_governance_agent_playbooks_for_rebuild(purge_id)
     storage.apply_governance_agent_playbook_rebuild(
@@ -1908,10 +1951,11 @@ def test_hide_governance_agent_playbooks_for_rebuild_does_not_reopen_complete_ta
             AgentPlaybookSourceWindow(user_playbook_id=9, source_interaction_ids=[201]),
         ],
     )
-    storage.prepare_governance_erase_targets(
+    _record_agent_playbook_rebuild_target(
+        storage,
         purge_id=purge_id,
-        user_id="user-hide-stale-prelock",
-        owned_user_playbook_ids={7},
+        agent_playbook_id=agent_playbook_id,
+        previous_lifecycle_status=Status.ARCHIVED.value,
     )
     storage.hide_governance_agent_playbooks_for_rebuild(purge_id)
     storage.apply_governance_agent_playbook_rebuild(
@@ -1997,58 +2041,24 @@ def test_hide_governance_agent_playbooks_for_rebuild_does_not_reopen_complete_ta
     )
 
 
-def test_prepare_governance_erase_targets_is_idempotent_after_completed_snapshot_and_rebuild(
+def test_prepare_governance_erase_targets_is_idempotent_after_completed_snapshot(
     storage,
 ):
-    purge_id = "purge_prepare_idempotent_after_rebuild"
-    user_id = "user-prepare-idempotent-after-rebuild"
+    purge_id = "purge_prepare_idempotent_after_snapshot"
+    user_id = "user-prepare-idempotent-after-snapshot"
     storage.begin_purge_operation(
         purge_id=purge_id,
-        idempotency_key="idem_purge_prepare_idempotent_after_rebuild",
+        idempotency_key="idem_purge_prepare_idempotent_after_snapshot",
         operation_type="user_erasure",
         scope_type="user",
         subject_ref=SUBJECT_REF,
         request_ref=REQUEST_REF,
     )
     owned_user_playbook_ids = _seed_prepare_counts_user_data(storage, user_id=user_id)
-    _seed_eval_result(
-        storage,
-        user_id=user_id,
-        session_id="session-delete-hide-complete",
-        evaluation_name="governance_delete_hide_complete",
-    )
-    affected_user_playbook_id = min(owned_user_playbook_ids)
-    agent_playbook_id = _seed_agent_playbook(
-        storage,
-        status=Status.ARCHIVED,
-        source_windows=[
-            AgentPlaybookSourceWindow(
-                user_playbook_id=affected_user_playbook_id,
-                source_interaction_ids=[101],
-            ),
-            AgentPlaybookSourceWindow(
-                user_playbook_id=999999, source_interaction_ids=[201]
-            ),
-        ],
-    )
     storage.prepare_governance_erase_targets(
         purge_id=purge_id,
         user_id=user_id,
         owned_user_playbook_ids=owned_user_playbook_ids,
-    )
-    storage.hide_governance_agent_playbooks_for_rebuild(purge_id)
-    storage.apply_governance_agent_playbook_rebuild(
-        purge_id=purge_id,
-        agent_playbook_id=agent_playbook_id,
-        remaining_source_windows=[
-            {"user_playbook_id": 999999, "source_interaction_ids": [201]},
-        ],
-        content="rebuilt content",
-        trigger="rebuilt trigger",
-        rationale="rebuilt rationale",
-        blocking_issue=None,
-        expanded_terms="rebuilt terms",
-        tags=["rebuilt"],
     )
 
     before_targets = [
@@ -2061,16 +2071,8 @@ def test_prepare_governance_erase_targets_is_idempotent_after_completed_snapshot
             target.deleted_count,
         )
         for target in storage.list_purge_targets(purge_id)
-        if target.target_name
-        in {*CANONICAL_DELETE_TARGET_NAMES, "agent_playbook", "target_snapshot"}
+        if target.target_name in {*CANONICAL_DELETE_TARGET_NAMES, "target_snapshot"}
     ]
-    before_playbook_row = storage.conn.execute(
-        """SELECT status, content, trigger, rationale, tags
-           FROM agent_playbooks
-           WHERE agent_playbook_id = ?""",
-        (agent_playbook_id,),
-    ).fetchone()
-    before_windows = storage.get_source_windows_for_agent_playbook(agent_playbook_id)
 
     storage.prepare_governance_erase_targets(
         purge_id=purge_id,
@@ -2088,20 +2090,10 @@ def test_prepare_governance_erase_targets_is_idempotent_after_completed_snapshot
             target.deleted_count,
         )
         for target in storage.list_purge_targets(purge_id)
-        if target.target_name
-        in {*CANONICAL_DELETE_TARGET_NAMES, "agent_playbook", "target_snapshot"}
+        if target.target_name in {*CANONICAL_DELETE_TARGET_NAMES, "target_snapshot"}
     ]
-    after_playbook_row = storage.conn.execute(
-        """SELECT status, content, trigger, rationale, tags
-           FROM agent_playbooks
-           WHERE agent_playbook_id = ?""",
-        (agent_playbook_id,),
-    ).fetchone()
-    after_windows = storage.get_source_windows_for_agent_playbook(agent_playbook_id)
 
     assert after_targets == before_targets
-    assert after_playbook_row == before_playbook_row
-    assert after_windows == before_windows
 
 
 def test_purge_targets_are_scoped_by_org_for_same_purge_id(storage_factory):
@@ -3163,7 +3155,7 @@ def test_apply_governance_user_data_delete_requires_complete_prepared_delete_mat
     }
 
 
-def test_apply_governance_user_data_delete_requires_hide_targets_for_planned_rebuilds(
+def test_apply_governance_user_data_delete_preserves_org_agent_playbooks_without_hide_targets(
     storage,
 ):
     purge_id = "purge_delete_requires_hide"
@@ -3184,7 +3176,7 @@ def test_apply_governance_user_data_delete_requires_hide_targets_for_planned_reb
         evaluation_name="governance_delete_hide_complete",
     )
     affected_user_playbook_id = min(owned_user_playbook_ids)
-    _seed_agent_playbook(
+    agent_playbook_id = _seed_agent_playbook(
         storage,
         status=None,
         source_windows=[
@@ -3200,21 +3192,20 @@ def test_apply_governance_user_data_delete_requires_hide_targets_for_planned_reb
         owned_user_playbook_ids=owned_user_playbook_ids,
     )
 
-    with pytest.raises(ValueError, match="hide_for_rebuild"):
-        storage.apply_governance_user_data_delete(
-            purge_id=purge_id,
-            user_id=user_id,
-        )
+    counts = storage.apply_governance_user_data_delete(
+        purge_id=purge_id,
+        user_id=user_id,
+    )
 
-    assert _user_scoped_row_counts(storage, user_id=user_id) == {
-        "requests": 1,
-        "interactions": 1,
-        "profiles": 2,
-        "user_playbooks": 2,
-    }
+    assert counts["user_playbooks"] == 1
+    remaining_counts = _user_scoped_row_counts(storage, user_id=user_id)
+    assert remaining_counts["requests"] == 0
+    assert remaining_counts["interactions"] == 0
+    assert storage.get_agent_playbook_by_id(agent_playbook_id) is not None
+    assert storage.get_source_windows_for_agent_playbook(agent_playbook_id) == []
     delete_targets = storage.list_purge_targets(purge_id, phase="delete")
     assert {(target.target_name, target.status) for target in delete_targets} == {
-        (target_name, "pending") for target_name in CANONICAL_DELETE_TARGET_NAMES
+        (target_name, "complete") for target_name in CANONICAL_DELETE_TARGET_NAMES
     }
 
 

@@ -14,6 +14,10 @@ class StorageError(Exception):
         return f"StorageError: {self.message}"
 
 
+class SubjectWriteBarrierError(StorageError):
+    """Raised when a write targets a subject with an active erasure barrier."""
+
+
 def require_non_empty_session_id(value: Any) -> str:
     """Return a stripped, non-empty request ``session_id`` or raise ``StorageError``.
 

@@ -199,14 +199,43 @@ class PlaybookMixin:
     _vec_delete: Any
     _delete_playbook_search_rows: Any
     _has_sqlite_vec: bool
+    _subject_ref_for_user_id: Any
+    _assert_subject_writable_locked: Any
 
     # ------------------------------------------------------------------
     # User Playbook methods
     # ------------------------------------------------------------------
 
+    def _subject_ref_from_user_playbook_row(self, row: sqlite3.Row) -> str:
+        subject_ref = row["governance_subject_ref"]
+        if subject_ref:
+            return str(subject_ref)
+        user_id = row["user_id"]
+        if user_id is None or str(user_id) == "":
+            raise ValueError("User playbook subject identity is missing")
+        return self._subject_ref_for_user_id(str(user_id))
+
+    def _assert_user_playbook_writable_locked(
+        self,
+        user_playbook_id: int,
+    ) -> sqlite3.Row | None:
+        row = self.conn.execute(
+            "SELECT user_id, governance_subject_ref FROM user_playbooks WHERE user_playbook_id = ?",
+            (user_playbook_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        self._assert_subject_writable_locked(
+            self._subject_ref_from_user_playbook_row(row)
+        )
+        return row
+
     @SQLiteStorageBase.handle_exceptions
     def save_user_playbooks(self, user_playbooks: list[UserPlaybook]) -> None:
         for up in user_playbooks:
+            subject_ref = self._subject_ref_for_user_id(up.user_id)
+            with self._lock:
+                self._assert_subject_writable_locked(subject_ref)
             embedding_text = up.trigger or up.content
             if embedding_text:
                 if self._should_expand_documents():
@@ -224,43 +253,50 @@ class PlaybookMixin:
 
             created_at_iso = _epoch_to_iso(up.created_at)
             with self._lock:
-                cur = self.conn.execute(
-                    """INSERT INTO user_playbooks
-                       (user_id, playbook_name, created_at, request_id, agent_version,
-                        content, trigger, rationale, blocking_issue,
-                        source_interaction_ids,
-                        status, source, embedding, expanded_terms,
-                        source_span, notes, reader_angle, tags,
-                        merged_into, superseded_by)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    (
-                        up.user_id,
-                        up.playbook_name,
-                        created_at_iso,
-                        up.request_id,
-                        up.agent_version,
-                        up.content,
-                        up.trigger,
-                        up.rationale,
-                        json.dumps(up.blocking_issue.model_dump())
-                        if up.blocking_issue
-                        else None,
-                        _json_dumps(up.source_interaction_ids or None),
-                        up.status.value if up.status else None,
-                        up.source,
-                        _json_dumps(up.embedding),
-                        up.expanded_terms,
-                        up.source_span,
-                        up.notes,
-                        up.reader_angle,
-                        _json_dumps(up.tags),
-                        up.merged_into,
-                        up.superseded_by,
-                    ),
-                )
-                upid = cur.lastrowid or 0
-                up.user_playbook_id = upid
-                self.conn.commit()
+                try:
+                    self.conn.execute("BEGIN IMMEDIATE")
+                    self._assert_subject_writable_locked(subject_ref)
+                    cur = self.conn.execute(
+                        """INSERT INTO user_playbooks
+                           (user_id, playbook_name, created_at, request_id, agent_version,
+                            content, trigger, rationale, blocking_issue,
+                            source_interaction_ids,
+                            status, source, embedding, expanded_terms,
+                            source_span, notes, reader_angle, tags,
+                            merged_into, superseded_by, governance_subject_ref)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (
+                            up.user_id,
+                            up.playbook_name,
+                            created_at_iso,
+                            up.request_id,
+                            up.agent_version,
+                            up.content,
+                            up.trigger,
+                            up.rationale,
+                            json.dumps(up.blocking_issue.model_dump())
+                            if up.blocking_issue
+                            else None,
+                            _json_dumps(up.source_interaction_ids or None),
+                            up.status.value if up.status else None,
+                            up.source,
+                            _json_dumps(up.embedding),
+                            up.expanded_terms,
+                            up.source_span,
+                            up.notes,
+                            up.reader_angle,
+                            _json_dumps(up.tags),
+                            up.merged_into,
+                            up.superseded_by,
+                            subject_ref,
+                        ),
+                    )
+                    upid = cur.lastrowid or 0
+                    up.user_playbook_id = upid
+                    self.conn.commit()
+                except Exception:
+                    self.conn.rollback()
+                    raise
 
             fts_parts = [up.trigger or "", up.content or ""]
             if up.expanded_terms:
@@ -513,20 +549,24 @@ class PlaybookMixin:
 
         batch_request_id = uuid.uuid4().hex
         with self._lock:
-            affected = [
-                r["user_playbook_id"]
-                for r in self.conn.execute(
-                    f"SELECT user_playbook_id FROM user_playbooks WHERE {where}",
+            affected = list(
+                self.conn.execute(
+                    f"SELECT user_playbook_id, user_id, governance_subject_ref FROM user_playbooks WHERE {where}",
                     select_params + extra_params,
                 ).fetchall()
-            ]
+            )
+            for row in affected:
+                self._assert_subject_writable_locked(
+                    self._subject_ref_from_user_playbook_row(row)
+                )
             cur = self.conn.execute(
                 f"UPDATE user_playbooks SET status = ?, retired_at = ? WHERE {where}",
                 [new_val, retired_at_val] + select_params + extra_params,
             )
             from_val = old_status.value if old_status else None
             to_val = new_status.value if new_status else None
-            for upid in affected:
+            for row in affected:
+                upid = row["user_playbook_id"]
                 _append_event_stmt(
                     self.conn,
                     org_id=self.org_id,
@@ -606,11 +646,22 @@ class PlaybookMixin:
 
     @SQLiteStorageBase.handle_exceptions
     def archive_user_playbook_by_id(self, user_id: str, user_playbook_id: int) -> bool:
-        cur = self._execute(
-            "UPDATE user_playbooks SET status = ?, retired_at = ? "
-            "WHERE user_playbook_id = ? AND user_id = ? AND status IS NULL",
-            (Status.ARCHIVED.value, _epoch_now(), user_playbook_id, user_id),
-        )
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT user_id, governance_subject_ref FROM user_playbooks WHERE user_playbook_id = ? AND user_id = ?",
+                (user_playbook_id, user_id),
+            ).fetchone()
+            if row is None:
+                return False
+            self._assert_subject_writable_locked(
+                self._subject_ref_from_user_playbook_row(row)
+            )
+            cur = self.conn.execute(
+                "UPDATE user_playbooks SET status = ?, retired_at = ? "
+                "WHERE user_playbook_id = ? AND user_id = ? AND status IS NULL",
+                (Status.ARCHIVED.value, _epoch_now(), user_playbook_id, user_id),
+            )
+            self.conn.commit()
         return cur.rowcount > 0
 
     @SQLiteStorageBase.handle_exceptions
@@ -1291,6 +1342,8 @@ class PlaybookMixin:
             op = "revise" if semantic_change else "status_change"
             prov = "wasRevisionOf" if op == "revise" else "wasInvalidatedBy"
             with self._lock:
+                if self._assert_user_playbook_writable_locked(user_playbook_id) is None:
+                    return
                 cur = self.conn.execute(
                     f"UPDATE user_playbooks SET {', '.join(updates)} WHERE user_playbook_id = ?",
                     tuple(params),
@@ -1332,11 +1385,14 @@ class PlaybookMixin:
         with self._lock:
             for upid in user_playbook_ids:
                 row = self.conn.execute(
-                    "SELECT status FROM user_playbooks WHERE user_playbook_id = ?",
+                    "SELECT status, user_id, governance_subject_ref FROM user_playbooks WHERE user_playbook_id = ?",
                     (upid,),
                 ).fetchone()
                 if row is None:
                     continue
+                self._assert_subject_writable_locked(
+                    self._subject_ref_from_user_playbook_row(row)
+                )
                 old_status = row["status"]
                 cur = self.conn.execute(
                     "UPDATE user_playbooks SET status = ?, retired_at = ?"
@@ -1658,24 +1714,43 @@ class PlaybookMixin:
                     ids.append(source_id)
                     seen.add(source_id)
         with self._lock:
-            self.conn.execute(
-                "DELETE FROM agent_playbook_source_user_playbooks WHERE agent_playbook_id = ?",
-                (agent_playbook_id,),
-            )
-            self.conn.executemany(
-                """INSERT OR IGNORE INTO agent_playbook_source_user_playbooks
-                   (agent_playbook_id, user_playbook_id, source_interaction_ids)
-                   VALUES (?, ?, ?)""",
-                [
-                    (
-                        agent_playbook_id,
-                        upid,
-                        _json_dumps(source_interaction_ids) or "[]",
-                    )
-                    for upid, source_interaction_ids in by_id.items()
-                ],
-            )
-            self.conn.commit()
+            try:
+                self.conn.execute("BEGIN IMMEDIATE")
+                for user_playbook_id in by_id:
+                    row = self.conn.execute(
+                        """SELECT user_id, governance_subject_ref FROM user_playbooks
+                           WHERE user_playbook_id = ?""",
+                        (user_playbook_id,),
+                    ).fetchone()
+                    if row is None:
+                        raise ValueError(
+                            f"User playbook {user_playbook_id} not found for source window"
+                        )
+                    subject_ref = row["governance_subject_ref"]
+                    if not isinstance(subject_ref, str) or not subject_ref:
+                        subject_ref = self._subject_ref_for_user_id(str(row["user_id"]))
+                    self._assert_subject_writable_locked(subject_ref)
+                self.conn.execute(
+                    "DELETE FROM agent_playbook_source_user_playbooks WHERE agent_playbook_id = ?",
+                    (agent_playbook_id,),
+                )
+                self.conn.executemany(
+                    """INSERT OR IGNORE INTO agent_playbook_source_user_playbooks
+                       (agent_playbook_id, user_playbook_id, source_interaction_ids)
+                       VALUES (?, ?, ?)""",
+                    [
+                        (
+                            agent_playbook_id,
+                            upid,
+                            _json_dumps(source_interaction_ids) or "[]",
+                        )
+                        for upid, source_interaction_ids in by_id.items()
+                    ],
+                )
+                self.conn.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
 
     @SQLiteStorageBase.handle_exceptions
     def get_source_windows_for_agent_playbook(
@@ -2044,31 +2119,41 @@ class PlaybookMixin:
                 result.embedding = []
 
             created_at_iso = _epoch_to_iso(result.created_at)
-            self._execute(
-                """INSERT INTO agent_success_evaluation_result
-                   (user_id, session_id, agent_version, evaluation_name, is_success,
-                    failure_type, failure_reason, regular_vs_shadow,
-                    number_of_correction_per_session, user_turns_to_resolution,
-                    is_escalated, embedding, created_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (
-                    result.user_id,
-                    result.session_id,
-                    result.agent_version,
-                    result.evaluation_name,
-                    int(result.is_success),
-                    result.failure_type,
-                    result.failure_reason,
-                    result.regular_vs_shadow.value
-                    if result.regular_vs_shadow
-                    else None,
-                    result.number_of_correction_per_session,
-                    result.user_turns_to_resolution,
-                    int(result.is_escalated),
-                    _json_dumps(result.embedding) if result.embedding else None,
-                    created_at_iso,
-                ),
-            )
+            subject_ref = self._subject_ref_for_user_id(result.user_id)
+            with self._lock:
+                try:
+                    self.conn.execute("BEGIN IMMEDIATE")
+                    self._assert_subject_writable_locked(subject_ref)
+                    self.conn.execute(
+                        """INSERT INTO agent_success_evaluation_result
+                           (user_id, session_id, agent_version, evaluation_name, is_success,
+                            failure_type, failure_reason, regular_vs_shadow,
+                            number_of_correction_per_session, user_turns_to_resolution,
+                            is_escalated, embedding, created_at, governance_subject_ref)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (
+                            result.user_id,
+                            result.session_id,
+                            result.agent_version,
+                            result.evaluation_name,
+                            int(result.is_success),
+                            result.failure_type,
+                            result.failure_reason,
+                            result.regular_vs_shadow.value
+                            if result.regular_vs_shadow
+                            else None,
+                            result.number_of_correction_per_session,
+                            result.user_turns_to_resolution,
+                            int(result.is_escalated),
+                            _json_dumps(result.embedding) if result.embedding else None,
+                            created_at_iso,
+                            subject_ref,
+                        ),
+                    )
+                    self.conn.commit()
+                except Exception:
+                    self.conn.rollback()
+                    raise
 
     @SQLiteStorageBase.handle_exceptions
     def get_agent_success_evaluation_results(
