@@ -28,6 +28,11 @@ from reflexio.models.config_schema import (
     PlaybookAggregatorConfig,
     PlaybookConfig,
 )
+from reflexio.server.services.playbook.aggregation_prompt_processing import (
+    AggregationPromptProcessingContext,
+    PromptPostprocessResult,
+    PromptPreprocessResult,
+)
 from reflexio.server.services.playbook.components.aggregator import PlaybookAggregator
 from reflexio.server.services.playbook.playbook_service_utils import (
     PlaybookAggregationOutput,
@@ -43,7 +48,7 @@ from reflexio.server.services.playbook.playbook_service_utils import (
 def _make_aggregator(
     storage: MagicMock | None = None,
     configurator: MagicMock | None = None,
-    user_detail_stripper: Any | None = None,
+    aggregation_prompt_processor: Any | None = None,
 ) -> Any:
     """Build an aggregator with fully mocked dependencies."""
     llm = MagicMock()
@@ -55,7 +60,7 @@ def _make_aggregator(
         llm_client=llm,
         request_context=ctx,
         agent_version="v1",
-        user_detail_stripper=user_detail_stripper,
+        aggregation_prompt_processor=aggregation_prompt_processor,
     )
 
 
@@ -89,94 +94,149 @@ def _agent_playbook(
 
 
 # ---------------------------------------------------------------------------
-# User detail stripping seam
+# Aggregation prompt processing seam
 # ---------------------------------------------------------------------------
 
 
-class _MappingAwareStripper:
+class _MappingAwareProcessor:
     prompt_extra_instructions: str | None = None
-    _OUTPUT_MARKER_RE = re.compile(r"<<DETAIL_\d+>>")
+    _OUTPUT_MARKER_RE = re.compile(r"<<TOKEN_\d+>>")
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, int]] = []
 
-    def strip_user_details(
-        self, text: str, shared_mapping: dict[str, int] | None = None
-    ) -> Any:
-        from reflexio.server.services.playbook.user_detail_stripping import (
-            StrippingResult,
-        )
-
-        assert shared_mapping is not None
-        if "Sarah" in text:
-            shared_mapping.setdefault("sarah", len(shared_mapping) + 1)
-            text = text.replace("Sarah", f"<<DETAIL_{shared_mapping['sarah']}>>")
-        if "Mike" in text:
-            shared_mapping.setdefault("mike", len(shared_mapping) + 1)
-            text = text.replace("Mike", f"<<DETAIL_{shared_mapping['mike']}>>")
-        if "sarah@acme.com" in text:
-            shared_mapping.setdefault("email", len(shared_mapping) + 1)
+    def preprocess_prompt_text(
+        self,
+        text: str,
+        *,
+        shared_state: dict[str, Any] | None = None,
+        context: AggregationPromptProcessingContext | None = None,  # noqa: ARG002
+    ) -> PromptPreprocessResult:
+        assert shared_state is not None
+        original = text
+        if "Project Zephyr" in text:
+            shared_state.setdefault("zephyr", len(shared_state) + 1)
+            text = text.replace("Project Zephyr", f"<<TOKEN_{shared_state['zephyr']}>>")
+        if "Project Atlas" in text:
+            shared_state.setdefault("atlas", len(shared_state) + 1)
+            text = text.replace("Project Atlas", f"<<TOKEN_{shared_state['atlas']}>>")
+        if "zephyr-access-code" in text:
+            shared_state.setdefault("access_code", len(shared_state) + 1)
             text = text.replace(
-                "sarah@acme.com", f"<<DETAIL_{shared_mapping['email']}>>"
+                "zephyr-access-code", f"<<TOKEN_{shared_state['access_code']}>>"
             )
-        if "555-1234" in text:
-            shared_mapping.setdefault("phone", len(shared_mapping) + 1)
-            text = text.replace("555-1234", f"<<DETAIL_{shared_mapping['phone']}>>")
-        self.calls.append((text, id(shared_mapping)))
-        return StrippingResult(text=text, detections=[])
+        if "handoff-window" in text:
+            shared_state.setdefault("handoff_window", len(shared_state) + 1)
+            text = text.replace(
+                "handoff-window", f"<<TOKEN_{shared_state['handoff_window']}>>"
+            )
+        self.calls.append((text, id(shared_state)))
+        return PromptPreprocessResult(text=text, changed=text != original)
 
-    def sanitize_aggregation_output_text(
+    def prompt_instructions(
+        self,
+        context: AggregationPromptProcessingContext,  # noqa: ARG002
+    ) -> str | None:
+        return self.prompt_extra_instructions
+
+    def _postprocess_text(
         self,
         text: str | None,
     ) -> tuple[str | None, int]:
         if text is None:
             return None, 0
         marker_count = len(self._OUTPUT_MARKER_RE.findall(text))
-        return self._OUTPUT_MARKER_RE.sub("a user detail", text), marker_count
+        return self._OUTPUT_MARKER_RE.sub("a processed artifact", text), marker_count
+
+    def postprocess_aggregation_output(
+        self,
+        value: object,
+        *,
+        context: AggregationPromptProcessingContext | None = None,  # noqa: ARG002
+    ) -> PromptPostprocessResult:
+        processed, count = self._postprocess_value(value)
+        return PromptPostprocessResult(value=processed, artifacts_removed=count)
+
+    def _postprocess_value(self, value: object) -> tuple[object, int]:
+        if isinstance(value, str):
+            return self._postprocess_text(value)
+        if isinstance(value, PlaybookAggregationOutput):
+            if value.playbook is None:
+                return value, 0
+            updates: dict[str, str | None] = {}
+            total = 0
+            for field_name, field_value in value.playbook.model_dump().items():
+                if not isinstance(field_value, str):
+                    continue
+                processed, count = self._postprocess_text(field_value)
+                total += count
+                if processed != field_value:
+                    updates[field_name] = processed
+            if not updates:
+                return value, 0
+            return value.model_copy(
+                update={"playbook": value.playbook.model_copy(update=updates)}
+            ), total
+        if isinstance(value, dict):
+            processed_dict: dict[object, object] = {}
+            total = 0
+            for key, item in value.items():
+                processed_key, key_count = self._postprocess_value(key)
+                processed_item, item_count = self._postprocess_value(item)
+                processed_dict[processed_key] = processed_item
+                total += key_count + item_count
+            return processed_dict, total
+        if isinstance(value, list):
+            processed_items: list[object] = []
+            total = 0
+            for item in value:
+                processed_item, count = self._postprocess_value(item)
+                processed_items.append(processed_item)
+                total += count
+            return processed_items, total
+        if isinstance(value, tuple):
+            processed_items: list[object] = []
+            total = 0
+            for item in value:
+                processed_item, count = self._postprocess_value(item)
+                processed_items.append(processed_item)
+                total += count
+            return tuple(processed_items), total
+        return value, 0
 
 
-def test_user_detail_stripping_protocol_types_importable():
-    from reflexio.server.services.playbook.user_detail_stripping import (
-        DetectedEntity,
-        PassthroughStripper,
-        StrippingResult,
-        create_aggregation_user_detail_stripper,
-        set_user_detail_stripper_factory,
+def test_aggregation_prompt_processing_protocol_types_importable():
+    from reflexio.server.services.configurator.configurator import DefaultConfigurator
+    from reflexio.server.services.playbook.aggregation_prompt_processing import (
+        PassthroughPromptProcessor,
+        PromptPostprocessResult,
+        PromptPreprocessResult,
     )
 
-    result = PassthroughStripper().strip_user_details("keep this")
-    sanitized, sanitized_count = PassthroughStripper().sanitize_aggregation_output_text(
-        "keep this"
+    processor = PassthroughPromptProcessor()
+    context = AggregationPromptProcessingContext()
+    preprocess_result = processor.preprocess_prompt_text(
+        "keep this",
+        shared_state={},
+        context=context,
     )
-    entity = DetectedEntity(
-        start=0,
-        end=4,
-        entity_type="USER_DETAIL",
-        replacement="<<DETAIL_1>>",
-        confidence=1.0,
-        source="test",
+    postprocess_result = processor.postprocess_aggregation_output(
+        {"content": "keep this"},
+        context=context,
     )
 
-    assert result == StrippingResult(text="keep this", detections=[])
-    assert sanitized == "keep this"
-    assert sanitized_count == 0
-    assert entity.start == 0
-    assert entity.end == 4
-    assert entity.replacement == "<<DETAIL_1>>"
-    assert create_aggregation_user_detail_stripper(object()) is None
-
-    set_user_detail_stripper_factory(lambda _configurator: PassthroughStripper())
-    try:
-        assert isinstance(
-            create_aggregation_user_detail_stripper(object()), PassthroughStripper
-        )
-    finally:
-        set_user_detail_stripper_factory(lambda _configurator: None)
+    assert preprocess_result == PromptPreprocessResult(text="keep this")
+    assert postprocess_result == PromptPostprocessResult(value={"content": "keep this"})
+    assert context.changed is False
+    assert (
+        DefaultConfigurator(org_id="test-org").create_aggregation_prompt_processor()
+        is None
+    )
 
 
-def test_user_detail_stripper_sanitizes_cluster_playbooks_but_not_existing_agent_playbooks():
-    stripper = _MappingAwareStripper()
-    agg = _make_aggregator(user_detail_stripper=stripper)
+def test_aggregation_prompt_processor_preprocesses_cluster_playbooks_but_not_existing_agent_playbooks():
+    processor = _MappingAwareProcessor()
+    agg = _make_aggregator(aggregation_prompt_processor=processor)
     captured_messages: list[dict[str, str]] = []
     captured_variables: dict[str, str] = {}
 
@@ -205,18 +265,18 @@ def test_user_detail_stripper_sanitizes_cluster_playbooks_but_not_existing_agent
                 agent_version="v1",
                 request_id="req-1",
                 playbook_name="test_fb",
-                content="Sarah prefers the safety checklist.",
-                trigger="When Sarah opens a ticket.",
-                rationale="Sarah missed one step.",
+                content="Project Zephyr prefers the safety checklist.",
+                trigger="When Project Zephyr opens a ticket.",
+                rationale="Project Zephyr missed one step.",
             ),
             UserPlaybook(
                 user_playbook_id=2,
                 agent_version="v1",
                 request_id="req-2",
                 playbook_name="test_fb",
-                content="Mike asks for the same checklist.",
-                trigger="When Mike opens a ticket.",
-                rationale="Mike missed the same step.",
+                content="Project Atlas asks for the same checklist.",
+                trigger="When Project Atlas opens a ticket.",
+                rationale="Project Atlas missed the same step.",
             ),
         ]
     }
@@ -225,7 +285,7 @@ def test_user_detail_stripper_sanitizes_cluster_playbooks_but_not_existing_agent
             agent_playbook_id=7,
             playbook_name="test_fb",
             agent_version="v1",
-            content="Sarah already has a checklist playbook.",
+            content="Project Zephyr already has a checklist playbook.",
             playbook_status=PlaybookStatus.PENDING,
         )
     ]
@@ -237,19 +297,19 @@ def test_user_detail_stripper_sanitizes_cluster_playbooks_but_not_existing_agent
     rendered_prompt = captured_messages[0]["content"]
     user_prompt = captured_variables["user_playbooks"]
     existing_prompt = captured_variables["existing_approved_playbooks"]
-    assert "Sarah" not in user_prompt
-    assert "Mike" not in user_prompt
-    assert "<<DETAIL_1>>" in rendered_prompt
-    assert "<<DETAIL_2>>" in rendered_prompt
-    assert "Sarah already has a checklist playbook." in existing_prompt
-    assert len({mapping_id for _text, mapping_id in stripper.calls}) == 1
-    assert clusters[0][0].content == "Sarah prefers the safety checklist."
-    assert existing[0].content == "Sarah already has a checklist playbook."
+    assert "Project Zephyr" not in user_prompt
+    assert "Project Atlas" not in user_prompt
+    assert "<<TOKEN_1>>" in rendered_prompt
+    assert "<<TOKEN_2>>" in rendered_prompt
+    assert "Project Zephyr already has a checklist playbook." in existing_prompt
+    assert len({mapping_id for _text, mapping_id in processor.calls}) == 1
+    assert clusters[0][0].content == "Project Zephyr prefers the safety checklist."
+    assert existing[0].content == "Project Zephyr already has a checklist playbook."
 
 
-def test_user_detail_stripper_sanitizes_grouped_prompt_input():
-    stripper = _MappingAwareStripper()
-    agg = _make_aggregator(user_detail_stripper=stripper)
+def test_aggregation_prompt_processor_preprocesses_grouped_prompt_input():
+    processor = _MappingAwareProcessor()
+    agg = _make_aggregator(aggregation_prompt_processor=processor)
     captured_prompts: list[str] = []
 
     agg.request_context.prompt_manager.render_prompt.side_effect = (
@@ -272,18 +332,18 @@ def test_user_detail_stripper_sanitizes_grouped_prompt_input():
                 agent_version="v1",
                 request_id="req-1",
                 playbook_name="test_fb",
-                content="Sarah checks deployment readiness.",
-                trigger="When Sarah reviews deployment readiness.",
-                rationale="Sarah owns the deployment checklist.",
+                content="Project Zephyr checks deployment readiness.",
+                trigger="When Project Zephyr reviews deployment readiness.",
+                rationale="Project Zephyr owns the deployment checklist.",
             ),
             UserPlaybook(
                 user_playbook_id=2,
                 agent_version="v1",
                 request_id="req-2",
                 playbook_name="test_fb",
-                content="Mike audits billing anomalies.",
-                trigger="When Mike reviews billing anomalies.",
-                rationale="Mike owns the billing review.",
+                content="Project Atlas audits billing anomalies.",
+                trigger="When Project Atlas reviews billing anomalies.",
+                rationale="Project Atlas owns the billing review.",
             ),
         ]
     }
@@ -294,15 +354,15 @@ def test_user_detail_stripper_sanitizes_grouped_prompt_input():
     assert len(result) == 1
     rendered_prompt = captured_prompts[0]
     assert "Group 1" in rendered_prompt
-    assert "Sarah" not in rendered_prompt
-    assert "Mike" not in rendered_prompt
-    assert "<<DETAIL_1>>" in rendered_prompt
-    assert "<<DETAIL_2>>" in rendered_prompt
+    assert "Project Zephyr" not in rendered_prompt
+    assert "Project Atlas" not in rendered_prompt
+    assert "<<TOKEN_1>>" in rendered_prompt
+    assert "<<TOKEN_2>>" in rendered_prompt
 
 
-def test_mock_llm_response_sanitizes_stripping_placeholders_before_storage():
-    stripper = _MappingAwareStripper()
-    agg = _make_aggregator(user_detail_stripper=stripper)
+def test_mock_llm_response_postprocesses_artifacts_before_storage():
+    processor = _MappingAwareProcessor()
+    agg = _make_aggregator(aggregation_prompt_processor=processor)
     clusters = {
         0: [
             UserPlaybook(
@@ -310,9 +370,9 @@ def test_mock_llm_response_sanitizes_stripping_placeholders_before_storage():
                 agent_version="v1",
                 request_id="req-1",
                 playbook_name="test_fb",
-                content="Sarah prefers the safety checklist for sarah@acme.com and 555-1234.",
-                trigger="When Sarah opens a ticket with 555-1234.",
-                rationale="Sarah missed one step for sarah@acme.com.",
+                content="Project Zephyr prefers the safety checklist for zephyr-access-code and handoff-window.",
+                trigger="When Project Zephyr opens a ticket with handoff-window.",
+                rationale="Project Zephyr missed one step for zephyr-access-code.",
             )
         ]
     }
@@ -322,19 +382,19 @@ def test_mock_llm_response_sanitizes_stripping_placeholders_before_storage():
 
     assert len(result) == 1
     playbook, _sources = result[0]
-    assert "<<DETAIL_" not in playbook.content
-    assert "<<DETAIL_" not in (playbook.trigger or "")
-    assert "a user detail" in playbook.content
+    assert "<<TOKEN_" not in playbook.content
+    assert "<<TOKEN_" not in (playbook.trigger or "")
+    assert "a processed artifact" in playbook.content
 
 
-def test_placeholder_leakage_is_replaced_before_response_logging_and_storage():
-    agg = _make_aggregator(user_detail_stripper=_MappingAwareStripper())
+def test_artifact_postprocessing_runs_before_response_logging_and_storage():
+    agg = _make_aggregator(aggregation_prompt_processor=_MappingAwareProcessor())
     agg.request_context.prompt_manager.render_prompt.return_value = "prompt"
     raw_response = PlaybookAggregationOutput(
         playbook=StructuredPlaybookContent(
-            content="- Ask <<DETAIL_1>> to confirm via <<DETAIL_2>>.",
-            trigger="When <<DETAIL_3>> requests access.",
-            rationale="<<DETAIL_1>>, <<DETAIL_2>>, and <<DETAIL_3>> all hit this case.",
+            content="- Ask <<TOKEN_1>> to confirm via <<TOKEN_2>>.",
+            trigger="When <<TOKEN_3>> requests access.",
+            rationale="<<TOKEN_1>>, <<TOKEN_2>>, and <<TOKEN_3>> all hit this case.",
         )
     )
     agg.client.generate_chat_response.return_value = raw_response
@@ -349,23 +409,23 @@ def test_placeholder_leakage_is_replaced_before_response_logging_and_storage():
         result = agg._generate_playbook_from_cluster(cluster, "None")
 
     assert result is not None
-    assert "<<DETAIL_" not in result.content
-    assert "<<DETAIL_" not in (result.trigger or "")
-    assert "<<DETAIL_" not in (result.rationale or "")
-    assert "a user detail" in result.content
-    assert "a user detail" in (result.trigger or "")
+    assert "<<TOKEN_" not in result.content
+    assert "<<TOKEN_" not in (result.trigger or "")
+    assert "<<TOKEN_" not in (result.rationale or "")
+    assert "a processed artifact" in result.content
+    assert "a processed artifact" in (result.trigger or "")
     logged_response = mock_log_model_response.call_args.args[2]
     assert isinstance(logged_response, PlaybookAggregationOutput)
     assert logged_response.playbook is not None
-    assert "<<DETAIL_" not in (logged_response.playbook.content or "")
-    assert "<<DETAIL_" not in (logged_response.playbook.trigger or "")
-    assert "<<DETAIL_" not in (logged_response.playbook.rationale or "")
+    assert "<<TOKEN_" not in (logged_response.playbook.content or "")
+    assert "<<TOKEN_" not in (logged_response.playbook.trigger or "")
+    assert "<<TOKEN_" not in (logged_response.playbook.rationale or "")
 
 
-def test_placeholder_leakage_is_replaced_before_string_fallback_logging():
-    agg = _make_aggregator(user_detail_stripper=_MappingAwareStripper())
+def test_artifact_postprocessing_runs_before_string_fallback_logging():
+    agg = _make_aggregator(aggregation_prompt_processor=_MappingAwareProcessor())
     agg.request_context.prompt_manager.render_prompt.return_value = "prompt"
-    agg.client.generate_chat_response.return_value = "invalid <<DETAIL_7>> response"
+    agg.client.generate_chat_response.return_value = "invalid <<TOKEN_7>> response"
     cluster = [_raw(rid=1)]
 
     with (
@@ -378,18 +438,18 @@ def test_placeholder_leakage_is_replaced_before_string_fallback_logging():
 
     assert result is None
     logged_response = mock_log_model_response.call_args.args[2]
-    assert logged_response == "invalid a user detail response"
+    assert logged_response == "invalid a processed artifact response"
 
 
-def test_placeholder_leakage_is_replaced_before_dict_fallback_logging():
-    agg = _make_aggregator(user_detail_stripper=_MappingAwareStripper())
+def test_artifact_postprocessing_runs_before_dict_fallback_logging():
+    agg = _make_aggregator(aggregation_prompt_processor=_MappingAwareProcessor())
     agg.request_context.prompt_manager.render_prompt.return_value = "prompt"
     agg.client.generate_chat_response.return_value = {
         "playbook": {
-            "content": "Ask <<DETAIL_1>> to confirm.",
-            "rationale": ["<<DETAIL_2>> saw this before."],
+            "content": "Ask <<TOKEN_1>> to confirm.",
+            "rationale": ["<<TOKEN_2>> saw this before."],
         },
-        "<<DETAIL_3>>": "key should not leak either",
+        "<<TOKEN_3>>": "key should not leak either",
     }
     cluster = [_raw(rid=1)]
 
@@ -403,26 +463,26 @@ def test_placeholder_leakage_is_replaced_before_dict_fallback_logging():
 
     assert result is None
     logged_response = mock_log_model_response.call_args.args[2]
-    assert "<<DETAIL_" not in repr(logged_response)
-    assert "a user detail" in repr(logged_response)
+    assert "<<TOKEN_" not in repr(logged_response)
+    assert "a processed artifact" in repr(logged_response)
 
 
-def test_placeholder_leakage_is_replaced_before_nested_sequence_logging():
-    agg = _make_aggregator(user_detail_stripper=_MappingAwareStripper())
+def test_artifact_postprocessing_runs_before_nested_sequence_logging():
+    agg = _make_aggregator(aggregation_prompt_processor=_MappingAwareProcessor())
 
-    sanitized, placeholder_count = agg._sanitize_aggregation_log_value(
+    processed, artifact_count = agg._postprocess_aggregation_output(
         (
-            "Ask <<DETAIL_1>> to confirm.",
-            ["Notify <<DETAIL_2>>.", {"owner": "<<DETAIL_3>>"}],
+            "Ask <<TOKEN_1>> to confirm.",
+            ["Notify <<TOKEN_2>>.", {"owner": "<<TOKEN_3>>"}],
         )
     )
 
-    assert placeholder_count == 3
-    assert "<<DETAIL_" not in repr(sanitized)
-    assert "a user detail" in repr(sanitized)
+    assert artifact_count == 3
+    assert "<<TOKEN_" not in repr(processed)
+    assert "a processed artifact" in repr(processed)
 
 
-def test_placeholder_leakage_warning_does_not_write_usage_event(caplog):
+def test_artifact_postprocessing_warning_does_not_write_usage_event(caplog):
     agg = _make_aggregator()
 
     with (
@@ -434,17 +494,17 @@ def test_placeholder_leakage_warning_does_not_write_usage_event(caplog):
             "reflexio.server.services.playbook.components.aggregator.record_usage_event"
         ) as mock_record_usage_event,
     ):
-        agg._record_placeholder_leakage(3)
+        agg._record_postprocessing_artifacts(3)
 
-    assert "Replaced 3 residual user-detail placeholders" in caplog.text
+    assert "Post-processed 3 residual artifacts" in caplog.text
     mock_record_usage_event.assert_not_called()
 
 
-def test_placeholder_leakage_is_replaced_before_exception_logging(caplog):
-    agg = _make_aggregator(user_detail_stripper=_MappingAwareStripper())
+def test_artifact_postprocessing_runs_before_exception_logging(caplog):
+    agg = _make_aggregator(aggregation_prompt_processor=_MappingAwareProcessor())
     agg.request_context.prompt_manager.render_prompt.return_value = "prompt"
     agg.client.generate_chat_response.side_effect = RuntimeError(
-        "failed after <<DETAIL_9>> appeared in parse error"
+        "failed after <<TOKEN_9>> appeared in parse error"
     )
     cluster = [_raw(rid=1)]
 
@@ -458,8 +518,8 @@ def test_placeholder_leakage_is_replaced_before_exception_logging(caplog):
         result = agg._generate_playbook_from_cluster(cluster, "None")
 
     assert result is None
-    assert "<<DETAIL_" not in caplog.text
-    assert "a user detail" in caplog.text
+    assert "<<TOKEN_" not in caplog.text
+    assert "a processed artifact" in caplog.text
 
 
 # ---------------------------------------------------------------------------
@@ -1522,6 +1582,40 @@ class TestProcessAggregationResponse:
         assert result.content == "do something"
         assert result.playbook_status == PlaybookStatus.PENDING
 
+    def test_does_not_postprocess_response_again(self):
+        from reflexio.server.services.playbook.playbook_service_utils import (
+            PlaybookAggregationOutput,
+            StructuredPlaybookContent,
+        )
+
+        class CountingProcessor(_MappingAwareProcessor):
+            def __init__(self) -> None:
+                super().__init__()
+                self.postprocess_calls = 0
+
+            def postprocess_aggregation_output(
+                self,
+                value: object,
+                *,
+                context: AggregationPromptProcessingContext | None = None,
+            ) -> PromptPostprocessResult:
+                self.postprocess_calls += 1
+                return super().postprocess_aggregation_output(value, context=context)
+
+        processor = CountingProcessor()
+        agg = _make_aggregator(aggregation_prompt_processor=processor)
+        response = PlaybookAggregationOutput(
+            playbook=StructuredPlaybookContent(
+                trigger="when testing",
+                content="do something",
+            )
+        )
+
+        result = agg._process_aggregation_response(response, [_raw()])
+
+        assert result is not None
+        assert processor.postprocess_calls == 0
+
     def test_empty_structured_response_returns_none(self):
         from reflexio.server.services.playbook.playbook_service_utils import (
             PlaybookAggregationOutput,
@@ -1714,7 +1808,7 @@ def test_playbook_aggregation_prompt_generalizes_direct_identifiers():
     assert 'Return {"playbook": null}' in out
 
 
-def test_playbook_aggregation_prompt_does_not_add_stripping_guidance_by_default():
+def test_playbook_aggregation_prompt_does_not_add_marker_guidance_by_default():
     """Default OSS prompt should stay generic because OSS does not create markers."""
     from reflexio.server.prompt.prompt_manager import PromptManager
 
@@ -1752,12 +1846,14 @@ def test_aggregation_prompt_extra_instructions_render_before_next_bullet():
 
 
 def test_aggregation_prompt_extra_instructions_are_rendered_when_injected():
-    class StripperWithPromptInstructions(_MappingAwareStripper):
+    class ProcessorWithPromptInstructions(_MappingAwareProcessor):
         prompt_extra_instructions = (
-            "Anonymized markers from this stripper represent user details."
+            "Processed markers from this processor represent transformed tokens."
         )
 
-    agg = _make_aggregator(user_detail_stripper=StripperWithPromptInstructions())
+    agg = _make_aggregator(
+        aggregation_prompt_processor=ProcessorWithPromptInstructions()
+    )
     captured_variables: dict[str, str] = {}
 
     def render_prompt(_prompt_id: str, variables: dict[str, str]) -> str:
@@ -1773,21 +1869,147 @@ def test_aggregation_prompt_extra_instructions_are_rendered_when_injected():
     )
 
     with patch.dict("os.environ", {"MOCK_LLM_RESPONSE": ""}):
-        result = agg._generate_playbook_from_cluster([_raw(rid=1)], "None")
+        result = agg._generate_playbook_from_cluster(
+            [_raw(rid=1)],
+            "None",
+            processing_context=AggregationPromptProcessingContext(changed=True),
+        )
 
     assert result is not None
     assert captured_variables["aggregation_prompt_extra_instructions"].startswith(
-        "Anonymized markers"
+        "Processed markers"
+    )
+
+
+def test_aggregation_prompt_extra_instructions_are_conditional_in_cluster_flow():
+    class ProcessorWithPromptInstructions(_MappingAwareProcessor):
+        prompt_extra_instructions = (
+            "Processed markers from this processor represent transformed tokens."
+        )
+
+    agg = _make_aggregator(
+        aggregation_prompt_processor=ProcessorWithPromptInstructions()
+    )
+    captured_variables: list[dict[str, str]] = []
+
+    def render_prompt(_prompt_id: str, variables: dict[str, str]) -> str:
+        captured_variables.append(dict(variables))
+        return variables["aggregation_prompt_extra_instructions"]
+
+    agg.request_context.prompt_manager.render_prompt.side_effect = render_prompt
+    agg.client.generate_chat_response.return_value = PlaybookAggregationOutput(
+        playbook=StructuredPlaybookContent(
+            content="Use generalized roles.",
+            trigger="When access support is needed.",
+        )
+    )
+
+    with patch.dict("os.environ", {"MOCK_LLM_RESPONSE": ""}):
+        agg._generate_playbooks_with_source_clusters({0: [_raw(rid=1)]}, [])
+        agg._generate_playbooks_with_source_clusters(
+            {
+                0: [
+                    UserPlaybook(
+                        user_playbook_id=2,
+                        agent_version="v1",
+                        request_id="req-2",
+                        playbook_name="test_fb",
+                        content="Project Zephyr needs access support.",
+                        trigger="When access support is needed.",
+                    )
+                ]
+            },
+            [],
+        )
+
+    assert captured_variables[0]["aggregation_prompt_extra_instructions"] == ""
+    assert captured_variables[1]["aggregation_prompt_extra_instructions"].startswith(
+        "Processed markers"
+    )
+
+
+def test_contextual_prompt_extra_instructions_receive_opaque_context():
+    class ContextAwareProcessor(_MappingAwareProcessor):
+        def preprocess_prompt_text(
+            self,
+            text: str,
+            *,
+            shared_state: dict[str, Any] | None = None,
+            context: AggregationPromptProcessingContext | None = None,
+        ) -> PromptPreprocessResult:
+            result = super().preprocess_prompt_text(
+                text,
+                shared_state=shared_state,
+                context=context,
+            )
+            if "special routing" in text and context is not None:
+                context.data["instruction"] = "Preserve special routing."
+                return PromptPreprocessResult(text=text.upper(), changed=True)
+            return result
+
+        def prompt_instructions(
+            self,
+            context: AggregationPromptProcessingContext,
+        ) -> str | None:
+            instruction = context.data.get("instruction")
+            return instruction if isinstance(instruction, str) else None
+
+    agg = _make_aggregator(aggregation_prompt_processor=ContextAwareProcessor())
+    captured_variables: dict[str, str] = {}
+
+    def render_prompt(_prompt_id: str, variables: dict[str, str]) -> str:
+        captured_variables.update(variables)
+        return variables["aggregation_prompt_extra_instructions"]
+
+    agg.request_context.prompt_manager.render_prompt.side_effect = render_prompt
+    agg.client.generate_chat_response.return_value = PlaybookAggregationOutput(
+        playbook=StructuredPlaybookContent(
+            content="Preserve Acme routing.",
+            trigger="When Acme routing applies.",
+        )
+    )
+
+    with patch.dict("os.environ", {"MOCK_LLM_RESPONSE": ""}):
+        result = agg._generate_playbooks_with_source_clusters(
+            {
+                0: [
+                    UserPlaybook(
+                        user_playbook_id=1,
+                        agent_version="v1",
+                        request_id="req-1",
+                        playbook_name="test_fb",
+                        content="special routing matters.",
+                        trigger="When special routing applies.",
+                    )
+                ]
+            },
+            [],
+        )
+
+    assert len(result) == 1
+    assert captured_variables["aggregation_prompt_extra_instructions"].startswith(
+        "Preserve special routing."
     )
 
 
 def test_aggregation_prompt_extra_instructions_ignore_non_string_values():
-    class StripperWithInvalidPromptInstructions(_MappingAwareStripper):
-        prompt_extra_instructions: Any = object()
+    class ProcessorWithInvalidPromptInstructions(_MappingAwareProcessor):
+        def prompt_instructions(
+            self,
+            context: AggregationPromptProcessingContext,  # noqa: ARG002
+        ) -> Any:
+            return object()
 
-    agg = _make_aggregator(user_detail_stripper=StripperWithInvalidPromptInstructions())
+    agg = _make_aggregator(
+        aggregation_prompt_processor=ProcessorWithInvalidPromptInstructions()
+    )
 
-    assert agg.aggregation_prompt_extra_instructions == ""
+    assert (
+        agg._aggregation_prompt_extra_instructions_for_context(
+            AggregationPromptProcessingContext(changed=True)
+        )
+        == ""
+    )
 
 
 def test_playbook_aggregation_prompt_has_privacy_self_check_before_output():

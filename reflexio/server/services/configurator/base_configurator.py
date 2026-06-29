@@ -4,7 +4,7 @@ import logging
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from pydantic import BaseModel
 
@@ -12,6 +12,11 @@ from reflexio.models.config_schema import Config, StorageConfig, StorageConfigTe
 from reflexio.server.services.configurator.config_storage import ConfigStorage
 from reflexio.server.services.storage.error import StorageError
 from reflexio.server.services.storage.storage_base import BaseStorage
+
+if TYPE_CHECKING:
+    from reflexio.server.services.playbook.aggregation_prompt_processing import (
+        AggregationPromptProcessor,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +90,12 @@ class BaseConfigurator(ABC):
     def get_prompt_bank_paths(self) -> list[Path]:
         """Return additional prompt banks this configurator contributes."""
         return []
+
+    def create_aggregation_prompt_processor(
+        self,
+    ) -> AggregationPromptProcessor | None:
+        """Return a deployment-specific aggregation prompt processor, if any."""
+        return None
 
     def get_agent_context(self) -> str:
         context = self.get_config().agent_context_prompt
