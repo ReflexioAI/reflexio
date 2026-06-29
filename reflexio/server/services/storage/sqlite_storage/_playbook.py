@@ -1672,7 +1672,7 @@ class PlaybookMixin:
                 self.conn.execute("BEGIN IMMEDIATE")
                 for user_playbook_id in by_id:
                     row = self.conn.execute(
-                        """SELECT governance_subject_ref FROM user_playbooks
+                        """SELECT user_id, governance_subject_ref FROM user_playbooks
                            WHERE user_playbook_id = ?""",
                         (user_playbook_id,),
                     ).fetchone()
@@ -1681,8 +1681,9 @@ class PlaybookMixin:
                             f"User playbook {user_playbook_id} not found for source window"
                         )
                     subject_ref = row["governance_subject_ref"]
-                    if isinstance(subject_ref, str) and subject_ref:
-                        self._assert_subject_writable_locked(subject_ref)
+                    if not isinstance(subject_ref, str) or not subject_ref:
+                        subject_ref = self._subject_ref_for_user_id(str(row["user_id"]))
+                    self._assert_subject_writable_locked(subject_ref)
                 self.conn.execute(
                     "DELETE FROM agent_playbook_source_user_playbooks WHERE agent_playbook_id = ?",
                     (agent_playbook_id,),

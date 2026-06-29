@@ -166,6 +166,33 @@ def test_barrier_blocks_playbook_eval_and_source_window_writes(
         )
 
 
+def test_begin_subject_erasure_barrier_requires_matching_purge(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = _storage(tmp_path, monkeypatch)
+    alice_subject_ref = governance_subject_ref(
+        "org-barrier", "alice", "barrier-secret"
+    )
+    bob_subject_ref = governance_subject_ref("org-barrier", "bob", "barrier-secret")
+    purge = storage.begin_purge_operation(
+        purge_id="purge_barrier_match",
+        idempotency_key="idem_barrier_match",
+        operation_type="user_erasure",
+        scope_type="user",
+        subject_ref=alice_subject_ref,
+        request_ref="reqref_v1_00000000000000000000000000000021",
+    )
+
+    with pytest.raises(ValueError, match="subject_ref must match"):
+        storage.begin_subject_erasure_barrier(bob_subject_ref, purge.purge_id)
+
+    with pytest.raises(ValueError, match="not found"):
+        storage.begin_subject_erasure_barrier(
+            alice_subject_ref, "purge_barrier_missing"
+        )
+
+
 def test_guarded_completion_requires_empty_subject_rows(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -212,4 +239,122 @@ def test_guarded_completion_requires_empty_subject_rows(
                 idempotency_key=purge.purge_id,
                 detail={"deleted_counts": {}, "rebuilt_agent_playbook_ids": []},
             ),
+        )
+
+
+def test_guarded_completion_requires_empty_legacy_null_subject_rows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = _storage(tmp_path, monkeypatch)
+    subject_ref = governance_subject_ref("org-barrier", "alice", "barrier-secret")
+    purge = storage.begin_purge_operation(
+        purge_id="purge_guarded_legacy",
+        idempotency_key="idem_guarded_legacy",
+        operation_type="user_erasure",
+        scope_type="user",
+        subject_ref=subject_ref,
+        request_ref="reqref_v1_00000000000000000000000000000031",
+    )
+    storage.add_request(
+        Request(
+            request_id="req-legacy-before-barrier",
+            user_id="alice",
+            session_id="sess-legacy",
+            source="test",
+            agent_version="agent-v1",
+            created_at=_now(),
+        )
+    )
+    storage.conn.execute(
+        """UPDATE requests
+           SET governance_subject_ref = NULL
+           WHERE request_id = ?""",
+        ("req-legacy-before-barrier",),
+    )
+    storage.conn.commit()
+
+    storage.begin_subject_erasure_barrier(subject_ref, purge.purge_id)
+    storage.record_purge_target(
+        purge.purge_id,
+        target_name="target_snapshot",
+        phase="prepare_targets",
+        status="complete",
+        target_ref="all",
+        detail={"prepared": True},
+    )
+
+    with pytest.raises(ValueError, match="same-subject rows remain"):
+        storage.complete_subject_erasure_barrier_after_empty_check(
+            purge.purge_id,
+            AuditEvent(
+                org_id="org-barrier",
+                operation="ERASE",
+                entity_type="request",
+                subject_ref=subject_ref,
+                request_ref="reqref_v1_00000000000000000000000000000031",
+                idempotency_key=purge.purge_id,
+                detail={"deleted_counts": {}, "rebuilt_agent_playbook_ids": []},
+            ),
+        )
+
+
+def test_source_window_write_blocks_legacy_null_subject_ref_user_playbook(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = _storage(tmp_path, monkeypatch)
+    subject_ref = governance_subject_ref("org-barrier", "alice", "barrier-secret")
+    purge = storage.begin_purge_operation(
+        purge_id="purge_source_window_legacy",
+        idempotency_key="idem_source_window_legacy",
+        operation_type="user_erasure",
+        scope_type="user",
+        subject_ref=subject_ref,
+        request_ref="reqref_v1_00000000000000000000000000000041",
+    )
+
+    user_playbook = UserPlaybook(
+        user_id="alice",
+        agent_version="agent-v1",
+        request_id="req-before-barrier",
+        playbook_name="legacy-source-window",
+        created_at=_now(),
+        content="legacy content",
+        trigger="legacy trigger",
+        rationale="legacy rationale",
+        source="test",
+    )
+    storage.save_user_playbooks([user_playbook])
+    storage.conn.execute(
+        """UPDATE user_playbooks
+           SET governance_subject_ref = NULL
+           WHERE user_playbook_id = ?""",
+        (user_playbook.user_playbook_id,),
+    )
+    storage.conn.commit()
+    agent_playbook = storage.save_agent_playbooks(
+        [
+            AgentPlaybook(
+                playbook_name="legacy-source-window",
+                agent_version="agent-v1",
+                created_at=_now(),
+                content="aggregate content",
+                trigger="aggregate trigger",
+                rationale="aggregate rationale",
+            )
+        ]
+    )[0]
+
+    storage.begin_subject_erasure_barrier(subject_ref, purge.purge_id)
+
+    with pytest.raises(SubjectWriteBarrierError):
+        storage.set_source_windows_for_agent_playbook(
+            agent_playbook.agent_playbook_id,
+            [
+                AgentPlaybookSourceWindow(
+                    user_playbook_id=user_playbook.user_playbook_id,
+                    source_interaction_ids=[404],
+                )
+            ],
         )

@@ -1047,7 +1047,42 @@ class SQLiteGovernanceMixin:
             get_governance_ref_secret(),
         )
 
+    def _legacy_request_ids_for_subject_locked(self, subject_ref: str) -> set[str]:
+        request_ids: set[str] = set()
+        for row in self.conn.execute(
+            """SELECT request_id, user_id
+               FROM requests
+               WHERE governance_subject_ref IS NULL"""
+        ).fetchall():
+            user_id = str(row["user_id"])
+            if self._subject_ref_for_user_id(user_id) != subject_ref:
+                continue
+            request_ids.add(str(row["request_id"]))
+        return request_ids
+
+    def _legacy_user_id_rows_remain_locked(
+        self,
+        *,
+        table: str,
+        subject_ref: str,
+        request_ids: set[str] | None = None,
+        request_id_column: str | None = None,
+    ) -> bool:
+        sql = f"SELECT user_id{', ' + request_id_column if request_id_column else ''} FROM {table} WHERE governance_subject_ref IS NULL"  # noqa: S608
+        for row in self.conn.execute(sql).fetchall():
+            user_id = str(row["user_id"])
+            if self._subject_ref_for_user_id(user_id) == subject_ref:
+                return True
+            if (
+                request_ids
+                and request_id_column is not None
+                and str(row[request_id_column]) in request_ids
+            ):
+                return True
+        return False
+
     def _same_subject_rows_remain_locked(self, subject_ref: str) -> bool:
+        legacy_request_ids = self._legacy_request_ids_for_subject_locked(subject_ref)
         for table in (
             "requests",
             "interactions",
@@ -1063,7 +1098,33 @@ class SQLiteGovernanceMixin:
             ).fetchone()
             if row is not None:
                 return True
-        return False
+        if legacy_request_ids:
+            return True
+        if self._legacy_user_id_rows_remain_locked(
+            table="interactions",
+            subject_ref=subject_ref,
+            request_ids=legacy_request_ids,
+            request_id_column="request_id",
+        ):
+            return True
+        if self._legacy_user_id_rows_remain_locked(
+            table="profiles",
+            subject_ref=subject_ref,
+            request_ids=legacy_request_ids,
+            request_id_column="generated_from_request_id",
+        ):
+            return True
+        if self._legacy_user_id_rows_remain_locked(
+            table="user_playbooks",
+            subject_ref=subject_ref,
+            request_ids=legacy_request_ids,
+            request_id_column="request_id",
+        ):
+            return True
+        return self._legacy_user_id_rows_remain_locked(
+            table="agent_success_evaluation_result",
+            subject_ref=subject_ref,
+        )
 
     def _replace_agent_playbook_source_windows_locked(
         self, agent_playbook_id: int, windows: list[AgentPlaybookSourceWindow]
@@ -2238,6 +2299,32 @@ class SQLiteGovernanceMixin:
         with self._lock:
             try:
                 self.conn.execute("BEGIN IMMEDIATE")
+                purge_row = self.conn.execute(
+                    """SELECT * FROM purge_operations
+                       WHERE purge_id = ? AND org_id = ?""",
+                    (validated_purge_id, self.org_id),
+                ).fetchone()
+                if purge_row is None:
+                    raise ValueError(
+                        f"Purge operation {validated_purge_id!r} not found"
+                    )
+                purge_operation = _row_to_purge_operation(purge_row)
+                if purge_operation.subject_ref != subject_ref:
+                    raise ValueError(
+                        "Purge operation subject_ref must match the barrier subject_ref"
+                    )
+                existing_barrier = self.conn.execute(
+                    """SELECT purge_id FROM subject_write_barriers
+                       WHERE org_id = ? AND subject_ref = ?""",
+                    (self.org_id, subject_ref),
+                ).fetchone()
+                if (
+                    existing_barrier is not None
+                    and str(existing_barrier["purge_id"]) != validated_purge_id
+                ):
+                    raise ValueError(
+                        "Existing barrier purge_id must match the requested purge_id"
+                    )
                 self.conn.execute(
                     """INSERT INTO subject_write_barriers
                        (org_id, subject_ref, purge_id, status, created_at, updated_at)
