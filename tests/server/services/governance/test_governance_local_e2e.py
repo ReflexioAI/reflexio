@@ -118,7 +118,11 @@ def _eval_result(
 
 
 @pytest.fixture
-def storage(tmp_path: Path) -> Generator[SQLiteStorage, None, None]:
+def storage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Generator[SQLiteStorage, None, None]:
+    monkeypatch.setenv("REFLEXIO_GOVERNANCE_REF_SECRET", "test-governance-secret")
     with patch.object(SQLiteStorage, "_get_embedding", return_value=[0.0] * 512):
         yield SQLiteStorage(org_id="org-local", db_path=str(tmp_path / "governance.db"))
 
