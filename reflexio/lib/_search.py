@@ -41,9 +41,23 @@ class SearchMixin(ReflexioBase):
             request = GetAgentSuccessEvaluationResultsRequest(**request)
 
         try:
-            results = self._get_storage().get_agent_success_evaluation_results(
-                limit=request.limit or 100, agent_version=request.agent_version
-            )
+            if request.start_time or request.end_time:
+                results = self._get_storage().get_agent_success_evaluation_results_in_window(
+                    from_ts=(
+                        int(request.start_time.timestamp()) if request.start_time else 0
+                    ),
+                    to_ts=(
+                        int(request.end_time.timestamp())
+                        if request.end_time
+                        else 2**31 - 1
+                    ),
+                    limit=request.limit or 100,
+                    agent_version=request.agent_version,
+                )
+            else:
+                results = self._get_storage().get_agent_success_evaluation_results(
+                    limit=request.limit or 100, agent_version=request.agent_version
+                )
             return GetAgentSuccessEvaluationResultsResponse(
                 success=True,
                 agent_success_evaluation_results=results,
@@ -79,6 +93,7 @@ class SearchMixin(ReflexioBase):
                 user_id=request.user_id,
                 request_id=request.request_id,
                 session_id=request.session_id,
+                source=request.source,
                 start_time=(
                     int(request.start_time.timestamp()) if request.start_time else None
                 ),

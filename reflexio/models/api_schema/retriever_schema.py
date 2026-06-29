@@ -187,9 +187,13 @@ class GetInteractionsResponse(BaseModel):
 
 class GetUserProfilesRequest(BaseModel):
     user_id: NonEmptyStr
+    profile_id: str | None = None
+    query: str | None = None
     start_time: datetime | None = None
     end_time: datetime | None = None
     top_k: int | None = Field(default=30, gt=0)
+    source: str | None = None
+    profile_time_to_live: str | None = None
     status_filter: list[Status | None] | None = None
     tags: list[str] | None = None
 
@@ -222,11 +226,22 @@ class SetConfigResponse(BaseModel):
 
 class GetUserPlaybooksRequest(BaseModel):
     limit: int | None = Field(default=100, gt=0)
+    user_playbook_id: int | None = Field(default=None, gt=0)
     user_id: str | None = None
+    request_id: str | None = None
+    query: str | None = None
     playbook_name: str | None = None
     agent_version: str | None = None
+    start_time: datetime | None = None
+    end_time: datetime | None = None
     status_filter: list[Status | None] | None = None
     tags: list[str] | None = None
+
+    @model_validator(mode="after")
+    def check_time_range(self) -> Self:
+        """Validate that end_time is after start_time."""
+        TimeRangeValidatorMixin.validate_time_range(self.start_time, self.end_time)
+        return self
 
 
 class GetUserPlaybooksResponse(BaseModel):
@@ -237,8 +252,12 @@ class GetUserPlaybooksResponse(BaseModel):
 
 class GetAgentPlaybooksRequest(BaseModel):
     limit: int | None = Field(default=100, gt=0)
+    agent_playbook_id: int | None = Field(default=None, gt=0)
+    query: str | None = None
     playbook_name: str | None = None
     agent_version: str | None = None
+    start_time: datetime | None = None
+    end_time: datetime | None = None
     status_filter: list[Status | None] | None = None
     playbook_status_filter: PlaybookStatus | None = None
     tags: list[str] | None = None
@@ -246,6 +265,12 @@ class GetAgentPlaybooksRequest(BaseModel):
     # Optional; consumed by _meter_applied_learnings in server/api.py.
     request_id: str | None = None
     session_id: str | None = None
+
+    @model_validator(mode="after")
+    def check_time_range(self) -> Self:
+        """Validate that end_time is after start_time."""
+        TimeRangeValidatorMixin.validate_time_range(self.start_time, self.end_time)
+        return self
 
 
 class GetAgentPlaybooksResponse(BaseModel):
@@ -392,6 +417,14 @@ class SearchAgentPlaybookResponse(BaseModel):
 class GetAgentSuccessEvaluationResultsRequest(BaseModel):
     limit: int | None = Field(default=100, gt=0)
     agent_version: str | None = None
+    start_time: datetime | None = None
+    end_time: datetime | None = None
+
+    @model_validator(mode="after")
+    def check_time_range(self) -> Self:
+        """Validate that end_time is after start_time."""
+        TimeRangeValidatorMixin.validate_time_range(self.start_time, self.end_time)
+        return self
 
 
 class GetAgentSuccessEvaluationResultsResponse(BaseModel):
@@ -404,6 +437,7 @@ class GetRequestsRequest(BaseModel):
     user_id: str | None = None
     request_id: str | None = None
     session_id: str | None = None
+    source: str | None = None
     start_time: datetime | None = None
     end_time: datetime | None = None
     top_k: int | None = Field(default=30, gt=0)

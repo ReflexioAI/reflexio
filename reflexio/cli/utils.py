@@ -44,7 +44,7 @@ def find_pids_on_port(port: int) -> list[int]:
     """Find process IDs listening on the given port using lsof."""
     try:
         result = subprocess.run(
-            ["lsof", "-t", f"-i:{port}"],
+            ["lsof", "-nP", "-t", f"-iTCP:{port}", "-sTCP:LISTEN"],
             capture_output=True,
             text=True,
             check=False,
@@ -74,6 +74,47 @@ def find_pids_by_pattern(pattern: str) -> list[int]:
     except FileNotFoundError:
         pass
     return []
+
+
+def get_requested_port_conflicts(ports: dict[str, int]) -> list[str]:
+    """Return startup-blocking conflicts for requested service ports."""
+    conflicts: list[str] = []
+    services_by_port: dict[int, list[str]] = {}
+    for name, port in ports.items():
+        services_by_port.setdefault(port, []).append(name)
+
+    for port, names in sorted(services_by_port.items()):
+        if len(names) > 1:
+            conflicts.append(
+                f"port {port} is assigned to multiple services: {', '.join(sorted(names))}"
+            )
+
+    for name, port in sorted(ports.items()):
+        pids = find_pids_on_port(port)
+        if pids:
+            pid_list = ", ".join(str(pid) for pid in sorted(set(pids)))
+            conflicts.append(
+                f"{name} port {port} is already in use by PID(s): {pid_list}"
+            )
+
+    return conflicts
+
+
+def ensure_requested_ports_available(ports: dict[str, int]) -> None:
+    """Exit with a clear message when requested service ports are unavailable."""
+    conflicts = get_requested_port_conflicts(ports)
+    if not conflicts:
+        return
+
+    sys.stdout.write("Error: cannot start Reflexio services because ports conflict.\n")
+    for conflict in conflicts:
+        sys.stdout.write(f"  - {conflict}\n")
+    sys.stdout.write(
+        "Stop the existing service with `uv run reflexio services stop` or choose "
+        "different BACKEND_PORT/FRONTEND_PORT/DOCS_PORT values.\n"
+    )
+    sys.stdout.flush()
+    sys.exit(1)
 
 
 def kill_processes(
@@ -232,6 +273,8 @@ def run_services(
 
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)
+
+    ensure_requested_ports_available(ports)
 
     for svc in services:
         noise_env = _NOISE_SUPPRESSION_ENV.get(svc.name, {})

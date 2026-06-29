@@ -80,6 +80,7 @@ class RequestMixin:
         end_time: int | None = None,
         top_k: int | None = 30,
         offset: int = 0,
+        source: str | None = None,
     ) -> dict[str, list[RequestInteractionDataModel]]:
         """Get requests with their associated interactions, grouped by session_id.
 
@@ -87,6 +88,7 @@ class RequestMixin:
             user_id (str, optional): User ID to filter requests.
             request_id (str, optional): Specific request ID to retrieve
             session_id (str, optional): Specific session ID to retrieve
+            source (str, optional): Request source to match exactly.
             start_time (int, optional): Start timestamp for filtering
             end_time (int, optional): End timestamp for filtering
             top_k (int, optional): Maximum number of requests to return

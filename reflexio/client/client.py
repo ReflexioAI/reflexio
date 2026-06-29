@@ -1154,9 +1154,13 @@ class ReflexioClient:
         force_refresh: bool = False,
         *,
         user_id: str | None = None,
+        profile_id: str | None = None,
+        query: str | None = None,
         start_time: datetime | None = None,
         end_time: datetime | None = None,
         top_k: int | None = None,
+        source: str | None = None,
+        profile_time_to_live: str | None = None,
         status_filter: list[Status | str | None] | None = None,
         tags: list[str] | None = None,
     ) -> GetProfilesViewResponse:
@@ -1166,9 +1170,13 @@ class ReflexioClient:
             request (Optional[GetUserProfilesRequest]): The list request object (alternative to kwargs)
             force_refresh (bool, optional): If True, bypass cache and fetch fresh data. Defaults to False.
             user_id (str): The user ID to get profiles for
+            profile_id (Optional[str]): Exact profile ID filter.
+            query (Optional[str]): Case-insensitive text filter across visible fields.
             start_time (Optional[datetime]): Filter by start time
             end_time (Optional[datetime]): Filter by end time
             top_k (Optional[int]): Maximum number of results to return (default: 30)
+            source (Optional[str]): Filter by profile source.
+            profile_time_to_live (Optional[str]): Filter by profile TTL value.
             status_filter (Optional[list[Optional[Union[Status, str]]]]): Filter by profile status. Accepts Status enum or string values (e.g., "archived", "pending").
             tags (Optional[list[str]]): Match profiles having any of these tags.
 
@@ -1191,9 +1199,13 @@ class ReflexioClient:
             request,
             GetUserProfilesRequest,
             user_id=user_id,
+            profile_id=profile_id,
+            query=query,
             start_time=start_time,
             end_time=end_time,
             top_k=top_k,
+            source=source,
+            profile_time_to_live=profile_time_to_live,
             status_filter=converted_status_filter,
             tags=tags,
         )
@@ -1203,9 +1215,13 @@ class ReflexioClient:
             cached_result = self._cache.get(
                 "get_profiles",
                 user_id=req.user_id,
+                profile_id=req.profile_id,
+                query=req.query,
                 start_time=req.start_time,
                 end_time=req.end_time,
                 top_k=req.top_k,
+                source=req.source,
+                profile_time_to_live=req.profile_time_to_live,
                 status_filter=req.status_filter,
                 tags=req.tags,
             )
@@ -1225,9 +1241,13 @@ class ReflexioClient:
             "get_profiles",
             result,
             user_id=req.user_id,
+            profile_id=req.profile_id,
+            query=req.query,
             start_time=req.start_time,
             end_time=req.end_time,
             top_k=req.top_k,
+            source=req.source,
+            profile_time_to_live=req.profile_time_to_live,
             status_filter=req.status_filter,
             tags=req.tags,
         )
@@ -1256,6 +1276,13 @@ class ReflexioClient:
         self,
         limit: int = 100,
         status_filter: str | None = None,
+        user_id: str | None = None,
+        profile_id: str | None = None,
+        query: str | None = None,
+        source: str | None = None,
+        profile_time_to_live: str | None = None,
+        start_time: int | None = None,
+        end_time: int | None = None,
     ) -> GetProfilesViewResponse:
         """Get all user profiles across all users.
 
@@ -1264,6 +1291,13 @@ class ReflexioClient:
             status_filter (str, optional): Filter by profile status. Accepts
                 ``"current"``, ``"pending"``, or ``"archived"``. If ``None``
                 (the default), profiles with any status are returned.
+            user_id (str, optional): Filter by exact user ID.
+            profile_id (str, optional): Filter by exact profile ID.
+            query (str, optional): Case-insensitive text filter across visible fields.
+            source (str, optional): Filter by exact profile source.
+            profile_time_to_live (str, optional): Filter by profile TTL value.
+            start_time (int, optional): Minimum last-modified epoch seconds.
+            end_time (int, optional): Maximum last-modified epoch seconds.
 
         Returns:
             GetProfilesViewResponse: Response containing all user profiles
@@ -1273,6 +1307,21 @@ class ReflexioClient:
         params: dict[str, str | int] = {"limit": limit}
         if status_filter:
             params["status_filter"] = status_filter
+        params.update(
+            {
+                key: value
+                for key, value in {
+                    "user_id": user_id,
+                    "profile_id": profile_id,
+                    "query": query,
+                    "source": source,
+                    "profile_time_to_live": profile_time_to_live,
+                    "start_time": start_time,
+                    "end_time": end_time,
+                }.items()
+                if value is not None
+            }
+        )
         response = self._make_request(
             "GET",
             f"/api/get_all_profiles?{urlencode(params)}",
@@ -1375,9 +1424,14 @@ class ReflexioClient:
         request: GetUserPlaybooksRequest | dict | None = None,
         *,
         limit: int | None = None,
+        user_playbook_id: int | None = None,
         user_id: str | None = None,
+        request_id: str | None = None,
+        query: str | None = None,
         playbook_name: str | None = None,
         agent_version: str | None = None,
+        start_time: datetime | None = None,
+        end_time: datetime | None = None,
         status_filter: list[Status | None] | None = None,
         tags: list[str] | None = None,
     ) -> GetUserPlaybooksViewResponse:
@@ -1386,9 +1440,14 @@ class ReflexioClient:
         Args:
             request (Optional[GetUserPlaybooksRequest]): The get request object (alternative to kwargs)
             limit (Optional[int]): Maximum number of results to return (default: 100)
+            user_playbook_id (Optional[int]): Exact user playbook ID filter.
             user_id (Optional[str]): Filter by user ID
+            request_id (Optional[str]): Filter by generating request ID.
+            query (Optional[str]): Case-insensitive text filter across visible fields.
             playbook_name (Optional[str]): Filter by playbook name
             agent_version (Optional[str]): Filter by agent version
+            start_time (Optional[datetime]): Filter by start time.
+            end_time (Optional[datetime]): Filter by end time.
             status_filter (Optional[list[Optional[Status]]]): Filter by status
             tags (Optional[list[str]]): Match playbooks having any of these tags.
 
@@ -1399,9 +1458,14 @@ class ReflexioClient:
             request,
             GetUserPlaybooksRequest,
             limit=limit,
+            user_playbook_id=user_playbook_id,
             user_id=user_id,
+            request_id=request_id,
+            query=query,
             playbook_name=playbook_name,
             agent_version=agent_version,
+            start_time=start_time,
+            end_time=end_time,
             status_filter=status_filter,
             tags=tags,
         )
@@ -1653,8 +1717,12 @@ class ReflexioClient:
         force_refresh: bool = False,
         *,
         limit: int | None = None,
+        agent_playbook_id: int | None = None,
+        query: str | None = None,
         playbook_name: str | None = None,
         agent_version: str | None = None,
+        start_time: datetime | None = None,
+        end_time: datetime | None = None,
         status_filter: list[Status | None] | None = None,
         playbook_status_filter: PlaybookStatus | None = None,
         tags: list[str] | None = None,
@@ -1665,8 +1733,12 @@ class ReflexioClient:
             request (Optional[GetAgentPlaybooksRequest]): The get request object (alternative to kwargs)
             force_refresh (bool, optional): If True, bypass cache and fetch fresh data. Defaults to False.
             limit (Optional[int]): Maximum number of results to return (default: 100)
+            agent_playbook_id (Optional[int]): Exact agent playbook ID filter.
+            query (Optional[str]): Case-insensitive text filter across visible fields.
             playbook_name (Optional[str]): Filter by playbook name
             agent_version (Optional[str]): Filter by agent version
+            start_time (Optional[datetime]): Filter by start time.
+            end_time (Optional[datetime]): Filter by end time.
             status_filter (Optional[list[Optional[Status]]]): Filter by status
             playbook_status_filter (Optional[PlaybookStatus]): Filter by playbook status (default: APPROVED)
             tags (Optional[list[str]]): Match playbooks having any of these tags.
@@ -1678,8 +1750,12 @@ class ReflexioClient:
             request,
             GetAgentPlaybooksRequest,
             limit=limit,
+            agent_playbook_id=agent_playbook_id,
+            query=query,
             playbook_name=playbook_name,
             agent_version=agent_version,
+            start_time=start_time,
+            end_time=end_time,
             status_filter=status_filter,
             playbook_status_filter=playbook_status_filter,
             tags=tags,
@@ -1690,8 +1766,12 @@ class ReflexioClient:
             cached_result = self._cache.get(
                 "get_agent_playbooks",
                 limit=req.limit,
+                agent_playbook_id=req.agent_playbook_id,
+                query=req.query,
                 playbook_name=req.playbook_name,
                 agent_version=req.agent_version,
+                start_time=req.start_time,
+                end_time=req.end_time,
                 status_filter=req.status_filter,
                 playbook_status_filter=req.playbook_status_filter,
                 tags=req.tags,
@@ -1712,8 +1792,12 @@ class ReflexioClient:
             "get_agent_playbooks",
             result,
             limit=req.limit,
+            agent_playbook_id=req.agent_playbook_id,
+            query=req.query,
             playbook_name=req.playbook_name,
             agent_version=req.agent_version,
+            start_time=req.start_time,
+            end_time=req.end_time,
             status_filter=req.status_filter,
             playbook_status_filter=req.playbook_status_filter,
             tags=req.tags,
@@ -1727,6 +1811,8 @@ class ReflexioClient:
         *,
         user_id: str | None = None,
         request_id: str | None = None,
+        session_id: str | None = None,
+        source: str | None = None,
         start_time: datetime | None = None,
         end_time: datetime | None = None,
         top_k: int | None = None,
@@ -1737,6 +1823,8 @@ class ReflexioClient:
             request (Optional[GetRequestsRequest]): The get request object (alternative to kwargs)
             user_id (Optional[str]): Filter by user ID
             request_id (Optional[str]): Filter by request ID
+            session_id (Optional[str]): Filter by session ID
+            source (Optional[str]): Filter by request source
             start_time (Optional[datetime]): Filter by start time
             end_time (Optional[datetime]): Filter by end time
             top_k (Optional[int]): Maximum number of results to return (default: 30)
@@ -1749,6 +1837,8 @@ class ReflexioClient:
             GetRequestsRequest,
             user_id=user_id,
             request_id=request_id,
+            session_id=session_id,
+            source=source,
             start_time=start_time,
             end_time=end_time,
             top_k=top_k,
@@ -1766,6 +1856,8 @@ class ReflexioClient:
         *,
         limit: int | None = None,
         agent_version: str | None = None,
+        start_time: datetime | None = None,
+        end_time: datetime | None = None,
     ) -> GetEvaluationResultsViewResponse:
         """Get agent success evaluation results.
 
@@ -1773,6 +1865,8 @@ class ReflexioClient:
             request (Optional[GetAgentSuccessEvaluationResultsRequest]): The get request object (alternative to kwargs)
             limit (Optional[int]): Maximum number of results to return (default: 100)
             agent_version (Optional[str]): Filter by agent version
+            start_time (Optional[datetime]): Filter by start time
+            end_time (Optional[datetime]): Filter by end time
 
         Returns:
             GetEvaluationResultsViewResponse: Response containing agent success evaluation results
@@ -1782,6 +1876,8 @@ class ReflexioClient:
             GetAgentSuccessEvaluationResultsRequest,
             limit=limit,
             agent_version=agent_version,
+            start_time=start_time,
+            end_time=end_time,
         )
         response = self._make_request(
             "POST",

@@ -75,6 +75,10 @@ def _build_tags_sql(alias: str, tags: list[str] | None) -> tuple[str, list[Any]]
     )
 
 
+def _escape_like_pattern(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 class ProfileMixin:
     """Mixin providing profile and interaction CRUD + search."""
 
@@ -141,11 +145,46 @@ class ProfileMixin:
         self,
         limit: int = 100,
         status_filter: list[Status | None] | None = None,
+        user_id: str | None = None,
+        profile_id: str | None = None,
+        query: str | None = None,
+        source: str | None = None,
+        profile_time_to_live: str | None = None,
+        start_time: int | None = None,
+        end_time: int | None = None,
     ) -> list[UserProfile]:
         if status_filter is None:
             status_filter = [None]
         frag, params = _build_status_sql(status_filter)
-        sql = f"SELECT * FROM profiles WHERE {frag} ORDER BY last_modified_timestamp DESC LIMIT ?"
+        conditions = [frag]
+        if user_id:
+            conditions.append("user_id = ?")
+            params.append(user_id)
+        if profile_id:
+            conditions.append("LOWER(profile_id) = LOWER(?)")
+            params.append(profile_id)
+        if query:
+            like = f"%{_escape_like_pattern(query.lower())}%"
+            conditions.append(
+                "(LOWER(content) LIKE ? ESCAPE '\\' OR LOWER(profile_id) LIKE ? ESCAPE '\\' OR LOWER(user_id) LIKE ? ESCAPE '\\')"
+            )
+            params.extend([like, like, like])
+        if source is not None:
+            conditions.append("source = ?")
+            params.append(source)
+        if profile_time_to_live:
+            conditions.append("profile_time_to_live = ?")
+            params.append(profile_time_to_live)
+        if start_time is not None:
+            conditions.append("last_modified_timestamp >= ?")
+            params.append(start_time)
+        if end_time is not None:
+            conditions.append("last_modified_timestamp <= ?")
+            params.append(end_time)
+        sql = (
+            f"SELECT * FROM profiles WHERE {' AND '.join(conditions)} "
+            "ORDER BY last_modified_timestamp DESC LIMIT ?"
+        )
         params.append(limit)
         return [_row_to_profile(r) for r in self._fetchall(sql, params)]
 
@@ -155,6 +194,12 @@ class ProfileMixin:
         user_id: str,
         status_filter: list[Status | None] | None = None,
         tags: list[str] | None = None,
+        profile_id: str | None = None,
+        query: str | None = None,
+        source: str | None = None,
+        profile_time_to_live: str | None = None,
+        start_time: int | None = None,
+        end_time: int | None = None,
     ) -> list[UserProfile]:
         if status_filter is None:
             status_filter = [None]
@@ -162,6 +207,27 @@ class ProfileMixin:
         frag, params = _build_status_sql(status_filter)
         conditions = ["user_id = ?", "expiration_timestamp >= ?", frag]
         all_params: list[Any] = [user_id, current_ts, *params]
+        if profile_id:
+            conditions.append("LOWER(profile_id) = LOWER(?)")
+            all_params.append(profile_id)
+        if query:
+            like = f"%{_escape_like_pattern(query.lower())}%"
+            conditions.append(
+                "(LOWER(content) LIKE ? ESCAPE '\\' OR LOWER(profile_id) LIKE ? ESCAPE '\\' OR LOWER(user_id) LIKE ? ESCAPE '\\')"
+            )
+            all_params.extend([like, like, like])
+        if source is not None:
+            conditions.append("source = ?")
+            all_params.append(source)
+        if profile_time_to_live:
+            conditions.append("profile_time_to_live = ?")
+            all_params.append(profile_time_to_live)
+        if start_time is not None:
+            conditions.append("last_modified_timestamp >= ?")
+            all_params.append(start_time)
+        if end_time is not None:
+            conditions.append("last_modified_timestamp <= ?")
+            all_params.append(end_time)
         tag_frag, tag_params = _build_tags_sql("profiles", tags)
         if tag_frag:
             conditions.append(tag_frag)

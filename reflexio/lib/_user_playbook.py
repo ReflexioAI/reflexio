@@ -53,10 +53,19 @@ class UserPlaybookMixin(ReflexioBase):
         try:
             user_playbooks = self._get_storage().get_user_playbooks(
                 limit=request.limit or 100,
+                user_playbook_id=request.user_playbook_id,
                 user_id=request.user_id,
+                request_id=request.request_id,
+                query=request.query,
                 playbook_name=request.playbook_name,
                 agent_version=request.agent_version,
                 status_filter=request.status_filter,
+                start_time=(
+                    int(request.start_time.timestamp()) if request.start_time else None
+                ),
+                end_time=(
+                    int(request.end_time.timestamp()) if request.end_time else None
+                ),
                 tags=request.tags,
             )
             return GetUserPlaybooksResponse(

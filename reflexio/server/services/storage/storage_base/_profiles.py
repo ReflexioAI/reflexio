@@ -22,6 +22,13 @@ class ProfileMixin:
         self,
         limit: int = 100,
         status_filter: list[Status | None] | None = None,
+        user_id: str | None = None,
+        profile_id: str | None = None,
+        query: str | None = None,
+        source: str | None = None,
+        profile_time_to_live: str | None = None,
+        start_time: int | None = None,
+        end_time: int | None = None,
     ) -> list[UserProfile]:
         raise NotImplementedError
 
@@ -35,6 +42,12 @@ class ProfileMixin:
         user_id: str,
         status_filter: list[Status | None] | None = None,
         tags: list[str] | None = None,
+        profile_id: str | None = None,
+        query: str | None = None,
+        source: str | None = None,
+        profile_time_to_live: str | None = None,
+        start_time: int | None = None,
+        end_time: int | None = None,
     ) -> list[UserProfile]:
         raise NotImplementedError
 

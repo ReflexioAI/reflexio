@@ -149,6 +149,19 @@ class TestUserPlaybookCRUD:
         assert all(rf.playbook_name == "alpha" for rf in alpha)
         assert beta[0].playbook_name == "beta"
 
+    def test_get_user_playbooks_filters_query_before_limit(self, storage):
+        newer = _make_user_playbook(1, "u1", "alpha", "v1")
+        newer.content = "newer nonmatch"
+        newer.created_at = 1_700_000_200
+        older_match = _make_user_playbook(2, "u2", "beta", "v1")
+        older_match.content = "older needle"
+        older_match.created_at = 1_700_000_100
+        storage.save_user_playbooks([newer, older_match])
+
+        result = storage.get_user_playbooks(limit=1, query="needle")
+
+        assert [p.content for p in result] == ["older needle"]
+
     def test_delete_all_user_playbooks_by_playbook_name(self, storage):
         storage.save_user_playbooks(
             [
@@ -271,6 +284,13 @@ class TestArchiveUserPlaybookById:
 
 class TestAgentPlaybookSourceWindows:
     def test_source_windows_round_trip_and_legacy_ids(self, storage):
+        storage.save_user_playbooks(
+            [
+                _make_user_playbook(1, "u1", "fb", "v1"),
+                _make_user_playbook(2, "u1", "fb", "v1"),
+                _make_user_playbook(3, "u1", "fb", "v1"),
+            ]
+        )
         storage.set_source_windows_for_agent_playbook(
             10,
             [
@@ -289,6 +309,13 @@ class TestAgentPlaybookSourceWindows:
         assert [w.source_interaction_ids for w in windows] == [[20, 21], [30]]
 
     def test_legacy_id_writer_creates_empty_source_windows(self, storage):
+        storage.save_user_playbooks(
+            [
+                _make_user_playbook(1, "u1", "fb", "v1"),
+                _make_user_playbook(2, "u1", "fb", "v1"),
+                _make_user_playbook(3, "u1", "fb", "v1"),
+            ]
+        )
         storage.set_source_user_playbook_ids_for_agent_playbook(10, [2, 3, 2])
 
         assert storage.get_source_user_playbook_ids_for_agent_playbook(10) == [2, 3]
@@ -320,6 +347,13 @@ class TestAgentPlaybookSourceWindows:
         ]
 
     def test_batch_source_user_playbook_ids_round_trip(self, storage):
+        storage.save_user_playbooks(
+            [
+                _make_user_playbook(1, "u1", "fb", "v1"),
+                _make_user_playbook(2, "u1", "fb", "v1"),
+                _make_user_playbook(3, "u1", "fb", "v1"),
+            ]
+        )
         storage.set_source_windows_for_agent_playbook(
             10,
             [
@@ -368,6 +402,19 @@ class TestAgentPlaybookCRUD:
 
         result = storage.get_agent_playbooks(playbook_name="fb")
         assert len(result) == 2
+
+    def test_get_agent_playbooks_filters_query_before_limit(self, storage):
+        newer = _make_agent_playbook(1, "alpha", "v1")
+        newer.content = "newer nonmatch"
+        newer.created_at = 1_700_000_200
+        older_match = _make_agent_playbook(2, "beta", "v1")
+        older_match.content = "older needle"
+        older_match.created_at = 1_700_000_100
+        storage.save_agent_playbooks([newer, older_match])
+
+        result = storage.get_agent_playbooks(limit=1, query="needle")
+
+        assert [p.content for p in result] == ["older needle"]
 
     def test_update_agent_playbook_tags_round_trip(self, storage):
         storage.save_agent_playbooks([_make_agent_playbook(1, "fb", "v1")])

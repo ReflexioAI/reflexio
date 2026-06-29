@@ -57,12 +57,18 @@ class PlaybookMixin:
         include_embedding: bool = False,
         tags: list[str] | None = None,
         offset: int = 0,
+        user_playbook_id: int | None = None,
+        request_id: str | None = None,
+        query: str | None = None,
     ) -> list[UserPlaybook]:
         """Get user playbooks from storage.
 
         Args:
             limit (int): Maximum number of playbooks to return
+            user_playbook_id (int, optional): Exact user playbook ID to retrieve.
             user_id (str, optional): The user ID to filter by. If None, returns playbooks for all users.
+            request_id (str, optional): Request ID that generated the playbook.
+            query (str, optional): Case-insensitive text filter across visible fields.
             playbook_name (str, optional): The playbook name to filter by. If None, returns all user playbooks.
             agent_version (str, optional): The agent version to filter by. If None, returns all agent versions.
             status_filter (list[Optional[Status]], optional): List of status values to filter by.
@@ -388,13 +394,21 @@ class PlaybookMixin:
         status_filter: list[Status | None] | None = None,
         playbook_status_filter: list[PlaybookStatus] | None = None,
         tags: list[str] | None = None,
+        agent_playbook_id: int | None = None,
+        query: str | None = None,
+        start_time: int | None = None,
+        end_time: int | None = None,
     ) -> list[AgentPlaybook]:
         """Get agent playbooks from storage.
 
         Args:
             limit (int): Maximum number of agent playbooks to return
+            agent_playbook_id (int, optional): Exact agent playbook ID to retrieve.
+            query (str, optional): Case-insensitive text filter across visible fields.
             playbook_name (str, optional): The playbook name to filter by. If None, returns all agent playbooks.
             agent_version (str, optional): The agent version to filter by. If None, returns all versions.
+            start_time (int, optional): Unix timestamp. Only return playbooks created at or after this time.
+            end_time (int, optional): Unix timestamp. Only return playbooks created at or before this time.
             status_filter (list[Optional[Status]], optional): List of Status values to filter by. None in the list means CURRENT status.
             playbook_status_filter (Optional[list[PlaybookStatus]]): List of PlaybookStatus values to filter by.
                 If None, returns all playbook statuses.
