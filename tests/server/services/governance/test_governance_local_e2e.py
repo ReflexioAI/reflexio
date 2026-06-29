@@ -23,6 +23,7 @@ from reflexio.models.config_schema import SearchMode
 from reflexio.server.services.governance import service as governance_service_module
 from reflexio.server.services.governance.config import governance_subject_ref
 from reflexio.server.services.governance.service import GovernanceService
+from reflexio.server.services.storage.error import SubjectWriteBarrierError
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 
 pytestmark = pytest.mark.integration
@@ -571,6 +572,59 @@ def test_barrier_acquisition_failure_marks_purge_failed_where_possible(
     assert len(failed_purges) == 1
     assert failed_purges[0]["error_code"] == "governance_erase_failed"
     assert failed_purges[0]["error_detail"] == "RuntimeError"
+
+
+def test_second_erase_conflict_preserves_original_barrier_and_write_block(
+    storage: SQLiteStorage,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("REFLEXIO_GOVERNANCE_REF_SECRET", "test-governance-secret")
+    subject_ref = governance_subject_ref(
+        storage.org_id,
+        "alice",
+        "test-governance-secret",
+    )
+    first_purge = storage.begin_purge_operation(
+        purge_id="purge_conflict_first",
+        idempotency_key="idem_conflict_first",
+        operation_type="user_erasure",
+        scope_type="user",
+        subject_ref=subject_ref,
+        request_ref="reqref_v1_00000000000000000000000000000061",
+    )
+    storage.begin_subject_erasure_barrier(subject_ref, first_purge.purge_id)
+    service = GovernanceService(
+        storage=storage,
+        org_id=storage.org_id,
+        ref_secret="test-governance-secret",
+    )
+
+    with pytest.raises(
+        ValueError, match="Existing barrier purge_id must match the requested purge_id"
+    ):
+        service.erase_user(user_id="alice", request_id="erase-conflict-second")
+
+    barrier = storage.get_subject_write_barrier(subject_ref)
+    assert barrier is not None
+    assert barrier.purge_id == first_purge.purge_id
+    assert barrier.status == "erasing"
+    with pytest.raises(SubjectWriteBarrierError):
+        storage.add_request(
+            _request(
+                request_id="req-after-conflict",
+                user_id="alice",
+                session_id="sess-after-conflict",
+            )
+        )
+
+    failed_purges = list(
+        storage.conn.execute(
+            "SELECT purge_id, status FROM purge_operations WHERE status = 'failed'"
+        ).fetchall()
+    )
+    assert len(failed_purges) == 1
+    assert failed_purges[0]["purge_id"] != first_purge.purge_id
+    assert failed_purges[0]["status"] == "failed"
 
 
 def test_governance_erase_marks_purge_failed_when_workflow_raises(

@@ -193,6 +193,56 @@ def test_begin_subject_erasure_barrier_requires_matching_purge(
         )
 
 
+def test_fail_subject_erasure_barrier_requires_matching_barrier_row(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = _storage(tmp_path, monkeypatch)
+    subject_ref = governance_subject_ref("org-barrier", "alice", "barrier-secret")
+    first_purge = storage.begin_purge_operation(
+        purge_id="purge_barrier_first",
+        idempotency_key="idem_barrier_first",
+        operation_type="user_erasure",
+        scope_type="user",
+        subject_ref=subject_ref,
+        request_ref="reqref_v1_00000000000000000000000000000051",
+    )
+    second_purge = storage.begin_purge_operation(
+        purge_id="purge_barrier_second",
+        idempotency_key="idem_barrier_second",
+        operation_type="user_erasure",
+        scope_type="user",
+        subject_ref=subject_ref,
+        request_ref="reqref_v1_00000000000000000000000000000052",
+    )
+
+    storage.begin_subject_erasure_barrier(subject_ref, first_purge.purge_id)
+
+    with pytest.raises(ValueError, match="matching barrier"):
+        storage.fail_subject_erasure_barrier(
+            subject_ref,
+            second_purge.purge_id,
+            error_code="governance_erase_failed",
+            error_detail="ValueError",
+        )
+
+    barrier = storage.get_subject_write_barrier(subject_ref)
+    assert barrier is not None
+    assert barrier.purge_id == first_purge.purge_id
+    assert barrier.status == "erasing"
+    with pytest.raises(SubjectWriteBarrierError):
+        storage.add_request(
+            Request(
+                request_id="req-still-blocked",
+                user_id="alice",
+                session_id="sess-still-blocked",
+                source="test",
+                agent_version="agent-v1",
+                created_at=_now(),
+            )
+        )
+
+
 def test_guarded_completion_requires_empty_subject_rows(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

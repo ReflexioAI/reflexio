@@ -2520,26 +2520,26 @@ class SQLiteGovernanceMixin:
         with self._lock:
             try:
                 self.conn.execute("BEGIN IMMEDIATE")
-                self.conn.execute(
-                    """INSERT INTO subject_write_barriers
-                       (org_id, subject_ref, purge_id, status, error_code, error_detail, created_at, updated_at)
-                       VALUES (?, ?, ?, 'failed', ?, ?, ?, ?)
-                       ON CONFLICT(org_id, subject_ref) DO UPDATE SET
-                         purge_id = excluded.purge_id,
-                         status = 'failed',
-                         error_code = excluded.error_code,
-                         error_detail = excluded.error_detail,
-                         updated_at = excluded.updated_at""",
+                update_cursor = self.conn.execute(
+                    """UPDATE subject_write_barriers
+                       SET status = 'failed',
+                           error_code = ?,
+                           error_detail = ?,
+                           updated_at = ?
+                       WHERE org_id = ? AND subject_ref = ? AND purge_id = ?""",
                     (
-                        self.org_id,
-                        subject_ref,
-                        validated_purge_id,
                         validated_error_code,
                         validated_error_detail,
                         now,
-                        now,
+                        self.org_id,
+                        subject_ref,
+                        validated_purge_id,
                     ),
                 )
+                if update_cursor.rowcount != 1:
+                    raise ValueError(
+                        "subject erasure barrier failure requires a matching barrier"
+                    )
                 purge_row = self.conn.execute(
                     "SELECT 1 FROM purge_operations WHERE purge_id = ? AND org_id = ?",
                     (validated_purge_id, self.org_id),
@@ -2561,8 +2561,8 @@ class SQLiteGovernanceMixin:
                     )
                 row = self.conn.execute(
                     """SELECT * FROM subject_write_barriers
-                       WHERE org_id = ? AND subject_ref = ?""",
-                    (self.org_id, subject_ref),
+                       WHERE org_id = ? AND subject_ref = ? AND purge_id = ?""",
+                    (self.org_id, subject_ref, validated_purge_id),
                 ).fetchone()
                 self.conn.commit()
             except Exception:
