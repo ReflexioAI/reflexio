@@ -162,18 +162,18 @@ from reflexio.models.config_schema import (
     SINGLETON_AGENT_SUCCESS_EVALUATION_NAME,
     Config,
 )
-from reflexio.server._auth import (
-    DEFAULT_ORG_ID,
-    default_billing_gate,
-    default_get_caller_type,
-    default_get_org_id,
-)
 from reflexio.server.api_endpoints import (
     account_api,
     health_api,
     pending_tool_call_api,
     publisher_api,
     stall_state_api,
+)
+from reflexio.server.auth import (
+    DEFAULT_ORG_ID,
+    default_billing_gate,
+    default_get_caller_type,
+    default_get_org_id,
 )
 from reflexio.server.cache.reflexio_cache import (
     get_reflexio,
@@ -3366,12 +3366,12 @@ def create_app(
     from collections.abc import AsyncIterator
     from contextlib import asynccontextmanager
 
-    from reflexio.server._auth import (
+    from reflexio.server.api_endpoints.request_context import RequestContext
+    from reflexio.server.auth import (
         default_billing_gate,
         default_get_caller_type,
         default_get_org_id,
     )
-    from reflexio.server.api_endpoints.request_context import RequestContext
     from reflexio.server.llm.model_defaults import validate_llm_availability
     from reflexio.server.services.extraction.resume_scheduler import (
         maybe_start_resume_scheduler,

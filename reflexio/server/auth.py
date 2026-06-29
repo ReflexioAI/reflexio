@@ -5,6 +5,8 @@ Lives in its own module to avoid an import cycle: api endpoints reference
 :func:`default_get_org_id` (e.g. via FastAPI ``Depends``) and are themselves
 imported by :mod:`reflexio.server.api`. Putting the dependency here keeps the
 import graph acyclic.
+
+Public module path: :mod:`reflexio.server.auth`.
 """
 
 from __future__ import annotations

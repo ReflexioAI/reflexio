@@ -24,7 +24,7 @@ _DEFAULT_STORAGE = "sqlite"
 def default_org_id() -> str:
     """Resolve the default org id, honoring ``REFLEXIO_DEFAULT_ORG_ID``.
 
-    Mirrors :func:`reflexio.server._auth.default_get_org_id` so the local CLI
+    Mirrors :func:`reflexio.server.auth.default_get_org_id` so the local CLI
     helpers (``setup``, ``config show`` / ``config local``) resolve the same
     ``config_<org>.json`` the running no-auth server reads. Uses ``os.environ``
     directly (not ``env_utils``) to keep this module's import lightweight — see
