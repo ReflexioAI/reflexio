@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from contextlib import suppress
-from typing import Any
+from typing import Any, Literal, TypedDict
 
 from reflexio.models.api_schema.domain.governance import (
     AuditEvent,
@@ -28,16 +28,29 @@ _REQUIRED_DELETE_TARGET_NAMES = tuple(_DELETE_TARGET_NAME_TO_RESULT_KEY)
 _USER_PLAYBOOK_PAGE_SIZE = 1000
 
 
+class GovernanceActorContext(TypedDict):
+    actor_type: Literal["api_token", "jwt", "system"]
+    actor_ref: str | None
+
+
 class GovernanceService:
     def __init__(self, *, storage: Any, org_id: str, ref_secret: str) -> None:
         self.storage = storage
         self.org_id = org_id
         self.ref_secret = ref_secret
 
-    def export_user(self, *, user_id: str, request_id: str) -> UserExportResult:
+    def export_user(
+        self,
+        *,
+        user_id: str,
+        request_id: str,
+        actor_context: GovernanceActorContext | None = None,
+    ) -> UserExportResult:
         subref = governance_subject_ref(self.org_id, user_id, self.ref_secret)
         reqref = governance_request_ref(self.org_id, request_id, self.ref_secret)
         export_id = stable_id("export", f"{self.org_id}:export:{subref}:{reqref}")
+        actor_type = actor_context["actor_type"] if actor_context else "system"
+        actor_ref = actor_context["actor_ref"] if actor_context else None
         requests, sessions = self._load_user_requests_and_sessions(user_id)
         bundle: dict[str, Any] = {
             "profiles": [
@@ -57,6 +70,8 @@ class GovernanceService:
         self.storage.append_audit_event(
             AuditEvent(
                 org_id=self.org_id,
+                actor_type=actor_type,
+                actor_ref=actor_ref,
                 operation="EXPORT",
                 entity_type="request",
                 subject_ref=subref,
@@ -67,9 +82,17 @@ class GovernanceService:
         )
         return UserExportResult(subject_ref=subref, export_id=export_id, bundle=bundle)
 
-    def erase_user(self, *, user_id: str, request_id: str) -> UserEraseResult:
+    def erase_user(
+        self,
+        *,
+        user_id: str,
+        request_id: str,
+        actor_context: GovernanceActorContext | None = None,
+    ) -> UserEraseResult:
         subref = governance_subject_ref(self.org_id, user_id, self.ref_secret)
         reqref = governance_request_ref(self.org_id, request_id, self.ref_secret)
+        actor_type = actor_context["actor_type"] if actor_context else "system"
+        actor_ref = actor_context["actor_ref"] if actor_context else None
         idempotency_key = stable_id(
             "idem",
             f"{self.org_id}:user_erasure:{subref}:{reqref}",
@@ -85,8 +108,15 @@ class GovernanceService:
         )
         if purge.status == "complete":
             return UserEraseResult(
-                subject_ref=subref, purge_id=purge_id, status="complete"
+                subject_ref=subref,
+                purge_id=purge_id,
+                status="complete",
+                deleted_counts=self._deleted_counts_from_targets(purge_id),
+                rebuilt_agent_playbook_ids=(
+                    self._rebuilt_agent_playbook_ids_from_targets(purge_id)
+                ),
             )
+        self.storage.begin_subject_erasure_barrier(subref, purge_id)
 
         try:
             if not self.storage.purge_targets_prepared(purge_id):
@@ -102,10 +132,12 @@ class GovernanceService:
             deleted_counts = self._deleted_counts_from_targets(purge_id)
 
             rebuilt_agent_playbook_ids = self._rebuild_agent_playbooks(purge_id)
-            completed = self.storage.complete_purge_operation_with_audit(
+            completed = self.storage.complete_subject_erasure_barrier_after_empty_check(
                 purge_id,
                 AuditEvent(
                     org_id=self.org_id,
+                    actor_type=actor_type,
+                    actor_ref=actor_ref,
                     operation="ERASE",
                     entity_type="request",
                     subject_ref=subref,
@@ -118,6 +150,13 @@ class GovernanceService:
                 ),
             )
         except Exception as exc:
+            with suppress(Exception):
+                self.storage.fail_subject_erasure_barrier(
+                    subref,
+                    purge_id,
+                    error_code="governance_erase_failed",
+                    error_detail=type(exc).__name__,
+                )
             with suppress(Exception):
                 self.storage.fail_purge_operation(
                     purge_id,
@@ -200,6 +239,20 @@ class GovernanceService:
                 continue
             counts[result_key] = int(target.deleted_count)
         return counts
+
+    def _rebuilt_agent_playbook_ids_from_targets(self, purge_id: str) -> list[int]:
+        return [
+            int(target.target_ref)
+            for target in self.storage.list_purge_targets(
+                purge_id,
+                phase="rebuild_without_erased_sources",
+            )
+            if (
+                target.target_name == "agent_playbook"
+                and target.target_ref
+                and target.status == "complete"
+            )
+        ]
 
     def _rebuild_agent_playbooks(self, purge_id: str) -> list[int]:
         rebuilt_ids: list[int] = []

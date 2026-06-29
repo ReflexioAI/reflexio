@@ -421,14 +421,65 @@ def test_local_governance_e2e_erases_exports_audits_and_rebuilds_shared_aggregat
 
     assert retried.purge_id == erased.purge_id
     assert retried.status == "complete"
-    assert retried.deleted_counts == {}
-    assert retried.rebuilt_agent_playbook_ids == []
+    assert retried.deleted_counts == erased.deleted_counts
+    assert retried.rebuilt_agent_playbook_ids == erased.rebuilt_agent_playbook_ids
     erase_events_after_retry = [
         event
         for event in storage.list_audit_events(subject_ref=exported.subject_ref)
         if event.operation == "ERASE" and event.status == "ok"
     ]
     assert len(erase_events_after_retry) == 1
+
+
+def test_governance_service_persists_actor_context_in_audit(
+    storage: SQLiteStorage,
+) -> None:
+    service = GovernanceService(
+        storage=storage,
+        org_id=storage.org_id,
+        ref_secret="test-governance-secret",
+    )
+
+    service.export_user(
+        user_id="alice",
+        request_id="export-actor",
+        actor_context={
+            "actor_type": "jwt",
+            "actor_ref": "actref_v1_1234567890abcdef1234567890abcdef",
+        },
+    )
+
+    audit_events = storage.list_audit_events()
+    event = audit_events[-1]
+    assert event.actor_type == "jwt"
+    assert event.actor_ref == "actref_v1_1234567890abcdef1234567890abcdef"
+
+
+def test_completed_erase_retry_reconstructs_response(
+    storage: SQLiteStorage,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("REFLEXIO_GOVERNANCE_REF_SECRET", "test-governance-secret")
+    storage.add_request(
+        _request(request_id="retry-req", user_id="alice", session_id="retry-sess")
+    )
+    storage.add_user_interaction(
+        "alice",
+        _interaction(user_id="alice", request_id="retry-req", content="retry-token"),
+    )
+    service = GovernanceService(
+        storage=storage,
+        org_id=storage.org_id,
+        ref_secret="test-governance-secret",
+    )
+
+    first = service.erase_user(user_id="alice", request_id="erase-retry")
+    second = service.erase_user(user_id="alice", request_id="erase-retry")
+
+    assert second.status == "complete"
+    assert second.purge_id == first.purge_id
+    assert second.deleted_counts == first.deleted_counts
+    assert second.rebuilt_agent_playbook_ids == first.rebuilt_agent_playbook_ids
 
 
 def test_governance_erase_marks_purge_failed_when_workflow_raises(
