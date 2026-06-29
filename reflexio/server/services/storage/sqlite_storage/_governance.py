@@ -2572,6 +2572,19 @@ class SQLiteGovernanceMixin:
             raise ValueError("subject erasure barrier update failed")
         return _row_to_subject_write_barrier(row)
 
+    def get_subject_write_barrier(self, subject_ref: str) -> SubjectWriteBarrier | None:
+        _validate_governance_prefixed_ref(
+            "subject_ref", subject_ref, prefix="subref_v1_"
+        )
+        row = self.conn.execute(
+            """SELECT * FROM subject_write_barriers
+               WHERE org_id = ? AND subject_ref = ?""",
+            (self.org_id, subject_ref),
+        ).fetchone()
+        if row is None:
+            return None
+        return _row_to_subject_write_barrier(row)
+
     def fail_purge_operation(
         self, purge_id: str, error_code: str, error_detail: str
     ) -> PurgeOperation:

@@ -6,6 +6,7 @@ from typing import Any, Literal, TypedDict
 from reflexio.models.api_schema.domain.governance import (
     AuditEvent,
     PurgeOperationTarget,
+    SubjectWriteBarrier,
     UserEraseResult,
     UserExportResult,
 )
@@ -107,6 +108,11 @@ class GovernanceService:
             request_ref=reqref,
         )
         if purge.status == "complete":
+            barrier = self._completed_barrier_for_retry(subject_ref=subref, purge_id=purge_id)
+            if barrier.status != "erased":
+                raise ValueError(
+                    "Completed purge retry requires an erased subject barrier"
+                )
             return UserEraseResult(
                 subject_ref=subref,
                 purge_id=purge_id,
@@ -116,9 +122,8 @@ class GovernanceService:
                     self._rebuilt_agent_playbook_ids_from_targets(purge_id)
                 ),
             )
-        self.storage.begin_subject_erasure_barrier(subref, purge_id)
-
         try:
+            self.storage.begin_subject_erasure_barrier(subref, purge_id)
             if not self.storage.purge_targets_prepared(purge_id):
                 self.storage.prepare_governance_erase_targets(
                     purge_id,
@@ -171,6 +176,16 @@ class GovernanceService:
             deleted_counts=deleted_counts,
             rebuilt_agent_playbook_ids=rebuilt_agent_playbook_ids,
         )
+
+    def _completed_barrier_for_retry(
+        self, *, subject_ref: str, purge_id: str
+    ) -> SubjectWriteBarrier:
+        barrier = self.storage.get_subject_write_barrier(subject_ref)
+        if barrier is None or barrier.purge_id != purge_id:
+            raise ValueError(
+                "Completed purge retry requires the matching subject barrier"
+            )
+        return barrier
 
     def _load_user_requests_and_sessions(
         self, user_id: str

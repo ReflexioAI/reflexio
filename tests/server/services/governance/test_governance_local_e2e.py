@@ -455,6 +455,33 @@ def test_governance_service_persists_actor_context_in_audit(
     assert event.actor_ref == "actref_v1_1234567890abcdef1234567890abcdef"
 
 
+def test_governance_erase_persists_actor_context_in_audit(
+    storage: SQLiteStorage,
+) -> None:
+    storage.add_request(
+        _request(request_id="erase-actor-req", user_id="alice", session_id="sess-actor")
+    )
+    service = GovernanceService(
+        storage=storage,
+        org_id=storage.org_id,
+        ref_secret="test-governance-secret",
+    )
+
+    service.erase_user(
+        user_id="alice",
+        request_id="erase-actor",
+        actor_context={
+            "actor_type": "api_token",
+            "actor_ref": "actref_v1_1234567890abcdef1234567890abcdef",
+        },
+    )
+
+    erase_events = [event for event in storage.list_audit_events() if event.operation == "ERASE"]
+    assert len(erase_events) == 1
+    assert erase_events[0].actor_type == "api_token"
+    assert erase_events[0].actor_ref == "actref_v1_1234567890abcdef1234567890abcdef"
+
+
 def test_completed_erase_retry_reconstructs_response(
     storage: SQLiteStorage,
     monkeypatch: pytest.MonkeyPatch,
@@ -480,6 +507,70 @@ def test_completed_erase_retry_reconstructs_response(
     assert second.purge_id == first.purge_id
     assert second.deleted_counts == first.deleted_counts
     assert second.rebuilt_agent_playbook_ids == first.rebuilt_agent_playbook_ids
+
+
+@pytest.mark.parametrize(
+    ("barrier_sql", "match"),
+    [
+        ("DELETE FROM subject_write_barriers WHERE subject_ref = ?", "matching subject barrier"),
+        (
+            "UPDATE subject_write_barriers SET status = 'failed' WHERE subject_ref = ?",
+            "erased subject barrier",
+        ),
+    ],
+)
+def test_completed_erase_retry_fails_closed_without_erased_barrier(
+    storage: SQLiteStorage,
+    monkeypatch: pytest.MonkeyPatch,
+    barrier_sql: str,
+    match: str,
+) -> None:
+    monkeypatch.setenv("REFLEXIO_GOVERNANCE_REF_SECRET", "test-governance-secret")
+    storage.add_request(
+        _request(request_id="retry-closed-req", user_id="alice", session_id="retry-closed-sess")
+    )
+    service = GovernanceService(
+        storage=storage,
+        org_id=storage.org_id,
+        ref_secret="test-governance-secret",
+    )
+
+    first = service.erase_user(user_id="alice", request_id="erase-retry-closed")
+    storage.conn.execute(barrier_sql, (first.subject_ref,))
+    storage.conn.commit()
+
+    with pytest.raises(ValueError, match=match):
+        service.erase_user(user_id="alice", request_id="erase-retry-closed")
+
+
+def test_barrier_acquisition_failure_marks_purge_failed_where_possible(
+    storage: SQLiteStorage,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = GovernanceService(
+        storage=storage,
+        org_id=storage.org_id,
+        ref_secret="test-governance-secret",
+    )
+
+    def _raise_begin(*args, **kwargs):
+        raise RuntimeError("forced barrier begin failure")
+
+    monkeypatch.setattr(storage, "begin_subject_erasure_barrier", _raise_begin)
+
+    with pytest.raises(RuntimeError, match="forced barrier begin failure"):
+        service.erase_user(user_id="alice", request_id="erase-begin-failure")
+
+    failed_purges = [
+        row
+        for row in storage.conn.execute(
+            "SELECT status, error_code, error_detail FROM purge_operations"
+        ).fetchall()
+        if row["status"] == "failed"
+    ]
+    assert len(failed_purges) == 1
+    assert failed_purges[0]["error_code"] == "governance_erase_failed"
+    assert failed_purges[0]["error_detail"] == "RuntimeError"
 
 
 def test_governance_erase_marks_purge_failed_when_workflow_raises(
@@ -510,6 +601,16 @@ def test_governance_erase_marks_purge_failed_when_workflow_raises(
     assert len(failed_purges) == 1
     assert failed_purges[0]["error_code"] == "governance_erase_failed"
     assert failed_purges[0]["error_detail"] == "RuntimeError"
+    failed_barriers = [
+        row
+        for row in storage.conn.execute(
+            "SELECT status, error_code, error_detail FROM subject_write_barriers"
+        ).fetchall()
+        if row["status"] == "failed"
+    ]
+    assert len(failed_barriers) == 1
+    assert failed_barriers[0]["error_code"] == "governance_erase_failed"
+    assert failed_barriers[0]["error_detail"] == "RuntimeError"
 
 
 def test_session_export_paginates_by_returned_rows_when_requests_are_missing() -> None:

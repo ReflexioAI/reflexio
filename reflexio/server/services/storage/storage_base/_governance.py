@@ -128,6 +128,12 @@ class GovernanceMixin(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def get_subject_write_barrier(
+        self, subject_ref: str
+    ) -> SubjectWriteBarrier | None:
+        raise NotImplementedError
+
+    @abstractmethod
     def fail_purge_operation(
         self, purge_id: str, error_code: str, error_detail: str
     ) -> PurgeOperation:
