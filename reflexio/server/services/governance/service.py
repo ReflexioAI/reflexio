@@ -134,13 +134,11 @@ class GovernanceService:
                     user_id,
                 )
 
-            self.storage.hide_governance_agent_playbooks_for_rebuild(purge_id)
-
             if not self._delete_targets_complete(purge_id):
                 self.storage.apply_governance_user_data_delete(purge_id, user_id)
             deleted_counts = self._deleted_counts_from_targets(purge_id)
 
-            rebuilt_agent_playbook_ids = self._rebuild_agent_playbooks(purge_id)
+            rebuilt_agent_playbook_ids: list[int] = []
             completed = self.storage.complete_subject_erasure_barrier_after_empty_check(
                 purge_id,
                 AuditEvent(

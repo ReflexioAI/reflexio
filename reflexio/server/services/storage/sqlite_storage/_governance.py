@@ -266,6 +266,8 @@ def _ensure_governance_subject_ref_columns(conn: sqlite3.Connection) -> None:
         "agent_success_evaluation_result",
     ):
         columns = [row[1] for row in conn.execute(f"PRAGMA table_info({table})")]
+        if not columns:
+            continue
         if "governance_subject_ref" in columns:
             pass
         else:
@@ -1630,8 +1632,9 @@ class SQLiteGovernanceMixin:
             "DELETE FROM requests WHERE user_id = ?",
             (user_id,),
         )
+        if raw_upb_ids:
+            deps._delete_source_windows_for_user_playbook_ids(raw_upb_ids)
         if delete_upb_ids:
-            deps._delete_source_windows_for_user_playbook_ids(delete_upb_ids)
             deps._delete_in_chunks("user_playbooks", "user_playbook_id", delete_upb_ids)
         if delete_profile_ids:
             deps._delete_in_chunks("profiles", "profile_id", delete_profile_ids)
@@ -1827,64 +1830,6 @@ class SQLiteGovernanceMixin:
                     user_id,
                     owned_user_playbook_ids,
                 )
-                affected_agent_playbook_ids: list[int] = []
-                rebuild_details_by_agent_playbook_id: dict[int, dict[str, object]] = {}
-                if owned_user_playbook_ids:
-                    placeholders = ",".join("?" for _ in owned_user_playbook_ids)
-                    rows = self.conn.execute(
-                        f"""SELECT DISTINCT apsup.agent_playbook_id
-                            FROM agent_playbook_source_user_playbooks
-                            AS apsup
-                            JOIN agent_playbooks ap
-                              ON ap.agent_playbook_id = apsup.agent_playbook_id
-                            WHERE user_playbook_id IN ({placeholders})
-                            ORDER BY apsup.agent_playbook_id ASC""",
-                        sorted(owned_user_playbook_ids),
-                    ).fetchall()
-                    affected_agent_playbook_ids = [
-                        int(row["agent_playbook_id"]) for row in rows
-                    ]
-                    for agent_playbook_id in affected_agent_playbook_ids:
-                        status_row = self.conn.execute(
-                            """SELECT status
-                               FROM agent_playbooks
-                               WHERE agent_playbook_id = ?""",
-                            (agent_playbook_id,),
-                        ).fetchone()
-                        if status_row is None:
-                            raise ValueError(
-                                f"Agent playbook with ID {agent_playbook_id} not found"
-                            )
-                        window_rows = self.conn.execute(
-                            """SELECT user_playbook_id, source_interaction_ids
-                               FROM agent_playbook_source_user_playbooks
-                               WHERE agent_playbook_id = ?
-                               ORDER BY user_playbook_id ASC""",
-                            (agent_playbook_id,),
-                        ).fetchall()
-                        original_window_dicts = [
-                            {
-                                "user_playbook_id": int(row["user_playbook_id"]),
-                                "source_interaction_ids": [
-                                    int(source_id)
-                                    for source_id in (
-                                        _json_loads(row["source_interaction_ids"]) or []
-                                    )
-                                ],
-                            }
-                            for row in window_rows
-                        ]
-                        remaining_window_dicts = [
-                            window
-                            for window in original_window_dicts
-                            if int(window["user_playbook_id"])
-                            not in owned_user_playbook_ids
-                        ]
-                        rebuild_details_by_agent_playbook_id[agent_playbook_id] = {
-                            "original_source_windows": original_window_dicts,
-                            "previous_lifecycle_status": status_row["status"],
-                            "remaining_source_windows": remaining_window_dicts,
-                        }
                 for target_name, count in targets.items():
                     self._record_purge_target_locked(
                         purge_id=purge_id,
@@ -1896,17 +1841,6 @@ class SQLiteGovernanceMixin:
                         deleted_count=0,
                         error_detail=None,
                     )
-                for agent_playbook_id in affected_agent_playbook_ids:
-                    self._record_purge_target_locked(
-                        purge_id=purge_id,
-                        target_name="agent_playbook",
-                        target_ref=str(agent_playbook_id),
-                        phase="rebuild_without_erased_sources",
-                        status="pending",
-                        detail=rebuild_details_by_agent_playbook_id[agent_playbook_id],
-                        deleted_count=0,
-                        error_detail=None,
-                    )
                 self._record_purge_target_locked(
                     purge_id=purge_id,
                     target_name=_SNAPSHOT_TARGET_NAME,
@@ -1915,7 +1849,6 @@ class SQLiteGovernanceMixin:
                     status="complete",
                     detail={
                         "owned_user_playbook_ids": sorted(owned_user_playbook_ids),
-                        "affected_agent_playbook_ids": affected_agent_playbook_ids,
                     },
                     deleted_count=0,
                     error_detail=None,

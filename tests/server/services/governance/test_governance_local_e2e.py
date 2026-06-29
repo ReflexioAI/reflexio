@@ -127,7 +127,7 @@ def storage(
         yield SQLiteStorage(org_id="org-local", db_path=str(tmp_path / "governance.db"))
 
 
-def test_local_governance_e2e_erases_exports_audits_and_rebuilds_shared_aggregate(
+def test_local_governance_e2e_erases_exports_audits_and_preserves_org_agent_playbooks(
     storage: SQLiteStorage,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -306,10 +306,7 @@ def test_local_governance_e2e_erases_exports_audits_and_rebuilds_shared_aggregat
     assert erased.deleted_counts["requests"] == 1
     assert erased.deleted_counts["user_playbooks"] == 2
     assert erased.deleted_counts["agent_success_evaluation_results"] == 1
-    assert set(erased.rebuilt_agent_playbook_ids) == {
-        shared_playbook.agent_playbook_id,
-        orphan_playbook.agent_playbook_id,
-    }
+    assert erased.rebuilt_agent_playbook_ids == []
 
     assert storage.get_user_interaction("alice") == []
     assert storage.get_user_profile("alice") == []
@@ -345,14 +342,13 @@ def test_local_governance_e2e_erases_exports_audits_and_rebuilds_shared_aggregat
     assert delete_targets["agent_success_evaluation_result"].deleted_count == 1
     assert len(storage.get_user_playbooks(user_id="bob", limit=10)) == 1
 
-    rebuilt_playbook = storage.get_agent_playbook_by_id(
+    preserved_playbook = storage.get_agent_playbook_by_id(
         shared_playbook.agent_playbook_id
     )
-    assert rebuilt_playbook is not None
-    assert "aliceuniquesourcetoken" not in rebuilt_playbook.content
-    assert rebuilt_playbook.content == "bobuniquesourcetoken"
-    assert rebuilt_playbook.trigger == "bobtriggerunique"
-    assert rebuilt_playbook.rationale == "bobrationaleunique"
+    assert preserved_playbook is not None
+    assert preserved_playbook.content == shared_playbook.content
+    assert preserved_playbook.trigger == shared_playbook.trigger
+    assert preserved_playbook.rationale == shared_playbook.rationale
     assert storage.get_source_windows_for_agent_playbook(
         shared_playbook.agent_playbook_id
     ) == [
@@ -361,8 +357,14 @@ def test_local_governance_e2e_erases_exports_audits_and_rebuilds_shared_aggregat
             source_interaction_ids=[202],
         )
     ]
-    assert storage.get_agent_playbook_by_id(orphan_playbook.agent_playbook_id) is None
-    assert orphan_playbook.agent_playbook_id not in {
+    preserved_orphan_playbook = storage.get_agent_playbook_by_id(
+        orphan_playbook.agent_playbook_id
+    )
+    assert preserved_orphan_playbook is not None
+    assert preserved_orphan_playbook.content == orphan_playbook.content
+    assert preserved_orphan_playbook.trigger == orphan_playbook.trigger
+    assert preserved_orphan_playbook.rationale == orphan_playbook.rationale
+    assert orphan_playbook.agent_playbook_id in {
         playbook.agent_playbook_id for playbook in storage.get_agent_playbooks(limit=10)
     }
     assert (
@@ -377,29 +379,28 @@ def test_local_governance_e2e_erases_exports_audits_and_rebuilds_shared_aggregat
         )
         if event.op == "hard_delete"
     ]
-    assert len(hard_delete_events) == 1
-    assert hard_delete_events[0].request_id == erased.purge_id
+    assert hard_delete_events == []
 
-    assert (
-        storage.search_agent_playbooks(
-            SearchAgentPlaybookRequest(
-                query="aliceuniquesourcetoken",
-                top_k=10,
-                search_mode=SearchMode.FTS,
-            )
+    alice_search_results = storage.search_agent_playbooks(
+        SearchAgentPlaybookRequest(
+            query="aliceuniquesourcetoken",
+            top_k=10,
+            search_mode=SearchMode.FTS,
         )
-        == []
     )
-    assert (
-        storage.search_agent_playbooks(
-            SearchAgentPlaybookRequest(
-                query="aliceorphansourcetoken",
-                top_k=10,
-                search_mode=SearchMode.FTS,
-            )
+    assert [playbook.agent_playbook_id for playbook in alice_search_results] == [
+        shared_playbook.agent_playbook_id
+    ]
+    orphan_search_results = storage.search_agent_playbooks(
+        SearchAgentPlaybookRequest(
+            query="aliceorphansourcetoken",
+            top_k=10,
+            search_mode=SearchMode.FTS,
         )
-        == []
     )
+    assert [playbook.agent_playbook_id for playbook in orphan_search_results] == [
+        orphan_playbook.agent_playbook_id
+    ]
     bob_search_results = storage.search_agent_playbooks(
         SearchAgentPlaybookRequest(
             query="bobuniquesourcetoken",
