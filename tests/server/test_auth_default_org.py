@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from reflexio.server._auth import DEFAULT_ORG_ID, default_get_org_id
+from reflexio.server.auth import DEFAULT_ORG_ID, default_get_org_id
 
 _ENV = "REFLEXIO_DEFAULT_ORG_ID"
 
