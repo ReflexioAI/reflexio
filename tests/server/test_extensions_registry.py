@@ -1,6 +1,18 @@
+import asyncio
+
 import pytest
+from fastapi import APIRouter
+
 from reflexio.server.extensions import (
-    ServiceKey, register_service, get_service, require_service, reset_services,
+    AppContext,
+    Capability,
+    CapabilityRegistry,
+    HookRegistry,
+    ServiceKey,
+    get_service,
+    register_service,
+    require_service,
+    reset_services,
 )
 
 KEY: ServiceKey[str] = ServiceKey("demo")
@@ -31,3 +43,53 @@ def test_double_register_is_error_unless_override() -> None:
         register_service(KEY, "y")
     register_service(KEY, "y", override=True)
     assert get_service(KEY) == "y"
+
+
+def test_key_isolation() -> None:
+    """Distinct ServiceKey instances are independent — registering under "a" does not affect "b"."""
+    key_a: ServiceKey[str] = ServiceKey("a")
+    key_b: ServiceKey[str] = ServiceKey("b")
+    register_service(key_a, "val_a")
+    assert get_service(key_b) is None
+
+
+# ---------------------------------------------------------------------------
+# Task-2 capability / hook / context tests
+# ---------------------------------------------------------------------------
+
+
+class _Cap(Capability):
+    name = "demo_cap"
+
+    def routers(self, role: str) -> list[APIRouter]:
+        return [APIRouter()]
+
+
+def test_capability_defaults_are_noops() -> None:
+    cap = _Cap()
+    cap.install_services()            # no raise
+    cap.install_hooks(HookRegistry())  # no raise
+    assert isinstance(cap.routers("all"), list)
+    asyncio.run(cap.on_startup(AppContext()))  # no raise
+    asyncio.run(cap.on_shutdown())             # no raise
+
+
+def test_registry_dedup_on_duplicate_name() -> None:
+    with pytest.raises(RuntimeError):
+        CapabilityRegistry([_Cap(), _Cap()])
+
+
+def test_registry_carries_singular_concerns() -> None:
+    reg = CapabilityRegistry(
+        [_Cap()],
+        configurator_class=object,
+        billing_gate=lambda line: (lambda: None),
+    )
+    assert reg.configurator_class is object
+    assert reg.billing_gate is not None
+    assert "demo_cap" in reg.router_names()
+
+
+def test_appcontext_defaults() -> None:
+    ctx = AppContext()
+    assert ctx.self_host_org_id is None and ctx.activated is False
