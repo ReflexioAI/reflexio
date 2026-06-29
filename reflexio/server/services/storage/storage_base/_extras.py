@@ -29,10 +29,10 @@ class ExtrasMixin:
             dict: Dictionary containing:
                 - current_period: Stats for the current period (days_back)
                 - previous_period: Stats for the previous period (for trend calculation)
-                - interactions_time_series: List of time series data points (raw, ungrouped)
-                - profiles_time_series: List of time series data points (raw, ungrouped)
-                - playbooks_time_series: List of time series data points (raw, ungrouped)
-                - evaluations_time_series: List of time series data points (raw, ungrouped)
+                - interactions_time_series: Daily bucketed interaction counts
+                - profiles_time_series: Daily bucketed profile counts
+                - playbooks_time_series: Daily bucketed playbook counts
+                - evaluations_time_series: Daily bucketed success rates with optional counts
         """
         raise NotImplementedError
 
