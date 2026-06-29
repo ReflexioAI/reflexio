@@ -440,8 +440,15 @@ class GetRequestsRequest(BaseModel):
     source: str | None = None
     start_time: datetime | None = None
     end_time: datetime | None = None
-    top_k: int | None = Field(default=30, gt=0)
-    offset: int | None = Field(default=0, ge=0)
+    top_k: int | None = Field(
+        default=30,
+        gt=0,
+        description="Maximum number of sessions to return. Pagination is "
+        "per-session: every returned session includes all of its requests.",
+    )
+    offset: int | None = Field(
+        default=0, ge=0, description="Number of sessions to skip for pagination."
+    )
 
     @model_validator(mode="after")
     def check_time_range(self) -> Self:

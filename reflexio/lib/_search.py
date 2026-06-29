@@ -119,10 +119,11 @@ class SearchMixin(ReflexioBase):
                     Session(session_id=group_name, requests=request_data_list)
                 )
 
-            # Determine has_more: count total requests returned across all groups
+            # Pagination is session-based (top_k counts sessions): there may be
+            # more pages when this page filled the session limit.
             total_returned = sum(len(s.requests) for s in sessions)
             effective_limit = request.top_k or 100
-            has_more = total_returned >= effective_limit
+            has_more = len(sessions) >= effective_limit
 
             return GetRequestsResponse(
                 success=True,
