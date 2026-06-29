@@ -229,7 +229,7 @@ _PROVIDER_DEFAULTS: dict[str, ProviderDefaults] = {
         should_run="minimax/MiniMax-M3",
         pre_retrieval="minimax/MiniMax-M3",
         embedding=None,
-        # Same M2.7 model handles resumable extraction. Surfaced by an
+        # Same M3 model handles resumable extraction. Surfaced by an
         # e2e run on a MiniMax-only VPS where publish printed
         # "No provider in ['minimax'] supports role=extraction_agent"
         # warnings and silently skipped profile creation. Without this,

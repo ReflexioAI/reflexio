@@ -53,7 +53,7 @@ _PROVIDERS: dict[str, dict[str, str]] = {
     },
     "minimax": {
         "env_var": "MINIMAX_API_KEY",
-        "model": "MiniMax-M2.7",
+        "model": "MiniMax-M3",
         "display": "MiniMax",
     },
     "dashscope": {
