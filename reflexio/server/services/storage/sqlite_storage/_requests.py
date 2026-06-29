@@ -188,10 +188,10 @@ class RequestMixin:
         if source is not None:
             filter_sql += " AND source = ?"
             filter_params.append(source)
-        if start_time:
+        if start_time is not None:
             filter_sql += " AND created_at >= ?"
             filter_params.append(_epoch_to_iso(start_time))
-        if end_time:
+        if end_time is not None:
             filter_sql += " AND created_at <= ?"
             filter_params.append(_epoch_to_iso(end_time))
 
