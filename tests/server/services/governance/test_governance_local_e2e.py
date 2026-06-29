@@ -530,6 +530,19 @@ def test_erase_fails_fast_when_service_and_storage_ref_secrets_differ(
         service.erase_user(user_id="alice", request_id="erase-mismatch")
 
 
+def test_export_fails_fast_when_service_and_storage_ref_secrets_differ(
+    storage: SQLiteStorage,
+) -> None:
+    service = GovernanceService(
+        storage=storage,
+        org_id=storage.org_id,
+        ref_secret="different-service-secret",
+    )
+
+    with pytest.raises(RuntimeError, match="ref_secret must match"):
+        service.export_user(user_id="alice", request_id="export-mismatch")
+
+
 @pytest.mark.parametrize(
     ("barrier_sql", "match"),
     [

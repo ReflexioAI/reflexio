@@ -95,7 +95,8 @@ _PROFILE_PURGE_SQL = (
     "UPDATE profiles SET "
     "content='', user_id='', generated_from_request_id='', source='', "
     "embedding=NULL, extractor_names=NULL, expanded_terms=NULL, tags=NULL, "
-    "custom_features=NULL, notes=NULL, source_span=NULL, reader_angle=NULL "
+    "custom_features=NULL, notes=NULL, source_span=NULL, reader_angle=NULL, "
+    "governance_subject_ref=NULL "
     "WHERE profile_id=?"
 )
 _USER_PLAYBOOK_PURGE_SQL = (
@@ -103,7 +104,8 @@ _USER_PLAYBOOK_PURGE_SQL = (
     "content='', user_id=NULL, request_id='', source=NULL, "
     "trigger=NULL, rationale=NULL, blocking_issue=NULL, "
     "source_interaction_ids=NULL, embedding=NULL, expanded_terms=NULL, "
-    "tags=NULL, source_span=NULL, notes=NULL, reader_angle=NULL "
+    "tags=NULL, source_span=NULL, notes=NULL, reader_angle=NULL, "
+    "governance_subject_ref=NULL "
     "WHERE user_playbook_id=?"
 )
 # agent_playbook purge not yet required; added when Task 3/4 needs it.

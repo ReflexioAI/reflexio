@@ -208,11 +208,12 @@ class PlaybookMixin:
 
     def _subject_ref_from_user_playbook_row(self, row: sqlite3.Row) -> str:
         subject_ref = row["governance_subject_ref"]
-        return (
-            str(subject_ref)
-            if subject_ref
-            else self._subject_ref_for_user_id(row["user_id"])
-        )
+        if subject_ref:
+            return str(subject_ref)
+        user_id = row["user_id"]
+        if user_id is None or str(user_id) == "":
+            raise ValueError("User playbook subject identity is missing")
+        return self._subject_ref_for_user_id(str(user_id))
 
     def _assert_user_playbook_writable_locked(
         self,

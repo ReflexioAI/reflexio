@@ -48,6 +48,7 @@ class GovernanceService:
         request_id: str,
         actor_context: GovernanceActorContext | None = None,
     ) -> UserExportResult:
+        self._assert_storage_ref_secret_matches()
         subref = governance_subject_ref(self.org_id, user_id, self.ref_secret)
         reqref = governance_request_ref(self.org_id, request_id, self.ref_secret)
         export_id = stable_id("export", f"{self.org_id}:export:{subref}:{reqref}")
@@ -184,7 +185,7 @@ class GovernanceService:
         if storage_secret != self.ref_secret:
             raise RuntimeError(
                 "GovernanceService ref_secret must match REFLEXIO_GOVERNANCE_REF_SECRET "
-                "for erasure"
+                "for governance operations"
             )
 
     def _completed_barrier_for_retry(

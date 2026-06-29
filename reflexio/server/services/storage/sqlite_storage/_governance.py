@@ -2259,7 +2259,7 @@ class SQLiteGovernanceMixin:
                         "Purge operation subject_ref must match the barrier subject_ref"
                     )
                 existing_barrier = self.conn.execute(
-                    """SELECT purge_id FROM subject_write_barriers
+                    """SELECT * FROM subject_write_barriers
                        WHERE org_id = ? AND subject_ref = ?""",
                     (self.org_id, subject_ref),
                 ).fetchone()
@@ -2270,6 +2270,13 @@ class SQLiteGovernanceMixin:
                     raise ValueError(
                         "Existing barrier purge_id must match the requested purge_id"
                     )
+                if (
+                    existing_barrier is not None
+                    and str(existing_barrier["status"]) == "erased"
+                ):
+                    row = existing_barrier
+                    self.conn.commit()
+                    return _row_to_subject_write_barrier(row)
                 self.conn.execute(
                     """INSERT INTO subject_write_barriers
                        (org_id, subject_ref, purge_id, status, created_at, updated_at)
@@ -2473,7 +2480,8 @@ class SQLiteGovernanceMixin:
                            error_code = ?,
                            error_detail = ?,
                            updated_at = ?
-                       WHERE org_id = ? AND subject_ref = ? AND purge_id = ?""",
+                       WHERE org_id = ? AND subject_ref = ? AND purge_id = ?
+                         AND status = 'erasing'""",
                     (
                         validated_error_code,
                         validated_error_detail,
@@ -2544,7 +2552,7 @@ class SQLiteGovernanceMixin:
                 """UPDATE purge_operations
                    SET status = 'failed', error_code = ?, error_detail = ?,
                    updated_at = ?, completed_at = ?
-                   WHERE purge_id = ? AND org_id = ?""",
+                   WHERE purge_id = ? AND org_id = ? AND status != 'complete'""",
                 (
                     validated_error_code,
                     validated_error_detail,
@@ -2555,6 +2563,12 @@ class SQLiteGovernanceMixin:
                 ),
             )
             if cur.rowcount == 0:
+                existing = self.conn.execute(
+                    "SELECT status FROM purge_operations WHERE purge_id = ? AND org_id = ?",
+                    (purge_id, self.org_id),
+                ).fetchone()
+                if existing is not None and str(existing["status"]) == "complete":
+                    raise ValueError("Purge operation is already complete")
                 raise ValueError(f"Purge operation {purge_id!r} not found")
             self.conn.commit()
         return self.get_purge_operation(purge_id)

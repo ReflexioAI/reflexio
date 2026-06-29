@@ -40,6 +40,7 @@ def test_governance_mixin_tracks_new_barrier_methods_as_abstract() -> None:
         "assert_subject_writable",
         "complete_subject_erasure_barrier_after_empty_check",
         "fail_subject_erasure_barrier",
+        "get_subject_write_barrier",
     } <= GovernanceMixin.__abstractmethods__
 
 

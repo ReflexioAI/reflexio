@@ -16,7 +16,10 @@ from reflexio.models.api_schema.domain.entities import (
 )
 from reflexio.models.api_schema.domain.governance import AuditEvent
 from reflexio.server.services.governance.config import governance_subject_ref
-from reflexio.server.services.storage.error import SubjectWriteBarrierError
+from reflexio.server.services.storage.error import (
+    StorageError,
+    SubjectWriteBarrierError,
+)
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 
 
@@ -56,6 +59,28 @@ def _mark_all_completion_targets(storage: SQLiteStorage, purge_id: str) -> None:
             target_ref="all",
             detail={"count": 0},
         )
+
+
+def _complete_empty_purge(
+    storage: SQLiteStorage,
+    *,
+    purge_id: str,
+    subject_ref: str,
+    request_ref: str,
+) -> None:
+    _mark_all_completion_targets(storage, purge_id)
+    storage.complete_subject_erasure_barrier_after_empty_check(
+        purge_id,
+        AuditEvent(
+            org_id="org-barrier",
+            operation="ERASE",
+            entity_type="request",
+            subject_ref=subject_ref,
+            request_ref=request_ref,
+            idempotency_key=purge_id,
+            detail={"deleted_counts": {}, "rebuilt_agent_playbook_ids": []},
+        ),
+    )
 
 
 def test_barrier_blocks_request_interaction_and_profile_writes(
@@ -266,6 +291,204 @@ def test_fail_subject_erasure_barrier_requires_matching_barrier_row(
                 agent_version="agent-v1",
                 created_at=_now(),
             )
+        )
+
+
+def test_begin_subject_erasure_barrier_preserves_terminal_erased_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = _storage(tmp_path, monkeypatch)
+    subject_ref = governance_subject_ref("org-barrier", "alice", "barrier-secret")
+    request_ref = "reqref_v1_00000000000000000000000000000053"
+    purge = storage.begin_purge_operation(
+        purge_id="purge_barrier_terminal_begin",
+        idempotency_key="idem_barrier_terminal_begin",
+        operation_type="user_erasure",
+        scope_type="user",
+        subject_ref=subject_ref,
+        request_ref=request_ref,
+    )
+    storage.begin_subject_erasure_barrier(subject_ref, purge.purge_id)
+    _complete_empty_purge(
+        storage,
+        purge_id=purge.purge_id,
+        subject_ref=subject_ref,
+        request_ref=request_ref,
+    )
+
+    barrier = storage.begin_subject_erasure_barrier(subject_ref, purge.purge_id)
+    stored_barrier = storage.get_subject_write_barrier(subject_ref)
+    stored_purge = storage.get_purge_operation(purge.purge_id)
+
+    assert barrier.status == "erased"
+    assert stored_barrier is not None
+    assert stored_barrier.status == "erased"
+    assert stored_purge is not None
+    assert stored_purge.status == "complete"
+
+
+def test_fail_subject_erasure_barrier_rejects_terminal_erased_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = _storage(tmp_path, monkeypatch)
+    subject_ref = governance_subject_ref("org-barrier", "alice", "barrier-secret")
+    request_ref = "reqref_v1_00000000000000000000000000000054"
+    purge = storage.begin_purge_operation(
+        purge_id="purge_barrier_terminal_fail",
+        idempotency_key="idem_barrier_terminal_fail",
+        operation_type="user_erasure",
+        scope_type="user",
+        subject_ref=subject_ref,
+        request_ref=request_ref,
+    )
+    storage.begin_subject_erasure_barrier(subject_ref, purge.purge_id)
+    _complete_empty_purge(
+        storage,
+        purge_id=purge.purge_id,
+        subject_ref=subject_ref,
+        request_ref=request_ref,
+    )
+
+    with pytest.raises(ValueError, match="matching barrier"):
+        storage.fail_subject_erasure_barrier(
+            subject_ref,
+            purge.purge_id,
+            error_code="governance_erase_failed",
+            error_detail="late_failure",
+        )
+
+    barrier = storage.get_subject_write_barrier(subject_ref)
+    purge_after_failure = storage.get_purge_operation(purge.purge_id)
+    assert barrier is not None
+    assert barrier.status == "erased"
+    assert barrier.error_code is None
+    assert purge_after_failure is not None
+    assert purge_after_failure.status == "complete"
+    assert purge_after_failure.error_code is None
+
+
+def test_fail_purge_operation_rejects_terminal_complete_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = _storage(tmp_path, monkeypatch)
+    subject_ref = governance_subject_ref("org-barrier", "alice", "barrier-secret")
+    request_ref = "reqref_v1_00000000000000000000000000000055"
+    purge = storage.begin_purge_operation(
+        purge_id="purge_barrier_terminal_purge_fail",
+        idempotency_key="idem_barrier_terminal_purge_fail",
+        operation_type="user_erasure",
+        scope_type="user",
+        subject_ref=subject_ref,
+        request_ref=request_ref,
+    )
+    storage.begin_subject_erasure_barrier(subject_ref, purge.purge_id)
+    _complete_empty_purge(
+        storage,
+        purge_id=purge.purge_id,
+        subject_ref=subject_ref,
+        request_ref=request_ref,
+    )
+
+    with pytest.raises(ValueError, match="already complete"):
+        storage.fail_purge_operation(
+            purge.purge_id,
+            error_code="governance_erase_failed",
+            error_detail="late_failure",
+        )
+
+    barrier = storage.get_subject_write_barrier(subject_ref)
+    purge_after_failure = storage.get_purge_operation(purge.purge_id)
+    assert barrier is not None
+    assert barrier.status == "erased"
+    assert purge_after_failure.status == "complete"
+    assert purge_after_failure.error_code is None
+
+
+def test_guarded_completion_allows_purged_retained_skeletons(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = _storage(tmp_path, monkeypatch)
+    subject_ref = governance_subject_ref("org-barrier", "alice", "barrier-secret")
+    profile = UserProfile(
+        profile_id="profile-purged-skeleton",
+        user_id="alice",
+        content="profile pii",
+        generated_from_request_id="req-profile-purged-skeleton",
+        last_modified_timestamp=_now(),
+    )
+    user_playbook = UserPlaybook(
+        user_id="alice",
+        agent_version="agent-v1",
+        request_id="req-playbook-purged-skeleton",
+        playbook_name="purged-skeleton",
+        created_at=_now(),
+        content="playbook pii",
+        trigger="trigger pii",
+        rationale="rationale pii",
+        source="test",
+    )
+    storage.add_user_profile("alice", [profile])
+    storage.save_user_playbooks([user_playbook])
+    purge = storage.begin_purge_operation(
+        purge_id="purge_purged_skeletons",
+        idempotency_key="idem_purged_skeletons",
+        operation_type="user_erasure",
+        scope_type="user",
+        subject_ref=subject_ref,
+        request_ref="reqref_v1_00000000000000000000000000000061",
+    )
+    storage.begin_subject_erasure_barrier(subject_ref, purge.purge_id)
+
+    assert storage.purge_content(entity_type="profile", entity_id=profile.profile_id)
+    assert storage.purge_content(
+        entity_type="user_playbook",
+        entity_id=str(user_playbook.user_playbook_id),
+    )
+    _complete_empty_purge(
+        storage,
+        purge_id=purge.purge_id,
+        subject_ref=subject_ref,
+        request_ref="reqref_v1_00000000000000000000000000000061",
+    )
+
+    barrier = storage.get_subject_write_barrier(subject_ref)
+    completed_purge = storage.get_purge_operation(purge.purge_id)
+    assert barrier is not None
+    assert barrier.status == "erased"
+    assert completed_purge is not None
+    assert completed_purge.status == "complete"
+
+
+def test_update_user_playbook_rejects_purged_retained_skeleton(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = _storage(tmp_path, monkeypatch)
+    user_playbook = UserPlaybook(
+        user_id="alice",
+        agent_version="agent-v1",
+        request_id="req-playbook-update-purged-skeleton",
+        playbook_name="purged-update",
+        created_at=_now(),
+        content="playbook pii",
+        trigger="trigger pii",
+        rationale="rationale pii",
+        source="test",
+    )
+    storage.save_user_playbooks([user_playbook])
+    assert storage.purge_content(
+        entity_type="user_playbook",
+        entity_id=str(user_playbook.user_playbook_id),
+    )
+
+    with pytest.raises(StorageError, match="subject identity is missing"):
+        storage.update_user_playbook(
+            user_playbook.user_playbook_id,
+            content="repopulated pii",
         )
 
 
