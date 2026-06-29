@@ -524,6 +524,11 @@ class TestNumericConstraints:
         with pytest.raises(ValidationError):
             TimeSeriesDataPoint(timestamp=0, value=5)
 
+    def test_timeseries_count_non_negative(self):
+        """TimeSeriesDataPoint.count must be >= 0 when provided."""
+        with pytest.raises(ValidationError):
+            TimeSeriesDataPoint(timestamp=1000, value=5, count=-1)
+
     def test_playbook_aggregator_config_constraints(self):
         """PlaybookAggregatorConfig thresholds must be >= 1."""
         with pytest.raises(ValidationError):

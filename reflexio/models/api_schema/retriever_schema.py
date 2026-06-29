@@ -531,7 +531,8 @@ class TimeSeriesDataPoint(BaseModel):
     """A single data point in a time series."""
 
     timestamp: int = Field(gt=0)  # Unix timestamp
-    value: int = Field(ge=0)  # Count or metric value
+    value: float = Field(ge=0)  # Count or metric value
+    count: int | None = Field(default=None, ge=0)  # Optional weight for rate metrics
 
 
 class PeriodStats(BaseModel):

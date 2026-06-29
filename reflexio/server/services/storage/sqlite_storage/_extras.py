@@ -2,6 +2,7 @@
 
 import sqlite3
 from collections import defaultdict
+from datetime import UTC, datetime
 from typing import Any, Literal, cast
 
 from reflexio.models.api_schema.braintrust_schema import (
@@ -179,31 +180,60 @@ class ExtrasMixin:
             (current_start_iso, current_time_iso),
         )
 
+        def day_bucket(timestamp: int) -> int:
+            return int(
+                datetime.fromtimestamp(timestamp, tz=UTC)
+                .replace(hour=0, minute=0, second=0, microsecond=0)
+                .timestamp()
+            )
+
+        def count_series(timestamps: list[int]) -> list[dict[str, int]]:
+            buckets: dict[int, int] = defaultdict(int)
+            for timestamp in timestamps:
+                buckets[day_bucket(timestamp)] += 1
+            return [
+                {"timestamp": timestamp, "value": value}
+                for timestamp, value in sorted(buckets.items())
+            ]
+
+        def rate_series(rows: list[sqlite3.Row]) -> list[dict[str, int | float]]:
+            buckets: dict[int, dict[str, int]] = defaultdict(
+                lambda: {"success": 0, "count": 0}
+            )
+            for row in rows:
+                bucket = day_bucket(_iso_to_epoch(row["created_at"]))
+                buckets[bucket]["count"] += 1
+                if row["is_success"]:
+                    buckets[bucket]["success"] += 1
+            return [
+                {
+                    "timestamp": timestamp,
+                    "value": (
+                        100.0 * aggregate["success"] / aggregate["count"]
+                        if aggregate["count"]
+                        else 0.0
+                    ),
+                    "count": aggregate["count"],
+                }
+                for timestamp, aggregate in sorted(buckets.items())
+            ]
+
         return {
             "current_period": current_stats,
             "previous_period": previous_stats,
-            "interactions_time_series": [
-                {"timestamp": _iso_to_epoch(r["created_at"]), "value": 1}
-                for r in interactions_ts
-            ],
-            "profiles_time_series": [
-                {"timestamp": r["last_modified_timestamp"], "value": 1}
-                for r in profiles_ts
-            ],
-            "playbooks_time_series": sorted(
-                [
-                    {"timestamp": _iso_to_epoch(r["created_at"]), "value": 1}
-                    for r in (*user_playbooks_ts, *agent_playbooks_ts)
-                ],
-                key=lambda x: x["timestamp"],
+            "interactions_time_series": count_series(
+                [_iso_to_epoch(r["created_at"]) for r in interactions_ts]
             ),
-            "evaluations_time_series": [
-                {
-                    "timestamp": _iso_to_epoch(r["created_at"]),
-                    "value": 100 if r["is_success"] else 0,
-                }
-                for r in evals_ts
-            ],
+            "profiles_time_series": count_series(
+                [r["last_modified_timestamp"] for r in profiles_ts]
+            ),
+            "playbooks_time_series": count_series(
+                [
+                    _iso_to_epoch(r["created_at"])
+                    for r in (*user_playbooks_ts, *agent_playbooks_ts)
+                ]
+            ),
+            "evaluations_time_series": rate_series(evals_ts),
         }
 
     @SQLiteStorageBase.handle_exceptions
