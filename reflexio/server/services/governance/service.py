@@ -11,6 +11,7 @@ from reflexio.models.api_schema.domain.governance import (
     UserExportResult,
 )
 from reflexio.server.services.governance.config import (
+    get_governance_ref_secret,
     governance_request_ref,
     governance_subject_ref,
 )
@@ -90,6 +91,7 @@ class GovernanceService:
         request_id: str,
         actor_context: GovernanceActorContext | None = None,
     ) -> UserEraseResult:
+        self._assert_storage_ref_secret_matches()
         subref = governance_subject_ref(self.org_id, user_id, self.ref_secret)
         reqref = governance_request_ref(self.org_id, request_id, self.ref_secret)
         actor_type = actor_context["actor_type"] if actor_context else "system"
@@ -108,7 +110,9 @@ class GovernanceService:
             request_ref=reqref,
         )
         if purge.status == "complete":
-            barrier = self._completed_barrier_for_retry(subject_ref=subref, purge_id=purge_id)
+            barrier = self._completed_barrier_for_retry(
+                subject_ref=subref, purge_id=purge_id
+            )
             if barrier.status != "erased":
                 raise ValueError(
                     "Completed purge retry requires an erased subject barrier"
@@ -176,6 +180,14 @@ class GovernanceService:
             deleted_counts=deleted_counts,
             rebuilt_agent_playbook_ids=rebuilt_agent_playbook_ids,
         )
+
+    def _assert_storage_ref_secret_matches(self) -> None:
+        storage_secret = get_governance_ref_secret()
+        if storage_secret != self.ref_secret:
+            raise RuntimeError(
+                "GovernanceService ref_secret must match REFLEXIO_GOVERNANCE_REF_SECRET "
+                "for erasure"
+            )
 
     def _completed_barrier_for_retry(
         self, *, subject_ref: str, purge_id: str

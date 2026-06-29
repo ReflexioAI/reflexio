@@ -267,8 +267,13 @@ def _ensure_governance_subject_ref_columns(conn: sqlite3.Connection) -> None:
     ):
         columns = [row[1] for row in conn.execute(f"PRAGMA table_info({table})")]
         if "governance_subject_ref" in columns:
-            continue
-        conn.execute(f"ALTER TABLE {table} ADD COLUMN governance_subject_ref TEXT")
+            pass
+        else:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN governance_subject_ref TEXT")
+        conn.execute(
+            f"CREATE INDEX IF NOT EXISTS idx_{table}_governance_subject_ref "
+            f"ON {table}(governance_subject_ref)"
+        )
 
 
 def _epoch_now() -> int:
@@ -1053,7 +1058,7 @@ class SQLiteGovernanceMixin:
             """SELECT request_id, user_id
                FROM requests
                WHERE governance_subject_ref IS NULL"""
-        ).fetchall():
+        ):
             user_id = str(row["user_id"])
             if self._subject_ref_for_user_id(user_id) != subject_ref:
                 continue
@@ -1069,7 +1074,7 @@ class SQLiteGovernanceMixin:
         request_id_column: str | None = None,
     ) -> bool:
         sql = f"SELECT user_id{', ' + request_id_column if request_id_column else ''} FROM {table} WHERE governance_subject_ref IS NULL"  # noqa: S608
-        for row in self.conn.execute(sql).fetchall():
+        for row in self.conn.execute(sql):
             user_id = str(row["user_id"])
             if self._subject_ref_for_user_id(user_id) == subject_ref:
                 return True
@@ -2189,6 +2194,13 @@ class SQLiteGovernanceMixin:
                     raise ValueError(
                         "Audit event request_ref must match purge operation request_ref"
                     )
+                barrier_row = self.conn.execute(
+                    """SELECT status FROM subject_write_barriers
+                       WHERE org_id = ? AND subject_ref = ? AND purge_id = ?""",
+                    (self.org_id, audit_event.subject_ref, purge_id),
+                ).fetchone()
+                if barrier_row is None or barrier_row["status"] != "erasing":
+                    raise ValueError("subject erasure barrier is missing")
                 snapshot = self.conn.execute(
                     """SELECT 1 FROM purge_operation_targets
                        WHERE org_id = ? AND purge_id = ? AND target_name = ? AND target_ref = 'all'
@@ -2481,12 +2493,14 @@ class SQLiteGovernanceMixin:
                         "Completion requires exactly one matching successful ERASE "
                         "audit row for the purge_id"
                     )
-                self.conn.execute(
+                barrier_update = self.conn.execute(
                     """UPDATE subject_write_barriers
                        SET status = 'erased', error_code = NULL, error_detail = NULL, updated_at = ?
                        WHERE org_id = ? AND subject_ref = ? AND purge_id = ?""",
                     (now, self.org_id, audit_event.subject_ref, purge_id),
                 )
+                if barrier_update.rowcount != 1:
+                    raise ValueError("subject erasure barrier is missing")
                 self.conn.execute(
                     """UPDATE purge_operations
                        SET status = 'complete',

@@ -107,6 +107,35 @@ class ProfileMixin:
     # CRUD — Profiles
     # ------------------------------------------------------------------
 
+    def _subject_ref_from_profile_row(self, row: sqlite3.Row) -> str:
+        subject_ref = row["governance_subject_ref"]
+        return (
+            str(subject_ref)
+            if subject_ref
+            else self._subject_ref_for_user_id(row["user_id"])
+        )
+
+    def _assert_profile_writable_locked(
+        self,
+        profile_id: str,
+        *,
+        user_id: str | None = None,
+    ) -> sqlite3.Row | None:
+        if user_id is None:
+            row = self.conn.execute(
+                "SELECT user_id, governance_subject_ref FROM profiles WHERE profile_id = ?",
+                (profile_id,),
+            ).fetchone()
+        else:
+            row = self.conn.execute(
+                "SELECT user_id, governance_subject_ref FROM profiles WHERE profile_id = ? AND user_id = ?",
+                (profile_id, user_id),
+            ).fetchone()
+        if row is None:
+            return None
+        self._assert_subject_writable_locked(self._subject_ref_from_profile_row(row))
+        return row
+
     @SQLiteStorageBase.handle_exceptions
     def get_all_profiles(
         self,
@@ -143,6 +172,9 @@ class ProfileMixin:
     @SQLiteStorageBase.handle_exceptions
     def add_user_profile(self, user_id: str, user_profiles: list[UserProfile]) -> None:  # noqa: ARG002
         for profile in user_profiles:
+            subject_ref = self._subject_ref_for_user_id(profile.user_id)
+            with self._lock:
+                self._assert_subject_writable_locked(subject_ref)
             embedding_text = "\n".join([profile.content, str(profile.custom_features)])
             if self._should_expand_documents():
                 with ThreadPoolExecutor(max_workers=2) as executor:
@@ -153,7 +185,6 @@ class ProfileMixin:
             else:
                 profile.embedding = self._get_embedding(embedding_text)
             embedding = profile.embedding
-            subject_ref = self._subject_ref_for_user_id(profile.user_id)
             with self._lock:
                 try:
                     self.conn.execute("BEGIN IMMEDIATE")
@@ -223,18 +254,28 @@ class ProfileMixin:
         that re-acquire it are safe.
         """
         current_ts = _epoch_now()
-        row = self._fetchone(
-            "SELECT profile_id FROM profiles WHERE user_id = ? AND profile_id = ? AND expiration_timestamp >= ?",
-            (user_id, profile_id, current_ts),
-        )
-        if not row:
-            logger.warning("User profile not found for user id: %s", user_id)
-            return
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT user_id, governance_subject_ref FROM profiles WHERE user_id = ? AND profile_id = ? AND expiration_timestamp >= ?",
+                (user_id, profile_id, current_ts),
+            ).fetchone()
+            if not row:
+                logger.warning("User profile not found for user id: %s", user_id)
+                return
+            self._assert_subject_writable_locked(
+                self._subject_ref_from_profile_row(row)
+            )
         embedding = self._get_embedding(
             "\n".join([new_profile.content, str(new_profile.custom_features)])
         )
         new_profile.embedding = embedding
         with self._lock:
+            if (
+                self._assert_profile_writable_locked(profile_id, user_id=user_id)
+                is None
+            ):
+                logger.warning("User profile not found for user id: %s", user_id)
+                return
             cur = self.conn.execute(
                 """UPDATE profiles SET content=?, last_modified_timestamp=?,
                    generated_from_request_id=?, profile_time_to_live=?,
@@ -294,10 +335,17 @@ class ProfileMixin:
     def update_user_profile_tags(
         self, user_id: str, profile_id: str, tags: list[str]
     ) -> None:
-        self._execute(
-            "UPDATE profiles SET tags=? WHERE user_id=? AND profile_id=?",
-            (_json_dumps(tags), user_id, profile_id),
-        )
+        with self._lock:
+            if (
+                self._assert_profile_writable_locked(profile_id, user_id=user_id)
+                is None
+            ):
+                return
+            self.conn.execute(
+                "UPDATE profiles SET tags=? WHERE user_id=? AND profile_id=?",
+                (_json_dumps(tags), user_id, profile_id),
+            )
+            self.conn.commit()
 
     @SQLiteStorageBase.handle_exceptions
     def delete_user_profile(self, request: DeleteUserProfileRequest) -> None:
@@ -420,20 +468,24 @@ class ProfileMixin:
 
         batch_request_id = uuid.uuid4().hex
         with self._lock:
-            affected = [
-                r["profile_id"]
-                for r in self.conn.execute(
-                    f"SELECT profile_id FROM profiles WHERE {where}",
+            affected = list(
+                self.conn.execute(
+                    f"SELECT profile_id, user_id, governance_subject_ref FROM profiles WHERE {where}",
                     select_params + extra_params,
                 ).fetchall()
-            ]
+            )
+            for row in affected:
+                self._assert_subject_writable_locked(
+                    self._subject_ref_from_profile_row(row)
+                )
             cur = self.conn.execute(
                 f"UPDATE profiles SET status = ?, last_modified_timestamp = ?, retired_at = ? WHERE {where}",
                 [new_val, now_ts, retired_at_val] + select_params + extra_params,
             )
             from_val = old_status.value if old_status else None
             to_val = new_status.value if new_status else None
-            for pid in affected:
+            for row in affected:
+                pid = row["profile_id"]
                 _append_event_stmt(
                     self.conn,
                     org_id=self.org_id,
@@ -542,6 +594,11 @@ class ProfileMixin:
     @SQLiteStorageBase.handle_exceptions
     def archive_profile_by_id(self, user_id: str, profile_id: str) -> bool:
         with self._lock:
+            if (
+                self._assert_profile_writable_locked(profile_id, user_id=user_id)
+                is None
+            ):
+                return False
             now_ts = _epoch_now()
             cur = self.conn.execute(
                 "UPDATE profiles SET status = ?, last_modified_timestamp = ?, retired_at = ? "
@@ -602,11 +659,14 @@ class ProfileMixin:
             for pid in profile_ids:
                 # Read current status for from_status derivation (user_id scoped)
                 row = self.conn.execute(
-                    "SELECT status FROM profiles WHERE profile_id = ? AND user_id = ?",
+                    "SELECT status, user_id, governance_subject_ref FROM profiles WHERE profile_id = ? AND user_id = ?",
                     (pid, user_id),
                 ).fetchone()
                 if row is None:
                     continue
+                self._assert_subject_writable_locked(
+                    self._subject_ref_from_profile_row(row)
+                )
                 old_status_val = (
                     row[0] if isinstance(row, (tuple, list)) else row["status"]
                 )
@@ -782,8 +842,12 @@ class ProfileMixin:
                             interaction.image_encoding,
                             interaction.shadow_content,
                             interaction.expert_content,
-                            _json_dumps([t.model_dump() for t in interaction.tools_used]),
-                            _json_dumps([c.model_dump() for c in interaction.citations]),
+                            _json_dumps(
+                                [t.model_dump() for t in interaction.tools_used]
+                            ),
+                            _json_dumps(
+                                [c.model_dump() for c in interaction.citations]
+                            ),
                             _json_dumps(interaction.embedding),
                             subject_ref,
                         ),
@@ -809,8 +873,12 @@ class ProfileMixin:
                             interaction.image_encoding,
                             interaction.shadow_content,
                             interaction.expert_content,
-                            _json_dumps([t.model_dump() for t in interaction.tools_used]),
-                            _json_dumps([c.model_dump() for c in interaction.citations]),
+                            _json_dumps(
+                                [t.model_dump() for t in interaction.tools_used]
+                            ),
+                            _json_dumps(
+                                [c.model_dump() for c in interaction.citations]
+                            ),
                             _json_dumps(interaction.embedding),
                             subject_ref,
                         ),

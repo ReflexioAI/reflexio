@@ -481,7 +481,9 @@ def test_governance_erase_persists_actor_context_in_audit(
         },
     )
 
-    erase_events = [event for event in storage.list_audit_events() if event.operation == "ERASE"]
+    erase_events = [
+        event for event in storage.list_audit_events() if event.operation == "ERASE"
+    ]
     assert len(erase_events) == 1
     assert erase_events[0].actor_type == "api_token"
     assert erase_events[0].actor_ref == "actref_v1_1234567890abcdef1234567890abcdef"
@@ -514,10 +516,26 @@ def test_completed_erase_retry_reconstructs_response(
     assert second.rebuilt_agent_playbook_ids == first.rebuilt_agent_playbook_ids
 
 
+def test_erase_fails_fast_when_service_and_storage_ref_secrets_differ(
+    storage: SQLiteStorage,
+) -> None:
+    service = GovernanceService(
+        storage=storage,
+        org_id=storage.org_id,
+        ref_secret="different-service-secret",
+    )
+
+    with pytest.raises(RuntimeError, match="ref_secret must match"):
+        service.erase_user(user_id="alice", request_id="erase-mismatch")
+
+
 @pytest.mark.parametrize(
     ("barrier_sql", "match"),
     [
-        ("DELETE FROM subject_write_barriers WHERE subject_ref = ?", "matching subject barrier"),
+        (
+            "DELETE FROM subject_write_barriers WHERE subject_ref = ?",
+            "matching subject barrier",
+        ),
         (
             "UPDATE subject_write_barriers SET status = 'failed' WHERE subject_ref = ?",
             "erased subject barrier",
@@ -532,7 +550,11 @@ def test_completed_erase_retry_fails_closed_without_erased_barrier(
 ) -> None:
     monkeypatch.setenv("REFLEXIO_GOVERNANCE_REF_SECRET", "test-governance-secret")
     storage.add_request(
-        _request(request_id="retry-closed-req", user_id="alice", session_id="retry-closed-sess")
+        _request(
+            request_id="retry-closed-req",
+            user_id="alice",
+            session_id="retry-closed-sess",
+        )
     )
     service = GovernanceService(
         storage=storage,

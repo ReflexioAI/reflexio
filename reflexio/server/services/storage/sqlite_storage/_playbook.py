@@ -206,9 +206,35 @@ class PlaybookMixin:
     # User Playbook methods
     # ------------------------------------------------------------------
 
+    def _subject_ref_from_user_playbook_row(self, row: sqlite3.Row) -> str:
+        subject_ref = row["governance_subject_ref"]
+        return (
+            str(subject_ref)
+            if subject_ref
+            else self._subject_ref_for_user_id(row["user_id"])
+        )
+
+    def _assert_user_playbook_writable_locked(
+        self,
+        user_playbook_id: int,
+    ) -> sqlite3.Row | None:
+        row = self.conn.execute(
+            "SELECT user_id, governance_subject_ref FROM user_playbooks WHERE user_playbook_id = ?",
+            (user_playbook_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        self._assert_subject_writable_locked(
+            self._subject_ref_from_user_playbook_row(row)
+        )
+        return row
+
     @SQLiteStorageBase.handle_exceptions
     def save_user_playbooks(self, user_playbooks: list[UserPlaybook]) -> None:
         for up in user_playbooks:
+            subject_ref = self._subject_ref_for_user_id(up.user_id)
+            with self._lock:
+                self._assert_subject_writable_locked(subject_ref)
             embedding_text = up.trigger or up.content
             if embedding_text:
                 if self._should_expand_documents():
@@ -225,7 +251,6 @@ class PlaybookMixin:
                     up.embedding = self._get_embedding(embedding_text)
 
             created_at_iso = _epoch_to_iso(up.created_at)
-            subject_ref = self._subject_ref_for_user_id(up.user_id)
             with self._lock:
                 try:
                     self.conn.execute("BEGIN IMMEDIATE")
@@ -523,20 +548,24 @@ class PlaybookMixin:
 
         batch_request_id = uuid.uuid4().hex
         with self._lock:
-            affected = [
-                r["user_playbook_id"]
-                for r in self.conn.execute(
-                    f"SELECT user_playbook_id FROM user_playbooks WHERE {where}",
+            affected = list(
+                self.conn.execute(
+                    f"SELECT user_playbook_id, user_id, governance_subject_ref FROM user_playbooks WHERE {where}",
                     select_params + extra_params,
                 ).fetchall()
-            ]
+            )
+            for row in affected:
+                self._assert_subject_writable_locked(
+                    self._subject_ref_from_user_playbook_row(row)
+                )
             cur = self.conn.execute(
                 f"UPDATE user_playbooks SET status = ?, retired_at = ? WHERE {where}",
                 [new_val, retired_at_val] + select_params + extra_params,
             )
             from_val = old_status.value if old_status else None
             to_val = new_status.value if new_status else None
-            for upid in affected:
+            for row in affected:
+                upid = row["user_playbook_id"]
                 _append_event_stmt(
                     self.conn,
                     org_id=self.org_id,
@@ -1301,6 +1330,8 @@ class PlaybookMixin:
             op = "revise" if semantic_change else "status_change"
             prov = "wasRevisionOf" if op == "revise" else "wasInvalidatedBy"
             with self._lock:
+                if self._assert_user_playbook_writable_locked(user_playbook_id) is None:
+                    return
                 cur = self.conn.execute(
                     f"UPDATE user_playbooks SET {', '.join(updates)} WHERE user_playbook_id = ?",
                     tuple(params),
@@ -1342,11 +1373,14 @@ class PlaybookMixin:
         with self._lock:
             for upid in user_playbook_ids:
                 row = self.conn.execute(
-                    "SELECT status FROM user_playbooks WHERE user_playbook_id = ?",
+                    "SELECT status, user_id, governance_subject_ref FROM user_playbooks WHERE user_playbook_id = ?",
                     (upid,),
                 ).fetchone()
                 if row is None:
                     continue
+                self._assert_subject_writable_locked(
+                    self._subject_ref_from_user_playbook_row(row)
+                )
                 old_status = row["status"]
                 cur = self.conn.execute(
                     "UPDATE user_playbooks SET status = ?, retired_at = ?"

@@ -30,6 +30,34 @@ def _storage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SQLiteStorage:
     return SQLiteStorage(org_id="org-barrier", db_path=str(tmp_path / "barrier.db"))
 
 
+def _mark_all_completion_targets(storage: SQLiteStorage, purge_id: str) -> None:
+    storage.record_purge_target(
+        purge_id,
+        target_name="target_snapshot",
+        phase="prepare_targets",
+        status="complete",
+        target_ref="all",
+        detail={"prepared": True},
+    )
+    for target_name in (
+        "request",
+        "interaction",
+        "profile",
+        "user_playbook",
+        "agent_success_evaluation_result",
+        "profile_purge",
+        "user_playbook_purge",
+    ):
+        storage.record_purge_target(
+            purge_id,
+            target_name=target_name,
+            phase="delete",
+            status="complete",
+            target_ref="all",
+            detail={"count": 0},
+        )
+
+
 def test_barrier_blocks_request_interaction_and_profile_writes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -171,9 +199,7 @@ def test_begin_subject_erasure_barrier_requires_matching_purge(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     storage = _storage(tmp_path, monkeypatch)
-    alice_subject_ref = governance_subject_ref(
-        "org-barrier", "alice", "barrier-secret"
-    )
+    alice_subject_ref = governance_subject_ref("org-barrier", "alice", "barrier-secret")
     bob_subject_ref = governance_subject_ref("org-barrier", "bob", "barrier-secret")
     purge = storage.begin_purge_operation(
         purge_id="purge_barrier_match",
@@ -346,6 +372,110 @@ def test_guarded_completion_requires_empty_legacy_null_subject_rows(
                 idempotency_key=purge.purge_id,
                 detail={"deleted_counts": {}, "rebuilt_agent_playbook_ids": []},
             ),
+        )
+
+
+def test_guarded_completion_requires_existing_erasing_subject_barrier(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = _storage(tmp_path, monkeypatch)
+    subject_ref = governance_subject_ref("org-barrier", "alice", "barrier-secret")
+    purge = storage.begin_purge_operation(
+        purge_id="purge_missing_barrier",
+        idempotency_key="idem_missing_barrier",
+        operation_type="user_erasure",
+        scope_type="user",
+        subject_ref=subject_ref,
+        request_ref="reqref_v1_00000000000000000000000000000032",
+    )
+    _mark_all_completion_targets(storage, purge.purge_id)
+
+    with pytest.raises(ValueError, match="subject erasure barrier is missing"):
+        storage.complete_subject_erasure_barrier_after_empty_check(
+            purge.purge_id,
+            AuditEvent(
+                org_id="org-barrier",
+                operation="ERASE",
+                entity_type="request",
+                subject_ref=subject_ref,
+                request_ref="reqref_v1_00000000000000000000000000000032",
+                idempotency_key=purge.purge_id,
+                detail={"deleted_counts": {}, "rebuilt_agent_playbook_ids": []},
+            ),
+        )
+
+
+def test_barrier_blocks_profile_update_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = _storage(tmp_path, monkeypatch)
+    subject_ref = governance_subject_ref("org-barrier", "alice", "barrier-secret")
+    profile = UserProfile(
+        profile_id="profile-before-barrier",
+        user_id="alice",
+        content="before",
+        generated_from_request_id="req-before-barrier",
+        last_modified_timestamp=_now(),
+    )
+    storage.add_user_profile("alice", [profile])
+    purge = storage.begin_purge_operation(
+        purge_id="purge_profile_update",
+        idempotency_key="idem_profile_update",
+        operation_type="user_erasure",
+        scope_type="user",
+        subject_ref=subject_ref,
+        request_ref="reqref_v1_00000000000000000000000000000033",
+    )
+    storage.begin_subject_erasure_barrier(subject_ref, purge.purge_id)
+
+    with pytest.raises(SubjectWriteBarrierError):
+        storage.update_user_profile_tags("alice", profile.profile_id, ["blocked"])
+    with pytest.raises(SubjectWriteBarrierError):
+        storage.archive_profile_by_id("alice", profile.profile_id)
+    with pytest.raises(SubjectWriteBarrierError):
+        storage.supersede_profiles_by_ids(
+            "alice",
+            [profile.profile_id],
+            request_id="req-supersede-blocked",
+        )
+
+
+def test_barrier_blocks_user_playbook_update_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = _storage(tmp_path, monkeypatch)
+    subject_ref = governance_subject_ref("org-barrier", "alice", "barrier-secret")
+    playbook = UserPlaybook(
+        user_id="alice",
+        agent_version="agent-v1",
+        request_id="req-before-barrier",
+        playbook_name="barrier-update",
+        created_at=_now(),
+        content="before",
+        trigger="trigger",
+        rationale="rationale",
+        source="test",
+    )
+    storage.save_user_playbooks([playbook])
+    purge = storage.begin_purge_operation(
+        purge_id="purge_playbook_update",
+        idempotency_key="idem_playbook_update",
+        operation_type="user_erasure",
+        scope_type="user",
+        subject_ref=subject_ref,
+        request_ref="reqref_v1_00000000000000000000000000000034",
+    )
+    storage.begin_subject_erasure_barrier(subject_ref, purge.purge_id)
+
+    with pytest.raises(SubjectWriteBarrierError):
+        storage.update_user_playbook(playbook.user_playbook_id, tags=["blocked"])
+    with pytest.raises(SubjectWriteBarrierError):
+        storage.supersede_user_playbooks_by_ids(
+            [playbook.user_playbook_id],
+            request_id="req-supersede-playbook-blocked",
         )
 
 
