@@ -1,0 +1,215 @@
+from __future__ import annotations
+
+from datetime import UTC, datetime
+from pathlib import Path
+
+import pytest
+
+from reflexio.models.api_schema.domain.entities import (
+    AgentPlaybook,
+    AgentPlaybookSourceWindow,
+    AgentSuccessEvaluationResult,
+    Interaction,
+    Request,
+    UserPlaybook,
+    UserProfile,
+)
+from reflexio.models.api_schema.domain.governance import AuditEvent
+from reflexio.server.services.governance.config import governance_subject_ref
+from reflexio.server.services.storage.error import SubjectWriteBarrierError
+from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
+
+
+def _now() -> int:
+    return int(datetime.now(UTC).timestamp())
+
+
+def _storage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SQLiteStorage:
+    monkeypatch.setenv("REFLEXIO_GOVERNANCE_REF_SECRET", "barrier-secret")
+    monkeypatch.setattr(SQLiteStorage, "_get_embedding", lambda *_args: [0.0] * 512)
+    return SQLiteStorage(org_id="org-barrier", db_path=str(tmp_path / "barrier.db"))
+
+
+def test_barrier_blocks_request_interaction_and_profile_writes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = _storage(tmp_path, monkeypatch)
+    subject_ref = governance_subject_ref("org-barrier", "alice", "barrier-secret")
+    purge = storage.begin_purge_operation(
+        purge_id="purge_barrier",
+        idempotency_key="idem_barrier",
+        operation_type="user_erasure",
+        scope_type="user",
+        subject_ref=subject_ref,
+        request_ref="reqref_v1_11111111111111111111111111111111",
+    )
+
+    barrier = storage.begin_subject_erasure_barrier(subject_ref, purge.purge_id)
+
+    assert barrier.status == "erasing"
+    with pytest.raises(SubjectWriteBarrierError):
+        storage.add_request(
+            Request(
+                request_id="req-after-barrier",
+                user_id="alice",
+                session_id="sess-1",
+                source="test",
+                agent_version="agent-v1",
+                created_at=_now(),
+            )
+        )
+    with pytest.raises(SubjectWriteBarrierError):
+        storage.add_user_interaction(
+            "alice",
+            Interaction(
+                user_id="alice",
+                request_id="req-after-barrier",
+                content="blocked interaction",
+                created_at=_now(),
+            ),
+        )
+    with pytest.raises(SubjectWriteBarrierError):
+        storage.add_user_profile(
+            "alice",
+            [
+                UserProfile(
+                    profile_id="profile-after-barrier",
+                    user_id="alice",
+                    content="blocked profile",
+                    generated_from_request_id="req-after-barrier",
+                    last_modified_timestamp=_now(),
+                )
+            ],
+        )
+
+
+def test_barrier_blocks_playbook_eval_and_source_window_writes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = _storage(tmp_path, monkeypatch)
+    subject_ref = governance_subject_ref("org-barrier", "alice", "barrier-secret")
+    purge = storage.begin_purge_operation(
+        purge_id="purge_barrier",
+        idempotency_key="idem_barrier",
+        operation_type="user_erasure",
+        scope_type="user",
+        subject_ref=subject_ref,
+        request_ref="reqref_v1_11111111111111111111111111111111",
+    )
+
+    user_playbook = UserPlaybook(
+        user_id="alice",
+        agent_version="agent-v1",
+        request_id="req-before-barrier",
+        playbook_name="barrier-test",
+        created_at=_now(),
+        content="initial content",
+        trigger="initial trigger",
+        rationale="initial rationale",
+        source="test",
+    )
+    storage.save_user_playbooks([user_playbook])
+    agent_playbook = storage.save_agent_playbooks(
+        [
+            AgentPlaybook(
+                playbook_name="barrier-test",
+                agent_version="agent-v1",
+                created_at=_now(),
+                content="aggregate content",
+                trigger="aggregate trigger",
+                rationale="aggregate rationale",
+            )
+        ]
+    )[0]
+
+    storage.begin_subject_erasure_barrier(subject_ref, purge.purge_id)
+
+    with pytest.raises(SubjectWriteBarrierError):
+        storage.save_user_playbooks(
+            [
+                UserPlaybook(
+                    user_id="alice",
+                    agent_version="agent-v1",
+                    request_id="req-after-barrier",
+                    playbook_name="barrier-test",
+                    created_at=_now(),
+                    content="blocked content",
+                    trigger="blocked trigger",
+                    rationale="blocked rationale",
+                    source="test",
+                )
+            ]
+        )
+    with pytest.raises(SubjectWriteBarrierError):
+        storage.save_agent_success_evaluation_results(
+            [
+                AgentSuccessEvaluationResult(
+                    user_id="alice",
+                    session_id="sess-1",
+                    agent_version="agent-v1",
+                    evaluation_name="barrier-test",
+                    is_success=False,
+                )
+            ]
+        )
+    with pytest.raises(SubjectWriteBarrierError):
+        storage.set_source_windows_for_agent_playbook(
+            agent_playbook.agent_playbook_id,
+            [
+                AgentPlaybookSourceWindow(
+                    user_playbook_id=user_playbook.user_playbook_id,
+                    source_interaction_ids=[101],
+                )
+            ],
+        )
+
+
+def test_guarded_completion_requires_empty_subject_rows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = _storage(tmp_path, monkeypatch)
+    subject_ref = governance_subject_ref("org-barrier", "alice", "barrier-secret")
+    purge = storage.begin_purge_operation(
+        purge_id="purge_guarded_complete",
+        idempotency_key="idem_guarded_complete",
+        operation_type="user_erasure",
+        scope_type="user",
+        subject_ref=subject_ref,
+        request_ref="reqref_v1_0123456789abcdef0123456789abcdef",
+    )
+    storage.add_request(
+        Request(
+            request_id="req-before-barrier",
+            user_id="alice",
+            session_id="sess-1",
+            source="test",
+            agent_version="agent-v1",
+            created_at=_now(),
+        )
+    )
+    storage.begin_subject_erasure_barrier(subject_ref, purge.purge_id)
+    storage.record_purge_target(
+        purge.purge_id,
+        target_name="target_snapshot",
+        phase="prepare_targets",
+        status="complete",
+        target_ref="all",
+        detail={"prepared": True},
+    )
+
+    with pytest.raises(ValueError, match="same-subject rows remain"):
+        storage.complete_subject_erasure_barrier_after_empty_check(
+            purge.purge_id,
+            AuditEvent(
+                org_id="org-barrier",
+                operation="ERASE",
+                entity_type="request",
+                subject_ref=subject_ref,
+                request_ref="reqref_v1_0123456789abcdef0123456789abcdef",
+                idempotency_key=purge.purge_id,
+                detail={"deleted_counts": {}, "rebuilt_agent_playbook_ids": []},
+            ),
+        )

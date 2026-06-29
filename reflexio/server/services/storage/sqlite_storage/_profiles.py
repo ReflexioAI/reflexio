@@ -100,6 +100,8 @@ class ProfileMixin:
     llm_client: Any
     embedding_model_name: str
     embedding_dimensions: int
+    _subject_ref_for_user_id: Any
+    _assert_subject_writable_locked: Any
 
     # ------------------------------------------------------------------
     # CRUD — Profiles
@@ -151,39 +153,49 @@ class ProfileMixin:
             else:
                 profile.embedding = self._get_embedding(embedding_text)
             embedding = profile.embedding
-            self._execute(
-                """INSERT OR REPLACE INTO profiles
-                   (profile_id, user_id, content, last_modified_timestamp,
-                    generated_from_request_id, profile_time_to_live,
-                    expiration_timestamp, custom_features, embedding, source,
-                   status, extractor_names, expanded_terms,
-                    source_span, notes, reader_angle, tags, source_interaction_ids, created_at,
-                    merged_into, superseded_by)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (
-                    profile.profile_id,
-                    profile.user_id,
-                    profile.content,
-                    profile.last_modified_timestamp,
-                    profile.generated_from_request_id,
-                    profile.profile_time_to_live.value,
-                    profile.expiration_timestamp,
-                    _json_dumps(profile.custom_features),
-                    _json_dumps(profile.embedding),
-                    profile.source,
-                    profile.status.value if profile.status else None,
-                    _json_dumps(profile.extractor_names),
-                    profile.expanded_terms,
-                    profile.source_span,
-                    profile.notes,
-                    profile.reader_angle,
-                    _json_dumps(profile.tags),
-                    _json_dumps(profile.source_interaction_ids),
-                    _iso_now(),
-                    profile.merged_into,
-                    profile.superseded_by,
-                ),
-            )
+            subject_ref = self._subject_ref_for_user_id(profile.user_id)
+            with self._lock:
+                try:
+                    self.conn.execute("BEGIN IMMEDIATE")
+                    self._assert_subject_writable_locked(subject_ref)
+                    self.conn.execute(
+                        """INSERT OR REPLACE INTO profiles
+                           (profile_id, user_id, content, last_modified_timestamp,
+                            generated_from_request_id, profile_time_to_live,
+                            expiration_timestamp, custom_features, embedding, source,
+                            status, extractor_names, expanded_terms,
+                            source_span, notes, reader_angle, tags, source_interaction_ids, created_at,
+                            merged_into, superseded_by, governance_subject_ref)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (
+                            profile.profile_id,
+                            profile.user_id,
+                            profile.content,
+                            profile.last_modified_timestamp,
+                            profile.generated_from_request_id,
+                            profile.profile_time_to_live.value,
+                            profile.expiration_timestamp,
+                            _json_dumps(profile.custom_features),
+                            _json_dumps(profile.embedding),
+                            profile.source,
+                            profile.status.value if profile.status else None,
+                            _json_dumps(profile.extractor_names),
+                            profile.expanded_terms,
+                            profile.source_span,
+                            profile.notes,
+                            profile.reader_angle,
+                            _json_dumps(profile.tags),
+                            _json_dumps(profile.source_interaction_ids),
+                            _iso_now(),
+                            profile.merged_into,
+                            profile.superseded_by,
+                            subject_ref,
+                        ),
+                    )
+                    self.conn.commit()
+                except Exception:
+                    self.conn.rollback()
+                    raise
             fts_parts = [profile.content or ""]
             if profile.custom_features:
                 fts_parts.extend(str(v) for v in profile.custom_features.values() if v)
@@ -744,62 +756,71 @@ class ProfileMixin:
 
     def _insert_interaction(self, interaction: Interaction) -> int:
         created_at_iso = _epoch_to_iso(interaction.created_at)
+        subject_ref = self._subject_ref_for_user_id(interaction.user_id)
         with self._lock:
-            if interaction.interaction_id:
-                self.conn.execute(
-                    """INSERT OR REPLACE INTO interactions
-                       (interaction_id, user_id, content, request_id, created_at,
-                        role, user_action, user_action_description,
-                        interacted_image_url, image_encoding, shadow_content,
-                        expert_content, tools_used, citations, embedding)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    (
-                        interaction.interaction_id,
-                        interaction.user_id,
-                        interaction.content,
-                        interaction.request_id,
-                        created_at_iso,
-                        interaction.role,
-                        interaction.user_action.value,
-                        interaction.user_action_description,
-                        interaction.interacted_image_url,
-                        interaction.image_encoding,
-                        interaction.shadow_content,
-                        interaction.expert_content,
-                        _json_dumps([t.model_dump() for t in interaction.tools_used]),
-                        _json_dumps([c.model_dump() for c in interaction.citations]),
-                        _json_dumps(interaction.embedding),
-                    ),
-                )
-                iid = interaction.interaction_id
-            else:
-                cur = self.conn.execute(
-                    """INSERT INTO interactions
-                       (user_id, content, request_id, created_at,
-                        role, user_action, user_action_description,
-                        interacted_image_url, image_encoding, shadow_content,
-                        expert_content, tools_used, citations, embedding)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    (
-                        interaction.user_id,
-                        interaction.content,
-                        interaction.request_id,
-                        created_at_iso,
-                        interaction.role,
-                        interaction.user_action.value,
-                        interaction.user_action_description,
-                        interaction.interacted_image_url,
-                        interaction.image_encoding,
-                        interaction.shadow_content,
-                        interaction.expert_content,
-                        _json_dumps([t.model_dump() for t in interaction.tools_used]),
-                        _json_dumps([c.model_dump() for c in interaction.citations]),
-                        _json_dumps(interaction.embedding),
-                    ),
-                )
-                iid = cur.lastrowid or 0
-                interaction.interaction_id = iid
-            self.conn.commit()
+            try:
+                self.conn.execute("BEGIN IMMEDIATE")
+                self._assert_subject_writable_locked(subject_ref)
+                if interaction.interaction_id:
+                    self.conn.execute(
+                        """INSERT OR REPLACE INTO interactions
+                           (interaction_id, user_id, content, request_id, created_at,
+                            role, user_action, user_action_description,
+                            interacted_image_url, image_encoding, shadow_content,
+                            expert_content, tools_used, citations, embedding, governance_subject_ref)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (
+                            interaction.interaction_id,
+                            interaction.user_id,
+                            interaction.content,
+                            interaction.request_id,
+                            created_at_iso,
+                            interaction.role,
+                            interaction.user_action.value,
+                            interaction.user_action_description,
+                            interaction.interacted_image_url,
+                            interaction.image_encoding,
+                            interaction.shadow_content,
+                            interaction.expert_content,
+                            _json_dumps([t.model_dump() for t in interaction.tools_used]),
+                            _json_dumps([c.model_dump() for c in interaction.citations]),
+                            _json_dumps(interaction.embedding),
+                            subject_ref,
+                        ),
+                    )
+                    iid = interaction.interaction_id
+                else:
+                    cur = self.conn.execute(
+                        """INSERT INTO interactions
+                           (user_id, content, request_id, created_at,
+                            role, user_action, user_action_description,
+                            interacted_image_url, image_encoding, shadow_content,
+                            expert_content, tools_used, citations, embedding, governance_subject_ref)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (
+                            interaction.user_id,
+                            interaction.content,
+                            interaction.request_id,
+                            created_at_iso,
+                            interaction.role,
+                            interaction.user_action.value,
+                            interaction.user_action_description,
+                            interaction.interacted_image_url,
+                            interaction.image_encoding,
+                            interaction.shadow_content,
+                            interaction.expert_content,
+                            _json_dumps([t.model_dump() for t in interaction.tools_used]),
+                            _json_dumps([c.model_dump() for c in interaction.citations]),
+                            _json_dumps(interaction.embedding),
+                            subject_ref,
+                        ),
+                    )
+                    iid = cur.lastrowid or 0
+                    interaction.interaction_id = iid
+                self.conn.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
         # Update FTS and vec
         self._fts_upsert(
             "interactions_fts",

@@ -30,6 +30,8 @@ class RequestMixin:
     _execute: Any
     _fetchone: Any
     _fetchall: Any
+    _subject_ref_for_user_id: Any
+    _assert_subject_writable_locked: Any
 
     # ------------------------------------------------------------------
     # Request methods
@@ -38,20 +40,31 @@ class RequestMixin:
     @SQLiteStorageBase.handle_exceptions
     def add_request(self, request: Request) -> None:
         created_at_iso = _epoch_to_iso(request.created_at)
-        self._execute(
-            """INSERT OR REPLACE INTO requests
-               (request_id, user_id, created_at, source, agent_version, session_id, evaluation_only)
-               VALUES (?,?,?,?,?,?,?)""",
-            (
-                request.request_id,
-                request.user_id,
-                created_at_iso,
-                request.source,
-                request.agent_version,
-                request.session_id,
-                1 if request.evaluation_only else 0,
-            ),
-        )
+        subject_ref = self._subject_ref_for_user_id(request.user_id)
+        with self._lock:
+            try:
+                self.conn.execute("BEGIN IMMEDIATE")
+                self._assert_subject_writable_locked(subject_ref)
+                self.conn.execute(
+                    """INSERT OR REPLACE INTO requests
+                       (request_id, user_id, created_at, source, agent_version, session_id,
+                        evaluation_only, governance_subject_ref)
+                       VALUES (?,?,?,?,?,?,?,?)""",
+                    (
+                        request.request_id,
+                        request.user_id,
+                        created_at_iso,
+                        request.source,
+                        request.agent_version,
+                        request.session_id,
+                        1 if request.evaluation_only else 0,
+                        subject_ref,
+                    ),
+                )
+                self.conn.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
 
     @SQLiteStorageBase.handle_exceptions
     def get_request(self, request_id: str) -> Request | None:

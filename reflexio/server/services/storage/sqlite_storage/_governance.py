@@ -20,9 +20,15 @@ from reflexio.models.api_schema.domain.governance import (
     PurgeOperationType,
     PurgeScopeType,
     PurgeTargetStatus,
+    SubjectBarrierStatus,
     SubjectWriteBarrier,
 )
 from reflexio.models.config_schema import GovernanceRetentionConfig
+from reflexio.server.services.governance.config import (
+    get_governance_ref_secret,
+    governance_subject_ref,
+)
+from reflexio.server.services.storage.error import SubjectWriteBarrierError
 
 _LEGACY_AUDIT_REQUEST_REF = "reqref_v1_legacy_unknown"
 
@@ -90,6 +96,21 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_purge_operations_org_idem
 {_PURGE_OPERATION_TARGETS_TABLE_DDL}
 CREATE INDEX IF NOT EXISTS idx_purge_targets_purge_phase
     ON purge_operation_targets(org_id, purge_id, phase, status);
+
+CREATE TABLE IF NOT EXISTS subject_write_barriers (
+    org_id TEXT NOT NULL,
+    subject_ref TEXT NOT NULL,
+    purge_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    error_code TEXT,
+    error_detail TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (org_id, subject_ref),
+    CHECK (status IN ('erasing', 'erased', 'failed'))
+);
+CREATE INDEX IF NOT EXISTS idx_subject_write_barriers_org_purge
+    ON subject_write_barriers(org_id, purge_id);
 """
 
 _PREPARE_PHASE = "prepare_targets"
@@ -233,6 +254,21 @@ def init_governance_tables(conn: sqlite3.Connection) -> None:
     _upgrade_legacy_purge_operation_targets_table(conn)
     conn.executescript(GOVERNANCE_DDL)
     _enforce_audit_request_ref_not_null(conn)
+    _ensure_governance_subject_ref_columns(conn)
+
+
+def _ensure_governance_subject_ref_columns(conn: sqlite3.Connection) -> None:
+    for table in (
+        "requests",
+        "interactions",
+        "profiles",
+        "user_playbooks",
+        "agent_success_evaluation_result",
+    ):
+        columns = [row[1] for row in conn.execute(f"PRAGMA table_info({table})")]
+        if "governance_subject_ref" in columns:
+            continue
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN governance_subject_ref TEXT")
 
 
 def _epoch_now() -> int:
@@ -894,6 +930,19 @@ def _row_to_purge_target(row: sqlite3.Row) -> PurgeOperationTarget:
     )
 
 
+def _row_to_subject_write_barrier(row: sqlite3.Row) -> SubjectWriteBarrier:
+    return SubjectWriteBarrier(
+        org_id=str(row["org_id"]),
+        subject_ref=str(row["subject_ref"]),
+        purge_id=str(row["purge_id"]),
+        status=cast(SubjectBarrierStatus, str(row["status"])),
+        error_code=row["error_code"],
+        error_detail=row["error_detail"],
+        created_at=int(row["created_at"]),
+        updated_at=int(row["updated_at"]),
+    )
+
+
 class _SQLiteGovernanceDeps(Protocol):
     conn: sqlite3.Connection
     _lock: threading.RLock
@@ -960,7 +1009,7 @@ class SQLiteGovernanceMixin:
             raise ValueError(
                 "Purge operation subject_ref must match the barrier subject_ref"
             )
-        status_by_purge_status = {
+        status_by_purge_status: dict[str, SubjectBarrierStatus] = {
             "pending": "erasing",
             "running": "erasing",
             "complete": "erased",
@@ -976,6 +1025,45 @@ class SQLiteGovernanceMixin:
             created_at=purge_operation.created_at,
             updated_at=purge_operation.updated_at,
         )
+
+    def _active_subject_barrier_locked(self, subject_ref: str) -> sqlite3.Row | None:
+        return self.conn.execute(
+            """SELECT * FROM subject_write_barriers
+               WHERE org_id = ? AND subject_ref = ? AND status IN ('erasing', 'erased')""",
+            (self.org_id, subject_ref),
+        ).fetchone()
+
+    def _assert_subject_writable_locked(self, subject_ref: str) -> None:
+        row = self._active_subject_barrier_locked(subject_ref)
+        if row is not None:
+            raise SubjectWriteBarrierError(
+                f"subject {subject_ref} is blocked by erasure barrier {row['purge_id']}"
+            )
+
+    def _subject_ref_for_user_id(self, user_id: str) -> str:
+        return governance_subject_ref(
+            self.org_id,
+            user_id,
+            get_governance_ref_secret(),
+        )
+
+    def _same_subject_rows_remain_locked(self, subject_ref: str) -> bool:
+        for table in (
+            "requests",
+            "interactions",
+            "profiles",
+            "user_playbooks",
+            "agent_success_evaluation_result",
+        ):
+            row = self.conn.execute(
+                f"""SELECT 1 FROM {table}
+                    WHERE governance_subject_ref = ?
+                    LIMIT 1""",
+                (subject_ref,),
+            ).fetchone()
+            if row is not None:
+                return True
+        return False
 
     def _replace_agent_playbook_source_windows_locked(
         self, agent_playbook_id: int, windows: list[AgentPlaybookSourceWindow]
@@ -2145,18 +2233,188 @@ class SQLiteGovernanceMixin:
         _validate_governance_prefixed_ref(
             "subject_ref", subject_ref, prefix="subref_v1_"
         )
-        purge_operation = self.get_purge_operation(purge_id)
-        return self._barrier_from_purge(purge_operation, subject_ref=subject_ref)
+        validated_purge_id = _validate_governance_purge_id("purge_id", purge_id)
+        now = _epoch_now()
+        with self._lock:
+            try:
+                self.conn.execute("BEGIN IMMEDIATE")
+                self.conn.execute(
+                    """INSERT INTO subject_write_barriers
+                       (org_id, subject_ref, purge_id, status, created_at, updated_at)
+                       VALUES (?, ?, ?, 'erasing', ?, ?)
+                       ON CONFLICT(org_id, subject_ref) DO UPDATE SET
+                         purge_id = excluded.purge_id,
+                         status = 'erasing',
+                         error_code = NULL,
+                         error_detail = NULL,
+                         updated_at = excluded.updated_at""",
+                    (self.org_id, subject_ref, validated_purge_id, now, now),
+                )
+                row = self.conn.execute(
+                    """SELECT * FROM subject_write_barriers
+                       WHERE org_id = ? AND subject_ref = ?""",
+                    (self.org_id, subject_ref),
+                ).fetchone()
+                self.conn.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
+        if row is None:
+            raise ValueError("subject erasure barrier insert failed")
+        return _row_to_subject_write_barrier(row)
 
     def assert_subject_writable(self, subject_ref: str) -> None:
         _validate_governance_prefixed_ref(
             "subject_ref", subject_ref, prefix="subref_v1_"
         )
+        with self._lock:
+            try:
+                self.conn.execute("BEGIN IMMEDIATE")
+                self._assert_subject_writable_locked(subject_ref)
+                self.conn.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
 
     def complete_subject_erasure_barrier_after_empty_check(
         self, purge_id: str, audit_event: AuditEvent
     ) -> PurgeOperation:
-        return self.complete_purge_operation_with_audit(purge_id, audit_event)
+        purge_id = _validate_governance_purge_id("purge_id", purge_id)
+        if audit_event.org_id != self.org_id:
+            raise ValueError("Audit event org_id must match storage org_id")
+        if audit_event.idempotency_key != purge_id:
+            raise ValueError("Audit event idempotency key must match purge_id")
+        if not _is_successful_erase_event(audit_event, purge_id=purge_id):
+            raise ValueError(
+                "Completion requires a successful ERASE audit event for this purge"
+            )
+        audit_event = _canonicalize_audit_event_for_persistence(audit_event)
+        now = _epoch_now()
+        with self._lock:
+            try:
+                self.conn.execute("BEGIN IMMEDIATE")
+                row = self.conn.execute(
+                    "SELECT * FROM purge_operations WHERE purge_id = ? AND org_id = ?",
+                    (purge_id, self.org_id),
+                ).fetchone()
+                if row is None:
+                    raise ValueError(f"Purge operation {purge_id!r} not found")
+                purge_operation = _row_to_purge_operation(row)
+                if purge_operation.subject_ref != audit_event.subject_ref:
+                    raise ValueError(
+                        "Audit event subject_ref must match purge operation subject_ref"
+                    )
+                if purge_operation.request_ref != audit_event.request_ref:
+                    raise ValueError(
+                        "Audit event request_ref must match purge operation request_ref"
+                    )
+                snapshot = self.conn.execute(
+                    """SELECT 1 FROM purge_operation_targets
+                       WHERE org_id = ? AND purge_id = ? AND target_name = ? AND target_ref = 'all'
+                         AND phase = ? AND status = 'complete'""",
+                    (self.org_id, purge_id, _SNAPSHOT_TARGET_NAME, _PREPARE_PHASE),
+                ).fetchone()
+                if snapshot is None:
+                    raise ValueError(
+                        "Cannot complete purge without target snapshot marker"
+                    )
+                if self._same_subject_rows_remain_locked(audit_event.subject_ref or ""):
+                    raise ValueError("same-subject rows remain")
+                delete_rows = self.conn.execute(
+                    """SELECT target_name, status FROM purge_operation_targets
+                       WHERE org_id = ? AND purge_id = ? AND phase = 'delete'
+                         AND target_ref = 'all'""",
+                    (self.org_id, purge_id),
+                ).fetchall()
+                delete_statuses = {
+                    str(target_row["target_name"]): str(target_row["status"])
+                    for target_row in delete_rows
+                }
+                missing_delete_targets = [
+                    target_name
+                    for target_name in _CANONICAL_DELETE_TARGET_NAMES
+                    if delete_statuses.get(target_name) != "complete"
+                ]
+                if missing_delete_targets:
+                    raise ValueError(
+                        "Cannot complete purge without complete delete target matrix: "
+                        + ", ".join(missing_delete_targets)
+                    )
+                incomplete = self.conn.execute(
+                    """SELECT 1 FROM purge_operation_targets
+                       WHERE org_id = ? AND purge_id = ? AND status != 'complete'
+                       LIMIT 1""",
+                    (self.org_id, purge_id),
+                ).fetchone()
+                if incomplete is not None:
+                    raise ValueError("Cannot complete purge with incomplete targets")
+                existing_audit_row = self.conn.execute(
+                    """SELECT * FROM audit_events
+                       WHERE org_id = ? AND idempotency_key = ?""",
+                    (self.org_id, purge_id),
+                ).fetchone()
+                if existing_audit_row is not None:
+                    existing_event = _row_to_audit_event(existing_audit_row)
+                    if not _is_successful_erase_event(
+                        existing_event, purge_id=purge_id
+                    ):
+                        raise ValueError(
+                            "Existing audit row for purge_id must be the matching "
+                            "successful ERASE row"
+                        )
+                    if _successful_erase_identity(
+                        existing_event
+                    ) != _successful_erase_identity(audit_event):
+                        raise ValueError(
+                            "Existing audit row for purge_id must be the matching "
+                            "successful ERASE row"
+                        )
+                else:
+                    self._append_audit_event_with_cursor(self.conn, audit_event)
+                    existing_audit_row = self.conn.execute(
+                        """SELECT * FROM audit_events
+                           WHERE org_id = ? AND idempotency_key = ?""",
+                        (self.org_id, purge_id),
+                    ).fetchone()
+                if existing_audit_row is None:
+                    raise ValueError(
+                        "Completion requires exactly one successful ERASE audit row "
+                        "for the purge_id"
+                    )
+                existing_event = _row_to_audit_event(existing_audit_row)
+                if not _is_successful_erase_event(existing_event, purge_id=purge_id):
+                    raise ValueError(
+                        "Completion requires exactly one matching successful ERASE "
+                        "audit row for the purge_id"
+                    )
+                if _successful_erase_identity(
+                    existing_event
+                ) != _successful_erase_identity(audit_event):
+                    raise ValueError(
+                        "Completion requires exactly one matching successful ERASE "
+                        "audit row for the purge_id"
+                    )
+                self.conn.execute(
+                    """UPDATE subject_write_barriers
+                       SET status = 'erased', error_code = NULL, error_detail = NULL, updated_at = ?
+                       WHERE org_id = ? AND subject_ref = ? AND purge_id = ?""",
+                    (now, self.org_id, audit_event.subject_ref, purge_id),
+                )
+                self.conn.execute(
+                    """UPDATE purge_operations
+                       SET status = 'complete',
+                           error_code = NULL,
+                           error_detail = NULL,
+                           updated_at = ?,
+                           completed_at = ?
+                       WHERE purge_id = ? AND org_id = ?""",
+                    (now, now, purge_id, self.org_id),
+                )
+                self.conn.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
+        return self.get_purge_operation(purge_id)
 
     def fail_subject_erasure_barrier(
         self,
@@ -2168,8 +2426,64 @@ class SQLiteGovernanceMixin:
         _validate_governance_prefixed_ref(
             "subject_ref", subject_ref, prefix="subref_v1_"
         )
-        purge_operation = self.fail_purge_operation(purge_id, error_code, error_detail)
-        return self._barrier_from_purge(purge_operation, subject_ref=subject_ref)
+        validated_purge_id = _validate_governance_purge_id("purge_id", purge_id)
+        validated_error_code = _validate_governance_error_code(error_code)
+        validated_error_detail = _validate_governance_error_detail(error_detail)
+        now = _epoch_now()
+        with self._lock:
+            try:
+                self.conn.execute("BEGIN IMMEDIATE")
+                self.conn.execute(
+                    """INSERT INTO subject_write_barriers
+                       (org_id, subject_ref, purge_id, status, error_code, error_detail, created_at, updated_at)
+                       VALUES (?, ?, ?, 'failed', ?, ?, ?, ?)
+                       ON CONFLICT(org_id, subject_ref) DO UPDATE SET
+                         purge_id = excluded.purge_id,
+                         status = 'failed',
+                         error_code = excluded.error_code,
+                         error_detail = excluded.error_detail,
+                         updated_at = excluded.updated_at""",
+                    (
+                        self.org_id,
+                        subject_ref,
+                        validated_purge_id,
+                        validated_error_code,
+                        validated_error_detail,
+                        now,
+                        now,
+                    ),
+                )
+                purge_row = self.conn.execute(
+                    "SELECT 1 FROM purge_operations WHERE purge_id = ? AND org_id = ?",
+                    (validated_purge_id, self.org_id),
+                ).fetchone()
+                if purge_row is not None:
+                    self.conn.execute(
+                        """UPDATE purge_operations
+                           SET status = 'failed', error_code = ?, error_detail = ?,
+                               updated_at = ?, completed_at = ?
+                           WHERE purge_id = ? AND org_id = ?""",
+                        (
+                            validated_error_code,
+                            validated_error_detail,
+                            now,
+                            now,
+                            validated_purge_id,
+                            self.org_id,
+                        ),
+                    )
+                row = self.conn.execute(
+                    """SELECT * FROM subject_write_barriers
+                       WHERE org_id = ? AND subject_ref = ?""",
+                    (self.org_id, subject_ref),
+                ).fetchone()
+                self.conn.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
+        if row is None:
+            raise ValueError("subject erasure barrier update failed")
+        return _row_to_subject_write_barrier(row)
 
     def fail_purge_operation(
         self, purge_id: str, error_code: str, error_detail: str
