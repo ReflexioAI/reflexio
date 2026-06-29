@@ -20,6 +20,7 @@ from reflexio.models.api_schema.domain.governance import (
     PurgeOperationType,
     PurgeScopeType,
     PurgeTargetStatus,
+    SubjectWriteBarrier,
 )
 from reflexio.models.config_schema import GovernanceRetentionConfig
 
@@ -948,6 +949,33 @@ class SQLiteGovernanceMixin:
 
     def _deps(self) -> _SQLiteGovernanceDeps:
         return cast(_SQLiteGovernanceDeps, self)
+
+    def _barrier_from_purge(
+        self,
+        purge_operation: PurgeOperation,
+        *,
+        subject_ref: str,
+    ) -> SubjectWriteBarrier:
+        if purge_operation.subject_ref != subject_ref:
+            raise ValueError(
+                "Purge operation subject_ref must match the barrier subject_ref"
+            )
+        status_by_purge_status = {
+            "pending": "erasing",
+            "running": "erasing",
+            "complete": "erased",
+            "failed": "failed",
+        }
+        return SubjectWriteBarrier(
+            org_id=purge_operation.org_id,
+            subject_ref=subject_ref,
+            purge_id=purge_operation.purge_id,
+            status=status_by_purge_status[purge_operation.status],
+            error_code=purge_operation.error_code,
+            error_detail=purge_operation.error_detail,
+            created_at=purge_operation.created_at,
+            updated_at=purge_operation.updated_at,
+        )
 
     def _replace_agent_playbook_source_windows_locked(
         self, agent_playbook_id: int, windows: list[AgentPlaybookSourceWindow]
@@ -2110,6 +2138,38 @@ class SQLiteGovernanceMixin:
                 self.conn.rollback()
                 raise
         return self.get_purge_operation(purge_id)
+
+    def begin_subject_erasure_barrier(
+        self, subject_ref: str, purge_id: str
+    ) -> SubjectWriteBarrier:
+        _validate_governance_prefixed_ref(
+            "subject_ref", subject_ref, prefix="subref_v1_"
+        )
+        purge_operation = self.get_purge_operation(purge_id)
+        return self._barrier_from_purge(purge_operation, subject_ref=subject_ref)
+
+    def assert_subject_writable(self, subject_ref: str) -> None:
+        _validate_governance_prefixed_ref(
+            "subject_ref", subject_ref, prefix="subref_v1_"
+        )
+
+    def complete_subject_erasure_barrier_after_empty_check(
+        self, purge_id: str, audit_event: AuditEvent
+    ) -> PurgeOperation:
+        return self.complete_purge_operation_with_audit(purge_id, audit_event)
+
+    def fail_subject_erasure_barrier(
+        self,
+        subject_ref: str,
+        purge_id: str,
+        error_code: str,
+        error_detail: str,
+    ) -> SubjectWriteBarrier:
+        _validate_governance_prefixed_ref(
+            "subject_ref", subject_ref, prefix="subref_v1_"
+        )
+        purge_operation = self.fail_purge_operation(purge_id, error_code, error_detail)
+        return self._barrier_from_purge(purge_operation, subject_ref=subject_ref)
 
     def fail_purge_operation(
         self, purge_id: str, error_code: str, error_detail: str

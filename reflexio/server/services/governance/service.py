@@ -9,11 +9,11 @@ from reflexio.models.api_schema.domain.governance import (
     UserEraseResult,
     UserExportResult,
 )
-from reflexio.server.services.governance.subject_refs import (
-    request_ref,
-    stable_id,
-    subject_ref,
+from reflexio.server.services.governance.config import (
+    governance_request_ref,
+    governance_subject_ref,
 )
+from reflexio.server.services.governance.subject_refs import stable_id
 
 _DELETE_TARGET_NAME_TO_RESULT_KEY = {
     "interaction": "interactions",
@@ -35,8 +35,8 @@ class GovernanceService:
         self.ref_secret = ref_secret
 
     def export_user(self, *, user_id: str, request_id: str) -> UserExportResult:
-        subref = subject_ref(user_id, self.ref_secret)
-        reqref = request_ref(request_id, self.ref_secret)
+        subref = governance_subject_ref(self.org_id, user_id, self.ref_secret)
+        reqref = governance_request_ref(self.org_id, request_id, self.ref_secret)
         export_id = stable_id("export", f"{self.org_id}:export:{subref}:{reqref}")
         requests, sessions = self._load_user_requests_and_sessions(user_id)
         bundle: dict[str, Any] = {
@@ -68,8 +68,8 @@ class GovernanceService:
         return UserExportResult(subject_ref=subref, export_id=export_id, bundle=bundle)
 
     def erase_user(self, *, user_id: str, request_id: str) -> UserEraseResult:
-        subref = subject_ref(user_id, self.ref_secret)
-        reqref = request_ref(request_id, self.ref_secret)
+        subref = governance_subject_ref(self.org_id, user_id, self.ref_secret)
+        reqref = governance_request_ref(self.org_id, request_id, self.ref_secret)
         idempotency_key = stable_id(
             "idem",
             f"{self.org_id}:user_erasure:{subref}:{reqref}",

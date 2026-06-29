@@ -21,8 +21,8 @@ from reflexio.models.api_schema.domain.enums import PlaybookStatus
 from reflexio.models.api_schema.retriever_schema import SearchAgentPlaybookRequest
 from reflexio.models.config_schema import SearchMode
 from reflexio.server.services.governance import service as governance_service_module
+from reflexio.server.services.governance.config import governance_subject_ref
 from reflexio.server.services.governance.service import GovernanceService
-from reflexio.server.services.governance.subject_refs import subject_ref
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 
 pytestmark = pytest.mark.integration
@@ -259,7 +259,11 @@ def test_local_governance_e2e_erases_exports_audits_and_rebuilds_shared_aggregat
 
     exported = service.export_user(user_id="alice", request_id="export-request-1")
 
-    assert exported.subject_ref == subject_ref("alice", "test-governance-secret")
+    assert exported.subject_ref == governance_subject_ref(
+        storage.org_id,
+        "alice",
+        "test-governance-secret",
+    )
     assert exported.export_id.startswith("export_")
     assert [profile["profile_id"] for profile in exported.bundle["profiles"]] == [
         "profile-alice"

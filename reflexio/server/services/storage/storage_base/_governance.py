@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from abc import abstractmethod
+from abc import ABC, abstractmethod
 from typing import Literal
 
 from reflexio.models.api_schema.domain.governance import (
@@ -12,7 +12,7 @@ from reflexio.models.api_schema.domain.governance import (
 from reflexio.models.config_schema import GovernanceRetentionConfig
 
 
-class GovernanceMixin:
+class GovernanceMixin(ABC):
     """Mixin for backend-neutral governance storage primitives."""
 
     @abstractmethod
