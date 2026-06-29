@@ -170,37 +170,60 @@ class RequestMixin:
         offset: int = 0,
         source: str | None = None,
     ) -> dict[str, list[RequestInteractionDataModel]]:
-        sql = "SELECT * FROM requests WHERE 1=1"
-        params: list[Any] = []
-
+        # Request-level filters shared by both the session-page query and the
+        # request-fetch query. Pagination is applied at the SESSION level
+        # (top_k/offset count sessions, not request rows) so a session with many
+        # requests is never truncated to a subset of its rows.
+        filter_sql = ""
+        filter_params: list[Any] = []
         if user_id:
-            sql += " AND user_id = ?"
-            params.append(user_id)
+            filter_sql += " AND user_id = ?"
+            filter_params.append(user_id)
         if request_id:
-            sql += " AND request_id = ?"
-            params.append(request_id)
+            filter_sql += " AND request_id = ?"
+            filter_params.append(request_id)
         if session_id:
-            sql += " AND session_id = ?"
-            params.append(session_id)
+            filter_sql += " AND session_id = ?"
+            filter_params.append(session_id)
         if source is not None:
-            sql += " AND source = ?"
-            params.append(source)
+            filter_sql += " AND source = ?"
+            filter_params.append(source)
         if start_time:
-            sql += " AND created_at >= ?"
-            params.append(_epoch_to_iso(start_time))
+            filter_sql += " AND created_at >= ?"
+            filter_params.append(_epoch_to_iso(start_time))
         if end_time:
-            sql += " AND created_at <= ?"
-            params.append(_epoch_to_iso(end_time))
+            filter_sql += " AND created_at <= ?"
+            filter_params.append(_epoch_to_iso(end_time))
 
+        # Step 1: select the page of session_ids, ordered by each session's most
+        # recent matching request (latest-first), with session_id as a stable
+        # tiebreak so pages don't overlap or skip.
         effective_limit = top_k or 100
-        sql += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
-        params.extend([effective_limit, offset])
+        page_rows = self._fetchall(
+            f"SELECT session_id, MAX(created_at) AS latest FROM requests "
+            f"WHERE 1=1{filter_sql} "
+            f"GROUP BY session_id ORDER BY latest DESC, session_id DESC "
+            f"LIMIT ? OFFSET ?",
+            [*filter_params, effective_limit, offset],
+        )
+        if not page_rows:
+            return {}
+        page_session_ids = [r["session_id"] for r in page_rows]
 
-        req_rows = self._fetchall(sql, params)
+        # Step 2: fetch ALL matching requests for the sessions in this page.
+        placeholders = ",".join("?" for _ in page_session_ids)
+        req_rows = self._fetchall(
+            f"SELECT * FROM requests WHERE 1=1{filter_sql} "
+            f"AND session_id IN ({placeholders}) ORDER BY created_at DESC",
+            [*filter_params, *page_session_ids],
+        )
         if not req_rows:
             return {}
 
-        grouped: dict[str, list[RequestInteractionDataModel]] = {}
+        # Preserve the latest-first session ordering from step 1.
+        grouped: dict[str, list[RequestInteractionDataModel]] = {
+            (sid or ""): [] for sid in page_session_ids
+        }
         for rr in req_rows:
             req = _row_to_request(rr)
             group_name = req.session_id or ""

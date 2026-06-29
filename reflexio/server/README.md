@@ -486,7 +486,7 @@ Pre-computed embeddings passed to storage methods via `query_embedding` paramete
 
 **Key Methods**:
 - CRUD: profiles, interactions, playbooks, results, requests, playbook aggregation change logs
-- `get_sessions(offset, top_k, session_id)` → `dict[str, list[RequestInteractionDataModel]]` (groups by session_id, supports offset/limit pagination)
+- `get_sessions(offset, top_k, session_id)` → `dict[str, list[RequestInteractionDataModel]]` (groups by session_id; paginates per-session — `top_k`/`offset` count sessions, and each returned session includes all of its requests)
 - `get_rerun_user_ids(user_id, start_time, end_time, source, agent_version)` → `list[str]` - Get distinct user IDs matching filters for rerun workflows (pushes filtering to storage layer)
 - `get_feedbacks(status_filter, feedback_status_filter)` - Filter by playbook status and approval status
 - `save_feedbacks()` → returns `list[Feedback]` with `feedback_id` populated (callers can ignore return)
