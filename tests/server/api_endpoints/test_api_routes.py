@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from reflexio.models.api_schema.retriever_schema import (
+    GetProfilesViewResponse,
     SearchInteractionResponse,
     SearchUserProfileResponse,
     SetConfigResponse,
@@ -18,6 +19,8 @@ from reflexio.models.api_schema.retriever_schema import (
 )
 from reflexio.models.api_schema.service_schemas import (
     PublishUserInteractionResponse,
+    Status,
+    UserProfile,
 )
 from reflexio.models.config_schema import Config, StorageConfigSQLite
 
@@ -165,6 +168,56 @@ class TestSearchEndpoints:
     def test_search_profiles_missing_body_returns_422(self, client):
         response = client.post("/api/search_profiles")
         assert response.status_code == 422
+
+
+class TestGetAllProfilesRoute:
+    """Tests for GET /api/get_all_profiles."""
+
+    def test_exact_profile_lookup_includes_tombstones_when_requested(
+        self, client, patched_reflexio, mock_reflexio
+    ):
+        profile = UserProfile(
+            profile_id="p-superseded",
+            user_id="project-1",
+            content="old preference",
+            last_modified_timestamp=123,
+            generated_from_request_id="req-1",
+            status=Status.SUPERSEDED,
+        )
+        mock_storage = MagicMock()
+        mock_storage.get_profile_by_id.return_value = profile
+        mock_reflexio.request_context.storage = mock_storage
+
+        response = client.get(
+            "/api/get_all_profiles",
+            params={
+                "profile_id": "p-superseded",
+                "include_tombstones": "true",
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["success"] is True
+        assert data["user_profiles"][0]["profile_id"] == "p-superseded"
+        assert data["user_profiles"][0]["status"] == "superseded"
+        mock_storage.get_profile_by_id.assert_called_once_with(
+            "p-superseded", include_tombstones=True
+        )
+
+    def test_list_profiles_still_uses_existing_reflexio_method(
+        self, client, patched_reflexio, mock_reflexio
+    ):
+        mock_reflexio.get_all_profiles.return_value = GetProfilesViewResponse(
+            success=True,
+            user_profiles=[],
+            msg="Found 0 profile(s)",
+        )
+
+        response = client.get("/api/get_all_profiles", params={"limit": 10})
+
+        assert response.status_code == 200
+        mock_reflexio.get_all_profiles.assert_called_once()
 
 
 class TestUpdateUserProfileRoute:
