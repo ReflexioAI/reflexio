@@ -645,11 +645,22 @@ class PlaybookMixin:
 
     @SQLiteStorageBase.handle_exceptions
     def archive_user_playbook_by_id(self, user_id: str, user_playbook_id: int) -> bool:
-        cur = self._execute(
-            "UPDATE user_playbooks SET status = ?, retired_at = ? "
-            "WHERE user_playbook_id = ? AND user_id = ? AND status IS NULL",
-            (Status.ARCHIVED.value, _epoch_now(), user_playbook_id, user_id),
-        )
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT user_id, governance_subject_ref FROM user_playbooks WHERE user_playbook_id = ? AND user_id = ?",
+                (user_playbook_id, user_id),
+            ).fetchone()
+            if row is None:
+                return False
+            self._assert_subject_writable_locked(
+                self._subject_ref_from_user_playbook_row(row)
+            )
+            cur = self.conn.execute(
+                "UPDATE user_playbooks SET status = ?, retired_at = ? "
+                "WHERE user_playbook_id = ? AND user_id = ? AND status IS NULL",
+                (Status.ARCHIVED.value, _epoch_now(), user_playbook_id, user_id),
+            )
+            self.conn.commit()
         return cur.rowcount > 0
 
     @SQLiteStorageBase.handle_exceptions

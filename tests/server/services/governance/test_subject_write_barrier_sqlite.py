@@ -406,6 +406,44 @@ def test_guarded_completion_requires_existing_erasing_subject_barrier(
         )
 
 
+def test_guarded_completion_rejects_failed_subject_barrier(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = _storage(tmp_path, monkeypatch)
+    subject_ref = governance_subject_ref("org-barrier", "alice", "barrier-secret")
+    purge = storage.begin_purge_operation(
+        purge_id="purge_failed_barrier",
+        idempotency_key="idem_failed_barrier",
+        operation_type="user_erasure",
+        scope_type="user",
+        subject_ref=subject_ref,
+        request_ref="reqref_v1_00000000000000000000000000000035",
+    )
+    storage.begin_subject_erasure_barrier(subject_ref, purge.purge_id)
+    storage.fail_subject_erasure_barrier(
+        subject_ref,
+        purge.purge_id,
+        error_code="test_failed_barrier",
+        error_detail="RuntimeError",
+    )
+    _mark_all_completion_targets(storage, purge.purge_id)
+
+    with pytest.raises(ValueError, match="subject erasure barrier is missing"):
+        storage.complete_subject_erasure_barrier_after_empty_check(
+            purge.purge_id,
+            AuditEvent(
+                org_id="org-barrier",
+                operation="ERASE",
+                entity_type="request",
+                subject_ref=subject_ref,
+                request_ref="reqref_v1_00000000000000000000000000000035",
+                idempotency_key=purge.purge_id,
+                detail={"deleted_counts": {}, "rebuilt_agent_playbook_ids": []},
+            ),
+        )
+
+
 def test_barrier_blocks_profile_update_paths(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -470,6 +508,8 @@ def test_barrier_blocks_user_playbook_update_paths(
     )
     storage.begin_subject_erasure_barrier(subject_ref, purge.purge_id)
 
+    with pytest.raises(SubjectWriteBarrierError):
+        storage.archive_user_playbook_by_id("alice", playbook.user_playbook_id)
     with pytest.raises(SubjectWriteBarrierError):
         storage.update_user_playbook(playbook.user_playbook_id, tags=["blocked"])
     with pytest.raises(SubjectWriteBarrierError):

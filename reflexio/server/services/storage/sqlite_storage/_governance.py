@@ -2496,7 +2496,7 @@ class SQLiteGovernanceMixin:
                 barrier_update = self.conn.execute(
                     """UPDATE subject_write_barriers
                        SET status = 'erased', error_code = NULL, error_detail = NULL, updated_at = ?
-                       WHERE org_id = ? AND subject_ref = ? AND purge_id = ?""",
+                       WHERE org_id = ? AND subject_ref = ? AND purge_id = ? AND status = 'erasing'""",
                     (now, self.org_id, audit_event.subject_ref, purge_id),
                 )
                 if barrier_update.rowcount != 1:
