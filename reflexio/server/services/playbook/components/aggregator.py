@@ -24,6 +24,10 @@ from reflexio.models.config_schema import (
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.services.operation_state_utils import OperationStateManager
+from reflexio.server.services.playbook.aggregation_prompt_processing import (
+    AggregationPromptProcessingContext,
+    AggregationPromptProcessor,
+)
 from reflexio.server.services.playbook.playbook_service_constants import (
     PlaybookServiceConstants,
 )
@@ -33,7 +37,6 @@ from reflexio.server.services.playbook.playbook_service_utils import (
     StructuredPlaybookContent,
     ensure_playbook_content,
 )
-from reflexio.server.services.playbook.user_detail_stripping import UserDetailStripper
 from reflexio.server.services.service_utils import log_model_response
 from reflexio.server.tracing import capture_anomaly, sentry_tags
 from reflexio.server.usage_metrics import record_usage_event
@@ -52,22 +55,14 @@ class PlaybookAggregator:
         llm_client: LiteLLMClient,
         request_context: RequestContext,
         agent_version: str,
-        user_detail_stripper: UserDetailStripper | None = None,
+        aggregation_prompt_processor: AggregationPromptProcessor | None = None,
     ) -> None:
         self.client = llm_client
         self.storage = request_context.storage
         self.configurator = request_context.configurator
         self.request_context = request_context
         self.agent_version = agent_version
-        self.user_detail_stripper = user_detail_stripper
-        prompt_extra_instructions = getattr(
-            user_detail_stripper, "prompt_extra_instructions", None
-        )
-        if not isinstance(prompt_extra_instructions, str):
-            prompt_extra_instructions = None
-        self.aggregation_prompt_extra_instructions = (
-            self._format_prompt_extra_instructions(prompt_extra_instructions)
-        )
+        self.aggregation_prompt_processor = aggregation_prompt_processor
 
     # ===============================
     # private methods - operation state
@@ -210,106 +205,96 @@ class PlaybookAggregator:
             blocks.append("\n".join(lines))
         return "\n\n".join(blocks) if blocks else "(No playbook items)"
 
-    def _strip_prompt_field(
+    def _preprocess_prompt_field(
         self,
         text: str | None,
-        shared_mapping: dict[str, int],
+        shared_state: dict[str, object],
+        processing_context: AggregationPromptProcessingContext | None = None,
     ) -> str | None:
-        if text is None or self.user_detail_stripper is None:
+        if text is None or self.aggregation_prompt_processor is None:
             return text
-        return self.user_detail_stripper.strip_user_details(
-            text, shared_mapping=shared_mapping
-        ).text
+        result = self.aggregation_prompt_processor.preprocess_prompt_text(
+            text,
+            shared_state=shared_state,
+            context=processing_context,
+        )
+        if processing_context is not None and (result.changed or result.text != text):
+            processing_context.changed = True
+        return result.text
 
-    def _strip_user_playbook_for_prompt(
+    def _preprocess_user_playbook_for_prompt(
         self,
         playbook: UserPlaybook,
-        shared_mapping: dict[str, int],
+        shared_state: dict[str, object],
+        processing_context: AggregationPromptProcessingContext | None = None,
     ) -> UserPlaybook:
-        if self.user_detail_stripper is None:
+        if self.aggregation_prompt_processor is None:
             return playbook
         return playbook.model_copy(
             update={
-                "content": self._strip_prompt_field(playbook.content, shared_mapping)
+                "content": self._preprocess_prompt_field(
+                    playbook.content, shared_state, processing_context
+                )
                 or "",
-                "trigger": self._strip_prompt_field(playbook.trigger, shared_mapping),
-                "rationale": self._strip_prompt_field(
-                    playbook.rationale, shared_mapping
+                "trigger": self._preprocess_prompt_field(
+                    playbook.trigger, shared_state, processing_context
+                ),
+                "rationale": self._preprocess_prompt_field(
+                    playbook.rationale, shared_state, processing_context
                 ),
             }
         )
 
-    def _sanitize_aggregation_output_text(
+    def _aggregation_prompt_extra_instructions_for_context(
         self,
-        text: str | None,
-    ) -> tuple[str | None, int]:
-        if self.user_detail_stripper is None:
-            return text, 0
-        return self.user_detail_stripper.sanitize_aggregation_output_text(text)
+        processing_context: AggregationPromptProcessingContext | None,
+    ) -> str:
+        if (
+            processing_context is None
+            or not processing_context.changed
+            or self.aggregation_prompt_processor is None
+        ):
+            return ""
 
-    def _sanitize_aggregation_response(
-        self, response: PlaybookAggregationOutput
+        context_instructions = self.aggregation_prompt_processor.prompt_instructions(
+            processing_context
+        )
+        if not isinstance(context_instructions, str):
+            context_instructions = None
+        return self._format_prompt_extra_instructions(context_instructions)
+
+    def _postprocess_aggregation_output(
+        self,
+        value: object,
+        processing_context: AggregationPromptProcessingContext | None = None,
+    ) -> tuple[object, int]:
+        if self.aggregation_prompt_processor is None:
+            return value, 0
+        result = self.aggregation_prompt_processor.postprocess_aggregation_output(
+            value,
+            context=processing_context,
+        )
+        return result.value, result.artifacts_removed
+
+    def _postprocess_aggregation_response(
+        self,
+        response: PlaybookAggregationOutput,
+        processing_context: AggregationPromptProcessingContext | None = None,
     ) -> tuple[PlaybookAggregationOutput, int]:
-        structured = response.playbook
-        if structured is None:
+        processed, artifact_count = self._postprocess_aggregation_output(
+            response,
+            processing_context,
+        )
+        if not isinstance(processed, PlaybookAggregationOutput):
             return response, 0
+        return processed, artifact_count
 
-        updates: dict[str, str | None] = {}
-        placeholder_count = 0
-        for field_name, value in structured.model_dump().items():
-            if not isinstance(value, str):
-                continue
-            sanitized, field_count = self._sanitize_aggregation_output_text(value)
-            placeholder_count += field_count
-            if sanitized != value:
-                updates[field_name] = sanitized
-
-        if not updates:
-            return response, 0
-        return response.model_copy(
-            update={"playbook": structured.model_copy(update=updates)}
-        ), placeholder_count
-
-    def _sanitize_aggregation_log_value(self, value: object) -> tuple[object, int]:
-        if isinstance(value, str):
-            return self._sanitize_aggregation_output_text(value)
-
-        if isinstance(value, dict):
-            sanitized: dict[object, object] = {}
-            placeholder_count = 0
-            for key, item in value.items():
-                sanitized_key, key_count = self._sanitize_aggregation_log_value(key)
-                sanitized_item, item_count = self._sanitize_aggregation_log_value(item)
-                sanitized[sanitized_key] = sanitized_item
-                placeholder_count += key_count + item_count
-            return sanitized, placeholder_count
-
-        if isinstance(value, list):
-            sanitized_items: list[object] = []
-            placeholder_count = 0
-            for item in value:
-                sanitized_item, item_count = self._sanitize_aggregation_log_value(item)
-                sanitized_items.append(sanitized_item)
-                placeholder_count += item_count
-            return sanitized_items, placeholder_count
-
-        if isinstance(value, tuple):
-            sanitized_items: list[object] = []
-            placeholder_count = 0
-            for item in value:
-                sanitized_item, item_count = self._sanitize_aggregation_log_value(item)
-                sanitized_items.append(sanitized_item)
-                placeholder_count += item_count
-            return tuple(sanitized_items), placeholder_count
-
-        return value, 0
-
-    def _record_placeholder_leakage(self, placeholder_count: int) -> None:
-        if placeholder_count <= 0:
+    def _record_postprocessing_artifacts(self, artifact_count: int) -> None:
+        if artifact_count <= 0:
             return
         logger.warning(
-            "Replaced %d residual user-detail placeholders in aggregated playbook output",
-            placeholder_count,
+            "Post-processed %d residual artifacts in aggregated playbook output",
+            artifact_count,
         )
 
     @staticmethod
@@ -692,9 +677,9 @@ class PlaybookAggregator:
             self.agent_version,
         )
         logger.info(
-            "User detail stripping for aggregation: %s",
-            type(self.user_detail_stripper).__name__
-            if self.user_detail_stripper is not None
+            "Aggregation prompt processor: %s",
+            type(self.aggregation_prompt_processor).__name__
+            if self.aggregation_prompt_processor is not None
             else "disabled",
         )
 
@@ -1325,12 +1310,20 @@ class PlaybookAggregator:
             else "None"
         )
         for cluster_playbooks in clusters.values():
-            shared_mapping: dict[str, int] = {}
-            if self.user_detail_stripper is None:
+            shared_state: dict[str, object] = {}
+            processing_context = AggregationPromptProcessingContext(
+                data={
+                    "agent_version": self.agent_version,
+                    "org_id": self.request_context.org_id,
+                }
+            )
+            if self.aggregation_prompt_processor is None:
                 prompt_cluster_playbooks = cluster_playbooks
             else:
                 prompt_cluster_playbooks = [
-                    self._strip_user_playbook_for_prompt(playbook, shared_mapping)
+                    self._preprocess_user_playbook_for_prompt(
+                        playbook, shared_state, processing_context
+                    )
                     for playbook in cluster_playbooks
                 ]
 
@@ -1338,6 +1331,7 @@ class PlaybookAggregator:
                 prompt_cluster_playbooks,
                 approved_playbooks_str,
                 direction_overlap_threshold=direction_overlap_threshold,
+                processing_context=processing_context,
             )
             if playbook is not None:
                 new_playbooks.append((playbook, cluster_playbooks))
@@ -1387,6 +1381,7 @@ class PlaybookAggregator:
         cluster_playbooks: list[UserPlaybook],
         existing_approved_playbooks_str: str,
         direction_overlap_threshold: float = 0.6,
+        processing_context: AggregationPromptProcessingContext | None = None,
     ) -> AgentPlaybook | None:
         """
         Generate a playbook from a cluster using structured JSON output.
@@ -1423,8 +1418,11 @@ class PlaybookAggregator:
                     trigger=trigger,
                 )
             )
-            response, placeholder_count = self._sanitize_aggregation_response(response)
-            self._record_placeholder_leakage(placeholder_count)
+            response, artifact_count = self._postprocess_aggregation_response(
+                response,
+                processing_context,
+            )
+            self._record_postprocessing_artifacts(artifact_count)
             playbook = self._process_aggregation_response(response, cluster_playbooks)
             if playbook is None:
                 return None
@@ -1444,7 +1442,9 @@ class PlaybookAggregator:
                     {
                         "user_playbooks": raw_playbooks_str,
                         "existing_approved_playbooks": existing_approved_playbooks_str,
-                        "aggregation_prompt_extra_instructions": self.aggregation_prompt_extra_instructions,
+                        "aggregation_prompt_extra_instructions": self._aggregation_prompt_extra_instructions_for_context(
+                            processing_context
+                        ),
                     },
                 ),
             }
@@ -1458,15 +1458,17 @@ class PlaybookAggregator:
                 parse_structured_output=True,
             )
             if isinstance(response, PlaybookAggregationOutput):
-                response, placeholder_count = self._sanitize_aggregation_response(
-                    response
+                response, artifact_count = self._postprocess_aggregation_response(
+                    response,
+                    processing_context,
                 )
-                self._record_placeholder_leakage(placeholder_count)
+                self._record_postprocessing_artifacts(artifact_count)
             else:
-                response, placeholder_count = self._sanitize_aggregation_log_value(
-                    response
+                response, artifact_count = self._postprocess_aggregation_output(
+                    response,
+                    processing_context,
                 )
-                self._record_placeholder_leakage(placeholder_count)
+                self._record_postprocessing_artifacts(artifact_count)
             log_model_response(logger, "Aggregation structured response", response)
 
             if not isinstance(response, PlaybookAggregationOutput):
@@ -1478,13 +1480,14 @@ class PlaybookAggregator:
 
             return self._process_aggregation_response(response, cluster_playbooks)
         except Exception as exc:
-            sanitized_error, placeholder_count = self._sanitize_aggregation_log_value(
-                str(exc)
+            processed_error, artifact_count = self._postprocess_aggregation_output(
+                str(exc),
+                processing_context,
             )
-            self._record_placeholder_leakage(placeholder_count)
+            self._record_postprocessing_artifacts(artifact_count)
             logger.error(
                 "AgentPlaybook aggregation failed due to %s, returning None.",
-                sanitized_error,
+                processed_error,
             )
             return None
 
@@ -1498,7 +1501,7 @@ class PlaybookAggregator:
             response: Parsed PlaybookAggregationOutput from LLM
             cluster_playbooks: Cluster playbooks used only for non-user metadata
                 such as playbook name and agent version. Callers may pass
-                prompt-sanitized copies here, so this method must not read
+                prompt-preprocessed copies here, so this method must not read
                 user-authored fields from them.
 
         Returns:
@@ -1506,7 +1509,6 @@ class PlaybookAggregator:
         """
         if not response:
             return None
-        response, _placeholder_count = self._sanitize_aggregation_response(response)
 
         structured = response.playbook
         if structured is None:

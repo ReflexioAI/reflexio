@@ -20,6 +20,9 @@ from reflexio.models.config_schema import (
 )
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
+from reflexio.server.services.playbook.aggregation_prompt_processing import (
+    PassthroughPromptProcessor,
+)
 from reflexio.server.services.playbook.playbook_service_utils import (
     PlaybookGenerationRequest,
 )
@@ -27,7 +30,6 @@ from reflexio.server.services.playbook.service import (
     PlaybookGenerationService,
     PlaybookGenerationServiceConfig,
 )
-from reflexio.server.services.playbook.user_detail_stripping import PassthroughStripper
 
 
 def create_request_interaction_data_model(
@@ -77,9 +79,10 @@ def _service_for_inline_aggregation(configurator: Any) -> PlaybookGenerationServ
     return service
 
 
-def test_inline_aggregation_default_path_does_not_inject_stripper():
+def test_inline_aggregation_default_path_does_not_inject_processor():
     configurator = MagicMock()
     configurator.get_config.return_value = _aggregation_enabled_config()
+    configurator.create_aggregation_prompt_processor.return_value = None
     service = _service_for_inline_aggregation(configurator)
     created_kwargs: list[dict[str, Any]] = []
 
@@ -99,26 +102,25 @@ def test_inline_aggregation_default_path_does_not_inject_stripper():
             "reflexio.server.services.playbook.service.run_with_operation_limit",
             side_effect=lambda **kwargs: kwargs["fn"](),
         ),
-        patch(
-            "reflexio.server.services.playbook.user_detail_stripping.create_aggregation_user_detail_stripper",
-            return_value=None,
-        ) as mock_create_stripper,
     ):
         service._trigger_playbook_aggregation()
 
     assert len(created_kwargs) == 1
-    assert "user_detail_stripper" not in created_kwargs[0]
-    mock_create_stripper.assert_called_once_with(configurator)
+    assert "aggregation_prompt_processor" not in created_kwargs[0]
+    configurator.create_aggregation_prompt_processor.assert_called_once_with()
 
 
-def test_inline_aggregation_injects_configured_stripper():
-    stripper = PassthroughStripper()
+def test_inline_aggregation_injects_configured_processor():
+    processor = PassthroughPromptProcessor()
 
-    class ConfiguratorWithStripper:
+    class ConfiguratorWithProcessor:
         def get_config(self) -> Config:
             return _aggregation_enabled_config()
 
-    service = _service_for_inline_aggregation(ConfiguratorWithStripper())
+        def create_aggregation_prompt_processor(self) -> PassthroughPromptProcessor:
+            return processor
+
+    service = _service_for_inline_aggregation(ConfiguratorWithProcessor())
     created_kwargs: list[dict[str, Any]] = []
 
     class FakeAggregator:
@@ -137,24 +139,23 @@ def test_inline_aggregation_injects_configured_stripper():
             "reflexio.server.services.playbook.service.run_with_operation_limit",
             side_effect=lambda **kwargs: kwargs["fn"](),
         ),
-        patch(
-            "reflexio.server.services.playbook.user_detail_stripping.create_aggregation_user_detail_stripper",
-            return_value=stripper,
-        ),
     ):
         service._trigger_playbook_aggregation()
 
     assert len(created_kwargs) == 1
-    assert created_kwargs[0]["user_detail_stripper"] is stripper
+    assert created_kwargs[0]["aggregation_prompt_processor"] is processor
 
 
-def test_inline_aggregation_does_not_thread_stripper_prompt_text_separately():
-    stripper = PassthroughStripper()
-    stripper.prompt_extra_instructions = "Extra aggregation instruction."
+def test_inline_aggregation_does_not_thread_processor_prompt_text_separately():
+    processor: Any = PassthroughPromptProcessor()
+    processor.prompt_extra_instructions = "Extra aggregation instruction."
 
     class ConfiguratorWithExtraInstructions:
         def get_config(self) -> Config:
             return _aggregation_enabled_config()
+
+        def create_aggregation_prompt_processor(self) -> PassthroughPromptProcessor:
+            return processor
 
     service = _service_for_inline_aggregation(ConfiguratorWithExtraInstructions())
     created_kwargs: list[dict[str, Any]] = []
@@ -175,15 +176,11 @@ def test_inline_aggregation_does_not_thread_stripper_prompt_text_separately():
             "reflexio.server.services.playbook.service.run_with_operation_limit",
             side_effect=lambda **kwargs: kwargs["fn"](),
         ),
-        patch(
-            "reflexio.server.services.playbook.user_detail_stripping.create_aggregation_user_detail_stripper",
-            return_value=stripper,
-        ),
     ):
         service._trigger_playbook_aggregation()
 
     assert len(created_kwargs) == 1
-    assert created_kwargs[0]["user_detail_stripper"] is stripper
+    assert created_kwargs[0]["aggregation_prompt_processor"] is processor
     assert "aggregation_prompt_extra_instructions" not in created_kwargs[0]
 
 
