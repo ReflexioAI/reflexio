@@ -25,7 +25,8 @@ api.py (core_router + sub-routers)
 
 - **`RequestContext` is the context-passing contract** — handlers receive it via `Depends` and never reach for storage/config/prompts globally.
 - **Route handlers call `Reflexio` through `get_reflexio(org_id)`** — these helper files do **not** instantiate `Reflexio()` directly.
-- **Auth is injected, not implemented here** — the OS app uses `default_get_org_id` / `DEFAULT_ORG_ID`; the enterprise extension swaps in authenticated org resolution (see `reflexio_ext/server/api_endpoints/`).
+- **Learning provenance currently lives in `../api.py`** — `POST /api/get_learning_provenance` reconstructs provenance for profiles/user playbooks/agent playbooks from storage and generation metadata.
+- **Auth is injected, not implemented here** — the OSS app uses `default_get_org_id` / `DEFAULT_ORG_ID`; the enterprise extension swaps in authenticated org resolution (see `reflexio_ext/server/api_endpoints/`).
 
 ## Requirements / Problems to Avoid
 
