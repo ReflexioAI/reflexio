@@ -1844,6 +1844,8 @@ def get_all_profiles(
     request: Request,
     limit: int = 100,
     status_filter: str | None = None,
+    profile_id: str | None = None,
+    include_tombstones: bool = False,
     org_id: str = Depends(default_get_org_id),
 ) -> GetProfilesViewResponse:
     """Get all user profiles across all users.
@@ -1851,12 +1853,33 @@ def get_all_profiles(
     Args:
         limit (int, optional): Maximum number of profiles to return. Defaults to 100.
         status_filter (str, optional): Filter by profile status. Can be "current", "pending", or "archived".
+        profile_id (str, optional): Exact profile ID to retrieve.
+        include_tombstones (bool, optional): Include merged/superseded rows when
+            looking up a specific profile_id.
         org_id (str): Organization ID
 
     Returns:
         GetProfilesViewResponse: Response containing all user profiles
     """
     reflexio = get_reflexio(org_id=org_id)
+
+    if profile_id:
+        storage = reflexio.request_context.storage
+        if storage is None:
+            return GetProfilesViewResponse(
+                success=True,
+                user_profiles=[],
+                msg="Storage is not configured",
+            )
+        profile = storage.get_profile_by_id(
+            profile_id, include_tombstones=include_tombstones
+        )
+        profiles = [profile] if profile else []
+        return GetProfilesViewResponse(
+            success=True,
+            user_profiles=[to_profile_view(p) for p in profiles],
+            msg=f"Found {len(profiles)} profile(s)",
+        )
 
     # Map status_filter string to Status list
     status_filter_list = None
