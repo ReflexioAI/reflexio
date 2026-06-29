@@ -134,6 +134,41 @@ class TestProfileCRUD:
         profiles = storage.get_all_profiles(limit=2)
         assert len(profiles) == 2
 
+    def test_get_all_profiles_filters_before_limit(self, storage: BaseStorage) -> None:
+        newer = _make_profile("u-new", "p-new", "newer nonmatch")
+        newer.last_modified_timestamp = 1_700_000_200
+        older_match = _make_profile("u-old", "p-old", "older needle")
+        older_match.last_modified_timestamp = 1_700_000_100
+        storage.add_user_profile("u-new", [newer])
+        storage.add_user_profile("u-old", [older_match])
+
+        profiles = storage.get_all_profiles(limit=1, query="needle")
+
+        assert [p.profile_id for p in profiles] == ["p-old"]
+
+    def test_profile_query_treats_like_metacharacters_as_literals(
+        self, storage: BaseStorage
+    ) -> None:
+        storage.add_user_profile(
+            "u-like",
+            [
+                _make_profile("u-like", "p-percent-literal", "progress is 100%"),
+                _make_profile("u-like", "p-percent-word", "progress is 100 percent"),
+                _make_profile("u-like", "p-underscore-literal", "uses _tmp files"),
+                _make_profile("u-like", "p-underscore-word", "uses xtmp files"),
+            ],
+        )
+
+        all_percent = storage.get_all_profiles(query="100%")
+        user_percent = storage.get_user_profile("u-like", query="100%")
+        all_underscore = storage.get_all_profiles(query="_tmp")
+        user_underscore = storage.get_user_profile("u-like", query="_tmp")
+
+        assert {p.profile_id for p in all_percent} == {"p-percent-literal"}
+        assert {p.profile_id for p in user_percent} == {"p-percent-literal"}
+        assert {p.profile_id for p in all_underscore} == {"p-underscore-literal"}
+        assert {p.profile_id for p in user_underscore} == {"p-underscore-literal"}
+
     def test_delete_profile(self, storage: BaseStorage) -> None:
         storage.add_user_profile("u1", [_make_profile("u1", "p1", "likes sushi")])
         assert len(storage.get_user_profile("u1")) == 1

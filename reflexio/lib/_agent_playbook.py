@@ -213,8 +213,16 @@ class AgentPlaybookMixin(ReflexioBase):
         try:
             agent_playbooks = self._get_storage().get_agent_playbooks(
                 limit=request.limit or 100,
+                agent_playbook_id=request.agent_playbook_id,
+                query=request.query,
                 playbook_name=request.playbook_name,
                 agent_version=request.agent_version,
+                start_time=(
+                    int(request.start_time.timestamp()) if request.start_time else None
+                ),
+                end_time=(
+                    int(request.end_time.timestamp()) if request.end_time else None
+                ),
                 status_filter=request.status_filter,
                 playbook_status_filter=[request.playbook_status_filter]
                 if request.playbook_status_filter

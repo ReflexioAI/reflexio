@@ -322,13 +322,30 @@ class PlaybookMixin:
         include_embedding: bool = False,
         tags: list[str] | None = None,
         offset: int = 0,
+        user_playbook_id: int | None = None,
+        request_id: str | None = None,
+        query: str | None = None,
     ) -> list[UserPlaybook]:
         sql = "SELECT * FROM user_playbooks WHERE 1=1"
         params: list[Any] = []
 
+        if user_playbook_id is not None:
+            sql += " AND user_playbook_id = ?"
+            params.append(user_playbook_id)
         if user_id is not None:
             sql += " AND user_id = ?"
             params.append(user_id)
+        if request_id is not None:
+            sql += " AND request_id = ?"
+            params.append(request_id)
+        if query:
+            like = f"%{query.lower()}%"
+            sql += (
+                " AND (LOWER(content) LIKE ? OR LOWER(trigger) LIKE ? "
+                "OR LOWER(rationale) LIKE ? OR LOWER(request_id) LIKE ? "
+                "OR LOWER(playbook_name) LIKE ? OR LOWER(user_id) LIKE ?)"
+            )
+            params.extend([like, like, like, like, like, like])
         if playbook_name:
             sql += " AND playbook_name = ?"
             params.append(playbook_name)
@@ -1025,10 +1042,25 @@ class PlaybookMixin:
         status_filter: list[Status | None] | None = None,
         playbook_status_filter: list[PlaybookStatus] | None = None,
         tags: list[str] | None = None,
+        agent_playbook_id: int | None = None,
+        query: str | None = None,
+        start_time: int | None = None,
+        end_time: int | None = None,
     ) -> list[AgentPlaybook]:
         sql = "SELECT * FROM agent_playbooks WHERE 1=1"
         params: list[Any] = []
 
+        if agent_playbook_id is not None:
+            sql += " AND agent_playbook_id = ?"
+            params.append(agent_playbook_id)
+        if query:
+            like = f"%{query.lower()}%"
+            sql += (
+                " AND (LOWER(content) LIKE ? OR LOWER(trigger) LIKE ? "
+                "OR LOWER(rationale) LIKE ? OR LOWER(playbook_name) LIKE ? "
+                "OR LOWER(playbook_metadata) LIKE ?)"
+            )
+            params.extend([like, like, like, like, like])
         if playbook_name:
             sql += " AND playbook_name = ?"
             params.append(playbook_name)
@@ -1036,6 +1068,12 @@ class PlaybookMixin:
         if agent_version is not None:
             sql += " AND agent_version = ?"
             params.append(agent_version)
+        if start_time is not None:
+            sql += " AND created_at >= ?"
+            params.append(_epoch_to_iso(start_time))
+        if end_time is not None:
+            sql += " AND created_at <= ?"
+            params.append(_epoch_to_iso(end_time))
 
         if status_filter is not None:
             frag, sparams = _build_status_sql(status_filter)

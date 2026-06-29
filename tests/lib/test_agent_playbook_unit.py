@@ -4,6 +4,7 @@ Tests get_agent_playbooks, add_agent_playbook, delete_agent_playbook, search_age
 delete_all_agent_playbooks_bulk, and update_agent_playbook_status with mocked storage.
 """
 
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 from reflexio.lib._agent_playbook import AgentPlaybookMixin
@@ -40,11 +41,11 @@ def _make_mixin(*, storage_configured: bool = True) -> AgentPlaybookMixin:
 
 
 def _get_storage(mixin: AgentPlaybookMixin) -> MagicMock:
-    return mixin.request_context.storage
+    return cast(MagicMock, mixin.request_context.storage)
 
 
-def _sample_agent_playbook(**overrides) -> AgentPlaybook:
-    defaults = {
+def _sample_agent_playbook(**overrides: Any) -> AgentPlaybook:
+    defaults: dict[str, Any] = {
         "agent_version": "v1",
         "playbook_name": "test_fb",
         "content": "test playbook content",
@@ -577,8 +578,12 @@ class TestGetAgentPlaybooksError:
         assert response.success is True
         _get_storage(mixin).get_agent_playbooks.assert_called_once_with(
             limit=10,
+            agent_playbook_id=None,
+            query=None,
             playbook_name=None,
             agent_version=None,
+            start_time=None,
+            end_time=None,
             status_filter=None,
             playbook_status_filter=[PlaybookStatus.APPROVED],
             tags=None,

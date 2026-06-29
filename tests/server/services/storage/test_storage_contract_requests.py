@@ -18,12 +18,13 @@ def _make_request(
     request_id: str,
     user_id: str,
     session_id: str = "s-default",
+    source: str = "test",
 ) -> Request:
     return Request(
         request_id=request_id,
         user_id=user_id,
         created_at=int(datetime.now(UTC).timestamp()),
-        source="test",
+        source=source,
         agent_version="v1",
         session_id=session_id,
     )
@@ -94,6 +95,23 @@ class TestSessionQueries:
         assert len(items) == 1
         assert items[0].request.request_id == "r1"
         assert items[0].session_id == "s1"
+
+    def test_get_sessions_filters_source_before_limit(
+        self, storage: BaseStorage
+    ) -> None:
+        newer = _make_request("r-new", "u1", source="web")
+        newer.created_at = 1_700_000_200
+        older_match = _make_request("r-old", "u1", source="cli")
+        older_match.created_at = 1_700_000_100
+        storage.add_request(newer)
+        storage.add_request(older_match)
+
+        sessions = storage.get_sessions(source="cli", top_k=1)
+        request_ids = [
+            item.request.request_id for items in sessions.values() for item in items
+        ]
+
+        assert request_ids == ["r-old"]
 
     def test_get_requests_by_session(self, storage: BaseStorage) -> None:
         storage.add_request(_make_request("r1", "u1", session_id="s1"))

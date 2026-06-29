@@ -7,6 +7,7 @@ with mocked storage and services.
 """
 
 import time
+from typing import cast
 from unittest.mock import MagicMock, patch
 
 from reflexio.lib._base import STORAGE_NOT_CONFIGURED_MSG
@@ -52,7 +53,7 @@ def _make_mixin(*, storage_configured: bool = True) -> ProfilesMixin:
 
 
 def _get_storage(mixin: ProfilesMixin) -> MagicMock:
-    return mixin.request_context.storage
+    return cast(MagicMock, mixin.request_context.storage)
 
 
 def _sample_profile(**overrides) -> UserProfile:
@@ -193,7 +194,15 @@ class TestGetAllProfiles:
         assert response.success is True
         assert len(response.user_profiles) == 1
         _get_storage(mixin).get_all_profiles.assert_called_once_with(
-            limit=50, status_filter=[None]
+            limit=50,
+            status_filter=[None],
+            user_id=None,
+            profile_id=None,
+            query=None,
+            source=None,
+            profile_time_to_live=None,
+            start_time=None,
+            end_time=None,
         )
 
     def test_storage_not_configured(self):

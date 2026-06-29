@@ -1845,6 +1845,12 @@ def get_all_profiles(
     limit: int = 100,
     status_filter: str | None = None,
     profile_id: str | None = None,
+    user_id: str | None = None,
+    query: str | None = None,
+    source: str | None = None,
+    profile_time_to_live: str | None = None,
+    start_time: int | None = None,
+    end_time: int | None = None,
     include_tombstones: bool = False,
     org_id: str = Depends(default_get_org_id),
 ) -> GetProfilesViewResponse:
@@ -1854,6 +1860,12 @@ def get_all_profiles(
         limit (int, optional): Maximum number of profiles to return. Defaults to 100.
         status_filter (str, optional): Filter by profile status. Can be "current", "pending", or "archived".
         profile_id (str, optional): Exact profile ID to retrieve.
+        user_id (str, optional): Exact user ID to filter by.
+        query (str, optional): Case-insensitive text filter across visible fields.
+        source (str, optional): Exact profile source to filter by.
+        profile_time_to_live (str, optional): Exact TTL value to filter by.
+        start_time (int, optional): Minimum last-modified epoch seconds.
+        end_time (int, optional): Maximum last-modified epoch seconds.
         include_tombstones (bool, optional): Include merged/superseded rows when
             looking up a specific profile_id.
         org_id (str): Organization ID
@@ -1863,7 +1875,7 @@ def get_all_profiles(
     """
     reflexio = get_reflexio(org_id=org_id)
 
-    if profile_id:
+    if profile_id and include_tombstones:
         storage = reflexio.request_context.storage
         if storage is None:
             return GetProfilesViewResponse(
@@ -1890,7 +1902,17 @@ def get_all_profiles(
     elif status_filter == "archived":
         status_filter_list = [Status.ARCHIVED]
 
-    response = reflexio.get_all_profiles(limit=limit, status_filter=status_filter_list)  # type: ignore[reportArgumentType]
+    response = reflexio.get_all_profiles(
+        limit=limit,
+        status_filter=status_filter_list,  # type: ignore[reportArgumentType]
+        user_id=user_id,
+        profile_id=profile_id,
+        query=query,
+        source=source,
+        profile_time_to_live=profile_time_to_live,
+        start_time=start_time,
+        end_time=end_time,
+    )
     return GetProfilesViewResponse(
         success=response.success,
         user_profiles=[to_profile_view(p) for p in response.user_profiles],

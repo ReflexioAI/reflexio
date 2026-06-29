@@ -168,6 +168,7 @@ class RequestMixin:
         end_time: int | None = None,
         top_k: int | None = 30,
         offset: int = 0,
+        source: str | None = None,
     ) -> dict[str, list[RequestInteractionDataModel]]:
         sql = "SELECT * FROM requests WHERE 1=1"
         params: list[Any] = []
@@ -181,6 +182,9 @@ class RequestMixin:
         if session_id:
             sql += " AND session_id = ?"
             params.append(session_id)
+        if source is not None:
+            sql += " AND source = ?"
+            params.append(source)
         if start_time:
             sql += " AND created_at >= ?"
             params.append(_epoch_to_iso(start_time))
