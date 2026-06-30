@@ -412,6 +412,7 @@ def _validate_governance_target_ref(
         "interaction",
         "profile",
         "user_playbook",
+        "agent_success_evaluation_result",
         "profile_purge",
         "user_playbook_purge",
     }:

@@ -62,21 +62,27 @@ class NeverStartedCap(Capability):
 
 
 def test_capability_routers_are_mounted() -> None:
-    app = create_app(capabilities=CapabilityRegistry([RouterCap()]))
+    app = create_app(
+        capabilities=CapabilityRegistry([RouterCap()]), mount_data_plane=False
+    )
     with TestClient(app) as c:
         assert c.get("/api/_cap_probe").json() == {"ok": True}
 
 
 def test_on_startup_and_shutdown_run() -> None:
     LifecycleCap.started = LifecycleCap.stopped = False
-    app = create_app(capabilities=CapabilityRegistry([LifecycleCap()]))
+    app = create_app(
+        capabilities=CapabilityRegistry([LifecycleCap()]), mount_data_plane=False
+    )
     with TestClient(app):
         assert LifecycleCap.started is True
     assert LifecycleCap.stopped is True
 
 
 def test_on_startup_raise_is_fail_loud() -> None:
-    app = create_app(capabilities=CapabilityRegistry([BoomCap()]))
+    app = create_app(
+        capabilities=CapabilityRegistry([BoomCap()]), mount_data_plane=False
+    )
     with pytest.raises(RuntimeError, match="startup failed"), TestClient(app):
         pass
 
@@ -93,7 +99,8 @@ def test_partial_cleanup_invariant() -> None:
 
     # Order: LifecycleCap starts successfully, BoomCap raises, NeverStartedCap never runs.
     app = create_app(
-        capabilities=CapabilityRegistry([LifecycleCap(), BoomCap(), NeverStartedCap()])
+        capabilities=CapabilityRegistry([LifecycleCap(), BoomCap(), NeverStartedCap()]),
+        mount_data_plane=False,
     )
     with pytest.raises(RuntimeError, match="startup failed"), TestClient(app):
         pass
@@ -153,7 +160,7 @@ def test_capabilities_role_none_falls_back_to_mount_data_plane() -> None:
     RoleCaptureCap.seen_role = None
     reg2 = CapabilityRegistry([RoleCaptureCap()])
     create_app(capabilities=reg2, mount_data_plane=False)
-    assert RoleCaptureCap.seen_role == "data-plane"
+    assert RoleCaptureCap.seen_role == "control-plane"
 
 
 def test_router_double_mount_is_boot_error() -> None:

@@ -3368,7 +3368,7 @@ def _wire_capabilities(
     sourced from ``capabilities.role`` when set (threaded in by the enterprise
     composition root via ``build_registry(deployment_role())``).  When
     ``capabilities.role`` is ``None`` the role falls back to the
-    ``mount_data_plane`` derivation (``"all"`` when True, ``"data-plane"``
+    ``mount_data_plane`` derivation (``"all"`` when True, ``"control-plane"``
     when False), preserving the existing OSS-only behaviour.
 
     Args:
@@ -3390,7 +3390,7 @@ def _wire_capabilities(
     if capabilities.role is not None:
         role = capabilities.role
     else:
-        role = "all" if mount_data_plane else "data-plane"
+        role = "all" if mount_data_plane else "control-plane"
     if capabilities.configurator_class is not None:
         from reflexio.server.services.configurator.configurator import (
             set_configurator_class,
@@ -3512,13 +3512,14 @@ def create_app(
             # drives a per-org worker with org-scoped claims, so it is not limited
             # to the bootstrap org. The bootstrap org is only used to read config
             # and to seed cross-org discovery.
+            bootstrap_org_id = _resolve_lifespan_org_id(get_org_id)
             scheduler = maybe_start_resume_scheduler(
                 lambda org_id: RequestContext(org_id=org_id),
-                bootstrap_org_id=_resolve_lifespan_org_id(get_org_id),
+                bootstrap_org_id=bootstrap_org_id,
             )
             gc_scheduler = maybe_start_lineage_gc(
                 lambda org_id: RequestContext(org_id=org_id),
-                bootstrap_org_id=_resolve_lifespan_org_id(get_org_id),
+                bootstrap_org_id=bootstrap_org_id,
             )
         try:
             if capabilities is not None:
