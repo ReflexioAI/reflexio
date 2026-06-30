@@ -5,7 +5,7 @@ rerun_profile_generation, manual_profile_generation, rerun_playbook_generation,
 manual_playbook_generation, and storage-not-configured error handling.
 """
 
-from typing import Any, cast
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -22,7 +22,9 @@ from reflexio.models.api_schema.service_schemas import (
     RerunProfileGenerationRequest,
     RerunProfileGenerationResponse,
 )
+from reflexio.server.extensions import register_service
 from reflexio.server.services.playbook.aggregation_prompt_processing import (
+    AGGREGATION_PROMPT_PROCESSOR,
     PassthroughPromptProcessor,
 )
 
@@ -40,8 +42,6 @@ def _make_mixin(*, storage_configured: bool = True) -> GenerationMixin:
     mock_request_context.org_id = "test_org"
     mock_request_context.storage = mock_storage if storage_configured else None
     mock_request_context.is_storage_configured.return_value = storage_configured
-    mock_configurator = cast(Any, mock_request_context.configurator)
-    mock_configurator.create_aggregation_prompt_processor.return_value = None
 
     mixin.request_context = mock_request_context
     mixin.llm_client = MagicMock()
@@ -71,23 +71,20 @@ class TestRunPlaybookAggregation:
             request_context=mixin.request_context,
             agent_version="v2",
         )
-        configurator = cast(Any, mixin.request_context.configurator)
-        configurator.create_aggregation_prompt_processor.assert_called_once_with()
         mock_agg_instance.run.assert_called_once()
         request_arg = mock_agg_instance.run.call_args[0][0]
         assert request_arg.agent_version == "v2"
         assert request_arg.rerun is True
 
     @patch("reflexio.server.services.playbook.components.aggregator.PlaybookAggregator")
-    def test_injects_configurator_processor(self, mock_agg_cls):
-        """Passes a configured prompt processor to manual aggregation."""
+    def test_injects_registered_processor(self, mock_agg_cls):
+        """Passes a registered prompt processor to manual aggregation."""
         processor: Any = PassthroughPromptProcessor()
+        register_service(AGGREGATION_PROMPT_PROCESSOR, processor, override=True)
         mixin = _make_mixin()
 
         mock_agg_instance = MagicMock()
         mock_agg_cls.return_value = mock_agg_instance
-        configurator = cast(Any, mixin.request_context.configurator)
-        configurator.create_aggregation_prompt_processor.return_value = processor
 
         mixin.run_playbook_aggregation(agent_version="v2")
 
@@ -97,20 +94,18 @@ class TestRunPlaybookAggregation:
             agent_version="v2",
             aggregation_prompt_processor=processor,
         )
-        configurator.create_aggregation_prompt_processor.assert_called_once_with()
         mock_agg_instance.run.assert_called_once()
 
     @patch("reflexio.server.services.playbook.components.aggregator.PlaybookAggregator")
     def test_does_not_thread_processor_prompt_text_as_separate_kwarg(
         self, mock_agg_cls
     ):
-        mixin = _make_mixin()
         processor: Any = PassthroughPromptProcessor()
         processor.prompt_extra_instructions = "Extra aggregation instruction."
+        register_service(AGGREGATION_PROMPT_PROCESSOR, processor, override=True)
+        mixin = _make_mixin()
         mock_agg_instance = MagicMock()
         mock_agg_cls.return_value = mock_agg_instance
-        configurator = cast(Any, mixin.request_context.configurator)
-        configurator.create_aggregation_prompt_processor.return_value = processor
 
         mixin.run_playbook_aggregation(agent_version="v2")
 
