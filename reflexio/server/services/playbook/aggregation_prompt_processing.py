@@ -37,8 +37,8 @@ class AggregationPromptProcessor(Protocol):
     Implementations may transform prompt text before the aggregation LLM call,
     provide contextual prompt instructions when preprocessing changed prompt
     input, and post-process aggregation output before storage or response
-    logging. Deployments supply one by overriding
-    ``BaseConfigurator.create_aggregation_prompt_processor()``.
+    logging. Deployments supply one by registering it via the
+    ``AGGREGATION_PROMPT_PROCESSOR`` ServiceKey (``register_service``).
     """
 
     def preprocess_prompt_text(
