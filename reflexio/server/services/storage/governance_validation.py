@@ -407,15 +407,7 @@ def _validate_governance_target_ref(
         if target_ref != "all":
             _raise_governance_validation_error("target_ref", "must be all")
         return target_ref
-    if target_name in {
-        "request",
-        "interaction",
-        "profile",
-        "user_playbook",
-        "agent_success_evaluation_result",
-        "profile_purge",
-        "user_playbook_purge",
-    }:
+    if target_name in _CANONICAL_DELETE_TARGET_NAMES:
         if phase != "delete":
             _raise_governance_validation_error(
                 phase,
