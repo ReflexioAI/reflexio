@@ -410,8 +410,10 @@ class TestExtractionAgentRole:
 
     def test_anthropic_defaults_map_to_sonnet(self) -> None:
         anthropic = _PROVIDER_DEFAULTS["anthropic"]
+        assert anthropic.generation == "claude-sonnet-5"
+        assert anthropic.evaluation == "claude-sonnet-5"
         assert anthropic.extraction_agent is not None
-        assert "sonnet" in anthropic.extraction_agent.lower()
+        assert anthropic.extraction_agent == "claude-sonnet-5"
 
     def test_openai_defaults_map_to_gpt5(self) -> None:
         openai = _PROVIDER_DEFAULTS["openai"]

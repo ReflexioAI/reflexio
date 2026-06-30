@@ -33,7 +33,7 @@ _PROVIDERS: dict[str, dict[str, str]] = {
     },
     "anthropic": {
         "env_var": "ANTHROPIC_API_KEY",
-        "model": "claude-sonnet-4-6",
+        "model": "claude-sonnet-5",
         "display": "Anthropic",
     },
     "gemini": {

@@ -195,12 +195,12 @@ _PROVIDER_DEFAULTS: dict[str, ProviderDefaults] = {
         extraction_agent="gpt-5.5",
     ),
     "anthropic": ProviderDefaults(
-        generation="claude-sonnet-4-6",
-        evaluation="claude-sonnet-4-6",
+        generation="claude-sonnet-5",
+        evaluation="claude-sonnet-5",
         should_run="claude-haiku-4-5-20251001",
         pre_retrieval="claude-haiku-4-5-20251001",
         embedding=None,
-        extraction_agent="claude-sonnet-4-6",
+        extraction_agent="claude-sonnet-5",
     ),
     "gemini": ProviderDefaults(
         generation="gemini/gemini-3-flash-preview",
