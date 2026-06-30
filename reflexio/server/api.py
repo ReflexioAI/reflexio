@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from reflexio.server.extensions import CapabilityRegistry
+    from reflexio.server.extensions import AppContext, CapabilityRegistry
 
 from anyio.to_thread import current_default_thread_limiter
 from fastapi import (
@@ -3414,6 +3414,7 @@ def create_app(
     get_billing_gate: Callable[[str], Callable[..., None]] | None = None,
     mount_data_plane: bool = True,
     capabilities: "CapabilityRegistry | None" = None,
+    app_context_factory: "Callable[[], AppContext] | None" = None,
 ) -> FastAPI:
     """Factory to create a FastAPI app.
 
@@ -3445,6 +3446,10 @@ def create_app(
             each capability's routers, services, hooks, and lifecycle methods are
             wired into the app at construction time. Behavior is unchanged when
             ``None``.
+        app_context_factory: Optional callable returning the AppContext passed to
+            each capability's on_startup. When None, an empty AppContext() is used
+            (local OSS / tests). Enterprise binds this to supply self_host_org_id /
+            activated computed during its own startup.
 
     Returns:
         Configured FastAPI application.
@@ -3504,7 +3509,11 @@ def create_app(
             )
         try:
             if capabilities is not None:
-                ctx = AppContext()
+                ctx = (
+                    app_context_factory()
+                    if app_context_factory is not None
+                    else AppContext()
+                )
                 for cap in capabilities.capabilities:
                     await cap.on_startup(ctx)
                     started_caps.append(cap)
