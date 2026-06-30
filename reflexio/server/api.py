@@ -3363,6 +3363,13 @@ def _wire_capabilities(
 
     No-op when ``capabilities`` is None.
 
+    The deployment role passed to each capability's ``routers(role)`` is
+    sourced from ``capabilities.role`` when set (threaded in by the enterprise
+    composition root via ``build_registry(deployment_role())``).  When
+    ``capabilities.role`` is ``None`` the role falls back to the
+    ``mount_data_plane`` derivation (``"all"`` when True, ``"data-plane"``
+    when False), preserving the existing OSS-only behaviour.
+
     Args:
         app (FastAPI): The application instance to wire into.
         capabilities (CapabilityRegistry | None): Capabilities to install, or None.
@@ -3373,7 +3380,10 @@ def _wire_capabilities(
     from reflexio.server.auth import default_billing_gate
     from reflexio.server.extensions import HookRegistry
 
-    role = "all" if mount_data_plane else "data-plane"
+    if capabilities.role is not None:
+        role = capabilities.role
+    else:
+        role = "all" if mount_data_plane else "data-plane"
     if capabilities.configurator_class is not None:
         from reflexio.server.services.configurator.configurator import (
             set_configurator_class,

@@ -187,6 +187,9 @@ class CapabilityRegistry:
         capabilities (list[Capability]): Capability instances; names must be unique.
         configurator_class (type | None): Single configurator class, or None.
         billing_gate (Callable | None): Billing gate factory, or None.
+        role (str | None): Deployment role to thread into ``_wire_capabilities``
+            (e.g. ``"all"``, ``"data-plane"``). When ``None``, ``create_app``
+            derives the role from ``mount_data_plane``.
 
     Raises:
         RuntimeError: If two capabilities share the same name.
@@ -198,6 +201,7 @@ class CapabilityRegistry:
         *,
         configurator_class: type | None = None,
         billing_gate: Callable[[str], Callable[..., None]] | None = None,
+        role: str | None = None,
     ) -> None:
         names = [c.name for c in capabilities]
         dupes = {n for n in names if names.count(n) > 1}
@@ -206,15 +210,4 @@ class CapabilityRegistry:
         self.capabilities = capabilities
         self.configurator_class = configurator_class
         self.billing_gate = billing_gate
-
-    def router_names(self) -> set[str]:
-        """Names of capabilities that contribute at least one router (for dual-path de-dup).
-
-        Returns:
-            set[str]: Names of capabilities returning non-empty router lists.
-        """
-        return {
-            c.name
-            for c in self.capabilities
-            if c.routers("all") or c.routers("data-plane")
-        }
+        self.role = role

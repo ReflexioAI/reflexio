@@ -118,3 +118,39 @@ def test_billing_gate_double_wire_raises() -> None:
     cap_registry = CapabilityRegistry([], billing_gate=my_gate)
     with pytest.raises(ValueError, match="billing_gate"):
         create_app(get_billing_gate=my_gate, capabilities=cap_registry)
+
+
+class RoleCaptureCap(Capability):
+    """Records the role passed to routers() so tests can inspect it."""
+
+    name = "role_capture"
+    seen_role: str | None = None
+
+    def routers(self, role: str) -> list[APIRouter]:
+        RoleCaptureCap.seen_role = role
+        return []
+
+
+def test_capabilities_role_overrides_mount_data_plane_derivation() -> None:
+    """When capabilities.role is set, create_app must use it, not mount_data_plane."""
+    RoleCaptureCap.seen_role = None
+    reg = CapabilityRegistry([RoleCaptureCap()], role="data-plane")
+    # mount_data_plane=True would normally yield "all" — but capabilities.role wins.
+    create_app(capabilities=reg, mount_data_plane=True)
+    assert RoleCaptureCap.seen_role == "data-plane", (
+        "capabilities.role must override mount_data_plane derivation"
+    )
+
+
+def test_capabilities_role_none_falls_back_to_mount_data_plane() -> None:
+    """When capabilities.role is None, create_app falls back to mount_data_plane derivation."""
+    RoleCaptureCap.seen_role = None
+    # role=None → fallback: mount_data_plane=True → "all"
+    reg = CapabilityRegistry([RoleCaptureCap()])
+    create_app(capabilities=reg, mount_data_plane=True)
+    assert RoleCaptureCap.seen_role == "all"
+
+    RoleCaptureCap.seen_role = None
+    reg2 = CapabilityRegistry([RoleCaptureCap()])
+    create_app(capabilities=reg2, mount_data_plane=False)
+    assert RoleCaptureCap.seen_role == "data-plane"

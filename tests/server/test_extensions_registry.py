@@ -67,11 +67,11 @@ class _Cap(Capability):
 
 def test_capability_defaults_are_noops() -> None:
     cap = _Cap()
-    cap.install_services()            # no raise
+    cap.install_services()  # no raise
     cap.install_hooks(HookRegistry())  # no raise
     assert isinstance(cap.routers("all"), list)
     asyncio.run(cap.on_startup(AppContext()))  # no raise
-    asyncio.run(cap.on_shutdown())             # no raise
+    asyncio.run(cap.on_shutdown())  # no raise
 
 
 def test_registry_dedup_on_duplicate_name() -> None:
@@ -83,11 +83,10 @@ def test_registry_carries_singular_concerns() -> None:
     reg = CapabilityRegistry(
         [_Cap()],
         configurator_class=object,
-        billing_gate=lambda line: (lambda: None),
+        billing_gate=lambda _: lambda: None,
     )
     assert reg.configurator_class is object
     assert reg.billing_gate is not None
-    assert "demo_cap" in reg.router_names()
 
 
 def test_appcontext_defaults() -> None:
