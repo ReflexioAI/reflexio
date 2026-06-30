@@ -180,6 +180,55 @@ def test_gc_tick_no_high_volume_anomaly_below_threshold():
 
 
 # ---------------------------------------------------------------------------
+# Shed invariant — the reduced OSS scheduler NEVER runs governance retention
+# ---------------------------------------------------------------------------
+
+
+def test_gc_tick_never_runs_governance_retention():
+    """Invariant: the reduced OSS scheduler sheds the premium concern. Even when
+    a governance_retention config with audit_events_retention_enabled=True is
+    present, _gc_tick must NEVER call gc_governance_retention (that behavior
+    moved to the enterprise GovernanceRetentionCapability)."""
+    cfg = LineageGCConfig(enabled=True, tombstone_grace_window_days=10)
+    storage = _make_storage(gc_return=0)
+    ctx = _make_ctx("org_gov", lineage_gc=cfg, storage=storage)
+    # Attach a governance_retention config that *would* have enabled the
+    # premium path under the old combined scheduler.
+    ctx.configurator.get_config.return_value = SimpleNamespace(
+        lineage_gc=cfg,
+        governance_retention=SimpleNamespace(audit_events_retention_enabled=True),
+    )
+
+    sched = _scheduler(factory=lambda _: ctx)
+    sched._gc_tick(["org_gov"])
+
+    storage.gc_governance_retention.assert_not_called()
+    # tombstone GC still ran (behavior preserved):
+    assert storage.gc_expired_tombstones.call_count == len(_ENTITY_TYPES)
+
+
+def test_gc_tick_works_for_legacy_config_without_governance_retention():
+    """Legacy-config path: a config object lacking ``governance_retention`` still
+    ticks fine — the reduced gate only reads ``lineage_gc.enabled``."""
+    cfg = LineageGCConfig(enabled=True, tombstone_grace_window_days=10)
+    storage = _make_storage(gc_return=0)
+    # _make_ctx builds SimpleNamespace(lineage_gc=...) with NO governance_retention.
+    ctx = _make_ctx("org_legacy", lineage_gc=cfg, storage=storage)
+    assert not hasattr(ctx.configurator.get_config(), "governance_retention")
+
+    sched = _scheduler(factory=lambda _: ctx)
+    sched._gc_tick(["org_legacy"])
+
+    assert storage.gc_expired_tombstones.call_count == len(_ENTITY_TYPES)
+    storage.gc_governance_retention.assert_not_called()
+
+
+def test_lineage_gc_enabled_default_is_true():
+    """Default-flip tripwire: OSS must always reclaim tombstones by default."""
+    assert LineageGCConfig().enabled is True
+
+
+# ---------------------------------------------------------------------------
 # maybe_start_lineage_gc — off-by-default factory
 # ---------------------------------------------------------------------------
 
