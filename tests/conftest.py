@@ -3,6 +3,7 @@
 import os
 import sys
 import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -53,7 +54,7 @@ def pytest_unconfigure(config):
 
 
 @pytest.fixture(autouse=True)
-def _reset_runtime_services() -> None:
+def _reset_runtime_services() -> Iterator[None]:
     """Clear the process-global service registry before and after each test."""
     reset_services()
     yield
