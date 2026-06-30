@@ -40,6 +40,13 @@ def test_sqlite_surface_matches_base_abc() -> None:
     sqlite_methods = _public_methods(SQLiteStorage)
     base_methods = _public_methods(BaseStorage)
 
+    # Membership guard: fail if a retention-allowlisted method is dropped from
+    # SQLiteStorage (the subtraction check below stays green in that case).
+    assert _RETENTION_MIXIN_METHODS.issubset(sqlite_methods), (
+        f"Retention allowlist contains methods absent from SQLiteStorage: "
+        f"{_RETENTION_MIXIN_METHODS - sqlite_methods}"
+    )
+
     assert sqlite_methods - _RETENTION_MIXIN_METHODS == base_methods, (
         f"SQLiteStorage method delta vs BaseStorage ABC "
         f"(retention allowlist={_RETENTION_MIXIN_METHODS}):\n"
