@@ -3,9 +3,11 @@
 import os
 import sys
 import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+from reflexio.server.extensions import reset_services
 
 _THIS_DIR = Path(__file__).resolve().parent  # tests/
 PROJECT_ROOT = _THIS_DIR.parent.parent  # repo root
@@ -49,6 +51,14 @@ def pytest_configure(config):
 
 def pytest_unconfigure(config):
     cleanup_llm_mock(config)
+
+
+@pytest.fixture(autouse=True)
+def _reset_runtime_services() -> Iterator[None]:
+    """Clear the process-global service registry before and after each test."""
+    reset_services()
+    yield
+    reset_services()
 
 
 @pytest.fixture

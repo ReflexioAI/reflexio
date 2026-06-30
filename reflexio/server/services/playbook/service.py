@@ -22,10 +22,14 @@ from reflexio.models.api_schema.service_schemas import (
     UserPlaybook,
 )
 from reflexio.models.config_schema import PlaybookConfig
+from reflexio.server.extensions import get_service
 from reflexio.server.operation_limiter import run_with_operation_limit
 from reflexio.server.services.base_generation_service import (
     BaseGenerationService,
     StatusChangeOperation,
+)
+from reflexio.server.services.playbook.aggregation_prompt_processing import (
+    AGGREGATION_PROMPT_PROCESSOR,
 )
 from reflexio.server.services.playbook.components.aggregator import PlaybookAggregator
 from reflexio.server.services.playbook.components.extractor import PlaybookExtractor
@@ -537,9 +541,7 @@ class PlaybookGenerationService(
         )
 
         # Initialize and run aggregator (synchronous)
-        aggregation_prompt_processor = (
-            self.request_context.configurator.create_aggregation_prompt_processor()
-        )
+        aggregation_prompt_processor = get_service(AGGREGATION_PROMPT_PROCESSOR)
         aggregator_kwargs = {}
         if aggregation_prompt_processor is not None:
             aggregator_kwargs["aggregation_prompt_processor"] = (

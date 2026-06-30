@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from reflexio.server.extensions import ServiceKey
+
 
 @dataclass
 class AggregationPromptProcessingContext:
@@ -35,8 +37,8 @@ class AggregationPromptProcessor(Protocol):
     Implementations may transform prompt text before the aggregation LLM call,
     provide contextual prompt instructions when preprocessing changed prompt
     input, and post-process aggregation output before storage or response
-    logging. Deployments supply one by overriding
-    ``BaseConfigurator.create_aggregation_prompt_processor()``.
+    logging. Deployments supply one by registering it via the
+    ``AGGREGATION_PROMPT_PROCESSOR`` ServiceKey (``register_service``).
     """
 
     def preprocess_prompt_text(
@@ -89,3 +91,10 @@ class PassthroughPromptProcessor:
         context: AggregationPromptProcessingContext | None = None,  # noqa: ARG002
     ) -> PromptPostprocessResult:
         return PromptPostprocessResult(value=value)
+
+
+# Singleton runtime-service key (round-5 RD-NEC-002): one processor registered at
+# the enterprise composition root; None in local OSS (passthrough, no redaction).
+AGGREGATION_PROMPT_PROCESSOR: ServiceKey[AggregationPromptProcessor] = ServiceKey(
+    "aggregation_prompt_processor"
+)

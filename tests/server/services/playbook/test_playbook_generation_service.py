@@ -19,8 +19,10 @@ from reflexio.models.config_schema import (
     StorageConfigSQLite,
 )
 from reflexio.server.api_endpoints.request_context import RequestContext
+from reflexio.server.extensions import register_service
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.services.playbook.aggregation_prompt_processing import (
+    AGGREGATION_PROMPT_PROCESSOR,
     PassthroughPromptProcessor,
 )
 from reflexio.server.services.playbook.playbook_service_utils import (
@@ -82,7 +84,6 @@ def _service_for_inline_aggregation(configurator: Any) -> PlaybookGenerationServ
 def test_inline_aggregation_default_path_does_not_inject_processor():
     configurator = MagicMock()
     configurator.get_config.return_value = _aggregation_enabled_config()
-    configurator.create_aggregation_prompt_processor.return_value = None
     service = _service_for_inline_aggregation(configurator)
     created_kwargs: list[dict[str, Any]] = []
 
@@ -107,20 +108,15 @@ def test_inline_aggregation_default_path_does_not_inject_processor():
 
     assert len(created_kwargs) == 1
     assert "aggregation_prompt_processor" not in created_kwargs[0]
-    configurator.create_aggregation_prompt_processor.assert_called_once_with()
 
 
-def test_inline_aggregation_injects_configured_processor():
+def test_inline_aggregation_injects_registered_processor():
     processor = PassthroughPromptProcessor()
+    register_service(AGGREGATION_PROMPT_PROCESSOR, processor, override=True)
 
-    class ConfiguratorWithProcessor:
-        def get_config(self) -> Config:
-            return _aggregation_enabled_config()
-
-        def create_aggregation_prompt_processor(self) -> PassthroughPromptProcessor:
-            return processor
-
-    service = _service_for_inline_aggregation(ConfiguratorWithProcessor())
+    configurator = MagicMock()
+    configurator.get_config.return_value = _aggregation_enabled_config()
+    service = _service_for_inline_aggregation(configurator)
     created_kwargs: list[dict[str, Any]] = []
 
     class FakeAggregator:
@@ -149,15 +145,11 @@ def test_inline_aggregation_injects_configured_processor():
 def test_inline_aggregation_does_not_thread_processor_prompt_text_separately():
     processor: Any = PassthroughPromptProcessor()
     processor.prompt_extra_instructions = "Extra aggregation instruction."
+    register_service(AGGREGATION_PROMPT_PROCESSOR, processor, override=True)
 
-    class ConfiguratorWithExtraInstructions:
-        def get_config(self) -> Config:
-            return _aggregation_enabled_config()
-
-        def create_aggregation_prompt_processor(self) -> PassthroughPromptProcessor:
-            return processor
-
-    service = _service_for_inline_aggregation(ConfiguratorWithExtraInstructions())
+    configurator = MagicMock()
+    configurator.get_config.return_value = _aggregation_enabled_config()
+    service = _service_for_inline_aggregation(configurator)
     created_kwargs: list[dict[str, Any]] = []
 
     class FakeAggregator:

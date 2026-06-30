@@ -8,6 +8,10 @@ from reflexio.server.services.governance.config import (
     governance_request_ref,
     governance_subject_ref,
 )
+from reflexio.server.services.storage.governance_validation import (
+    _CANONICAL_DELETE_TARGET_NAMES,
+    _validate_governance_target_ref,
+)
 from reflexio.server.services.storage.storage_base._governance import GovernanceMixin
 
 
@@ -42,6 +46,36 @@ def test_governance_mixin_tracks_new_barrier_methods_as_abstract() -> None:
         "fail_subject_erasure_barrier",
         "get_subject_write_barrier",
     } <= GovernanceMixin.__abstractmethods__
+
+
+def test_agent_success_eval_result_is_delete_only_target() -> None:
+    """``agent_success_evaluation_result`` is a canonical delete target, so its
+    target_ref validation must enforce the delete-only contract (phase=='delete',
+    target_ref=='all') — not fall through to the permissive generic path that
+    would accept e.g. ``hide_for_rebuild``.
+    """
+    target = "agent_success_evaluation_result"
+    assert target in _CANONICAL_DELETE_TARGET_NAMES
+
+    # Valid canonical delete shape is accepted.
+    assert (
+        _validate_governance_target_ref(
+            target_name=target, phase="delete", target_ref="all"
+        )
+        == "all"
+    )
+
+    # Previously accepted (fell through to generic path); must now be rejected.
+    with pytest.raises(ValueError, match="must use delete phase"):
+        _validate_governance_target_ref(
+            target_name=target, phase="hide_for_rebuild", target_ref="all"
+        )
+
+    # delete phase but non-"all" ref must also be rejected.
+    with pytest.raises(ValueError, match="must be all"):
+        _validate_governance_target_ref(
+            target_name=target, phase="delete", target_ref="123"
+        )
 
 
 def test_secret_defaults_only_in_local_dev_or_test(

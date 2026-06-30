@@ -1,6 +1,6 @@
 from fastapi import Depends
 
-from reflexio.server._auth import default_get_org_id
+from reflexio.server.auth import default_get_org_id
 from reflexio.server.prompt.prompt_manager import PromptManager
 from reflexio.server.services.configurator.base_configurator import BaseConfigurator
 from reflexio.server.services.configurator.configurator import get_configurator_class

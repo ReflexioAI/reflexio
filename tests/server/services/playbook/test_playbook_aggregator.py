@@ -206,7 +206,6 @@ class _MappingAwareProcessor:
 
 
 def test_aggregation_prompt_processing_protocol_types_importable():
-    from reflexio.server.services.configurator.configurator import DefaultConfigurator
     from reflexio.server.services.playbook.aggregation_prompt_processing import (
         PassthroughPromptProcessor,
         PromptPostprocessResult,
@@ -228,10 +227,6 @@ def test_aggregation_prompt_processing_protocol_types_importable():
     assert preprocess_result == PromptPreprocessResult(text="keep this")
     assert postprocess_result == PromptPostprocessResult(value={"content": "keep this"})
     assert context.changed is False
-    assert (
-        DefaultConfigurator(org_id="test-org").create_aggregation_prompt_processor()
-        is None
-    )
 
 
 def test_aggregation_prompt_processor_preprocesses_cluster_playbooks_but_not_existing_agent_playbooks():

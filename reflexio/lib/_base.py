@@ -127,6 +127,21 @@ class ReflexioBase:
             raise RuntimeError(STORAGE_NOT_CONFIGURED_MSG)
         return storage
 
+    def get_storage(self) -> BaseStorage:
+        """Return the configured storage backend.
+
+        Public accessor for consumers (including enterprise) that need the
+        underlying ``BaseStorage``. Prefer ``request_context.storage`` inside
+        OSS pipeline code; this exists for callers that hold a ``Reflexio``.
+
+        Returns:
+            BaseStorage: The configured storage backend.
+
+        Raises:
+            RuntimeError: If storage is not configured.
+        """
+        return self._get_storage()
+
     def _get_query_reformulator(self) -> QueryReformulator:
         """Lazily create and cache a QueryReformulator instance.
 

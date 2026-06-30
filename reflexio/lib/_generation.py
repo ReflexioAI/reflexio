@@ -38,6 +38,10 @@ class GenerationMixin(ReflexioBase):
         """
         if not self._is_storage_configured():
             raise ValueError(STORAGE_NOT_CONFIGURED_MSG)
+        from reflexio.server.extensions import get_service
+        from reflexio.server.services.playbook.aggregation_prompt_processing import (
+            AGGREGATION_PROMPT_PROCESSOR,
+        )
         from reflexio.server.services.playbook.components.aggregator import (
             PlaybookAggregator,
         )
@@ -45,9 +49,7 @@ class GenerationMixin(ReflexioBase):
             PlaybookAggregatorRequest,
         )
 
-        aggregation_prompt_processor = (
-            self.request_context.configurator.create_aggregation_prompt_processor()
-        )
+        aggregation_prompt_processor = get_service(AGGREGATION_PROMPT_PROCESSOR)
         aggregator_kwargs = {}
         if aggregation_prompt_processor is not None:
             aggregator_kwargs["aggregation_prompt_processor"] = (

@@ -50,9 +50,9 @@ Triggered manually via `/api/run_playbook_aggregation`. Clusters user playbooks 
 - `get_clusters(user_playbooks, config)` - HDBSCAN/Agglomerative clustering on embeddings
 - `aggregate()` - Full aggregation pipeline with LLM-based consolidation
 
-**Optional prompt processing**: deployments can override
-`BaseConfigurator.create_aggregation_prompt_processor()` to supply an
-`AggregationPromptProcessor`. The aggregator applies the processor only at the
+**Optional prompt processing**: deployments can register an
+`AggregationPromptProcessor` via the `AGGREGATION_PROMPT_PROCESSOR` ServiceKey
+(`register_service`). The aggregator applies the processor only at the
 aggregation prompt boundary, carries an opaque per-cluster processing context,
 injects extra prompt guidance only when preprocessing changed prompt input, and
 post-processes generated outputs before storage or model-response logging.
