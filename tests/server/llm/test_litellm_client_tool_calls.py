@@ -126,7 +126,7 @@ class TestToolCallingExtensions:
             )
 
         call_kwargs = mock_completion.call_args.kwargs
-        assert call_kwargs["model"] == "claude-sonnet-4-6"
+        assert call_kwargs["model"] == "claude-sonnet-5"
 
     def test_non_tool_path_unchanged(self) -> None:
         """Without tools kwarg the existing str-return path is untouched."""

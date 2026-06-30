@@ -212,6 +212,8 @@ class TestClaudeCodeLLMCompletion:
         cmd = mock_run.call_args.args[0]
         fmt_idx = cmd.index("--output-format")
         assert cmd[fmt_idx + 1] == "stream-json"
+        model_idx = cmd.index("--model")
+        assert cmd[model_idx + 1] == "claude-sonnet-5"
         # stream-json requires --verbose to emit events.
         assert "--verbose" in cmd
 
