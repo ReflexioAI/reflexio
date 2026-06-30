@@ -6,7 +6,10 @@ import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from reflexio.server.extensions import CapabilityRegistry
 
 from anyio.to_thread import current_default_thread_limiter
 from fastapi import (
@@ -3324,6 +3327,74 @@ def _add_openapi_security(app: FastAPI) -> None:
     app.openapi = custom_openapi  # type: ignore[method-assign]
 
 
+def _resolve_lifespan_org_id(get_org_id: Callable[..., str] | None) -> str:
+    """Resolve the bootstrap org ID for lifespan schedulers without a request context.
+
+    Args:
+        get_org_id (Callable[..., str] | None): Custom org-ID dependency, or None for
+            the default single-tenant mode.
+
+    Returns:
+        str: The resolved org ID string.
+    """
+    from reflexio.server.auth import default_get_org_id
+
+    if get_org_id is None:
+        return default_get_org_id()
+    try:
+        signature = inspect.signature(get_org_id)
+    except (TypeError, ValueError):
+        return default_get_org_id()
+    if signature.parameters:
+        return default_get_org_id()
+    try:
+        return str(get_org_id())
+    except Exception:
+        logger.exception("Failed to resolve lifespan org_id; using default org")
+        return default_get_org_id()
+
+
+def _wire_capabilities(
+    app: FastAPI,
+    capabilities: "CapabilityRegistry | None",
+    mount_data_plane: bool,
+) -> None:
+    """Wire capability routers, services, and hooks into the app at construction time.
+
+    No-op when ``capabilities`` is None.
+
+    Args:
+        app (FastAPI): The application instance to wire into.
+        capabilities (CapabilityRegistry | None): Capabilities to install, or None.
+        mount_data_plane (bool): Whether the data-plane role is active.
+    """
+    if capabilities is None:
+        return
+    from reflexio.server.auth import default_billing_gate
+    from reflexio.server.extensions import HookRegistry
+
+    role = "all" if mount_data_plane else "data-plane"
+    if capabilities.configurator_class is not None:
+        from reflexio.server.services.configurator.configurator import (
+            set_configurator_class,
+        )
+
+        set_configurator_class(capabilities.configurator_class)
+    if capabilities.billing_gate is not None:
+        for line in ("application", "learnings_generated"):
+            app.dependency_overrides[default_billing_gate(line)] = (
+                capabilities.billing_gate(line)
+            )
+    # HookRegistry is a stateless facade: its methods configure process-global
+    # tracer/usage-recorder/retrieval-capture singletons; the object needn't be stored.
+    hooks = HookRegistry()
+    for cap in capabilities.capabilities:
+        cap.install_services()
+        cap.install_hooks(hooks)
+        for r in cap.routers(role):
+            app.include_router(r)
+
+
 def create_app(
     get_org_id: Callable[..., str] | None = None,
     additional_routers: list[APIRouter] | None = None,
@@ -3332,6 +3403,7 @@ def create_app(
     get_caller_type: Callable[..., str] | None = None,
     get_billing_gate: Callable[[str], Callable[..., None]] | None = None,
     mount_data_plane: bool = True,
+    capabilities: "CapabilityRegistry | None" = None,
 ) -> FastAPI:
     """Factory to create a FastAPI app.
 
@@ -3359,10 +3431,26 @@ def create_app(
             scheduler, while keeping all other scaffolding (middleware, CORS,
             auth overrides, OpenAPI security, health, ``/meta/version``,
             ``additional_routers``).
+        capabilities: Optional registry of enterprise capabilities. When provided,
+            each capability's routers, services, hooks, and lifecycle methods are
+            wired into the app at construction time. Behavior is unchanged when
+            ``None``.
 
     Returns:
         Configured FastAPI application.
+
+    Raises:
+        ValueError: If both ``get_billing_gate`` and ``capabilities.billing_gate``
+            are provided — pass billing_gate through exactly one path.
     """
+    if (
+        get_billing_gate is not None
+        and capabilities is not None
+        and capabilities.billing_gate is not None
+    ):
+        raise ValueError(
+            "pass billing_gate via either get_billing_gate or capabilities, not both"
+        )
     from collections.abc import AsyncIterator
     from contextlib import asynccontextmanager
 
@@ -3372,6 +3460,7 @@ def create_app(
         default_get_caller_type,
         default_get_org_id,
     )
+    from reflexio.server.extensions import AppContext
     from reflexio.server.llm.model_defaults import validate_llm_availability
     from reflexio.server.services.extraction.resume_scheduler import (
         maybe_start_resume_scheduler,
@@ -3380,25 +3469,11 @@ def create_app(
         maybe_start_lineage_gc,
     )
 
-    def _lifespan_org_id() -> str:
-        if get_org_id is None:
-            return default_get_org_id()
-        try:
-            signature = inspect.signature(get_org_id)
-        except (TypeError, ValueError):
-            return default_get_org_id()
-        if signature.parameters:
-            return default_get_org_id()
-        try:
-            return str(get_org_id())
-        except Exception:
-            logger.exception("Failed to resolve lifespan org_id; using default org")
-            return default_get_org_id()
-
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
         scheduler = None
         gc_scheduler = None
+        started_caps: list = []
         if mount_data_plane:
             log_publish_hardware_capacity()
             validate_llm_availability()
@@ -3411,15 +3486,29 @@ def create_app(
             # and to seed cross-org discovery.
             scheduler = maybe_start_resume_scheduler(
                 lambda org_id: RequestContext(org_id=org_id),
-                bootstrap_org_id=_lifespan_org_id(),
+                bootstrap_org_id=_resolve_lifespan_org_id(get_org_id),
             )
             gc_scheduler = maybe_start_lineage_gc(
                 lambda org_id: RequestContext(org_id=org_id),
-                bootstrap_org_id=_lifespan_org_id(),
+                bootstrap_org_id=_resolve_lifespan_org_id(get_org_id),
             )
         try:
+            if capabilities is not None:
+                ctx = AppContext()
+                for cap in capabilities.capabilities:
+                    await cap.on_startup(ctx)
+                    started_caps.append(cap)
             yield
         finally:
+            for cap in reversed(started_caps):
+                try:
+                    await cap.on_shutdown()
+                except Exception:
+                    logger.warning(
+                        "capability %r on_shutdown raised; continuing cleanup",
+                        cap,
+                        exc_info=True,
+                    )
             if scheduler is not None:
                 scheduler.stop()
             if gc_scheduler is not None:
@@ -3528,6 +3617,9 @@ def create_app(
     # Include additional routers
     for router in additional_routers or []:
         app.include_router(router)
+
+    # Wire capability routers, services, and hooks (composition-root only)
+    _wire_capabilities(app, capabilities, mount_data_plane)
 
     # Health/observability endpoint (per-worker metrics for recycling)
     health_api.install(app)
