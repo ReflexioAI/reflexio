@@ -52,7 +52,7 @@ def _scheduler(*, bootstrap_org_id: str = "org_bootstrap", factory=None):
     if factory is None:
         factory = _default_factory
     return LineageGCScheduler(
-        request_context_factory=factory,
+        request_context_factory=factory,  # type: ignore[arg-type]
         bootstrap_org_id=bootstrap_org_id,
     )
 
@@ -180,6 +180,55 @@ def test_gc_tick_no_high_volume_anomaly_below_threshold():
 
 
 # ---------------------------------------------------------------------------
+# Shed invariant — the reduced OSS scheduler NEVER runs governance retention
+# ---------------------------------------------------------------------------
+
+
+def test_gc_tick_never_runs_governance_retention():
+    """Invariant: the reduced OSS scheduler sheds the premium concern. Even when
+    a governance_retention config with audit_events_retention_enabled=True is
+    present, _gc_tick must NEVER call gc_governance_retention (that behavior
+    moved to the enterprise GovernanceRetentionCapability)."""
+    cfg = LineageGCConfig(enabled=True, tombstone_grace_window_days=10)
+    storage = _make_storage(gc_return=0)
+    ctx = _make_ctx("org_gov", lineage_gc=cfg, storage=storage)
+    # Attach a governance_retention config that *would* have enabled the
+    # premium path under the old combined scheduler.
+    ctx.configurator.get_config.return_value = SimpleNamespace(
+        lineage_gc=cfg,
+        governance_retention=SimpleNamespace(audit_events_retention_enabled=True),
+    )
+
+    sched = _scheduler(factory=lambda _: ctx)
+    sched._gc_tick(["org_gov"])
+
+    storage.gc_governance_retention.assert_not_called()
+    # tombstone GC still ran (behavior preserved):
+    assert storage.gc_expired_tombstones.call_count == len(_ENTITY_TYPES)
+
+
+def test_gc_tick_works_for_legacy_config_without_governance_retention():
+    """Legacy-config path: a config object lacking ``governance_retention`` still
+    ticks fine — the reduced gate only reads ``lineage_gc.enabled``."""
+    cfg = LineageGCConfig(enabled=True, tombstone_grace_window_days=10)
+    storage = _make_storage(gc_return=0)
+    # _make_ctx builds SimpleNamespace(lineage_gc=...) with NO governance_retention.
+    ctx = _make_ctx("org_legacy", lineage_gc=cfg, storage=storage)
+    assert not hasattr(ctx.configurator.get_config(), "governance_retention")
+
+    sched = _scheduler(factory=lambda _: ctx)
+    sched._gc_tick(["org_legacy"])
+
+    assert storage.gc_expired_tombstones.call_count == len(_ENTITY_TYPES)
+    storage.gc_governance_retention.assert_not_called()
+
+
+def test_lineage_gc_enabled_default_is_true():
+    """Default-flip tripwire: OSS must always reclaim tombstones by default."""
+    assert LineageGCConfig().enabled is True
+
+
+# ---------------------------------------------------------------------------
 # maybe_start_lineage_gc — off-by-default factory
 # ---------------------------------------------------------------------------
 
@@ -187,14 +236,14 @@ def test_gc_tick_no_high_volume_anomaly_below_threshold():
 def test_maybe_start_lineage_gc_returns_none_when_disabled():
     cfg = LineageGCConfig(enabled=False)
     ctx = _make_ctx("org_1", lineage_gc=cfg)
-    result = maybe_start_lineage_gc(lambda _: ctx, bootstrap_org_id="org_1")
+    result = maybe_start_lineage_gc(lambda _: ctx, bootstrap_org_id="org_1")  # type: ignore[arg-type]
     assert result is None
 
 
 def test_maybe_start_lineage_gc_returns_scheduler_when_enabled():
     cfg = LineageGCConfig(enabled=True)
     ctx = _make_ctx("org_1", lineage_gc=cfg)
-    sched = maybe_start_lineage_gc(lambda _: ctx, bootstrap_org_id="org_1")
+    sched = maybe_start_lineage_gc(lambda _: ctx, bootstrap_org_id="org_1")  # type: ignore[arg-type]
     assert sched is not None
     sched.stop(timeout_seconds=1.0)
 
@@ -227,7 +276,7 @@ def test_discover_org_ids_not_implemented_warns_and_falls_back_to_bootstrap(
     with caplog.at_level(
         logging.WARNING, logger="reflexio.server.services.lineage.gc_scheduler"
     ):
-        org_ids = sched._discover_org_ids(bootstrap_ctx)
+        org_ids = sched._discover_org_ids(bootstrap_ctx)  # type: ignore[arg-type]
 
     assert org_ids == ["org_bootstrap"]
     assert any(
@@ -280,6 +329,145 @@ def test_gc_tick_stops_mid_tick_when_stop_event_set():
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Helpers for dead-knob warning tests
+# ---------------------------------------------------------------------------
+
+
+def _config(
+    *, lineage_gc_enabled: bool = True, audit_events_retention_enabled: bool = False
+):
+    """Build a minimal config-like object for dead-knob warning tests."""
+    return SimpleNamespace(
+        lineage_gc=SimpleNamespace(enabled=lineage_gc_enabled),
+        governance_retention=SimpleNamespace(
+            audit_events_retention_enabled=audit_events_retention_enabled
+        ),
+    )
+
+
+def _ctx(org_id: str, *, storage, cfg):
+    """Build a minimal request-context stand-in backed by an explicit config."""
+    return SimpleNamespace(
+        org_id=org_id,
+        storage=storage,
+        configurator=SimpleNamespace(get_config=MagicMock(return_value=cfg)),
+    )
+
+
+def _mock_storage() -> MagicMock:
+    return _make_storage()
+
+
+# ---------------------------------------------------------------------------
+# Dead-knob warning — audit-event retention is enterprise-only
+# ---------------------------------------------------------------------------
+
+
+def test_oss_dead_knob_warns_when_retention_enabled_without_enterprise(
+    monkeypatch, caplog
+):
+    """OSS-only deployment with audit_events_retention_enabled=True must warn that
+    the knob is enterprise-only (the OSS scheduler does not reclaim audit events)."""
+    import reflexio.server.services.configurator.configurator as _conf_mod
+    from reflexio.server.services.configurator.configurator import DefaultConfigurator
+
+    # Pin the configurator class to DefaultConfigurator (OSS context).
+    monkeypatch.setattr(_conf_mod, "_configurator_class", DefaultConfigurator)
+
+    # Use lineage_gc_enabled=False so maybe_start_lineage_gc returns None without
+    # spawning a daemon thread — the dead-knob warning fires before the enabled gate.
+    cfg = _config(lineage_gc_enabled=False, audit_events_retention_enabled=True)
+    ctx = _ctx(org_id="org1", storage=_mock_storage(), cfg=cfg)
+
+    with caplog.at_level(logging.WARNING):
+        maybe_start_lineage_gc(lambda _org: ctx, bootstrap_org_id="org1")  # type: ignore[arg-type]
+
+    assert any(
+        "audit_events_retention_enabled" in r.message
+        and "enterprise" in r.message.lower()
+        for r in caplog.records
+    ), (
+        f"Expected a dead-knob warning; got records: {[r.message for r in caplog.records]}"
+    )
+
+
+def test_oss_dead_knob_does_not_warn_when_not_oss(monkeypatch, caplog):
+    """When a non-DefaultConfigurator class is active (enterprise mode), no warning fires."""
+    import reflexio.server.services.configurator.configurator as _conf_mod
+    from reflexio.server.services.configurator.configurator import DefaultConfigurator
+
+    class _FakeEnterpriseConfigurator(DefaultConfigurator):
+        """Stand-in for the enterprise configurator (not DefaultConfigurator)."""
+
+    monkeypatch.setattr(_conf_mod, "_configurator_class", _FakeEnterpriseConfigurator)
+
+    # Use lineage_gc_enabled=False so no daemon thread is spawned — the warning
+    # check runs before the enabled gate.
+    cfg = _config(lineage_gc_enabled=False, audit_events_retention_enabled=True)
+    ctx = _ctx(org_id="org1", storage=_mock_storage(), cfg=cfg)
+
+    with caplog.at_level(logging.WARNING):
+        maybe_start_lineage_gc(lambda _org: ctx, bootstrap_org_id="org1")  # type: ignore[arg-type]
+
+    dead_knob_records = [
+        r for r in caplog.records if "audit_events_retention_enabled" in r.message
+    ]
+    assert not dead_knob_records, (
+        f"Unexpected dead-knob warning in enterprise mode: {[r.message for r in dead_knob_records]}"
+    )
+
+
+def test_oss_dead_knob_does_not_warn_when_retention_disabled(monkeypatch, caplog):
+    """No warning when audit_events_retention_enabled=False (even in OSS mode)."""
+    import reflexio.server.services.configurator.configurator as _conf_mod
+    from reflexio.server.services.configurator.configurator import DefaultConfigurator
+
+    monkeypatch.setattr(_conf_mod, "_configurator_class", DefaultConfigurator)
+
+    # Use lineage_gc_enabled=False so no daemon thread is spawned — the warning
+    # check runs before the enabled gate.
+    cfg = _config(lineage_gc_enabled=False, audit_events_retention_enabled=False)
+    ctx = _ctx(org_id="org1", storage=_mock_storage(), cfg=cfg)
+
+    with caplog.at_level(logging.WARNING):
+        maybe_start_lineage_gc(lambda _org: ctx, bootstrap_org_id="org1")  # type: ignore[arg-type]
+
+    dead_knob_records = [
+        r for r in caplog.records if "audit_events_retention_enabled" in r.message
+    ]
+    assert not dead_knob_records, (
+        f"Unexpected dead-knob warning when retention disabled: {[r.message for r in dead_knob_records]}"
+    )
+
+
+def test_oss_dead_knob_warns_even_when_lineage_gc_disabled(monkeypatch, caplog):
+    """Dead-knob warning must fire even when lineage_gc.enabled=False."""
+    import reflexio.server.services.configurator.configurator as _conf_mod
+    from reflexio.server.services.configurator.configurator import DefaultConfigurator
+
+    monkeypatch.setattr(_conf_mod, "_configurator_class", DefaultConfigurator)
+
+    cfg = _config(lineage_gc_enabled=False, audit_events_retention_enabled=True)
+    ctx = _ctx(org_id="org1", storage=_mock_storage(), cfg=cfg)
+
+    with caplog.at_level(logging.WARNING):
+        maybe_start_lineage_gc(lambda _org: ctx, bootstrap_org_id="org1")  # type: ignore[arg-type]
+
+    assert any(
+        "audit_events_retention_enabled" in r.message
+        and "enterprise" in r.message.lower()
+        for r in caplog.records
+    ), (
+        f"Expected dead-knob warning even with GC disabled; got: {[r.message for r in caplog.records]}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Poll interval clamp — non-positive values are floored to _MIN_POLL_SECONDS
+# ---------------------------------------------------------------------------
+
+
 def test_run_loop_clamps_non_positive_poll_interval():
     """_run_loop must pass at least _MIN_POLL_SECONDS to _stop_event.wait.
 
@@ -315,7 +503,7 @@ def test_run_loop_clamps_non_positive_poll_interval():
         storage=MagicMock(),
         configurator=SimpleNamespace(get_config=MagicMock(return_value=zero_cfg)),
     )
-    sched.request_context_factory = lambda _: zero_ctx
+    sched.request_context_factory = lambda _: zero_ctx  # type: ignore[assignment]
 
     sched._run_loop()
 
