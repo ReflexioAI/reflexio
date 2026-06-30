@@ -169,3 +169,23 @@ def test_router_double_mount_is_boot_error() -> None:
     reg = CapabilityRegistry([_Dup()], role="all")
     with pytest.raises(ValueError, match="dup"):
         create_app(capabilities=reg, additional_routers=[shared])
+
+
+def test_router_double_mount_guard_uses_identity_not_equality() -> None:
+    """Guard must use 'is' (identity), not '==' (equality).
+
+    Two distinct empty APIRouter() instances compare equal via __eq__ (same routes list),
+    so the guard must NOT fire when a capability returns a fresh router that happens to be
+    route-identical to one in additional_routers.
+    """
+
+    class _FreshRouter(Capability):
+        name = "fresh"
+
+        def routers(self, role: str) -> list[APIRouter]:
+            return [APIRouter()]  # distinct object every call
+
+    extra = APIRouter()  # also empty — equal to the one above via __eq__
+    reg = CapabilityRegistry([_FreshRouter()], role="all")
+    # Must NOT raise; the two routers are equal but not the same object.
+    create_app(capabilities=reg, additional_routers=[extra])

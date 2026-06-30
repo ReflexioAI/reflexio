@@ -3410,7 +3410,7 @@ def _wire_capabilities(
         cap.install_services()
         cap.install_hooks(hooks)
         for r in cap.routers(role):
-            if r in additional:
+            if any(r is a for a in additional):
                 raise ValueError(
                     f"router for capability {cap.name!r} is mounted both via the "
                     f"registry and additional_routers; mount it exactly once"
