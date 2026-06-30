@@ -177,6 +177,30 @@ def maybe_start_lineage_gc(
     try:
         ctx = request_context_factory(bootstrap_org_id)
         cfg = ctx.configurator.get_config()
+
+        # Dead-knob warning: audit-event retention is an ENTERPRISE-only feature
+        # (handled by reflexio_ext GovernanceRetentionCapability). In an OSS-only
+        # deployment the knob is accepted but does nothing — warn loudly. Detected
+        # via the configurator class: enterprise swaps in EnterpriseConfigurator at
+        # construction, so the OSS DefaultConfigurator means "no enterprise here".
+        from reflexio.server.services.configurator.configurator import (  # noqa: PLC0415
+            DefaultConfigurator,
+            get_configurator_class,
+        )
+
+        gr = getattr(cfg, "governance_retention", None)
+        if (
+            gr is not None
+            and getattr(gr, "audit_events_retention_enabled", False)
+            and get_configurator_class() is DefaultConfigurator
+        ):
+            logger.warning(
+                "event=governance_retention_knob_ignored "
+                "audit_events_retention_enabled=True but this is an OSS-only "
+                "deployment — audit-event retention is an enterprise-only feature "
+                "and will NOT run here."
+            )
+
         if not cfg.lineage_gc.enabled:
             return None
     except Exception as exc:

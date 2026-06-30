@@ -329,6 +329,129 @@ def test_gc_tick_stops_mid_tick_when_stop_event_set():
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Helpers for dead-knob warning tests
+# ---------------------------------------------------------------------------
+
+
+def _config(*, lineage_gc_enabled: bool = True, audit_events_retention_enabled: bool = False):
+    """Build a minimal config-like object for dead-knob warning tests."""
+    from types import SimpleNamespace as _NS
+
+    return _NS(
+        lineage_gc=_NS(enabled=lineage_gc_enabled),
+        governance_retention=_NS(audit_events_retention_enabled=audit_events_retention_enabled),
+    )
+
+
+def _ctx(org_id: str, *, storage, cfg):
+    """Build a minimal request-context stand-in backed by an explicit config."""
+    return SimpleNamespace(
+        org_id=org_id,
+        storage=storage,
+        configurator=SimpleNamespace(get_config=MagicMock(return_value=cfg)),
+    )
+
+
+def _mock_storage() -> MagicMock:
+    return _make_storage()
+
+
+# ---------------------------------------------------------------------------
+# Dead-knob warning — audit-event retention is enterprise-only
+# ---------------------------------------------------------------------------
+
+
+def test_oss_dead_knob_warns_when_retention_enabled_without_enterprise(monkeypatch, caplog):
+    """OSS-only deployment with audit_events_retention_enabled=True must warn that
+    the knob is enterprise-only (the OSS scheduler does not reclaim audit events)."""
+    import reflexio.server.services.configurator.configurator as _conf_mod
+    from reflexio.server.services.configurator.configurator import DefaultConfigurator
+
+    # Pin the configurator class to DefaultConfigurator (OSS context).
+    monkeypatch.setattr(_conf_mod, "_configurator_class", DefaultConfigurator)
+
+    cfg = _config(lineage_gc_enabled=True, audit_events_retention_enabled=True)
+    ctx = _ctx(org_id="org1", storage=_mock_storage(), cfg=cfg)
+
+    with caplog.at_level(logging.WARNING):
+        maybe_start_lineage_gc(lambda _org: ctx, bootstrap_org_id="org1")
+
+    assert any(
+        "audit_events_retention_enabled" in r.message and "enterprise" in r.message.lower()
+        for r in caplog.records
+    ), f"Expected a dead-knob warning; got records: {[r.message for r in caplog.records]}"
+
+
+def test_oss_dead_knob_does_not_warn_when_not_oss(monkeypatch, caplog):
+    """When a non-DefaultConfigurator class is active (enterprise mode), no warning fires."""
+    import reflexio.server.services.configurator.configurator as _conf_mod
+    from reflexio.server.services.configurator.configurator import DefaultConfigurator
+
+    class _FakeEnterpriseConfigurator(DefaultConfigurator):
+        """Stand-in for the enterprise configurator (not DefaultConfigurator)."""
+
+    monkeypatch.setattr(_conf_mod, "_configurator_class", _FakeEnterpriseConfigurator)
+
+    cfg = _config(lineage_gc_enabled=True, audit_events_retention_enabled=True)
+    ctx = _ctx(org_id="org1", storage=_mock_storage(), cfg=cfg)
+
+    with caplog.at_level(logging.WARNING):
+        maybe_start_lineage_gc(lambda _org: ctx, bootstrap_org_id="org1")
+
+    dead_knob_records = [
+        r for r in caplog.records if "audit_events_retention_enabled" in r.message
+    ]
+    assert not dead_knob_records, (
+        f"Unexpected dead-knob warning in enterprise mode: {[r.message for r in dead_knob_records]}"
+    )
+
+
+def test_oss_dead_knob_does_not_warn_when_retention_disabled(monkeypatch, caplog):
+    """No warning when audit_events_retention_enabled=False (even in OSS mode)."""
+    import reflexio.server.services.configurator.configurator as _conf_mod
+    from reflexio.server.services.configurator.configurator import DefaultConfigurator
+
+    monkeypatch.setattr(_conf_mod, "_configurator_class", DefaultConfigurator)
+
+    cfg = _config(lineage_gc_enabled=True, audit_events_retention_enabled=False)
+    ctx = _ctx(org_id="org1", storage=_mock_storage(), cfg=cfg)
+
+    with caplog.at_level(logging.WARNING):
+        maybe_start_lineage_gc(lambda _org: ctx, bootstrap_org_id="org1")
+
+    dead_knob_records = [
+        r for r in caplog.records if "audit_events_retention_enabled" in r.message
+    ]
+    assert not dead_knob_records, (
+        f"Unexpected dead-knob warning when retention disabled: {[r.message for r in dead_knob_records]}"
+    )
+
+
+def test_oss_dead_knob_warns_even_when_lineage_gc_disabled(monkeypatch, caplog):
+    """Dead-knob warning must fire even when lineage_gc.enabled=False."""
+    import reflexio.server.services.configurator.configurator as _conf_mod
+    from reflexio.server.services.configurator.configurator import DefaultConfigurator
+
+    monkeypatch.setattr(_conf_mod, "_configurator_class", DefaultConfigurator)
+
+    cfg = _config(lineage_gc_enabled=False, audit_events_retention_enabled=True)
+    ctx = _ctx(org_id="org1", storage=_mock_storage(), cfg=cfg)
+
+    with caplog.at_level(logging.WARNING):
+        maybe_start_lineage_gc(lambda _org: ctx, bootstrap_org_id="org1")
+
+    assert any(
+        "audit_events_retention_enabled" in r.message and "enterprise" in r.message.lower()
+        for r in caplog.records
+    ), f"Expected dead-knob warning even with GC disabled; got: {[r.message for r in caplog.records]}"
+
+
+# ---------------------------------------------------------------------------
+# Poll interval clamp — non-positive values are floored to _MIN_POLL_SECONDS
+# ---------------------------------------------------------------------------
+
+
 def test_run_loop_clamps_non_positive_poll_interval():
     """_run_loop must pass at least _MIN_POLL_SECONDS to _stop_event.wait.
 
