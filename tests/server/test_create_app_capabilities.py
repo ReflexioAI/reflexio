@@ -154,3 +154,18 @@ def test_capabilities_role_none_falls_back_to_mount_data_plane() -> None:
     reg2 = CapabilityRegistry([RoleCaptureCap()])
     create_app(capabilities=reg2, mount_data_plane=False)
     assert RoleCaptureCap.seen_role == "data-plane"
+
+
+def test_router_double_mount_is_boot_error() -> None:
+    """A capability router also passed via additional_routers must raise ValueError at boot."""
+    shared = APIRouter()
+
+    class _Dup(Capability):
+        name = "dup"
+
+        def routers(self, role: str) -> list[APIRouter]:
+            return [shared]
+
+    reg = CapabilityRegistry([_Dup()], role="all")
+    with pytest.raises(ValueError, match="dup"):
+        create_app(capabilities=reg, additional_routers=[shared])

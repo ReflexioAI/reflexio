@@ -3358,6 +3358,7 @@ def _wire_capabilities(
     app: FastAPI,
     capabilities: "CapabilityRegistry | None",
     mount_data_plane: bool,
+    additional_routers: list[APIRouter] | None = None,
 ) -> None:
     """Wire capability routers, services, and hooks into the app at construction time.
 
@@ -3374,6 +3375,12 @@ def _wire_capabilities(
         app (FastAPI): The application instance to wire into.
         capabilities (CapabilityRegistry | None): Capabilities to install, or None.
         mount_data_plane (bool): Whether the data-plane role is active.
+        additional_routers (list[APIRouter] | None): Routers already mounted via
+            ``additional_routers``; used to detect and reject double-mounts at boot.
+
+    Raises:
+        ValueError: If a capability's router object is also present in
+            ``additional_routers`` — each router must be mounted exactly once.
     """
     if capabilities is None:
         return
@@ -3398,10 +3405,16 @@ def _wire_capabilities(
     # HookRegistry is a stateless facade: its methods configure process-global
     # tracer/usage-recorder/retrieval-capture singletons; the object needn't be stored.
     hooks = HookRegistry()
+    additional = additional_routers or []
     for cap in capabilities.capabilities:
         cap.install_services()
         cap.install_hooks(hooks)
         for r in cap.routers(role):
+            if r in additional:
+                raise ValueError(
+                    f"router for capability {cap.name!r} is mounted both via the "
+                    f"registry and additional_routers; mount it exactly once"
+                )
             app.include_router(r)
 
 
@@ -3638,7 +3651,7 @@ def create_app(
         app.include_router(router)
 
     # Wire capability routers, services, and hooks (composition-root only)
-    _wire_capabilities(app, capabilities, mount_data_plane)
+    _wire_capabilities(app, capabilities, mount_data_plane, additional_routers)
 
     # Health/observability endpoint (per-worker metrics for recycling)
     health_api.install(app)
