@@ -1,7 +1,8 @@
 """Profile store CRUD methods for SQLite storage.
 
 Extracted verbatim from ``_profiles.py`` (the ProfileStore bucket). Interaction
-and search methods remain in ``_profiles.ProfileMixin``.
+methods live in ``profiles._interaction_store`` (``InteractionStoreMixin``);
+search methods live in ``profiles._search`` (``ProfileSearchMixin``).
 """
 
 import logging

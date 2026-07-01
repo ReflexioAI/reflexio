@@ -1,8 +1,8 @@
 """Interaction store CRUD methods for SQLite storage.
 
 Extracted verbatim from ``_profiles.py`` (the InteractionStore bucket). Profile
-CRUD lives in ``profiles._profile_store``; search methods remain in
-``_profiles.ProfileMixin``.
+CRUD lives in ``profiles._profile_store`` (``ProfileStoreMixin``); search methods
+live in ``profiles._search`` (``ProfileSearchMixin``).
 """
 
 import logging
