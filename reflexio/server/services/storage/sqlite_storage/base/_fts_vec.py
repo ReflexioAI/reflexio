@@ -28,20 +28,20 @@ class SQLiteFtsVecMixin:
     def _fts_upsert(self, table: str, rowid: int, **text_fields: str | None) -> None:
         """Insert or update an FTS row.  Deletes old entry first to avoid duplicates."""
         with self._lock:
-            self.conn.execute(f"DELETE FROM {table} WHERE rowid = ?", (rowid,))
+            self.conn.execute(f"DELETE FROM {table} WHERE rowid = ?", (rowid,))  # noqa: S608
             cols = list(text_fields.keys())
             vals = [text_fields[c] or "" for c in cols]
             placeholders = ",".join("?" for _ in cols)
             col_str = ",".join(cols)
             self.conn.execute(
-                f"INSERT INTO {table}(rowid, {col_str}) VALUES (?, {placeholders})",
+                f"INSERT INTO {table}(rowid, {col_str}) VALUES (?, {placeholders})",  # noqa: S608
                 [rowid, *vals],
             )
             self.conn.commit()
 
     def _fts_delete(self, table: str, rowid: int) -> None:
         with self._lock:
-            self.conn.execute(f"DELETE FROM {table} WHERE rowid = ?", (rowid,))
+            self.conn.execute(f"DELETE FROM {table} WHERE rowid = ?", (rowid,))  # noqa: S608
             self.conn.commit()
 
     def _fts_upsert_profile(self, profile_id: str, content: str) -> None:
@@ -69,9 +69,9 @@ class SQLiteFtsVecMixin:
         if not self._has_sqlite_vec:
             return
         with self._lock:
-            self.conn.execute(f"DELETE FROM {table} WHERE rowid = ?", (rowid,))
+            self.conn.execute(f"DELETE FROM {table} WHERE rowid = ?", (rowid,))  # noqa: S608
             self.conn.execute(
-                f"INSERT INTO {table}(rowid, embedding) VALUES (?, ?)",
+                f"INSERT INTO {table}(rowid, embedding) VALUES (?, ?)",  # noqa: S608
                 (rowid, json.dumps(embedding)),
             )
             self.conn.commit()
@@ -81,7 +81,7 @@ class SQLiteFtsVecMixin:
         if not self._has_sqlite_vec:
             return
         with self._lock:
-            self.conn.execute(f"DELETE FROM {table} WHERE rowid = ?", (rowid,))
+            self.conn.execute(f"DELETE FROM {table} WHERE rowid = ?", (rowid,))  # noqa: S608
             self.conn.commit()
 
     def _vec_knn_search(
@@ -122,7 +122,7 @@ class SQLiteFtsVecMixin:
                   ) v ON m.rowid = v.rowid
                   WHERE {where_clause}
                   ORDER BY v.distance
-                  LIMIT ?"""
+                  LIMIT ?"""  # noqa: S608
         all_params = [
             json.dumps(query_embedding),
             knn_overfetch,
