@@ -26,13 +26,14 @@ from ._stall_state import (
     mark_stall_notified,
     upsert_stall_state,
 )
-from .playbook import UserPlaybookStoreMixin
+from .playbook import AgentPlaybookStoreMixin, UserPlaybookStoreMixin
 
 
 class SQLiteStorage(
     SQLiteAgentRunMixin,
     ProfileMixin,
     RequestMixin,
+    AgentPlaybookStoreMixin,
     UserPlaybookStoreMixin,
     PlaybookMixin,
     SQLiteGovernanceMixin,

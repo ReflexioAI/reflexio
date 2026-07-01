@@ -30,7 +30,7 @@ from unittest.mock import patch
 
 import pytest
 
-import reflexio.server.services.storage.sqlite_storage._playbook as _playbook_mod
+import reflexio.server.services.storage.sqlite_storage.playbook._agent as _agent_playbook_mod
 import reflexio.server.services.storage.sqlite_storage.playbook._user as _user_playbook_mod
 from reflexio.models.api_schema.domain.entities import AgentPlaybook, UserPlaybook
 from reflexio.models.api_schema.domain.enums import Status
@@ -233,7 +233,7 @@ class TestHardDeleteCrashWindow:
 
         with (
             patch.object(
-                _playbook_mod,
+                _agent_playbook_mod,
                 "_emit_hard_delete_playbook",
                 side_effect=RuntimeError("simulated emit failure"),
             ),
@@ -252,7 +252,7 @@ class TestHardDeleteCrashWindow:
 
         with (
             patch.object(
-                _playbook_mod,
+                _agent_playbook_mod,
                 "_emit_hard_delete_playbook",
                 side_effect=RuntimeError("simulated emit failure"),
             ),
@@ -271,7 +271,7 @@ class TestHardDeleteCrashWindow:
 
         with (
             patch.object(
-                _playbook_mod,
+                _agent_playbook_mod,
                 "_emit_hard_delete_playbook",
                 side_effect=RuntimeError("simulated emit failure"),
             ),
@@ -298,7 +298,7 @@ class TestHardDeleteCrashWindow:
 
         with (
             patch.object(
-                _playbook_mod,
+                _agent_playbook_mod,
                 "_emit_hard_delete_playbook",
                 side_effect=RuntimeError("simulated emit failure"),
             ),
