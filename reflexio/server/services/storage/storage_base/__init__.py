@@ -35,6 +35,7 @@ from ._share_links import ShareLinkMixin
 from ._stall_state import StallStateMixin
 from .playbook import (
     AgentPlaybookStoreMixin,
+    OptimizationJobStoreMixin,
     PlaybookSourceLinkageMixin,
     UserPlaybookStoreMixin,
 )
@@ -47,6 +48,7 @@ class BaseStorage(
     AgentPlaybookStoreMixin,
     UserPlaybookStoreMixin,
     PlaybookSourceLinkageMixin,
+    OptimizationJobStoreMixin,
     PlaybookMixin,
     RetrievalLogMixin,
     GovernanceMixin,
@@ -256,6 +258,7 @@ __all__ = [
     "PendingToolCallUpsertResult",
     "PlaybookMixin",
     "AgentPlaybookStoreMixin",
+    "OptimizationJobStoreMixin",
     "PlaybookSourceLinkageMixin",
     "UserPlaybookStoreMixin",
     "RetrievalLogMixin",

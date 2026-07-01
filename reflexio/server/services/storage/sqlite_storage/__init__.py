@@ -28,6 +28,7 @@ from ._stall_state import (
 )
 from .playbook import (
     AgentPlaybookStoreMixin,
+    OptimizationJobStoreMixin,
     PlaybookSourceLinkageMixin,
     UserPlaybookStoreMixin,
 )
@@ -40,6 +41,7 @@ class SQLiteStorage(
     AgentPlaybookStoreMixin,
     UserPlaybookStoreMixin,
     PlaybookSourceLinkageMixin,
+    OptimizationJobStoreMixin,
     PlaybookMixin,
     SQLiteGovernanceMixin,
     SQLiteLineageMixin,
