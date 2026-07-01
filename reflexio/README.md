@@ -102,6 +102,7 @@ Description: FastAPI backend server that processes user interactions to generate
 
 ### Main Entry Points
 - **API**: `api.py` - FastAPI routes
+- **Extension Registry**: `extensions.py` - optional capability/service registration for OSS and enterprise integrations
 - **Endpoint Helpers**: `api_endpoints/` - Request handlers calling `Reflexio` (reflexio_lib)
 - **Core Service**: `services/generation_service.py` - Main orchestrator
 
@@ -141,7 +142,8 @@ client (Python SDK)
   - `playbook_optimizer/` - Scenario-based playbook optimization experiments
   - `braintrust/` - Braintrust eval export/sync support
   - `lineage/` - Resolve current records and schedule tombstone garbage collection for superseded profile/playbook rows
-  - `storage/` - Abstract layer (SQLite prod, LocalJSON test)
+  - `governance/` - Subject-reference contracts and retention/barrier helpers used by storage and lineage
+  - `storage/` - Abstract layer (SQLite prod, LocalJSON test) with governance-aware write validation
   - `pre_retrieval/` - Query rewriting and document expansion helpers
   - `configurator/` - YAML config loader
 - **`site_var/`**: Global settings singleton

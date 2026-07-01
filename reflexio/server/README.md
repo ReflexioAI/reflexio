@@ -6,6 +6,7 @@ Description: FastAPI backend server that processes user interactions to generate
 - [Main Entry Points](#main-entry-points)
 - [Cache](#cache)
 - [API Endpoints](#api-endpoints)
+- [Extension Registry](#extension-registry)
 - [LLM Client](#llm-client)
 - [Prompts](#prompts)
 - [Site Variables](#site-variables)
@@ -34,6 +35,7 @@ Description: FastAPI backend server that processes user interactions to generate
 
 - **API**: `api.py` - FastAPI routes (only place to expose endpoints)
 - **Endpoint Helpers**: `api_endpoints/` - Bridge between routes and business logic
+- **Extension Registry**: `extensions.py` - Capability and service registry for optional OSS/enterprise integrations
 - **Core Service**: `services/generation_service.py` - Main orchestrator
 
 ## Cache
@@ -83,6 +85,14 @@ Description: FastAPI backend server that processes user interactions to generate
 **Authentication Pattern**: The open-source app uses `default_get_org_id` and `DEFAULT_ORG_ID` for local/no-auth starts. The enterprise extension wraps `create_app()` with authenticated org resolution, login/OAuth/account/share/waitlist routers, admin checks, Sentry tracing, and usage metrics.
 
 **Pattern**: Core route handlers call `Reflexio` through `get_reflexio(org_id)`; endpoint helper files should not instantiate `Reflexio` directly.
+
+## Extension Registry
+
+**File**: `extensions.py`
+
+`CapabilityRegistry` lets deployments register optional routers, startup/shutdown hooks, and cross-cutting services without hardcoding enterprise-only imports into the OSS app. `create_app()` builds the active registry, stores it on `app.state.capability_registry`, installs capability routers/startup/shutdown hooks, and exposes typed service lookup through `ServiceKey`.
+
+**Pattern**: Optional integrations should register capabilities/services at app construction time and consume them through the registry; avoid importing enterprise implementations directly in OSS modules.
 
 ## LLM Client
 
@@ -188,6 +198,7 @@ python -m reflexio.server.scripts.manage_invitation_codes list --show-used
 - **Search preparation**: `pre_retrieval/` and `unified_search_service.py` handle query reformulation, document expansion, embeddings, and cross-entity search orchestration.
 - **Optimization/integrations**: `playbook_optimizer/` and `braintrust/` run candidate playbook optimization, rollout support, and Braintrust export/sync.
 - **Lineage**: `lineage/` resolves active records across superseded chains and schedules tombstone garbage collection for profile/playbook storage.
+- **Governance**: `governance/` defines subject-reference contracts and retention/barrier policy helpers used by storage and lineage paths.
 - **Persistence/config**: `storage/`, `configurator/`, and `operation_state_utils.py` provide storage abstractions, config loading, locks, bookmarks, progress, and cancellation.
 
 ### Orchestrator
@@ -478,7 +489,8 @@ Pre-computed embeddings passed to storage methods via `query_embedding` paramete
 | File | Purpose |
 |------|---------|
 | `storage_base/` | BaseStorage interface split by domain (`_profiles.py`, `_playbook.py`, `_requests.py`, `_operations.py`, `_agent_run.py`, `_lineage.py`, `_shadow_verdicts.py`, `_stall_state.py`, `_share_links.py`) |
-| `sqlite_storage/` | SQLite-backed implementation split across the same domains, including lineage/tombstone support in `_lineage.py` |
+| `sqlite_storage/` | SQLite-backed implementation split across the same domains, including governance-aware retention/barrier handling and lineage/tombstone support in `_governance.py` / `_lineage.py` |
+| `governance_validation.py` | Shared validation helpers for subject references and governance contracts before storage writes. |
 | `retention.py`, `retention_mixin.py` | Data retention and cleanup helpers |
 | `constants.py`, `error.py` | Storage constants and shared errors |
 
