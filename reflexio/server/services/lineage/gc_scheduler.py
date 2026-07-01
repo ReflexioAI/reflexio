@@ -30,6 +30,14 @@ _HIGH_VOLUME_THRESHOLD = 1000
 
 _ENTITY_TYPES = ("user_playbook", "agent_playbook", "profile")
 
+# Class B: direct-delete sweeps for expired plain rows (no PII/audit obligation).
+# Each entry is (storage_method_name, grace_seconds, batch_limit).
+# Methods added in Tasks 2.2 / 2.3; getattr-guarded so missing impls are skipped.
+_CLASS_B_SWEEPS: tuple[tuple[str, int, int], ...] = (
+    ("delete_expired_share_links", 7 * 86400, 1000),
+    ("delete_expired_pending_tool_calls", 1 * 86400, 1000),
+)
+
 
 class LineageGCScheduler:
     """Polling daemon that hard-deletes expired tombstones per org."""
@@ -101,45 +109,67 @@ class LineageGCScheduler:
                 if ctx.storage is None:
                     continue
                 cfg = ctx.configurator.get_config()
-                if not cfg.lineage_gc.enabled:
-                    continue
-                # Class A: tombstone TTL-expired active profiles so the existing
-                # tombstone GC can reclaim them after the grace window.
-                expired_tombstoned = ctx.storage.expire_active_profiles(
-                    now=int(time.time())
-                )
-                if expired_tombstoned:
-                    logger.info(
-                        "event=expiry_sweep org_id=%s profiles_tombstoned=%d",
-                        org_id, expired_tombstoned,
+
+                # Class A: profile expiry sweep + tombstone GC (requires PII/grace
+                # sign-off; gated on lineage_gc.enabled independently of Class B).
+                if cfg.lineage_gc.enabled:
+                    expired_tombstoned = ctx.storage.expire_active_profiles(
+                        now=int(time.time())
                     )
-                if expired_tombstoned > _HIGH_VOLUME_THRESHOLD:
-                    capture_anomaly(
-                        "lineage.expiry_sweep.high_volume",
-                        org_id=org_id, count=expired_tombstoned,
+                    if expired_tombstoned:
+                        logger.info(
+                            "event=expiry_sweep org_id=%s profiles_tombstoned=%d",
+                            org_id,
+                            expired_tombstoned,
+                        )
+                    if expired_tombstoned > _HIGH_VOLUME_THRESHOLD:
+                        capture_anomaly(
+                            "lineage.expiry_sweep.high_volume",
+                            org_id=org_id,
+                            count=expired_tombstoned,
+                        )
+                    older_than_epoch = (
+                        int(time.time())
+                        - cfg.lineage_gc.tombstone_grace_window_days * 86400
                     )
-                older_than_epoch = (
-                    int(time.time())
-                    - cfg.lineage_gc.tombstone_grace_window_days * 86400
-                )
-                tombstone_deleted = 0
-                for entity_type in _ENTITY_TYPES:
-                    tombstone_deleted += ctx.storage.gc_expired_tombstones(
-                        entity_type=entity_type,
-                        older_than_epoch=older_than_epoch,
-                    )
-                if tombstone_deleted:
-                    logger.info(
-                        "event=lineage_gc_tick org_id=%s tombstone_deleted=%d",
-                        org_id,
-                        tombstone_deleted,
-                    )
-                if tombstone_deleted > _HIGH_VOLUME_THRESHOLD:
-                    capture_anomaly(
-                        "lineage.gc.high_volume",
-                        org_id=org_id,
-                        count=tombstone_deleted,
-                    )
+                    tombstone_deleted = 0
+                    for entity_type in _ENTITY_TYPES:
+                        tombstone_deleted += ctx.storage.gc_expired_tombstones(
+                            entity_type=entity_type,
+                            older_than_epoch=older_than_epoch,
+                        )
+                    if tombstone_deleted:
+                        logger.info(
+                            "event=lineage_gc_tick org_id=%s tombstone_deleted=%d",
+                            org_id,
+                            tombstone_deleted,
+                        )
+                    if tombstone_deleted > _HIGH_VOLUME_THRESHOLD:
+                        capture_anomaly(
+                            "lineage.gc.high_volume",
+                            org_id=org_id,
+                            count=tombstone_deleted,
+                        )
+
+                # Class B: direct-delete of expired plain rows (no audit/grace
+                # obligation; independent of lineage_gc).
+                if (
+                    getattr(cfg, "expiry_reclamation", None) is not None
+                    and cfg.expiry_reclamation.enabled
+                ):
+                    now = int(time.time())
+                    for method_name, grace, limit in _CLASS_B_SWEEPS:
+                        method = getattr(ctx.storage, method_name, None)
+                        if method is None:
+                            continue
+                        deleted = method(now=now, grace_seconds=grace, limit=limit)
+                        if deleted:
+                            logger.info(
+                                "event=class_b_reclaim org_id=%s method=%s deleted=%d",
+                                org_id,
+                                method_name,
+                                deleted,
+                            )
             except Exception:
                 capture_anomaly("lineage.gc.run_failed", org_id=org_id)
                 logger.exception("event=lineage_gc_org_failed org_id=%s", org_id)
@@ -216,7 +246,10 @@ def maybe_start_lineage_gc(
                 "and will NOT run here."
             )
 
-        if not cfg.lineage_gc.enabled:
+        expiry_reclamation_enabled = getattr(
+            getattr(cfg, "expiry_reclamation", None), "enabled", False
+        )
+        if not (cfg.lineage_gc.enabled or expiry_reclamation_enabled):
             return None
     except Exception as exc:
         logger.warning(
