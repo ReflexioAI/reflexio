@@ -1437,16 +1437,41 @@ class TestRun:
 # ---------------------------------------------------------------------------
 
 
+def _format_cluster_input(cluster_playbooks: list[UserPlaybook]) -> str:
+    """
+    Format a cluster of playbooks for the aggregation prompt using per-item format.
+
+    Each playbook is shown as a self-contained unit with content as the
+    primary content, followed by optional structured fields as supplementary metadata.
+
+    Args:
+        cluster_playbooks: List of raw playbooks in this cluster
+
+    Returns:
+        str: Formatted input for the aggregation prompt
+    """
+    blocks = []
+    for idx, fb in enumerate(cluster_playbooks, 1):
+        lines = [f"[{idx}]"]
+        if fb.content:
+            lines.append(f'Content: "{fb.content}"')
+        if fb.trigger:
+            lines.append(f'Trigger: "{fb.trigger}"')
+        if fb.rationale:
+            lines.append(f'Rationale: "{fb.rationale}"')
+        blocks.append("\n".join(lines))
+    return "\n\n".join(blocks) if blocks else "(No playbook items)"
+
+
 class TestFormatClusterInput:
     def test_all_fields_present(self):
         """Each playbook becomes a numbered block with Content and Trigger."""
-        agg = _make_aggregator()
         raws = [
             _raw(rid=1, when="cond1"),
             _raw(rid=2, when="cond2"),
         ]
 
-        result = agg._format_cluster_input(raws)
+        result = _format_cluster_input(raws)
 
         assert "[1]" in result
         assert "[2]" in result
@@ -1456,25 +1481,22 @@ class TestFormatClusterInput:
         assert 'Trigger: "cond2"' in result
 
     def test_no_trigger_omits_trigger_line(self):
-        agg = _make_aggregator()
         raws = [_raw(rid=1, when=None)]
 
-        result = agg._format_cluster_input(raws)
+        result = _format_cluster_input(raws)
 
         assert "Trigger:" not in result
 
     def test_empty_list_returns_placeholder(self):
         """Empty input returns a placeholder string."""
-        agg = _make_aggregator()
-        result = agg._format_cluster_input([])
+        result = _format_cluster_input([])
         assert result == "(No playbook items)"
 
     def test_content_is_first_field_after_number(self):
         """Content line appears immediately after the numbered header."""
-        agg = _make_aggregator()
         raws = [_raw(rid=1, when="cond")]
 
-        result = agg._format_cluster_input(raws)
+        result = _format_cluster_input(raws)
 
         lines = result.strip().split("\n")
         assert lines[0] == "[1]"
@@ -1482,10 +1504,9 @@ class TestFormatClusterInput:
 
     def test_multiple_playbooks_separated_by_blank_lines(self):
         """Multiple playbooks are separated by blank lines."""
-        agg = _make_aggregator()
         raws = [_raw(rid=1, when="cond1"), _raw(rid=2, when="cond2")]
 
-        result = agg._format_cluster_input(raws)
+        result = _format_cluster_input(raws)
 
         # Two blocks separated by double newline
         assert "\n\n" in result
