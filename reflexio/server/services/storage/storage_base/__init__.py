@@ -35,6 +35,7 @@ from .governance import (
     AuditEventStoreMixin,
     GovernanceEraseExecutionMixin,
     PurgeOperationStoreMixin,
+    RebuildHideMixin,
     SubjectBarrierMixin,
 )
 from .playbook import (
@@ -63,6 +64,7 @@ class BaseStorage(
     PurgeOperationStoreMixin,
     SubjectBarrierMixin,
     GovernanceEraseExecutionMixin,
+    RebuildHideMixin,
     GovernanceMixin,
     LineageEventMixin,
     OperationMixin,
@@ -278,6 +280,7 @@ __all__ = [
     "PurgeOperationStoreMixin",
     "SubjectBarrierMixin",
     "GovernanceEraseExecutionMixin",
+    "RebuildHideMixin",
     "AgentPlaybookStoreMixin",
     "OptimizationJobStoreMixin",
     "PlaybookSourceLinkageMixin",

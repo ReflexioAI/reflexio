@@ -3,11 +3,9 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
-from collections.abc import Callable
 from typing import Any, Literal, Protocol, cast
 
 from reflexio.models.api_schema.domain import AgentPlaybook, AgentPlaybookSourceWindow
-from reflexio.models.api_schema.domain.enums import Status
 from reflexio.models.api_schema.domain.governance import (
     AuditEvent,
     PurgeOperation,
@@ -19,10 +17,7 @@ from reflexio.server.services.storage.governance_validation import (
     _CANONICAL_DELETE_TARGET_NAMES,
     _PREPARE_PHASE,
     _SNAPSHOT_TARGET_NAME,
-    _canonicalize_governance_windows,
-    _parse_governance_window_list,
     _validate_governance_int_list,
-    _validate_governance_purge_id,
 )
 
 _LEGACY_AUDIT_REQUEST_REF = "reqref_v1_legacy_unknown"
@@ -147,27 +142,6 @@ def _json_loads(text: str | None) -> Any:
     if not text:
         return None
     return json.loads(text)
-
-
-def _build_agent_playbook_source_window_rows(
-    agent_playbook_id: int, windows: list[AgentPlaybookSourceWindow]
-) -> list[tuple[int, int, str]]:
-    by_id: dict[int, list[int]] = {}
-    for window in windows:
-        ids = by_id.setdefault(window.user_playbook_id, [])
-        seen = set(ids)
-        for source_id in window.source_interaction_ids:
-            if source_id not in seen:
-                ids.append(source_id)
-                seen.add(source_id)
-    return [
-        (
-            agent_playbook_id,
-            user_playbook_id,
-            _json_dumps(source_interaction_ids) or "[]",
-        )
-        for user_playbook_id, source_interaction_ids in by_id.items()
-    ]
 
 
 def _upgrade_legacy_purge_operation_targets_table(conn: sqlite3.Connection) -> None:
@@ -337,67 +311,8 @@ class SQLiteGovernanceMixin:
     _lock: threading.RLock
     org_id: str
 
-    # Provided via MRO by the co-composed PurgeOperationStoreMixin (purge bucket);
-    # reached here by the cross-bucket rebuild-hide method.
-    _record_purge_target_locked: Callable[..., None]
-
     def _deps(self) -> _SQLiteGovernanceDeps:
         return cast(_SQLiteGovernanceDeps, self)
-
-    def _replace_agent_playbook_source_windows_locked(
-        self, agent_playbook_id: int, windows: list[AgentPlaybookSourceWindow]
-    ) -> None:
-        self.conn.execute(
-            "DELETE FROM agent_playbook_source_user_playbooks WHERE agent_playbook_id = ?",
-            (agent_playbook_id,),
-        )
-        source_window_rows = _build_agent_playbook_source_window_rows(
-            agent_playbook_id, windows
-        )
-        if source_window_rows:
-            self.conn.executemany(
-                """INSERT OR IGNORE INTO agent_playbook_source_user_playbooks
-                   (agent_playbook_id, user_playbook_id, source_interaction_ids)
-                   VALUES (?, ?, ?)""",
-                source_window_rows,
-            )
-
-    def _delete_agent_playbook_search_rows_locked(self, agent_playbook_id: int) -> None:
-        self.conn.execute(
-            "DELETE FROM agent_playbooks_fts WHERE rowid = ?",
-            (agent_playbook_id,),
-        )
-        if self._deps()._has_sqlite_vec:
-            self.conn.execute(
-                "DELETE FROM agent_playbooks_vec WHERE rowid = ?",
-                (agent_playbook_id,),
-            )
-
-    def _upsert_agent_playbook_search_rows_locked(
-        self,
-        *,
-        agent_playbook_id: int,
-        trigger: str | None,
-        content: str,
-        expanded_terms: str | None,
-        embedding: list[float],
-    ) -> None:
-        self._delete_agent_playbook_search_rows_locked(agent_playbook_id)
-        fts_parts = [trigger or "", content]
-        if expanded_terms:
-            fts_parts.append(expanded_terms)
-        self.conn.execute(
-            "INSERT INTO agent_playbooks_fts(rowid, search_text) VALUES (?, ?)",
-            (
-                agent_playbook_id,
-                " ".join(part for part in fts_parts if part) or "",
-            ),
-        )
-        if self._deps()._has_sqlite_vec and embedding:
-            self.conn.execute(
-                "INSERT INTO agent_playbooks_vec(rowid, embedding) VALUES (?, ?)",
-                (agent_playbook_id, json.dumps(embedding)),
-            )
 
     def _validate_prepared_delete_target_matrix_locked(self, purge_id: str) -> None:
         snapshot = self.conn.execute(
@@ -535,198 +450,3 @@ class SQLiteGovernanceMixin:
                 detail.get("owned_user_playbook_ids"),
             )
         )
-
-    def hide_governance_agent_playbooks_for_rebuild(self, purge_id: str) -> list[int]:
-        purge_id = _validate_governance_purge_id("purge_id", purge_id)
-        with self._lock:
-            try:
-                self.conn.execute("BEGIN IMMEDIATE")
-                target_rows = self.conn.execute(
-                    """SELECT target_ref
-                       FROM purge_operation_targets
-                       WHERE org_id = ? AND purge_id = ?
-                         AND target_name = 'agent_playbook'
-                         AND phase = 'rebuild_without_erased_sources'
-                         AND target_ref != ''
-                         AND status != 'complete'
-                       ORDER BY CAST(target_ref AS INTEGER) ASC""",
-                    (self.org_id, purge_id),
-                ).fetchall()
-                agent_playbook_ids = [int(row["target_ref"]) for row in target_rows]
-                if not agent_playbook_ids:
-                    self.conn.commit()
-                    return []
-                placeholders = ",".join("?" for _ in agent_playbook_ids)
-                self.conn.execute(
-                    f"""UPDATE agent_playbooks
-                        SET status = ?
-                        WHERE agent_playbook_id IN ({placeholders})""",
-                    [Status.ARCHIVE_IN_PROGRESS.value, *agent_playbook_ids],
-                )
-                for agent_playbook_id in agent_playbook_ids:
-                    self._record_purge_target_locked(
-                        purge_id=purge_id,
-                        target_name="agent_playbook",
-                        target_ref=str(agent_playbook_id),
-                        phase="hide_for_rebuild",
-                        status="complete",
-                        detail=None,
-                        deleted_count=0,
-                        error_detail=None,
-                    )
-                    self._record_purge_target_locked(
-                        purge_id=purge_id,
-                        target_name="agent_playbook",
-                        target_ref=str(agent_playbook_id),
-                        phase="rebuild_without_erased_sources",
-                        status="running",
-                        detail=None,
-                        deleted_count=0,
-                        error_detail=None,
-                    )
-                self.conn.commit()
-            except Exception:
-                self.conn.rollback()
-                raise
-        return agent_playbook_ids
-
-    def apply_governance_agent_playbook_rebuild(
-        self,
-        purge_id: str,
-        agent_playbook_id: int,
-        remaining_source_windows: list[dict[str, object]],
-        content: str | None,
-        trigger: str | None,
-        rationale: str | None,
-        blocking_issue: dict[str, object] | None,
-        expanded_terms: str | None,
-        tags: list[str] | None,
-    ) -> None:
-        purge_id = _validate_governance_purge_id("purge_id", purge_id)
-        windows = _parse_governance_window_list(
-            "remaining_source_windows", remaining_source_windows
-        )
-        canonical_remaining_windows = [window.model_dump() for window in windows]
-        content_value = content or ""
-        trigger_value = trigger or None
-        embedding_text = trigger_value or content_value
-        embedding = (
-            self._deps()._get_embedding(embedding_text) if embedding_text else []
-        )
-        with self._lock:
-            try:
-                self.conn.execute("BEGIN")
-                rebuild_target_row = self.conn.execute(
-                    """SELECT status, detail
-                       FROM purge_operation_targets
-                       WHERE org_id = ? AND purge_id = ? AND target_name = 'agent_playbook'
-                         AND target_ref = ? AND phase = 'rebuild_without_erased_sources'""",
-                    (self.org_id, purge_id, str(agent_playbook_id)),
-                ).fetchone()
-                if rebuild_target_row is None:
-                    raise ValueError("planned rebuild target does not exist")
-                if rebuild_target_row["status"] == "complete":
-                    raise ValueError("planned rebuild target is already complete")
-                rebuild_detail = _json_loads(rebuild_target_row["detail"])
-                if not isinstance(rebuild_detail, dict) or not {
-                    "original_source_windows",
-                    "previous_lifecycle_status",
-                    "remaining_source_windows",
-                }.issubset(rebuild_detail):
-                    raise ValueError(
-                        "planned rebuild target is missing source window detail"
-                    )
-                planned_remaining_windows = _canonicalize_governance_windows(
-                    "planned remaining_source_windows",
-                    cast(
-                        list[dict[str, object]],
-                        rebuild_detail["remaining_source_windows"],
-                    ),
-                )
-                if planned_remaining_windows != canonical_remaining_windows:
-                    raise ValueError(
-                        "remaining_source_windows must match the planned rebuild target"
-                    )
-                previous_lifecycle_status = cast(
-                    str | None, rebuild_detail["previous_lifecycle_status"]
-                )
-                hide_target_row = self.conn.execute(
-                    """SELECT status
-                       FROM purge_operation_targets
-                       WHERE org_id = ? AND purge_id = ? AND target_name = 'agent_playbook'
-                         AND target_ref = ? AND phase = 'hide_for_rebuild'""",
-                    (self.org_id, purge_id, str(agent_playbook_id)),
-                ).fetchone()
-                if hide_target_row is None or hide_target_row["status"] != "complete":
-                    raise ValueError("hide_for_rebuild target must be complete")
-                if windows:
-                    cur = self.conn.execute(
-                        """UPDATE agent_playbooks
-                           SET content = ?, trigger = ?, rationale = ?, blocking_issue = ?,
-                               embedding = ?, expanded_terms = ?, tags = ?, status = ?
-                           WHERE agent_playbook_id = ?""",
-                        (
-                            content_value,
-                            trigger_value,
-                            rationale,
-                            json.dumps(blocking_issue)
-                            if blocking_issue is not None
-                            else None,
-                            _json_dumps(embedding),
-                            expanded_terms,
-                            _json_dumps(tags),
-                            previous_lifecycle_status,
-                            agent_playbook_id,
-                        ),
-                    )
-                    if cur.rowcount == 0:
-                        raise ValueError(
-                            f"Agent playbook with ID {agent_playbook_id} not found"
-                        )
-                    self._replace_agent_playbook_source_windows_locked(
-                        agent_playbook_id, windows
-                    )
-                    self._upsert_agent_playbook_search_rows_locked(
-                        agent_playbook_id=agent_playbook_id,
-                        trigger=trigger_value,
-                        content=content_value,
-                        expanded_terms=expanded_terms,
-                        embedding=embedding,
-                    )
-                else:
-                    from ._playbook import _emit_hard_delete_playbook
-
-                    self._delete_agent_playbook_search_rows_locked(agent_playbook_id)
-                    self.conn.execute(
-                        "DELETE FROM agent_playbook_source_user_playbooks WHERE agent_playbook_id = ?",
-                        (agent_playbook_id,),
-                    )
-                    cur = self.conn.execute(
-                        "DELETE FROM agent_playbooks WHERE agent_playbook_id = ?",
-                        (agent_playbook_id,),
-                    )
-                    if cur.rowcount == 0:
-                        raise ValueError(
-                            f"Agent playbook with ID {agent_playbook_id} not found"
-                        )
-                    _emit_hard_delete_playbook(
-                        self.conn,
-                        org_id=self.org_id,
-                        entity_type="agent_playbook",
-                        entity_id=str(agent_playbook_id),
-                        request_id=purge_id,
-                    )
-                self._record_purge_target_locked(
-                    purge_id=purge_id,
-                    target_name="agent_playbook",
-                    target_ref=str(agent_playbook_id),
-                    phase="rebuild_without_erased_sources",
-                    status="complete",
-                    detail=None,
-                    deleted_count=0,
-                    error_detail=None,
-                )
-                self.conn.commit()
-            except Exception:
-                self.conn.rollback()
-                raise

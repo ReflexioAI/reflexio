@@ -1,26 +1,12 @@
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
+from abc import ABC
 
 
-class GovernanceMixin(ABC):
-    """Mixin for backend-neutral governance storage primitives."""
+class GovernanceMixin(ABC):  # noqa: B024 - drained residual kept composed for structural continuity
+    """Mixin for backend-neutral governance storage primitives.
 
-    @abstractmethod
-    def hide_governance_agent_playbooks_for_rebuild(self, purge_id: str) -> list[int]:
-        raise NotImplementedError
-
-    @abstractmethod
-    def apply_governance_agent_playbook_rebuild(
-        self,
-        purge_id: str,
-        agent_playbook_id: int,
-        remaining_source_windows: list[dict[str, object]],
-        content: str | None,
-        trigger: str | None,
-        rationale: str | None,
-        blocking_issue: dict[str, object] | None,
-        expanded_terms: str | None,
-        tags: list[str] | None,
-    ) -> None:
-        raise NotImplementedError
+    Fully drained: every governance-contract abstract method now lives in a
+    dedicated sub-mixin (audit, purge, subject-barrier, erase-execution,
+    rebuild-hide). This residual mixin stays composed for structural continuity.
+    """

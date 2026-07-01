@@ -28,6 +28,7 @@ from .governance import (
     AuditEventStoreMixin,
     GovernanceEraseExecutionMixin,
     PurgeOperationStoreMixin,
+    RebuildHideMixin,
     SubjectBarrierMixin,
 )
 from .playbook import (
@@ -55,6 +56,7 @@ class SQLiteStorage(
     PurgeOperationStoreMixin,
     SubjectBarrierMixin,
     GovernanceEraseExecutionMixin,
+    RebuildHideMixin,
     SQLiteGovernanceMixin,
     SQLiteLineageMixin,
     OperationMixin,
