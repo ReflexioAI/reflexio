@@ -24,6 +24,13 @@ from ._stall_state import (
     mark_stall_notified,
     upsert_stall_state,
 )
+from .governance import (
+    AuditEventStoreMixin,
+    GovernanceEraseExecutionMixin,
+    PurgeOperationStoreMixin,
+    RebuildHideMixin,
+    SubjectBarrierMixin,
+)
 from .playbook import (
     AgentEvaluationResultStoreMixin,
     AgentPlaybookStoreMixin,
@@ -45,6 +52,11 @@ class SQLiteStorage(
     PlaybookSourceLinkageMixin,
     OptimizationJobStoreMixin,
     AgentEvaluationResultStoreMixin,
+    AuditEventStoreMixin,
+    PurgeOperationStoreMixin,
+    SubjectBarrierMixin,
+    GovernanceEraseExecutionMixin,
+    RebuildHideMixin,
     SQLiteGovernanceMixin,
     SQLiteLineageMixin,
     OperationMixin,

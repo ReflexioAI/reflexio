@@ -23,7 +23,6 @@ from ._agent_run import (
 )
 from ._base import BaseStorageCore, matches_status_filter
 from ._extras import ExtrasMixin
-from ._governance import GovernanceMixin
 from ._lineage import EntityType, LineageEventMixin
 from ._operations import OperationMixin
 from ._requests import RequestMixin
@@ -31,6 +30,13 @@ from ._retrieval_log import RetrievalLogMixin
 from ._shadow_verdicts import ShadowVerdictsMixin
 from ._share_links import ShareLinkMixin
 from ._stall_state import StallStateMixin
+from .governance import (
+    AuditEventStoreMixin,
+    GovernanceEraseExecutionMixin,
+    PurgeOperationStoreMixin,
+    RebuildHideMixin,
+    SubjectBarrierMixin,
+)
 from .playbook import (
     AgentEvaluationResultStoreMixin,
     AgentPlaybookStoreMixin,
@@ -53,7 +59,11 @@ class BaseStorage(
     OptimizationJobStoreMixin,
     AgentEvaluationResultStoreMixin,
     RetrievalLogMixin,
-    GovernanceMixin,
+    AuditEventStoreMixin,
+    PurgeOperationStoreMixin,
+    SubjectBarrierMixin,
+    GovernanceEraseExecutionMixin,
+    RebuildHideMixin,
     LineageEventMixin,
     OperationMixin,
     ExtrasMixin,
@@ -264,6 +274,11 @@ __all__ = [
     "PendingToolCallStatus",
     "PendingToolCallUpsertResult",
     "AgentEvaluationResultStoreMixin",
+    "AuditEventStoreMixin",
+    "PurgeOperationStoreMixin",
+    "SubjectBarrierMixin",
+    "GovernanceEraseExecutionMixin",
+    "RebuildHideMixin",
     "AgentPlaybookStoreMixin",
     "OptimizationJobStoreMixin",
     "PlaybookSourceLinkageMixin",
