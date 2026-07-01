@@ -708,6 +708,21 @@ class LineageGCConfig(BaseModel):
     poll_interval_seconds: int = Field(default=86400, gt=0)
 
 
+class ExpiryReclamationConfig(BaseModel):
+    """Direct-delete reclamation of expired plain rows (non-audited).
+
+    Independent of ``lineage_gc``: these rows carry no PII/audit/grace obligation,
+    so they can be reclaimed whenever this is enabled even if tombstone GC is off.
+
+    Opt-in by default (``enabled=False``) so operators control a staged rollout
+    of the direct-delete Class B sweeps and are not surprised by deletions on
+    upgrade.  ``lineage_gc.enabled`` (which defaults to True) is unaffected and
+    continues to drive the Class A profile-expiry and tombstone-GC paths.
+    """
+
+    enabled: bool = False
+
+
 class GovernanceRetentionConfig(BaseModel):
     """Audit-event retention policy. **Enterprise-only:** reclamation is performed
     by the reflexio_ext GovernanceRetentionCapability. In an OSS-only deployment
@@ -859,6 +874,10 @@ class Config(BaseModel):
     )
     # Tombstone GC job gate (opt-in, off by default — see LineageGCConfig)
     lineage_gc: LineageGCConfig = Field(default_factory=LineageGCConfig)
+    # Direct-delete reclamation of expired plain rows (share links, pending tool calls)
+    expiry_reclamation: ExpiryReclamationConfig = Field(
+        default_factory=ExpiryReclamationConfig
+    )
     governance_retention: GovernanceRetentionConfig = Field(
         default_factory=GovernanceRetentionConfig
     )
@@ -920,6 +939,7 @@ class Config(BaseModel):
                 "reflection_config",
                 "playbook_optimizer_config",
                 "lineage_gc",
+                "expiry_reclamation",
                 "governance_retention",
                 "pending_tool_call_config",
                 "retrieval_floor",

@@ -1,9 +1,19 @@
-"""Process-local scheduler for lineage tombstone garbage collection.
+"""Process-local scheduler for lineage tombstone garbage collection and expiry reclamation.
 
-Startup is gated on ``lineage_gc.enabled`` (default on). Each tick evaluates
-every org independently and hard-deletes expired tombstones per that org's
-``lineage_gc`` config. One org's failure never stalls the loop; errors are
-captured as Sentry anomalies and the loop continues to the next org.
+Startup runs when EITHER ``lineage_gc.enabled`` OR ``expiry_reclamation.enabled``
+is set in the bootstrap org's config. Each tick evaluates every org independently.
+
+- **Class A** (profile expiry sweep + tombstone GC): gated on ``lineage_gc.enabled``.
+  Hard-deletes expired tombstones per that org's ``lineage_gc`` config.
+- **Class B** (plain-row direct-delete sweeps, no PII/audit obligation): gated on
+  ``expiry_reclamation.enabled``. Currently sweeps expired share links and expired
+  pending tool calls.
+
+One org's failure never stalls the loop; errors are captured as Sentry anomalies
+and the loop continues to the next org.
+
+Note: the poll interval is always taken from ``lineage_gc.poll_interval_seconds``
+even when only ``expiry_reclamation`` is enabled; Class B currently shares that cadence.
 
 Governance-retention reclamation is a premium concern handled by the enterprise
 GovernanceRetentionCapability (reflexio_ext), not here.
@@ -30,6 +40,36 @@ _HIGH_VOLUME_THRESHOLD = 1000
 
 _ENTITY_TYPES = ("user_playbook", "agent_playbook", "profile")
 
+# Class B: direct-delete sweeps for expired plain rows (no PII/audit obligation).
+# Each entry is (storage_method_name, grace_seconds, batch_limit).
+# Methods added in Tasks 2.2 / 2.3; getattr-guarded so missing impls are skipped.
+_CLASS_B_SWEEPS: tuple[tuple[str, int, int], ...] = (
+    ("delete_expired_share_links", 7 * 86400, 1000),
+    ("delete_expired_pending_tool_calls", 1 * 86400, 1000),
+)
+
+# Injection seam: a deployment (e.g. enterprise/managed) sets a tenant-enumerating
+# provider here at startup so the single OSS-started scheduler sweeps ALL tenant
+# orgs. maybe_start_lineage_gc reads this when no explicit provider is passed.
+# None (OSS default) keeps behavior byte-for-byte identical to before.
+_org_id_provider_hook: Callable[[], list[str]] | None = None
+
+
+def set_org_id_provider(provider: Callable[[], list[str]] | None) -> None:
+    """Register the org-id provider consulted by ``maybe_start_lineage_gc``.
+
+    Managed multi-tenant deployments call this at app-construction time so the
+    lineage GC / expiry sweep reaches every tenant org (``storage.list_org_ids()``
+    raises ``NotImplementedError`` on Supabase, degrading to bootstrap-only).
+    Pass ``None`` to clear the hook (used by tests to restore OSS defaults).
+
+    Args:
+        provider (Callable[[], list[str]] | None): Callable returning the tenant
+            org ids to sweep, or ``None`` to clear.
+    """
+    global _org_id_provider_hook  # noqa: PLW0603
+    _org_id_provider_hook = provider
+
 
 class LineageGCScheduler:
     """Polling daemon that hard-deletes expired tombstones per org."""
@@ -39,9 +79,17 @@ class LineageGCScheduler:
         *,
         request_context_factory: Callable[[str], RequestContext],
         bootstrap_org_id: str,
+        org_id_provider: Callable[[], list[str]] | None = None,
     ) -> None:
         self.request_context_factory = request_context_factory
         self.bootstrap_org_id = bootstrap_org_id
+        # Optional injectable org-id source. When set (managed/multi-tenant mode),
+        # it is the authoritative enumeration seam; enterprise supplies a
+        # provider that lists tenant orgs via the control-plane repository — the
+        # only seam that surfaces managed tenants where storage.list_org_ids()
+        # raises NotImplementedError on Supabase. When None (OSS default),
+        # discovery falls back to storage.list_org_ids() exactly as before.
+        self.org_id_provider = org_id_provider
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -67,20 +115,42 @@ class LineageGCScheduler:
         logger.info("event=lineage_gc_scheduler_stopped")
 
     def _discover_org_ids(self, bootstrap_ctx: RequestContext) -> list[str]:
-        """Return every known org, always including the bootstrap org."""
-        storage = getattr(bootstrap_ctx, "storage", None)
-        org_ids: list[str] = []
-        if storage is not None:
+        """Return every known org, always including the bootstrap org.
+
+        When an ``org_id_provider`` was injected (managed/multi-tenant mode), it
+        is the authoritative org-id source and ``storage.list_org_ids()`` is not
+        consulted. Otherwise the OSS single-tenant path is used unchanged
+        (``storage.list_org_ids()`` with a visible NotImplementedError fallback).
+        The bootstrap org is always unioned in either way.
+        """
+        if self.org_id_provider is not None:
             try:
-                org_ids = storage.list_org_ids()
-            except NotImplementedError:
-                logger.warning(
-                    "event=lineage_gc_list_org_ids_not_implemented "
-                    "backend=%s bootstrap_org_id=%s — GC will only process bootstrap org",
-                    type(storage).__name__,
-                    bootstrap_ctx.org_id,
+                org_ids = list(self.org_id_provider())
+            except Exception:
+                capture_anomaly(
+                    "lineage.gc.org_id_provider_failed",
+                    bootstrap_org_id=self.bootstrap_org_id,
+                )
+                logger.exception(
+                    "event=lineage_gc_org_id_provider_failed bootstrap_org_id=%s "
+                    "— falling back to bootstrap org only",
+                    self.bootstrap_org_id,
                 )
                 org_ids = []
+        else:
+            storage = getattr(bootstrap_ctx, "storage", None)
+            org_ids = []
+            if storage is not None:
+                try:
+                    org_ids = storage.list_org_ids()
+                except NotImplementedError:
+                    logger.warning(
+                        "event=lineage_gc_list_org_ids_not_implemented "
+                        "backend=%s bootstrap_org_id=%s — GC will only process bootstrap org",
+                        type(storage).__name__,
+                        bootstrap_ctx.org_id,
+                    )
+                    org_ids = []
         if bootstrap_ctx.org_id not in org_ids:
             org_ids = [bootstrap_ctx.org_id, *org_ids]
         return org_ids
@@ -101,33 +171,98 @@ class LineageGCScheduler:
                 if ctx.storage is None:
                     continue
                 cfg = ctx.configurator.get_config()
-                if not cfg.lineage_gc.enabled:
-                    continue
-                older_than_epoch = (
-                    int(time.time())
-                    - cfg.lineage_gc.tombstone_grace_window_days * 86400
-                )
-                tombstone_deleted = 0
-                for entity_type in _ENTITY_TYPES:
-                    tombstone_deleted += ctx.storage.gc_expired_tombstones(
-                        entity_type=entity_type,
-                        older_than_epoch=older_than_epoch,
-                    )
-                if tombstone_deleted:
-                    logger.info(
-                        "event=lineage_gc_tick org_id=%s tombstone_deleted=%d",
-                        org_id,
-                        tombstone_deleted,
-                    )
-                if tombstone_deleted > _HIGH_VOLUME_THRESHOLD:
-                    capture_anomaly(
-                        "lineage.gc.high_volume",
-                        org_id=org_id,
-                        count=tombstone_deleted,
-                    )
             except Exception:
                 capture_anomaly("lineage.gc.run_failed", org_id=org_id)
                 logger.exception("event=lineage_gc_org_failed org_id=%s", org_id)
+                continue
+
+            # Class A: profile expiry sweep (requires PII/grace sign-off; gated on
+            # lineage_gc.enabled independently of Class B).
+            if cfg.lineage_gc.enabled:
+                try:
+                    expired_tombstoned = ctx.storage.expire_active_profiles(
+                        now=int(time.time())
+                    )
+                    if expired_tombstoned:
+                        logger.info(
+                            "event=expiry_sweep org_id=%s profiles_tombstoned=%d",
+                            org_id,
+                            expired_tombstoned,
+                        )
+                    if expired_tombstoned > _HIGH_VOLUME_THRESHOLD:
+                        capture_anomaly(
+                            "lineage.expiry_sweep.high_volume",
+                            org_id=org_id,
+                            count=expired_tombstoned,
+                        )
+                except Exception:
+                    capture_anomaly("lineage.expiry_sweep.failed", org_id=org_id)
+                    logger.exception(
+                        "event=lineage_expiry_sweep_failed org_id=%s", org_id
+                    )
+
+                # Tombstone GC: each entity type is independent within the loop.
+                try:
+                    older_than_epoch = (
+                        int(time.time())
+                        - cfg.lineage_gc.tombstone_grace_window_days * 86400
+                    )
+                    tombstone_deleted = 0
+                    for entity_type in _ENTITY_TYPES:
+                        tombstone_deleted += ctx.storage.gc_expired_tombstones(
+                            entity_type=entity_type,
+                            older_than_epoch=older_than_epoch,
+                        )
+                    if tombstone_deleted:
+                        logger.info(
+                            "event=lineage_gc_tick org_id=%s tombstone_deleted=%d",
+                            org_id,
+                            tombstone_deleted,
+                        )
+                    if tombstone_deleted > _HIGH_VOLUME_THRESHOLD:
+                        capture_anomaly(
+                            "lineage.gc.high_volume",
+                            org_id=org_id,
+                            count=tombstone_deleted,
+                        )
+                except Exception:
+                    capture_anomaly("lineage.gc.tombstone_gc_failed", org_id=org_id)
+                    logger.exception(
+                        "event=lineage_gc_tombstone_gc_failed org_id=%s", org_id
+                    )
+
+            # Class B: direct-delete of expired plain rows (no audit/grace
+            # obligation; independent of lineage_gc).  Each sweep is isolated so
+            # one failing method does not skip the rest.
+            if (
+                getattr(cfg, "expiry_reclamation", None) is not None
+                and cfg.expiry_reclamation.enabled
+            ):
+                now = int(time.time())
+                for method_name, grace, limit in _CLASS_B_SWEEPS:
+                    method = getattr(ctx.storage, method_name, None)
+                    if method is None:
+                        continue
+                    try:
+                        deleted = method(now=now, grace_seconds=grace, limit=limit)
+                        if deleted:
+                            logger.info(
+                                "event=class_b_reclaim org_id=%s method=%s deleted=%d",
+                                org_id,
+                                method_name,
+                                deleted,
+                            )
+                    except Exception:
+                        capture_anomaly(
+                            "lineage.class_b_reclaim.failed",
+                            org_id=org_id,
+                            method=method_name,
+                        )
+                        logger.exception(
+                            "event=class_b_reclaim_failed org_id=%s method=%s",
+                            org_id,
+                            method_name,
+                        )
 
     def _run_loop(self) -> None:
         while not self._stop_event.is_set():
@@ -147,12 +282,17 @@ def maybe_start_lineage_gc(
     request_context_factory: Callable[[str], RequestContext],
     *,
     bootstrap_org_id: str,
+    org_id_provider: Callable[[], list[str]] | None = None,
 ) -> LineageGCScheduler | None:
-    """Start the scheduler only when bootstrap config enables tombstone GC.
+    """Start the scheduler when bootstrap config enables tombstone GC or expiry reclamation.
 
-    Startup requires bootstrap-org config to enable tombstone GC via
-    ``lineage_gc.enabled``. Tombstone-GC enablement criteria (must
-    ALL hold before enabling for a production org):
+    Startup runs when bootstrap-org config sets EITHER ``lineage_gc.enabled``
+    (Class A: profile expiry + tombstone GC) OR ``expiry_reclamation.enabled``
+    (Class B: plain-row direct-delete sweeps). Returns ``None`` if neither flag
+    is set.
+
+    Tombstone-GC enablement criteria (must ALL hold before enabling ``lineage_gc``
+    for a production org):
 
     1. **Mechanism**: GC ages tombstones by ``retired_at`` (the INTEGER epoch
        written at every tombstone write-path).  Rows with ``retired_at = NULL``
@@ -167,12 +307,19 @@ def maybe_start_lineage_gc(
     4. **DPO sign-off**: obtain sign-off on the PII-lifetime and audit-depth
        implications before enabling in any deployment that processes personal data.
 
+    Note: the poll cadence is always controlled by ``lineage_gc.poll_interval_seconds``
+    even when only ``expiry_reclamation`` is enabled; Class B shares that interval.
+
     Args:
         request_context_factory: Builds an org-scoped :class:`RequestContext`.
         bootstrap_org_id: Org used to read config and seed cross-org discovery.
+        org_id_provider: Optional tenant-enumerating org-id source. When ``None``
+            (OSS default), falls back to the module-level provider hook set via
+            :func:`set_org_id_provider`; when both are ``None`` discovery uses
+            ``storage.list_org_ids()`` exactly as before.
 
     Returns:
-        LineageGCScheduler: The started scheduler, or ``None`` if not enabled.
+        LineageGCScheduler: The started scheduler, or ``None`` if neither flag is set.
     """
     try:
         ctx = request_context_factory(bootstrap_org_id)
@@ -201,7 +348,10 @@ def maybe_start_lineage_gc(
                 "and will NOT run here."
             )
 
-        if not cfg.lineage_gc.enabled:
+        expiry_reclamation_enabled = getattr(
+            getattr(cfg, "expiry_reclamation", None), "enabled", False
+        )
+        if not (cfg.lineage_gc.enabled or expiry_reclamation_enabled):
             return None
     except Exception as exc:
         logger.warning(
@@ -214,6 +364,9 @@ def maybe_start_lineage_gc(
     scheduler = LineageGCScheduler(
         request_context_factory=request_context_factory,
         bootstrap_org_id=bootstrap_org_id,
+        org_id_provider=(
+            org_id_provider if org_id_provider is not None else _org_id_provider_hook
+        ),
     )
     scheduler.start()
     return scheduler

@@ -17,7 +17,12 @@ EntityType = Literal["user_playbook", "agent_playbook", "profile"]
 # Also used as the merge guard: a source that already carries any of these
 # statuses is skipped (no re-tombstone, no clock reset).
 _GC_ELIGIBLE_STATUSES: frozenset[str] = frozenset(
-    {Status.MERGED.value, Status.SUPERSEDED.value, Status.ARCHIVED.value}
+    {
+        Status.MERGED.value,
+        Status.SUPERSEDED.value,
+        Status.ARCHIVED.value,
+        Status.EXPIRED.value,
+    }
 )
 
 # Mapping from entity_type string to (table_name, primary_key_column).

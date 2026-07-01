@@ -164,8 +164,8 @@ class BaseStorage(
         interaction_count = len(self.get_user_interaction(user_id))
 
         # All statuses a user's row can have — including tombstones (SUPERSEDED,
-        # MERGED). Erasure MUST reach every row the user owns regardless of
-        # status; the old filter excluded tombstones, leaving them in the DB
+        # MERGED, EXPIRED). Erasure MUST reach every row the user owns regardless
+        # of status; the old filter excluded tombstones, leaving them in the DB
         # after clear_user_data (GDPR regression).
         _all_statuses: list[Status | None] = [
             None,  # CURRENT
@@ -174,6 +174,7 @@ class BaseStorage(
             Status.ARCHIVE_IN_PROGRESS,
             Status.SUPERSEDED,
             Status.MERGED,
+            Status.EXPIRED,
         ]
 
         # Snapshot user_playbook ids for the user and partition into
@@ -192,10 +193,14 @@ class BaseStorage(
         )
 
         # Snapshot profile ids for the user and partition into
-        # purge vs delete sets.
+        # purge vs delete sets. include_expired=True drops the
+        # expiration_timestamp >= now guard so EXPIRED tombstones (expiry in
+        # the past) are enumerated and reached by the erasure path.
         raw_profile_ids = [
             p.profile_id
-            for p in self.get_user_profile(user_id, status_filter=_all_statuses)
+            for p in self.get_user_profile(
+                user_id, status_filter=_all_statuses, include_expired=True
+            )
             if p.profile_id is not None
         ]
         purge_profile_ids, delete_profile_ids = self._partition_purge_vs_delete(

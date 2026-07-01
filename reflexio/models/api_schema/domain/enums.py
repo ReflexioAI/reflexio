@@ -46,6 +46,7 @@ class Status(str, Enum):  # noqa: UP042 - CURRENT=None is not compatible with St
     SUPERSEDED = (
         "superseded"  # tombstone: replaced by a new version (superseded_by set)
     )
+    EXPIRED = "expired"  # tombstone: TTL elapsed while active (see expiry reclamation)
 
 
 class OperationStatus(StrEnum):

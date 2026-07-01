@@ -28,6 +28,9 @@ def _make_storage(*, gc_return: int = 0) -> MagicMock:
     """Return a mock storage whose gc_expired_tombstones returns ``gc_return``."""
     storage = MagicMock()
     storage.gc_expired_tombstones.return_value = gc_return
+    # expire_active_profiles is now called at the start of each tick; default to 0
+    # so existing tests that don't exercise the sweep see a clean integer return.
+    storage.expire_active_profiles.return_value = 0
     return storage
 
 
@@ -283,6 +286,31 @@ def test_discover_org_ids_not_implemented_warns_and_falls_back_to_bootstrap(
         "lineage_gc_list_org_ids_not_implemented" in record.message
         for record in caplog.records
     ), "Expected a warning with event=lineage_gc_list_org_ids_not_implemented"
+
+
+def test_discover_org_ids_provider_raises_falls_back_to_bootstrap():
+    """When org_id_provider raises, _discover_org_ids falls back to bootstrap-only.
+
+    Regression guard for Task 3.5 fix 1: a provider exception must NOT propagate
+    to _run_loop (which would skip the entire tick). The old NotImplementedError
+    fallback behaviour is restored — bootstrap is always swept.
+    """
+    bootstrap_ctx = _make_ctx("org_bootstrap", lineage_gc=LineageGCConfig(enabled=True))
+
+    def exploding_provider() -> list[str]:
+        raise RuntimeError("provider blown up")
+
+    sched = LineageGCScheduler(
+        request_context_factory=lambda _: bootstrap_ctx,  # type: ignore[arg-type]
+        bootstrap_org_id="org_bootstrap",
+        org_id_provider=exploding_provider,
+    )
+
+    # Must not raise — provider failure is isolated; bootstrap still included.
+    org_ids = sched._discover_org_ids(bootstrap_ctx)  # type: ignore[arg-type]
+    assert org_ids == ["org_bootstrap"], (
+        "bootstrap org must be present even when provider raises"
+    )
 
 
 # ---------------------------------------------------------------------------

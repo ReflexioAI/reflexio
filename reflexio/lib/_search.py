@@ -42,17 +42,21 @@ class SearchMixin(ReflexioBase):
 
         try:
             if request.start_time or request.end_time:
-                results = self._get_storage().get_agent_success_evaluation_results_in_window(
-                    from_ts=(
-                        int(request.start_time.timestamp()) if request.start_time else 0
-                    ),
-                    to_ts=(
-                        int(request.end_time.timestamp())
-                        if request.end_time
-                        else 2**31 - 1
-                    ),
-                    limit=request.limit or 100,
-                    agent_version=request.agent_version,
+                results = (
+                    self._get_storage().get_agent_success_evaluation_results_in_window(
+                        from_ts=(
+                            int(request.start_time.timestamp())
+                            if request.start_time
+                            else 0
+                        ),
+                        to_ts=(
+                            int(request.end_time.timestamp())
+                            if request.end_time
+                            else 2**31 - 1
+                        ),
+                        limit=request.limit or 100,
+                        agent_version=request.agent_version,
+                    )
                 )
             else:
                 results = self._get_storage().get_agent_success_evaluation_results(

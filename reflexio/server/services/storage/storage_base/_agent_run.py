@@ -270,6 +270,36 @@ class AgentRunMixin:
     ) -> int:
         raise NotImplementedError(f"{type(self).__name__} does not support agent runs")
 
+    def delete_expired_pending_tool_calls(
+        self,
+        *,
+        now: int,
+        grace_seconds: int,
+        limit: int = 1000,
+    ) -> int:
+        """Physically delete terminal 'expired'-status rows past the grace window.
+
+        Only rows with ``status = 'expired'`` (the terminal marker set by
+        ``expire_pending_tool_calls``) are candidates. RESOLVED rows are never
+        deleted — even if their ``expires_at`` is in the past — because their
+        ``valid_until`` may still be live and their cached result is needed by
+        resumable extraction resume paths.
+
+        The deletion cutoff is ``now - grace_seconds`` expressed as an ISO-8601
+        string (``expires_at`` is stored as TEXT/ISO in SQLite and as
+        ``timestamp with time zone`` in Postgres).
+
+        Args:
+            now: Current Unix epoch seconds.
+            grace_seconds: Extra TTL buffer; a row is only deleted if its
+                ``expires_at < datetime(now - grace_seconds)``.
+            limit: Maximum rows to delete in one call (default 1000).
+
+        Returns:
+            Number of rows actually deleted.
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not support agent runs")
+
     def find_active_pending_tool_call(
         self,
         *,

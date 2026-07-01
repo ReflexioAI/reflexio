@@ -164,3 +164,33 @@ class SQLiteShareLinkMixin:
             (self.org_id,),
         )
         return cur.rowcount
+
+    @SQLiteStorageBase.handle_exceptions
+    def delete_expired_share_links(
+        self, *, now: int, grace_seconds: int, limit: int = 1000
+    ) -> int:
+        """Physically delete share links whose expires_at < now - grace_seconds.
+
+        Args:
+            now (int): Current Unix epoch timestamp.
+            grace_seconds (int): Additional grace window; only rows with
+                expires_at < (now - grace_seconds) are deleted.
+            limit (int): Maximum number of rows to delete in one call.
+                Rows are processed in expires_at ASC order (oldest first).
+
+        Returns:
+            int: Number of rows physically deleted.
+        """
+        cutoff = now - grace_seconds
+        # Re-assert the expiry condition inside the DELETE via a subquery so
+        # the predicate cannot race between the SELECT and the DELETE (TOCTOU).
+        # Matches the Supabase RPC sibling which re-asserts expires_at in a single
+        # atomic statement.
+        cur = self._execute(
+            "DELETE FROM share_links WHERE id IN ("
+            "  SELECT id FROM share_links WHERE org_id = ? AND expires_at IS NOT NULL"
+            "  AND expires_at < ? ORDER BY expires_at ASC LIMIT ?"
+            ")",
+            (self.org_id, cutoff, limit),
+        )
+        return cur.rowcount

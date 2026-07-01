@@ -288,6 +288,42 @@ def _true_rrf_merge(
 # explicit status_filter on list/count methods.
 _TOMBSTONE_STATUS_VALUES = (Status.MERGED.value, Status.SUPERSEDED.value)
 
+# Profile reads also treat EXPIRED (TTL-expired tombstone) as non-current. Kept
+# separate from _TOMBSTONE_STATUS_VALUES because that tuple is shared with playbook
+# queries (which never carry EXPIRED) via hardcoded placeholders.
+_PROFILE_TOMBSTONE_STATUS_VALUES = (
+    Status.MERGED.value,
+    Status.SUPERSEDED.value,
+    Status.EXPIRED.value,
+)
+
+
+def _parse_status(value: str | None) -> Status | None:
+    """Parse a stored status string into a Status, tolerating unknown values.
+
+    Unknown non-null values (e.g. a status written by a newer build after a
+    rollback) map to a non-current tombstone sentinel and log an anomaly, rather
+    than raising ValueError. Never maps to None (which models CURRENT/live).
+
+    Args:
+        value: Raw status string from the database, or None/empty for CURRENT.
+
+    Returns:
+        The matching Status enum member, Status.SUPERSEDED for unknown values,
+        or None for falsy input (representing the CURRENT/live state).
+    """
+    if not value:
+        return None
+    try:
+        return Status(value)
+    except ValueError:
+        from reflexio.server.tracing import capture_anomaly
+
+        capture_anomaly(
+            "storage.status.unknown_value", level="warning", status_value=value
+        )
+        return Status.SUPERSEDED
+
 
 def _status_value(status: Status | None) -> str | None:
     """Convert a Status enum (or None) to its DB string value."""
@@ -392,7 +428,7 @@ def _row_to_profile(row: sqlite3.Row) -> UserProfile:
         expiration_timestamp=d["expiration_timestamp"],
         custom_features=_json_loads(d.get("custom_features")),
         source=d.get("source") or "",
-        status=Status(d["status"]) if d.get("status") else None,
+        status=_parse_status(d.get("status")),
         extractor_names=_json_loads(d.get("extractor_names")),
         expanded_terms=d.get("expanded_terms"),
         source_span=d.get("source_span"),
@@ -472,7 +508,7 @@ def _row_to_user_playbook(
         blocking_issue=BlockingIssue(**json.loads(d["blocking_issue"]))
         if d.get("blocking_issue")
         else None,
-        status=Status(d["status"]) if d.get("status") else None,
+        status=_parse_status(d.get("status")),
         source=d.get("source"),
         source_interaction_ids=_json_loads(d.get("source_interaction_ids")) or [],
         tags=_json_loads(d.get("tags")),
@@ -505,7 +541,7 @@ def _row_to_agent_playbook(row: sqlite3.Row) -> AgentPlaybook:
         playbook_metadata=d.get("playbook_metadata") or "",
         tags=_json_loads(d.get("tags")),
         embedding=[],
-        status=Status(d["status"]) if d.get("status") else None,
+        status=_parse_status(d.get("status")),
         expanded_terms=d.get("expanded_terms"),
         merged_into=d.get("merged_into"),
         superseded_by=d.get("superseded_by"),

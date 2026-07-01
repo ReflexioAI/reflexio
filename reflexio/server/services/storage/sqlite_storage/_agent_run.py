@@ -691,6 +691,49 @@ class SQLiteAgentRunMixin:
         return len(call_ids)
 
     @SQLiteStorageBase.handle_exceptions
+    def delete_expired_pending_tool_calls(
+        self, *, now: int, grace_seconds: int, limit: int = 1000
+    ) -> int:
+        """Delete terminal 'expired'-status rows whose expires_at is past the grace window.
+
+        Only rows with status='expired' are deleted. RESOLVED rows are never
+        touched even if their expires_at is in the past, preserving live cached
+        results for resumable extraction.
+
+        Args:
+            now: Current Unix epoch seconds.
+            grace_seconds: Grace buffer; cutoff = now - grace_seconds.
+            limit: Max rows to delete per call.
+
+        Returns:
+            Number of rows deleted.
+        """
+        cutoff_iso = datetime.fromtimestamp(now - grace_seconds, UTC).isoformat()
+        bounded_limit = max(1, min(limit, 10_000))
+        with self._lock:
+            self.conn.execute("BEGIN IMMEDIATE")
+            try:
+                rows = self.conn.execute(
+                    "SELECT id FROM _pending_tool_calls "
+                    "WHERE org_id = ? AND status = 'expired' AND expires_at IS NOT NULL AND expires_at < ? "
+                    "ORDER BY expires_at ASC LIMIT ?",
+                    (self.org_id, cutoff_iso, bounded_limit),
+                ).fetchall()
+                if not rows:
+                    self.conn.commit()
+                    return 0
+                ids = [r["id"] for r in rows]
+                ph = ",".join("?" * len(ids))
+                cur = self.conn.execute(
+                    f"DELETE FROM _pending_tool_calls WHERE id IN ({ph})", ids
+                )
+                self.conn.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
+        return cur.rowcount
+
+    @SQLiteStorageBase.handle_exceptions
     def find_active_pending_tool_call(
         self,
         *,

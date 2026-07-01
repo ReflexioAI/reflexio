@@ -37,7 +37,32 @@ class ProfileStoreMixin:
         profile_time_to_live: str | None = None,
         start_time: int | None = None,
         end_time: int | None = None,
+        include_expired: bool = False,
     ) -> list[UserProfile]:
+        """Return profiles for a user, optionally including expired rows.
+
+        Args:
+            user_id: The user whose profiles to return.
+            status_filter: Statuses to include (``None`` element = CURRENT).
+                Defaults to ``[None]`` (CURRENT only) when not supplied.
+            tags: If provided, only return profiles whose ``tags`` overlap.
+            profile_id: If provided, filter to this exact profile id.
+            query: Free-text substring match across content, profile_id, user_id.
+            source: If provided, filter to this exact source value.
+            profile_time_to_live: If provided, filter to this TTL value.
+            start_time: If provided, lower bound on last_modified_timestamp.
+            end_time: If provided, upper bound on last_modified_timestamp.
+            include_expired: When ``False`` (default), rows whose
+                ``expiration_timestamp`` is in the past are excluded
+                (byte-for-byte prior behaviour — every existing caller is
+                unaffected).  Pass ``True`` to omit the expiry filter so
+                EXPIRED tombstones (``expiration_timestamp < now``) are
+                returned.  Required by ``clear_user_data`` to reach every
+                profile a user owns regardless of TTL state.
+
+        Returns:
+            list[UserProfile]: Matching profiles in unspecified order.
+        """
         raise NotImplementedError
 
     @abstractmethod
@@ -101,6 +126,24 @@ class ProfileStoreMixin:
 
         Returns:
             int: Number of profiles updated
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def expire_active_profiles(self, *, now: int, limit: int = 1000) -> int:
+        """Tombstone active profiles whose TTL has elapsed.
+
+        Selects ``status IS NULL AND expiration_timestamp < now`` and transitions
+        each to ``status=EXPIRED, retired_at=now``, emitting a ``status_change``
+        lineage event (reason ``ttl-expired``). Returns the number tombstoned.
+
+        Args:
+            now: Current epoch timestamp (seconds). Profiles with
+                ``expiration_timestamp < now`` are tombstoned.
+            limit: Maximum number of profiles to tombstone in one call (default 1000).
+
+        Returns:
+            int: Number of profiles tombstoned.
         """
         raise NotImplementedError
 
