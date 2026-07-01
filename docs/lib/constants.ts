@@ -7,5 +7,5 @@ export const NAV_GROUPS = [
   { id: "agent-evaluation", name: "Agent Evaluation", icon: "BarChart" },
   { id: "unified-search", name: "Unified Search", icon: "Search" },
   { id: "generation", name: "Generation", icon: "Cpu" },
-  { id: "configuration", name: "Configuration", icon: "Settings" },
+  { id: "configuration", name: "Config API", icon: "Settings" },
 ] as const;

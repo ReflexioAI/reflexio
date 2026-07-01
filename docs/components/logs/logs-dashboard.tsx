@@ -60,9 +60,9 @@ const levelStyles: Record<LogLevel, { badge: string; filter: string; label: stri
   },
   critical: {
     badge:
-      "border-red-200 bg-red-50 text-red-700 dark:border-red-900/50 dark:bg-red-950/30 dark:text-red-300",
+      "border-red-700 bg-red-50 text-red-800 dark:border-red-500/70 dark:bg-red-950/50 dark:text-red-200",
     filter:
-      "border-red-300 bg-red-50 text-red-700 hover:bg-red-100 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-300 dark:hover:bg-red-950/50",
+      "border-red-700 bg-red-50 text-red-800 hover:bg-red-100 dark:border-red-500/70 dark:bg-red-950/50 dark:text-red-200 dark:hover:bg-red-950/70 font-semibold",
     label: "Critical",
   },
 };

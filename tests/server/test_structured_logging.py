@@ -277,9 +277,10 @@ def test_structured_logging_reused_handler_survives_first_handle_close(
     second.close()
 
     assert any(row.message == "still live after first close" for row in rows)
+    reflexio_logger = logging.getLogger("reflexio")
     assert not any(
         getattr(handler, "_reflexio_structured_logging", False)
-        for handler in logging.getLogger().handlers
+        for handler in reflexio_logger.handlers
     )
 
 
