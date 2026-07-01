@@ -23,12 +23,14 @@ Time control:
 
 from __future__ import annotations
 
+import pathlib
 from unittest.mock import patch
 
 import pytest
 
 from reflexio.lib.reflexio_lib import Reflexio
 from reflexio.models.api_schema.common import NEVER_EXPIRES_TIMESTAMP
+from reflexio.models.api_schema.domain.entities import UserProfile
 from reflexio.models.api_schema.domain.enums import Status
 from reflexio.models.api_schema.service_schemas import InteractionData
 from reflexio.models.config_schema import (
@@ -45,7 +47,7 @@ _EPOCH_NOW_PATH = "reflexio.server.services.storage.sqlite_storage._profiles._ep
 
 
 @pytest.fixture()
-def reflexio_instance(tmp_path: pytest.TempPathFactory, worker_id: str) -> Reflexio:
+def reflexio_instance(tmp_path: pathlib.Path, worker_id: str) -> Reflexio:
     """Create a Reflexio instance with real SQLite storage and a profile-only config.
 
     ``stride_size=1`` ensures the extractor runs after a single published interaction
@@ -164,6 +166,10 @@ def test_ttl_expired_active_profile_is_physically_reclaimed(
     assert "status_change" in ops, (
         "Expected a status_change lineage event (reason=ttl-expired) from the sweep"
     )
+    sc_events = [e for e in events if e.op == "status_change"]
+    assert any(getattr(e, "reason", None) == "ttl-expired" for e in sc_events), (
+        "Expected a status_change event with reason='ttl-expired' from expire_active_profiles"
+    )
     assert "hard_delete" in ops, (
         "Expected a hard_delete lineage event from gc_expired_tombstones"
     )
@@ -215,6 +221,15 @@ def test_pre_fix_pathology_active_expired_is_not_gc_eligible_until_swept(
     assert raw.status is None, (
         "Profile status must be None (CURRENT) before the expiry sweep; "
         "it is NOT yet a tombstone"
+    )
+    # retired_at is storage-internal (not on the domain model) — read via direct SQL.
+    raw_retired_at = storage.conn.execute(
+        "SELECT retired_at FROM profiles WHERE profile_id = ?",
+        (profile.profile_id,),
+    ).fetchone()["retired_at"]
+    assert raw_retired_at is None, (
+        "Profile retired_at must be None before the expiry sweep; "
+        "the un-reclaimable state requires BOTH status None and retired_at None"
     )
 
     # GC without sweep skips it — status=None is not in the eligible set.
@@ -283,4 +298,33 @@ def test_expiry_sweep_does_not_break_concurrent_supersede(
     assert not supersede_events, (
         "No SUPERSEDED status_change event must be emitted after the sweep already "
         "tombstoned the profile to EXPIRED"
+    )
+
+    # -- Lineage-consistency check: the sweep must not break a concurrent survivor --
+    # Create a second profile as the survivor (NEVER_EXPIRES; not touched by the sweep).
+    survivor = UserProfile(
+        profile_id="survivor_profile_race_test",
+        user_id=profile.user_id,
+        content="survivor profile for race-consistency check",
+        last_modified_timestamp=profile.last_modified_timestamp + 1,
+        generated_from_request_id="race_test_survivor_req",
+        expiration_timestamp=NEVER_EXPIRES_TIMESTAMP,
+    )
+    storage.add_user_profile(profile.user_id, [survivor])
+
+    # A supersede call "in favor of" the survivor (source = the EXPIRED profile) must
+    # remain a no-op and must NOT corrupt the survivor.
+    storage.supersede_profiles_by_ids(
+        profile.user_id,
+        [profile.profile_id],
+        "race_test_request_id_survivor",
+    )
+
+    # The survivor must be resolvable after the no-op supersede on the EXPIRED source.
+    assert (
+        storage.get_profile_by_id(survivor.profile_id, include_tombstones=False)
+        is not None
+    ), (
+        "Survivor profile must remain resolvable (status=NULL) after a no-op "
+        "supersede_profiles_by_ids call on the already-EXPIRED source"
     )
