@@ -85,13 +85,8 @@ class AgentPlaybookStoreMixin:
     _should_expand_documents: Any
     _expand_document: Any
     _fts_upsert: Any
-    _fts_delete: Any
     _vec_upsert: Any
-    _vec_delete: Any
     _delete_playbook_search_rows: Any
-    _has_sqlite_vec: bool
-    _subject_ref_for_user_id: Any
-    _assert_subject_writable_locked: Any
 
     def _index_agent_playbook_fts_vec(self, ap: AgentPlaybook) -> None:
         """Update the FTS and vector indexes for a single agent playbook row.
