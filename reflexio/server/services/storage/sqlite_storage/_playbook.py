@@ -1,10 +1,7 @@
 """Playbook CRUD + search methods for SQLite storage."""
 
-import logging
 import sqlite3
 from typing import Any
-
-logger = logging.getLogger(__name__)
 
 from ._lineage import _append_event_stmt
 
