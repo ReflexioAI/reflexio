@@ -125,3 +125,42 @@ def test_delete_expired_pending_tool_calls_ignores_pending_status(tmp_path):
     )
     assert deleted == 0
     assert s.get_pending_tool_call("d") is not None
+
+
+def test_delete_expired_pending_tool_calls_scopes_to_own_org(tmp_path):
+    """Cross-org isolation: org A's sweep must not delete org B's expired rows.
+
+    Two SQLiteStorage instances share the same db_path (shared-file deployment).
+    Only the row belonging to org A must be deleted when org A runs the sweep.
+    Org B's row must survive.
+    """
+    db = str(tmp_path / "shared.db")
+    now = datetime.now(UTC)
+    s_a = SQLiteStorage(db_path=db, org_id="org_a")
+    s_b = SQLiteStorage(db_path=db, org_id="org_b")
+
+    _seed_call(
+        s_a,
+        id="row-a",
+        status="expired",
+        expires_at=(now - timedelta(days=1)).isoformat(),
+        org_id="org_a",
+    )
+    _seed_call(
+        s_b,
+        id="row-b",
+        status="expired",
+        expires_at=(now - timedelta(days=1)).isoformat(),
+        org_id="org_b",
+    )
+
+    # Only sweep org A
+    deleted = s_a.delete_expired_pending_tool_calls(
+        now=int(now.timestamp()), grace_seconds=0
+    )
+
+    assert deleted == 1, "org A's row must be deleted"
+    assert s_a.get_pending_tool_call("row-a") is None, "org A row must be gone"
+    assert s_b.get_pending_tool_call("row-b") is not None, (
+        "org B row must survive — cross-tenant deletion detected"
+    )

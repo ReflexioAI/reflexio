@@ -715,9 +715,9 @@ class SQLiteAgentRunMixin:
             try:
                 rows = self.conn.execute(
                     "SELECT id FROM _pending_tool_calls "
-                    "WHERE status = 'expired' AND expires_at IS NOT NULL AND expires_at < ? "
+                    "WHERE org_id = ? AND status = 'expired' AND expires_at IS NOT NULL AND expires_at < ? "
                     "ORDER BY expires_at ASC LIMIT ?",
-                    (cutoff_iso, bounded_limit),
+                    (self.org_id, cutoff_iso, bounded_limit),
                 ).fetchall()
                 if not rows:
                     self.conn.commit()
