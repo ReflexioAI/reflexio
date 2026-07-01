@@ -28,6 +28,9 @@ from reflexio.server.services.storage.sqlite_storage import (
 from reflexio.server.services.storage.sqlite_storage._governance import (
     init_governance_tables,
 )
+from reflexio.server.services.storage.sqlite_storage.governance import (
+    _purge as purge_module,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -885,7 +888,7 @@ def test_complete_purge_operation_requires_full_delete_target_matrix(storage):
 
 def test_complete_retry_replaces_failed_completed_at(storage):
     purge_id = _begin_completeable_purge(storage, "purge_retry_completion_time")
-    with patch.object(governance_module, "_epoch_now", return_value=111):
+    with patch.object(purge_module, "_epoch_now", return_value=111):
         failed = storage.fail_purge_operation(
             purge_id,
             error_code="governance_erase_failed",

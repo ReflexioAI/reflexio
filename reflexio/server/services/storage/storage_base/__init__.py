@@ -31,7 +31,7 @@ from ._retrieval_log import RetrievalLogMixin
 from ._shadow_verdicts import ShadowVerdictsMixin
 from ._share_links import ShareLinkMixin
 from ._stall_state import StallStateMixin
-from .governance import AuditEventStoreMixin
+from .governance import AuditEventStoreMixin, PurgeOperationStoreMixin
 from .playbook import (
     AgentEvaluationResultStoreMixin,
     AgentPlaybookStoreMixin,
@@ -55,6 +55,7 @@ class BaseStorage(
     AgentEvaluationResultStoreMixin,
     RetrievalLogMixin,
     AuditEventStoreMixin,
+    PurgeOperationStoreMixin,
     GovernanceMixin,
     LineageEventMixin,
     OperationMixin,
@@ -267,6 +268,7 @@ __all__ = [
     "PendingToolCallUpsertResult",
     "AgentEvaluationResultStoreMixin",
     "AuditEventStoreMixin",
+    "PurgeOperationStoreMixin",
     "AgentPlaybookStoreMixin",
     "OptimizationJobStoreMixin",
     "PlaybookSourceLinkageMixin",

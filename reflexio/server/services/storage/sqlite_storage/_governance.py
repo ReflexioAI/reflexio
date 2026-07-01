@@ -21,12 +21,6 @@ from reflexio.server.services.governance.config import (
 )
 from reflexio.server.services.storage.error import SubjectWriteBarrierError
 from reflexio.server.services.storage.governance_validation import (
-    _ALLOWED_PURGE_OPERATION_TYPES,
-    _ALLOWED_PURGE_SCOPE_TYPES,
-    _ALLOWED_PURGE_TARGET_DETAIL_KEYS,
-    _ALLOWED_PURGE_TARGET_NAMES,
-    _ALLOWED_PURGE_TARGET_PHASES,
-    _ALLOWED_PURGE_TARGET_STATUSES,
     _CANONICAL_DELETE_TARGET_NAMES,
     _PREPARE_PHASE,
     _SNAPSHOT_TARGET_NAME,
@@ -36,16 +30,11 @@ from reflexio.server.services.storage.governance_validation import (
     _is_successful_erase_event,
     _parse_governance_window_list,
     _successful_erase_identity,
-    _validate_governance_deleted_count,
-    _validate_governance_detail,
-    _validate_governance_enum,
     _validate_governance_error_code,
     _validate_governance_error_detail,
-    _validate_governance_idempotency_key,
     _validate_governance_int_list,
     _validate_governance_prefixed_ref,
     _validate_governance_purge_id,
-    _validate_governance_target_ref,
 )
 
 _LEGACY_AUDIT_REQUEST_REF = "reqref_v1_legacy_unknown"
@@ -365,6 +354,12 @@ class SQLiteGovernanceMixin:
     _append_audit_event_with_cursor: Callable[
         [sqlite3.Connection | sqlite3.Cursor, AuditEvent], bool
     ]
+
+    # Provided via MRO by the co-composed PurgeOperationStoreMixin (purge bucket);
+    # reached here by the cross-bucket rebuild-hide / governance-erase-execution
+    # / barrier completion methods.
+    get_purge_operation: Callable[[str], PurgeOperation]
+    _record_purge_target_locked: Callable[..., None]
 
     def _deps(self) -> _SQLiteGovernanceDeps:
         return cast(_SQLiteGovernanceDeps, self)
@@ -688,97 +683,6 @@ class SQLiteGovernanceMixin:
             )
         )
 
-    def _record_purge_target_locked(
-        self,
-        *,
-        purge_id: str,
-        target_name: str,
-        target_ref: str,
-        phase: str,
-        status: Literal["pending", "running", "failed", "complete"],
-        detail: dict[str, object] | None,
-        deleted_count: int,
-        error_detail: str | None,
-    ) -> None:
-        purge_id = _validate_governance_purge_id("purge_id", purge_id)
-        _validate_governance_enum(
-            "target_name",
-            target_name,
-            allowed=_ALLOWED_PURGE_TARGET_NAMES,
-        )
-        _validate_governance_enum(
-            "phase",
-            phase,
-            allowed=_ALLOWED_PURGE_TARGET_PHASES,
-        )
-        _validate_governance_enum(
-            "status",
-            status,
-            allowed=_ALLOWED_PURGE_TARGET_STATUSES,
-        )
-        detail = _validate_governance_detail(
-            "detail",
-            detail,
-            allowed_keys=_ALLOWED_PURGE_TARGET_DETAIL_KEYS,
-        )
-        error_detail = _validate_governance_error_detail(error_detail)
-        target_ref = _validate_governance_target_ref(
-            target_name=target_name,
-            phase=phase,
-            target_ref=target_ref,
-        )
-        deleted_count = _validate_governance_deleted_count(deleted_count)
-        now = _epoch_now()
-        existing = self.conn.execute(
-            """SELECT started_at, completed_at
-               FROM purge_operation_targets
-               WHERE org_id = ? AND purge_id = ? AND target_name = ? AND target_ref = ? AND phase = ?""",
-            (self.org_id, purge_id, target_name, target_ref, phase),
-        ).fetchone()
-        started_at = existing["started_at"] if existing else None
-        completed_at = existing["completed_at"] if existing else None
-        if started_at is None and status in {"running", "failed", "complete"}:
-            started_at = now
-        if status in {"failed", "complete"}:
-            completed_at = now
-        self.conn.execute(
-            """INSERT INTO purge_operation_targets (
-                   org_id, purge_id, target_name, target_ref, phase, status, detail,
-                   deleted_count, error_detail, started_at, completed_at
-               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-               ON CONFLICT(org_id, purge_id, target_name, target_ref, phase) DO UPDATE SET
-                   status = excluded.status,
-                   detail = COALESCE(excluded.detail, purge_operation_targets.detail),
-                   deleted_count = excluded.deleted_count,
-                   error_detail = excluded.error_detail,
-                   started_at = COALESCE(purge_operation_targets.started_at, excluded.started_at),
-                   completed_at = excluded.completed_at""",
-            (
-                self.org_id,
-                purge_id,
-                target_name,
-                target_ref,
-                phase,
-                status,
-                _json_dumps(detail),
-                deleted_count,
-                error_detail,
-                started_at,
-                completed_at,
-            ),
-        )
-        self.conn.execute(
-            """UPDATE purge_operations
-               SET status = CASE
-                   WHEN status IN ('complete', 'failed') THEN status
-                   WHEN ? IN ('running', 'complete') THEN 'running'
-                   ELSE status
-               END,
-                   updated_at = ?
-               WHERE purge_id = ? AND org_id = ?""",
-            (status, now, purge_id, self.org_id),
-        )
-
     def _purge_governance_entity_content_locked(
         self,
         *,
@@ -980,192 +884,6 @@ class SQLiteGovernanceMixin:
             "purged_profiles": purged_profiles,
             "purged_user_playbooks": purged_user_playbooks,
         }
-
-    def begin_purge_operation(
-        self,
-        purge_id: str,
-        idempotency_key: str,
-        operation_type: Literal["user_erasure", "org_purge"],
-        scope_type: Literal["user", "org"],
-        subject_ref: str | None,
-        request_ref: str,
-    ) -> PurgeOperation:
-        _validate_governance_enum(
-            "operation_type",
-            operation_type,
-            allowed=_ALLOWED_PURGE_OPERATION_TYPES,
-        )
-        _validate_governance_enum(
-            "scope_type",
-            scope_type,
-            allowed=_ALLOWED_PURGE_SCOPE_TYPES,
-        )
-        _validate_governance_prefixed_ref(
-            "subject_ref", subject_ref, prefix="subref_v1_"
-        )
-        _validate_governance_prefixed_ref(
-            "request_ref", request_ref, prefix="reqref_v1_"
-        )
-        validated_purge_id = _validate_governance_purge_id("purge_id", purge_id)
-        validated_idempotency_key = cast(
-            str,
-            _validate_governance_idempotency_key("idempotency_key", idempotency_key),
-        )
-        now = _epoch_now()
-        with self._lock:
-            existing = self.conn.execute(
-                """SELECT * FROM purge_operations
-                   WHERE org_id = ? AND idempotency_key = ?""",
-                (self.org_id, validated_idempotency_key),
-            ).fetchone()
-            if existing is not None:
-                existing_operation = _row_to_purge_operation(existing)
-                expected_identity = {
-                    "purge_id": validated_purge_id,
-                    "operation_type": operation_type,
-                    "scope_type": scope_type,
-                    "subject_ref": subject_ref,
-                    "request_ref": request_ref,
-                }
-                for field_name, expected_value in expected_identity.items():
-                    if getattr(existing_operation, field_name) != expected_value:
-                        raise ValueError(
-                            "Existing purge operation for idempotency_key has "
-                            f"mismatched {field_name}"
-                        )
-                return _row_to_purge_operation(existing)
-            self.conn.execute(
-                """INSERT INTO purge_operations (
-                       purge_id, org_id, operation_type, scope_type, subject_ref,
-                       request_ref, idempotency_key, status, created_at, updated_at
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)""",
-                (
-                    validated_purge_id,
-                    self.org_id,
-                    operation_type,
-                    scope_type,
-                    subject_ref,
-                    request_ref,
-                    validated_idempotency_key,
-                    now,
-                    now,
-                ),
-            )
-            self.conn.commit()
-        return self.get_purge_operation(validated_purge_id)
-
-    def record_purge_target(
-        self,
-        purge_id: str,
-        target_name: str,
-        phase: str,
-        status: Literal["pending", "running", "failed", "complete"],
-        target_ref: str = "",
-        detail: dict[str, object] | None = None,
-        deleted_count: int = 0,
-        error_detail: str | None = None,
-    ) -> None:
-        purge_id = _validate_governance_purge_id("purge_id", purge_id)
-        _validate_governance_enum(
-            "target_name",
-            target_name,
-            allowed=_ALLOWED_PURGE_TARGET_NAMES,
-        )
-        _validate_governance_enum(
-            "phase",
-            phase,
-            allowed=_ALLOWED_PURGE_TARGET_PHASES,
-        )
-        _validate_governance_enum(
-            "status",
-            status,
-            allowed=_ALLOWED_PURGE_TARGET_STATUSES,
-        )
-        with self._lock:
-            self._record_purge_target_locked(
-                purge_id=purge_id,
-                target_name=target_name,
-                target_ref=target_ref,
-                phase=phase,
-                status=status,
-                detail=detail,
-                deleted_count=deleted_count,
-                error_detail=error_detail,
-            )
-            self.conn.commit()
-
-    def list_purge_targets(
-        self, purge_id: str, phase: str | None = None
-    ) -> list[PurgeOperationTarget]:
-        purge_id = _validate_governance_purge_id("purge_id", purge_id)
-        deps = self._deps()
-        sql = "SELECT * FROM purge_operation_targets WHERE org_id = ? AND purge_id = ?"
-        params: list[Any] = [self.org_id, purge_id]
-        if phase is not None:
-            sql += " AND phase = ?"
-            params.append(phase)
-        sql += " ORDER BY phase ASC, target_name ASC, target_ref ASC"
-        rows = deps._fetchall(sql, params)
-        return [_row_to_purge_target(row) for row in rows]
-
-    def purge_targets_prepared(self, purge_id: str) -> bool:
-        purge_id = _validate_governance_purge_id("purge_id", purge_id)
-        row = self._deps()._fetchone(
-            """SELECT 1 FROM purge_operation_targets
-               WHERE org_id = ? AND purge_id = ? AND target_name = ? AND target_ref = 'all'
-                 AND phase = ? AND status = 'complete'""",
-            (self.org_id, purge_id, _SNAPSHOT_TARGET_NAME, _PREPARE_PHASE),
-        )
-        return row is not None
-
-    def prepare_governance_erase_targets(
-        self,
-        purge_id: str,
-        user_id: str,
-        owned_user_playbook_ids: set[int] | None = None,
-    ) -> None:
-        purge_id = _validate_governance_purge_id("purge_id", purge_id)
-        with self._lock:
-            if self.purge_targets_prepared(purge_id):
-                return
-            try:
-                self.conn.execute("BEGIN IMMEDIATE")
-                owned_user_playbook_ids = (
-                    set(owned_user_playbook_ids)
-                    if owned_user_playbook_ids is not None
-                    else self._owned_user_playbook_ids_locked(user_id)
-                )
-                targets = self._planned_governance_delete_counts(
-                    user_id,
-                    owned_user_playbook_ids,
-                )
-                for target_name, count in targets.items():
-                    self._record_purge_target_locked(
-                        purge_id=purge_id,
-                        target_name=target_name,
-                        target_ref="all",
-                        phase="delete",
-                        status="pending",
-                        detail={"count": count},
-                        deleted_count=0,
-                        error_detail=None,
-                    )
-                self._record_purge_target_locked(
-                    purge_id=purge_id,
-                    target_name=_SNAPSHOT_TARGET_NAME,
-                    target_ref="all",
-                    phase=_PREPARE_PHASE,
-                    status="complete",
-                    detail={
-                        "owned_user_playbook_ids": sorted(owned_user_playbook_ids),
-                    },
-                    deleted_count=0,
-                    error_detail=None,
-                )
-                self.conn.commit()
-            except Exception:
-                self.conn.rollback()
-                raise
 
     def hide_governance_agent_playbooks_for_rebuild(self, purge_id: str) -> list[int]:
         purge_id = _validate_governance_purge_id("purge_id", purge_id)
@@ -1848,46 +1566,3 @@ class SQLiteGovernanceMixin:
         if row is None:
             return None
         return _row_to_subject_write_barrier(row)
-
-    def fail_purge_operation(
-        self, purge_id: str, error_code: str, error_detail: str
-    ) -> PurgeOperation:
-        purge_id = _validate_governance_purge_id("purge_id", purge_id)
-        validated_error_code = _validate_governance_error_code(error_code)
-        validated_error_detail = _validate_governance_error_detail(error_detail)
-        now = _epoch_now()
-        with self._lock:
-            cur = self.conn.execute(
-                """UPDATE purge_operations
-                   SET status = 'failed', error_code = ?, error_detail = ?,
-                   updated_at = ?, completed_at = ?
-                   WHERE purge_id = ? AND org_id = ? AND status != 'complete'""",
-                (
-                    validated_error_code,
-                    validated_error_detail,
-                    now,
-                    now,
-                    purge_id,
-                    self.org_id,
-                ),
-            )
-            if cur.rowcount == 0:
-                existing = self.conn.execute(
-                    "SELECT status FROM purge_operations WHERE purge_id = ? AND org_id = ?",
-                    (purge_id, self.org_id),
-                ).fetchone()
-                if existing is not None and str(existing["status"]) == "complete":
-                    raise ValueError("Purge operation is already complete")
-                raise ValueError(f"Purge operation {purge_id!r} not found")
-            self.conn.commit()
-        return self.get_purge_operation(purge_id)
-
-    def get_purge_operation(self, purge_id: str) -> PurgeOperation:
-        purge_id = _validate_governance_purge_id("purge_id", purge_id)
-        row = self._deps()._fetchone(
-            "SELECT * FROM purge_operations WHERE purge_id = ? AND org_id = ?",
-            (purge_id, self.org_id),
-        )
-        if row is None:
-            raise ValueError(f"Purge operation {purge_id!r} not found")
-        return _row_to_purge_operation(row)

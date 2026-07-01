@@ -1,63 +1,16 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Literal
 
 from reflexio.models.api_schema.domain.governance import (
     AuditEvent,
     PurgeOperation,
-    PurgeOperationTarget,
     SubjectWriteBarrier,
 )
 
 
 class GovernanceMixin(ABC):
     """Mixin for backend-neutral governance storage primitives."""
-
-    @abstractmethod
-    def begin_purge_operation(
-        self,
-        purge_id: str,
-        idempotency_key: str,
-        operation_type: Literal["user_erasure", "org_purge"],
-        scope_type: Literal["user", "org"],
-        subject_ref: str | None,
-        request_ref: str,
-    ) -> PurgeOperation:
-        raise NotImplementedError
-
-    @abstractmethod
-    def record_purge_target(
-        self,
-        purge_id: str,
-        target_name: str,
-        phase: str,
-        status: Literal["pending", "running", "failed", "complete"],
-        target_ref: str = "",
-        detail: dict[str, object] | None = None,
-        deleted_count: int = 0,
-        error_detail: str | None = None,
-    ) -> None:
-        raise NotImplementedError
-
-    @abstractmethod
-    def list_purge_targets(
-        self, purge_id: str, phase: str | None = None
-    ) -> list[PurgeOperationTarget]:
-        raise NotImplementedError
-
-    @abstractmethod
-    def purge_targets_prepared(self, purge_id: str) -> bool:
-        raise NotImplementedError
-
-    @abstractmethod
-    def prepare_governance_erase_targets(
-        self,
-        purge_id: str,
-        user_id: str,
-        owned_user_playbook_ids: set[int] | None = None,
-    ) -> None:
-        raise NotImplementedError
 
     @abstractmethod
     def hide_governance_agent_playbooks_for_rebuild(self, purge_id: str) -> list[int]:
@@ -118,14 +71,4 @@ class GovernanceMixin(ABC):
 
     @abstractmethod
     def get_subject_write_barrier(self, subject_ref: str) -> SubjectWriteBarrier | None:
-        raise NotImplementedError
-
-    @abstractmethod
-    def fail_purge_operation(
-        self, purge_id: str, error_code: str, error_detail: str
-    ) -> PurgeOperation:
-        raise NotImplementedError
-
-    @abstractmethod
-    def get_purge_operation(self, purge_id: str) -> PurgeOperation:
         raise NotImplementedError
