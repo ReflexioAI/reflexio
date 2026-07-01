@@ -1,9 +1,19 @@
-"""Process-local scheduler for lineage tombstone garbage collection.
+"""Process-local scheduler for lineage tombstone garbage collection and expiry reclamation.
 
-Startup is gated on ``lineage_gc.enabled`` (default on). Each tick evaluates
-every org independently and hard-deletes expired tombstones per that org's
-``lineage_gc`` config. One org's failure never stalls the loop; errors are
-captured as Sentry anomalies and the loop continues to the next org.
+Startup runs when EITHER ``lineage_gc.enabled`` OR ``expiry_reclamation.enabled``
+is set in the bootstrap org's config. Each tick evaluates every org independently.
+
+- **Class A** (profile expiry sweep + tombstone GC): gated on ``lineage_gc.enabled``.
+  Hard-deletes expired tombstones per that org's ``lineage_gc`` config.
+- **Class B** (plain-row direct-delete sweeps, no PII/audit obligation): gated on
+  ``expiry_reclamation.enabled``. Currently sweeps expired share links and expired
+  pending tool calls.
+
+One org's failure never stalls the loop; errors are captured as Sentry anomalies
+and the loop continues to the next org.
+
+Note: the poll interval is always taken from ``lineage_gc.poll_interval_seconds``
+even when only ``expiry_reclamation`` is enabled; Class B currently shares that cadence.
 
 Governance-retention reclamation is a premium concern handled by the enterprise
 GovernanceRetentionCapability (reflexio_ext), not here.
@@ -193,11 +203,15 @@ def maybe_start_lineage_gc(
     *,
     bootstrap_org_id: str,
 ) -> LineageGCScheduler | None:
-    """Start the scheduler only when bootstrap config enables tombstone GC.
+    """Start the scheduler when bootstrap config enables tombstone GC or expiry reclamation.
 
-    Startup requires bootstrap-org config to enable tombstone GC via
-    ``lineage_gc.enabled``. Tombstone-GC enablement criteria (must
-    ALL hold before enabling for a production org):
+    Startup runs when bootstrap-org config sets EITHER ``lineage_gc.enabled``
+    (Class A: profile expiry + tombstone GC) OR ``expiry_reclamation.enabled``
+    (Class B: plain-row direct-delete sweeps). Returns ``None`` if neither flag
+    is set.
+
+    Tombstone-GC enablement criteria (must ALL hold before enabling ``lineage_gc``
+    for a production org):
 
     1. **Mechanism**: GC ages tombstones by ``retired_at`` (the INTEGER epoch
        written at every tombstone write-path).  Rows with ``retired_at = NULL``
@@ -212,12 +226,15 @@ def maybe_start_lineage_gc(
     4. **DPO sign-off**: obtain sign-off on the PII-lifetime and audit-depth
        implications before enabling in any deployment that processes personal data.
 
+    Note: the poll cadence is always controlled by ``lineage_gc.poll_interval_seconds``
+    even when only ``expiry_reclamation`` is enabled; Class B shares that interval.
+
     Args:
         request_context_factory: Builds an org-scoped :class:`RequestContext`.
         bootstrap_org_id: Org used to read config and seed cross-org discovery.
 
     Returns:
-        LineageGCScheduler: The started scheduler, or ``None`` if not enabled.
+        LineageGCScheduler: The started scheduler, or ``None`` if neither flag is set.
     """
     try:
         ctx = request_context_factory(bootstrap_org_id)
