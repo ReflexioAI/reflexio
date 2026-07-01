@@ -288,6 +288,15 @@ def _true_rrf_merge(
 # explicit status_filter on list/count methods.
 _TOMBSTONE_STATUS_VALUES = (Status.MERGED.value, Status.SUPERSEDED.value)
 
+# Profile reads also treat EXPIRED (TTL-expired tombstone) as non-current. Kept
+# separate from _TOMBSTONE_STATUS_VALUES because that tuple is shared with playbook
+# queries (which never carry EXPIRED) via hardcoded placeholders.
+_PROFILE_TOMBSTONE_STATUS_VALUES = (
+    Status.MERGED.value,
+    Status.SUPERSEDED.value,
+    Status.EXPIRED.value,
+)
+
 
 def _parse_status(value: str | None) -> Status | None:
     """Parse a stored status string into a Status, tolerating unknown values.
