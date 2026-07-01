@@ -7,12 +7,16 @@ ABC skeleton (all abstract methods), ``__init__`` (per-run field inits), the ``r
 FIFO drain, ``_run_generation`` billing emit-ordering, and the lock/queue helpers.
 """
 
+from reflexio.server.services.base_generation._config_filter import (
+    ConfigFilterMixin,
+)
 from reflexio.server.services.base_generation._status_change import (
     StatusChangeMixin,
     StatusChangeOperation,
 )
 
 __all__ = [
+    "ConfigFilterMixin",
     "StatusChangeMixin",
     "StatusChangeOperation",
 ]
