@@ -52,6 +52,7 @@ strings before deleting old import paths in the same PR.
 | `playbook_optimizer/` | Scenario-based playbook optimization: mature flat package with `optimizer.py`, `scheduler.py`, `rollout.py`, `judge.py`, `models.py`, `scenario_resolver.py`, `gepa_adapter.py`, and `assistant_webhook.py`. See [README](playbook_optimizer/README.md). |
 | `braintrust/` | Braintrust export/sync: `service.py`, `client.py`, `_cron.py`, `_encryption.py`. |
 | `lineage/` | Current-record resolution and tombstone GC: `resolve.py`, `gc_scheduler.py`. |
+| `governance/` | Subject-reference and retention/barrier policy contracts: `config.py`, `service.py`, `subject_refs.py`. Storage and lineage code use these helpers to preserve governance constraints during writes, supersedes, and cleanup. |
 | `pre_retrieval/` | `QueryReformulator` (`_query_reformulator.py`) + `DocumentExpander` (`_document_expander.py`) - query rewrite and doc expansion for recall. Compact by design; see [README](pre_retrieval/README.md). |
 | `tagging/` | `TaggingService` (`service.py`) + deferred `tagging_scheduler.py` - post-generation profile/playbook tagging. Compact by design; see [README](tagging/README.md). |
 | `unified_search_service.py` | `run_unified_search()` — two-phase parallel search across profiles / agent playbooks / user playbooks. |
@@ -61,7 +62,7 @@ strings before deleting old import paths in the same PR.
 
 | Path | Purpose |
 |------|---------|
-| `storage/` | `storage_base/` (`BaseStorage` split by domain, including `_lineage.py`) + `sqlite_storage/` (including lineage/tombstones) + `retention*.py`. Access via `request_context.storage` only. |
+| `storage/` | `storage_base/` (`BaseStorage` split by domain, including `_governance.py` and `_lineage.py`) + `sqlite_storage/` (governance validation, retention barriers, lineage/tombstones) + `governance_validation.py` + `retention*.py`. Access via `request_context.storage` only. |
 | `configurator/` | `DefaultConfigurator` — loads YAML config and creates the storage backend. |
 
 ## Key Rules
@@ -71,3 +72,4 @@ strings before deleting old import paths in the same PR.
 - **ALWAYS use `LiteLLMClient`** for completions/embeddings and `request_context.prompt_manager.render_prompt(...)` for prompts — no hardcoded prompts, no direct OpenAI/Claude clients.
 - **All `_operation_state` writes go through `OperationStateManager`** — don't touch the table directly (it backs locks, bookmarks, progress, and cancellation).
 - **`tool_can_use` lives at root `Config`** — shared by playbook extraction and success evaluation, not per-service.
+- **Preserve governance subject refs/barriers** — route validation through `services/governance/` and `storage/governance_validation.py`; do not bypass retention or subject-write checks in storage implementations.
