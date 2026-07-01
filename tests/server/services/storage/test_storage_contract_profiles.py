@@ -484,3 +484,22 @@ class TestInteractionCRUD:
             sources=["api"],
         )
         assert new_groups[0].interactions[0].image_encoding == "base64-image-data"
+
+
+def test_expire_active_profiles_contract(storage: BaseStorage) -> None:
+    """Contract: expire_active_profiles tombstones TTL-expired active profiles."""
+    storage.add_user_profile(
+        "u1",
+        [
+            UserProfile(
+                profile_id="c1",
+                user_id="u1",
+                content="c",
+                last_modified_timestamp=1,
+                generated_from_request_id="r1",
+                expiration_timestamp=100,
+            )
+        ],
+    )
+    assert storage.expire_active_profiles(now=1000) == 1
+    assert storage.get_profile_by_id("c1", include_tombstones=False) is None

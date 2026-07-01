@@ -105,6 +105,24 @@ class ProfileStoreMixin:
         raise NotImplementedError
 
     @abstractmethod
+    def expire_active_profiles(self, *, now: int, limit: int = 1000) -> int:
+        """Tombstone active profiles whose TTL has elapsed.
+
+        Selects ``status IS NULL AND expiration_timestamp < now`` and transitions
+        each to ``status=EXPIRED, retired_at=now``, emitting a ``status_change``
+        lineage event (reason ``ttl-expired``). Returns the number tombstoned.
+
+        Args:
+            now: Current epoch timestamp (seconds). Profiles with
+                ``expiration_timestamp < now`` are tombstoned.
+            limit: Maximum number of profiles to tombstone in one call (default 1000).
+
+        Returns:
+            int: Number of profiles tombstoned.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     def get_profiles_by_ids(
         self,
         user_id: str,
