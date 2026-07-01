@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Fragment, useState } from "react";
+import { useState } from "react";
 import {
   MessageSquare,
   Users,
@@ -53,36 +53,26 @@ export function Sidebar() {
         </Link>
 
         <div className="space-y-1">
-          {resourceGroups.map((group) => {
-            const isOperationsGroup = group.id === "configuration";
-            return (
-              <Fragment key={group.id}>
-                {isOperationsGroup && (
-                  <div className="mt-4 border-t border-border pt-3">
-                    <div className="px-2 pb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                      Operations
-                    </div>
-                    <SidebarLink
-                      href="/configure"
-                      label="Configure"
-                      icon={Pencil}
-                      active={pathname === "/configure"}
-                    />
-                    <SidebarLink
-                      href="/logs"
-                      label="Logs"
-                      icon={Logs}
-                      active={pathname === "/logs"}
-                    />
-                  </div>
-                )}
-                <SidebarGroup
-                  group={group}
-                  pathname={pathname}
-                />
-              </Fragment>
-            );
-          })}
+          {resourceGroups.map((group) => (
+            <SidebarGroup key={group.id} group={group} pathname={pathname} />
+          ))}
+          <div className="mt-4 border-t border-border pt-3">
+            <div className="px-2 pb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+              Operations
+            </div>
+            <SidebarLink
+              href="/configure"
+              label="Configure"
+              icon={Pencil}
+              active={pathname === "/configure"}
+            />
+            <SidebarLink
+              href="/logs"
+              label="Logs"
+              icon={Logs}
+              active={pathname === "/logs"}
+            />
+          </div>
         </div>
       </div>
     </ScrollArea>
