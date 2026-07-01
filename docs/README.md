@@ -6,7 +6,7 @@ Interactive API reference and documentation for the Reflexio platform. Built wit
 
 ## What's Inside
 
-- API reference for REST endpoints across interactions, profiles, playbooks, search, operations, and config
+- API reference for REST endpoints across interactions, profiles, playbooks, search, logs, and configuration
 - Interactive API explorer for testing requests against a running server
 - Operator pages for local configuration and structured warning/error/critical logs
 - Schema documentation generated from the Reflexio backend

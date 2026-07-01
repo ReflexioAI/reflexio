@@ -13,7 +13,6 @@ import {
   BarChart,
   Search,
   Cpu,
-  Activity,
   Settings,
   Pencil,
   ChevronRight,
@@ -40,9 +39,22 @@ const iconMap: Record<string, LucideIcon> = {
   BarChart,
   Search,
   Cpu,
-  Activity,
+  Logs,
   Settings,
 };
+
+const operatorLinks = [
+  {
+    href: "/configure",
+    label: "Configure",
+    icon: Pencil,
+  },
+  {
+    href: "/logs",
+    label: "Logs",
+    icon: Logs,
+  },
+];
 
 export function Sidebar() {
   const pathname = usePathname();
@@ -62,18 +74,15 @@ export function Sidebar() {
             <div className="px-2 pb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
               Operations
             </div>
-            <SidebarLink
-              href="/configure"
-              label="Configure"
-              icon={Pencil}
-              active={pathname === "/configure"}
-            />
-            <SidebarLink
-              href="/logs"
-              label="Logs"
-              icon={Logs}
-              active={pathname === "/logs"}
-            />
+            {operatorLinks.map((link) => (
+              <SidebarLink
+                key={link.href}
+                href={link.href}
+                label={link.label}
+                icon={link.icon}
+                active={pathname === link.href}
+              />
+            ))}
           </div>
         </div>
       </div>
