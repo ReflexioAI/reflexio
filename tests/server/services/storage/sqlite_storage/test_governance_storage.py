@@ -4266,3 +4266,83 @@ def test_gc_governance_retention_noops_when_audit_retention_disabled(storage):
 
     assert storage.gc_governance_retention(config=GovernanceRetentionConfig()) == 0
     assert len(storage.list_audit_events()) == 1
+
+
+def _successful_erase_audit_rows(storage: SQLiteStorage) -> list[AuditEvent]:
+    return [
+        event
+        for event in storage.list_audit_events()
+        if event.operation == "ERASE" and event.status == "ok"
+    ]
+
+
+def _assert_successful_erase_rows_only_for_complete_purges(
+    storage: SQLiteStorage,
+) -> None:
+    """Central privacy invariant.
+
+    Every persisted successful-ERASE audit row (operation == "ERASE",
+    status == "ok") must be keyed by a purge_id whose purge_operation exists and
+    has status == "complete". A successful-ERASE row may therefore never exist
+    while its purge is still in-flight.
+    """
+    for event in _successful_erase_audit_rows(storage):
+        assert event.idempotency_key is not None
+        purge = storage.get_purge_operation(event.idempotency_key)
+        assert purge.status == "complete"
+
+
+def test_successful_erase_audit_row_exists_only_after_complete_purge(storage):
+    """Property test for the lineage privacy invariant.
+
+    (1) ``append_audit_event`` refuses to write a successful-ERASE row and
+        persists nothing.
+    (2) A successful-ERASE row appears ONLY via
+        ``complete_purge_operation_with_audit``, and only once the matching
+        purge_operation is ``complete`` — never while the purge is in-flight.
+    """
+    # (1) Direct append of a successful ERASE is refused and writes nothing —
+    # both with and without an idempotency key.
+    with pytest.raises(ValueError, match="Successful ERASE audit rows"):
+        storage.append_audit_event(_erase_event(purge_id="purge_invariant"))
+    with pytest.raises(ValueError, match="Successful ERASE audit rows"):
+        storage.append_audit_event(
+            AuditEvent(
+                org_id="org1",
+                operation="ERASE",
+                entity_type="request",
+                subject_ref=SUBJECT_REF,
+                request_ref=REQUEST_REF,
+                idempotency_key=None,
+                status="ok",
+            )
+        )
+    assert storage.list_audit_events() == []
+    assert _successful_erase_audit_rows(storage) == []
+
+    # A purge that is fully prepared but not yet completed holds no
+    # successful-ERASE row, and the invariant holds trivially.
+    purge_id = _begin_completeable_purge(storage, "purge_invariant")
+    assert storage.get_purge_operation(purge_id).status == "running"
+    assert _successful_erase_audit_rows(storage) == []
+    _assert_successful_erase_rows_only_for_complete_purges(storage)
+
+    # (2) The one legitimate writer produces exactly one successful-ERASE row,
+    # and only after the purge_operation transitions to 'complete'.
+    completed = storage.complete_purge_operation_with_audit(
+        purge_id, _erase_event(purge_id=purge_id)
+    )
+    assert completed.status == "complete"
+    erase_rows = _successful_erase_audit_rows(storage)
+    assert [event.idempotency_key for event in erase_rows] == [purge_id]
+    _assert_successful_erase_rows_only_for_complete_purges(storage)
+
+    # Idempotent re-completion neither duplicates the row nor breaks the
+    # invariant.
+    storage.complete_purge_operation_with_audit(
+        purge_id, _erase_event(purge_id=purge_id)
+    )
+    assert [
+        event.idempotency_key for event in _successful_erase_audit_rows(storage)
+    ] == [purge_id]
+    _assert_successful_erase_rows_only_for_complete_purges(storage)

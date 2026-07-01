@@ -742,6 +742,52 @@ def test_barrier_blocks_user_playbook_update_paths(
         )
 
 
+def test_assert_subject_writable_blocks_only_barriered_subject(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = _storage(tmp_path, monkeypatch)
+    barriered_subject_ref = governance_subject_ref(
+        "org-barrier", "alice", "barrier-secret"
+    )
+    other_subject_ref = governance_subject_ref("org-barrier", "bob", "barrier-secret")
+    request_ref = "reqref_v1_00000000000000000000000000000071"
+    purge = storage.begin_purge_operation(
+        purge_id="purge_assert_writable",
+        idempotency_key="idem_assert_writable",
+        operation_type="user_erasure",
+        scope_type="user",
+        subject_ref=barriered_subject_ref,
+        request_ref=request_ref,
+    )
+
+    # Before any barrier, both subjects are writable.
+    storage.assert_subject_writable(barriered_subject_ref)
+    storage.assert_subject_writable(other_subject_ref)
+
+    storage.begin_subject_erasure_barrier(barriered_subject_ref, purge.purge_id)
+
+    # The 'erasing' barrier blocks only its own subject.
+    with pytest.raises(SubjectWriteBarrierError, match="blocked by erasure barrier"):
+        storage.assert_subject_writable(barriered_subject_ref)
+    storage.assert_subject_writable(other_subject_ref)
+
+    # The terminal 'erased' barrier (no rows remain, so the empty check passes)
+    # continues to block writes.
+    _complete_empty_purge(
+        storage,
+        purge_id=purge.purge_id,
+        subject_ref=barriered_subject_ref,
+        request_ref=request_ref,
+    )
+    erased_barrier = storage.get_subject_write_barrier(barriered_subject_ref)
+    assert erased_barrier is not None
+    assert erased_barrier.status == "erased"
+    with pytest.raises(SubjectWriteBarrierError, match="blocked by erasure barrier"):
+        storage.assert_subject_writable(barriered_subject_ref)
+    storage.assert_subject_writable(other_subject_ref)
+
+
 def test_source_window_write_blocks_legacy_null_subject_ref_user_playbook(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
