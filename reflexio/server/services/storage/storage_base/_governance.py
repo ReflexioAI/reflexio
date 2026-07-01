@@ -9,21 +9,10 @@ from reflexio.models.api_schema.domain.governance import (
     PurgeOperationTarget,
     SubjectWriteBarrier,
 )
-from reflexio.models.config_schema import GovernanceRetentionConfig
 
 
 class GovernanceMixin(ABC):
     """Mixin for backend-neutral governance storage primitives."""
-
-    @abstractmethod
-    def append_audit_event(self, event: AuditEvent) -> bool:
-        raise NotImplementedError
-
-    @abstractmethod
-    def list_audit_events(
-        self, subject_ref: str | None = None, *, org_id: str | None = None
-    ) -> list[AuditEvent]:
-        raise NotImplementedError
 
     @abstractmethod
     def begin_purge_operation(
@@ -139,8 +128,4 @@ class GovernanceMixin(ABC):
 
     @abstractmethod
     def get_purge_operation(self, purge_id: str) -> PurgeOperation:
-        raise NotImplementedError
-
-    @abstractmethod
-    def gc_governance_retention(self, *, config: GovernanceRetentionConfig) -> int:
         raise NotImplementedError
