@@ -43,7 +43,9 @@ from reflexio.server.services.configurator.configurator import DefaultConfigurat
 pytestmark = pytest.mark.integration
 
 # Patch target for the expiry filter used inside get_user_profile
-_EPOCH_NOW_PATH = "reflexio.server.services.storage.sqlite_storage._profiles._epoch_now"
+_EPOCH_NOW_PATH = (
+    "reflexio.server.services.storage.sqlite_storage.profiles._profile_store._epoch_now"
+)
 
 
 @pytest.fixture()

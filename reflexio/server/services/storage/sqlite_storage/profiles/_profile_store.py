@@ -18,7 +18,7 @@ from reflexio.models.api_schema.service_schemas import (
 )
 
 from .._base import (
-    _TOMBSTONE_STATUS_VALUES,
+    _PROFILE_TOMBSTONE_STATUS_VALUES,
     SQLiteStorageBase,
     _build_status_sql,
     _epoch_now,
@@ -167,13 +167,18 @@ class ProfileStoreMixin:
         profile_time_to_live: str | None = None,
         start_time: int | None = None,
         end_time: int | None = None,
+        include_expired: bool = False,
     ) -> list[UserProfile]:
         if status_filter is None:
             status_filter = [None]
-        current_ts = _epoch_now()
         frag, params = _build_status_sql(status_filter)
-        conditions = ["user_id = ?", "expiration_timestamp >= ?", frag]
-        all_params: list[Any] = [user_id, current_ts, *params]
+        conditions: list[str] = ["user_id = ?"]
+        all_params: list[Any] = [user_id]
+        if not include_expired:
+            conditions.append("expiration_timestamp >= ?")
+            all_params.append(_epoch_now())
+        conditions.append(frag)
+        all_params.extend(params)
         if profile_id:
             conditions.append("LOWER(profile_id) = LOWER(?)")
             all_params.append(profile_id)
@@ -538,6 +543,62 @@ class ProfileStoreMixin:
         return cur.rowcount
 
     @SQLiteStorageBase.handle_exceptions
+    def expire_active_profiles(self, *, now: int, limit: int = 1000) -> int:
+        """Tombstone active profiles whose TTL has elapsed.
+
+        Args:
+            now: Current epoch timestamp (seconds). Profiles with
+                ``expiration_timestamp < now`` are tombstoned.
+            limit: Maximum number of profiles to tombstone in one call (default 1000).
+
+        Returns:
+            int: Number of profiles tombstoned.
+        """
+        if limit <= 0:
+            return 0
+        batch_request_id = uuid.uuid4().hex
+        with self._lock:
+            affected = list(
+                self.conn.execute(
+                    "SELECT profile_id, user_id, governance_subject_ref FROM profiles "
+                    "WHERE status IS NULL AND expiration_timestamp < ? "
+                    "ORDER BY expiration_timestamp ASC LIMIT ?",
+                    (now, limit),
+                ).fetchall()
+            )
+            if not affected:
+                return 0
+            for row in affected:
+                self._assert_subject_writable_locked(
+                    self._subject_ref_from_profile_row(row)
+                )
+            ids = [r["profile_id"] for r in affected]
+            ph = ",".join("?" * len(ids))
+            cur = self.conn.execute(
+                f"UPDATE profiles SET status = ?, retired_at = ?, last_modified_timestamp = ? "  # noqa: S608
+                f"WHERE profile_id IN ({ph}) AND status IS NULL",
+                [Status.EXPIRED.value, now, now, *ids],
+            )
+            for row in affected:
+                _append_event_stmt(
+                    self.conn,
+                    org_id=self.org_id,
+                    entity_type="profile",
+                    entity_id=str(row["profile_id"]),
+                    op="status_change",
+                    prov="wasInvalidatedBy",
+                    source_ids=[],
+                    actor="system",
+                    request_id=batch_request_id,
+                    reason="ttl-expired",
+                    from_status=None,
+                    to_status=Status.EXPIRED.value,
+                    status_namespace="lifecycle_status",
+                )
+            self.conn.commit()
+        return cur.rowcount
+
+    @SQLiteStorageBase.handle_exceptions
     def get_profiles_by_ids(
         self,
         user_id: str,
@@ -567,7 +628,7 @@ class ProfileStoreMixin:
 
         Args:
             profile_id: The profile's primary key.
-            include_tombstones: When False (default), MERGED/SUPERSEDED profiles
+            include_tombstones: When False (default), MERGED/SUPERSEDED/EXPIRED profiles
                 return None. Set to True for lineage resolution (resolve_current).
 
         Returns:
@@ -575,8 +636,9 @@ class ProfileStoreMixin:
         """
         sql = "SELECT * FROM profiles WHERE profile_id = ?"
         if not include_tombstones:
-            sql += " AND (status IS NULL OR status NOT IN (?, ?))"
-            row = self._fetchone(sql, (profile_id, *_TOMBSTONE_STATUS_VALUES))
+            ph = ",".join("?" * len(_PROFILE_TOMBSTONE_STATUS_VALUES))
+            sql += f" AND (status IS NULL OR status NOT IN ({ph}))"
+            row = self._fetchone(sql, (profile_id, *_PROFILE_TOMBSTONE_STATUS_VALUES))
         else:
             row = self._fetchone(sql, (profile_id,))
         return _row_to_profile(row) if row else None
