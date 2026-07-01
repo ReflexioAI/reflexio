@@ -16,7 +16,7 @@ from unittest.mock import patch
 
 import pytest
 
-import reflexio.server.services.storage.sqlite_storage._playbook as _playbook_mod
+import reflexio.server.services.storage.sqlite_storage.playbook._agent as _agent_playbook_mod
 from reflexio.models.api_schema.domain.entities import AgentPlaybook
 from reflexio.server.services.storage.error import StorageError
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
@@ -97,7 +97,7 @@ class TestSaveAgentPlaybookWithAggregateEvent:
 
         with (
             patch.object(
-                _playbook_mod,
+                _agent_playbook_mod,
                 "_append_event_stmt",
                 side_effect=RuntimeError("simulated event failure"),
             ),

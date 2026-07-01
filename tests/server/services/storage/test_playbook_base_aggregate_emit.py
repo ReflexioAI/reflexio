@@ -1,4 +1,4 @@
-"""Unit tests for PlaybookMixin.save_agent_playbook_with_aggregate_event base default.
+"""Unit tests for AgentPlaybookStoreMixin.save_agent_playbook_with_aggregate_event base default.
 
 Tests the base-class default directly via an unbound-method call with a mock
 self, so the SQLite override (which has its own tests) does not interfere.
@@ -18,9 +18,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from reflexio.models.api_schema.domain.entities import AgentPlaybook
-from reflexio.server.services.storage.storage_base._playbook import (
+from reflexio.server.services.storage.storage_base.playbook._agent import (
     _AGGREGATE_EVENT_EMIT_ATTEMPTS,
-    PlaybookMixin,
+    AgentPlaybookStoreMixin,
 )
 
 
@@ -35,7 +35,7 @@ def _make_saved_playbook() -> AgentPlaybook:
 
 
 def _make_mock_self(saved_pb: AgentPlaybook, append_side_effect=None) -> MagicMock:
-    """Build a minimal mock self that satisfies PlaybookMixin's attribute accesses."""
+    """Build a minimal mock self that satisfies AgentPlaybookStoreMixin's attribute accesses."""
     mock_self = MagicMock()
     mock_self.save_agent_playbooks.return_value = [saved_pb]
     mock_self.org_id = "org-x"
@@ -53,9 +53,9 @@ class TestPlaybookBaseAggregateEmit:
         )
 
         with patch(
-            "reflexio.server.services.storage.storage_base._playbook.capture_anomaly"
+            "reflexio.server.services.storage.storage_base.playbook._agent.capture_anomaly"
         ) as mock_capture:
-            result = PlaybookMixin.save_agent_playbook_with_aggregate_event(
+            result = AgentPlaybookStoreMixin.save_agent_playbook_with_aggregate_event(
                 mock_self,
                 AgentPlaybook(playbook_name="test-pb", agent_version="v2", content="x"),
                 source_ids=["1", "2"],
@@ -82,9 +82,9 @@ class TestPlaybookBaseAggregateEmit:
         mock_self = _make_mock_self(saved_pb)
 
         with patch(
-            "reflexio.server.services.storage.storage_base._playbook.capture_anomaly"
+            "reflexio.server.services.storage.storage_base.playbook._agent.capture_anomaly"
         ) as mock_capture:
-            result = PlaybookMixin.save_agent_playbook_with_aggregate_event(
+            result = AgentPlaybookStoreMixin.save_agent_playbook_with_aggregate_event(
                 mock_self,
                 AgentPlaybook(playbook_name="test-pb", agent_version="v2", content="x"),
                 source_ids=["10", "11"],
@@ -115,7 +115,7 @@ class TestPlaybookBaseAggregateEmit:
         mock_self = _make_mock_self(saved_pb)
 
         with pytest.raises(ValueError, match="non-empty request_id"):
-            PlaybookMixin.save_agent_playbook_with_aggregate_event(
+            AgentPlaybookStoreMixin.save_agent_playbook_with_aggregate_event(
                 mock_self,
                 AgentPlaybook(playbook_name="test-pb", agent_version="v2", content="x"),
                 source_ids=["1"],

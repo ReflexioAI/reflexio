@@ -11,7 +11,6 @@ from ._extras import ExtrasMixin
 from ._governance import SQLiteGovernanceMixin
 from ._lineage import SQLiteLineageMixin
 from ._operations import OperationMixin
-from ._playbook import PlaybookMixin
 from ._profiles import ProfileMixin
 from ._requests import RequestMixin
 from ._shadow_verdicts import ShadowVerdictsMixin as SQLiteShadowVerdictsMixin
@@ -26,13 +25,24 @@ from ._stall_state import (
     mark_stall_notified,
     upsert_stall_state,
 )
+from .playbook import (
+    AgentEvaluationResultStoreMixin,
+    AgentPlaybookStoreMixin,
+    OptimizationJobStoreMixin,
+    PlaybookSourceLinkageMixin,
+    UserPlaybookStoreMixin,
+)
 
 
 class SQLiteStorage(
     SQLiteAgentRunMixin,
     ProfileMixin,
     RequestMixin,
-    PlaybookMixin,
+    AgentPlaybookStoreMixin,
+    UserPlaybookStoreMixin,
+    PlaybookSourceLinkageMixin,
+    OptimizationJobStoreMixin,
+    AgentEvaluationResultStoreMixin,
     SQLiteGovernanceMixin,
     SQLiteLineageMixin,
     OperationMixin,

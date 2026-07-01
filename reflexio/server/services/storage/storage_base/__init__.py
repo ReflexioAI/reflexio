@@ -26,20 +26,30 @@ from ._extras import ExtrasMixin
 from ._governance import GovernanceMixin
 from ._lineage import EntityType, LineageEventMixin
 from ._operations import OperationMixin
-from ._playbook import PlaybookMixin
 from ._profiles import ProfileMixin
 from ._requests import RequestMixin
 from ._retrieval_log import RetrievalLogMixin
 from ._shadow_verdicts import ShadowVerdictsMixin
 from ._share_links import ShareLinkMixin
 from ._stall_state import StallStateMixin
+from .playbook import (
+    AgentEvaluationResultStoreMixin,
+    AgentPlaybookStoreMixin,
+    OptimizationJobStoreMixin,
+    PlaybookSourceLinkageMixin,
+    UserPlaybookStoreMixin,
+)
 
 
 class BaseStorage(
     AgentRunMixin,
     ProfileMixin,
     RequestMixin,
-    PlaybookMixin,
+    AgentPlaybookStoreMixin,
+    UserPlaybookStoreMixin,
+    PlaybookSourceLinkageMixin,
+    OptimizationJobStoreMixin,
+    AgentEvaluationResultStoreMixin,
     RetrievalLogMixin,
     GovernanceMixin,
     LineageEventMixin,
@@ -246,7 +256,11 @@ __all__ = [
     "PendingToolCallRecord",
     "PendingToolCallStatus",
     "PendingToolCallUpsertResult",
-    "PlaybookMixin",
+    "AgentEvaluationResultStoreMixin",
+    "AgentPlaybookStoreMixin",
+    "OptimizationJobStoreMixin",
+    "PlaybookSourceLinkageMixin",
+    "UserPlaybookStoreMixin",
     "RetrievalLogMixin",
     "PriorAnswerMatch",
     "RunToolDependencyKind",
