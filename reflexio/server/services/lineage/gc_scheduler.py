@@ -171,10 +171,15 @@ class LineageGCScheduler:
                 if ctx.storage is None:
                     continue
                 cfg = ctx.configurator.get_config()
+            except Exception:
+                capture_anomaly("lineage.gc.run_failed", org_id=org_id)
+                logger.exception("event=lineage_gc_org_failed org_id=%s", org_id)
+                continue
 
-                # Class A: profile expiry sweep + tombstone GC (requires PII/grace
-                # sign-off; gated on lineage_gc.enabled independently of Class B).
-                if cfg.lineage_gc.enabled:
+            # Class A: profile expiry sweep (requires PII/grace sign-off; gated on
+            # lineage_gc.enabled independently of Class B).
+            if cfg.lineage_gc.enabled:
+                try:
                     expired_tombstoned = ctx.storage.expire_active_profiles(
                         now=int(time.time())
                     )
@@ -190,6 +195,14 @@ class LineageGCScheduler:
                             org_id=org_id,
                             count=expired_tombstoned,
                         )
+                except Exception:
+                    capture_anomaly("lineage.expiry_sweep.failed", org_id=org_id)
+                    logger.exception(
+                        "event=lineage_expiry_sweep_failed org_id=%s", org_id
+                    )
+
+                # Tombstone GC: each entity type is independent within the loop.
+                try:
                     older_than_epoch = (
                         int(time.time())
                         - cfg.lineage_gc.tombstone_grace_window_days * 86400
@@ -212,18 +225,25 @@ class LineageGCScheduler:
                             org_id=org_id,
                             count=tombstone_deleted,
                         )
+                except Exception:
+                    capture_anomaly("lineage.gc.tombstone_gc_failed", org_id=org_id)
+                    logger.exception(
+                        "event=lineage_gc_tombstone_gc_failed org_id=%s", org_id
+                    )
 
-                # Class B: direct-delete of expired plain rows (no audit/grace
-                # obligation; independent of lineage_gc).
-                if (
-                    getattr(cfg, "expiry_reclamation", None) is not None
-                    and cfg.expiry_reclamation.enabled
-                ):
-                    now = int(time.time())
-                    for method_name, grace, limit in _CLASS_B_SWEEPS:
-                        method = getattr(ctx.storage, method_name, None)
-                        if method is None:
-                            continue
+            # Class B: direct-delete of expired plain rows (no audit/grace
+            # obligation; independent of lineage_gc).  Each sweep is isolated so
+            # one failing method does not skip the rest.
+            if (
+                getattr(cfg, "expiry_reclamation", None) is not None
+                and cfg.expiry_reclamation.enabled
+            ):
+                now = int(time.time())
+                for method_name, grace, limit in _CLASS_B_SWEEPS:
+                    method = getattr(ctx.storage, method_name, None)
+                    if method is None:
+                        continue
+                    try:
                         deleted = method(now=now, grace_seconds=grace, limit=limit)
                         if deleted:
                             logger.info(
@@ -232,9 +252,17 @@ class LineageGCScheduler:
                                 method_name,
                                 deleted,
                             )
-            except Exception:
-                capture_anomaly("lineage.gc.run_failed", org_id=org_id)
-                logger.exception("event=lineage_gc_org_failed org_id=%s", org_id)
+                    except Exception:
+                        capture_anomaly(
+                            "lineage.class_b_reclaim.failed",
+                            org_id=org_id,
+                            method=method_name,
+                        )
+                        logger.exception(
+                            "event=class_b_reclaim_failed org_id=%s method=%s",
+                            org_id,
+                            method_name,
+                        )
 
     def _run_loop(self) -> None:
         while not self._stop_event.is_set():

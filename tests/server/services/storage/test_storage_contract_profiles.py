@@ -487,7 +487,11 @@ class TestInteractionCRUD:
 
 
 def test_expire_active_profiles_contract(storage: BaseStorage) -> None:
-    """Contract: expire_active_profiles tombstones TTL-expired active profiles."""
+    """Contract: expire_active_profiles tombstones TTL-expired active profiles.
+
+    Enforces that the backend TOMBSTONES (status → EXPIRED), not hard-deletes,
+    so that the tombstone GC can later reclaim the row after the grace window.
+    """
     storage.add_user_profile(
         "u1",
         [
@@ -502,4 +506,13 @@ def test_expire_active_profiles_contract(storage: BaseStorage) -> None:
         ],
     )
     assert storage.expire_active_profiles(now=1000) == 1
+    # Hidden from default reads (expiry-filtered).
     assert storage.get_profile_by_id("c1", include_tombstones=False) is None
+    # But the tombstone must still exist with status EXPIRED — not hard-deleted.
+    tombstone = storage.get_profile_by_id("c1", include_tombstones=True)
+    assert tombstone is not None, (
+        "expire_active_profiles must TOMBSTONE the row (status=EXPIRED), not hard-delete it"
+    )
+    assert tombstone.status == Status.EXPIRED, (
+        f"expected status=EXPIRED after sweep, got {tombstone.status!r}"
+    )

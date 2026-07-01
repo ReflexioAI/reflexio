@@ -86,5 +86,6 @@ def test_tick_tombstones_then_gc_reclaims_expired(real_ctx_factory, org_id):
     sched._gc_tick([org_id])
 
     row = ctx.storage.get_profile_by_id("e1", include_tombstones=True)
-    # Either hard-deleted (None) or tombstoned as EXPIRED — either satisfies the contract.
-    assert row is None or row.status == Status.EXPIRED
+    # The tombstone_grace_window_days=1 ensures a freshly-tombstoned row is NOT
+    # hard-deleted in the same tick.  The row must exist and be EXPIRED.
+    assert row is not None and row.status == Status.EXPIRED

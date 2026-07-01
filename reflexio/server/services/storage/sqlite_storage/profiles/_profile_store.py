@@ -558,44 +558,56 @@ class ProfileStoreMixin:
             return 0
         batch_request_id = uuid.uuid4().hex
         with self._lock:
-            affected = list(
-                self.conn.execute(
-                    "SELECT profile_id, user_id, governance_subject_ref FROM profiles "
-                    "WHERE status IS NULL AND expiration_timestamp < ? "
-                    "ORDER BY expiration_timestamp ASC LIMIT ?",
-                    (now, limit),
-                ).fetchall()
-            )
-            if not affected:
-                return 0
-            for row in affected:
-                self._assert_subject_writable_locked(
-                    self._subject_ref_from_profile_row(row)
+            # BEGIN IMMEDIATE acquires a write lock immediately so no other
+            # connection can write between the SELECT and the UPDATE.  This
+            # ensures the affected-id list == the actually-updated set, making
+            # the emitted status_change events correct.  Matches the pattern
+            # used by expire_pending_tool_calls in sqlite_storage/_agent_run.py.
+            self.conn.execute("BEGIN IMMEDIATE")
+            try:
+                affected = list(
+                    self.conn.execute(
+                        "SELECT profile_id, user_id, governance_subject_ref FROM profiles "
+                        "WHERE status IS NULL AND expiration_timestamp < ? "
+                        "ORDER BY expiration_timestamp ASC LIMIT ?",
+                        (now, limit),
+                    ).fetchall()
                 )
-            ids = [r["profile_id"] for r in affected]
-            ph = ",".join("?" * len(ids))
-            cur = self.conn.execute(
-                f"UPDATE profiles SET status = ?, retired_at = ?, last_modified_timestamp = ? "  # noqa: S608
-                f"WHERE profile_id IN ({ph}) AND status IS NULL",
-                [Status.EXPIRED.value, now, now, *ids],
-            )
-            for row in affected:
-                _append_event_stmt(
-                    self.conn,
-                    org_id=self.org_id,
-                    entity_type="profile",
-                    entity_id=str(row["profile_id"]),
-                    op="status_change",
-                    prov="wasInvalidatedBy",
-                    source_ids=[],
-                    actor="system",
-                    request_id=batch_request_id,
-                    reason="ttl-expired",
-                    from_status=None,
-                    to_status=Status.EXPIRED.value,
-                    status_namespace="lifecycle_status",
+                if not affected:
+                    self.conn.commit()
+                    return 0
+                for row in affected:
+                    self._assert_subject_writable_locked(
+                        self._subject_ref_from_profile_row(row)
+                    )
+                ids = [r["profile_id"] for r in affected]
+                ph = ",".join("?" * len(ids))
+                cur = self.conn.execute(
+                    f"UPDATE profiles SET status = ?, retired_at = ?, last_modified_timestamp = ? "  # noqa: S608
+                    f"WHERE profile_id IN ({ph}) AND status IS NULL",
+                    [Status.EXPIRED.value, now, now, *ids],
                 )
-            self.conn.commit()
+                for row in affected:
+                    _append_event_stmt(
+                        self.conn,
+                        org_id=self.org_id,
+                        entity_type="profile",
+                        entity_id=str(row["profile_id"]),
+                        op="status_change",
+                        prov="wasInvalidatedBy",
+                        source_ids=[],
+                        actor="system",
+                        request_id=batch_request_id,
+                        reason="ttl-expired",
+                        from_status=None,
+                        to_status=Status.EXPIRED.value,
+                        status_namespace="lifecycle_status",
+                    )
+            except Exception:
+                self.conn.rollback()
+                raise
+            else:
+                self.conn.commit()
         return cur.rowcount
 
     @SQLiteStorageBase.handle_exceptions

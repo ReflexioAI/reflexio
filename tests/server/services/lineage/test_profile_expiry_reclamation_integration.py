@@ -108,9 +108,9 @@ def _publish_and_get_profile(reflexio: Reflexio) -> object:
     assert response.success, f"publish_interaction failed: {response.message}"
     storage = reflexio.request_context.storage
     profiles = storage.get_user_profile(user_id)
-    assert profiles, (
-        "publish_interaction must produce at least one profile via the real "
-        "calculate_expiration_timestamp path"
+    assert len(profiles) == 1, (
+        "publish_interaction must produce exactly one profile via the real "
+        "calculate_expiration_timestamp path; got %d" % len(profiles)
     )
     return profiles[0]
 

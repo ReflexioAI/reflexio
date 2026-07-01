@@ -25,7 +25,7 @@ pytestmark = pytest.mark.integration
 def _seed_call(
     s: SQLiteStorage,
     *,
-    id: str,
+    call_id: str,
     status: str,
     expires_at: str | None = None,
     valid_until: str | None = None,
@@ -35,16 +35,16 @@ def _seed_call(
     now = datetime.now(UTC)
     scope: dict[str, str] = {"org_id": org_id, "scope_kind": "org"}
     record = PendingToolCallRecord(
-        id=id,
+        id=call_id,
         org_id=org_id,
         scope=scope,
         scope_hash=build_scope_hash(scope),
         tool_name="ask_human",
         dedup_key=build_pending_tool_call_dedup_key(
-            tool_name="ask_human", question_text=f"q_{id}"
+            tool_name="ask_human", question_text=f"q_{call_id}"
         ),
         status=PendingToolCallStatus(status),
-        question_text=f"q_{id}",
+        question_text=f"q_{call_id}",
         expires_at=(
             datetime.fromisoformat(expires_at).replace(tzinfo=UTC)
             if expires_at
@@ -66,13 +66,13 @@ def test_delete_expired_pending_tool_calls_spares_resolved(tmp_path):
     now = datetime.now(UTC)
     _seed_call(
         s,
-        id="a",
+        call_id="a",
         status="expired",
         expires_at=(now - timedelta(days=2)).isoformat(),
     )
     _seed_call(
         s,
-        id="b",
+        call_id="b",
         status="resolved",
         valid_until=(now + timedelta(days=5)).isoformat(),
         expires_at=(now - timedelta(days=2)).isoformat(),  # past expires_at but RESOLVED
@@ -92,7 +92,7 @@ def test_delete_expired_within_grace_not_deleted(tmp_path):
     # expires_at 30 min ago, grace = 1 h → cutoff 1 h ago → not past cutoff
     _seed_call(
         s,
-        id="c",
+        call_id="c",
         status="expired",
         expires_at=(now - timedelta(minutes=30)).isoformat(),
     )
@@ -116,7 +116,7 @@ def test_delete_expired_pending_tool_calls_ignores_pending_status(tmp_path):
     # PENDING row whose expires_at is in the past — must NOT be deleted
     _seed_call(
         s,
-        id="d",
+        call_id="d",
         status="pending",
         expires_at=(now - timedelta(days=3)).isoformat(),
     )
@@ -141,14 +141,14 @@ def test_delete_expired_pending_tool_calls_scopes_to_own_org(tmp_path):
 
     _seed_call(
         s_a,
-        id="row-a",
+        call_id="row-a",
         status="expired",
         expires_at=(now - timedelta(days=1)).isoformat(),
         org_id="org_a",
     )
     _seed_call(
         s_b,
-        id="row-b",
+        call_id="row-b",
         status="expired",
         expires_at=(now - timedelta(days=1)).isoformat(),
         org_id="org_b",

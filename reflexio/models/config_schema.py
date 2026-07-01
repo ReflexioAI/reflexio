@@ -712,10 +712,15 @@ class ExpiryReclamationConfig(BaseModel):
     """Direct-delete reclamation of expired plain rows (non-audited).
 
     Independent of ``lineage_gc``: these rows carry no PII/audit/grace obligation,
-    so they are reclaimed whenever this is enabled even if tombstone GC is off.
+    so they can be reclaimed whenever this is enabled even if tombstone GC is off.
+
+    Opt-in by default (``enabled=False``) so operators control a staged rollout
+    of the direct-delete Class B sweeps and are not surprised by deletions on
+    upgrade.  ``lineage_gc.enabled`` (which defaults to True) is unaffected and
+    continues to drive the Class A profile-expiry and tombstone-GC paths.
     """
 
-    enabled: bool = True
+    enabled: bool = False
 
 
 class GovernanceRetentionConfig(BaseModel):
