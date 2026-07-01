@@ -1,32 +1,11 @@
-from abc import abstractmethod
+"""Residual base (ABC) profile module.
 
-from reflexio.models.api_schema.domain import (
-    Interaction,
-    Status,
-    UserProfile,
-)
-from reflexio.models.api_schema.retriever_schema import (
-    SearchInteractionRequest,
-    SearchUserProfileRequest,
-)
+All abstract methods have been extracted into the ``profiles`` package
+(``ProfileStoreMixin``, ``InteractionStoreMixin``, ``ProfileSearchMixin``). Only
+the now-drained ``ProfileMixin`` class remains; Task 6 removes the class and its
+composition.
+"""
 
 
 class ProfileMixin:
-    """Mixin for interaction + profile search methods."""
-
-    @abstractmethod
-    def search_interaction(
-        self,
-        search_interaction_request: SearchInteractionRequest,
-        query_embedding: list[float] | None = None,
-    ) -> list[Interaction]:
-        raise NotImplementedError
-
-    @abstractmethod
-    def search_user_profile(
-        self,
-        search_user_profile_request: SearchUserProfileRequest,
-        status_filter: list[Status | None] | None = None,
-        query_embedding: list[float] | None = None,
-    ) -> list[UserProfile]:
-        raise NotImplementedError
+    """Drained residual mixin — all abstracts moved to the ``profiles`` package."""
