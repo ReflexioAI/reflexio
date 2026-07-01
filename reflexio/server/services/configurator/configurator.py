@@ -35,12 +35,7 @@ def _create_sqlite_storage(
     enable_document_expansion = (
         full_config.enable_document_expansion if full_config else False
     )
-    # When base_dir is explicitly provided (e.g. tests with temp dirs)
-    # and no db_path is configured, use base_dir for the SQLite DB
-    # so the storage is isolated from the shared default database.
-    db_path = config.db_path
-    if db_path is None and configurator.base_dir:
-        db_path = str(Path(configurator.base_dir) / "reflexio.db")
+    db_path = resolve_oss_sqlite_db_path(configurator, config)
     return SQLiteStorage(
         org_id=configurator.org_id,
         db_path=db_path,
@@ -48,6 +43,31 @@ def _create_sqlite_storage(
         llm_config=llm_config,
         enable_document_expansion=enable_document_expansion,
     )
+
+
+def resolve_oss_sqlite_db_path(
+    configurator: BaseConfigurator, storage_config: StorageConfig
+) -> str | None:
+    """Resolve the SQLite DB path used by the OSS storage factory.
+
+    Args:
+        configurator: Active configurator whose ``base_dir`` can isolate
+            test/local storage.
+        storage_config: Active storage configuration.
+
+    Returns:
+        The final SQLite DB path, or None when the storage config is not SQLite.
+    """
+    if not isinstance(storage_config, StorageConfigSQLite):
+        return None
+    if storage_config.db_path is not None:
+        return storage_config.db_path
+    if configurator.base_dir:
+        return str(Path(configurator.base_dir) / "reflexio.db")
+
+    from reflexio.server import LOCAL_STORAGE_PATH
+
+    return str(Path(LOCAL_STORAGE_PATH) / "reflexio.db")
 
 
 class DefaultConfigurator(BaseConfigurator):

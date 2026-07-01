@@ -9,7 +9,10 @@ from reflexio.models.config_schema import (
     ProfileExtractorConfig,
     StorageConfigSQLite,
 )
-from reflexio.server.services.configurator.configurator import DefaultConfigurator
+from reflexio.server.services.configurator.configurator import (
+    DefaultConfigurator,
+    resolve_oss_sqlite_db_path,
+)
 
 
 @pytest.fixture
@@ -107,6 +110,24 @@ def test_llm_config_persists_pre_retrieval_model_name(temp_dir, test_org_id):
     reloaded = DefaultConfigurator(org_id=test_org_id, base_dir=temp_dir)
     assert reloaded.config.llm_config is not None
     assert reloaded.config.llm_config.pre_retrieval_model_name == "gpt-5.4-nano"
+
+
+def test_resolve_oss_sqlite_db_path_prefers_explicit_path(temp_dir, test_org_id):
+    configurator = DefaultConfigurator(org_id=test_org_id, base_dir=temp_dir)
+    storage_config = StorageConfigSQLite(db_path="/tmp/explicit-reflexio.db")  # noqa: S108
+
+    assert (
+        resolve_oss_sqlite_db_path(configurator, storage_config)
+        == "/tmp/explicit-reflexio.db"  # noqa: S108
+    )
+
+
+def test_resolve_oss_sqlite_db_path_uses_base_dir(temp_dir, test_org_id):
+    configurator = DefaultConfigurator(org_id=test_org_id, base_dir=temp_dir)
+
+    assert resolve_oss_sqlite_db_path(configurator, StorageConfigSQLite()) == str(
+        Path(temp_dir) / "reflexio.db"
+    )
 
 
 if __name__ == "__main__":

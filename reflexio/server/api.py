@@ -168,6 +168,7 @@ from reflexio.models.config_schema import (
 from reflexio.server.api_endpoints import (
     account_api,
     health_api,
+    logs_api,
     pending_tool_call_api,
     publisher_api,
     stall_state_api,
@@ -3418,6 +3419,121 @@ def _wire_capabilities(
             app.include_router(r)
 
 
+def _start_data_plane_services(
+    app: FastAPI,
+    get_org_id: Callable[..., str] | None,
+) -> tuple[Any, Any, Any]:
+    """Start data-plane lifespan services and structured logging."""
+    from reflexio.server.api_endpoints.request_context import RequestContext
+    from reflexio.server.llm.model_defaults import validate_llm_availability
+    from reflexio.server.services.extraction.resume_scheduler import (
+        maybe_start_resume_scheduler,
+    )
+    from reflexio.server.services.lineage.gc_scheduler import (
+        maybe_start_lineage_gc,
+    )
+    from reflexio.server.structured_logging import (
+        install_structured_logging,
+        resolve_oss_structured_log_db_path,
+    )
+
+    scheduler = None
+    gc_scheduler = None
+    structured_logging_handle = None
+    # The scheduler discovers every org with resumable work each tick and
+    # drives a per-org worker with org-scoped claims, so it is not limited
+    # to the bootstrap org. The bootstrap org is only used to read config
+    # and to seed cross-org discovery.
+    bootstrap_org_id = _resolve_lifespan_org_id(get_org_id)
+    structured_log_db_path = resolve_oss_structured_log_db_path(bootstrap_org_id)
+    if structured_log_db_path is not None:
+        structured_logging_handle = install_structured_logging(structured_log_db_path)
+        app.state.structured_logging_handle = structured_logging_handle
+    else:
+        app.state.structured_logging_unavailable_reason = (
+            "Structured logs are only available for OSS SQLite storage"
+        )
+    try:
+        log_publish_hardware_capacity()
+        validate_llm_availability()
+        from reflexio.server.llm.rerank import prewarm as _prewarm_cross_encoder
+
+        _prewarm_cross_encoder()
+        scheduler = maybe_start_resume_scheduler(
+            lambda org_id: RequestContext(org_id=org_id),
+            bootstrap_org_id=bootstrap_org_id,
+        )
+        gc_scheduler = maybe_start_lineage_gc(
+            lambda org_id: RequestContext(org_id=org_id),
+            bootstrap_org_id=bootstrap_org_id,
+        )
+    except Exception:
+        logger.exception("Data-plane startup failed")
+        if structured_logging_handle is not None:
+            structured_logging_handle.close()
+        raise
+    return scheduler, gc_scheduler, structured_logging_handle
+
+
+def _configure_base_middleware(app: FastAPI, require_auth: bool) -> None:
+    """Install shared middleware in the same order for every app instance."""
+    if require_auth:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=_resolve_cors_origins(),
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+    else:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=["*"],
+            allow_credentials=False,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+
+    # Reject oversized requests before they reach endpoint handlers.
+    app.add_middleware(BodySizeLimitMiddleware)
+
+    # Security headers
+    app.add_middleware(SecurityHeadersMiddleware)
+
+    # Timeout middleware
+    app.add_middleware(TimeoutMiddleware)
+
+    # Bot protection
+    app.add_middleware(BotProtectionMiddleware)
+
+    # Correlation ID — added last so it runs outermost (Starlette reverses order)
+    app.add_middleware(CorrelationIdMiddleware)
+
+
+def _include_app_routers(
+    app: FastAPI,
+    *,
+    mount_data_plane: bool,
+    additional_routers: list[APIRouter] | None,
+    capabilities: "CapabilityRegistry | None",
+) -> None:
+    """Install built-in, caller-provided, and capability routers."""
+    # Include data-plane routes (core, stall-state, pending-tool-call). A
+    # control-plane host sets mount_data_plane=False to skip these while
+    # keeping every other piece of scaffolding below.
+    if mount_data_plane:
+        app.include_router(core_router)
+        app.include_router(stall_state_api.router)
+        app.include_router(pending_tool_call_api.router)
+        app.include_router(logs_api.router)
+
+    for router in additional_routers or []:
+        app.include_router(router)
+
+    # Wire capability routers, services, and hooks (composition-root only)
+    _wire_capabilities(app, capabilities, mount_data_plane, additional_routers)
+
+
 def create_app(
     get_org_id: Callable[..., str] | None = None,
     additional_routers: list[APIRouter] | None = None,
@@ -3482,44 +3598,22 @@ def create_app(
     from collections.abc import AsyncIterator
     from contextlib import asynccontextmanager
 
-    from reflexio.server.api_endpoints.request_context import RequestContext
     from reflexio.server.auth import (
         default_billing_gate,
         default_get_caller_type,
         default_get_org_id,
     )
     from reflexio.server.extensions import AppContext
-    from reflexio.server.llm.model_defaults import validate_llm_availability
-    from reflexio.server.services.extraction.resume_scheduler import (
-        maybe_start_resume_scheduler,
-    )
-    from reflexio.server.services.lineage.gc_scheduler import (
-        maybe_start_lineage_gc,
-    )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
         scheduler = None
         gc_scheduler = None
         started_caps: list = []
+        structured_logging_handle = None
         if mount_data_plane:
-            log_publish_hardware_capacity()
-            validate_llm_availability()
-            from reflexio.server.llm.rerank import prewarm as _prewarm_cross_encoder
-
-            _prewarm_cross_encoder()
-            # The scheduler discovers every org with resumable work each tick and
-            # drives a per-org worker with org-scoped claims, so it is not limited
-            # to the bootstrap org. The bootstrap org is only used to read config
-            # and to seed cross-org discovery.
-            bootstrap_org_id = _resolve_lifespan_org_id(get_org_id)
-            scheduler = maybe_start_resume_scheduler(
-                lambda org_id: RequestContext(org_id=org_id),
-                bootstrap_org_id=bootstrap_org_id,
-            )
-            gc_scheduler = maybe_start_lineage_gc(
-                lambda org_id: RequestContext(org_id=org_id),
-                bootstrap_org_id=bootstrap_org_id,
+            scheduler, gc_scheduler, structured_logging_handle = (
+                _start_data_plane_services(app, get_org_id)
             )
         try:
             if capabilities is not None:
@@ -3546,6 +3640,8 @@ def create_app(
                 scheduler.stop()
             if gc_scheduler is not None:
                 gc_scheduler.stop()
+            if structured_logging_handle is not None:
+                structured_logging_handle.close()
 
     app = FastAPI(docs_url="/docs", lifespan=lifespan)
 
@@ -3575,37 +3671,7 @@ def create_app(
     # hosts that wire in auth (``require_auth=True``) restrict browser origins.
     # OSS/local runs have no auth and bundle their own docs playground on a
     # separate port, so they allow any origin (no credentials needed).
-    if require_auth:
-        app.add_middleware(
-            CORSMiddleware,
-            allow_origins=_resolve_cors_origins(),
-            allow_credentials=True,
-            allow_methods=["*"],
-            allow_headers=["*"],
-        )
-    else:
-        app.add_middleware(
-            CORSMiddleware,
-            allow_origins=["*"],
-            allow_credentials=False,
-            allow_methods=["*"],
-            allow_headers=["*"],
-        )
-
-    # Reject oversized requests before they reach endpoint handlers.
-    app.add_middleware(BodySizeLimitMiddleware)
-
-    # Security headers
-    app.add_middleware(SecurityHeadersMiddleware)
-
-    # Timeout middleware
-    app.add_middleware(TimeoutMiddleware)
-
-    # Bot protection
-    app.add_middleware(BotProtectionMiddleware)
-
-    # Correlation ID — added last so it runs outermost (Starlette reverses order)
-    app.add_middleware(CorrelationIdMiddleware)
+    _configure_base_middleware(app, require_auth)
 
     # Override get_org_id dependency if custom one provided
     if get_org_id is not None:
@@ -3634,25 +3700,12 @@ def create_app(
     # multi-tenant embeddings) can coexist without leaking state.
     app.state.my_config_enabled = bool(get_org_id is not None and require_auth)
 
-    # Include data-plane routes (core, stall-state, pending-tool-call). A
-    # control-plane host sets mount_data_plane=False to skip these while
-    # keeping every other piece of scaffolding below.
-    if mount_data_plane:
-        # Include core routes
-        app.include_router(core_router)
-
-        # Include stall_state routes
-        app.include_router(stall_state_api.router)
-
-        # Include pending tool call routes
-        app.include_router(pending_tool_call_api.router)
-
-    # Include additional routers
-    for router in additional_routers or []:
-        app.include_router(router)
-
-    # Wire capability routers, services, and hooks (composition-root only)
-    _wire_capabilities(app, capabilities, mount_data_plane, additional_routers)
+    _include_app_routers(
+        app,
+        mount_data_plane=mount_data_plane,
+        additional_routers=additional_routers,
+        capabilities=capabilities,
+    )
 
     # Health/observability endpoint (per-worker metrics for recycling)
     health_api.install(app)

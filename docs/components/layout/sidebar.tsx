@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import {
   MessageSquare,
   Users,
@@ -16,6 +16,7 @@ import {
   Settings,
   Pencil,
   ChevronRight,
+  Logs,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -52,16 +53,66 @@ export function Sidebar() {
         </Link>
 
         <div className="space-y-1">
-          {resourceGroups.map((group) => (
-            <SidebarGroup
-              key={group.id}
-              group={group}
-              pathname={pathname}
-            />
-          ))}
+          {resourceGroups.map((group) => {
+            const isOperationsGroup = group.id === "configuration";
+            return (
+              <Fragment key={group.id}>
+                {isOperationsGroup && (
+                  <div className="mt-4 border-t border-border pt-3">
+                    <div className="px-2 pb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                      Operations
+                    </div>
+                    <SidebarLink
+                      href="/configure"
+                      label="Configure"
+                      icon={Pencil}
+                      active={pathname === "/configure"}
+                    />
+                    <SidebarLink
+                      href="/logs"
+                      label="Logs"
+                      icon={Logs}
+                      active={pathname === "/logs"}
+                    />
+                  </div>
+                )}
+                <SidebarGroup
+                  group={group}
+                  pathname={pathname}
+                />
+              </Fragment>
+            );
+          })}
         </div>
       </div>
     </ScrollArea>
+  );
+}
+
+function SidebarLink({
+  href,
+  label,
+  icon: Icon,
+  active,
+}: {
+  href: string;
+  label: string;
+  icon: LucideIcon;
+  active: boolean;
+}) {
+  return (
+    <Link
+      href={href}
+      className={cn(
+        "flex items-center gap-2 px-2 py-1.5 text-sm rounded-md transition-colors",
+        active
+          ? "bg-accent text-accent-foreground font-medium"
+          : "text-muted-foreground hover:text-foreground hover:bg-accent/50"
+      )}
+    >
+      <Icon className="h-4 w-4" />
+      <span className="truncate">{label}</span>
+    </Link>
   );
 }
 
@@ -72,11 +123,7 @@ function SidebarGroup({
   group: (typeof resourceGroups)[0];
   pathname: string;
 }) {
-  const isConfigGroup = group.id === "configuration";
-  const configureActive = pathname === "/configure";
-  const isActive =
-    pathname.startsWith(`/${group.id}`) ||
-    (isConfigGroup && configureActive);
+  const isActive = pathname.startsWith(`/${group.id}`);
   const [open, setOpen] = useState(isActive);
   const Icon = iconMap[group.icon] ?? MessageSquare;
 
@@ -96,20 +143,6 @@ function SidebarGroup({
       </CollapsibleTrigger>
       <CollapsibleContent>
         <div className="ml-4 pl-3 border-l border-border space-y-0.5 py-1">
-          {isConfigGroup && (
-            <Link
-              href="/configure"
-              className={cn(
-                "flex items-center gap-2 px-2 py-1.5 text-sm rounded-md transition-colors",
-                configureActive
-                  ? "bg-accent text-accent-foreground font-medium"
-                  : "text-muted-foreground hover:text-foreground hover:bg-accent/50"
-              )}
-            >
-              <Pencil className="h-3.5 w-3.5" />
-              <span className="truncate">Edit Config</span>
-            </Link>
-          )}
           {group.methods.map((method) => {
             const href = `/${group.id}/${method.id}`;
             const active = pathname === href;

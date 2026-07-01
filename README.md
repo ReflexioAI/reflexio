@@ -144,6 +144,7 @@ uv run reflexio services stop              # Stop all services
 > Alternative: `python -m reflexio.cli services start` or `./run_services.sh`
 
 Once running, open **[http://localhost:8062](http://localhost:8062)** to interactively browse and try out the API.
+The local dashboard also includes **Logs** (`/logs`) for recent OSS warning/error/critical events captured in the SQLite-backed structured log sink.
 <p align="center">
   <img src="docs/images/doc_website.png" width="800px" alt="Reflexio Doc Website">
 </p>

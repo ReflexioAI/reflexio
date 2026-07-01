@@ -11,6 +11,7 @@ Description: Bridge between FastAPI routes and business logic — builds `Reques
 | `publisher_api.py` | Publishing + direct CRUD helpers: `add_user_interaction/profile/playbook`, `update_*`, and the full family of single / by-ids / bulk delete helpers for interactions, profiles, playbooks, requests, and sessions; plus `run_playbook_aggregation()` and `clear_user_data()`. |
 | `account_api.py` | Identity/config helpers behind `/api/whoami`, `/api/my_config`. |
 | `health_api.py` | `GET /`, `/health`, `/healthz`, `/healthz/eval`; `install()` adds response-time + liveness tracking. |
+| `logs_api.py` | `GET /api/logs` — local OSS structured warning/error/critical log retrieval for operator dashboards. |
 | `pending_tool_call_api.py` | Router for resumable-extraction human clarification: list/get, `resolve`, `answer`, `not_applicable`, `cancel`; HMAC signature verify + migration-retry helpers. |
 | `stall_state_api.py` | `GET /api/stall_state`, `POST /api/stall_state/notified` — extraction-agent waiting state. |
 | `precondition_checks.py` | `precondition_checks()` — shared request validation. |

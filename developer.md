@@ -77,6 +77,12 @@ When the storage backend is SQLite and `--workers > 1`, a warning is logged at s
 
 Long-uptime processes accumulate memory regardless of source (request handlers, ORM caches, third-party libraries, fragmented allocators). Without recycling, RSS grows monotonically over days/weeks. With request-count recycling at workers≥2, one worker exits cleanly after ~max_requests served, the manager respawns it under a fresh PID, and the peer worker absorbs traffic during the ~1-2s respawn window — zero downtime.
 
+## Structured Logs
+
+OSS SQLite deployments install a structured warning/error/critical log sink in the same local SQLite DB used for Reflexio data at startup. Operators can inspect recent events from the docs dashboard at `http://localhost:8062/logs` or from `GET /api/logs` on the backend.
+
+The sink is local and bounded: it keeps recent rows only, truncates very large messages/exceptions, and fails open after startup so application logging problems do not block request handling.
+
 ## API Usage
 
 ```bash
