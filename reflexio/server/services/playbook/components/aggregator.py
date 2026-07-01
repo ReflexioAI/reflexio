@@ -34,6 +34,9 @@ from reflexio.server.services.playbook.components import (
 from reflexio.server.services.playbook.components.aggregator_clustering import (
     CLUSTERING_ALGORITHM_THRESHOLD,
 )
+from reflexio.server.services.playbook.components.aggregator_postprocessing import (
+    AggregationPostProcessing,
+)
 from reflexio.server.services.playbook.playbook_service_constants import (
     PlaybookServiceConstants,
 )
@@ -64,16 +67,14 @@ class PlaybookAggregator:
         self.request_context = request_context
         self.agent_version = agent_version
         self.aggregation_prompt_processor = aggregation_prompt_processor
+        # Cohesive pre/post-processing component (the enterprise redaction
+        # Protocol seam). Constructed from the SAME injected instance stored
+        # above — do NOT re-resolve the AGGREGATION_PROMPT_PROCESSOR ServiceKey.
+        self._postproc = AggregationPostProcessing(aggregation_prompt_processor)
 
     # ===============================
     # private methods - operation state
     # ===============================
-
-    @staticmethod
-    def _format_prompt_extra_instructions(instructions: str | None) -> str:
-        if not instructions or not instructions.strip():
-            return ""
-        return f"{instructions.strip()}\n"
 
     def _create_state_manager(self) -> OperationStateManager:
         """
@@ -181,97 +182,30 @@ class PlaybookAggregator:
             last_processed_id=max_id,
         )
 
-    def _preprocess_prompt_field(
-        self,
-        text: str | None,
-        shared_state: dict[str, object],
-        processing_context: AggregationPromptProcessingContext | None = None,
-    ) -> str | None:
-        if text is None or self.aggregation_prompt_processor is None:
-            return text
-        result = self.aggregation_prompt_processor.preprocess_prompt_text(
-            text,
-            shared_state=shared_state,
-            context=processing_context,
-        )
-        if processing_context is not None and (result.changed or result.text != text):
-            processing_context.changed = True
-        return result.text
-
-    def _preprocess_user_playbook_for_prompt(
-        self,
-        playbook: UserPlaybook,
-        shared_state: dict[str, object],
-        processing_context: AggregationPromptProcessingContext | None = None,
-    ) -> UserPlaybook:
-        if self.aggregation_prompt_processor is None:
-            return playbook
-        return playbook.model_copy(
-            update={
-                "content": self._preprocess_prompt_field(
-                    playbook.content, shared_state, processing_context
-                )
-                or "",
-                "trigger": self._preprocess_prompt_field(
-                    playbook.trigger, shared_state, processing_context
-                ),
-                "rationale": self._preprocess_prompt_field(
-                    playbook.rationale, shared_state, processing_context
-                ),
-            }
-        )
-
-    def _aggregation_prompt_extra_instructions_for_context(
-        self,
-        processing_context: AggregationPromptProcessingContext | None,
-    ) -> str:
-        if (
-            processing_context is None
-            or not processing_context.changed
-            or self.aggregation_prompt_processor is None
-        ):
-            return ""
-
-        context_instructions = self.aggregation_prompt_processor.prompt_instructions(
-            processing_context
-        )
-        if not isinstance(context_instructions, str):
-            context_instructions = None
-        return self._format_prompt_extra_instructions(context_instructions)
+    # ===============================
+    # private methods - aggregation pre/post-processing
+    # ===============================
+    # Bodies live on the AggregationPostProcessing component (self._postproc).
+    # These thin delegators are kept for OSS test call-sites that invoke them by
+    # name (test_playbook_aggregator.py). Internal callers use self._postproc.
 
     def _postprocess_aggregation_output(
         self,
         value: object,
         processing_context: AggregationPromptProcessingContext | None = None,
     ) -> tuple[object, int]:
-        if self.aggregation_prompt_processor is None:
-            return value, 0
-        result = self.aggregation_prompt_processor.postprocess_aggregation_output(
-            value,
-            context=processing_context,
-        )
-        return result.value, result.artifacts_removed
+        return self._postproc._postprocess_aggregation_output(value, processing_context)
 
-    def _postprocess_aggregation_response(
+    def _aggregation_prompt_extra_instructions_for_context(
         self,
-        response: PlaybookAggregationOutput,
-        processing_context: AggregationPromptProcessingContext | None = None,
-    ) -> tuple[PlaybookAggregationOutput, int]:
-        processed, artifact_count = self._postprocess_aggregation_output(
-            response,
-            processing_context,
+        processing_context: AggregationPromptProcessingContext | None,
+    ) -> str:
+        return self._postproc._aggregation_prompt_extra_instructions_for_context(
+            processing_context
         )
-        if not isinstance(processed, PlaybookAggregationOutput):
-            return response, 0
-        return processed, artifact_count
 
     def _record_postprocessing_artifacts(self, artifact_count: int) -> None:
-        if artifact_count <= 0:
-            return
-        logger.warning(
-            "Post-processed %d residual artifacts in aggregated playbook output",
-            artifact_count,
-        )
+        self._postproc._record_postprocessing_artifacts(artifact_count)
 
     @staticmethod
     def _get_direction_key(fb: UserPlaybook) -> str:
@@ -959,7 +893,7 @@ class PlaybookAggregator:
                 prompt_cluster_playbooks = cluster_playbooks
             else:
                 prompt_cluster_playbooks = [
-                    self._preprocess_user_playbook_for_prompt(
+                    self._postproc._preprocess_user_playbook_for_prompt(
                         playbook, shared_state, processing_context
                     )
                     for playbook in cluster_playbooks
@@ -1056,11 +990,11 @@ class PlaybookAggregator:
                     trigger=trigger,
                 )
             )
-            response, artifact_count = self._postprocess_aggregation_response(
+            response, artifact_count = self._postproc._postprocess_aggregation_response(
                 response,
                 processing_context,
             )
-            self._record_postprocessing_artifacts(artifact_count)
+            self._postproc._record_postprocessing_artifacts(artifact_count)
             playbook = self._process_aggregation_response(response, cluster_playbooks)
             if playbook is None:
                 return None
@@ -1080,7 +1014,7 @@ class PlaybookAggregator:
                     {
                         "user_playbooks": raw_playbooks_str,
                         "existing_approved_playbooks": existing_approved_playbooks_str,
-                        "aggregation_prompt_extra_instructions": self._aggregation_prompt_extra_instructions_for_context(
+                        "aggregation_prompt_extra_instructions": self._postproc._aggregation_prompt_extra_instructions_for_context(
                             processing_context
                         ),
                     },
@@ -1096,17 +1030,21 @@ class PlaybookAggregator:
                 parse_structured_output=True,
             )
             if isinstance(response, PlaybookAggregationOutput):
-                response, artifact_count = self._postprocess_aggregation_response(
-                    response,
-                    processing_context,
+                response, artifact_count = (
+                    self._postproc._postprocess_aggregation_response(
+                        response,
+                        processing_context,
+                    )
                 )
-                self._record_postprocessing_artifacts(artifact_count)
+                self._postproc._record_postprocessing_artifacts(artifact_count)
             else:
-                response, artifact_count = self._postprocess_aggregation_output(
-                    response,
-                    processing_context,
+                response, artifact_count = (
+                    self._postproc._postprocess_aggregation_output(
+                        response,
+                        processing_context,
+                    )
                 )
-                self._record_postprocessing_artifacts(artifact_count)
+                self._postproc._record_postprocessing_artifacts(artifact_count)
             log_model_response(logger, "Aggregation structured response", response)
 
             if not isinstance(response, PlaybookAggregationOutput):
@@ -1118,11 +1056,13 @@ class PlaybookAggregator:
 
             return self._process_aggregation_response(response, cluster_playbooks)
         except Exception as exc:
-            processed_error, artifact_count = self._postprocess_aggregation_output(
-                str(exc),
-                processing_context,
+            processed_error, artifact_count = (
+                self._postproc._postprocess_aggregation_output(
+                    str(exc),
+                    processing_context,
+                )
             )
-            self._record_postprocessing_artifacts(artifact_count)
+            self._postproc._record_postprocessing_artifacts(artifact_count)
             logger.error(
                 "AgentPlaybook aggregation failed due to %s, returning None.",
                 processed_error,
