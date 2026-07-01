@@ -48,6 +48,28 @@ _CLASS_B_SWEEPS: tuple[tuple[str, int, int], ...] = (
     ("delete_expired_pending_tool_calls", 1 * 86400, 1000),
 )
 
+# Injection seam: a deployment (e.g. enterprise/managed) sets a tenant-enumerating
+# provider here at startup so the single OSS-started scheduler sweeps ALL tenant
+# orgs. maybe_start_lineage_gc reads this when no explicit provider is passed.
+# None (OSS default) keeps behavior byte-for-byte identical to before.
+_org_id_provider_hook: Callable[[], list[str]] | None = None
+
+
+def set_org_id_provider(provider: Callable[[], list[str]] | None) -> None:
+    """Register the org-id provider consulted by ``maybe_start_lineage_gc``.
+
+    Managed multi-tenant deployments call this at app-construction time so the
+    lineage GC / expiry sweep reaches every tenant org (``storage.list_org_ids()``
+    raises ``NotImplementedError`` on Supabase, degrading to bootstrap-only).
+    Pass ``None`` to clear the hook (used by tests to restore OSS defaults).
+
+    Args:
+        provider (Callable[[], list[str]] | None): Callable returning the tenant
+            org ids to sweep, or ``None`` to clear.
+    """
+    global _org_id_provider_hook  # noqa: PLW0603
+    _org_id_provider_hook = provider
+
 
 class LineageGCScheduler:
     """Polling daemon that hard-deletes expired tombstones per org."""
@@ -57,9 +79,17 @@ class LineageGCScheduler:
         *,
         request_context_factory: Callable[[str], RequestContext],
         bootstrap_org_id: str,
+        org_id_provider: Callable[[], list[str]] | None = None,
     ) -> None:
         self.request_context_factory = request_context_factory
         self.bootstrap_org_id = bootstrap_org_id
+        # Optional injectable org-id source. When set (managed/multi-tenant mode),
+        # it is the authoritative enumeration seam; enterprise supplies a
+        # provider that lists tenant orgs via the control-plane repository — the
+        # only seam that surfaces managed tenants where storage.list_org_ids()
+        # raises NotImplementedError on Supabase. When None (OSS default),
+        # discovery falls back to storage.list_org_ids() exactly as before.
+        self.org_id_provider = org_id_provider
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -85,20 +115,30 @@ class LineageGCScheduler:
         logger.info("event=lineage_gc_scheduler_stopped")
 
     def _discover_org_ids(self, bootstrap_ctx: RequestContext) -> list[str]:
-        """Return every known org, always including the bootstrap org."""
-        storage = getattr(bootstrap_ctx, "storage", None)
-        org_ids: list[str] = []
-        if storage is not None:
-            try:
-                org_ids = storage.list_org_ids()
-            except NotImplementedError:
-                logger.warning(
-                    "event=lineage_gc_list_org_ids_not_implemented "
-                    "backend=%s bootstrap_org_id=%s — GC will only process bootstrap org",
-                    type(storage).__name__,
-                    bootstrap_ctx.org_id,
-                )
-                org_ids = []
+        """Return every known org, always including the bootstrap org.
+
+        When an ``org_id_provider`` was injected (managed/multi-tenant mode), it
+        is the authoritative org-id source and ``storage.list_org_ids()`` is not
+        consulted. Otherwise the OSS single-tenant path is used unchanged
+        (``storage.list_org_ids()`` with a visible NotImplementedError fallback).
+        The bootstrap org is always unioned in either way.
+        """
+        if self.org_id_provider is not None:
+            org_ids = list(self.org_id_provider())
+        else:
+            storage = getattr(bootstrap_ctx, "storage", None)
+            org_ids = []
+            if storage is not None:
+                try:
+                    org_ids = storage.list_org_ids()
+                except NotImplementedError:
+                    logger.warning(
+                        "event=lineage_gc_list_org_ids_not_implemented "
+                        "backend=%s bootstrap_org_id=%s — GC will only process bootstrap org",
+                        type(storage).__name__,
+                        bootstrap_ctx.org_id,
+                    )
+                    org_ids = []
         if bootstrap_ctx.org_id not in org_ids:
             org_ids = [bootstrap_ctx.org_id, *org_ids]
         return org_ids
@@ -202,6 +242,7 @@ def maybe_start_lineage_gc(
     request_context_factory: Callable[[str], RequestContext],
     *,
     bootstrap_org_id: str,
+    org_id_provider: Callable[[], list[str]] | None = None,
 ) -> LineageGCScheduler | None:
     """Start the scheduler when bootstrap config enables tombstone GC or expiry reclamation.
 
@@ -232,6 +273,10 @@ def maybe_start_lineage_gc(
     Args:
         request_context_factory: Builds an org-scoped :class:`RequestContext`.
         bootstrap_org_id: Org used to read config and seed cross-org discovery.
+        org_id_provider: Optional tenant-enumerating org-id source. When ``None``
+            (OSS default), falls back to the module-level provider hook set via
+            :func:`set_org_id_provider`; when both are ``None`` discovery uses
+            ``storage.list_org_ids()`` exactly as before.
 
     Returns:
         LineageGCScheduler: The started scheduler, or ``None`` if neither flag is set.
@@ -279,6 +324,9 @@ def maybe_start_lineage_gc(
     scheduler = LineageGCScheduler(
         request_context_factory=request_context_factory,
         bootstrap_org_id=bootstrap_org_id,
+        org_id_provider=(
+            org_id_provider if org_id_provider is not None else _org_id_provider_hook
+        ),
     )
     scheduler.start()
     return scheduler
