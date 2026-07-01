@@ -10,6 +10,9 @@ FIFO drain, ``_run_generation`` billing emit-ordering, and the lock/queue helper
 from reflexio.server.services.base_generation._config_filter import (
     ConfigFilterMixin,
 )
+from reflexio.server.services.base_generation._should_run import (
+    ShouldRunPrecheckMixin,
+)
 from reflexio.server.services.base_generation._status_change import (
     StatusChangeMixin,
     StatusChangeOperation,
@@ -17,6 +20,7 @@ from reflexio.server.services.base_generation._status_change import (
 
 __all__ = [
     "ConfigFilterMixin",
+    "ShouldRunPrecheckMixin",
     "StatusChangeMixin",
     "StatusChangeOperation",
 ]
