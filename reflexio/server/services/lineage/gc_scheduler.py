@@ -124,7 +124,19 @@ class LineageGCScheduler:
         The bootstrap org is always unioned in either way.
         """
         if self.org_id_provider is not None:
-            org_ids = list(self.org_id_provider())
+            try:
+                org_ids = list(self.org_id_provider())
+            except Exception:
+                capture_anomaly(
+                    "lineage.gc.org_id_provider_failed",
+                    bootstrap_org_id=self.bootstrap_org_id,
+                )
+                logger.exception(
+                    "event=lineage_gc_org_id_provider_failed bootstrap_org_id=%s "
+                    "— falling back to bootstrap org only",
+                    self.bootstrap_org_id,
+                )
+                org_ids = []
         else:
             storage = getattr(bootstrap_ctx, "storage", None)
             org_ids = []

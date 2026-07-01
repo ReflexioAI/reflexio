@@ -182,14 +182,15 @@ class SQLiteShareLinkMixin:
             int: Number of rows physically deleted.
         """
         cutoff = now - grace_seconds
-        rows = self._fetchall(
-            "SELECT id FROM share_links WHERE org_id = ? AND expires_at IS NOT NULL "
-            "AND expires_at < ? ORDER BY expires_at ASC LIMIT ?",
+        # Re-assert the expiry condition inside the DELETE via a subquery so
+        # the predicate cannot race between the SELECT and the DELETE (TOCTOU).
+        # Matches the Supabase RPC sibling which re-asserts expires_at in a single
+        # atomic statement.
+        cur = self._execute(
+            "DELETE FROM share_links WHERE id IN ("
+            "  SELECT id FROM share_links WHERE org_id = ? AND expires_at IS NOT NULL"
+            "  AND expires_at < ? ORDER BY expires_at ASC LIMIT ?"
+            ")",
             (self.org_id, cutoff, limit),
         )
-        if not rows:
-            return 0
-        ids = [r["id"] for r in rows]
-        ph = ",".join("?" * len(ids))
-        cur = self._execute(f"DELETE FROM share_links WHERE id IN ({ph})", ids)  # noqa: S608
         return cur.rowcount
