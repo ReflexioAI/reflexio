@@ -477,13 +477,13 @@ def test_clear_user_data_chunk_boundary(tmp_path, monkeypatch):
     a chunk size of 2, then seeds 5 profiles so the delete-set crosses the chunk
     boundary. All rows must be deleted/purged without error.
     """
-    import reflexio.server.services.storage.sqlite_storage._base as _base_mod
+    import reflexio.server.services.storage.sqlite_storage.base._deletion as _deletion_mod
     from reflexio.server.services.storage.retention_mixin import chunked as real_chunked
 
     def chunked_size2(values, chunk_size=500):  # type: ignore[misc]
         return real_chunked(values, chunk_size=2)
 
-    monkeypatch.setattr(_base_mod, "chunked", chunked_size2)
+    monkeypatch.setattr(_deletion_mod, "chunked", chunked_size2)
 
     with patch.object(SQLiteStorage, "_get_embedding", return_value=[0.0] * 512):
         s = SQLiteStorage(org_id="0", db_path=str(tmp_path / "t.db"))
