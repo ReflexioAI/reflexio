@@ -24,7 +24,7 @@ from ._stall_state import (
     mark_stall_notified,
     upsert_stall_state,
 )
-from .base import SQLiteDeletionMixin
+from .base import SQLiteDeletionMixin, SQLiteFtsVecMixin
 from .governance import (
     AuditEventStoreMixin,
     GovernanceEraseExecutionMixin,
@@ -66,6 +66,7 @@ class SQLiteStorage(
     SQLiteStallStateMixin,
     SQLiteShadowVerdictsMixin,
     SQLiteDeletionMixin,
+    SQLiteFtsVecMixin,
     SQLiteStorageBase,
 ):
     """SQLite-based storage with FTS5 and hybrid search."""
