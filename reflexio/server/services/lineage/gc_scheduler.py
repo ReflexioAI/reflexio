@@ -103,6 +103,21 @@ class LineageGCScheduler:
                 cfg = ctx.configurator.get_config()
                 if not cfg.lineage_gc.enabled:
                     continue
+                # Class A: tombstone TTL-expired active profiles so the existing
+                # tombstone GC can reclaim them after the grace window.
+                expired_tombstoned = ctx.storage.expire_active_profiles(
+                    now=int(time.time())
+                )
+                if expired_tombstoned:
+                    logger.info(
+                        "event=expiry_sweep org_id=%s profiles_tombstoned=%d",
+                        org_id, expired_tombstoned,
+                    )
+                if expired_tombstoned > _HIGH_VOLUME_THRESHOLD:
+                    capture_anomaly(
+                        "lineage.expiry_sweep.high_volume",
+                        org_id=org_id, count=expired_tombstoned,
+                    )
                 older_than_epoch = (
                     int(time.time())
                     - cfg.lineage_gc.tombstone_grace_window_days * 86400

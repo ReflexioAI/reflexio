@@ -28,6 +28,9 @@ def _make_storage(*, gc_return: int = 0) -> MagicMock:
     """Return a mock storage whose gc_expired_tombstones returns ``gc_return``."""
     storage = MagicMock()
     storage.gc_expired_tombstones.return_value = gc_return
+    # expire_active_profiles is now called at the start of each tick; default to 0
+    # so existing tests that don't exercise the sweep see a clean integer return.
+    storage.expire_active_profiles.return_value = 0
     return storage
 
 
