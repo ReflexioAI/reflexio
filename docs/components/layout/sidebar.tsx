@@ -152,6 +152,7 @@ function SidebarGroup({
               <Link
                 key={method.id}
                 href={href}
+                aria-current={active ? "page" : undefined}
                 className={cn(
                   "flex items-center gap-2 px-2 py-1.5 text-sm rounded-md transition-colors",
                   active

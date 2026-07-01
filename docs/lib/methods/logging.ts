@@ -1,12 +1,12 @@
 import { MethodDef } from "../types";
 
-export const logMethods: MethodDef[] = [
+export const loggingMethods: MethodDef[] = [
   {
     id: "get-logs",
     pythonName: "get_logs",
     pythonCodeStyle: "requests",
     displayName: "Get Logs",
-    group: "logs",
+    group: "logging",
     description:
       "Retrieve recent OSS structured warning, error, and critical log events.",
     httpMethod: "GET",

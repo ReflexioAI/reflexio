@@ -275,8 +275,7 @@ export function LogsDashboard() {
               </div>
             </div>
             <p className="text-sm text-muted-foreground">
-              {items.length} rows
-              {responseLimit ? ` / ${responseLimit}` : ""}
+              {items.length} returned, limit {responseLimit}
             </p>
           </div>
 
@@ -372,17 +371,22 @@ export function LogsDashboard() {
                     API failure{error.status ? ` (${error.status})` : ""}
                   </div>
                   <p className="break-words">{error.message}</p>
+                  <p className="mt-1 text-xs text-destructive/80">
+                    Check that the API endpoint points to a running Reflexio
+                    backend.
+                  </p>
                 </div>
               </div>
             )}
           </div>
 
           <div className="min-h-0 flex-1 overflow-auto">
-            <table className="w-full min-w-[720px] table-fixed text-sm">
+            <table className="w-full min-w-[880px] table-fixed text-sm">
               <thead className="sticky top-0 z-10 bg-background">
                 <tr className="border-b border-border text-left text-xs text-muted-foreground">
                   <th className="w-52 px-4 py-2 font-medium">Timestamp</th>
                   <th className="w-28 px-4 py-2 font-medium">Level</th>
+                  <th className="w-56 px-4 py-2 font-medium">Source</th>
                   <th className="px-4 py-2 font-medium">Message</th>
                 </tr>
               </thead>
@@ -390,7 +394,7 @@ export function LogsDashboard() {
                 {loading ? (
                   <tr>
                     <td
-                      colSpan={3}
+                      colSpan={4}
                       className="px-4 py-10 text-center text-sm text-muted-foreground"
                     >
                       <div className="inline-flex items-center gap-2">
@@ -402,7 +406,7 @@ export function LogsDashboard() {
                 ) : items.length === 0 ? (
                   <tr>
                     <td
-                      colSpan={3}
+                      colSpan={4}
                       className="px-4 py-10 text-center text-sm text-muted-foreground"
                     >
                       {error ? "Unable to load log entries." : "No log entries found."}
@@ -428,6 +432,11 @@ export function LogsDashboard() {
                             )}
                           >
                             {levelStyles[item.level].label}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 font-mono text-xs text-muted-foreground">
+                          <span className="break-all" title={item.logger_name}>
+                            {item.logger_name}
                           </span>
                         </td>
                         <td className="px-4 py-3">
