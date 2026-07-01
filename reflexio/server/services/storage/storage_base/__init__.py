@@ -26,7 +26,6 @@ from ._extras import ExtrasMixin
 from ._governance import GovernanceMixin
 from ._lineage import EntityType, LineageEventMixin
 from ._operations import OperationMixin
-from ._playbook import PlaybookMixin
 from ._profiles import ProfileMixin
 from ._requests import RequestMixin
 from ._retrieval_log import RetrievalLogMixin
@@ -51,7 +50,6 @@ class BaseStorage(
     PlaybookSourceLinkageMixin,
     OptimizationJobStoreMixin,
     AgentEvaluationResultStoreMixin,
-    PlaybookMixin,
     RetrievalLogMixin,
     GovernanceMixin,
     LineageEventMixin,
@@ -258,7 +256,6 @@ __all__ = [
     "PendingToolCallRecord",
     "PendingToolCallStatus",
     "PendingToolCallUpsertResult",
-    "PlaybookMixin",
     "AgentEvaluationResultStoreMixin",
     "AgentPlaybookStoreMixin",
     "OptimizationJobStoreMixin",

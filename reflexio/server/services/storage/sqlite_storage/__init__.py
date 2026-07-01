@@ -11,7 +11,6 @@ from ._extras import ExtrasMixin
 from ._governance import SQLiteGovernanceMixin
 from ._lineage import SQLiteLineageMixin
 from ._operations import OperationMixin
-from ._playbook import PlaybookMixin
 from ._profiles import ProfileMixin
 from ._requests import RequestMixin
 from ._shadow_verdicts import ShadowVerdictsMixin as SQLiteShadowVerdictsMixin
@@ -44,7 +43,6 @@ class SQLiteStorage(
     PlaybookSourceLinkageMixin,
     OptimizationJobStoreMixin,
     AgentEvaluationResultStoreMixin,
-    PlaybookMixin,
     SQLiteGovernanceMixin,
     SQLiteLineageMixin,
     OperationMixin,

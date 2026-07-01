@@ -41,26 +41,3 @@ def _build_tags_sql(alias: str, tags: list[str] | None) -> tuple[str, list[Any]]
         f"EXISTS (SELECT 1 FROM json_each({alias}.tags) WHERE value IN ({placeholders}))",
         list(tags),
     )
-
-
-class PlaybookMixin:
-    """Mixin providing user playbook, agent playbook, and evaluation CRUD + search."""
-
-    # Type hints for instance attributes/methods provided by SQLiteStorageBase via MRO
-    _lock: Any
-    conn: sqlite3.Connection
-    org_id: str
-    _execute: Any
-    _fetchone: Any
-    _fetchall: Any
-    _get_embedding: Any
-    _should_expand_documents: Any
-    _expand_document: Any
-    _fts_upsert: Any
-    _fts_delete: Any
-    _vec_upsert: Any
-    _vec_delete: Any
-    _delete_playbook_search_rows: Any
-    _has_sqlite_vec: bool
-    _subject_ref_for_user_id: Any
-    _assert_subject_writable_locked: Any
