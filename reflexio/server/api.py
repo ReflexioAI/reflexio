@@ -3465,6 +3465,16 @@ def _start_data_plane_services(
         )
     except Exception:  # noqa: BLE001 - log startup failures, clean up, then re-raise
         logger.exception("Data-plane startup failed")
+        for started_scheduler in (gc_scheduler, scheduler):
+            if started_scheduler is None:
+                continue
+            try:
+                started_scheduler.stop()
+            except Exception:  # noqa: BLE001 - preserve the startup failure
+                logger.warning(
+                    "Scheduler cleanup after data-plane startup failure failed",
+                    exc_info=True,
+                )
         if structured_logging_handle is not None:
             structured_logging_handle.close()
         raise

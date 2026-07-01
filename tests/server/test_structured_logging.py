@@ -313,6 +313,48 @@ def test_data_plane_startup_failure_logs_and_closes_handler(tmp_path, monkeypatc
     assert any("RuntimeError: llm provider missing" in row[1] for row in rows)
 
 
+def test_data_plane_startup_failure_stops_started_schedulers(
+    tmp_path, monkeypatch
+) -> None:
+    import reflexio.server.llm.model_defaults as model_defaults
+    import reflexio.server.llm.rerank as rerank
+    import reflexio.server.services.extraction.resume_scheduler as resume_scheduler
+    import reflexio.server.services.lineage.gc_scheduler as gc_scheduler
+
+    class StartedScheduler:
+        stopped = False
+
+        def stop(self) -> None:
+            self.stopped = True
+
+    started_scheduler = StartedScheduler()
+
+    monkeypatch.setattr("reflexio.server.LOCAL_STORAGE_PATH", str(tmp_path))
+    monkeypatch.setattr(model_defaults, "validate_llm_availability", lambda: None)
+    monkeypatch.setattr(rerank, "prewarm", lambda: None)
+    monkeypatch.setattr(
+        resume_scheduler,
+        "maybe_start_resume_scheduler",
+        lambda *_, **__: started_scheduler,
+    )
+
+    def fail_lineage_gc(*_, **__) -> None:
+        raise RuntimeError("lineage gc unavailable")
+
+    monkeypatch.setattr(gc_scheduler, "maybe_start_lineage_gc", fail_lineage_gc)
+    app = create_app(get_org_id=lambda: "logs-test-org")
+
+    with pytest.raises(RuntimeError, match="lineage gc unavailable"), TestClient(app):
+        pass
+
+    assert started_scheduler.stopped
+    reflexio_logger = logging.getLogger("reflexio")
+    assert not any(
+        getattr(handler, "_reflexio_structured_logging", False)
+        for handler in reflexio_logger.handlers
+    )
+
+
 def test_structured_logging_applies_caps_and_retention(tmp_path) -> None:
     handle = install_structured_logging(str(tmp_path / "reflexio.db"), row_limit=2)
     assert handle.store.conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
