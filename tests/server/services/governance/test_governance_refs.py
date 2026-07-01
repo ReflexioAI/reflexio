@@ -12,7 +12,9 @@ from reflexio.server.services.storage.governance_validation import (
     _CANONICAL_DELETE_TARGET_NAMES,
     _validate_governance_target_ref,
 )
-from reflexio.server.services.storage.storage_base._governance import GovernanceMixin
+from reflexio.server.services.storage.storage_base.governance import (
+    SubjectBarrierMixin,
+)
 
 
 def test_refs_are_domain_separated_by_org_and_kind() -> None:
@@ -45,7 +47,7 @@ def test_governance_mixin_tracks_new_barrier_methods_as_abstract() -> None:
         "complete_subject_erasure_barrier_after_empty_check",
         "fail_subject_erasure_barrier",
         "get_subject_write_barrier",
-    } <= GovernanceMixin.__abstractmethods__
+    } <= SubjectBarrierMixin.__abstractmethods__
 
 
 def test_agent_success_eval_result_is_delete_only_target() -> None:

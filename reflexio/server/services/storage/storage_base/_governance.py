@@ -5,7 +5,6 @@ from abc import ABC, abstractmethod
 from reflexio.models.api_schema.domain.governance import (
     AuditEvent,
     PurgeOperation,
-    SubjectWriteBarrier,
 )
 
 
@@ -41,34 +40,4 @@ class GovernanceMixin(ABC):
     def complete_purge_operation_with_audit(
         self, purge_id: str, audit_event: AuditEvent
     ) -> PurgeOperation:
-        raise NotImplementedError
-
-    @abstractmethod
-    def begin_subject_erasure_barrier(
-        self, subject_ref: str, purge_id: str
-    ) -> SubjectWriteBarrier:
-        raise NotImplementedError
-
-    @abstractmethod
-    def assert_subject_writable(self, subject_ref: str) -> None:
-        raise NotImplementedError
-
-    @abstractmethod
-    def complete_subject_erasure_barrier_after_empty_check(
-        self, purge_id: str, audit_event: AuditEvent
-    ) -> PurgeOperation:
-        raise NotImplementedError
-
-    @abstractmethod
-    def fail_subject_erasure_barrier(
-        self,
-        subject_ref: str,
-        purge_id: str,
-        error_code: str,
-        error_detail: str,
-    ) -> SubjectWriteBarrier:
-        raise NotImplementedError
-
-    @abstractmethod
-    def get_subject_write_barrier(self, subject_ref: str) -> SubjectWriteBarrier | None:
         raise NotImplementedError
