@@ -1,4 +1,3 @@
-from ._agent_run import SQLiteAgentRunMixin
 from ._base import (
     SQLiteStorageBase,
     _cosine_similarity,
@@ -24,6 +23,11 @@ from ._stall_state import (
     mark_stall_notified,
     upsert_stall_state,
 )
+from .agent_run import (
+    SQLiteAgentRunStoreMixin,
+    SQLitePendingToolCallStoreMixin,
+    SQLiteRunToolDependencyStoreMixin,
+)
 from .base import SQLiteDeletionMixin, SQLiteFtsVecMixin
 from .governance import (
     AuditEventStoreMixin,
@@ -43,7 +47,9 @@ from .profiles import InteractionStoreMixin, ProfileSearchMixin, ProfileStoreMix
 
 
 class SQLiteStorage(
-    SQLiteAgentRunMixin,
+    SQLiteAgentRunStoreMixin,
+    SQLitePendingToolCallStoreMixin,
+    SQLiteRunToolDependencyStoreMixin,
     ProfileStoreMixin,
     InteractionStoreMixin,
     ProfileSearchMixin,
