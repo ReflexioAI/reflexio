@@ -35,7 +35,7 @@ from unittest.mock import patch
 
 import pytest
 
-import reflexio.server.services.storage.sqlite_storage._profiles as profiles_mod
+import reflexio.server.services.storage.sqlite_storage.profiles._profile_store as profiles_mod
 from reflexio.models.api_schema.service_schemas import (
     Interaction,
     Status,

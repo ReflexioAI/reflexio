@@ -32,10 +32,12 @@ from .playbook import (
     PlaybookSourceLinkageMixin,
     UserPlaybookStoreMixin,
 )
+from .profiles import ProfileStoreMixin
 
 
 class SQLiteStorage(
     SQLiteAgentRunMixin,
+    ProfileStoreMixin,
     ProfileMixin,
     RequestMixin,
     AgentPlaybookStoreMixin,
