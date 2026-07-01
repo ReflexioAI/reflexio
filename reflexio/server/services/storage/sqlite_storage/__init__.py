@@ -27,6 +27,7 @@ from ._stall_state import (
     upsert_stall_state,
 )
 from .playbook import (
+    AgentEvaluationResultStoreMixin,
     AgentPlaybookStoreMixin,
     OptimizationJobStoreMixin,
     PlaybookSourceLinkageMixin,
@@ -42,6 +43,7 @@ class SQLiteStorage(
     UserPlaybookStoreMixin,
     PlaybookSourceLinkageMixin,
     OptimizationJobStoreMixin,
+    AgentEvaluationResultStoreMixin,
     PlaybookMixin,
     SQLiteGovernanceMixin,
     SQLiteLineageMixin,

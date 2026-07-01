@@ -34,6 +34,7 @@ from ._shadow_verdicts import ShadowVerdictsMixin
 from ._share_links import ShareLinkMixin
 from ._stall_state import StallStateMixin
 from .playbook import (
+    AgentEvaluationResultStoreMixin,
     AgentPlaybookStoreMixin,
     OptimizationJobStoreMixin,
     PlaybookSourceLinkageMixin,
@@ -49,6 +50,7 @@ class BaseStorage(
     UserPlaybookStoreMixin,
     PlaybookSourceLinkageMixin,
     OptimizationJobStoreMixin,
+    AgentEvaluationResultStoreMixin,
     PlaybookMixin,
     RetrievalLogMixin,
     GovernanceMixin,
@@ -257,6 +259,7 @@ __all__ = [
     "PendingToolCallStatus",
     "PendingToolCallUpsertResult",
     "PlaybookMixin",
+    "AgentEvaluationResultStoreMixin",
     "AgentPlaybookStoreMixin",
     "OptimizationJobStoreMixin",
     "PlaybookSourceLinkageMixin",
