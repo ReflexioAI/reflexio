@@ -8,6 +8,7 @@ import { agentPlaybookMethods } from "./agent-playbooks";
 import { agentEvaluationMethods } from "./agent-evaluation";
 import { unifiedSearchMethods } from "./unified-search";
 import { generationMethods } from "./generation";
+import { operationMethods } from "./operations";
 import { configurationMethods } from "./configuration";
 
 const methodsByGroup: Record<string, MethodDef[]> = {
@@ -19,6 +20,7 @@ const methodsByGroup: Record<string, MethodDef[]> = {
   "agent-evaluation": agentEvaluationMethods,
   "unified-search": unifiedSearchMethods,
   generation: generationMethods,
+  operations: operationMethods,
   configuration: configurationMethods,
 };
 

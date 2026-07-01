@@ -4,6 +4,10 @@ export function generatePythonCode(
   method: MethodDef,
   params: Record<string, unknown>
 ): string {
+  if (method.pythonCodeStyle === "requests") {
+    return generateRequestsCode(method, params);
+  }
+
   const lines: string[] = [
     "from reflexio import ReflexioClient",
     "",
@@ -27,6 +31,41 @@ export function generatePythonCode(
   }
 
   lines.push("print(result)");
+  return lines.join("\n");
+}
+
+function generateRequestsCode(
+  method: MethodDef,
+  params: Record<string, unknown>
+): string {
+  const lines: string[] = [
+    "import requests",
+    "",
+    'base_url = "http://localhost:8061"',
+    `url = f"{base_url}${method.endpoint}"`,
+  ];
+  const queryEntries = method.params
+    .map((param) => {
+      const value = params[param.name];
+      if (value === undefined || value === null || value === "") return null;
+      return `    "${param.name}": ${formatPythonValue(value, param.type)}`;
+    })
+    .filter((entry): entry is string => entry !== null);
+
+  if (queryEntries.length > 0) {
+    lines.push("params = {");
+    lines.push(queryEntries.join(",\n"));
+    lines.push("}");
+  } else {
+    lines.push("params = {}");
+  }
+
+  lines.push("");
+  lines.push(
+    `response = requests.${method.httpMethod.toLowerCase()}(url, params=params)`
+  );
+  lines.push("response.raise_for_status()");
+  lines.push("print(response.json())");
   return lines.join("\n");
 }
 

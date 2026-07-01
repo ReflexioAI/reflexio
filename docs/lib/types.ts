@@ -21,6 +21,7 @@ export interface ParamDef {
 export interface MethodDef {
   id: string;
   pythonName: string;
+  pythonCodeStyle?: "client" | "requests";
   displayName: string;
   group: string;
   description: string;

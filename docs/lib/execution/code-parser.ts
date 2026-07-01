@@ -9,6 +9,10 @@ export function parsePythonCode(
   code: string,
   methodDef: MethodDef
 ): ParseResult | null {
+  if (methodDef.pythonCodeStyle === "requests") {
+    return parseRequestsCode(code, methodDef);
+  }
+
   // Find the client method call line
   const callPattern = new RegExp(
     `client\\.([a-z_]+)\\s*\\(([\\s\\S]*?)\\)\\s*$`,
@@ -37,6 +41,21 @@ export function parsePythonCode(
   }
 
   return { methodName, params };
+}
+
+function parseRequestsCode(code: string, methodDef: MethodDef): ParseResult | null {
+  const paramsMatch = code.match(/params\s*=\s*\{([\s\S]*?)\}/m);
+  if (!paramsMatch) return null;
+
+  const params: Record<string, unknown> = {};
+  const entryPattern =
+    /["']([\w-]+)["']\s*:\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|True|False|None|[\d.]+)/g;
+  let entryMatch;
+  while ((entryMatch = entryPattern.exec(paramsMatch[1])) !== null) {
+    params[entryMatch[1]] = parsePythonLiteral(entryMatch[2]);
+  }
+
+  return { methodName: methodDef.pythonName, params };
 }
 
 function parsePythonLiteral(value: string): unknown {

@@ -13,6 +13,7 @@ import {
   BarChart,
   Search,
   Cpu,
+  Activity,
   Settings,
   Pencil,
   ChevronRight,
@@ -39,6 +40,7 @@ const iconMap: Record<string, LucideIcon> = {
   BarChart,
   Search,
   Cpu,
+  Activity,
   Settings,
 };
 
