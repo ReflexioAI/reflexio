@@ -26,7 +26,6 @@ from ._extras import ExtrasMixin
 from ._governance import GovernanceMixin
 from ._lineage import EntityType, LineageEventMixin
 from ._operations import OperationMixin
-from ._profiles import ProfileMixin
 from ._requests import RequestMixin
 from ._retrieval_log import RetrievalLogMixin
 from ._shadow_verdicts import ShadowVerdictsMixin
@@ -47,7 +46,6 @@ class BaseStorage(
     ProfileStoreMixin,
     InteractionStoreMixin,
     ProfileSearchMixin,
-    ProfileMixin,
     RequestMixin,
     AgentPlaybookStoreMixin,
     UserPlaybookStoreMixin,
