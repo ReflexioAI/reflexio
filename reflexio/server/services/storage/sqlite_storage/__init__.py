@@ -11,7 +11,6 @@ from ._extras import ExtrasMixin
 from ._governance import SQLiteGovernanceMixin
 from ._lineage import SQLiteLineageMixin
 from ._operations import OperationMixin
-from ._profiles import ProfileMixin
 from ._requests import RequestMixin
 from ._shadow_verdicts import ShadowVerdictsMixin as SQLiteShadowVerdictsMixin
 from ._share_links import SQLiteShareLinkMixin
@@ -32,11 +31,14 @@ from .playbook import (
     PlaybookSourceLinkageMixin,
     UserPlaybookStoreMixin,
 )
+from .profiles import InteractionStoreMixin, ProfileSearchMixin, ProfileStoreMixin
 
 
 class SQLiteStorage(
     SQLiteAgentRunMixin,
-    ProfileMixin,
+    ProfileStoreMixin,
+    InteractionStoreMixin,
+    ProfileSearchMixin,
     RequestMixin,
     AgentPlaybookStoreMixin,
     UserPlaybookStoreMixin,

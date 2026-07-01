@@ -26,7 +26,6 @@ from ._extras import ExtrasMixin
 from ._governance import GovernanceMixin
 from ._lineage import EntityType, LineageEventMixin
 from ._operations import OperationMixin
-from ._profiles import ProfileMixin
 from ._requests import RequestMixin
 from ._retrieval_log import RetrievalLogMixin
 from ._shadow_verdicts import ShadowVerdictsMixin
@@ -39,11 +38,14 @@ from .playbook import (
     PlaybookSourceLinkageMixin,
     UserPlaybookStoreMixin,
 )
+from .profiles import InteractionStoreMixin, ProfileSearchMixin, ProfileStoreMixin
 
 
 class BaseStorage(
     AgentRunMixin,
-    ProfileMixin,
+    ProfileStoreMixin,
+    InteractionStoreMixin,
+    ProfileSearchMixin,
     RequestMixin,
     AgentPlaybookStoreMixin,
     UserPlaybookStoreMixin,
@@ -261,6 +263,9 @@ __all__ = [
     "OptimizationJobStoreMixin",
     "PlaybookSourceLinkageMixin",
     "UserPlaybookStoreMixin",
+    "InteractionStoreMixin",
+    "ProfileSearchMixin",
+    "ProfileStoreMixin",
     "RetrievalLogMixin",
     "PriorAnswerMatch",
     "RunToolDependencyKind",
