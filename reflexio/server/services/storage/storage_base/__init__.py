@@ -33,6 +33,7 @@ from ._share_links import ShareLinkMixin
 from ._stall_state import StallStateMixin
 from .governance import (
     AuditEventStoreMixin,
+    GovernanceEraseExecutionMixin,
     PurgeOperationStoreMixin,
     SubjectBarrierMixin,
 )
@@ -61,6 +62,7 @@ class BaseStorage(
     AuditEventStoreMixin,
     PurgeOperationStoreMixin,
     SubjectBarrierMixin,
+    GovernanceEraseExecutionMixin,
     GovernanceMixin,
     LineageEventMixin,
     OperationMixin,
@@ -275,6 +277,7 @@ __all__ = [
     "AuditEventStoreMixin",
     "PurgeOperationStoreMixin",
     "SubjectBarrierMixin",
+    "GovernanceEraseExecutionMixin",
     "AgentPlaybookStoreMixin",
     "OptimizationJobStoreMixin",
     "PlaybookSourceLinkageMixin",

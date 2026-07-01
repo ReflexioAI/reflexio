@@ -26,6 +26,7 @@ from ._stall_state import (
 )
 from .governance import (
     AuditEventStoreMixin,
+    GovernanceEraseExecutionMixin,
     PurgeOperationStoreMixin,
     SubjectBarrierMixin,
 )
@@ -53,6 +54,7 @@ class SQLiteStorage(
     AuditEventStoreMixin,
     PurgeOperationStoreMixin,
     SubjectBarrierMixin,
+    GovernanceEraseExecutionMixin,
     SQLiteGovernanceMixin,
     SQLiteLineageMixin,
     OperationMixin,

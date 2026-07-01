@@ -22,11 +22,11 @@ from reflexio.models.api_schema.domain.governance import (
 from reflexio.models.api_schema.retriever_schema import SearchAgentPlaybookRequest
 from reflexio.models.config_schema import GovernanceRetentionConfig
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
-from reflexio.server.services.storage.sqlite_storage import (
-    _governance as governance_module,
-)
 from reflexio.server.services.storage.sqlite_storage._governance import (
     init_governance_tables,
+)
+from reflexio.server.services.storage.sqlite_storage.governance import (
+    _erase_execution as erase_execution_module,
 )
 from reflexio.server.services.storage.sqlite_storage.governance import (
     _purge as purge_module,
@@ -896,7 +896,7 @@ def test_complete_retry_replaces_failed_completed_at(storage):
         )
     assert failed.completed_at == 111
 
-    with patch.object(governance_module, "_epoch_now", return_value=222):
+    with patch.object(erase_execution_module, "_epoch_now", return_value=222):
         completed = storage.complete_purge_operation_with_audit(
             purge_id,
             _erase_event(purge_id=purge_id),
