@@ -1,7 +1,6 @@
 """Profile and interaction CRUD + search mixins for SQLite storage."""
 
 import logging
-import sqlite3
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -11,23 +10,17 @@ from reflexio.models.api_schema.retriever_schema import (
     SearchUserProfileRequest,
 )
 from reflexio.models.api_schema.service_schemas import (
-    DeleteUserInteractionRequest,
     Interaction,
     Status,
     UserProfile,
 )
 from reflexio.models.config_schema import SearchMode
-from reflexio.server.llm.providers.embedding_service_provider import (
-    EmbeddingUnavailableError,
-)
 
 from ._base import (
     SQLiteStorageBase,
     _build_status_sql,
     _effective_search_mode,
     _epoch_now,
-    _epoch_to_iso,
-    _json_dumps,
     _row_to_interaction,
     _row_to_profile,
     _sanitize_fts_query,
@@ -47,234 +40,10 @@ def _build_tags_sql(alias: str, tags: list[str] | None) -> tuple[str, list[Any]]
 
 
 class ProfileMixin:
-    """Mixin providing profile and interaction CRUD + search."""
+    """Mixin providing profile + interaction search."""
 
     # Type hints for instance attributes/methods provided by SQLiteStorageBase via MRO
-    _lock: Any
-    conn: sqlite3.Connection
-    _fetchone: Any
     _fetchall: Any
-    _get_embedding: Any
-    _fts_upsert: Any
-    _vec_upsert: Any
-    _delete_in_chunks: Any
-    _has_sqlite_vec: bool
-    llm_client: Any
-    embedding_model_name: str
-    embedding_dimensions: int
-    _subject_ref_for_user_id: Any
-    _assert_subject_writable_locked: Any
-
-    # ------------------------------------------------------------------
-    # CRUD — Interactions
-    # ------------------------------------------------------------------
-
-    @SQLiteStorageBase.handle_exceptions
-    def get_all_interactions(self, limit: int = 100) -> list[Interaction]:
-        rows = self._fetchall(
-            "SELECT * FROM interactions ORDER BY created_at DESC LIMIT ?", (limit,)
-        )
-        return [_row_to_interaction(r) for r in rows]
-
-    @SQLiteStorageBase.handle_exceptions
-    def get_user_interaction(self, user_id: str) -> list[Interaction]:
-        rows = self._fetchall(
-            "SELECT * FROM interactions WHERE user_id = ?", (user_id,)
-        )
-        return [_row_to_interaction(r) for r in rows]
-
-    @SQLiteStorageBase.handle_exceptions
-    def add_user_interaction(self, user_id: str, interaction: Interaction) -> None:  # noqa: ARG002
-        embedding = self._get_embedding(
-            f"{interaction.content}\n{interaction.user_action_description}"
-        )
-        interaction.embedding = embedding
-        self._insert_interaction(interaction)
-
-    def _insert_interaction(self, interaction: Interaction) -> int:
-        created_at_iso = _epoch_to_iso(interaction.created_at)
-        subject_ref = self._subject_ref_for_user_id(interaction.user_id)
-        with self._lock:
-            try:
-                self.conn.execute("BEGIN IMMEDIATE")
-                self._assert_subject_writable_locked(subject_ref)
-                if interaction.interaction_id:
-                    self.conn.execute(
-                        """INSERT OR REPLACE INTO interactions
-                           (interaction_id, user_id, content, request_id, created_at,
-                            role, user_action, user_action_description,
-                            interacted_image_url, image_encoding, shadow_content,
-                            expert_content, tools_used, citations, embedding, governance_subject_ref)
-                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                        (
-                            interaction.interaction_id,
-                            interaction.user_id,
-                            interaction.content,
-                            interaction.request_id,
-                            created_at_iso,
-                            interaction.role,
-                            interaction.user_action.value,
-                            interaction.user_action_description,
-                            interaction.interacted_image_url,
-                            interaction.image_encoding,
-                            interaction.shadow_content,
-                            interaction.expert_content,
-                            _json_dumps(
-                                [t.model_dump() for t in interaction.tools_used]
-                            ),
-                            _json_dumps(
-                                [c.model_dump() for c in interaction.citations]
-                            ),
-                            _json_dumps(interaction.embedding),
-                            subject_ref,
-                        ),
-                    )
-                    iid = interaction.interaction_id
-                else:
-                    cur = self.conn.execute(
-                        """INSERT INTO interactions
-                           (user_id, content, request_id, created_at,
-                            role, user_action, user_action_description,
-                            interacted_image_url, image_encoding, shadow_content,
-                            expert_content, tools_used, citations, embedding, governance_subject_ref)
-                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                        (
-                            interaction.user_id,
-                            interaction.content,
-                            interaction.request_id,
-                            created_at_iso,
-                            interaction.role,
-                            interaction.user_action.value,
-                            interaction.user_action_description,
-                            interaction.interacted_image_url,
-                            interaction.image_encoding,
-                            interaction.shadow_content,
-                            interaction.expert_content,
-                            _json_dumps(
-                                [t.model_dump() for t in interaction.tools_used]
-                            ),
-                            _json_dumps(
-                                [c.model_dump() for c in interaction.citations]
-                            ),
-                            _json_dumps(interaction.embedding),
-                            subject_ref,
-                        ),
-                    )
-                    iid = cur.lastrowid or 0
-                    interaction.interaction_id = iid
-                self.conn.commit()
-            except Exception:
-                self.conn.rollback()
-                raise
-        # Update FTS and vec
-        self._fts_upsert(
-            "interactions_fts",
-            iid,
-            content=interaction.content,
-            user_action_description=interaction.user_action_description,
-        )
-        if interaction.embedding:
-            self._vec_upsert("interactions_vec", iid, interaction.embedding)
-        return iid
-
-    @SQLiteStorageBase.handle_exceptions
-    def add_user_interactions_bulk(
-        self,
-        user_id: str,  # noqa: ARG002
-        interactions: list[Interaction],
-    ) -> None:
-        if not interactions:
-            return
-        texts = [
-            "\n".join([i.content or "", i.user_action_description or ""])
-            for i in interactions
-        ]
-        try:
-            embeddings = self.llm_client.get_embeddings(
-                texts, self.embedding_model_name, self.embedding_dimensions
-            )
-        except EmbeddingUnavailableError as exc:
-            logger.warning(
-                "Embedding unavailable for interaction bulk insert; "
-                "continuing without vectors: %s",
-                exc,
-            )
-            embeddings = [[] for _ in texts]
-        for interaction, embedding in zip(interactions, embeddings, strict=False):
-            interaction.embedding = embedding
-            self._insert_interaction(interaction)
-
-    @SQLiteStorageBase.handle_exceptions
-    def delete_user_interaction(self, request: DeleteUserInteractionRequest) -> None:
-        with self._lock:
-            row = self.conn.execute(
-                "SELECT interaction_id FROM interactions WHERE user_id = ? AND interaction_id = ?",
-                (request.user_id, request.interaction_id),
-            ).fetchone()
-            if row is None:
-                return
-            self.conn.execute(
-                "DELETE FROM interactions_fts WHERE rowid = ?",
-                (request.interaction_id,),
-            )
-            if self._has_sqlite_vec:
-                self.conn.execute(
-                    "DELETE FROM interactions_vec WHERE rowid = ?",
-                    (request.interaction_id,),
-                )
-            self.conn.execute(
-                "DELETE FROM interactions WHERE user_id = ? AND interaction_id = ?",
-                (request.user_id, request.interaction_id),
-            )
-            self.conn.commit()
-
-    @SQLiteStorageBase.handle_exceptions
-    def delete_all_interactions_for_user(self, user_id: str) -> None:
-        with self._lock:
-            rows = self.conn.execute(
-                "SELECT interaction_id FROM interactions WHERE user_id = ?", (user_id,)
-            ).fetchall()
-            if not rows:
-                return
-            ids = [r["interaction_id"] for r in rows]
-            self._delete_in_chunks("interactions_fts", "rowid", ids)
-            if self._has_sqlite_vec:
-                self._delete_in_chunks("interactions_vec", "rowid", ids)
-            self.conn.execute("DELETE FROM interactions WHERE user_id = ?", (user_id,))
-            self.conn.commit()
-
-    @SQLiteStorageBase.handle_exceptions
-    def delete_all_interactions(self) -> None:
-        with self._lock:
-            self.conn.execute("DELETE FROM interactions_fts")
-            if self._has_sqlite_vec:
-                self.conn.execute("DELETE FROM interactions_vec")
-            self.conn.execute("DELETE FROM interactions")
-            self.conn.commit()
-
-    @SQLiteStorageBase.handle_exceptions
-    def count_all_interactions(self) -> int:
-        row = self._fetchone("SELECT COUNT(*) as cnt FROM interactions")
-        return row["cnt"] if row else 0
-
-    @SQLiteStorageBase.handle_exceptions
-    def delete_oldest_interactions(self, count: int) -> int:
-        if count <= 0:
-            return 0
-        with self._lock:
-            rows = self.conn.execute(
-                "SELECT interaction_id FROM interactions ORDER BY created_at ASC LIMIT ?",
-                (count,),
-            ).fetchall()
-            if not rows:
-                return 0
-            ids = [r["interaction_id"] for r in rows]
-            self._delete_in_chunks("interactions_fts", "rowid", ids)
-            if self._has_sqlite_vec:
-                self._delete_in_chunks("interactions_vec", "rowid", ids)
-            self._delete_in_chunks("interactions", "interaction_id", ids)
-            self.conn.commit()
-        return len(ids)
 
     # ------------------------------------------------------------------
     # Search — Interactions & Profiles

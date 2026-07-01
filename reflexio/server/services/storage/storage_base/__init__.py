@@ -39,12 +39,13 @@ from .playbook import (
     PlaybookSourceLinkageMixin,
     UserPlaybookStoreMixin,
 )
-from .profiles import ProfileStoreMixin
+from .profiles import InteractionStoreMixin, ProfileStoreMixin
 
 
 class BaseStorage(
     AgentRunMixin,
     ProfileStoreMixin,
+    InteractionStoreMixin,
     ProfileMixin,
     RequestMixin,
     AgentPlaybookStoreMixin,
@@ -263,6 +264,7 @@ __all__ = [
     "OptimizationJobStoreMixin",
     "PlaybookSourceLinkageMixin",
     "UserPlaybookStoreMixin",
+    "InteractionStoreMixin",
     "ProfileStoreMixin",
     "RetrievalLogMixin",
     "PriorAnswerMatch",
