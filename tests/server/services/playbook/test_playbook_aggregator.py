@@ -13,6 +13,7 @@ Targets coverage gaps in:
 
 import logging
 import re
+from contextlib import ExitStack, contextmanager
 from typing import Any
 from unittest.mock import ANY, MagicMock, call, patch
 
@@ -27,6 +28,7 @@ from reflexio.models.config_schema import (
     SINGLETON_USER_PLAYBOOK_NAME,
     PlaybookAggregatorConfig,
     PlaybookConfig,
+    PlaybookOptimizerConfig,
 )
 from reflexio.server.services.playbook.aggregation_prompt_processing import (
     AggregationPromptProcessingContext,
@@ -2061,3 +2063,332 @@ def test_playbook_aggregation_prompt_preserves_distinct_orientations():
     assert 'never collapse a "do" rule and an "avoid" rule into one' in normalized
     # Mixed-orientation rules for different sub-aspects are allowed in one skill.
     assert "separate bullets" in normalized
+
+
+# ---------------------------------------------------------------------------
+# run() side-effect ORDER characterization — the SOLE order guard.
+#
+# e2e tests assert final DB/output but physically cannot observe the internal
+# call ORDER, so a reordered-but-eventually-consistent refactor of run() would
+# stay e2e-green. This suite records EVERY observable side effect on ONE ordered
+# ``call_log`` (a single MagicMock storage + patched module-level
+# ``record_usage_event`` / ``capture_anomaly`` + the optimization scheduler),
+# then asserts the exact interleaving the aggregation lineage invariant depends
+# on. Each assertion is written to FAIL if that specific ordering/guard breaks.
+# ---------------------------------------------------------------------------
+
+_AGG_MODULE = "reflexio.server.services.playbook.components.aggregator"
+_SCHEDULER_GET_INSTANCE = (
+    "reflexio.server.services.playbook_optimizer."
+    "PlaybookOptimizationScheduler.get_instance"
+)
+
+
+class _EmptyStrUUID:
+    """A uuid4 stand-in whose ``str()`` is empty (to drive the falsy ``_run_id``
+    supersede guard) but whose ``.hex`` remains valid for any downstream use."""
+
+    hex = "0" * 32
+
+    def __str__(self) -> str:
+        return ""
+
+
+def _make_ordered_aggregator(call_log: list[tuple[str, Any]]) -> Any:
+    """Build a run()-ready aggregator whose storage records every relevant
+    side effect (in call order) onto the shared ``call_log``."""
+    agg = _make_aggregator()
+
+    fac = PlaybookAggregatorConfig(min_cluster_size=2, reaggregation_trigger_count=2)
+    afc = PlaybookConfig(
+        extractor_name="fb",
+        extraction_definition_prompt="prompt",
+        aggregation_config=fac,
+    )
+    cfg = agg.configurator.get_config.return_value
+    cfg.user_playbook_extractor_config = afc
+    # A real optimizer config (not a MagicMock) so the enqueue gate — which uses
+    # ``is not True`` identity checks — actually passes and the scheduler fires.
+    cfg.playbook_optimizer_config = PlaybookOptimizerConfig(
+        enabled=True, optimize_agent_playbooks=True
+    )
+
+    agg.storage.count_user_playbooks.return_value = 5
+    agg.storage.get_agent_playbooks.return_value = []
+    agg.storage.get_user_playbooks.return_value = [_raw(rid=1), _raw(rid=2)]
+
+    def _save(playbook: AgentPlaybook, **_kwargs: Any) -> AgentPlaybook:
+        call_log.append(("save", playbook.agent_playbook_id))
+        return playbook
+
+    agg.storage.save_agent_playbook_with_aggregate_event.side_effect = _save
+
+    def _set_source_windows(agent_playbook_id: int, _windows: Any) -> None:
+        call_log.append(("set_source_windows", agent_playbook_id))
+
+    agg.storage.set_source_windows_for_agent_playbook.side_effect = _set_source_windows
+
+    def _archive(name: str, **_kwargs: Any) -> None:
+        call_log.append(("archive", name))
+
+    agg.storage.archive_agent_playbooks_by_playbook_name.side_effect = _archive
+
+    def _supersede_by_name(name: str, **_kwargs: Any) -> None:
+        call_log.append(("supersede_by_name", name))
+
+    agg.storage.supersede_agent_playbooks_by_playbook_name.side_effect = (
+        _supersede_by_name
+    )
+
+    def _supersede_by_ids(ids: Any, **_kwargs: Any) -> None:
+        call_log.append(("supersede_by_ids", tuple(ids)))
+
+    agg.storage.supersede_agent_playbooks_by_ids.side_effect = _supersede_by_ids
+
+    def _restore_by_name(name: str, **_kwargs: Any) -> None:
+        call_log.append(("restore", name))
+
+    agg.storage.restore_archived_agent_playbooks_by_playbook_name.side_effect = (
+        _restore_by_name
+    )
+
+    return agg
+
+
+@contextmanager
+def _instrument_run(
+    call_log: list[tuple[str, Any]],
+    clusters: dict[int, list[UserPlaybook]],
+    generated_pairs: list[tuple[AgentPlaybook, list[UserPlaybook]]],
+    *,
+    uuid_side_effect: Any | None = None,
+):
+    """Patch the module-level collaborators (usage events, anomaly capture,
+    optimization scheduler) and the LLM-generation / clustering / state-manager
+    seams so every side effect lands on ``call_log`` in call order.
+
+    Yields (capture_anomaly_mock, scheduler_mock).
+    """
+    with ExitStack() as stack:
+        record = stack.enter_context(patch(f"{_AGG_MODULE}.record_usage_event"))
+        record.side_effect = lambda **kw: call_log.append(("usage", kw["event_name"]))
+
+        anomaly = stack.enter_context(patch(f"{_AGG_MODULE}.capture_anomaly"))
+        anomaly.side_effect = lambda *a, **_k: call_log.append(
+            ("anomaly", a[0] if a else None)
+        )
+
+        scheduler = MagicMock()
+        scheduler.enqueue.side_effect = lambda **kw: call_log.append(
+            ("enqueue", kw["target"].target_id)
+        )
+        stack.enter_context(patch(_SCHEDULER_GET_INSTANCE, return_value=scheduler))
+
+        stack.enter_context(
+            patch.object(PlaybookAggregator, "get_clusters", return_value=clusters)
+        )
+
+        def _generate(*_a: Any, **_k: Any):
+            call_log.append(("generate", None))
+            return generated_pairs
+
+        gen = stack.enter_context(
+            patch.object(PlaybookAggregator, "_generate_playbooks_with_source_clusters")
+        )
+        gen.side_effect = _generate
+
+        mgr = MagicMock()
+        mgr.get_cluster_fingerprints.return_value = {}
+        stack.enter_context(
+            patch.object(PlaybookAggregator, "_create_state_manager", return_value=mgr)
+        )
+
+        if uuid_side_effect is not None:
+            stack.enter_context(
+                patch(f"{_AGG_MODULE}.uuid.uuid4", side_effect=uuid_side_effect)
+            )
+
+        yield anomaly, scheduler
+
+
+def _first_index(call_log: list[tuple[str, Any]], name: str) -> int:
+    return next(i for i, (n, _) in enumerate(call_log) if n == name)
+
+
+def _last_index(call_log: list[tuple[str, Any]], *names: str) -> int:
+    return max(i for i, (n, _) in enumerate(call_log) if n in names)
+
+
+class TestRunSideEffectOrder:
+    """The falsifiable order guard for run(). Each test drives run() with two
+    generated playbooks (distinct ids 100/200) so interleaving is observable."""
+
+    def _two_pairs(
+        self,
+    ) -> tuple[dict[int, list[UserPlaybook]], list]:
+        cluster_a = [_raw(rid=1)]
+        cluster_b = [_raw(rid=2)]
+        clusters = {0: cluster_a, 1: cluster_b}
+        pb_a = _agent_playbook(fid=100)
+        pb_a.agent_playbook_id = 100
+        pb_b = _agent_playbook(fid=200)
+        pb_b.agent_playbook_id = 200
+        generated_pairs = [(pb_a, cluster_a), (pb_b, cluster_b)]
+        return clusters, generated_pairs
+
+    def test_archive_between_generate_and_first_save(self):
+        """(a) The deferred full-archive fires AFTER generation produced
+        playbooks and BEFORE the first save — never before generation (which
+        would drop existing PENDING/APPROVED on a null LLM result) and never
+        after the first save (which would archive freshly-saved rows)."""
+        call_log: list[tuple[str, Any]] = []
+        agg = _make_ordered_aggregator(call_log)
+        clusters, generated_pairs = self._two_pairs()
+
+        with _instrument_run(call_log, clusters, generated_pairs):
+            agg.run(PlaybookAggregatorRequest(agent_version="v1", rerun=True))
+
+        i_generate = _first_index(call_log, "generate")
+        i_archive = _first_index(call_log, "archive")
+        i_save = _first_index(call_log, "save")
+        assert i_generate < i_archive < i_save, call_log
+
+    def test_per_playbook_save_then_source_windows_interleaved(self):
+        """(b) Each save is IMMEDIATELY followed by set_source_windows for THAT
+        iteration's agent_playbook_id — the writes are interleaved per playbook,
+        not batched (all saves then all windows)."""
+        call_log: list[tuple[str, Any]] = []
+        agg = _make_ordered_aggregator(call_log)
+        clusters, generated_pairs = self._two_pairs()
+
+        with _instrument_run(call_log, clusters, generated_pairs):
+            agg.run(PlaybookAggregatorRequest(agent_version="v1", rerun=True))
+
+        saved_ids = [detail for name, detail in call_log if name == "save"]
+        assert saved_ids == [100, 200], call_log
+        for idx, (name, detail) in enumerate(call_log):
+            if name == "save":
+                nxt_name, nxt_detail = call_log[idx + 1]
+                assert nxt_name == "set_source_windows", call_log
+                assert nxt_detail == detail, (
+                    f"set_source_windows must use this iteration's id {detail!r}, "
+                    f"got {nxt_detail!r}"
+                )
+
+    def test_enqueue_after_last_supersede_before_succeeded(self):
+        """(c) _enqueue_playbook_optimization fires AFTER the last supersede and
+        BEFORE the aggregation_succeeded usage event."""
+        call_log: list[tuple[str, Any]] = []
+        agg = _make_ordered_aggregator(call_log)
+        clusters, generated_pairs = self._two_pairs()
+
+        with _instrument_run(call_log, clusters, generated_pairs) as (_a, scheduler):
+            agg.run(PlaybookAggregatorRequest(agent_version="v1", rerun=True))
+
+        assert scheduler.enqueue.call_count == 2, call_log
+        i_last_supersede = _last_index(
+            call_log, "supersede_by_name", "supersede_by_ids"
+        )
+        i_enqueue = _first_index(call_log, "enqueue")
+        i_succeeded = next(
+            i
+            for i, (n, d) in enumerate(call_log)
+            if n == "usage" and d == "aggregation_succeeded"
+        )
+        assert i_last_supersede < i_enqueue < i_succeeded, call_log
+
+    def test_empty_run_id_takes_capture_anomaly_guard_branch(self):
+        """(d) When _run_id is falsy the supersede-guard captures an anomaly and
+        SKIPS the (unreconstructable) soft-supersede — never silently removes.
+        Without the empty-uuid injection this branch is dead (uuid4 is always
+        non-empty in practice), so it must be forced here to be exercised."""
+        call_log: list[tuple[str, Any]] = []
+        agg = _make_ordered_aggregator(call_log)
+        clusters, generated_pairs = self._two_pairs()
+
+        with _instrument_run(
+            call_log,
+            clusters,
+            generated_pairs,
+            uuid_side_effect=lambda: _EmptyStrUUID(),
+        ) as (anomaly, _scheduler):
+            agg.run(PlaybookAggregatorRequest(agent_version="v1", rerun=True))
+
+        anomaly.assert_called_once()
+        assert anomaly.call_args.args[0] == "lineage.aggregation.missing_request_id"
+        # The soft-supersede must be skipped entirely on the empty-run_id branch.
+        supersede_calls = [
+            name
+            for name, _ in call_log
+            if name in ("supersede_by_name", "supersede_by_ids")
+        ]
+        assert supersede_calls == [], call_log
+        agg.storage.supersede_agent_playbooks_by_playbook_name.assert_not_called()
+        agg.storage.supersede_agent_playbooks_by_ids.assert_not_called()
+
+    def test_mid_run_failure_emits_failed_restores_and_skips_enqueue(self):
+        """(e) A failure mid-run (here: set_source_windows raises, after archive
+        and the first save, before supersede/enqueue) emits aggregation_failed,
+        restores the archived state, re-raises — and NEVER enqueues optimization
+        or emits aggregation_succeeded."""
+        call_log: list[tuple[str, Any]] = []
+        agg = _make_ordered_aggregator(call_log)
+        clusters, generated_pairs = self._two_pairs()
+
+        def _set_source_windows_boom(agent_playbook_id: int, _windows: Any) -> None:
+            call_log.append(("set_source_windows", agent_playbook_id))
+            raise RuntimeError("boom in set_source_windows")
+
+        agg.storage.set_source_windows_for_agent_playbook.side_effect = (
+            _set_source_windows_boom
+        )
+
+        with (
+            _instrument_run(call_log, clusters, generated_pairs) as (_a, scheduler),
+            pytest.raises(RuntimeError, match="boom in set_source_windows"),
+        ):
+            agg.run(PlaybookAggregatorRequest(agent_version="v1", rerun=True))
+
+        names = [name for name, _ in call_log]
+        assert ("usage", "aggregation_failed") in call_log, call_log
+        assert ("usage", "aggregation_succeeded") not in call_log, call_log
+        # Full-archive restore ran; optimization never enqueued.
+        assert "restore" in names, call_log
+        assert "enqueue" not in names, call_log
+        scheduler.enqueue.assert_not_called()
+        # The failure was reached only after archive + at least one save.
+        assert names.index("archive") < names.index("save"), call_log
+
+
+class TestLazyArchivePreservesExisting:
+    """The deferred/lazy full-archive (aggregator.py ~:832-844): when a
+    full-archive run's LLM produces ZERO new playbooks, the archive is SKIPPED
+    (full_archive flips False) so existing PENDING/APPROVED playbooks survive —
+    and no supersede/restore fires.
+
+    Verified-before-adding: test_aggregation_soft_delete_integration.py (27
+    tests) covers the supersede/empty-run_id/from-status paths but NOT this
+    "0 new playbooks -> archive skipped" branch, so it is added here rather than
+    folded into that file.
+    """
+
+    def test_zero_new_playbooks_skips_full_archive(self):
+        call_log: list[tuple[str, Any]] = []
+        agg = _make_ordered_aggregator(call_log)
+        clusters = {0: [_raw(rid=1)]}
+
+        with _instrument_run(call_log, clusters, generated_pairs=[]) as (
+            _a,
+            scheduler,
+        ):
+            agg.run(PlaybookAggregatorRequest(agent_version="v1", rerun=True))
+
+        # Archive skipped because the LLM produced no replacements.
+        agg.storage.archive_agent_playbooks_by_playbook_name.assert_not_called()
+        assert "archive" not in [name for name, _ in call_log], call_log
+        # full_archive flipped False -> no supersede-by-name, existing preserved.
+        agg.storage.supersede_agent_playbooks_by_playbook_name.assert_not_called()
+        agg.storage.supersede_agent_playbooks_by_ids.assert_not_called()
+        agg.storage.restore_archived_agent_playbooks_by_playbook_name.assert_not_called()
+        # Nothing saved -> nothing enqueued.
+        scheduler.enqueue.assert_not_called()
