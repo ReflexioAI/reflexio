@@ -230,7 +230,8 @@ class UserPlaybookStoreMixin:
             params.extend(sparams)
         else:
             # Default: exclude tombstone statuses (MERGED/SUPERSEDED)
-            sql += " AND (status IS NULL OR status NOT IN (?, ?))"
+            _ph = ",".join("?" * len(_TOMBSTONE_STATUS_VALUES))
+            sql += f" AND (status IS NULL OR status NOT IN ({_ph}))"
             params.extend(_TOMBSTONE_STATUS_VALUES)
         tag_frag, tag_params = _build_tags_sql("user_playbooks", tags)
         if tag_frag:
@@ -274,7 +275,8 @@ class UserPlaybookStoreMixin:
             params.extend(sparams)
         else:
             # Default: exclude tombstone statuses (MERGED/SUPERSEDED)
-            sql += " AND (status IS NULL OR status NOT IN (?, ?))"
+            _ph = ",".join("?" * len(_TOMBSTONE_STATUS_VALUES))
+            sql += f" AND (status IS NULL OR status NOT IN ({_ph}))"
             params.extend(_TOMBSTONE_STATUS_VALUES)
 
         row = self._fetchone(sql, params)
@@ -282,11 +284,12 @@ class UserPlaybookStoreMixin:
 
     @SQLiteStorageBase.handle_exceptions
     def count_user_playbooks_by_session(self, session_id: str) -> int:
+        _ph = ",".join("?" * len(_TOMBSTONE_STATUS_VALUES))
         row = self._fetchone(
-            """SELECT COUNT(*) as cnt FROM user_playbooks up
+            f"""SELECT COUNT(*) as cnt FROM user_playbooks up
                JOIN requests r ON up.request_id = r.request_id
                WHERE r.session_id = ?
-                 AND (up.status IS NULL OR up.status NOT IN (?, ?))""",
+                 AND (up.status IS NULL OR up.status NOT IN ({_ph}))""",  # noqa: S608
             (session_id, *_TOMBSTONE_STATUS_VALUES),
         )
         return row["cnt"] if row else 0
@@ -620,7 +623,8 @@ class UserPlaybookStoreMixin:
             params.extend(sparams)
         else:
             # Default: exclude tombstone statuses (MERGED/SUPERSEDED)
-            conditions.append("(up.status IS NULL OR up.status NOT IN (?, ?))")
+            _ph = ",".join("?" * len(_TOMBSTONE_STATUS_VALUES))
+            conditions.append(f"(up.status IS NULL OR up.status NOT IN ({_ph}))")
             params.extend(_TOMBSTONE_STATUS_VALUES)
         tag_frag, tag_params = _build_tags_sql("up", request.tags)
         if tag_frag:
@@ -695,7 +699,8 @@ class UserPlaybookStoreMixin:
     ) -> UserPlaybook | None:
         sql = "SELECT * FROM user_playbooks WHERE user_playbook_id = ?"
         if not include_tombstones:
-            sql += " AND (status IS NULL OR status NOT IN (?, ?))"
+            _ph = ",".join("?" * len(_TOMBSTONE_STATUS_VALUES))
+            sql += f" AND (status IS NULL OR status NOT IN ({_ph}))"
             row = self._fetchone(sql, (user_playbook_id, *_TOMBSTONE_STATUS_VALUES))
         else:
             row = self._fetchone(sql, (user_playbook_id,))
@@ -814,10 +819,11 @@ class UserPlaybookStoreMixin:
                     self._subject_ref_from_user_playbook_row(row)
                 )
                 old_status = row["status"]
+                _ph = ",".join("?" * len(_TOMBSTONE_STATUS_VALUES))
                 cur = self.conn.execute(
                     "UPDATE user_playbooks SET status = ?, retired_at = ?"
                     " WHERE user_playbook_id = ?"
-                    " AND (status IS NULL OR status NOT IN (?, ?))",
+                    f" AND (status IS NULL OR status NOT IN ({_ph}))",
                     (
                         Status.SUPERSEDED.value,
                         now_ts,

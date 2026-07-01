@@ -329,7 +329,8 @@ class AgentPlaybookStoreMixin:
     ) -> AgentPlaybook | None:
         sql = "SELECT * FROM agent_playbooks WHERE agent_playbook_id = ?"
         if not include_tombstones:
-            sql += " AND (status IS NULL OR status NOT IN (?, ?, ?))"
+            _ph = ",".join("?" * len(_AGENT_PLAYBOOK_DEFAULT_EXCLUDED_STATUSES))
+            sql += f" AND (status IS NULL OR status NOT IN ({_ph}))"
             row = self._fetchone(
                 sql,
                 (agent_playbook_id, *_AGENT_PLAYBOOK_DEFAULT_EXCLUDED_STATUSES),
@@ -689,10 +690,11 @@ class AgentPlaybookStoreMixin:
                 # would require adding playbook_status to the SELECT. The UPDATE WHERE
                 # clause already excludes those rows atomically; the extra continue here
                 # would be a no-op and not worth the added complexity.
+                _ph = ",".join("?" * len(_TOMBSTONE_STATUS_VALUES))
                 cur = self.conn.execute(
                     "UPDATE agent_playbooks SET status = ?, retired_at = ?"
                     " WHERE agent_playbook_id = ? AND playbook_status != ?"
-                    " AND (status IS NULL OR status NOT IN (?, ?))",
+                    f" AND (status IS NULL OR status NOT IN ({_ph}))",
                     (
                         Status.SUPERSEDED.value,
                         now_ts,
@@ -882,7 +884,8 @@ class AgentPlaybookStoreMixin:
             conditions.append(frag)
             params.extend(sparams)
         else:
-            conditions.append("(ap.status IS NULL OR ap.status NOT IN (?, ?, ?))")
+            _ph = ",".join("?" * len(_AGENT_PLAYBOOK_DEFAULT_EXCLUDED_STATUSES))
+            conditions.append(f"(ap.status IS NULL OR ap.status NOT IN ({_ph}))")
             params.extend(_AGENT_PLAYBOOK_DEFAULT_EXCLUDED_STATUSES)
         tag_frag, tag_params = _build_tags_sql("ap", request.tags)
         if tag_frag:
