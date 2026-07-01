@@ -15,7 +15,7 @@ by calling AgentRunStore-owned ``_..._unlocked`` privates
 duplicated. Each transaction is moved WHOLE (its ``BEGIN IMMEDIATE`` /
 ``with self._lock`` block plus all writes and its commit/rollback).
 
-The residual ``SQLiteAgentRunMixin`` stays composed alongside this mixin and
+The residual ``_agent_run.py`` module (helpers-only, no mixin class)
 permanently holds the shared row/datetime helpers (``_dt_str``,
 ``_row_to_pending_tool_call``, ``_record_to_prior_answer_match`` …), which are
 imported here rather than duplicated.

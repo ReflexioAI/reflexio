@@ -2,14 +2,15 @@
 
 Extracted verbatim from ``_agent_run.py`` (the AgentRunStore bucket): the seven
 agent-run lifecycle methods plus the three ``_..._unlocked`` run-cascade
-privates. The privates are consumed cross-bucket by the residual pending-tool-call
-methods (``cancel``/``expire``/``update_resolved``/``mark_not_applicable``),
-which reach them via MRO co-composition — kept SINGLE here, never duplicated.
+privates. The privates are consumed cross-bucket by the pending-tool-call
+methods (``cancel``/``expire``/``update_resolved``/``mark_not_applicable``) in
+``SQLitePendingToolCallStoreMixin``, which reach them via MRO co-composition —
+kept SINGLE here, never duplicated.
 
-The residual ``SQLiteAgentRunMixin`` stays composed alongside this mixin and
+The residual ``_agent_run.py`` module (helpers-only, no mixin class)
 permanently holds the shared row/datetime helpers (``_dt``, ``_dt_str``,
-``_row_to_agent_run`` …) and ``_json_dumps``, which are imported here rather
-than duplicated.
+``_row_to_agent_run`` …); ``_json_dumps`` comes from ``.._base``. Both are
+imported here rather than duplicated.
 """
 
 from __future__ import annotations

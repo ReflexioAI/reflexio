@@ -5,14 +5,19 @@ non-class symbols live in the leaf ``agent_run/_models.py`` and are re-exported
 here so ``storage_base/__init__.py`` keeps importing them from ``._agent_run``
 byte-identically. ``AgentRunMixin`` survives as a thin COMPOSITE ABC:
 ``AgentRunStoreABC`` supplies the agent-run lifecycle stubs,
-``PendingToolCallStoreABC`` supplies the pending-tool-call stubs, and the
-remaining run-tool-dependency stubs plus the public helper staticmethods stay
-inline here until Task 4 peels them out.
+``PendingToolCallStoreABC`` supplies the pending-tool-call stubs,
+``RunToolDependencyStoreABC`` supplies the run-tool-dependency stubs, and only
+the public helper staticmethods stay inline here. All twenty-three agent-run
+methods now live in the three ``agent_run`` sub-mixins.
 """
 
 from __future__ import annotations
 
-from .agent_run import AgentRunStoreABC, PendingToolCallStoreABC
+from .agent_run import (
+    AgentRunStoreABC,
+    PendingToolCallStoreABC,
+    RunToolDependencyStoreABC,
+)
 from .agent_run._models import (
     NOT_APPLICABLE_ANSWER,
     AgentBinding,
@@ -57,29 +62,11 @@ __all__ = [
 ]
 
 
-class AgentRunMixin(AgentRunStoreABC, PendingToolCallStoreABC):
+class AgentRunMixin(
+    AgentRunStoreABC, PendingToolCallStoreABC, RunToolDependencyStoreABC
+):
     """Backend-neutral helpers shared by resumable extraction storage backends."""
 
     build_scope_hash = staticmethod(build_scope_hash)
     human_feedback_scope = staticmethod(human_feedback_scope)
     build_pending_tool_call_dedup_key = staticmethod(build_pending_tool_call_dedup_key)
-
-    def attach_run_tool_dependency(
-        self, record: RunToolDependencyRecord
-    ) -> RunToolDependencyRecord:
-        raise NotImplementedError(f"{type(self).__name__} does not support agent runs")
-
-    def count_unresolved_followup_dependencies(
-        self,
-        *,
-        org_id: str,
-        extractor_kind: str,
-        tool_name: str,
-    ) -> int:
-        raise NotImplementedError(f"{type(self).__name__} does not support agent runs")
-
-    def list_run_tool_dependencies(self, run_id: str) -> list[RunToolDependencyRecord]:
-        raise NotImplementedError(f"{type(self).__name__} does not support agent runs")
-
-    def consume_run_tool_dependencies(self, run_id: str) -> int:
-        raise NotImplementedError(f"{type(self).__name__} does not support agent runs")
