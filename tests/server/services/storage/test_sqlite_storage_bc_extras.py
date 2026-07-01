@@ -203,6 +203,10 @@ def test_get_citations_by_session_ids_extracts_cited_rows(
         "UPDATE interactions SET citations = NULL WHERE request_id = ? AND role = ?",
         (null_request_id, "Assistant"),
     )
+    # Commit the raw UPDATE so the shared connection isn't left mid-transaction —
+    # otherwise the next add_request()'s `BEGIN IMMEDIATE` raises
+    # "cannot start a transaction within a transaction".
+    storage.conn.commit()
     blank_request_id = _add_request_with_interactions(
         storage,
         session_id="blank",
@@ -213,6 +217,7 @@ def test_get_citations_by_session_ids_extracts_cited_rows(
         "UPDATE interactions SET citations = '' WHERE request_id = ? AND role = ?",
         (blank_request_id, "Assistant"),
     )
+    storage.conn.commit()
 
     out = storage.get_citations_by_session_ids(
         ["s1", "s2", "empty", "nullish", "blank", "missing"]
