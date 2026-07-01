@@ -3449,10 +3449,6 @@ def _start_data_plane_services(
     if structured_log_db_path is not None:
         structured_logging_handle = install_structured_logging(structured_log_db_path)
         app.state.structured_logging_handle = structured_logging_handle
-    else:
-        app.state.structured_logging_unavailable_reason = (
-            "Structured logs are only available for OSS SQLite storage"
-        )
     try:
         log_publish_hardware_capacity()
         validate_llm_availability()
@@ -3467,7 +3463,7 @@ def _start_data_plane_services(
             lambda org_id: RequestContext(org_id=org_id),
             bootstrap_org_id=bootstrap_org_id,
         )
-    except Exception:
+    except Exception:  # noqa: BLE001 - log startup failures, clean up, then re-raise
         logger.exception("Data-plane startup failed")
         if structured_logging_handle is not None:
             structured_logging_handle.close()

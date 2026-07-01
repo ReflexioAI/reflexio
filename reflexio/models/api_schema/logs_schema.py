@@ -7,6 +7,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 LogLevel = Literal["warning", "error", "critical"]
+LOG_LEVEL_VALUES: tuple[LogLevel, ...] = ("warning", "error", "critical")
 
 
 class LogEventResponse(BaseModel):

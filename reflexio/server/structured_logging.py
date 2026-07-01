@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from reflexio.models.api_schema.logs_schema import LOG_LEVEL_VALUES
 from reflexio.server.services.configurator.configurator import (
     DefaultConfigurator,
     get_configurator_class,
@@ -33,12 +34,13 @@ CREATE INDEX IF NOT EXISTS idx_structured_log_events_level
     ON structured_log_events(level);
 """
 
-_VALID_LEVELS = frozenset({"warning", "error", "critical"})
+_LOGGER_NAME = "reflexio"
+_VALID_LEVELS = frozenset(LOG_LEVEL_VALUES)
 _MESSAGE_MAX_CHARS = 8 * 1024
 _EXCEPTION_MAX_CHARS = 32 * 1024
 _DEFAULT_ROW_LIMIT = 10_000
 _RETENTION_INTERVAL = 100
-_BUSY_TIMEOUT_MS = 5_000
+_BUSY_TIMEOUT_MS = 100
 _HANDLER_LOCK = threading.RLock()
 
 
@@ -79,7 +81,7 @@ class StructuredLogStore:
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA foreign_keys=ON")
-        self.conn.execute(f"PRAGMA busy_timeout={busy_timeout_ms}")
+        self.conn.execute(f"PRAGMA busy_timeout={int(busy_timeout_ms)}")
         self.conn.executescript(_DDL)
         self.conn.commit()
         self.enforce_retention()
@@ -147,38 +149,34 @@ class StructuredLogStore:
         since_filter = (
             _format_timestamp(since.timestamp()) if since is not None else None
         )
-        like_filter = f"%{q}%" if q else None
-        params: tuple[str | int | None, ...] = (
-            int("warning" in levels),
-            int("error" in levels),
-            int("critical" in levels),
-            since_filter,
-            since_filter,
-            like_filter,
-            like_filter,
-            like_filter,
-            like_filter,
-            limit,
-        )
+        like_filter = f"%{_escape_like(q)}%" if q else None
+        params: dict[str, str | int | None] = {
+            "warning_enabled": int("warning" in levels),
+            "error_enabled": int("error" in levels),
+            "critical_enabled": int("critical" in levels),
+            "since_filter": since_filter,
+            "like_filter": like_filter,
+            "limit": limit,
+        }
         with self._lock:
             rows = self.conn.execute(
                 """
                 SELECT timestamp, level, logger_name, message, exception_text
                 FROM structured_log_events
                 WHERE (
-                    (? = 1 AND level = 'warning')
-                    OR (? = 1 AND level = 'error')
-                    OR (? = 1 AND level = 'critical')
+                    (:warning_enabled = 1 AND level = 'warning')
+                    OR (:error_enabled = 1 AND level = 'error')
+                    OR (:critical_enabled = 1 AND level = 'critical')
                 )
-                AND (? IS NULL OR timestamp >= ?)
+                AND (:since_filter IS NULL OR timestamp >= :since_filter)
                 AND (
-                    ? IS NULL
-                    OR message LIKE ?
-                    OR exception_text LIKE ?
-                    OR logger_name LIKE ?
+                    :like_filter IS NULL
+                    OR message LIKE :like_filter ESCAPE '\\'
+                    OR exception_text LIKE :like_filter ESCAPE '\\'
+                    OR logger_name LIKE :like_filter ESCAPE '\\'
                 )
                 ORDER BY id DESC
-                LIMIT ?
+                LIMIT :limit
                 """,
                 params,
             ).fetchall()
@@ -204,7 +202,7 @@ class StructuredLogStore:
 
 
 class StructuredLogHandler(logging.Handler):
-    """Root logging handler that writes warning/error/critical records to SQLite."""
+    """Logger handler that writes warning/error/critical records to SQLite."""
 
     _reflexio_structured_logging = True
 
@@ -217,6 +215,13 @@ class StructuredLogHandler(logging.Handler):
     @property
     def db_path(self) -> str:
         return self.store.db_path
+
+    def claim_handle(self) -> None:
+        self._ref_count += 1
+
+    def release_handle(self) -> bool:
+        self._ref_count -= 1
+        return self._ref_count == 0
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
@@ -260,11 +265,10 @@ class StructuredLoggingHandle:
             return
         self._closed = True
         with _HANDLER_LOCK:
-            self.handler._ref_count -= 1
-            if self.handler._ref_count > 0:
+            if not self.handler.release_handle():
                 return
-            root_logger = logging.getLogger()
-            root_logger.removeHandler(self.handler)
+            target_logger = logging.getLogger(_LOGGER_NAME)
+            target_logger.removeHandler(self.handler)
             self.handler.close()
 
 
@@ -294,12 +298,12 @@ def install_structured_logging(
 ) -> StructuredLoggingHandle:
     """Install or reuse the process-global structured logging handler."""
     with _HANDLER_LOCK:
-        root_logger = logging.getLogger()
-        for handler in root_logger.handlers:
+        target_logger = logging.getLogger(_LOGGER_NAME)
+        for handler in target_logger.handlers:
             if not isinstance(handler, StructuredLogHandler):
                 continue
             if Path(handler.db_path) == Path(db_path):
-                handler._ref_count += 1
+                handler.claim_handle()
                 return StructuredLoggingHandle(handler)
             raise RuntimeError(
                 "Reflexio structured logging is already installed for "
@@ -308,8 +312,8 @@ def install_structured_logging(
 
         store = StructuredLogStore(db_path, row_limit=row_limit)
         handler = StructuredLogHandler(store)
-        handler._ref_count = 1
-        root_logger.addHandler(handler)
+        handler.claim_handle()
+        target_logger.addHandler(handler)
         return StructuredLoggingHandle(handler)
 
 
@@ -325,3 +329,7 @@ def _cap(value: str, max_chars: int) -> str:
     if len(value) <= max_chars:
         return value
     return value[:max_chars]
+
+
+def _escape_like(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")

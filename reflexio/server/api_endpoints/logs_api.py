@@ -7,13 +7,18 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
-from reflexio.models.api_schema.logs_schema import GetLogsResponse, LogEventResponse
+from reflexio.models.api_schema.logs_schema import (
+    LOG_LEVEL_VALUES,
+    GetLogsResponse,
+    LogEventResponse,
+)
 from reflexio.server.auth import default_get_org_id
 
 router = APIRouter(prefix="/api", tags=["logs"])
 
-_VALID_LEVELS = frozenset({"warning", "error", "critical"})
+_VALID_LEVELS = frozenset(LOG_LEVEL_VALUES)
 _DEFAULT_LEVELS = {"error", "critical"}
+_MAX_SEARCH_CHARS = 256
 
 
 @router.get("/logs", response_model=GetLogsResponse)
@@ -22,7 +27,7 @@ def get_logs(
     _org_id: Annotated[str, Depends(default_get_org_id)],
     levels: Annotated[str | None, Query()] = None,
     since: Annotated[str | None, Query()] = None,
-    q: Annotated[str | None, Query()] = None,
+    q: Annotated[str | None, Query(max_length=_MAX_SEARCH_CHARS)] = None,
     limit: Annotated[str | None, Query()] = None,
 ) -> GetLogsResponse:
     """Return structured log events newest-first."""
@@ -39,7 +44,7 @@ def get_logs(
     events = handle.query(
         levels=parsed_levels,
         since=parsed_since,
-        q=q.strip() if q and q.strip() else None,
+        q=_normalize_search(q),
         limit=parsed_limit,
     )
     return GetLogsResponse(
@@ -70,6 +75,13 @@ def _parse_levels(raw: str | None) -> set[str]:
             detail=f"Unsupported log level(s): {', '.join(unknown)}",
         )
     return set(parts)
+
+
+def _normalize_search(raw: str | None) -> str | None:
+    if raw is None:
+        return None
+    value = raw.strip()
+    return value or None
 
 
 def _parse_since(raw: str | None) -> datetime | None:

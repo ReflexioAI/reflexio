@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Logs, RefreshCw, Search, TriangleAlert } from "lucide-react";
+import { ArrowDownUp, Logs, RefreshCw, Search, TriangleAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -18,10 +18,12 @@ const LOG_LEVELS = ["warning", "error", "critical"] as const;
 const TIME_WINDOWS = ["1h", "24h", "all"] as const;
 const DEFAULT_LEVELS = ["error", "critical"] as const;
 const DEFAULT_WINDOW = "24h" as const;
+const DEFAULT_SORT = "newest" as const;
 const RESULT_LIMIT = 200;
 
 type LogLevel = (typeof LOG_LEVELS)[number];
 type TimeWindow = (typeof TIME_WINDOWS)[number];
+type SortOrder = "newest" | "oldest";
 
 interface LogItem {
   timestamp: string;
@@ -100,24 +102,22 @@ function getErrorMessage(payload: unknown, fallback: string) {
     return payload;
   }
 
-  if (
-    payload &&
-    typeof payload === "object" &&
-    "detail" in payload &&
-    typeof payload.detail === "string" &&
-    payload.detail.trim()
-  ) {
-    return payload.detail;
+  if (!payload || typeof payload !== "object") {
+    return fallback;
   }
 
-  if (
-    payload &&
-    typeof payload === "object" &&
-    "message" in payload &&
-    typeof payload.message === "string" &&
-    payload.message.trim()
-  ) {
-    return payload.message;
+  if ("detail" in payload && typeof payload.detail === "string") {
+    const detail = payload.detail.trim();
+    if (detail) {
+      return detail;
+    }
+  }
+
+  if ("message" in payload && typeof payload.message === "string") {
+    const message = payload.message.trim();
+    if (message) {
+      return message;
+    }
   }
 
   return fallback;
@@ -130,12 +130,17 @@ function getWindowLabel(window: TimeWindow) {
   return window;
 }
 
+function getSortLabel(order: SortOrder) {
+  return order === "newest" ? "Newest first" : "Oldest first";
+}
+
 export function LogsDashboard() {
   const { apiEndpoint } = useSettings();
   const [selectedLevels, setSelectedLevels] = useState<LogLevel[]>([
     ...DEFAULT_LEVELS,
   ]);
   const [timeWindow, setTimeWindow] = useState<TimeWindow>(DEFAULT_WINDOW);
+  const [sortOrder, setSortOrder] = useState<SortOrder>(DEFAULT_SORT);
   const [searchValue, setSearchValue] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [items, setItems] = useState<LogItem[]>([]);
@@ -175,10 +180,23 @@ export function LogsDashboard() {
     return `${baseUrl}/api/logs?${params.toString()}`;
   }, [apiEndpoint, debouncedSearch, levelsParam, timeWindow]);
 
+  const displayItems = useMemo(() => {
+    const sorted = [...items].sort((left, right) => {
+      const leftTime = new Date(left.timestamp).getTime();
+      const rightTime = new Date(right.timestamp).getTime();
+      return sortOrder === "newest"
+        ? rightTime - leftTime
+        : leftTime - rightTime;
+    });
+    return sorted;
+  }, [items, sortOrder]);
+
   const loadLogs = useCallback(
     async (signal: AbortSignal) => {
       setLoading(true);
       setError(null);
+      setItems([]);
+      setResponseLimit(RESULT_LIMIT);
 
       try {
         const response = await fetch(requestUrl, { signal });
@@ -231,17 +249,12 @@ export function LogsDashboard() {
   const toggleLevel = useCallback((level: LogLevel) => {
     setSelectedLevels((current) => {
       if (current.includes(level)) {
-        if (current.length === 1) {
-          return current;
-        }
-        return LOG_LEVELS.filter(
-          (candidate) => candidate !== level && current.includes(candidate)
-        );
+        return current.length > 1
+          ? current.filter((candidate) => candidate !== level)
+          : current;
       }
 
-      return LOG_LEVELS.filter(
-        (candidate) => current.includes(candidate) || candidate === level
-      );
+      return [...current, level];
     });
   }, []);
 
@@ -309,7 +322,10 @@ export function LogsDashboard() {
                 value={timeWindow}
                 onValueChange={(value) => setTimeWindow(value as TimeWindow)}
               >
-                <SelectTrigger className="h-7 min-w-20 text-xs">
+                <SelectTrigger
+                  className="h-7 min-w-20 text-xs"
+                  aria-label="Time window"
+                >
                   <SelectValue placeholder="Window" />
                 </SelectTrigger>
                 <SelectContent>
@@ -321,11 +337,27 @@ export function LogsDashboard() {
                 </SelectContent>
               </Select>
 
+              <Button
+                type="button"
+                variant="outline"
+                size="xs"
+                aria-label={`Sort logs: ${getSortLabel(sortOrder)}`}
+                onClick={() =>
+                  setSortOrder((current) =>
+                    current === "newest" ? "oldest" : "newest"
+                  )
+                }
+              >
+                <ArrowDownUp className="size-3.5" />
+                {getSortLabel(sortOrder)}
+              </Button>
+
               <div className="relative min-w-52 flex-1">
                 <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
                 <Input
                   value={searchValue}
                   onChange={(event) => setSearchValue(event.target.value)}
+                  aria-label="Search logs"
                   placeholder="Search logs"
                   className="h-7 pl-8 text-xs"
                 />
@@ -377,7 +409,7 @@ export function LogsDashboard() {
                     </td>
                   </tr>
                 ) : (
-                  items.map((item, index) => {
+                  displayItems.map((item, index) => {
                     return (
                       <tr
                         key={`${item.timestamp}:${index}`}
