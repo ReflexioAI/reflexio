@@ -31,6 +31,7 @@ from unittest.mock import patch
 import pytest
 
 import reflexio.server.services.storage.sqlite_storage._playbook as _playbook_mod
+import reflexio.server.services.storage.sqlite_storage.playbook._user as _user_playbook_mod
 from reflexio.models.api_schema.domain.entities import AgentPlaybook, UserPlaybook
 from reflexio.models.api_schema.domain.enums import Status
 from reflexio.server.services.storage.error import StorageError
@@ -192,7 +193,7 @@ class TestSupersedeUserPlaybooksByIds:
 
         with (
             patch.object(
-                _playbook_mod,
+                _user_playbook_mod,
                 "_emit_supersede_user_playbook",
                 side_effect=RuntimeError("simulated emit failure"),
             ),

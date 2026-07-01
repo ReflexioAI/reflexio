@@ -33,12 +33,14 @@ from ._retrieval_log import RetrievalLogMixin
 from ._shadow_verdicts import ShadowVerdictsMixin
 from ._share_links import ShareLinkMixin
 from ._stall_state import StallStateMixin
+from .playbook import UserPlaybookStoreMixin
 
 
 class BaseStorage(
     AgentRunMixin,
     ProfileMixin,
     RequestMixin,
+    UserPlaybookStoreMixin,
     PlaybookMixin,
     RetrievalLogMixin,
     GovernanceMixin,
@@ -247,6 +249,7 @@ __all__ = [
     "PendingToolCallStatus",
     "PendingToolCallUpsertResult",
     "PlaybookMixin",
+    "UserPlaybookStoreMixin",
     "RetrievalLogMixin",
     "PriorAnswerMatch",
     "RunToolDependencyKind",
