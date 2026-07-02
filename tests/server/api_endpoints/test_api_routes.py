@@ -128,11 +128,7 @@ class TestPublishInteraction:
 
         assert response.status_code == 200
         add_user_interaction.assert_called_once()
-        assert add_user_interaction.call_args.kwargs["use_publish_limiter"] is True
-        assert (
-            add_user_interaction.call_args.kwargs["publish_limiter_wait_forever"]
-            is False
-        )
+        assert add_user_interaction.call_args.kwargs["defer_learning"] is True
 
     def test_publish_missing_body_returns_422(self, client):
         response = client.post("/api/publish_interaction")
@@ -318,7 +314,9 @@ class TestUpdateConfigRoute:
         existing = self._existing_config()
         self._wire_mock(mock_reflexio, existing)
 
-        with patch("reflexio.server.cache.reflexio_cache.invalidate_reflexio_cache") as mock_invalidate:
+        with patch(
+            "reflexio.server.cache.reflexio_cache.invalidate_reflexio_cache"
+        ) as mock_invalidate:
             response = client.post(
                 "/api/update_config",
                 json={"window_size": 25},
@@ -383,7 +381,9 @@ class TestUpdateConfigRoute:
             success=False, msg="storage validation failed"
         )
 
-        with patch("reflexio.server.cache.reflexio_cache.invalidate_reflexio_cache") as mock_invalidate:
+        with patch(
+            "reflexio.server.cache.reflexio_cache.invalidate_reflexio_cache"
+        ) as mock_invalidate:
             response = client.post(
                 "/api/update_config",
                 json={"window_size": 25},

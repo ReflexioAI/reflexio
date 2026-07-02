@@ -1,7 +1,7 @@
 import datetime
 import tempfile
 from datetime import UTC
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from pydantic import ValidationError
@@ -140,6 +140,105 @@ def test_publish_request_tagging_schedule_failure_is_best_effort(mock_llm_respon
         assert result.request_id == request_id
         assert generation_service.storage is not None
         assert generation_service.storage.get_request(request_id) is not None
+
+
+def test_defer_learning_persists_and_enqueues_without_inline_extractors(
+    mock_llm_responses,
+):
+    user_id = "test_user_id"
+    org_id = "test_org"
+    session_id = "test_session_id"
+    request_id = "deferred-request-id"
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        generation_service = GenerationService(
+            llm_client=LiteLLMClient(LiteLLMConfig(model="gpt-4o-mini")),
+            request_context=RequestContext(org_id=org_id, storage_base_dir=temp_dir),
+        )
+        request = PublishUserInteractionRequest(
+            request_id=request_id,
+            user_id=user_id,
+            interaction_data_list=[
+                InteractionData(
+                    content="test interaction",
+                    created_at=int(datetime.datetime.now(UTC).timestamp()),
+                )
+            ],
+            session_id=session_id,
+        )
+        usage_events = []
+
+        with (
+            patch.object(
+                generation_service, "_schedule_group_evaluation_if_needed"
+            ) as schedule_eval,
+            patch(
+                "reflexio.server.services.publish_learning_worker.enqueue_publish_learning",
+                return_value=True,
+            ) as enqueue_learning,
+            patch(
+                "reflexio.server.services.generation_service.ProfileGenerationService",
+                side_effect=AssertionError("profile extraction should be deferred"),
+            ),
+            patch(
+                "reflexio.server.services.generation_service.PlaybookGenerationService",
+                side_effect=AssertionError("playbook extraction should be deferred"),
+            ),
+            patch(
+                "reflexio.server.services.generation_service.record_usage_event",
+                side_effect=lambda **kwargs: usage_events.append(kwargs),
+            ),
+        ):
+            result = generation_service.run(request, defer_learning=True)
+
+        assert result.request_id == request_id
+        assert generation_service.storage is not None
+        assert generation_service.storage.get_request(request_id) is not None
+        assert enqueue_learning.call_count == 1
+        assert schedule_eval.call_count == 1
+        success_event = next(
+            event
+            for event in usage_events
+            if event["event_name"] == "publish_request_succeeded"
+        )
+        assert success_event["metadata"]["defer_learning"] is True
+        assert success_event["metadata"]["learning_queued"] is True
+
+
+def test_defer_learning_stall_skips_learning_enqueue(mock_llm_responses):
+    with tempfile.TemporaryDirectory() as temp_dir:
+        generation_service = GenerationService(
+            llm_client=LiteLLMClient(LiteLLMConfig(model="gpt-4o-mini")),
+            request_context=RequestContext(
+                org_id="test_org", storage_base_dir=temp_dir
+            ),
+        )
+        request = PublishUserInteractionRequest(
+            user_id="user-1",
+            interaction_data_list=[
+                InteractionData(
+                    content="test interaction",
+                    created_at=int(datetime.datetime.now(UTC).timestamp()),
+                )
+            ],
+            session_id="session-1",
+        )
+
+        with (
+            patch.object(
+                generation_service,
+                "_active_learning_stall_warning",
+                return_value="learning paused",
+            ),
+            patch(
+                "reflexio.server.services.publish_learning_worker.enqueue_publish_learning",
+                MagicMock(side_effect=AssertionError("should not enqueue")),
+            ),
+        ):
+            result = generation_service.run(request, defer_learning=True)
+
+    assert result.request_id is not None
+    assert result.warnings == ["learning paused"]
 
 
 def test_publish_request_rejects_empty_caller_request_id():

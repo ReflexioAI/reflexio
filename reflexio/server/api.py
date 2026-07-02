@@ -401,6 +401,11 @@ def create_app(
                 scheduler.stop()
             if gc_scheduler is not None:
                 gc_scheduler.stop()
+            from reflexio.server.services.publish_learning_worker import (
+                stop_publish_learning_worker,
+            )
+
+            stop_publish_learning_worker(timeout=5.0)
 
     app = FastAPI(docs_url="/docs", lifespan=lifespan)
 

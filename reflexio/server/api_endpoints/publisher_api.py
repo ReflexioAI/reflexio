@@ -65,6 +65,7 @@ def add_user_interaction(
     *,
     use_publish_limiter: bool = True,
     publish_limiter_wait_forever: bool = True,
+    defer_learning: bool = False,
 ) -> PublishUserInteractionResponse:
     """Add user interaction
 
@@ -75,6 +76,8 @@ def add_user_interaction(
             post-write learning pipeline.
         publish_limiter_wait_forever (bool): Whether GenerationService should queue
             indefinitely for that post-write learning limiter.
+        defer_learning (bool): Whether to enqueue post-persist learning instead
+            of running it inline.
 
     Returns:
         PublishUserInteractionResponse: Response containing success status and message
@@ -88,6 +91,7 @@ def add_user_interaction(
         request=request,
         use_publish_limiter=use_publish_limiter,
         publish_limiter_wait_forever=publish_limiter_wait_forever,
+        defer_learning=defer_learning,
     )
 
 

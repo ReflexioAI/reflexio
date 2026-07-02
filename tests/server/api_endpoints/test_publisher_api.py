@@ -62,6 +62,7 @@ class TestAddUserInteraction:
             request=request,
             use_publish_limiter=True,
             publish_limiter_wait_forever=True,
+            defer_learning=False,
         )
         assert result is expected
 
