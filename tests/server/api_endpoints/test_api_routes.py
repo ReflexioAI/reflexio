@@ -128,6 +128,11 @@ class TestPublishInteraction:
 
         assert response.status_code == 200
         add_user_interaction.assert_called_once()
+        assert add_user_interaction.call_args.kwargs["use_publish_limiter"] is True
+        assert (
+            add_user_interaction.call_args.kwargs["publish_limiter_wait_forever"]
+            is False
+        )
 
     def test_publish_missing_body_returns_422(self, client):
         response = client.post("/api/publish_interaction")
