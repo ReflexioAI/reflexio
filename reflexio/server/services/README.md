@@ -23,6 +23,7 @@ strings before deleting old import paths in the same PR.
 | File | Purpose |
 |------|---------|
 | `generation_service.py` | `GenerationService` — saves interactions, runs profile + playbook generation in parallel (ThreadPoolExecutor), schedules deferred evaluation when `session_id` is present. |
+| `publish_learning_worker.py` | Deferred post-persist publish learning worker — queues async publish learning after durable interaction writes and requeues under publish limiter pressure. |
 | `base_generation_service.py` | `BaseGenerationService` — abstract base; the **Service Pattern** (load configs → create actors → run in parallel → save results). Per-extractor timeout `EXTRACTOR_TIMEOUT_SECONDS = 300`. |
 | `operation_state_utils.py` | `OperationStateManager` — all `_operation_state` access (progress, concurrency locks, extractor/aggregator bookmarks, cluster fingerprints, cancellation). |
 | `extractor_config_utils.py`, `extractor_interaction_utils.py` | Filter extractors by source / `allow_manual_trigger` / names; per-extractor stride + window + bookmark handling. |

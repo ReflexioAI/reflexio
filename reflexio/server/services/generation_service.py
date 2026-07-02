@@ -147,6 +147,7 @@ class GenerationService:
         *,
         use_publish_limiter: bool = True,
         publish_limiter_wait_forever: bool = True,
+        defer_learning: bool = False,
     ) -> GenerationServiceResult:
         """
         Process a user interaction request by storing interactions and triggering generation services.
@@ -168,6 +169,8 @@ class GenerationService:
                 limiter to avoid waiting after storage side effects.
             publish_limiter_wait_forever: Whether to queue indefinitely for the
                 post-write learning limiter when ``use_publish_limiter`` is true.
+            defer_learning: Whether to persist the publish and enqueue learning
+                for a process-local worker instead of running it inline.
 
         Returns:
             GenerationServiceResult: The request_id assigned to this publish call
@@ -305,6 +308,51 @@ class GenerationService:
                 )
                 return result
 
+            if defer_learning:
+                from reflexio.server.services.publish_learning_worker import (
+                    PublishLearningJob,
+                    enqueue_publish_learning,
+                )
+
+                self._schedule_group_evaluation_if_needed(
+                    new_request=new_request,
+                    user_id=user_id,
+                    agent_version=agent_version,
+                    source=source,
+                )
+                learning_queued = enqueue_publish_learning(
+                    PublishLearningJob(
+                        org_id=self.org_id,
+                        user_id=user_id,
+                        request_id=request_id,
+                        session_id=new_request.session_id,
+                        source=source,
+                        agent_version=agent_version,
+                        force_extraction=publish_user_interaction_request.force_extraction,
+                        skip_aggregation=publish_user_interaction_request.skip_aggregation,
+                    )
+                )
+                record_usage_event(
+                    org_id=self.org_id,
+                    user_id=user_id,
+                    request_id=request_id,
+                    session_id=new_request.session_id,
+                    source=source,
+                    agent_version=agent_version,
+                    backend="classic",
+                    event_name="publish_request_succeeded",
+                    event_category="publish",
+                    outcome="success",
+                    count_value=len(new_interactions),
+                    duration_ms=int((time.perf_counter() - publish_start) * 1000),
+                    metadata={
+                        "defer_learning": True,
+                        "learning_queued": learning_queued,
+                        "warning_count": len(result.warnings),
+                    },
+                )
+                return result
+
             # The durable write above must not sit behind the publish limiter:
             # async API callers have already received success=True. Throttle only
             # the post-write learning pipeline so a hung LLM cannot silently drop
@@ -319,114 +367,15 @@ class GenerationService:
                 else nullcontext()
             )
             with learning_limit:
-                # Reflection runs as its own sliding-window step BEFORE the
-                # extractor pool spins up, so any replacements it makes are
-                # visible to the extractors when they retrieve existing
-                # profile/playbook context. Wrapped in a broad except so a
-                # reflection bug never breaks the publish.
-                self._maybe_run_reflection(
+                self._run_learning_steps(
                     user_id=user_id,
                     request_id=request_id,
                     agent_version=agent_version,
-                    source=source,
-                )
-
-                # Create generation services and requests
-                # Each service writes to separate storage tables and has no dependencies on others
-                profile_generation_service = ProfileGenerationService(
-                    llm_client=self.client, request_context=self.request_context
-                )
-                profile_generation_request = ProfileGenerationRequest(
-                    user_id=user_id,
-                    request_id=request_id,
-                    source=source,
                     force_extraction=publish_user_interaction_request.force_extraction,
-                )
-
-                playbook_generation_service = PlaybookGenerationService(
-                    llm_client=self.client,
-                    request_context=self.request_context,
                     skip_aggregation=publish_user_interaction_request.skip_aggregation,
-                )
-                playbook_generation_request = PlaybookGenerationRequest(
-                    request_id=request_id,
-                    agent_version=agent_version,
-                    user_id=user_id,
                     source=source,
-                    force_extraction=publish_user_interaction_request.force_extraction,
+                    result=result,
                 )
-
-                # Run profile and playbook generation services in parallel
-                # Each service creates its own internal ThreadPoolExecutor for extractors
-                # This is safe because we create separate, independent pool instances
-                # Uses manual executor management to avoid blocking on shutdown(wait=True)
-                # when threads are hung on LLM calls
-                executor = ThreadPoolExecutor(max_workers=2)
-                try:
-                    # Each thread needs its own context copy — Context.run() is non-reentrant
-                    futures = [
-                        executor.submit(
-                            contextvars.copy_context().run,
-                            profile_generation_service.run,
-                            profile_generation_request,
-                        ),
-                        executor.submit(
-                            contextvars.copy_context().run,
-                            playbook_generation_service.run,
-                            playbook_generation_request,
-                        ),
-                    ]
-
-                    # Collect results and handle any exceptions
-                    # Each service failure is logged but doesn't block others
-                    service_names = ["profile_generation", "playbook_generation"]
-                    for future, service_name in zip(
-                        futures, service_names, strict=True
-                    ):
-                        try:
-                            future.result(timeout=GENERATION_SERVICE_TIMEOUT_SECONDS)
-                        except FuturesTimeoutError:  # noqa: PERF203
-                            msg = f"{service_name} timed out after {GENERATION_SERVICE_TIMEOUT_SECONDS}s"
-                            with sentry_tags(
-                                subsystem="generation",
-                                service=service_name,
-                                request_id=request_id,
-                                error_type="timeout",
-                            ):
-                                logger.error("%s for request %s", msg, request_id)
-                            result.warnings.append(msg)
-                        except Exception as e:
-                            msg = f"{service_name} failed: {e}"
-                            with sentry_tags(
-                                subsystem="generation",
-                                service=service_name,
-                                request_id=request_id,
-                                error_type=type(e).__name__,
-                            ):
-                                logger.exception(
-                                    "Generation service failed for request %s",
-                                    request_id,
-                                )
-                            result.warnings.append(msg)
-                finally:
-                    executor.shutdown(wait=False, cancel_futures=True)
-
-                # Tagging runs an LLM call per newly generated entity, so defer it off
-                # the publish path. The scheduler debounces bursts and is idempotent
-                # (already-tagged entities are skipped).
-                try:
-                    schedule_tagging(
-                        org_id=self.org_id,
-                        user_id=user_id,
-                        agent_version=agent_version,
-                        request_context=self.request_context,
-                        llm_client=self.client,
-                    )
-                except Exception:
-                    logger.exception(
-                        "Failed to schedule tagging for publish request %s",
-                        request_id,
-                    )
 
                 # Schedule delayed group evaluation for the required session.
                 self._schedule_group_evaluation_if_needed(
@@ -482,8 +431,140 @@ class GenerationService:
             raise
 
     # ===============================
+    # deferred learning
+    # ===============================
+
+    def run_deferred_learning(
+        self,
+        *,
+        user_id: str,
+        request_id: str,
+        session_id: str | None,  # noqa: ARG002 - kept for worker telemetry symmetry
+        source: str | None,
+        agent_version: str,
+        force_extraction: bool,
+        skip_aggregation: bool,
+    ) -> GenerationServiceResult:
+        result = GenerationServiceResult(request_id=request_id)
+        self._run_learning_steps(
+            user_id=user_id,
+            request_id=request_id,
+            agent_version=agent_version,
+            force_extraction=force_extraction,
+            skip_aggregation=skip_aggregation,
+            source=source,
+            result=result,
+        )
+        return result
+
+    # ===============================
     # private methods
     # ===============================
+
+    def _run_learning_steps(
+        self,
+        *,
+        user_id: str,
+        request_id: str,
+        agent_version: str,
+        force_extraction: bool,
+        skip_aggregation: bool,
+        source: str | None,
+        result: GenerationServiceResult,
+    ) -> None:
+        # Reflection runs as its own sliding-window step BEFORE the extractor
+        # pool spins up, so replacements are visible to extractors.
+        self._maybe_run_reflection(
+            user_id=user_id,
+            request_id=request_id,
+            agent_version=agent_version,
+            source=source,
+        )
+
+        profile_generation_service = ProfileGenerationService(
+            llm_client=self.client, request_context=self.request_context
+        )
+        profile_generation_request = ProfileGenerationRequest(
+            user_id=user_id,
+            request_id=request_id,
+            source=source,
+            force_extraction=force_extraction,
+        )
+
+        playbook_generation_service = PlaybookGenerationService(
+            llm_client=self.client,
+            request_context=self.request_context,
+            skip_aggregation=skip_aggregation,
+        )
+        playbook_generation_request = PlaybookGenerationRequest(
+            request_id=request_id,
+            agent_version=agent_version,
+            user_id=user_id,
+            source=source,
+            force_extraction=force_extraction,
+        )
+
+        executor = ThreadPoolExecutor(max_workers=2)
+        try:
+            futures = [
+                executor.submit(
+                    contextvars.copy_context().run,
+                    profile_generation_service.run,
+                    profile_generation_request,
+                ),
+                executor.submit(
+                    contextvars.copy_context().run,
+                    playbook_generation_service.run,
+                    playbook_generation_request,
+                ),
+            ]
+
+            service_names = ["profile_generation", "playbook_generation"]
+            for future, service_name in zip(futures, service_names, strict=True):
+                try:
+                    future.result(timeout=GENERATION_SERVICE_TIMEOUT_SECONDS)
+                except FuturesTimeoutError:  # noqa: PERF203
+                    msg = (
+                        f"{service_name} timed out after "
+                        f"{GENERATION_SERVICE_TIMEOUT_SECONDS}s"
+                    )
+                    with sentry_tags(
+                        subsystem="generation",
+                        service=service_name,
+                        request_id=request_id,
+                        error_type="timeout",
+                    ):
+                        logger.error("%s for request %s", msg, request_id)
+                    result.warnings.append(msg)
+                except Exception as e:
+                    msg = f"{service_name} failed: {e}"
+                    with sentry_tags(
+                        subsystem="generation",
+                        service=service_name,
+                        request_id=request_id,
+                        error_type=type(e).__name__,
+                    ):
+                        logger.exception(
+                            "Generation service failed for request %s",
+                            request_id,
+                        )
+                    result.warnings.append(msg)
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
+
+        try:
+            schedule_tagging(
+                org_id=self.org_id,
+                user_id=user_id,
+                agent_version=agent_version,
+                request_context=self.request_context,
+                llm_client=self.client,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to schedule tagging for publish request %s",
+                request_id,
+            )
 
     def _schedule_group_evaluation_if_needed(
         self,

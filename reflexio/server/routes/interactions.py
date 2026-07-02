@@ -84,8 +84,7 @@ def publish_user_interaction(
             publisher_api.add_user_interaction(
                 org_id=org_id,
                 request=payload,
-                use_publish_limiter=True,
-                publish_limiter_wait_forever=False,
+                defer_learning=True,
             )
         except Exception:
             logger.exception("Background publish failed for org %s", org_id)

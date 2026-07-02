@@ -62,6 +62,11 @@ def _limit_for(operation: OperationName) -> int:
     return _DEFAULT_LIMITS[operation]
 
 
+def operation_limit_value(operation: OperationName) -> int:
+    """Return the configured concurrency limit for an operation."""
+    return _limit_for(operation)
+
+
 def _timeout_for(operation: OperationName) -> float:
     raw = os.getenv(_env_key(operation, "TIMEOUT_SECONDS"), "").strip()
     if raw:
@@ -403,6 +408,7 @@ def operation_limit(
     *,
     timeout_seconds: float | None = None,
     wait_forever: bool = False,
+    log_timeout: bool = True,
 ) -> Any:
     """Acquire the per-org limiter for an operation, recording wait metrics."""
     state = _state_for(org_id, operation)
@@ -448,7 +454,7 @@ def operation_limit(
                 limit=state.limit,
                 active=active,
             )
-            if operation == "publish":
+            if operation == "publish" and log_timeout:
                 logger.warning(
                     "publish_limiter_timeout org_id=%s limit=%s active=%s "
                     "waiting=%s wait_ms=%s timeout_seconds=%s hardware=%s",
@@ -504,12 +510,14 @@ def run_with_operation_limit[T](
     fn: Callable[[], T],
     timeout_seconds: float | None = None,
     wait_forever: bool = False,
+    log_timeout: bool = True,
 ) -> T:
     with operation_limit(
         org_id,
         operation,
         timeout_seconds=timeout_seconds,
         wait_forever=wait_forever,
+        log_timeout=log_timeout,
     ):
         return fn()
 

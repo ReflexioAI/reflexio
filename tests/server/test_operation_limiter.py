@@ -140,6 +140,43 @@ def test_operation_limiter_wait_forever_queues_until_slot_available(monkeypatch)
     )
 
 
+def test_operation_limiter_can_suppress_publish_timeout_log(monkeypatch, caplog):
+    monkeypatch.setenv("REFLEXIO_PUBLISH_CONCURRENCY_LIMIT", "1")
+    events: list[UsageEvent] = []
+    configure_usage_event_recorder(events.append)
+    ready = threading.Event()
+    release = threading.Event()
+
+    def _hold_limit() -> None:
+        with operation_limit("org_1", "publish", timeout_seconds=0.1):
+            ready.set()
+            release.wait(timeout=5)
+
+    holder = threading.Thread(target=_hold_limit)
+    holder.start()
+    try:
+        assert ready.wait(timeout=5)
+        with (
+            caplog.at_level(
+                logging.WARNING, logger="reflexio.server.operation_limiter"
+            ),
+            pytest.raises(TimeoutError),
+            operation_limit(
+                "org_1",
+                "publish",
+                timeout_seconds=0.01,
+                log_timeout=False,
+            ),
+        ):
+            pass
+    finally:
+        release.set()
+        holder.join(timeout=5)
+
+    assert "publish_limiter_timeout" not in caplog.text
+    assert any(event.event_name == "limiter_acquire_timeout" for event in events)
+
+
 def test_publish_hardware_capacity_snapshot_reports_hardware_guidance(monkeypatch):
     monkeypatch.setenv("REFLEXIO_PUBLISH_CONCURRENCY_LIMIT", "7")
     monkeypatch.setenv("REFLEXIO_PUBLISH_CONCURRENCY_TIMEOUT_SECONDS", "2.5")

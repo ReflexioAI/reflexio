@@ -56,6 +56,7 @@ class InteractionsMixin(ReflexioBase):
         *,
         use_publish_limiter: bool = True,
         publish_limiter_wait_forever: bool = True,
+        defer_learning: bool = False,
     ) -> PublishUserInteractionResponse:
         """Publish user interactions.
 
@@ -65,6 +66,8 @@ class InteractionsMixin(ReflexioBase):
                 post-write learning pipeline.
             publish_limiter_wait_forever: Whether GenerationService should queue
                 indefinitely for that post-write learning limiter.
+            defer_learning: Whether to enqueue post-persist learning instead of
+                running it inline.
 
         Returns:
             PublishUserInteractionResponse: Response containing success status and message
@@ -98,6 +101,7 @@ class InteractionsMixin(ReflexioBase):
                 request,
                 use_publish_limiter=use_publish_limiter,
                 publish_limiter_wait_forever=publish_limiter_wait_forever,
+                defer_learning=defer_learning,
             )
             after_profiles = _safe_count(storage.count_all_profiles)
             after_playbooks = _safe_count(storage.count_user_playbooks)
