@@ -47,9 +47,11 @@ from reflexio.server.llm.litellm_client import (
     LLMHardTimeoutError,
     StructuredOutputParseError,
     _CompletionErrorSnapshot,
+    _extract_json_from_string,
     _get_embedding_encoding,
     _get_embedding_limit,
     _litellm_completion_worker,
+    _sanitize_json_string,
     _truncate_for_embedding,
     create_litellm_client,
 )
@@ -714,7 +716,7 @@ class TestEmbeddingDefaultResolution:
             return "text-embedding-3-small"
 
         monkeypatch.setattr(
-            "reflexio.server.llm.litellm_client.resolve_model_name",
+            "reflexio.server.llm._litellm_embedding.resolve_model_name",
             _fake_resolve,
         )
 
@@ -741,17 +743,17 @@ class TestEmbeddingDefaultResolution:
         # in-process LocalEmbedder branch this test exercises. Force the service
         # gate off.
         monkeypatch.setattr(
-            "reflexio.server.llm.litellm_client.should_use_embedding_service",
+            "reflexio.server.llm._litellm_embedding.should_use_embedding_service",
             lambda _model: False,
         )
         monkeypatch.setattr(
-            "reflexio.server.llm.litellm_client._is_chromadb_importable",
+            "reflexio.server.llm._litellm_embedding._is_chromadb_importable",
             lambda: True,
         )
         fake_embedder = MagicMock()
         fake_embedder.embed.return_value = [[0.9, 0.8, 0.7]]
         monkeypatch.setattr(
-            "reflexio.server.llm.litellm_client.LocalEmbedder.get",
+            "reflexio.server.llm._litellm_embedding.LocalEmbedder.get",
             classmethod(lambda _cls: fake_embedder),
         )
 
@@ -806,7 +808,7 @@ class TestEmbeddingTruncation:
         # Patch the registry so the assertion doesn't ride on whatever value
         # the installed litellm build happens to report today.
         with patch(
-            "reflexio.server.llm.litellm_client.litellm.get_model_info",
+            "reflexio.server.llm._litellm_embedding.litellm.get_model_info",
             return_value={"mode": "embedding", "max_input_tokens": 8191},
         ):
             assert _get_embedding_limit("text-embedding-3-small") == 8191
@@ -841,7 +843,7 @@ class TestEmbeddingTruncation:
     def test_get_embedding_limit_variants(self, model, mock_kwargs, expected):
         """Exhaustive table of registry lookup + prefix-fallback outcomes."""
         with patch(
-            "reflexio.server.llm.litellm_client.litellm.get_model_info",
+            "reflexio.server.llm._litellm_embedding.litellm.get_model_info",
             **mock_kwargs,
         ):
             assert _get_embedding_limit(model) == expected
@@ -872,7 +874,7 @@ class TestEmbeddingTruncation:
         """Unknown non-OpenAI models skip truncation entirely."""
         text = "word " * 5000
         with patch(
-            "reflexio.server.llm.litellm_client.litellm.get_model_info",
+            "reflexio.server.llm._litellm_embedding.litellm.get_model_info",
             side_effect=Exception("unmapped"),
         ):
             result = _truncate_for_embedding(text, "mystery-provider/embed-v1")
@@ -1181,7 +1183,7 @@ class TestStrictStructuredOutputRequest:
             patch.object(
                 LiteLLMClient, "_supports_response_schema", return_value=False
             ),
-            patch("reflexio.server.llm.litellm_client.assert_provider_safe_schema"),
+            patch("reflexio.server.llm._litellm_structured_output.assert_provider_safe_schema"),
         ):
             params, _, _, _, _ = client._build_completion_params(
                 [{"role": "user", "content": "test"}],
@@ -1206,7 +1208,7 @@ class TestStrictStructuredOutputRequest:
         # Non-base double exercises the make_strict backstop; patch the
         # by-construction guard (it would raise under pytest) — see the sibling
         # test above for why.
-        with patch("reflexio.server.llm.litellm_client.assert_provider_safe_schema"):
+        with patch("reflexio.server.llm._litellm_structured_output.assert_provider_safe_schema"):
             params, _, _, _, _ = client._build_completion_params(
                 [{"role": "user", "content": "test"}],
                 response_format=_DiscriminatedOutput,
@@ -1395,36 +1397,36 @@ class TestExtractJsonFromString:
 
     def test_plain_json_object(self, client):
         content = '{"key": "value"}'
-        assert client._extract_json_from_string(content) == '{"key": "value"}'
+        assert _extract_json_from_string(content) == '{"key": "value"}'
 
     def test_json_in_markdown_block(self, client):
         content = '```json\n{"key": "value"}\n```'
-        result = client._extract_json_from_string(content)
+        result = _extract_json_from_string(content)
         assert result == '{"key": "value"}'
 
     def test_json_in_plain_code_block(self, client):
         content = '```\n{"key": "value"}\n```'
-        result = client._extract_json_from_string(content)
+        result = _extract_json_from_string(content)
         assert result == '{"key": "value"}'
 
     def test_json_array(self, client):
         content = "Some text before [1, 2, 3] some text after"
-        result = client._extract_json_from_string(content)
+        result = _extract_json_from_string(content)
         assert result == "[1, 2, 3]"
 
     def test_json_object_in_text(self, client):
         content = 'Here is the result: {"answer": 42} that is all'
-        result = client._extract_json_from_string(content)
+        result = _extract_json_from_string(content)
         assert result == '{"answer": 42}'
 
     def test_json_object_ignores_stray_braces_in_text(self, client):
         content = 'Result {not json}: {"answer": 42, "why": "{kept}"} trailing {x}'
-        result = client._extract_json_from_string(content)
+        result = _extract_json_from_string(content)
         assert result == '{"answer": 42, "why": "{kept}"}'
 
     def test_json_array_ignores_stray_brackets_in_text(self, client):
         content = 'Candidates [not json] then [{"answer": 42}] trailing [x]'
-        result = client._extract_json_from_string(content)
+        result = _extract_json_from_string(content)
         assert result == '[{"answer": 42}]'
 
     def test_json_object_with_markdown_fence_in_string(self, client):
@@ -1434,7 +1436,7 @@ class TestExtractJsonFromString:
                 "value": 42,
             }
         )
-        result = client._extract_json_from_string(content)
+        result = _extract_json_from_string(content)
         assert json.loads(result) == {
             "key": "Use:\n```bash\nsupabase start\n```",
             "value": 42,
@@ -1442,7 +1444,7 @@ class TestExtractJsonFromString:
 
     def test_no_json_returns_original(self, client):
         content = "plain text"
-        assert client._extract_json_from_string(content) == "plain text"
+        assert _extract_json_from_string(content) == "plain text"
 
 
 # ===================================================================
@@ -1458,32 +1460,32 @@ class TestSanitizeJsonString:
         return _build_client()
 
     def test_single_quotes_to_double(self, client):
-        result = client._sanitize_json_string("{'key': 'value'}")
+        result = _sanitize_json_string("{'key': 'value'}")
         parsed = json.loads(result)
         assert parsed == {"key": "value"}
 
     def test_python_booleans(self, client):
-        result = client._sanitize_json_string('{"flag": True, "other": False}')
+        result = _sanitize_json_string('{"flag": True, "other": False}')
         parsed = json.loads(result)
         assert parsed == {"flag": True, "other": False}
 
     def test_python_none(self, client):
-        result = client._sanitize_json_string('{"val": None}')
+        result = _sanitize_json_string('{"val": None}')
         parsed = json.loads(result)
         assert parsed == {"val": None}
 
     def test_trailing_commas(self, client):
-        result = client._sanitize_json_string('{"a": 1, "b": 2, }')
+        result = _sanitize_json_string('{"a": 1, "b": 2, }')
         parsed = json.loads(result)
         assert parsed == {"a": 1, "b": 2}
 
     def test_escaped_apostrophe_in_single_quoted(self, client):
-        result = client._sanitize_json_string("{'text': 'didn\\'t work'}")
+        result = _sanitize_json_string("{'text': 'didn\\'t work'}")
         parsed = json.loads(result)
         assert parsed["text"] == "didn't work"
 
     def test_double_quotes_inside_single_quoted_escaped(self, client):
-        result = client._sanitize_json_string("{'key': 'he said \"hello\"'}")
+        result = _sanitize_json_string("{'key': 'he said \"hello\"'}")
         parsed = json.loads(result)
         assert parsed["key"] == 'he said "hello"'
 
@@ -2125,29 +2127,25 @@ class TestSanitizeJsonEdgeCases:
 
     def test_nested_single_quotes(self):
         """Test nested single-quoted strings."""
-        client = _build_client()
-        result = client._sanitize_json_string("{'items': ['a', 'b', 'c']}")
+        result = _sanitize_json_string("{'items': ['a', 'b', 'c']}")
         parsed = json.loads(result)
         assert parsed == {"items": ["a", "b", "c"]}
 
     def test_trailing_comma_in_array(self):
         """Test trailing commas before closing bracket."""
-        client = _build_client()
-        result = client._sanitize_json_string('{"items": [1, 2, 3, ]}')
+        result = _sanitize_json_string('{"items": [1, 2, 3, ]}')
         parsed = json.loads(result)
         assert parsed == {"items": [1, 2, 3]}
 
     def test_mixed_python_values(self):
         """Test handling of mixed True/False/None values."""
-        client = _build_client()
-        result = client._sanitize_json_string('{"a": True, "b": False, "c": None}')
+        result = _sanitize_json_string('{"a": True, "b": False, "c": None}')
         parsed = json.loads(result)
         assert parsed == {"a": True, "b": False, "c": None}
 
     def test_boolean_inside_string_not_replaced(self):
         """Test that True/False inside strings are not replaced."""
-        client = _build_client()
-        result = client._sanitize_json_string('{"msg": "This is True story"}')
+        result = _sanitize_json_string('{"msg": "This is True story"}')
         parsed = json.loads(result)
         # "True" inside the string value should remain unchanged
         assert "True" in parsed["msg"]

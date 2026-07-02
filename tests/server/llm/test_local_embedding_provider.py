@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from reflexio.server.llm import _litellm_embedding
 from reflexio.server.llm.providers import local_embedding_provider as lep
 from reflexio.server.llm.providers.local_embedding_provider import (
     LocalEmbedder,
@@ -238,7 +239,7 @@ class TestLiteLLMClientShortCircuit:
         # is hermetic (no running daemon required).
         monkeypatch.setenv("CLAUDE_SMART_USE_LOCAL_EMBEDDING", "1")
         monkeypatch.setattr(
-            litellm_client,
+            _litellm_embedding,
             "get_service_embeddings",
             lambda texts, **_kwargs: [[0.0] * 512 for _ in texts],
         )
@@ -261,7 +262,7 @@ class TestLiteLLMClientShortCircuit:
         # embedding *service* (daemon) too. Mock the service call for hermeticity.
         monkeypatch.setenv("CLAUDE_SMART_USE_LOCAL_EMBEDDING", "1")
         monkeypatch.setattr(
-            litellm_client,
+            _litellm_embedding,
             "get_service_embeddings",
             lambda texts, **_kwargs: [[0.0] * 512 for _ in texts],
         )
@@ -359,7 +360,7 @@ class TestLiteLLMClientShortCircuit:
         monkeypatch.delenv("REFLEXIO_EMBEDDING_SERVICE_URL", raising=False)
         monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_EMBEDDING", raising=False)
         monkeypatch.setattr(
-            litellm_client, "should_use_embedding_service", lambda _model: False
+            _litellm_embedding, "should_use_embedding_service", lambda _model: False
         )
         monkeypatch.setattr(lep.importlib.util, "find_spec", lambda _name: None)
 
