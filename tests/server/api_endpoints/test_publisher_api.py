@@ -58,7 +58,11 @@ class TestAddUserInteraction:
 
         result = add_user_interaction(ORG_ID, request)
 
-        mock_reflexio.publish_interaction.assert_called_once_with(request=request)
+        mock_reflexio.publish_interaction.assert_called_once_with(
+            request=request,
+            use_publish_limiter=True,
+            publish_limiter_wait_forever=True,
+        )
         assert result is expected
 
     @patch(f"{MODULE}.validate_publish_user_interaction_request")
