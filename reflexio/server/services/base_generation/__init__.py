@@ -20,6 +20,9 @@ from reflexio.server.services.base_generation._status_change import (
     StatusChangeMixin,
     StatusChangeOperation,
 )
+from reflexio.server.services.base_generation._usage_billing import (
+    UsageBillingMixin,
+)
 
 __all__ = [
     "ConfigFilterMixin",
@@ -27,4 +30,5 @@ __all__ = [
     "ShouldRunPrecheckMixin",
     "StatusChangeMixin",
     "StatusChangeOperation",
+    "UsageBillingMixin",
 ]
