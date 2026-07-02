@@ -70,9 +70,18 @@ class TestPublishInteraction:
             success=True, message="Interaction processed"
         )
 
-        with patch(
-            "reflexio.server.api_endpoints.publisher_api.add_user_interaction",
-            return_value=mock_response,
+        def run_immediately(**kwargs):
+            return kwargs["fn"]()
+
+        with (
+            patch(
+                "reflexio.server.api.run_with_operation_limit",
+                side_effect=run_immediately,
+            ) as run_with_operation_limit,
+            patch(
+                "reflexio.server.api_endpoints.publisher_api.add_user_interaction",
+                return_value=mock_response,
+            ) as add_user_interaction,
         ):
             response = client.post(
                 "/api/publish_interaction",
@@ -82,6 +91,9 @@ class TestPublishInteraction:
         assert response.status_code == 200
         data = response.json()
         assert data["success"] is True
+        assert run_with_operation_limit.call_args.kwargs["operation"] == "publish"
+        add_user_interaction.assert_called_once()
+        assert add_user_interaction.call_args.kwargs["use_publish_limiter"] is False
 
     def test_async_publish_returns_queued(self, client, patched_reflexio):
         """Async mode returns immediate acknowledgement without calling publisher."""
@@ -94,26 +106,20 @@ class TestPublishInteraction:
         assert data["success"] is True
         assert "queued" in data["message"].lower()
 
-    def test_async_publish_does_not_wait_forever_for_limiter_capacity(
+    def test_async_publish_does_not_gate_durable_write_on_limiter(
         self, client, patched_reflexio
     ):
-        captured: dict[str, bool] = {}
-
-        def _fake_run_with_limit(**kwargs):
-            captured["wait_forever"] = kwargs["wait_forever"]
-            return kwargs["fn"]()
-
         with (
             patch(
                 "reflexio.server.api.run_with_operation_limit",
-                side_effect=_fake_run_with_limit,
+                side_effect=AssertionError("publish limiter should not wrap storage"),
             ),
             patch(
                 "reflexio.server.api_endpoints.publisher_api.add_user_interaction",
                 return_value=PublishUserInteractionResponse(
                     success=True, message="Interaction processed"
                 ),
-            ),
+            ) as add_user_interaction,
         ):
             response = client.post(
                 "/api/publish_interaction",
@@ -121,7 +127,7 @@ class TestPublishInteraction:
             )
 
         assert response.status_code == 200
-        assert captured["wait_forever"] is False
+        add_user_interaction.assert_called_once()
 
     def test_publish_missing_body_returns_422(self, client):
         response = client.post("/api/publish_interaction")

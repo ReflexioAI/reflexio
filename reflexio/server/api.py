@@ -686,31 +686,27 @@ def publish_user_interaction(
     _gate: None = Depends(default_billing_gate("learnings_generated")),  # noqa: B008
 ) -> PublishUserInteractionResponse:
     if wait_for_response:
-        # Process synchronously so the caller gets the real result
+        # Sync callers wait for the real result, so preserve bounded backpressure
+        # before any storage side effects. The inner service limiter is disabled
+        # because this route already owns the publish slot.
         return _run_limited_api(
             org_id,
             "publish",
-            lambda: publisher_api.add_user_interaction(org_id=org_id, request=payload),
+            lambda: publisher_api.add_user_interaction(
+                org_id=org_id,
+                request=payload,
+                use_publish_limiter=False,
+            ),
         )
 
-    def _limited_publish_task() -> None:
+    def _publish_task() -> None:
         try:
-            run_with_operation_limit(
-                org_id=org_id,
-                operation="publish",
-                fn=lambda: publisher_api.add_user_interaction(
-                    org_id=org_id, request=payload
-                ),
-                wait_forever=False,
-            )
-        except TimeoutError:
-            logger.warning(
-                "Dropped queued publish for org %s because publish limiter is saturated",
-                org_id,
-            )
+            publisher_api.add_user_interaction(org_id=org_id, request=payload)
+        except Exception:
+            logger.exception("Background publish failed for org %s", org_id)
 
     # Run in background — caller gets immediate acknowledgement
-    background_tasks.add_task(_limited_publish_task)
+    background_tasks.add_task(_publish_task)
     return PublishUserInteractionResponse(
         success=True, message="Interaction queued for processing"
     )

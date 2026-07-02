@@ -62,12 +62,19 @@ logger = logging.getLogger(__name__)
 def add_user_interaction(
     org_id: str,
     request: PublishUserInteractionRequest,
+    *,
+    use_publish_limiter: bool = True,
+    publish_limiter_wait_forever: bool = True,
 ) -> PublishUserInteractionResponse:
     """Add user interaction
 
     Args:
         org_id (str): Organization ID
         request (PublishUserInteractionRequest): The request containing interaction data
+        use_publish_limiter (bool): Whether GenerationService should throttle the
+            post-write learning pipeline.
+        publish_limiter_wait_forever (bool): Whether GenerationService should queue
+            indefinitely for that post-write learning limiter.
 
     Returns:
         PublishUserInteractionResponse: Response containing success status and message
@@ -77,7 +84,11 @@ def add_user_interaction(
         return PublishUserInteractionResponse(success=False, message=message)
 
     reflexio = get_reflexio(org_id=org_id)
-    return reflexio.publish_interaction(request=request)
+    return reflexio.publish_interaction(
+        request=request,
+        use_publish_limiter=use_publish_limiter,
+        publish_limiter_wait_forever=publish_limiter_wait_forever,
+    )
 
 
 def add_user_playbook(

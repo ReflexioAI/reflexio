@@ -9,6 +9,7 @@ wiring check.
 from __future__ import annotations
 
 import tempfile
+from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -84,6 +85,40 @@ def test_run_invokes_maybe_run_reflection(request_context, llm_client, publish_r
     # agent_version must be threaded through so reflected playbooks
     # inherit the publish's resolved version, not "".
     assert kwargs.get("agent_version") == "v1"
+
+
+def test_run_writes_request_and_interactions_before_publish_limiter(
+    request_context, llm_client, publish_request
+):
+    """The post-write limiter must not block acknowledged async publishes from storage."""
+    request_id = "req-before-learning-limiter"
+    request = publish_request.model_copy(update={"request_id": request_id})
+    service = GenerationService(llm_client=llm_client, request_context=request_context)
+    limiter_calls = []
+
+    @contextmanager
+    def saturated_publish_limit(org_id, operation, **kwargs):
+        limiter_calls.append((org_id, operation, kwargs))
+        raise TimeoutError("publish limiter saturated")
+        yield
+
+    with (
+        patch(
+            "reflexio.server.services.generation_service.operation_limit",
+            saturated_publish_limit,
+        ),
+        patch("reflexio.server.services.generation_service.record_usage_event"),
+        pytest.raises(TimeoutError, match="publish limiter saturated"),
+    ):
+        service.run(request)
+
+    storage = request_context.storage
+    assert storage is not None
+    assert storage.get_request(request_id) is not None
+    assert len(storage.get_interactions_by_request_ids([request_id])) == 2
+    assert limiter_calls == [
+        ("test_org", "publish", {"wait_forever": True}),
+    ]
 
 
 def test_reflection_failure_does_not_break_publish(
