@@ -135,7 +135,7 @@ def test_grade_on_demand_first_call_returns_fresh_result(client_with_org):
     )
 
     with patch(
-        "reflexio.server.api.run_group_evaluation",
+        "reflexio.server.routes.evaluation.run_group_evaluation",
         side_effect=_fake_runner_factory(
             storage, agent_version="v1", evaluation_name="overall_success"
         ),
@@ -180,7 +180,7 @@ def test_grade_on_demand_second_call_returns_cached(client_with_org):
     fake = _fake_runner_factory(
         storage, agent_version="v1", evaluation_name="overall_success"
     )
-    with patch("reflexio.server.api.run_group_evaluation", side_effect=fake) as runner:
+    with patch("reflexio.server.routes.evaluation.run_group_evaluation", side_effect=fake) as runner:
         first = client.post(
             "/api/evaluations/grade_on_demand",
             json={
@@ -256,7 +256,7 @@ def test_grade_on_demand_scopes_cache_and_readback_by_evaluation_name(client_wit
     )
 
     with patch(
-        "reflexio.server.api.run_group_evaluation",
+        "reflexio.server.routes.evaluation.run_group_evaluation",
         side_effect=_fake_runner_factory(
             storage, agent_version="v1", evaluation_name="overall_success"
         ),
@@ -297,7 +297,7 @@ def test_grade_on_demand_unknown_session_returns_skipped(client_with_org):
     client, org_id = client_with_org
     _configure_evaluator(org_id, evaluation_name="overall_success")
 
-    with patch("reflexio.server.api.run_group_evaluation") as runner:
+    with patch("reflexio.server.routes.evaluation.run_group_evaluation") as runner:
         resp = client.post(
             "/api/evaluations/grade_on_demand",
             json={

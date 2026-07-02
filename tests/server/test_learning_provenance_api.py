@@ -9,7 +9,7 @@ from reflexio.models.api_schema.domain import (
     UserProfile,
 )
 from reflexio.models.api_schema.retriever_schema import GetLearningProvenanceRequest
-from reflexio.server.api import (
+from reflexio.server.routes.provenance import (
     _get_agent_playbook_learning_provenance,
     _get_profile_learning_provenance,
     _get_user_playbook_learning_provenance,

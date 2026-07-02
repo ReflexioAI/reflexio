@@ -78,7 +78,7 @@ def _patch_unified_search(
     # Prevent platform_llm_from_config from iterating MagicMock.values()
     mock_reflexio.request_context.configurator.get_config.return_value = None
 
-    with patch("reflexio.server.api.get_reflexio", return_value=mock_reflexio):
+    with patch("reflexio.server.cache.reflexio_cache.get_reflexio", return_value=mock_reflexio):
         yield
 
 
@@ -263,7 +263,7 @@ def test_metering_failure_does_not_break_search_response() -> None:
         )
 
         with patch(
-            "reflexio.server.api.get_reflexio", return_value=mock_reflexio_search
+            "reflexio.server.cache.reflexio_cache.get_reflexio", return_value=mock_reflexio_search
         ):
             resp = _client("production_agent").post(
                 "/api/search", json={"query": "x", "user_id": "u1"}
@@ -301,7 +301,7 @@ def _patch_service_method(method_name: str, response_attr: str, items: list):
     getattr(mock_reflexio, method_name).return_value = mock_response
     mock_reflexio.request_context.configurator.get_config.return_value = None
 
-    with patch("reflexio.server.api.get_reflexio", return_value=mock_reflexio):
+    with patch("reflexio.server.cache.reflexio_cache.get_reflexio", return_value=mock_reflexio):
         yield
 
 

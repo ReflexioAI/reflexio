@@ -34,17 +34,17 @@ def mock_reflexio():
 
 @pytest.fixture
 def patched_reflexio(mock_reflexio):
-    """Patch get_reflexio to return mock_reflexio for all tests using this fixture."""
-    with (
-        patch(
-            "reflexio.server.cache.reflexio_cache.get_reflexio",
-            return_value=mock_reflexio,
-        ) as mock_get,
-        patch(
-            "reflexio.server.api.get_reflexio",
-            return_value=mock_reflexio,
-        ),
-    ):
+    """Patch get_reflexio to return mock_reflexio for all tests using this fixture.
+
+    After the A2 route-module split the domain routers resolve ``get_reflexio``
+    through the ``reflexio_cache`` module (``reflexio_cache.get_reflexio(...)``),
+    so patching the source binding intercepts every route module + the metering
+    helpers with a single target.
+    """
+    with patch(
+        "reflexio.server.cache.reflexio_cache.get_reflexio",
+        return_value=mock_reflexio,
+    ) as mock_get:
         yield mock_get
 
 

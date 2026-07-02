@@ -218,6 +218,7 @@ ignore = [
 "reflexio/scripts/**" = ["S101", "G004", "ANN"]
 "reflexio/benchmarks/**" = ["S311"]
 "reflexio/server/api.py" = ["B008", "ARG001", "ARG002"]
+"reflexio/server/routes/**" = ["B008", "ARG001", "ARG002"]
 "reflexio/server/api_endpoints/**" = ["B008", "ARG001", "ARG002"]
 "reflexio/integrations/**" = ["ARG002"]
 # The openclaw plugin is a nested package; its tests/scripts/cli are not reached
