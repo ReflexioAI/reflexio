@@ -10,11 +10,8 @@ import json
 import logging
 import multiprocessing
 import os
-import pickle
 import queue
-import re
 import time
-from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any
 
@@ -23,6 +20,43 @@ import tiktoken
 from pydantic import BaseModel
 
 from reflexio.models.config_schema import APIKeyConfig
+
+# Identity-preserving re-exports (SINK-2): every moved name is re-bound here by
+# import, never redefined, so ``from ...litellm_client import <name>`` keeps
+# resolving the SAME object/class the moved code uses and tests touch.
+from reflexio.server.llm._litellm_json_extraction import (
+    _extract_json_from_string,
+    _looks_truncated_json,
+    _sanitize_json_string,
+)
+from reflexio.server.llm._litellm_subprocess import (
+    _CompletionChoiceSnapshot as _CompletionChoiceSnapshot,
+)
+from reflexio.server.llm._litellm_subprocess import (
+    _CompletionErrorSnapshot as _CompletionErrorSnapshot,
+)
+from reflexio.server.llm._litellm_subprocess import (
+    _CompletionMessageSnapshot as _CompletionMessageSnapshot,
+)
+from reflexio.server.llm._litellm_subprocess import (
+    _CompletionResponseSnapshot as _CompletionResponseSnapshot,
+)
+from reflexio.server.llm._litellm_subprocess import (
+    _CompletionUsageSnapshot as _CompletionUsageSnapshot,
+)
+from reflexio.server.llm._litellm_subprocess import (
+    _litellm_completion_worker,
+)
+from reflexio.server.llm._litellm_subprocess import (
+    _PromptTokenDetailsSnapshot as _PromptTokenDetailsSnapshot,
+)
+from reflexio.server.llm._litellm_types import (
+    LiteLLMClientError,
+    LiteLLMConfig,
+    LLMHardTimeoutError,
+    StructuredOutputParseError,
+    ToolCallingChatResponse,
+)
 from reflexio.server.llm.image_utils import (
     SUPPORTED_IMAGE_MIME_TYPES,
     ImageEncodingError,
@@ -104,9 +138,6 @@ _TRUNCATION_WARNED_MODELS: set[str] = set()
 # share the 8191-token cap). Anything that does not start with one of these is
 # treated as "unknown provider" when litellm has no registry entry.
 _OPENAI_EMBEDDING_FAMILY_PREFIXES = ("text-embedding-", "openai/", "azure/")
-
-# Python-to-JSON keyword replacements used by _sanitize_json_string.
-_PYTHON_TO_JSON_REPLACEMENTS = {"True": "true", "False": "false", "None": "null"}
 
 
 @lru_cache(maxsize=32)
@@ -234,51 +265,6 @@ def _truncate_for_embedding(
     return encoding.decode(tokens[:max_tokens])
 
 
-@dataclass
-class LiteLLMConfig:
-    """
-    Configuration for LiteLLM client.
-
-    Args:
-        model: Model name to use (e.g., 'gpt-4o', 'claude-3-5-sonnet-20241022').
-        temperature: Temperature for response generation (0.0 to 2.0).
-        max_tokens: Maximum tokens to generate.
-        timeout: Request timeout in seconds.
-        max_retries: Maximum same-model retry attempts. Used by the embedding
-            path (litellm's num_retries) and clamped in _build_completion_params.
-            NOT used on the chat-completion path — that forces num_retries=0 so a
-            hung primary can't be retried before the fallback (PYTHON-FASTAPI-62).
-            Default 3.
-        retry_delay: Currently unused — LiteLLM owns retry backoff. Kept for
-            backward compatibility; remove in a follow-up sweep.
-        top_p: Top-p sampling parameter.
-        api_key_config: Optional API key configuration from Config (overrides env vars).
-        fallback_models: Models LiteLLM tries in order after the primary's single
-            attempt. Passed directly to litellm's fallbacks param.
-            Default is an empty list (no fallback) so local reflexio and the
-            claude-smart integration are never silently routed to an unintended
-            provider. Production opts in via the env var
-            REFLEXIO_LLM_FALLBACK_MODELS (comma-separated, e.g. "gpt-5.4-mini").
-            Self-references are deduped at request time.
-    """
-
-    model: str
-    temperature: float = 0.7
-    max_tokens: int | None = None
-    timeout: int = 120
-    max_retries: int = 3
-    retry_delay: float = 1.0
-    top_p: float = 1.0
-    api_key_config: APIKeyConfig | None = None
-    fallback_models: list[str] = field(
-        default_factory=lambda: [
-            m.strip()
-            for m in os.environ.get("REFLEXIO_LLM_FALLBACK_MODELS", "").split(",")
-            if m.strip()
-        ]
-    )
-
-
 # Per-model provider-timeout floors. Values are floors, not overrides: the
 # effective timeout is max(configured, floor), and an explicit per-call timeout
 # kwarg always wins.
@@ -292,181 +278,6 @@ class LiteLLMConfig:
 _MODEL_TIMEOUT_FLOOR_SECONDS: dict[str, int] = {
     "minimax/MiniMax-M3": 120,
 }
-
-
-@dataclass
-class ToolCallingChatResponse:
-    """Response from a chat call that was routed in tool-calling mode.
-
-    Returned instead of ``str | BaseModel`` whenever the caller passes
-    ``tools=...`` to ``generate_chat_response``. Callers inspect
-    ``tool_calls`` to drive a tool loop; ``content`` is set on the
-    terminal (non-tool) turn.
-
-    Args:
-        content: Text content from the model, or None when the model emitted tool calls.
-        tool_calls: List of tool call objects from the model, or None on the terminal turn.
-        finish_reason: The stop reason reported by the provider (e.g. "tool_calls", "stop").
-        usage: Raw usage object from the LLM response (provider-dependent shape), or None.
-        cost_usd: Estimated cost in USD for this call via litellm price table, or None when
-            the provider is not in the table (local ONNX, claude-code CLI, etc.).
-        parsed_output: When ``response_format`` is passed alongside ``tools`` and the model
-            ends the turn with a plain (non-tool) response, the content parsed into the
-            ``response_format`` schema. None when the turn emitted tool calls, when no
-            ``response_format`` was requested, or when the content was not parseable.
-    """
-
-    content: str | None
-    tool_calls: list[Any] | None
-    finish_reason: str | None
-    usage: Any | None = None
-    cost_usd: float | None = None
-    parsed_output: BaseModel | None = None
-
-
-class LiteLLMClientError(Exception):
-    """Custom exception for LiteLLM client errors."""
-
-
-class StructuredOutputParseError(Exception):
-    """Raised when a structured-output LLM call returns content that cannot be parsed.
-
-    Caught by the retry loop in ``_make_request`` so a malformed response
-    burns a retry attempt rather than silently returning unparsed content.
-    """
-
-
-class LLMHardTimeoutError(TimeoutError):
-    """Raised when an LLM call exceeds the client-side wall-clock timeout."""
-
-
-@dataclass
-class _CompletionMessageSnapshot:
-    content: str | None = None
-    tool_calls: Any | None = None
-
-
-@dataclass
-class _CompletionChoiceSnapshot:
-    message: _CompletionMessageSnapshot
-    finish_reason: str | None = None
-
-
-@dataclass
-class _PromptTokenDetailsSnapshot:
-    cached_tokens: int = 0
-
-
-@dataclass
-class _CompletionUsageSnapshot:
-    prompt_tokens: int | None = None
-    completion_tokens: int | None = None
-    total_tokens: int | None = None
-    prompt_tokens_details: _PromptTokenDetailsSnapshot | None = None
-    cache_creation_input_tokens: int | None = None
-    cache_read_input_tokens: int | None = None
-
-
-@dataclass
-class _CompletionResponseSnapshot:
-    choices: list[_CompletionChoiceSnapshot]
-    usage: _CompletionUsageSnapshot | None = None
-    model: str | None = None
-    _hidden_params: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
-class _CompletionErrorSnapshot:
-    type_name: str
-    message: str
-    model: str | None = None
-    llm_provider: str | None = None
-
-
-def _snapshot_completion_error(
-    exc: BaseException, params: dict[str, Any]
-) -> _CompletionErrorSnapshot:
-    model = getattr(exc, "model", None) or params.get("model")
-    llm_provider = getattr(exc, "llm_provider", None)
-    return _CompletionErrorSnapshot(
-        type_name=type(exc).__name__,
-        message=str(exc),
-        model=str(model) if model else None,
-        llm_provider=str(llm_provider) if llm_provider else None,
-    )
-
-
-def _ensure_picklable(value: Any) -> Any:
-    try:
-        pickle.dumps(value)
-    except Exception:
-        return repr(value)
-    return value
-
-
-def _snapshot_completion_response(response: Any) -> _CompletionResponseSnapshot:
-    choices: list[_CompletionChoiceSnapshot] = []
-    for choice in getattr(response, "choices", []) or []:
-        message = getattr(choice, "message", None)
-        choices.append(
-            _CompletionChoiceSnapshot(
-                message=_CompletionMessageSnapshot(
-                    content=getattr(message, "content", None),
-                    tool_calls=_ensure_picklable(getattr(message, "tool_calls", None)),
-                ),
-                finish_reason=getattr(choice, "finish_reason", None),
-            )
-        )
-
-    usage = getattr(response, "usage", None)
-    usage_snapshot = None
-    if usage is not None:
-        prompt_details = getattr(usage, "prompt_tokens_details", None)
-        prompt_details_snapshot = None
-        if prompt_details is not None:
-            prompt_details_snapshot = _PromptTokenDetailsSnapshot(
-                cached_tokens=int(getattr(prompt_details, "cached_tokens", 0) or 0)
-            )
-        usage_snapshot = _CompletionUsageSnapshot(
-            prompt_tokens=getattr(usage, "prompt_tokens", None),
-            completion_tokens=getattr(usage, "completion_tokens", None),
-            total_tokens=getattr(usage, "total_tokens", None),
-            prompt_tokens_details=prompt_details_snapshot,
-            cache_creation_input_tokens=getattr(
-                usage, "cache_creation_input_tokens", None
-            ),
-            cache_read_input_tokens=getattr(usage, "cache_read_input_tokens", None),
-        )
-
-    hidden_params = getattr(response, "_hidden_params", {}) or {}
-    if not isinstance(hidden_params, dict):
-        hidden_params = {}
-
-    return _CompletionResponseSnapshot(
-        choices=choices,
-        usage=usage_snapshot,
-        model=getattr(response, "model", None),
-        _hidden_params={str(k): _ensure_picklable(v) for k, v in hidden_params.items()},
-    )
-
-
-def _picklable_completion_result(response: Any) -> Any:
-    try:
-        pickle.dumps(response)
-    except Exception:
-        return _snapshot_completion_response(response)
-    return response
-
-
-def _litellm_completion_worker(
-    params: dict[str, Any], result_queue: multiprocessing.Queue
-) -> None:
-    try:
-        result_queue.put(
-            ("ok", _picklable_completion_result(litellm.completion(**params)))
-        )
-    except BaseException as exc:
-        result_queue.put(("error", _snapshot_completion_error(exc, params)))
 
 
 class LiteLLMClient:
@@ -1727,7 +1538,7 @@ class LiteLLMClient:
 
         # Try to parse JSON and convert to Pydantic model
         # Extract JSON from markdown code blocks if present
-        json_str = self._extract_json_from_string(content)
+        json_str = _extract_json_from_string(content)
         try:
             parsed = json.loads(json_str)
 
@@ -1737,7 +1548,7 @@ class LiteLLMClient:
             # LLMs sometimes produce Python-style output (single quotes, True/False,
             # trailing commas). Try to sanitize before giving up.
             try:
-                sanitized = self._sanitize_json_string(json_str)
+                sanitized = _sanitize_json_string(json_str)
                 parsed = json.loads(sanitized)
                 return response_format.model_validate(parsed)
             except Exception:
@@ -1748,7 +1559,7 @@ class LiteLLMClient:
                 try:
                     from json_repair import repair_json
 
-                    if self._looks_truncated_json(json_str):
+                    if _looks_truncated_json(json_str):
                         raise StructuredOutputParseError(
                             "Structured output appears truncated"
                         )
@@ -1766,234 +1577,6 @@ class LiteLLMClient:
                         f"Structured output parse failed for model={model!r}: {e}. "
                         f"Content snippet: {snippet!r}"
                     ) from e
-
-    def _extract_json_from_string(self, content: str) -> str:
-        """
-        Extract JSON from a string, handling markdown code blocks.
-
-        Args:
-            content: String potentially containing JSON.
-
-        Returns:
-            Extracted JSON string.
-        """
-        content = content.strip()
-
-        # Prefer a balanced JSON container first. Structured JSON may contain
-        # markdown fences inside string values; grabbing the first code block
-        # would extract the inner snippet instead of the response object.
-        json_container = self._extract_first_json_container(content)
-        if json_container is not None:
-            return json_container
-
-        # Try to extract from markdown code blocks
-        json_block_pattern = r"```(?:json)?\s*([\s\S]*?)```"
-        matches = re.findall(json_block_pattern, content)
-        if matches:
-            return matches[0].strip()
-
-        return content
-
-    def _extract_first_json_container(self, content: str) -> str | None:
-        """Return the first balanced JSON-like object/array in ``content``."""
-        for start_idx, ch in enumerate(content):
-            if ch not in "{[":
-                continue
-            end_idx = self._find_json_container_end(content, start_idx)
-            if end_idx is None:
-                continue
-            candidate = content[start_idx : end_idx + 1]
-            if self._is_parseable_json_candidate(candidate):
-                return candidate
-        return None
-
-    @staticmethod
-    def _find_json_container_end(content: str, start_idx: int) -> int | None:
-        """Find the matching end of a JSON container, respecting strings."""
-        pairs = {"{": "}", "[": "]"}
-        stack = [pairs[content[start_idx]]]
-        in_str = False
-        escape = False
-
-        for idx in range(start_idx + 1, len(content)):
-            ch = content[idx]
-            if escape:
-                escape = False
-                continue
-            if ch == "\\" and in_str:
-                escape = True
-                continue
-            if ch == '"':
-                in_str = not in_str
-                continue
-            if in_str:
-                continue
-            if ch in pairs:
-                stack.append(pairs[ch])
-            elif ch in ("}", "]"):
-                if not stack or stack.pop() != ch:
-                    return None
-                if not stack:
-                    return idx
-        return None
-
-    def _is_parseable_json_candidate(self, candidate: str) -> bool:
-        """Return True if a balanced candidate can parse after normal sanitizing."""
-        try:
-            json.loads(candidate)
-            return True
-        except Exception:
-            try:
-                json.loads(self._sanitize_json_string(candidate))
-                return True
-            except Exception:
-                return False
-
-    def _looks_truncated_json(self, json_str: str) -> bool:
-        """
-        Return True when a JSON-like string appears to end before it is complete.
-
-        This intentionally only treats content with a JSON container opener as
-        truncation. Plain text that is not JSON should proceed to the normal
-        parse failure path.
-
-        Args:
-            json_str: Extracted JSON-like response text.
-
-        Returns:
-            True if the response has unclosed containers or strings.
-        """
-        stripped = json_str.strip()
-        start_indices = [
-            idx for idx in (stripped.find("{"), stripped.find("[")) if idx != -1
-        ]
-        if not stripped or not start_indices:
-            return False
-        stripped = stripped[min(start_indices) :]
-
-        stack: list[str] = []
-        in_str = False
-        escape = False
-        pairs = {"{": "}", "[": "]"}
-
-        for ch in stripped:
-            if escape:
-                escape = False
-                continue
-            if ch == "\\" and in_str:
-                escape = True
-                continue
-            if ch == '"':
-                in_str = not in_str
-                continue
-            if in_str:
-                continue
-            if ch in pairs:
-                stack.append(pairs[ch])
-            elif ch in ("}", "]") and (not stack or stack.pop() != ch):
-                return False
-
-        return in_str or bool(stack)
-
-    def _sanitize_json_string(self, json_str: str) -> str:
-        """
-        Sanitize a JSON-like string that uses Python-style syntax into valid JSON.
-
-        Handles common LLM issues: single quotes, Python True/False/None,
-        and trailing commas before closing braces/brackets.
-
-        Args:
-            json_str: A JSON-like string that may contain Python-style syntax.
-
-        Returns:
-            A sanitized string closer to valid JSON.
-        """
-        s = json_str
-
-        # Walk character-by-character to:
-        #   1. Replace single-quoted strings with double-quoted strings
-        #   2. Replace Python True/False/None with JSON true/false/null ONLY outside strings
-        #   3. Handle escaped apostrophes inside single-quoted strings (e.g. 'didn\'t')
-        #   4. Escape literal double quotes that end up inside double-quoted strings
-        result = []
-        in_double = False
-        in_single = False
-        i = 0
-        while i < len(s):
-            ch = s[i]
-            if ch == "\\" and (in_double or in_single):
-                # Escaped character inside a string
-                if i + 1 < len(s):
-                    next_ch = s[i + 1]
-                    if in_single and next_ch == "'":
-                        # \' inside single-quoted string → literal apostrophe
-                        # In JSON double-quoted strings, apostrophe needs no escape
-                        result.append("'")
-                        i += 2
-                        continue
-                    result.append(ch)
-                    result.append(next_ch)
-                    i += 2
-                    continue
-                result.append(ch)
-            elif ch == '"' and not in_single:
-                in_double = not in_double
-                result.append(ch)
-            elif ch == "'" and not in_double:
-                in_single = not in_single
-                result.append('"')  # swap single → double
-            else:
-                # Escape unescaped double quotes inside single-quoted strings
-                # (they become part of a double-quoted JSON string)
-                if in_single and ch == '"':
-                    result.append('\\"')
-                else:
-                    result.append(ch)
-            i += 1
-        s = "".join(result)
-
-        # Replace Python booleans/None with JSON equivalents only outside quoted strings.
-        # We walk the already-double-quoted result so we only need to track double quotes.
-        output = []
-        in_str = False
-        j = 0
-        while j < len(s):
-            if s[j] == "\\" and in_str:
-                output.append(s[j : j + 2])
-                j += 2
-                continue
-            if s[j] == '"':
-                in_str = not in_str
-                output.append(s[j])
-                j += 1
-                continue
-            if not in_str:
-                matched = False
-                for py_val, json_val in _PYTHON_TO_JSON_REPLACEMENTS.items():
-                    if s[j : j + len(py_val)] == py_val:
-                        # Check word boundaries
-                        before = s[j - 1] if j > 0 else " "
-                        after = s[j + len(py_val)] if j + len(py_val) < len(s) else " "
-                        if (
-                            not before.isalnum()
-                            and before != "_"
-                            and not after.isalnum()
-                            and after != "_"
-                        ):
-                            output.append(json_val)
-                            j += len(py_val)
-                            matched = True
-                            break
-                if not matched:
-                    output.append(s[j])
-                    j += 1
-            else:
-                output.append(s[j])
-                j += 1
-        s = "".join(output)
-
-        # Remove trailing commas before } or ]
-        return re.sub(r",\s*([}\]])", r"\1", s)
 
     def update_config(self, **kwargs) -> None:
         """
