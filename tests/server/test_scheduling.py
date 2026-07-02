@@ -131,3 +131,44 @@ def test_run_once_return_value_drives_wait_interval() -> None:
     sched._run_loop()
 
     assert waits == [42.0]
+
+
+def test_stop_timeout_keeps_thread_reference_and_blocks_double_start() -> None:
+    """A join timeout must not orphan the live thread nor allow a second start.
+
+    If ``stop()`` cleared ``_thread`` unconditionally, a slow ``_run_once`` still
+    running after the join timeout would leave ``is_running()`` false while the
+    old loop is alive, and the next ``start()`` would spawn a SECOND thread.
+    """
+    release = threading.Event()
+
+    class _SlowScheduler(ThreadedScheduler):
+        def __init__(self) -> None:
+            super().__init__(thread_name="test-slow-scheduler")
+            self.entered = threading.Event()
+
+        def _run_once(self) -> float:
+            self.entered.set()
+            release.wait(timeout=5.0)  # block past the stop() timeout
+            return 0.001
+
+    sched = _SlowScheduler()
+    try:
+        sched.start()
+        assert sched.entered.wait(timeout=2.0)
+        first_thread = sched._thread
+
+        # join times out because the tick is still blocked
+        sched.stop(timeout_seconds=0.05)
+        assert sched.is_running() is True  # reference kept; thread still alive
+        assert sched._thread is first_thread
+
+        # a second start must NOT spawn another thread
+        sched.start()
+        assert sched._thread is first_thread
+    finally:
+        release.set()
+        sched.stop(timeout_seconds=2.0)
+
+    assert sched.is_running() is False
+    assert sched._thread is None

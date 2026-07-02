@@ -80,7 +80,12 @@ class ThreadedScheduler:
         self._stop_event.set()
         if self._thread is not None:
             self._thread.join(timeout=timeout_seconds)
-        self._thread = None
+            # Only drop the reference once the thread has actually exited. If the
+            # join timed out (a slow ``_run_once`` still running), keep it so
+            # ``is_running()`` stays true and a subsequent ``start()`` refuses to
+            # spawn a second loop while the first is alive.
+            if not self._thread.is_alive():
+                self._thread = None
         self._on_stopped()
 
     def is_running(self) -> bool:
