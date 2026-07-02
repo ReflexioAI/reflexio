@@ -6,13 +6,11 @@ using LiteLLM. It maintains the same interface as the existing LLMClient for eas
 """
 
 import base64
-import json
 import logging
 import multiprocessing
 import os
 import queue
 import time
-from functools import lru_cache
 from typing import Any
 
 import litellm
@@ -39,9 +37,13 @@ from reflexio.server.llm._litellm_embedding import (
     _truncate_for_embedding as _truncate_for_embedding,
 )
 from reflexio.server.llm._litellm_json_extraction import (
-    _extract_json_from_string,
-    _looks_truncated_json,
-    _sanitize_json_string,
+    _extract_json_from_string as _extract_json_from_string,
+)
+from reflexio.server.llm._litellm_json_extraction import (
+    _sanitize_json_string as _sanitize_json_string,
+)
+from reflexio.server.llm._litellm_structured_output import (
+    StructuredOutputMixin,
 )
 from reflexio.server.llm._litellm_subprocess import (
     _CompletionChoiceSnapshot as _CompletionChoiceSnapshot,
@@ -79,9 +81,7 @@ from reflexio.server.llm.image_utils import (
     encode_image_to_base64 as _encode_image_to_base64,
 )
 from reflexio.server.llm.llm_utils import (
-    assert_provider_safe_schema,
     is_pydantic_model,
-    strict_response_format_for_model,
 )
 from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
 from reflexio.server.llm.providers.claude_code_provider import (
@@ -136,7 +136,7 @@ _MODEL_TIMEOUT_FLOOR_SECONDS: dict[str, int] = {
 }
 
 
-class LiteLLMClient(EmbeddingMixin):
+class LiteLLMClient(EmbeddingMixin, StructuredOutputMixin):
     """
     Unified LLM client using LiteLLM for multi-provider support.
 
@@ -156,15 +156,6 @@ class LiteLLMClient(EmbeddingMixin):
         "moonshot/": "moonshot",
         "xai/": "xai",
     }
-
-    # OpenAI-compatible providers that accept a ``json_schema`` response_format
-    # but that ``litellm.supports_response_schema`` reports as unsupported. For
-    # these, the gate below would fall back to handing LiteLLM the raw Pydantic
-    # model; LiteLLM then builds the ``json_schema`` itself and emits ``oneOf``
-    # for discriminated unions, which strict structured-output endpoints reject
-    # (Sentry PYTHON-FASTAPI-9J). Listing the provider here forces our own
-    # normalized strict schema (``oneOf`` folded into ``anyOf``) to be sent.
-    _JSON_SCHEMA_PROVIDER_ALLOWLIST: frozenset[str] = frozenset({"minimax"})
 
     # Models that only support temperature=1.0 (custom values cause errors or degraded performance)
     TEMPERATURE_RESTRICTED_MODELS = {
@@ -564,69 +555,6 @@ class LiteLLMClient(EmbeddingMixin):
             max_retries,
             fallback_models,
         )
-
-    @staticmethod
-    @lru_cache(maxsize=256)
-    def _supports_response_schema(model: str) -> bool:
-        try:
-            return bool(litellm.supports_response_schema(model=model))
-        except Exception:
-            return False
-
-    @staticmethod
-    @lru_cache(maxsize=256)
-    def _provider_for_model(model: str) -> str | None:
-        try:
-            return litellm.get_llm_provider(model)[1]
-        except Exception:
-            return None
-
-    @classmethod
-    def _accepts_json_schema_response_format(cls, model: str) -> bool:
-        """Whether to send ``model`` an explicit strict ``json_schema`` schema.
-
-        True when LiteLLM reports native response-schema support, or when the
-        provider is a known OpenAI-compatible endpoint that LiteLLM
-        under-reports (see ``_JSON_SCHEMA_PROVIDER_ALLOWLIST``). In the latter
-        case LiteLLM would otherwise forward a ``json_schema`` it built itself,
-        emitting ``oneOf`` for discriminated unions that the endpoint rejects.
-        """
-        if cls._supports_response_schema(model):
-            return True
-        return cls._provider_for_model(model) in cls._JSON_SCHEMA_PROVIDER_ALLOWLIST
-
-    def _provider_response_format(
-        self,
-        *,
-        response_format: Any,
-        model: str,
-        strict_response_format: bool,
-    ) -> Any:
-        """Return the provider-facing response_format while preserving parser schema.
-
-        Callers pass a Pydantic model so local parsing stays type-safe. When the
-        target model accepts a JSON Schema response format — either LiteLLM
-        reports native support, or the provider is an OpenAI-compatible endpoint
-        LiteLLM under-reports (see ``_accepts_json_schema_response_format``) — we
-        send an explicit strict schema to constrain generation. Truly
-        unsupported providers keep the existing Pydantic response_format
-        behavior.
-        """
-
-        if not is_pydantic_model(response_format):
-            return response_format
-
-        # Build the native schema once and reuse it for both the boundary guard and
-        # (when applicable) the strict normalizer, avoiding a second schema build.
-        # Boundary guard: models inheriting StrictStructuredOutput are safe by
-        # construction; this catches a model that forgot the base (raises under
-        # tests, warns in prod) regardless of which path is taken below.
-        schema = response_format.model_json_schema()
-        assert_provider_safe_schema(schema, name=response_format.__name__)
-
-        if strict_response_format and self._accepts_json_schema_response_format(model):
-            return strict_response_format_for_model(response_format, schema=schema)
-        return response_format
 
     def _compute_cost_usd(self, response: Any, model: str | None) -> float | None:
         """Compute call cost in USD via the litellm price table.
@@ -1160,75 +1088,6 @@ class LiteLLMClient(EmbeddingMixin):
             model_name.startswith(restricted) or model_name == restricted
             for restricted in self.TEMPERATURE_RESTRICTED_MODELS
         )
-
-    def _maybe_parse_structured_output(
-        self,
-        content: str,
-        response_format: Any,
-        parse_structured_output: bool,
-    ) -> str | BaseModel:
-        """
-        Parse structured output if applicable.
-
-        Args:
-            content: Raw response content.
-            response_format: Expected response format (must be a Pydantic BaseModel class).
-            parse_structured_output: Whether to parse the output.
-
-        Returns:
-            String for text responses, or BaseModel instance for structured responses.
-        """
-        if not response_format or not parse_structured_output:
-            return content
-
-        if content is None:
-            return content
-
-        # If content is already a Pydantic model (some providers return parsed)
-        if isinstance(content, BaseModel):
-            return content
-
-        # Try to parse JSON and convert to Pydantic model
-        # Extract JSON from markdown code blocks if present
-        json_str = _extract_json_from_string(content)
-        try:
-            parsed = json.loads(json_str)
-
-            # response_format must be a Pydantic model (validated at entry points)
-            return response_format.model_validate(parsed)
-        except Exception:
-            # LLMs sometimes produce Python-style output (single quotes, True/False,
-            # trailing commas). Try to sanitize before giving up.
-            try:
-                sanitized = _sanitize_json_string(json_str)
-                parsed = json.loads(sanitized)
-                return response_format.model_validate(parsed)
-            except Exception:
-                # Last resort: json-repair can recover complete responses with
-                # small syntax glitches, such as missing commas. Do not repair
-                # likely truncation: the retry loop should request a fresh
-                # complete response instead of accepting invented tail content.
-                try:
-                    from json_repair import repair_json
-
-                    if _looks_truncated_json(json_str):
-                        raise StructuredOutputParseError(
-                            "Structured output appears truncated"
-                        )
-
-                    repaired = repair_json(json_str, return_objects=True)
-                    return response_format.model_validate(repaired)
-                except Exception as e:
-                    model = self.config.model
-                    snippet = (
-                        content[:200]
-                        if isinstance(content, str)
-                        else repr(content)[:200]
-                    )
-                    raise StructuredOutputParseError(
-                        f"Structured output parse failed for model={model!r}: {e}. "
-                        f"Content snippet: {snippet!r}"
-                    ) from e
 
     def update_config(self, **kwargs) -> None:
         """

@@ -1183,7 +1183,7 @@ class TestStrictStructuredOutputRequest:
             patch.object(
                 LiteLLMClient, "_supports_response_schema", return_value=False
             ),
-            patch("reflexio.server.llm.litellm_client.assert_provider_safe_schema"),
+            patch("reflexio.server.llm._litellm_structured_output.assert_provider_safe_schema"),
         ):
             params, _, _, _, _ = client._build_completion_params(
                 [{"role": "user", "content": "test"}],
@@ -1208,7 +1208,7 @@ class TestStrictStructuredOutputRequest:
         # Non-base double exercises the make_strict backstop; patch the
         # by-construction guard (it would raise under pytest) — see the sibling
         # test above for why.
-        with patch("reflexio.server.llm.litellm_client.assert_provider_safe_schema"):
+        with patch("reflexio.server.llm._litellm_structured_output.assert_provider_safe_schema"):
             params, _, _, _, _ = client._build_completion_params(
                 [{"role": "user", "content": "test"}],
                 response_format=_DiscriminatedOutput,
