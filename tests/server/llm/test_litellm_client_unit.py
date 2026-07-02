@@ -716,7 +716,7 @@ class TestEmbeddingDefaultResolution:
             return "text-embedding-3-small"
 
         monkeypatch.setattr(
-            "reflexio.server.llm.litellm_client.resolve_model_name",
+            "reflexio.server.llm._litellm_embedding.resolve_model_name",
             _fake_resolve,
         )
 
@@ -743,17 +743,17 @@ class TestEmbeddingDefaultResolution:
         # in-process LocalEmbedder branch this test exercises. Force the service
         # gate off.
         monkeypatch.setattr(
-            "reflexio.server.llm.litellm_client.should_use_embedding_service",
+            "reflexio.server.llm._litellm_embedding.should_use_embedding_service",
             lambda _model: False,
         )
         monkeypatch.setattr(
-            "reflexio.server.llm.litellm_client._is_chromadb_importable",
+            "reflexio.server.llm._litellm_embedding._is_chromadb_importable",
             lambda: True,
         )
         fake_embedder = MagicMock()
         fake_embedder.embed.return_value = [[0.9, 0.8, 0.7]]
         monkeypatch.setattr(
-            "reflexio.server.llm.litellm_client.LocalEmbedder.get",
+            "reflexio.server.llm._litellm_embedding.LocalEmbedder.get",
             classmethod(lambda _cls: fake_embedder),
         )
 
@@ -808,7 +808,7 @@ class TestEmbeddingTruncation:
         # Patch the registry so the assertion doesn't ride on whatever value
         # the installed litellm build happens to report today.
         with patch(
-            "reflexio.server.llm.litellm_client.litellm.get_model_info",
+            "reflexio.server.llm._litellm_embedding.litellm.get_model_info",
             return_value={"mode": "embedding", "max_input_tokens": 8191},
         ):
             assert _get_embedding_limit("text-embedding-3-small") == 8191
@@ -843,7 +843,7 @@ class TestEmbeddingTruncation:
     def test_get_embedding_limit_variants(self, model, mock_kwargs, expected):
         """Exhaustive table of registry lookup + prefix-fallback outcomes."""
         with patch(
-            "reflexio.server.llm.litellm_client.litellm.get_model_info",
+            "reflexio.server.llm._litellm_embedding.litellm.get_model_info",
             **mock_kwargs,
         ):
             assert _get_embedding_limit(model) == expected
@@ -874,7 +874,7 @@ class TestEmbeddingTruncation:
         """Unknown non-OpenAI models skip truncation entirely."""
         text = "word " * 5000
         with patch(
-            "reflexio.server.llm.litellm_client.litellm.get_model_info",
+            "reflexio.server.llm._litellm_embedding.litellm.get_model_info",
             side_effect=Exception("unmapped"),
         ):
             result = _truncate_for_embedding(text, "mystery-provider/embed-v1")

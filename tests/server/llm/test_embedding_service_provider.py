@@ -209,7 +209,7 @@ def test_litellm_client_routes_local_service_embeddings(monkeypatch) -> None:
     client = LiteLLMClient(LiteLLMConfig(model="gpt-4o"))
 
     with patch(
-        "reflexio.server.llm.litellm_client.get_service_embeddings",
+        "reflexio.server.llm._litellm_embedding.get_service_embeddings",
         return_value=[[0.1, 0.2]],
     ) as mocked:
         assert client.get_embedding("hello", model="local/nomic-embed-v1.5") == [
@@ -636,7 +636,7 @@ def test_nomic_inprocess_fallback_uses_nomic_embedder(monkeypatch) -> None:
     monkeypatch.setattr(esp, "_local_service_probe_cache", None)
     monkeypatch.setattr(esp, "_http_client", lambda: _UnreachableHttpClient())
     monkeypatch.setattr(
-        "reflexio.server.llm.litellm_client.NomicEmbedder",
+        "reflexio.server.llm._litellm_embedding.NomicEmbedder",
         _NomicFactory,
     )
 
@@ -669,11 +669,11 @@ def test_nomic_inprocess_fallback_does_not_use_minilm(monkeypatch) -> None:
     monkeypatch.setattr(esp, "_local_service_probe_cache", None)
     monkeypatch.setattr(esp, "_http_client", lambda: _UnreachableHttpClient())
     monkeypatch.setattr(
-        "reflexio.server.llm.litellm_client.NomicEmbedder",
+        "reflexio.server.llm._litellm_embedding.NomicEmbedder",
         _NomicFactory,
     )
     monkeypatch.setattr(
-        "reflexio.server.llm.litellm_client.LocalEmbedder",
+        "reflexio.server.llm._litellm_embedding.LocalEmbedder",
         _MiniLMFactory,
     )
 
