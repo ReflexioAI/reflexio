@@ -2,16 +2,12 @@
 Base class for generation services
 """
 
-import contextvars
 import logging
 import re
 import time
 import uuid
 from abc import ABC, abstractmethod
-from concurrent.futures import ThreadPoolExecutor
-from concurrent.futures import TimeoutError as FuturesTimeoutError
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
 from typing import Any, Generic, TypeVar
 
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
@@ -20,13 +16,13 @@ from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.llm.token_accounting import RunTokenTotals
 from reflexio.server.services.base_generation import (
     ConfigFilterMixin,
+    ExtractionRunLifecycleMixin,
     ShouldRunPrecheckMixin,
     StatusChangeMixin,
 )
 from reflexio.server.services.base_generation import (
     StatusChangeOperation as StatusChangeOperation,  # re-export for back-compat
 )
-from reflexio.server.services.extraction.outcome import ExtractionOutcome
 from reflexio.server.services.extractor_config_utils import (
     get_extractor_name,
 )
@@ -35,7 +31,6 @@ from reflexio.server.services.extractor_interaction_utils import (
     get_extractor_window_params,
 )
 from reflexio.server.services.operation_state_utils import OperationStateManager
-from reflexio.server.services.storage.storage_base import AgentRunStatus
 from reflexio.server.usage_metrics import record_usage_event
 
 
@@ -158,6 +153,7 @@ class PreparedGenerationRun(Generic[TExtractorConfig]):  # noqa: UP046
 
 # Unified base class for all generation services (evaluation, playbook, profile)
 class BaseGenerationService(
+    ExtractionRunLifecycleMixin[TExtractorConfig, TGenerationServiceConfig],
     ShouldRunPrecheckMixin[TExtractorConfig, TGenerationServiceConfig],
     ConfigFilterMixin[TExtractorConfig, TGenerationServiceConfig],
     StatusChangeMixin[TRequest],
@@ -846,170 +842,6 @@ class BaseGenerationService(
             extractor_name=extractor_name,
             identifier=identifier,
         )
-
-    def _execute_extractor(
-        self,
-        extractor_config: TExtractorConfig,
-        identifier: str,
-    ) -> Any | None:
-        """
-        Run the configured extractor with timeout and error handling.
-
-        The extractor runs in a thread pool with a timeout guard so providers that
-        ignore their own timeout cannot block generation forever.
-
-        Args:
-            extractor_config: Filtered extractor config to execute
-            identifier: Logging context identifier (user_id or request_id)
-
-        Returns:
-            Extractor result, or None if the extractor succeeded with no output.
-
-        Raises:
-            ExtractorExecutionError: If the extractor fails with an exception or timeout.
-        """
-        if (
-            self.service_config is None
-        ):  # pragma: no cover — set by _prepare_generation_run
-            raise RuntimeError("service_config must be set before executing extractor")
-
-        self._last_extractor_run_stats = {"total": 1, "failed": 0, "timed_out": 0}
-        extractor = self._create_extractor(extractor_config, self.service_config)
-        executor: ThreadPoolExecutor | None = None
-        try:
-            executor = ThreadPoolExecutor(max_workers=1)
-            # Copy context so correlation ID propagates to worker thread
-            ctx = contextvars.copy_context()
-            future = executor.submit(ctx.run, extractor.run)  # type: ignore[reportAttributeAccessIssue]
-            result = future.result(timeout=EXTRACTOR_TIMEOUT_SECONDS)
-            if isinstance(result, ExtractionOutcome):
-                if result.run_id:
-                    self._last_extraction_run_ids.append(result.run_id)
-                self._last_token_totals = result.token_totals
-                if result.status == "completed" and result.items:
-                    return result.items
-                logger.info(
-                    "No results generated for %s identifier: %s",
-                    self._get_service_name(),
-                    identifier,
-                )
-                return None
-            if result:
-                return result
-            logger.info(
-                "No results generated for %s identifier: %s",
-                self._get_service_name(),
-                identifier,
-            )
-            return None
-        except FuturesTimeoutError as exc:
-            self._last_extractor_run_stats = {"total": 1, "failed": 1, "timed_out": 1}
-            error_msg = (
-                f"Extractor timed out after {EXTRACTOR_TIMEOUT_SECONDS} seconds "
-                f"for {self._get_service_name()} identifier={identifier}"
-            )
-            logger.error(error_msg)
-            self._fail_active_extraction_runs(
-                extractor_kind=get_extractor_name(extractor_config),
-                last_error=error_msg,
-            )
-            raise ExtractorExecutionError(error_msg) from exc
-        except Exception as exc:
-            self._last_extractor_run_stats = {"total": 1, "failed": 1, "timed_out": 0}
-            error_msg = (
-                f"Extractor failed for {self._get_service_name()} "
-                f"identifier={identifier}: {exc} (type={type(exc).__name__})"
-            )
-            logger.error(error_msg)
-            raise ExtractorExecutionError(error_msg) from exc
-        finally:
-            if executor is not None:
-                executor.shutdown(wait=False, cancel_futures=True)
-
-    def _fail_active_extraction_runs(
-        self,
-        *,
-        extractor_kind: str,
-        last_error: str,
-    ) -> None:
-        """Mark active agent-run rows failed when the service timeout fires."""
-        if self.storage is None or self.service_config is None:
-            return
-        request_id = getattr(self.service_config, "request_id", None)
-        if not request_id:
-            return
-        user_id = getattr(self.service_config, "user_id", None)
-        try:
-            failed_count = self.storage.fail_running_agent_runs_for_request(
-                org_id=self.request_context.org_id,
-                extractor_kind=extractor_kind,
-                user_id=user_id,
-                request_id=request_id,
-                last_error=last_error,
-            )
-        except NotImplementedError:
-            return
-        except Exception as exc:  # noqa: BLE001 - keep timeout error primary
-            logger.warning(
-                "Failed to mark timed-out %s agent runs failed: %s",
-                extractor_kind,
-                exc,
-            )
-            return
-        if failed_count:
-            logger.warning(
-                "Marked %d timed-out %s agent run(s) failed for request_id=%s",
-                failed_count,
-                extractor_kind,
-                request_id,
-            )
-
-    def _finalize_extraction_runs(self) -> None:
-        if self.storage is None:
-            return
-        for run_id in self._last_extraction_run_ids:
-            run = self.storage.get_agent_run(run_id)
-            if run is None:
-                continue
-            status = (
-                AgentRunStatus.FINALIZED_PENDING_TOOL
-                if run.pending_tool_call_ids
-                else AgentRunStatus.FINALIZED
-            )
-            self.storage.update_agent_run_status(
-                run_id,
-                status,
-                pending_tool_call_ids=run.pending_tool_call_ids,
-            )
-
-    def _mark_extraction_runs_finalization_failed(self, exc: Exception) -> None:
-        if self.storage is None:
-            return
-        root_config = self.request_context.configurator.get_config()
-        pending_config = getattr(root_config, "pending_tool_call_config", None)
-        for run_id in self._last_extraction_run_ids:
-            run = self.storage.get_agent_run(run_id)
-            if run is None or run.committed_output is None:
-                continue
-            next_attempt_count = run.finalization_attempts + 1
-            max_attempts = (
-                pending_config.max_finalization_attempts
-                if pending_config is not None
-                else 3
-            )
-            status = (
-                AgentRunStatus.FAILED
-                if next_attempt_count >= max_attempts
-                else AgentRunStatus.FINALIZATION_FAILED
-            )
-            delay_seconds = min(300, max(1, 2 ** max(0, next_attempt_count - 1)))
-            self.storage.update_agent_run_status(
-                run_id,
-                status,
-                next_resume_at=datetime.now(UTC) + timedelta(seconds=delay_seconds),
-                last_error=str(exc),
-                increment_finalization_attempts=True,
-            )
 
     # ===============================
     # Batch with progress (shared by rerun + manual)
