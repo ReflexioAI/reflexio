@@ -75,7 +75,7 @@ class TestPublishInteraction:
 
         with (
             patch(
-                "reflexio.server.api.run_with_operation_limit",
+                "reflexio.server.routes._common.run_with_operation_limit",
                 side_effect=run_immediately,
             ) as run_with_operation_limit,
             patch(
@@ -111,7 +111,7 @@ class TestPublishInteraction:
     ):
         with (
             patch(
-                "reflexio.server.api.run_with_operation_limit",
+                "reflexio.server.routes._common.run_with_operation_limit",
                 side_effect=AssertionError("publish limiter should not wrap storage"),
             ),
             patch(
@@ -318,7 +318,7 @@ class TestUpdateConfigRoute:
         existing = self._existing_config()
         self._wire_mock(mock_reflexio, existing)
 
-        with patch("reflexio.server.api.invalidate_reflexio_cache") as mock_invalidate:
+        with patch("reflexio.server.cache.reflexio_cache.invalidate_reflexio_cache") as mock_invalidate:
             response = client.post(
                 "/api/update_config",
                 json={"window_size": 25},
@@ -383,7 +383,7 @@ class TestUpdateConfigRoute:
             success=False, msg="storage validation failed"
         )
 
-        with patch("reflexio.server.api.invalidate_reflexio_cache") as mock_invalidate:
+        with patch("reflexio.server.cache.reflexio_cache.invalidate_reflexio_cache") as mock_invalidate:
             response = client.post(
                 "/api/update_config",
                 json={"window_size": 25},
@@ -443,7 +443,7 @@ class TestUpdateConfigRoute:
         existing = self._existing_config()
         self._wire_mock(mock_reflexio, existing)
 
-        with patch("reflexio.server.api.invalidate_reflexio_cache"):
+        with patch("reflexio.server.cache.reflexio_cache.invalidate_reflexio_cache"):
             response = client.post(
                 "/api/update_config",
                 json={
@@ -473,7 +473,7 @@ class TestUpdateConfigRoute:
         existing = self._existing_config_with_playbooks()
         self._wire_mock(mock_reflexio, existing)
 
-        with patch("reflexio.server.api.invalidate_reflexio_cache"):
+        with patch("reflexio.server.cache.reflexio_cache.invalidate_reflexio_cache"):
             response = client.post(
                 "/api/update_config",
                 json={
@@ -495,7 +495,7 @@ class TestUpdateConfigRoute:
         existing = self._existing_config_with_playbooks()
         self._wire_mock(mock_reflexio, existing)
 
-        with patch("reflexio.server.api.invalidate_reflexio_cache"):
+        with patch("reflexio.server.cache.reflexio_cache.invalidate_reflexio_cache"):
             response = client.post(
                 "/api/update_config",
                 json={"window_size": 25},

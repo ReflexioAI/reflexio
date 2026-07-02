@@ -3,7 +3,8 @@ import asyncio
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
-from reflexio.server.api import BodySizeLimitMiddleware, create_app
+from reflexio.server.api import create_app
+from reflexio.server.middleware import BodySizeLimitMiddleware
 
 
 def test_cors_uses_frontend_url_allowlist(monkeypatch):
