@@ -77,6 +77,17 @@ _register_openclaw()
 _register_local_embedder()
 _register_nomic_embedder()
 
+# Public importer surface (the #1 invariant of the Tier-2.5 decomposition). These
+# five names — plus the test-imported internals re-exported below the split — must
+# stay importable from ``reflexio.server.llm.litellm_client`` for all ~102 importers.
+__all__ = [
+    "LiteLLMClient",
+    "LiteLLMConfig",
+    "LiteLLMClientError",
+    "ToolCallingChatResponse",
+    "create_litellm_client",
+]
+
 _LOGGER = logging.getLogger(__name__)
 
 # OpenAI's documented max input length for text-embedding-3-* and ada-002 is
