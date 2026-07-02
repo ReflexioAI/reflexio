@@ -22,11 +22,11 @@ GovernanceRetentionCapability (reflexio_ext), not here.
 from __future__ import annotations
 
 import logging
-import threading
 import time
 from collections.abc import Callable
 
 from reflexio.server.api_endpoints.request_context import RequestContext
+from reflexio.server.scheduling import ThreadedScheduler
 from reflexio.server.tracing import capture_anomaly
 
 logger = logging.getLogger(__name__)
@@ -71,7 +71,7 @@ def set_org_id_provider(provider: Callable[[], list[str]] | None) -> None:
     _org_id_provider_hook = provider
 
 
-class LineageGCScheduler:
+class LineageGCScheduler(ThreadedScheduler):
     """Polling daemon that hard-deletes expired tombstones per org."""
 
     def __init__(
@@ -81,6 +81,7 @@ class LineageGCScheduler:
         bootstrap_org_id: str,
         org_id_provider: Callable[[], list[str]] | None = None,
     ) -> None:
+        super().__init__(thread_name="reflexio-lineage-gc-scheduler")
         self.request_context_factory = request_context_factory
         self.bootstrap_org_id = bootstrap_org_id
         # Optional injectable org-id source. When set (managed/multi-tenant mode),
@@ -90,28 +91,11 @@ class LineageGCScheduler:
         # raises NotImplementedError on Supabase. When None (OSS default),
         # discovery falls back to storage.list_org_ids() exactly as before.
         self.org_id_provider = org_id_provider
-        self._stop_event = threading.Event()
-        self._thread: threading.Thread | None = None
 
-    def start(self) -> None:
-        """Start the daemon thread (idempotent if already running)."""
-        if self._thread is not None and self._thread.is_alive():
-            return
-        self._stop_event.clear()
-        self._thread = threading.Thread(
-            target=self._run_loop,
-            name="reflexio-lineage-gc-scheduler",
-            daemon=True,
-        )
-        self._thread.start()
+    def _on_started(self) -> None:
         logger.info("event=lineage_gc_scheduler_started")
 
-    def stop(self, *, timeout_seconds: float = 5.0) -> None:
-        """Signal the daemon to stop and wait for it to finish."""
-        self._stop_event.set()
-        if self._thread is not None:
-            self._thread.join(timeout=timeout_seconds)
-        self._thread = None
+    def _on_stopped(self) -> None:
         logger.info("event=lineage_gc_scheduler_stopped")
 
     def _discover_org_ids(self, bootstrap_ctx: RequestContext) -> list[str]:
@@ -264,18 +248,17 @@ class LineageGCScheduler:
                             method_name,
                         )
 
-    def _run_loop(self) -> None:
-        while not self._stop_event.is_set():
-            poll_interval = _DEFAULT_POLL_INTERVAL_SECONDS
-            try:
-                bootstrap_ctx = self.request_context_factory(self.bootstrap_org_id)
-                cfg = bootstrap_ctx.configurator.get_config()
-                poll_interval = cfg.lineage_gc.poll_interval_seconds
-                org_ids = self._discover_org_ids(bootstrap_ctx)
-                self._gc_tick(org_ids)
-            except Exception:
-                logger.exception("event=lineage_gc_scheduler_tick_failed")
-            self._stop_event.wait(max(poll_interval, _MIN_POLL_SECONDS))
+    def _run_once(self) -> float:
+        poll_interval = _DEFAULT_POLL_INTERVAL_SECONDS
+        try:
+            bootstrap_ctx = self.request_context_factory(self.bootstrap_org_id)
+            cfg = bootstrap_ctx.configurator.get_config()
+            poll_interval = cfg.lineage_gc.poll_interval_seconds
+            org_ids = self._discover_org_ids(bootstrap_ctx)
+            self._gc_tick(org_ids)
+        except Exception:
+            logger.exception("event=lineage_gc_scheduler_tick_failed")
+        return max(poll_interval, _MIN_POLL_SECONDS)
 
 
 def maybe_start_lineage_gc(

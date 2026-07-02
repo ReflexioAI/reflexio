@@ -20,6 +20,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from reflexio.server.deployment_profile import DeploymentProfile
     from reflexio.server.extensions import AppContext, CapabilityRegistry
 
 from fastapi import APIRouter, FastAPI
@@ -234,6 +235,29 @@ def _wire_capabilities(
             app.include_router(r)
 
 
+def _resolve_app_profile(
+    profile: "DeploymentProfile | None",
+    *,
+    mount_data_plane: bool,
+    require_auth: bool,
+) -> "DeploymentProfile":
+    """Return the caller's profile, or derive one from the legacy knobs.
+
+    Args:
+        profile (DeploymentProfile | None): Explicit profile, or None to derive.
+        mount_data_plane (bool): Legacy knob — whether data-plane routers/lifespan run.
+        require_auth (bool): Legacy knob — whether auth is declared.
+
+    Returns:
+        DeploymentProfile: ``profile`` when provided, else the derived profile.
+    """
+    from reflexio.server.deployment_profile import resolve_profile
+
+    if profile is not None:
+        return profile
+    return resolve_profile(mount_data_plane=mount_data_plane, require_auth=require_auth)
+
+
 def create_app(
     get_org_id: Callable[..., str] | None = None,
     additional_routers: list[APIRouter] | None = None,
@@ -244,6 +268,7 @@ def create_app(
     mount_data_plane: bool = True,
     capabilities: "CapabilityRegistry | None" = None,
     app_context_factory: "Callable[[], AppContext] | None" = None,
+    profile: "DeploymentProfile | None" = None,
 ) -> FastAPI:
     """Factory to create a FastAPI app.
 
@@ -279,6 +304,12 @@ def create_app(
             each capability's on_startup. When None, an empty AppContext() is used
             (local OSS / tests). Enterprise binds this to supply self_host_org_id /
             activated computed during its own startup.
+        profile: Optional declarative :class:`DeploymentProfile`. When None
+            (default), it is DERIVED from the ``mount_data_plane`` / ``require_auth``
+            knobs so behaviour is identical to before this parameter existed. When
+            provided it is the single source for router-group mounting, auth, and
+            data-plane lifespan gating (the legacy knobs still populate the derived
+            profile, so callers may pass either — they express the same thing).
 
     Returns:
         Configured FastAPI application.
@@ -295,6 +326,14 @@ def create_app(
         raise ValueError(
             "pass billing_gate via either get_billing_gate or capabilities, not both"
         )
+    # The profile is a cleaner representation of the two existing knobs. When the
+    # caller does not pass one, derive it from ``mount_data_plane`` / ``require_auth``
+    # so behaviour is byte-identical to before this parameter existed.
+    profile = _resolve_app_profile(
+        profile, mount_data_plane=mount_data_plane, require_auth=require_auth
+    )
+    mounts_data_plane = profile.mounts_data_plane
+    auth_required = profile.auth_required
     from collections.abc import AsyncIterator
     from contextlib import asynccontextmanager
 
@@ -318,7 +357,7 @@ def create_app(
         scheduler = None
         gc_scheduler = None
         started_caps: list = []
-        if mount_data_plane:
+        if mounts_data_plane:
             log_publish_hardware_capacity()
             validate_llm_availability()
             from reflexio.server.llm.rerank import prewarm as _prewarm_cross_encoder
@@ -365,7 +404,7 @@ def create_app(
 
     app = FastAPI(docs_url="/docs", lifespan=lifespan)
 
-    if require_auth:
+    if auth_required:
         _add_openapi_security(app)
 
     @app.get("/meta/version")
@@ -391,7 +430,7 @@ def create_app(
     # hosts that wire in auth (``require_auth=True``) restrict browser origins.
     # OSS/local runs have no auth and bundle their own docs playground on a
     # separate port, so they allow any origin (no credentials needed).
-    if require_auth:
+    if auth_required:
         app.add_middleware(
             CORSMiddleware,
             allow_origins=_resolve_cors_origins(),
@@ -448,12 +487,12 @@ def create_app(
     # ``app.state`` instead of a module-level global keeps the gate
     # scoped to this FastAPI instance, so multiple apps (e.g. tests,
     # multi-tenant embeddings) can coexist without leaking state.
-    app.state.my_config_enabled = bool(get_org_id is not None and require_auth)
+    app.state.my_config_enabled = bool(get_org_id is not None and auth_required)
 
     # Include data-plane routes (core, stall-state, pending-tool-call). A
     # control-plane host sets mount_data_plane=False to skip these while
     # keeping every other piece of scaffolding below.
-    if mount_data_plane:
+    if mounts_data_plane:
         # Include core routes
         app.include_router(core_router)
 
@@ -468,7 +507,7 @@ def create_app(
         app.include_router(router)
 
     # Wire capability routers, services, and hooks (composition-root only)
-    _wire_capabilities(app, capabilities, mount_data_plane, additional_routers)
+    _wire_capabilities(app, capabilities, mounts_data_plane, additional_routers)
 
     # Health/observability endpoint (per-worker metrics for recycling)
     health_api.install(app)

@@ -11,11 +11,11 @@ with — never another tenant's runs.
 from __future__ import annotations
 
 import logging
-import threading
 from collections.abc import Callable
 from datetime import UTC, datetime
 
 from reflexio.server.api_endpoints.request_context import RequestContext
+from reflexio.server.scheduling import ThreadedScheduler
 from reflexio.server.services.extraction.resumable_agent import (
     pending_tool_calls_enabled,
 )
@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 _DEFAULT_POLL_INTERVAL_SECONDS = 5.0
 
 
-class ExtractionResumeScheduler:
+class ExtractionResumeScheduler(ThreadedScheduler):
     """Small polling wrapper that drives :class:`ExtractionResumeWorker` per org."""
 
     def __init__(
@@ -37,29 +37,15 @@ class ExtractionResumeScheduler:
         bootstrap_org_id: str,
         max_runs_per_tick: int = 10,
     ) -> None:
+        super().__init__(thread_name="reflexio-extraction-resume-scheduler")
         self.request_context_factory = request_context_factory
         self.bootstrap_org_id = bootstrap_org_id
         self.max_runs_per_tick = max_runs_per_tick
-        self._stop_event = threading.Event()
-        self._thread: threading.Thread | None = None
 
-    def start(self) -> None:
-        if self._thread is not None and self._thread.is_alive():
-            return
-        self._stop_event.clear()
-        self._thread = threading.Thread(
-            target=self._run_loop,
-            name="reflexio-extraction-resume-scheduler",
-            daemon=True,
-        )
-        self._thread.start()
+    def _on_started(self) -> None:
         logger.info("event=extraction_resume_scheduler_started")
 
-    def stop(self, *, timeout_seconds: float = 5.0) -> None:
-        self._stop_event.set()
-        if self._thread is not None:
-            self._thread.join(timeout=timeout_seconds)
-        self._thread = None
+    def _on_stopped(self) -> None:
         logger.info("event=extraction_resume_scheduler_stopped")
 
     def _discover_org_ids(self, bootstrap_ctx: RequestContext) -> list[str]:
@@ -116,28 +102,27 @@ class ExtractionResumeScheduler:
                     org_id,
                 )
 
-    def _run_loop(self) -> None:
-        while not self._stop_event.is_set():
-            poll_interval = _DEFAULT_POLL_INTERVAL_SECONDS
-            try:
-                bootstrap_ctx = self.request_context_factory(self.bootstrap_org_id)
-                config = bootstrap_ctx.configurator.get_config()
-                poll_interval = (
-                    config.pending_tool_call_config.resume_poll_interval_seconds
-                )
-                self._expire_pending_tool_calls(bootstrap_ctx)
-                for org_id in self._discover_org_ids(bootstrap_ctx):
-                    if self._stop_event.is_set():
-                        break
-                    self._drain_org(org_id)
-            except Exception as exc:
-                with sentry_tags(
-                    subsystem="extraction",
-                    op="scheduler_tick",
-                    error_type=type(exc).__name__,
-                ):
-                    logger.exception("event=extraction_resume_scheduler_tick_failed")
-            self._stop_event.wait(poll_interval)
+    def _run_once(self) -> float:
+        poll_interval = _DEFAULT_POLL_INTERVAL_SECONDS
+        try:
+            bootstrap_ctx = self.request_context_factory(self.bootstrap_org_id)
+            config = bootstrap_ctx.configurator.get_config()
+            poll_interval = (
+                config.pending_tool_call_config.resume_poll_interval_seconds
+            )
+            self._expire_pending_tool_calls(bootstrap_ctx)
+            for org_id in self._discover_org_ids(bootstrap_ctx):
+                if self._stop_event.is_set():
+                    break
+                self._drain_org(org_id)
+        except Exception as exc:
+            with sentry_tags(
+                subsystem="extraction",
+                op="scheduler_tick",
+                error_type=type(exc).__name__,
+            ):
+                logger.exception("event=extraction_resume_scheduler_tick_failed")
+        return poll_interval
 
 
 def maybe_start_resume_scheduler(
