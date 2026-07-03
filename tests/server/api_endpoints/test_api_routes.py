@@ -337,6 +337,28 @@ class TestUpdateConfigRoute:
         # Cache invalidated on success.
         mock_invalidate.assert_called_once_with(org_id="test-org")
 
+    def test_no_op_patch_skips_set_config_and_cache_invalidation(
+        self, client, patched_reflexio, mock_reflexio
+    ):
+        existing = self._existing_config()
+        self._wire_mock(mock_reflexio, existing)
+
+        with patch(
+            "reflexio.server.cache.reflexio_cache.invalidate_reflexio_cache"
+        ) as mock_invalidate:
+            response = client.post(
+                "/api/update_config",
+                json={"window_size": existing.window_size},
+            )
+
+        assert response.status_code == 200, response.text
+        assert response.json() == {
+            "success": True,
+            "msg": "Configuration unchanged",
+        }
+        mock_reflexio.set_config.assert_not_called()
+        mock_invalidate.assert_not_called()
+
     def test_unknown_field_returns_422_before_set_config(
         self, client, patched_reflexio, mock_reflexio
     ):

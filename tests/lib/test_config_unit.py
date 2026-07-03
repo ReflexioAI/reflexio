@@ -10,7 +10,7 @@ from unittest.mock import MagicMock
 from reflexio.lib._config import ConfigMixin
 from reflexio.lib._dashboard import DashboardMixin
 from reflexio.models.api_schema.retriever_schema import GetDashboardStatsRequest
-from reflexio.models.config_schema import Config
+from reflexio.models.config_schema import Config, StorageConfigSQLite
 
 # ---------------------------------------------------------------------------
 # ConfigMixin helpers
@@ -105,6 +105,50 @@ class TestSetConfig:
 
         assert response.success is False
         assert "Connection refused" in (response.msg or "")
+
+    def test_set_config_skips_storage_init_when_storage_unchanged(self):
+        """Saving non-storage config changes should not run migrations."""
+        mixin = _make_config_mixin()
+        storage_config = StorageConfigSQLite(db_path="/var/data/current.db")
+        config = Config(storage_config=storage_config, window_size=25)
+
+        _get_configurator(
+            mixin
+        ).get_current_storage_configuration.return_value = storage_config
+
+        response = mixin.set_config(config)
+
+        assert response.success is True
+        _get_configurator(mixin).is_storage_config_ready_to_test.assert_not_called()
+        _get_configurator(mixin).test_and_init_storage_config.assert_not_called()
+        _get_configurator(mixin).set_config.assert_called_once_with(config)
+
+    def test_set_config_initializes_storage_when_storage_changed(self):
+        """Changing storage still validates and initializes the new target."""
+        mixin = _make_config_mixin()
+        existing_storage_config = StorageConfigSQLite(db_path="/var/data/current.db")
+        new_storage_config = StorageConfigSQLite(db_path="/var/data/new.db")
+        config = Config(storage_config=new_storage_config)
+
+        _get_configurator(
+            mixin
+        ).get_current_storage_configuration.return_value = existing_storage_config
+        _get_configurator(mixin).is_storage_config_ready_to_test.return_value = True
+        _get_configurator(mixin).test_and_init_storage_config.return_value = (
+            True,
+            None,
+        )
+
+        response = mixin.set_config(config)
+
+        assert response.success is True
+        _get_configurator(mixin).is_storage_config_ready_to_test.assert_called_once_with(
+            storage_config=new_storage_config
+        )
+        _get_configurator(mixin).test_and_init_storage_config.assert_called_once_with(
+            storage_config=new_storage_config
+        )
+        _get_configurator(mixin).set_config.assert_called_once_with(config)
 
     def test_set_config_storage_not_ready(self):
         """Returns failure when storage config is incomplete."""

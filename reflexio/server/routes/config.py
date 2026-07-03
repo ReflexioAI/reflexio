@@ -156,9 +156,8 @@ def update_config(
     from pydantic import ValidationError
 
     reflexio = reflexio_cache.get_reflexio(org_id=org_id)
-    existing = reflexio.request_context.configurator.get_config().model_dump(
-        mode="python"
-    )
+    existing_config = reflexio.request_context.configurator.get_config()
+    existing = existing_config.model_dump(mode="python")
     merged = {**existing, **partial}
     # Pydantic validates the merged shape and rejects unknown / malformed
     # fields here, before storage validation in reflexio.set_config.
@@ -183,6 +182,10 @@ def update_config(
                 "validation_errors": exc.errors(),
             },
         ) from exc
+    if merged_config.model_dump(mode="python") == existing:
+        logger.info("Skipping no-op config update for org %s", org_id)
+        return SetConfigResponse(success=True, msg="Configuration unchanged")
+
     response = reflexio.set_config(merged_config)
     if response.success:
         reflexio_cache.invalidate_reflexio_cache(org_id=org_id)
