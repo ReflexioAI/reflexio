@@ -86,10 +86,14 @@ def _grade_on_demand_cache_key(
     Returns:
         str: A namespaced key suitable for ``storage.upsert_operation_state``.
     """
-    return (
-        f"{_GRADE_ON_DEMAND_CACHE_KEY_PREFIX}::{org_id}::{session_id}"
-        f"::{agent_version}::{evaluation_name}"
+    # Length-prefix each free-form component (``f"{len(s)}:{s}"``) so the join is
+    # injective: distinct component tuples can never collapse to the same key even
+    # when a component itself contains the ``::`` delimiter. Keeps the prefix intact
+    # for prefix-based filtering and the key human-readable for inspection.
+    parts = "::".join(
+        f"{len(s)}:{s}" for s in (org_id, session_id, agent_version, evaluation_name)
     )
+    return f"{_GRADE_ON_DEMAND_CACHE_KEY_PREFIX}::{parts}"
 
 
 def _read_grade_on_demand_cache(
@@ -441,8 +445,9 @@ def grade_on_demand(
     )
 
     # Two operation_state rows are intentionally written for this session:
-    #   1) `grade_on_demand::{org_id}::{session_id}::{agent_version}::{evaluation_name}`
-    #      — our 24h cache, set below after the result_id is resolved.
+    #   1) `grade_on_demand::{len:org}::{len:session}::{len:version}::{len:eval}`
+    #      (each component length-prefixed by `_grade_on_demand_cache_key` so the
+    #      key is injective) — our 24h cache, set below after result_id resolves.
     #   2) `agent_success_group_eval::{org_id}::{user_id}::{session_id}`
     #      — the runner's own "evaluated" marker, written by
     #      run_group_evaluation. Future background runs without
