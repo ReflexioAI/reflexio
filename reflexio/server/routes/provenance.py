@@ -9,6 +9,7 @@ if TYPE_CHECKING:
 from fastapi import (
     APIRouter,
     Depends,
+    HTTPException,
 )
 
 from reflexio.models.api_schema.retriever_schema import (
@@ -328,8 +329,15 @@ def get_learning_provenance(
     payload: GetLearningProvenanceRequest,
     org_id: str = Depends(default_get_org_id),
 ) -> LearningProvenanceViewResponse:
-    """Return read-only learning provenance for a generated learning row."""
+    """Return read-only learning provenance for a generated learning row.
+
+    Raises:
+        HTTPException: 503 when storage is not configured (matches the sibling
+            route convention, e.g. evaluation.py / stall_state_api.py).
+    """
     reflexio = reflexio_cache.get_reflexio(org_id=org_id)
+    if reflexio.request_context.storage is None:
+        raise HTTPException(status_code=503, detail="Storage not configured")
     if payload.kind == "profile":
         return _get_profile_learning_provenance(payload, reflexio)
     if payload.kind == "user_playbook":

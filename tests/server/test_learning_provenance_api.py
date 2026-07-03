@@ -1,4 +1,8 @@
 from types import SimpleNamespace
+from unittest.mock import patch
+
+import pytest
+from fastapi import HTTPException
 
 from reflexio.models.api_schema.domain import (
     AgentPlaybook,
@@ -13,6 +17,7 @@ from reflexio.server.routes.provenance import (
     _get_agent_playbook_learning_provenance,
     _get_profile_learning_provenance,
     _get_user_playbook_learning_provenance,
+    get_learning_provenance,
 )
 
 
@@ -291,3 +296,25 @@ def test_missing_learning_target_returns_structured_failure() -> None:
     assert response.success is False
     assert response.provenance_status == "unavailable"
     assert response.msg == "Profile not found"
+
+
+def test_unconfigured_storage_returns_503() -> None:
+    """When storage is not configured, the endpoint returns a controlled 503.
+
+    Matches the sibling route convention (evaluation.py, stall_state_api.py)
+    that surfaces 503 "Storage not configured" instead of an uncontrolled 500
+    from dereferencing ``None`` storage.
+    """
+    reflexio = SimpleNamespace(request_context=SimpleNamespace(storage=None))
+    with (
+        patch(
+            "reflexio.server.routes.provenance.reflexio_cache.get_reflexio",
+            return_value=reflexio,
+        ),
+        pytest.raises(HTTPException) as exc_info,
+    ):
+        get_learning_provenance(
+            GetLearningProvenanceRequest(kind="profile", id="1"),
+            org_id="org-1",
+        )
+    assert exc_info.value.status_code == 503
