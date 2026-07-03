@@ -230,10 +230,15 @@ class TextGenerationMixin:
         if system_message:
             # Check if first message is already a system message
             if final_messages and final_messages[0].get("role") == "system":
-                # Merge with existing system message
-                final_messages[0]["content"] = (
-                    f"{system_message}\n\n{final_messages[0]['content']}"
-                )
+                # Merge with existing system message. Replace the slot with a NEW
+                # dict rather than mutating in place — ``list(messages)`` is a
+                # shallow copy that shares the caller's dict objects, so an
+                # in-place edit would corrupt the caller's list (and re-prepend on
+                # reuse/retry).
+                final_messages[0] = {
+                    **final_messages[0],
+                    "content": f"{system_message}\n\n{final_messages[0]['content']}",
+                }
             else:
                 final_messages.insert(0, {"role": "system", "content": system_message})
 
@@ -468,25 +473,64 @@ class TextGenerationMixin:
         )
         process.start()
         try:
-            process.join(timeout=hard_timeout)
+            # Drain the result queue BEFORE joining the child. A large completion
+            # payload overflows the OS pipe buffer, so the child's queue-feeder
+            # thread blocks on ``put`` until a reader drains it — and the child
+            # cannot exit while that thread is blocked. Joining first would then
+            # deadlock the parent against a child that finished but is wedged on a
+            # full pipe, tripping a *false* hard timeout (a large-but-successful
+            # result reported as a wall-clock kill). Reading here unblocks the
+            # feeder so the child can exit. The read is bounded by the same
+            # ``hard_timeout`` budget the join used to enforce.
+            deadline = time.monotonic() + hard_timeout
+            result: tuple[str, Any] | None = None
+            while result is None:
+                remaining = deadline - time.monotonic()
+                try:
+                    result = result_queue.get(timeout=max(0.0, min(0.1, remaining)))
+                    break
+                except queue.Empty as exc:
+                    if remaining <= 0:
+                        # True wall-clock timeout: the child ran past the hard
+                        # bound without producing a result. Kill it (if still
+                        # alive) and surface the timeout; a child that exited
+                        # without a result is a distinct failure.
+                        if process.is_alive():
+                            process.terminate()
+                            process.join(timeout=1.0)
+                            if process.is_alive():
+                                process.kill()
+                                process.join(timeout=1.0)
+                            raise LLMHardTimeoutError(
+                                f"LLM request exceeded hard timeout of {hard_timeout:.3f}s "
+                                f"(provider timeout={provider_timeout!r})"
+                            ) from exc
+                        raise LiteLLMClientError(
+                            "LLM request process exited without returning a result "
+                            f"(exitcode={process.exitcode})"
+                        ) from exc
+                    if not process.is_alive():
+                        # The child exited before the deadline. Give the queue one
+                        # last read in case the feeder flushed the payload just
+                        # before exit; otherwise it died without a result.
+                        try:
+                            result = result_queue.get(timeout=1.0)
+                        except queue.Empty as exc2:
+                            raise LiteLLMClientError(
+                                "LLM request process exited without returning a result "
+                                f"(exitcode={process.exitcode})"
+                            ) from exc2
+
+            # The loop only exits with a drained result (every no-result path
+            # above raises); the assert makes that invariant explicit for pyright.
+            assert result is not None
+            status, payload = result
+            # The payload is drained, so the feeder is unblocked and the child can
+            # exit. Reap it (terminating if it lingers) to avoid a zombie.
+            process.join(timeout=1.0)
             if process.is_alive():
                 process.terminate()
                 process.join(timeout=1.0)
-                if process.is_alive():
-                    process.kill()
-                    process.join(timeout=1.0)
-                raise LLMHardTimeoutError(
-                    f"LLM request exceeded hard timeout of {hard_timeout:.3f}s "
-                    f"(provider timeout={provider_timeout!r})"
-                )
-
-            try:
-                status, payload = result_queue.get(timeout=1.0)
-            except queue.Empty as exc:
-                raise LiteLLMClientError(
-                    "LLM request process exited without returning a result "
-                    f"(exitcode={process.exitcode})"
-                ) from exc
 
             if status == "ok":
                 return payload
