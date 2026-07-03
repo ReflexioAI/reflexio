@@ -238,6 +238,12 @@ class TestPydanticModels:
         assert parse_item_id("EXISTING-1") == ("EXISTING", 1)
         assert parse_item_id("new-5") == ("NEW", 5)
 
+    def test_parse_item_id_strips_prompt_brackets(self):
+        """Weak models echo the rendered label ``[NEW-0]``; tolerate it."""
+        assert parse_item_id("[NEW-0]") == ("NEW", 0)
+        assert parse_item_id("[EXISTING-3]") == ("EXISTING", 3)
+        assert parse_item_id(" [new-5] ") == ("NEW", 5)
+
     def test_parse_item_id_invalid(self):
         """Test parse_item_id returns None for invalid inputs."""
         assert parse_item_id("INVALID-0") is None
