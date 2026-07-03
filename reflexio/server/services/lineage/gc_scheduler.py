@@ -71,6 +71,32 @@ def set_org_id_provider(provider: Callable[[], list[str]] | None) -> None:
     _org_id_provider_hook = provider
 
 
+# Global sweeps run once per tick (for GLOBAL tables like invitation_codes),
+# gated on expiry_reclamation.enabled. Each fn takes `now` (unix epoch) and
+# returns a deleted-row count. Enterprise registers its sweeps here at startup;
+# empty (OSS default) keeps behavior byte-for-byte identical to before.
+_global_sweep_hooks: list[Callable[[int], int]] = []
+
+
+def register_global_sweep(fn: Callable[[int], int]) -> None:
+    """Register a global (once-per-tick) reclamation sweep.
+
+    Note: a registered sweep that absorbs its own exceptions (returns instead
+    of raising) will NOT trigger the generic ``lineage.global_sweep.failed``
+    backstop; such a sweep must emit its own failure anomaly.
+
+    Args:
+        fn (Callable[[int], int]): Called with the current unix epoch; returns
+            the number of rows it deleted.
+    """
+    _global_sweep_hooks.append(fn)
+
+
+def clear_global_sweeps() -> None:
+    """Clear all registered global sweeps (tests restore OSS defaults)."""
+    _global_sweep_hooks.clear()
+
+
 class LineageGCScheduler(ThreadedScheduler):
     """Polling daemon that hard-deletes expired tombstones per org."""
 
@@ -248,6 +274,30 @@ class LineageGCScheduler(ThreadedScheduler):
                             method_name,
                         )
 
+    def _run_global_sweeps(self, cfg: object) -> None:
+        """Invoke each registered global sweep once, gated on expiry_reclamation.
+
+        Per-sweep failure isolation: one sweep raising does not skip the others.
+        The specific per-entity anomaly is emitted inside each registered sweep;
+        this is a generic backstop.
+
+        Args:
+            cfg: The bootstrap-org config read for this tick.
+        """
+        expiry = getattr(cfg, "expiry_reclamation", None)
+        if expiry is None or not expiry.enabled:
+            return
+        now = int(time.time())
+        for sweep in _global_sweep_hooks:
+            try:
+                deleted = sweep(now)
+                if deleted:
+                    logger.info("event=global_sweep deleted=%d", deleted)
+            except Exception:
+                sweep_id = getattr(sweep, "__qualname__", repr(sweep))
+                capture_anomaly("lineage.global_sweep.failed", sweep=sweep_id)
+                logger.exception("event=global_sweep_failed sweep=%s", sweep_id)
+
     def _run_once(self) -> float:
         poll_interval = _DEFAULT_POLL_INTERVAL_SECONDS
         try:
@@ -256,6 +306,7 @@ class LineageGCScheduler(ThreadedScheduler):
             poll_interval = cfg.lineage_gc.poll_interval_seconds
             org_ids = self._discover_org_ids(bootstrap_ctx)
             self._gc_tick(org_ids)
+            self._run_global_sweeps(cfg)
         except Exception:
             logger.exception("event=lineage_gc_scheduler_tick_failed")
         return max(poll_interval, _MIN_POLL_SECONDS)
