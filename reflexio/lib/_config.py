@@ -29,32 +29,37 @@ class ConfigMixin(ReflexioBase):
             # security). Without this, the marker reaches the readiness check as
             # an unfillable StorageConfigManagedSupabase and fails with
             # "Storage configuration is incomplete".
+            current_storage_config = configurator.get_current_storage_configuration()
             storage_config = config.storage_config
             if storage_config is None or isinstance(
                 storage_config, StorageConfigManagedSupabase
             ):
-                storage_config = configurator.get_current_storage_configuration()
+                storage_config = current_storage_config
                 config.storage_config = storage_config
 
-            # Check if storage config is ready to test
-            if not configurator.is_storage_config_ready_to_test(
-                storage_config=storage_config
-            ):
-                return SetConfigResponse(
-                    success=False, msg="Storage configuration is incomplete"
+            storage_config_changed = storage_config != current_storage_config
+            if storage_config_changed or current_storage_config is None:
+                # Storage validation initializes the backend and may run
+                # migrations, so only do it when the storage target changes.
+                if not configurator.is_storage_config_ready_to_test(
+                    storage_config=storage_config
+                ):
+                    return SetConfigResponse(
+                        success=False, msg="Storage configuration is incomplete"
+                    )
+
+                (
+                    success,
+                    error_msg,
+                ) = configurator.test_and_init_storage_config(
+                    storage_config=storage_config
                 )
 
-            # Test and initialize storage connection
-            (
-                success,
-                error_msg,
-            ) = configurator.test_and_init_storage_config(storage_config=storage_config)
-
-            if not success:
-                return SetConfigResponse(
-                    success=False,
-                    msg=f"Failed to validate storage connection: {error_msg}",
-                )
+                if not success:
+                    return SetConfigResponse(
+                        success=False,
+                        msg=f"Failed to validate storage connection: {error_msg}",
+                    )
 
             # Only set config if validation passed
             configurator.set_config(config)

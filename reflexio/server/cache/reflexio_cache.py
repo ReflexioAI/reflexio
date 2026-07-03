@@ -65,6 +65,17 @@ _reflexio_cache: TTLCache = TTLCache(
     maxsize=REFLEXIO_CACHE_MAX_SIZE, ttl=REFLEXIO_CACHE_TTL_SECONDS
 )
 _reflexio_cache_lock = threading.Lock()
+_REFLEXIO_CONSTRUCTION_LOCK_STRIPES = 64
+_reflexio_construction_locks = tuple(
+    threading.Lock() for _ in range(_REFLEXIO_CONSTRUCTION_LOCK_STRIPES)
+)
+
+
+def _get_construction_lock(cache_key: CacheKey) -> threading.Lock:
+    """Return a bounded striped lock for cold Reflexio construction."""
+    return _reflexio_construction_locks[
+        hash(cache_key) % _REFLEXIO_CONSTRUCTION_LOCK_STRIPES
+    ]
 
 
 def _probe_version_safe(reflexio: Reflexio) -> _ProbeResult:
@@ -157,45 +168,60 @@ def get_reflexio(org_id: str, storage_base_dir: str | None = None) -> Reflexio:
                     del _reflexio_cache[cache_key]
             span.set_data("evicted", evicted)
 
-    # Cache miss (or just-evicted stale entry) - create a new instance
-    # outside the lock to avoid blocking concurrent requests for other orgs.
-    with profile_step("reflexio.cache.construct"):
-        reflexio = Reflexio(org_id=org_id, storage_base_dir=storage_base_dir)
-    with profile_step("reflexio.cache.version_probe", cache_state="miss") as span:
-        new_version = _probe_version_safe(reflexio)
-        span.set_data("probe_failed", new_version is _PROBE_FAILED)
-        span.set_data(
-            "probe_supported",
-            new_version is not None and new_version is not _PROBE_FAILED,
+    # Cache miss (or just-evicted stale entry). Only one request per cache
+    # key may construct at a time; construction can initialize storage and
+    # run migrations, so parallel cold starts for the same org are not safe.
+    construction_lock = _get_construction_lock(cache_key)
+    with construction_lock:
+        with _reflexio_cache_lock:
+            entry = _reflexio_cache.get(cache_key)
+        if entry is not None:
+            return entry.reflexio
+
+        logger.info(
+            "Constructing Reflexio instance for org %s storage_base_dir=%s",
+            org_id,
+            storage_base_dir,
+        )
+        with profile_step("reflexio.cache.construct"):
+            reflexio = Reflexio(org_id=org_id, storage_base_dir=storage_base_dir)
+        with profile_step("reflexio.cache.version_probe", cache_state="miss") as span:
+            new_version = _probe_version_safe(reflexio)
+            span.set_data("probe_failed", new_version is _PROBE_FAILED)
+            span.set_data(
+                "probe_supported",
+                new_version is not None and new_version is not _PROBE_FAILED,
+            )
+
+        # Construction-time probe failure: serve this request from the
+        # newly-built instance but DON'T cache it. Caching with
+        # ``cached_version=None`` would conflate the entry with a
+        # legitimately-unprobeable backend and permanently disable
+        # auto-eviction. Skipping the cache means the next request pays a
+        # construction cost, but version-based eviction is preserved as
+        # soon as the backend recovers.
+        if new_version is _PROBE_FAILED:
+            logger.warning(
+                "Constructed uncached Reflexio instance for org %s because config version probe failed",
+                org_id,
+            )
+            return reflexio
+
+        new_entry = _CacheEntry(
+            reflexio=reflexio,
+            cached_version=new_version,  # type: ignore[arg-type]
         )
 
-    # Construction-time probe failure: serve this request from the
-    # newly-built instance but DON'T cache it. Caching with
-    # ``cached_version=None`` would conflate the entry with a
-    # legitimately-unprobeable backend and permanently disable
-    # auto-eviction. Skipping the cache means the next request pays a
-    # construction cost, but version-based eviction is preserved as
-    # soon as the backend recovers.
-    if new_version is _PROBE_FAILED:
-        return reflexio
-
-    new_entry = _CacheEntry(
-        reflexio=reflexio,
-        cached_version=new_version,  # type: ignore[arg-type]
-    )
-
-    with profile_step("reflexio.cache.store") as span:
-        with _reflexio_cache_lock:
-            # Double-check in case another thread populated while we were constructing.
-            existing = _reflexio_cache.get(cache_key)
-            stored = existing is None
-            if stored:
+        with profile_step("reflexio.cache.store") as span:
+            with _reflexio_cache_lock:
                 _reflexio_cache[cache_key] = new_entry
-                result = reflexio
-            else:
-                result = existing.reflexio
-        span.set_data("stored", stored)
-        return result
+            span.set_data("stored", True)
+            logger.info(
+                "Stored Reflexio instance for org %s storage_base_dir=%s",
+                org_id,
+                storage_base_dir,
+            )
+            return reflexio
 
 
 def invalidate_reflexio_cache(org_id: str, storage_base_dir: str | None = None) -> bool:

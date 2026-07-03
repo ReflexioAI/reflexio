@@ -11,6 +11,8 @@ Covers:
 7. Version-based auto-invalidation: stale entries are evicted on next get
 """
 
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
@@ -173,6 +175,35 @@ class TestGetReflexio:
             "has_cached_version": True,
         }
         assert tracer.started[5][1] == {"cache_state": "hit"}
+
+    @patch("reflexio.server.cache.reflexio_cache.Reflexio")
+    def test_concurrent_cache_miss_constructs_once_per_key(
+        self, mock_reflexio_cls: MagicMock
+    ):
+        """Concurrent misses for one org share one construction path."""
+        first_constructor_entered = threading.Event()
+        release_constructor = threading.Event()
+        constructed = _stub_reflexio(("db", 1))
+
+        def construct(**_kwargs):
+            first_constructor_entered.set()
+            assert release_constructor.wait(timeout=2)
+            return constructed
+
+        mock_reflexio_cls.side_effect = construct
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            first = executor.submit(get_reflexio, "org-1")
+            assert first_constructor_entered.wait(timeout=2)
+            second = executor.submit(get_reflexio, "org-1")
+            release_constructor.set()
+
+            assert first.result(timeout=2) is constructed
+            assert second.result(timeout=2) is constructed
+
+        mock_reflexio_cls.assert_called_once_with(
+            org_id="org-1", storage_base_dir=None
+        )
 
 
 # =============================================================================
