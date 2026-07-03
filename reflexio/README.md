@@ -101,9 +101,10 @@ Description: FastAPI backend server that processes user interactions to generate
 **Detailed Documentation**: See [`reflexio/server/README.md`](server/README.md) for component details, including the [Prompt Bank](server/prompt/prompt_bank/README.md), [Playbook Service](server/services/playbook/README.md), and [Site Variables](server/site_var/README.md)
 
 ### Main Entry Points
-- **API**: `api.py` - FastAPI routes
+- **API composer**: `api.py` - `create_app()` factory, middleware/capability wiring, and `core_router` aggregation
+- **Domain routes**: `server/routes/` - FastAPI route modules grouped by system, interactions, profiles, playbooks, search, provenance, evaluation, Braintrust, and config
 - **Extension Registry**: `extensions.py` - optional capability/service registration for OSS and enterprise integrations
-- **Endpoint Helpers**: `api_endpoints/` - Request handlers calling `Reflexio` (reflexio_lib)
+- **Endpoint Helpers**: `api_endpoints/` - Shared handler/helper functions and `RequestContext` used by route modules
 - **Core Service**: `services/generation_service.py` - Main orchestrator
 
 ### Purpose
@@ -115,8 +116,9 @@ Receives user interactions from clients and processes them to:
 ### Component Relationships
 ```
 client (Python SDK)
-  -> api.py (FastAPI routes)
-    -> api_endpoints/ (request handlers)
+  -> api.py (create_app + core_router)
+    -> routes/ (domain FastAPI routers)
+    -> api_endpoints/ (shared handlers + RequestContext)
       -> reflexio_lib.Reflexio (main entry)
         -> services/generation_service.py (orchestrator)
           ├─> services/profile/ -> storage (BaseStorage)
@@ -126,12 +128,13 @@ client (Python SDK)
 
 ### Key Components
 - **`api_endpoints/`**: Request handling, `RequestContext` (bundles storage/config/prompts), auth
+- **`routes/`**: Domain route modules (`system.py`, `interactions.py`, `profiles.py`, `playbooks.py`, `search.py`, `provenance.py`, `evaluation.py`, `braintrust.py`, `config.py`) included into `api.py`'s `core_router`
 - **`db/`**: Auth & config storage only (SQLite) - NOT for profiles/interactions
 - **`llm/`**: Unified LLM client (auto-detects OpenAI/Claude from model name)
 - **`prompt/`**: Versioned prompt templates in `prompt_bank/`
 - **`services/`**: Core business logic
   - `generation_service.py` - Orchestrator (runs profile/playbook/success services)
-  - `base_generation_service.py` - Abstract base for parallel actor execution
+  - `base_generation_service.py` + `base_generation/` - Abstract base plus mixins for parallel actor execution, batch progress, should-run prechecks, status transitions, and usage billing
   - `profile/` - Profile extraction & updates
   - `playbook/` - Playbook extraction, consolidation, and aggregation
   - `agent_success_evaluation/` - Success evaluation
