@@ -80,13 +80,14 @@ class BatchProgressMixin(Generic[TRequest]):  # noqa: UP046
         total_users = len(user_ids)
         self._is_batch_mode = True
 
-        # Initialize progress
-        state_manager.initialize_progress(
-            total_users=total_users,
-            request_params=request_params,
-        )
-
         try:
+            # Initialize progress. Kept inside the try so a raise here still
+            # resets _is_batch_mode via the finally (no leak into the next op).
+            state_manager.initialize_progress(
+                total_users=total_users,
+                request_params=request_params,
+            )
+
             # Process each user
             users_processed = 0
             processed_user_ids: list[str] = []
