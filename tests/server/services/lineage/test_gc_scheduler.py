@@ -16,6 +16,7 @@ from reflexio.server.services.lineage.gc_scheduler import (
     _HIGH_VOLUME_THRESHOLD,
     _MIN_POLL_SECONDS,
     LineageGCScheduler,
+    clear_global_sweeps,
     clear_per_org_sweeps,
     maybe_start_lineage_gc,
     register_per_org_sweep,
@@ -623,3 +624,46 @@ def test_gc_tick_isolates_per_org_sweep_failure():
     )
     assert len(sibling_calls) == 1
     assert sibling_calls[0][0] == "orgA"
+
+
+# ---------------------------------------------------------------------------
+# maybe_start_lineage_gc — registered hooks widen the start gate
+# ---------------------------------------------------------------------------
+
+
+def test_maybe_start_starts_when_a_per_org_sweep_is_registered_even_with_flags_off():
+    """Scheduler must start when any per-org sweep is registered, even if all
+    config flags (lineage_gc.enabled, expiry_reclamation.enabled,
+    governance_retention.audit_events_retention_enabled) are False.
+
+    This preserves the invariant of the deleted GovernanceRetentionScheduler,
+    which started unconditionally so that a non-bootstrap tenant with governance
+    retention ON would still be swept.
+    """
+
+    def fake_sweep(org_id: str, now: int) -> int:
+        return 0
+
+    register_per_org_sweep(fake_sweep)
+    sched = None
+    try:
+        cfg = SimpleNamespace(
+            lineage_gc=SimpleNamespace(enabled=False, poll_interval_seconds=86400),
+            expiry_reclamation=SimpleNamespace(enabled=False),
+            governance_retention=SimpleNamespace(audit_events_retention_enabled=False),
+        )
+        ctx = SimpleNamespace(
+            org_id="org_bootstrap",
+            storage=_make_storage(),
+            configurator=SimpleNamespace(get_config=MagicMock(return_value=cfg)),
+        )
+        sched = maybe_start_lineage_gc(lambda _: ctx, bootstrap_org_id="org_bootstrap")  # type: ignore[arg-type]
+        assert sched is not None, (
+            "Expected scheduler to start when a per-org sweep is registered, "
+            "regardless of config flags"
+        )
+    finally:
+        clear_per_org_sweeps()
+        clear_global_sweeps()
+        if sched is not None:
+            sched.stop(timeout_seconds=1.0)

@@ -411,10 +411,11 @@ def maybe_start_lineage_gc(
         cfg = ctx.configurator.get_config()
 
         # Dead-knob warning: audit-event retention is an ENTERPRISE-only feature
-        # (handled by reflexio_ext GovernanceRetentionCapability). In an OSS-only
-        # deployment the knob is accepted but does nothing — warn loudly. Detected
-        # via the configurator class: enterprise swaps in EnterpriseConfigurator at
-        # construction, so the OSS DefaultConfigurator means "no enterprise here".
+        # (handled by an enterprise per-org reclamation sweep registered via
+        # register_per_org_sweep). In an OSS-only deployment the knob is accepted
+        # but does nothing — warn loudly. Detected via the configurator class:
+        # enterprise swaps in EnterpriseConfigurator at construction, so the OSS
+        # DefaultConfigurator means "no enterprise here".
         from reflexio.server.services.configurator.configurator import (  # noqa: PLC0415
             DefaultConfigurator,
             get_configurator_class,
@@ -439,10 +440,17 @@ def maybe_start_lineage_gc(
         governance_retention_enabled = getattr(
             gr, "audit_events_retention_enabled", False
         )
+        # Also start when any reclamation sweep has been registered — registered
+        # hooks carry their own per-org gates (in the enterprise closure), so the
+        # scheduler must run even if the bootstrap org's config has all flags off.
+        # This preserves the "start unconditionally, gate per-org" invariant of
+        # the deleted GovernanceRetentionScheduler.
         if not (
             cfg.lineage_gc.enabled
             or expiry_reclamation_enabled
             or governance_retention_enabled
+            or bool(_per_org_sweep_hooks)
+            or bool(_global_sweep_hooks)
         ):
             return None
     except Exception as exc:
