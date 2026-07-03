@@ -81,6 +81,10 @@ _global_sweep_hooks: list[Callable[[int], int]] = []
 def register_global_sweep(fn: Callable[[int], int]) -> None:
     """Register a global (once-per-tick) reclamation sweep.
 
+    Note: a registered sweep that absorbs its own exceptions (returns instead
+    of raising) will NOT trigger the generic ``lineage.global_sweep.failed``
+    backstop; such a sweep must emit its own failure anomaly.
+
     Args:
         fn (Callable[[int], int]): Called with the current unix epoch; returns
             the number of rows it deleted.
@@ -290,8 +294,9 @@ class LineageGCScheduler(ThreadedScheduler):
                 if deleted:
                     logger.info("event=global_sweep deleted=%d", deleted)
             except Exception:
-                capture_anomaly("lineage.global_sweep.failed")
-                logger.exception("event=global_sweep_failed")
+                sweep_id = getattr(sweep, "__qualname__", repr(sweep))
+                capture_anomaly("lineage.global_sweep.failed", sweep=sweep_id)
+                logger.exception("event=global_sweep_failed sweep=%s", sweep_id)
 
     def _run_once(self) -> float:
         poll_interval = _DEFAULT_POLL_INTERVAL_SECONDS
