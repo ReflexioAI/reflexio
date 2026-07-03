@@ -230,10 +230,15 @@ class TextGenerationMixin:
         if system_message:
             # Check if first message is already a system message
             if final_messages and final_messages[0].get("role") == "system":
-                # Merge with existing system message
-                final_messages[0]["content"] = (
-                    f"{system_message}\n\n{final_messages[0]['content']}"
-                )
+                # Merge with existing system message. Replace the slot with a NEW
+                # dict rather than mutating in place — ``list(messages)`` is a
+                # shallow copy that shares the caller's dict objects, so an
+                # in-place edit would corrupt the caller's list (and re-prepend on
+                # reuse/retry).
+                final_messages[0] = {
+                    **final_messages[0],
+                    "content": f"{system_message}\n\n{final_messages[0]['content']}",
+                }
             else:
                 final_messages.insert(0, {"role": "system", "content": system_message})
 

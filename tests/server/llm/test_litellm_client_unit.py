@@ -2779,3 +2779,32 @@ class TestEmbeddingRetries:
         )
         client.get_embedding("hi")
         assert "fallbacks" not in captured
+
+
+def test_generate_chat_response_does_not_mutate_caller_messages() -> None:
+    """Merging a ``system_message`` must not mutate the caller's message dicts.
+
+    ``final_messages = list(messages)`` is a shallow copy that shares the caller's
+    dict objects, so merging into ``final_messages[0]`` in place used to corrupt
+    the caller's list and re-prepend the system message on reuse/retry.
+    """
+    client = _build_client()
+    original = [
+        {"role": "system", "content": "orig-system"},
+        {"role": "user", "content": "hi"},
+    ]
+
+    with patch.object(client, "_make_request", return_value="ok") as mock_req:
+        client.generate_chat_response(original, system_message="injected")
+
+    # The caller's first dict is untouched...
+    assert original[0]["content"] == "orig-system"
+    # ...while _make_request received a NEW merged system dict.
+    sent = mock_req.call_args[0][0]
+    assert sent[0] is not original[0]
+    assert sent[0]["content"] == "injected\n\norig-system"
+
+    # A second call must not double-prepend onto the caller's data.
+    with patch.object(client, "_make_request", return_value="ok"):
+        client.generate_chat_response(original, system_message="injected")
+    assert original[0]["content"] == "orig-system"
