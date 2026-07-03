@@ -24,7 +24,7 @@ strings before deleting old import paths in the same PR.
 |------|---------|
 | `generation_service.py` | `GenerationService` — saves interactions, runs profile + playbook generation in parallel (ThreadPoolExecutor), schedules deferred evaluation when `session_id` is present. |
 | `publish_learning_worker.py` | Deferred post-persist publish learning worker — queues async publish learning after durable interaction writes and requeues under publish limiter pressure. |
-| `base_generation_service.py` | `BaseGenerationService` — abstract base; the **Service Pattern** (load configs → create actors → run in parallel → save results). Per-extractor timeout `EXTRACTOR_TIMEOUT_SECONDS = 300`. |
+| `base_generation_service.py` + `base_generation/` | `BaseGenerationService` stable import surface plus mixins for batch progress, config filtering, extraction lifecycle, should-run prechecks, status transitions, and usage billing. Per-extractor timeout `EXTRACTOR_TIMEOUT_SECONDS = 300`. |
 | `operation_state_utils.py` | `OperationStateManager` — all `_operation_state` access (progress, concurrency locks, extractor/aggregator bookmarks, cluster fingerprints, cancellation). |
 | `extractor_config_utils.py`, `extractor_interaction_utils.py` | Filter extractors by source / `allow_manual_trigger` / names; per-extractor stride + window + bookmark handling. |
 | `deduplication_utils.py`, `service_utils.py`, `embedding_text.py` | LLM dedup helpers (used by `ProfileConsolidator` + `PlaybookConsolidator`), message construction / JSON extraction / response logging, embedding text builders. |
@@ -63,7 +63,7 @@ strings before deleting old import paths in the same PR.
 
 | Path | Purpose |
 |------|---------|
-| `storage/` | `storage_base/` (`BaseStorage` split by domain, including `_governance.py` and `_lineage.py`) + `sqlite_storage/` (governance validation, retention barriers, lineage/tombstones) + `governance_validation.py` + `retention*.py`. Access via `request_context.storage` only. |
+| `storage/` | `storage_base/` and `sqlite_storage/` keep legacy domain facades while focused subpackages own `profiles/`, `playbook/`, `agent_run/`, `governance/`, and SQLite `base/` helpers; plus `governance_validation.py` and `retention*.py`. Access via `request_context.storage` only. |
 | `configurator/` | `DefaultConfigurator` — loads YAML config and creates the storage backend. |
 
 ## Key Rules

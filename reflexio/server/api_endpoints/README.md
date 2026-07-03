@@ -1,5 +1,5 @@
 # server/api_endpoints
-Description: Bridge between FastAPI routes and business logic — builds `RequestContext`, validates requests, and delegates into `Reflexio`. Most endpoints are registered on the `core_router` in `../api.py`; the files here are the handlers/helpers it calls.
+Description: Shared helpers between FastAPI domain routes and business logic — builds `RequestContext`, validates requests, and delegates into `Reflexio`. Public route declarations live in `../routes/` and are aggregated by `core_router` in `../api.py`; the files here are reusable handlers/helpers those routes call.
 
 > For the complete endpoint list (publish, retrieval, search, profile/playbook lifecycle, evaluation, Braintrust, operations), see the parent [server README](../README.md#api-endpoints).
 
@@ -18,8 +18,9 @@ Description: Bridge between FastAPI routes and business logic — builds `Reques
 ## Architecture Pattern
 
 ```
-api.py (core_router + sub-routers)
-  -> Depends(get_request_context) -> RequestContext(org_id, storage, configurator, prompt_manager)
+api.py (create_app + core_router)
+  -> routes/<domain>.py (FastAPI routers)
+    -> Depends(get_request_context) -> RequestContext(org_id, storage, configurator, prompt_manager)
     -> get_reflexio(org_id) -> Reflexio (reflexio_lib) -> services/
 ```
 

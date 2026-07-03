@@ -33,8 +33,9 @@ Description: FastAPI backend server that processes user interactions to generate
 
 ## Main Entry Points
 
-- **API**: `api.py` - FastAPI routes (only place to expose endpoints)
-- **Endpoint Helpers**: `api_endpoints/` - Bridge between routes and business logic
+- **API composer**: `api.py` - `create_app()` factory, middleware/capability wiring, OpenAPI auth decoration, and `core_router` aggregation
+- **Domain routes**: `routes/` - FastAPI route modules; add new public API surfaces here and include their routers in `api.py`
+- **Endpoint Helpers**: `api_endpoints/` - Shared handlers/helpers plus `RequestContext` used by route modules
 - **Extension Registry**: `extensions.py` - Capability and service registry for optional OSS/enterprise integrations
 - **Core Service**: `services/generation_service.py` - Main orchestrator
 
@@ -57,7 +58,19 @@ Description: FastAPI backend server that processes user interactions to generate
 
 **Directory**: `api_endpoints/`
 
-**Detailed Documentation**: See [`api_endpoints/README.md`](api_endpoints/README.md) for the `RequestContext` contract and per-file handler map.
+**Route modules** live in `routes/` and are grouped by domain. `api.py` remains the composition root: it creates `core_router`, includes each domain router, and mounts the aggregate router into the FastAPI app. **Detailed handler documentation**: See [`api_endpoints/README.md`](api_endpoints/README.md) for the `RequestContext` contract and helper map.
+
+| Route file | Purpose |
+|------|---------|
+| `routes/system.py` | Root/health/version and operation status/cancel surfaces. |
+| `routes/interactions.py` | Publish, request/session/interaction retrieval, direct interaction writes, and clear-data operations. |
+| `routes/profiles.py` | Profile retrieval, statistics, rerun/manual generation, upgrade/downgrade, update/delete lifecycle routes. |
+| `routes/playbooks.py` | User/agent playbook retrieval, aggregation, lifecycle, status/update/delete, and application stats routes. |
+| `routes/search.py` | Unified search and entity-specific search/rerank routes. |
+| `routes/provenance.py` | Learning provenance and approval routes. |
+| `routes/evaluation.py` | Evaluation overview, regenerate jobs, grade-on-demand, shadow comparisons, pending tool calls, and stall-state routes. |
+| `routes/braintrust.py` | Braintrust connection/project/status/sync routes. |
+| `routes/config.py` | Config read/write and account identity routes. |
 
 | File | Purpose |
 |------|---------|
@@ -97,10 +110,13 @@ Description: FastAPI backend server that processes user interactions to generate
 ## LLM Client
 
 **Directory**: `llm/`
-**Entry Point**: `litellm_client.py` - `LiteLLMClient`
+**Entry Point**: `litellm_client.py` - `LiteLLMClient` facade composed from focused mixins
 
 Key files:
-- `litellm_client.py`: Unified LiteLLMClient using LiteLLM for multi-provider support
+- `litellm_client.py`: Stable import surface, client config/credential resolution, and `LiteLLMClient` facade
+- `_litellm_text_generation.py`, `_litellm_embedding.py`, `_litellm_structured_output.py`: Completion/tool-call, embedding, and structured-output mixins
+- `_litellm_json_extraction.py`, `_litellm_subprocess.py`, `_litellm_types.py`: JSON parsing, hard-timeout subprocess snapshots/workers, and shared public types/errors
+- `providers/`: Optional local/provider adapters (`claude-code/`, OpenClaw, local embedding, Nomic embedding); registration is opt-in via environment/config
 - `openai_client.py`: OpenAI implementation (legacy, do not use directly)
 - `claude_client.py`: Claude implementation (legacy, do not use directly)
 - `llm_utils.py`: Helper functions for Pydantic model conversion
@@ -230,7 +246,8 @@ Called by API endpoints via `Reflexio`
 
 ### Base Infrastructure
 
-- `base_generation_service.py`: Abstract base for all services (parallel extractor execution via ThreadPoolExecutor, `EXTRACTOR_TIMEOUT_SECONDS = 300` per-extractor safety timeout)
+- `base_generation_service.py`: Stable `BaseGenerationService` import surface plus service-specific orchestration hooks (parallel extractor execution via ThreadPoolExecutor, `EXTRACTOR_TIMEOUT_SECONDS = 300` per-extractor safety timeout)
+- `base_generation/`: Mixins for batch progress, config filtering, extraction lifecycle, should-run prechecks, status transitions, and usage billing that keep `base_generation_service.py` navigable without changing caller imports
 - `extractor_config_utils.py`: Shared utility for filtering extractor configs by source, `allow_manual_trigger`, and extractor names
 - `extractor_interaction_utils.py`: Per-extractor utilities for stride_size checking and source filtering
 - `operation_state_utils.py`: Centralized `OperationStateManager` for all `_operation_state` table interactions (progress tracking, concurrency locks, extractor/aggregator bookmarks, simple locks)
@@ -488,8 +505,8 @@ Pre-computed embeddings passed to storage methods via `query_embedding` paramete
 
 | File | Purpose |
 |------|---------|
-| `storage_base/` | BaseStorage interface split by domain (`_profiles.py`, `_playbook.py`, `_requests.py`, `_operations.py`, `_agent_run.py`, `_lineage.py`, `_shadow_verdicts.py`, `_stall_state.py`, `_share_links.py`) |
-| `sqlite_storage/` | SQLite-backed implementation split across the same domains, including governance-aware retention/barrier handling and lineage/tombstone support in `_governance.py` / `_lineage.py` |
+| `storage_base/` | BaseStorage interface split by domain. Legacy facades (`_profiles.py`, `_playbook.py`, `_agent_run.py`, etc.) preserve imports while subpackages (`profiles/`, `playbook/`, `agent_run/`, `governance/`) hold focused abstract store contracts. |
+| `sqlite_storage/` | SQLite-backed implementation split across matching facades and subpackages (`profiles/`, `playbook/`, `agent_run/`, `governance/`, `base/`), including governance-aware retention/barrier handling and lineage/tombstone support. |
 | `governance_validation.py` | Shared validation helpers for subject references and governance contracts before storage writes. |
 | `retention.py`, `retention_mixin.py` | Data retention and cleanup helpers |
 | `constants.py`, `error.py` | Storage constants and shared errors |
