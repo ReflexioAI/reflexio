@@ -1183,7 +1183,9 @@ class TestStrictStructuredOutputRequest:
             patch.object(
                 LiteLLMClient, "_supports_response_schema", return_value=False
             ),
-            patch("reflexio.server.llm._litellm_structured_output.assert_provider_safe_schema"),
+            patch(
+                "reflexio.server.llm._litellm_structured_output.assert_provider_safe_schema"
+            ),
         ):
             params, _, _, _, _ = client._build_completion_params(
                 [{"role": "user", "content": "test"}],
@@ -1208,7 +1210,9 @@ class TestStrictStructuredOutputRequest:
         # Non-base double exercises the make_strict backstop; patch the
         # by-construction guard (it would raise under pytest) — see the sibling
         # test above for why.
-        with patch("reflexio.server.llm._litellm_structured_output.assert_provider_safe_schema"):
+        with patch(
+            "reflexio.server.llm._litellm_structured_output.assert_provider_safe_schema"
+        ):
             params, _, _, _, _ = client._build_completion_params(
                 [{"role": "user", "content": "test"}],
                 response_format=_DiscriminatedOutput,
@@ -2392,6 +2396,44 @@ class TestLitellmIntegration:
         # A single subprocess spawn/kill cycle (the blind same-model hard-timeout
         # retry was removed) — still far below the 1s the blocked call would take.
         assert time.perf_counter() - start < 1.0
+
+    def test_large_result_does_not_deadlock_hard_timeout(self, monkeypatch):
+        """A large completion payload overflows the OS pipe buffer feeding the
+        result queue. If the parent joined the child before draining the queue,
+        the child's queue-feeder thread would block on the full pipe, the child
+        could not exit, and a finished-but-large result would trip a *false*
+        hard timeout. The queue must be drained before join."""
+        monkeypatch.setenv("REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS", "0")
+        client = LiteLLMClient(LiteLLMConfig(model="x"))
+
+        big = "x" * (2 * 1024 * 1024)  # 2 MB, far exceeds the ~64KB pipe buffer
+
+        def _big(**_params):
+            choice = MagicMock()
+            choice.message.content = big
+            choice.message.tool_calls = None
+            choice.finish_reason = "stop"
+            resp = MagicMock()
+            resp.choices = [choice]
+            resp.usage = None
+            resp._hidden_params = {}
+            resp.model = "x"
+            return resp
+
+        monkeypatch.setattr("litellm.completion", _big)
+        params = {"model": "x", "messages": self._messages(), "timeout": 0.5}
+        # Force the subprocess path (a monkeypatched completion is not module
+        # "litellm", so isolation falls to the short-timeout branch).
+        assert client._should_process_isolate_completion(0.5, 0.0)
+
+        start = time.perf_counter()
+        payload = client._completion_with_hard_timeout(params, hard_timeout=10.0)
+        elapsed = time.perf_counter() - start
+
+        assert payload.choices[0].message.content == big
+        # Draining-before-join returns immediately; the pre-fix deadlock would
+        # instead burn the full hard_timeout and raise LLMHardTimeoutError.
+        assert elapsed < 8.0
 
     def test_worker_snapshots_litellm_api_connection_error(self, monkeypatch):
         """LiteLLM exceptions can dump but fail to load across process queues."""
