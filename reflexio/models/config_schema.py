@@ -725,9 +725,10 @@ class ExpiryReclamationConfig(BaseModel):
 
 class GovernanceRetentionConfig(BaseModel):
     """Audit-event retention policy. **Enterprise-only:** reclamation is performed
-    by the reflexio_ext GovernanceRetentionCapability. In an OSS-only deployment
-    these knobs are accepted but inert (the OSS lineage scheduler does not reclaim
-    audit events) and the server logs a startup warning when retention is enabled.
+    by an enterprise per-org reclamation sweep registered via
+    ``register_per_org_sweep``. In an OSS-only deployment these knobs are accepted
+    but inert (the OSS lineage scheduler does not reclaim audit events) and the
+    server logs a startup warning when retention is enabled.
     """
 
     audit_events_retention_enabled: bool = False

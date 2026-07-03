@@ -1,22 +1,24 @@
 """Process-local scheduler for lineage tombstone garbage collection and expiry reclamation.
 
 Startup runs when EITHER ``lineage_gc.enabled`` OR ``expiry_reclamation.enabled``
-is set in the bootstrap org's config. Each tick evaluates every org independently.
+OR ``governance_retention.audit_events_retention_enabled`` is set in the bootstrap
+org's config. Each tick evaluates every org independently.
 
 - **Class A** (profile expiry sweep + tombstone GC): gated on ``lineage_gc.enabled``.
   Hard-deletes expired tombstones per that org's ``lineage_gc`` config.
 - **Class B** (plain-row direct-delete sweeps, no PII/audit obligation): gated on
   ``expiry_reclamation.enabled``. Currently sweeps expired share links and expired
   pending tool calls.
+- **Per-org sweeps**: registered via :func:`register_per_org_sweep`; invoked
+  unconditionally once per org after the Class-B block. Enterprise registers a
+  governance-retention closure here at startup (see ``reflexio_ext``).
 
 One org's failure never stalls the loop; errors are captured as Sentry anomalies
 and the loop continues to the next org.
 
 Note: the poll interval is always taken from ``lineage_gc.poll_interval_seconds``
-even when only ``expiry_reclamation`` is enabled; Class B currently shares that cadence.
-
-Governance-retention reclamation is a premium concern handled by the enterprise
-GovernanceRetentionCapability (reflexio_ext), not here.
+even when only ``expiry_reclamation`` or ``governance_retention`` is enabled;
+all sweep classes share that cadence.
 """
 
 from __future__ import annotations
@@ -95,6 +97,36 @@ def register_global_sweep(fn: Callable[[int], int]) -> None:
 def clear_global_sweeps() -> None:
     """Clear all registered global sweeps (tests restore OSS defaults)."""
     _global_sweep_hooks.clear()
+
+
+# Per-org sweeps run once per org per tick (for per-org reclamation concerns).
+# Each fn takes (org_id, now) and returns a deleted-row count. Enterprise
+# registers its closure here at startup so governance retention folds into the
+# shared scheduler loop; empty (OSS default) keeps behavior identical to before.
+_per_org_sweep_hooks: list[Callable[[str, int], int]] = []
+
+
+def register_per_org_sweep(fn: Callable[[str, int], int]) -> None:
+    """Register a per-org reclamation sweep.
+
+    The sweep is invoked once per org inside ``_gc_tick``'s org loop, after
+    the Class-B block, unconditionally (not gated on ``lineage_gc`` or
+    ``expiry_reclamation`` — the real gate lives in the enterprise closure).
+
+    Note: a registered sweep that absorbs its own exceptions (returns instead
+    of raising) will NOT trigger the generic ``lineage.per_org_sweep.failed``
+    backstop; such a sweep must emit its own failure anomaly.
+
+    Args:
+        fn (Callable[[str, int], int]): Called with ``(org_id, now)`` where
+            ``now`` is the current unix epoch; returns the number of rows deleted.
+    """
+    _per_org_sweep_hooks.append(fn)
+
+
+def clear_per_org_sweeps() -> None:
+    """Clear all registered per-org sweeps (tests restore OSS defaults)."""
+    _per_org_sweep_hooks.clear()
 
 
 class LineageGCScheduler(ThreadedScheduler):
@@ -274,6 +306,47 @@ class LineageGCScheduler(ThreadedScheduler):
                             method_name,
                         )
 
+            # Per-org sweeps: invoked unconditionally once per org (the real gate
+            # lives in each enterprise closure). Extracted to keep _gc_tick's
+            # cyclomatic complexity in check and to mirror _run_global_sweeps.
+            self._run_per_org_sweeps(org_id)
+
+    def _run_per_org_sweeps(self, org_id: str) -> None:
+        """Invoke each registered per-org sweep once for this org.
+
+        Invoked unconditionally (not gated on ``lineage_gc``/``expiry_reclamation``
+        — the real gate lives in each enterprise closure). Per-sweep failure
+        isolation: one sweep raising does not skip the others; a sweep that
+        absorbs its own exceptions bypasses the ``lineage.per_org_sweep.failed``
+        backstop and must emit its own anomaly.
+
+        Args:
+            org_id: The org being swept this tick.
+        """
+        now = int(time.time())
+        for sweep in _per_org_sweep_hooks:
+            sweep_id = getattr(sweep, "__qualname__", repr(sweep))
+            try:
+                deleted = sweep(org_id, now)
+                if deleted:
+                    logger.info(
+                        "event=per_org_sweep org_id=%s sweep=%s deleted=%d",
+                        org_id,
+                        sweep_id,
+                        deleted,
+                    )
+            except Exception:
+                capture_anomaly(
+                    "lineage.per_org_sweep.failed",
+                    org_id=org_id,
+                    sweep=sweep_id,
+                )
+                logger.exception(
+                    "event=per_org_sweep_failed org_id=%s sweep=%s",
+                    org_id,
+                    sweep_id,
+                )
+
     def _run_global_sweeps(self, cfg: object) -> None:
         """Invoke each registered global sweep once, gated on expiry_reclamation.
 
@@ -320,10 +393,15 @@ def maybe_start_lineage_gc(
 ) -> LineageGCScheduler | None:
     """Start the scheduler when bootstrap config enables tombstone GC or expiry reclamation.
 
-    Startup runs when bootstrap-org config sets EITHER ``lineage_gc.enabled``
-    (Class A: profile expiry + tombstone GC) OR ``expiry_reclamation.enabled``
-    (Class B: plain-row direct-delete sweeps). Returns ``None`` if neither flag
-    is set.
+    Startup runs when the bootstrap-org config sets ``lineage_gc.enabled``
+    (Class A: profile expiry + tombstone GC), ``expiry_reclamation.enabled``
+    (Class B: plain-row direct-delete sweeps), or
+    ``governance_retention.audit_events_retention_enabled`` — OR when any sweep
+    hook has been registered via :func:`register_per_org_sweep` /
+    :func:`register_global_sweep`. Registered hooks carry their own per-org gate
+    in the enterprise closure, so the scheduler must start to evaluate them even
+    when none of the bootstrap-org flags are set. Returns ``None`` only if none
+    of these conditions hold.
 
     Tombstone-GC enablement criteria (must ALL hold before enabling ``lineage_gc``
     for a production org):
@@ -353,17 +431,19 @@ def maybe_start_lineage_gc(
             ``storage.list_org_ids()`` exactly as before.
 
     Returns:
-        LineageGCScheduler: The started scheduler, or ``None`` if neither flag is set.
+        LineageGCScheduler: The started scheduler, or ``None`` if no start
+        condition holds (see the startup criteria above).
     """
     try:
         ctx = request_context_factory(bootstrap_org_id)
         cfg = ctx.configurator.get_config()
 
         # Dead-knob warning: audit-event retention is an ENTERPRISE-only feature
-        # (handled by reflexio_ext GovernanceRetentionCapability). In an OSS-only
-        # deployment the knob is accepted but does nothing — warn loudly. Detected
-        # via the configurator class: enterprise swaps in EnterpriseConfigurator at
-        # construction, so the OSS DefaultConfigurator means "no enterprise here".
+        # (handled by an enterprise per-org reclamation sweep registered via
+        # register_per_org_sweep). In an OSS-only deployment the knob is accepted
+        # but does nothing — warn loudly. Detected via the configurator class:
+        # enterprise swaps in EnterpriseConfigurator at construction, so the OSS
+        # DefaultConfigurator means "no enterprise here".
         from reflexio.server.services.configurator.configurator import (  # noqa: PLC0415
             DefaultConfigurator,
             get_configurator_class,
@@ -385,7 +465,21 @@ def maybe_start_lineage_gc(
         expiry_reclamation_enabled = getattr(
             getattr(cfg, "expiry_reclamation", None), "enabled", False
         )
-        if not (cfg.lineage_gc.enabled or expiry_reclamation_enabled):
+        governance_retention_enabled = getattr(
+            gr, "audit_events_retention_enabled", False
+        )
+        # Also start when any reclamation sweep has been registered — registered
+        # hooks carry their own per-org gates (in the enterprise closure), so the
+        # scheduler must run even if the bootstrap org's config has all flags off.
+        # This preserves the "start unconditionally, gate per-org" invariant of
+        # the deleted GovernanceRetentionScheduler.
+        if not (
+            cfg.lineage_gc.enabled
+            or expiry_reclamation_enabled
+            or governance_retention_enabled
+            or bool(_per_org_sweep_hooks)
+            or bool(_global_sweep_hooks)
+        ):
             return None
     except Exception as exc:
         logger.warning(

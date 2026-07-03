@@ -16,7 +16,10 @@ from reflexio.server.services.lineage.gc_scheduler import (
     _HIGH_VOLUME_THRESHOLD,
     _MIN_POLL_SECONDS,
     LineageGCScheduler,
+    clear_global_sweeps,
+    clear_per_org_sweeps,
     maybe_start_lineage_gc,
+    register_per_org_sweep,
 )
 
 # ---------------------------------------------------------------------------
@@ -190,8 +193,9 @@ def test_gc_tick_no_high_volume_anomaly_below_threshold():
 def test_gc_tick_never_runs_governance_retention():
     """Invariant: the reduced OSS scheduler sheds the premium concern. Even when
     a governance_retention config with audit_events_retention_enabled=True is
-    present, _gc_tick must NEVER call gc_governance_retention (that behavior
-    moved to the enterprise GovernanceRetentionCapability)."""
+    present, _gc_tick must NEVER call gc_governance_retention directly — that
+    behavior is only invoked if an enterprise per-org sweep is registered via
+    register_per_org_sweep (Task 1 seam)."""
     cfg = LineageGCConfig(enabled=True, tombstone_grace_window_days=10)
     storage = _make_storage(gc_return=0)
     ctx = _make_ctx("org_gov", lineage_gc=cfg, storage=storage)
@@ -539,3 +543,127 @@ def test_run_loop_clamps_non_positive_poll_interval():
     assert all(t >= _MIN_POLL_SECONDS for t in wait_calls), (
         f"Non-positive poll interval was not clamped: got {wait_calls}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Per-org sweep seam — register_per_org_sweep / clear_per_org_sweeps
+# ---------------------------------------------------------------------------
+
+
+def test_gc_tick_runs_registered_per_org_sweep_gated_live():
+    """Per-org sweeps registered via register_per_org_sweep are invoked once per
+    org per tick, unconditionally (no expiry_reclamation or lineage_gc gate).
+    Each sweep receives (org_id: str, now: int) exactly once per org.
+    """
+    calls: list[tuple[str, int]] = []
+
+    def fake_sweep(org_id: str, now: int) -> int:
+        calls.append((org_id, now))
+        return 0
+
+    register_per_org_sweep(fake_sweep)
+    try:
+        # Disable both Class-A and Class-B to confirm the per-org sweep runs
+        # unconditionally regardless of those gates.
+        cfg = LineageGCConfig(enabled=False)
+        sched = _scheduler(
+            factory=lambda org_id: _make_ctx(
+                org_id, lineage_gc=cfg, storage=_make_storage()
+            )
+        )
+
+        before = int(time.time())
+        sched._gc_tick(["orgA", "orgB"])
+        after = int(time.time())
+    finally:
+        clear_per_org_sweeps()
+
+    org_ids_called = [c[0] for c in calls]
+    assert org_ids_called == ["orgA", "orgB"], (
+        f"Expected exactly one call per org in order; got {org_ids_called}"
+    )
+    for _, now_val in calls:
+        assert isinstance(now_val, int)
+        assert before <= now_val <= after, (
+            f"now_val={now_val} not in [{before}, {after}]"
+        )
+
+
+def test_gc_tick_isolates_per_org_sweep_failure():
+    """A raising per-org sweep emits capture_anomaly and does NOT skip sibling
+    sweeps registered after it (per-sweep failure isolation).
+    """
+    sibling_calls: list[tuple[str, int]] = []
+
+    def raising_sweep(org_id: str, now: int) -> int:
+        raise RuntimeError("boom")
+
+    def sibling_sweep(org_id: str, now: int) -> int:
+        sibling_calls.append((org_id, now))
+        return 0
+
+    register_per_org_sweep(raising_sweep)
+    register_per_org_sweep(sibling_sweep)
+    try:
+        cfg = LineageGCConfig(enabled=False)
+        sched = _scheduler(
+            factory=lambda org_id: _make_ctx(
+                org_id, lineage_gc=cfg, storage=_make_storage()
+            )
+        )
+
+        with patch.object(gc_scheduler, "capture_anomaly") as mock_anomaly:
+            sched._gc_tick(["orgA"])
+    finally:
+        clear_per_org_sweeps()
+
+    mock_anomaly.assert_called_once_with(
+        "lineage.per_org_sweep.failed",
+        org_id="orgA",
+        sweep=raising_sweep.__qualname__,
+    )
+    assert len(sibling_calls) == 1
+    assert sibling_calls[0][0] == "orgA"
+
+
+# ---------------------------------------------------------------------------
+# maybe_start_lineage_gc — registered hooks widen the start gate
+# ---------------------------------------------------------------------------
+
+
+def test_maybe_start_starts_when_a_per_org_sweep_is_registered_even_with_flags_off():
+    """Scheduler must start when any per-org sweep is registered, even if all
+    config flags (lineage_gc.enabled, expiry_reclamation.enabled,
+    governance_retention.audit_events_retention_enabled) are False.
+
+    This preserves the invariant of the deleted GovernanceRetentionScheduler,
+    which started unconditionally so that a non-bootstrap tenant with governance
+    retention ON would still be swept.
+    """
+
+    def fake_sweep(org_id: str, now: int) -> int:
+        return 0
+
+    register_per_org_sweep(fake_sweep)
+    sched = None
+    try:
+        cfg = SimpleNamespace(
+            lineage_gc=SimpleNamespace(enabled=False, poll_interval_seconds=86400),
+            expiry_reclamation=SimpleNamespace(enabled=False),
+            governance_retention=SimpleNamespace(audit_events_retention_enabled=False),
+        )
+        ctx = SimpleNamespace(
+            org_id="org_bootstrap",
+            storage=_make_storage(),
+            configurator=SimpleNamespace(get_config=MagicMock(return_value=cfg)),
+        )
+        sched = maybe_start_lineage_gc(lambda _: ctx, bootstrap_org_id="org_bootstrap")  # type: ignore[arg-type]
+        assert sched is not None, (
+            "Expected scheduler to start when a per-org sweep is registered, "
+            "regardless of config flags"
+        )
+    finally:
+        clear_per_org_sweeps()
+        clear_global_sweeps()
+        if sched is not None:
+            sched.stop(timeout_seconds=1.0)
