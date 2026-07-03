@@ -1,22 +1,24 @@
 """Process-local scheduler for lineage tombstone garbage collection and expiry reclamation.
 
 Startup runs when EITHER ``lineage_gc.enabled`` OR ``expiry_reclamation.enabled``
-is set in the bootstrap org's config. Each tick evaluates every org independently.
+OR ``governance_retention.audit_events_retention_enabled`` is set in the bootstrap
+org's config. Each tick evaluates every org independently.
 
 - **Class A** (profile expiry sweep + tombstone GC): gated on ``lineage_gc.enabled``.
   Hard-deletes expired tombstones per that org's ``lineage_gc`` config.
 - **Class B** (plain-row direct-delete sweeps, no PII/audit obligation): gated on
   ``expiry_reclamation.enabled``. Currently sweeps expired share links and expired
   pending tool calls.
+- **Per-org sweeps**: registered via :func:`register_per_org_sweep`; invoked
+  unconditionally once per org after the Class-B block. Enterprise registers a
+  governance-retention closure here at startup (see ``reflexio_ext``).
 
 One org's failure never stalls the loop; errors are captured as Sentry anomalies
 and the loop continues to the next org.
 
 Note: the poll interval is always taken from ``lineage_gc.poll_interval_seconds``
-even when only ``expiry_reclamation`` is enabled; Class B currently shares that cadence.
-
-Governance-retention reclamation is a premium concern handled by the enterprise
-GovernanceRetentionCapability (reflexio_ext), not here.
+even when only ``expiry_reclamation`` or ``governance_retention`` is enabled;
+all sweep classes share that cadence.
 """
 
 from __future__ import annotations
@@ -95,6 +97,36 @@ def register_global_sweep(fn: Callable[[int], int]) -> None:
 def clear_global_sweeps() -> None:
     """Clear all registered global sweeps (tests restore OSS defaults)."""
     _global_sweep_hooks.clear()
+
+
+# Per-org sweeps run once per org per tick (for per-org reclamation concerns).
+# Each fn takes (org_id, now) and returns a deleted-row count. Enterprise
+# registers its closure here at startup so governance retention folds into the
+# shared scheduler loop; empty (OSS default) keeps behavior identical to before.
+_per_org_sweep_hooks: list[Callable[[str, int], int]] = []
+
+
+def register_per_org_sweep(fn: Callable[[str, int], int]) -> None:
+    """Register a per-org reclamation sweep.
+
+    The sweep is invoked once per org inside ``_gc_tick``'s org loop, after
+    the Class-B block, unconditionally (not gated on ``lineage_gc`` or
+    ``expiry_reclamation`` — the real gate lives in the enterprise closure).
+
+    Note: a registered sweep that absorbs its own exceptions (returns instead
+    of raising) will NOT trigger the generic ``lineage.per_org_sweep.failed``
+    backstop; such a sweep must emit its own failure anomaly.
+
+    Args:
+        fn (Callable[[str, int], int]): Called with ``(org_id, now)`` where
+            ``now`` is the current unix epoch; returns the number of rows deleted.
+    """
+    _per_org_sweep_hooks.append(fn)
+
+
+def clear_per_org_sweeps() -> None:
+    """Clear all registered per-org sweeps (tests restore OSS defaults)."""
+    _per_org_sweep_hooks.clear()
 
 
 class LineageGCScheduler(ThreadedScheduler):
@@ -274,6 +306,25 @@ class LineageGCScheduler(ThreadedScheduler):
                             method_name,
                         )
 
+            # Per-org sweeps: invoked unconditionally (not gated on lineage_gc or
+            # expiry_reclamation — the real gate lives in each enterprise closure).
+            # Each sweep is isolated so one failure does not skip the rest.
+            for sweep in _per_org_sweep_hooks:
+                try:
+                    sweep(org_id, int(time.time()))
+                except Exception:
+                    sweep_id = getattr(sweep, "__qualname__", repr(sweep))
+                    capture_anomaly(
+                        "lineage.per_org_sweep.failed",
+                        org_id=org_id,
+                        sweep=sweep_id,
+                    )
+                    logger.exception(
+                        "event=per_org_sweep_failed org_id=%s sweep=%s",
+                        org_id,
+                        sweep_id,
+                    )
+
     def _run_global_sweeps(self, cfg: object) -> None:
         """Invoke each registered global sweep once, gated on expiry_reclamation.
 
@@ -385,7 +436,14 @@ def maybe_start_lineage_gc(
         expiry_reclamation_enabled = getattr(
             getattr(cfg, "expiry_reclamation", None), "enabled", False
         )
-        if not (cfg.lineage_gc.enabled or expiry_reclamation_enabled):
+        governance_retention_enabled = getattr(
+            gr, "audit_events_retention_enabled", False
+        )
+        if not (
+            cfg.lineage_gc.enabled
+            or expiry_reclamation_enabled
+            or governance_retention_enabled
+        ):
             return None
     except Exception as exc:
         logger.warning(
