@@ -293,7 +293,7 @@ _PROFILE_TOMBSTONE_STATUS_VALUES = (
 )
 
 
-def _parse_status(value: str | None) -> Status | None:
+def parse_status(value: str | None) -> Status | None:
     """Parse a stored status string into a Status, tolerating unknown values.
 
     Unknown non-null values (e.g. a status written by a newer build after a
@@ -423,7 +423,7 @@ def _row_to_profile(row: sqlite3.Row) -> UserProfile:
         expiration_timestamp=d["expiration_timestamp"],
         custom_features=_json_loads(d.get("custom_features")),
         source=d.get("source") or "",
-        status=_parse_status(d.get("status")),
+        status=parse_status(d.get("status")),
         extractor_names=_json_loads(d.get("extractor_names")),
         expanded_terms=d.get("expanded_terms"),
         source_span=d.get("source_span"),
@@ -503,7 +503,7 @@ def _row_to_user_playbook(
         blocking_issue=BlockingIssue(**json.loads(d["blocking_issue"]))
         if d.get("blocking_issue")
         else None,
-        status=_parse_status(d.get("status")),
+        status=parse_status(d.get("status")),
         source=d.get("source"),
         source_interaction_ids=_json_loads(d.get("source_interaction_ids")) or [],
         tags=_json_loads(d.get("tags")),
@@ -536,7 +536,7 @@ def _row_to_agent_playbook(row: sqlite3.Row) -> AgentPlaybook:
         playbook_metadata=d.get("playbook_metadata") or "",
         tags=_json_loads(d.get("tags")),
         embedding=[],
-        status=_parse_status(d.get("status")),
+        status=parse_status(d.get("status")),
         expanded_terms=d.get("expanded_terms"),
         merged_into=d.get("merged_into"),
         superseded_by=d.get("superseded_by"),
