@@ -48,6 +48,10 @@ def parse_item_id(item_id: str) -> tuple[str, int] | None:
     """
     Parse a prompt-format item ID like 'NEW-0' or 'EXISTING-1' into its prefix and index.
 
+    Weak models sometimes echo the rendered display label with its brackets
+    (``[NEW-0]``); strip a single surrounding pair so those outputs parse
+    instead of being silently dropped.
+
     Args:
         item_id (str): Item ID string in the format 'PREFIX-N' (e.g., 'NEW-0', 'EXISTING-1')
 
@@ -55,7 +59,10 @@ def parse_item_id(item_id: str) -> tuple[str, int] | None:
         Optional[tuple[str, int]]: A tuple of (prefix, index) where prefix is 'NEW' or 'EXISTING',
             or None if the item ID is invalid
     """
-    parts = item_id.rsplit("-", 1)
+    stripped = item_id.strip()
+    if stripped.startswith("[") and stripped.endswith("]"):
+        stripped = stripped[1:-1].strip()
+    parts = stripped.rsplit("-", 1)
     if len(parts) != 2:
         logger.warning("Invalid item ID format: %s", item_id)
         return None

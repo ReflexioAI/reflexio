@@ -33,6 +33,74 @@ logger = logging.getLogger(__name__)
 # Playbook-specific Pydantic Output Schemas for LLM
 # ===============================
 
+NewIdField = str | list[str]
+ExistingIdField = int | list[int]
+
+
+def _strip_prompt_brackets(value: str) -> str:
+    """Strip the display brackets used in prompt labels, e.g. ``[NEW-0]``."""
+    stripped = value.strip()
+    if stripped.startswith("[") and stripped.endswith("]"):
+        return stripped[1:-1].strip()
+    return stripped
+
+
+def _dedupe_preserving_order(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        deduped.append(value)
+    return deduped
+
+
+def _coerce_new_id(value: object) -> str:
+    """Normalize a prompt-format NEW id to ``NEW-N``.
+
+    LLMs sometimes echo the rendered display label (``[NEW-0]``) or wrap the
+    id in a one-item list. Keep the apply path keyed on canonical ``NEW-N``.
+    """
+    if isinstance(value, list):
+        if len(value) != 1:
+            raise ValueError(f"new_id expected one NEW id, got {value!r}")
+        return _coerce_new_id(value[0])
+    if not isinstance(value, str):
+        raise ValueError(
+            f"new_id must be 'NEW-N' label, got {type(value).__name__}: {value!r}"
+        )
+
+    stripped = _strip_prompt_brackets(value)
+    for prefix in ("NEW-", "NEW_", "new-", "new_"):
+        if stripped.startswith(prefix):
+            suffix = stripped[len(prefix) :]
+            break
+    else:
+        raise ValueError(f"new_id must be 'NEW-N' label, got {value!r}")
+
+    try:
+        parsed = int(suffix)
+    except ValueError as exc:
+        raise ValueError(f"new_id must be 'NEW-N' label, got {value!r}") from exc
+    if parsed < 0:
+        raise ValueError(f"new_id must be >= 0, got {value!r}")
+    return f"NEW-{parsed}"
+
+
+def _coerce_new_ids(value: object, *, allow_many: bool) -> NewIdField:
+    values = value if isinstance(value, list) else [value]
+    coerced = _dedupe_preserving_order([_coerce_new_id(item) for item in values])
+    if not coerced:
+        raise ValueError("new_id must include at least one NEW id")
+    if not allow_many and len(coerced) != 1:
+        raise ValueError(f"new_id expected one NEW id, got {coerced!r}")
+    return coerced if len(coerced) > 1 else coerced[0]
+
+
+def _new_ids_from_field(value: NewIdField) -> list[str]:
+    return list(value) if isinstance(value, list) else [value]
+
 
 def _coerce_existing_position(value: object) -> int:
     """Accept either a bare int position or an ``"EXISTING-N"`` label.
@@ -71,12 +139,16 @@ def _coerce_existing_position(value: object) -> int:
         # ``bool`` is a subclass of ``int`` in Python; reject explicitly so a
         # stray ``True`` doesn't silently become position 1.
         raise ValueError(f"existing-position must be int, got bool: {value!r}")
+    if isinstance(value, list):
+        if len(value) != 1:
+            raise ValueError(f"existing-position expected one id, got {value!r}")
+        return _coerce_existing_position(value[0])
     if isinstance(value, int):
         if value < 0:
             raise ValueError(f"existing-position must be >= 0, got {value!r}")
         return value
     if isinstance(value, str):
-        stripped = value.strip()
+        stripped = _strip_prompt_brackets(value)
         for prefix in ("EXISTING-", "EXISTING_", "existing-", "existing_"):
             if stripped.startswith(prefix):
                 stripped = stripped[len(prefix) :]
@@ -93,6 +165,30 @@ def _coerce_existing_position(value: object) -> int:
     raise ValueError(
         f"existing-position must be int or 'EXISTING-N' label, got {type(value).__name__}: {value!r}"
     )
+
+
+def _coerce_existing_positions(value: object, *, allow_many: bool) -> ExistingIdField:
+    values = value if isinstance(value, list) else [value]
+    coerced = [_coerce_existing_position(item) for item in values]
+    if not coerced:
+        raise ValueError("existing-position must include at least one id")
+    if not allow_many and len(coerced) != 1:
+        raise ValueError(f"existing-position expected one id, got {coerced!r}")
+    return coerced if len(coerced) > 1 else coerced[0]
+
+
+def _existing_ids_from_field(value: ExistingIdField) -> list[int]:
+    return list(value) if isinstance(value, list) else [value]
+
+
+def _new_id_log_label(value: NewIdField) -> str:
+    return ",".join(_new_ids_from_field(value)) if isinstance(value, list) else value
+
+
+def _existing_id_log_label(value: ExistingIdField) -> str:
+    if isinstance(value, list):
+        return ",".join(str(item) for item in value)
+    return str(value)
 
 
 class UnifyDecision(BaseModel):
@@ -112,12 +208,17 @@ class UnifyDecision(BaseModel):
     """
 
     kind: Literal["unify"] = "unify"
-    new_id: str
+    new_id: NewIdField
     archive_existing_ids: list[int] = Field(default_factory=list)
     content: str
     trigger: str
     rationale: str
     reason: str = ""
+
+    @field_validator("new_id", mode="before")
+    @classmethod
+    def _coerce_new_id(cls, value: object) -> NewIdField:
+        return _coerce_new_ids(value, allow_many=True)
 
     @field_validator("archive_existing_ids", mode="before")
     @classmethod
@@ -126,7 +227,11 @@ class UnifyDecision(BaseModel):
             return []
         if isinstance(value, list):
             return [_coerce_existing_position(item) for item in value]
-        return value
+        return [_coerce_existing_position(value)]
+
+    @property
+    def new_ids(self) -> list[str]:
+        return _new_ids_from_field(self.new_id)
 
     model_config = ConfigDict(json_schema_extra={"additionalProperties": False})
 
@@ -142,14 +247,27 @@ class RejectNewDecision(BaseModel):
     """
 
     kind: Literal["reject_new"] = "reject_new"
-    new_id: str
-    superseded_by_existing_id: int
+    new_id: NewIdField
+    superseded_by_existing_id: ExistingIdField
     reason: str = ""
+
+    @field_validator("new_id", mode="before")
+    @classmethod
+    def _coerce_new_id(cls, value: object) -> NewIdField:
+        return _coerce_new_ids(value, allow_many=True)
 
     @field_validator("superseded_by_existing_id", mode="before")
     @classmethod
-    def _coerce_superseded_id(cls, value: object) -> int:
-        return _coerce_existing_position(value)
+    def _coerce_superseded_id(cls, value: object) -> ExistingIdField:
+        return _coerce_existing_positions(value, allow_many=True)
+
+    @property
+    def new_ids(self) -> list[str]:
+        return _new_ids_from_field(self.new_id)
+
+    @property
+    def superseded_by_existing_ids(self) -> list[int]:
+        return _existing_ids_from_field(self.superseded_by_existing_id)
 
     model_config = ConfigDict(json_schema_extra={"additionalProperties": False})
 
@@ -171,10 +289,18 @@ class DifferentiateDecision(BaseModel):
     refined_existing_trigger: str
     reason: str = ""
 
+    @field_validator("new_id", mode="before")
+    @classmethod
+    def _coerce_new_id(cls, value: object) -> str:
+        return _coerce_new_id(value)
+
     @field_validator("existing_id", mode="before")
     @classmethod
     def _coerce_existing_id(cls, value: object) -> int:
-        return _coerce_existing_position(value)
+        coerced = _coerce_existing_positions(value, allow_many=False)
+        if not isinstance(coerced, int):
+            raise ValueError(f"existing_id expected one id, got {coerced!r}")
+        return coerced
 
     @field_validator("refined_new_trigger", "refined_existing_trigger")
     @classmethod
@@ -190,8 +316,17 @@ class IndependentDecision(BaseModel):
     """Unrelated to any existing row: insert new as-is, no archive."""
 
     kind: Literal["independent"] = "independent"
-    new_id: str
+    new_id: NewIdField
     reason: str = ""
+
+    @field_validator("new_id", mode="before")
+    @classmethod
+    def _coerce_new_id(cls, value: object) -> NewIdField:
+        return _coerce_new_ids(value, allow_many=True)
+
+    @property
+    def new_ids(self) -> list[str]:
+        return _new_ids_from_field(self.new_id)
 
     model_config = ConfigDict(json_schema_extra={"additionalProperties": False})
 
@@ -679,8 +814,22 @@ class PlaybookConsolidator(BaseDeduplicator):
                 )
             except Exception as exc:  # noqa: BLE001 — per-decision isolation
                 result_counters.failed_count += 1
-                new_id_str = getattr(decision, "new_id", "unknown")
-                existing_id_str = getattr(decision, "existing_id", "unknown")
+                raw_new_id = getattr(decision, "new_id", "unknown")
+                new_id_str = (
+                    _new_id_log_label(raw_new_id)
+                    if isinstance(raw_new_id, (str, list))
+                    else "unknown"
+                )
+                raw_existing_id = getattr(
+                    decision,
+                    "existing_id",
+                    getattr(decision, "superseded_by_existing_id", "unknown"),
+                )
+                existing_id_str = (
+                    _existing_id_log_label(raw_existing_id)
+                    if isinstance(raw_existing_id, (int, list))
+                    else "unknown"
+                )
                 with sentry_tags(
                     subsystem="playbook_consolidator",
                     op="apply_decision",
@@ -779,6 +928,7 @@ class PlaybookConsolidator(BaseDeduplicator):
         if isinstance(decision, RejectNewDecision):
             return self._apply_reject_new(
                 decision,
+                candidates_by_id=candidates_by_id,
                 existing_by_id=existing_by_id,
                 existing_by_position=existing_by_position,
             )
@@ -834,14 +984,18 @@ class PlaybookConsolidator(BaseDeduplicator):
             so the merge is materialized by the caller, not here.
 
         Raises:
-            KeyError: If ``decision.new_id`` does not resolve to a known
-                candidate.
+            KeyError: If any id in ``decision.new_ids`` does not resolve to a
+                known candidate.
             ValueError: If an ``archive_existing_ids`` entry has no matching
                 ``EXISTING-{idx}`` row in the position map.
         """
-        candidate = candidates_by_id.get(decision.new_id)
-        if candidate is None:
-            raise KeyError(f"unify references unknown NEW id: {decision.new_id}")
+        new_ids = decision.new_ids
+        candidates: list[UserPlaybook] = []
+        for new_id in new_ids:
+            candidate = candidates_by_id.get(new_id)
+            if candidate is None:
+                raise KeyError(f"unify references unknown NEW id: {new_id}")
+            candidates.append(candidate)
 
         existing_members: list[UserPlaybook] = []
         for existing_position in decision.archive_existing_ids:
@@ -870,74 +1024,92 @@ class PlaybookConsolidator(BaseDeduplicator):
             # apply logic; the merge still proceeds.
             logger.warning(
                 "event=consolidation_over_budget new_id=%s len=%d budget=%d",
-                decision.new_id,
+                ",".join(new_ids),
                 content_len,
                 budget,
             )
 
-        combined_source_ids = self._merge_source_ids([candidate, *existing_members])
+        primary_candidate = candidates[0]
+        combined_source_ids = self._merge_source_ids([*candidates, *existing_members])
         unified_row = UserPlaybook(
             user_playbook_id=0,
-            user_id=candidate.user_id,
-            agent_version=candidate.agent_version,
+            user_id=primary_candidate.user_id,
+            agent_version=primary_candidate.agent_version,
             request_id=request_id,
-            playbook_name=candidate.playbook_name,
+            playbook_name=primary_candidate.playbook_name,
             created_at=int(datetime.now(UTC).timestamp()),
             content=decision.content,
             trigger=decision.trigger,
             rationale=decision.rationale,
-            status=candidate.status,
-            source=candidate.source,
+            status=primary_candidate.status,
+            source=primary_candidate.source,
             source_interaction_ids=combined_source_ids,
         )
-        return [unified_row], [decision.new_id], merge_source_ids
+        return [unified_row], new_ids, merge_source_ids
 
     def _apply_reject_new(
         self,
         decision: RejectNewDecision,
         *,
+        candidates_by_id: dict[str, UserPlaybook],
         existing_by_id: dict[int, UserPlaybook],
         existing_by_position: dict[str, UserPlaybook],
     ) -> tuple[list[UserPlaybook], list[str], list[int]]:
-        """No-op apply: the existing row wins and the new candidate is dropped.
+        """No-op apply: the existing row(s) win and the new candidate(s) dropped.
 
-        Resolve the integer against the rendered ``EXISTING-N`` position first,
-        then as a DB ``user_playbook_id`` for backwards compatibility. If it
-        does not resolve to a known existing row, the decision is treated as
-        malformed: we log a warning and return ``([], [])`` so the safety
-        fallback re-inserts the candidate rather than silently dropping
-        extracted data.
+        Resolve each superseding integer against the rendered ``EXISTING-N``
+        position first, then as a DB ``user_playbook_id`` for backwards
+        compatibility. If ANY referenced existing row does not resolve, the
+        decision is treated as malformed: we log a warning and return
+        ``([], [], [])`` so the safety fallback re-inserts every named
+        candidate rather than silently dropping extracted data.
 
         Args:
             decision: The ``RejectNewDecision`` to apply.
+            candidates_by_id: Mapping ``"NEW-N"`` -> candidate playbook.
             existing_by_id: Mapping ``user_playbook_id`` -> existing playbook,
-                used as a fallback for ``decision.superseded_by_existing_id``.
+                used as a fallback for ``decision.superseded_by_existing_ids``.
             existing_by_position: Mapping ``"EXISTING-M"`` -> existing playbook.
 
         Returns:
-            Tuple of ``([], [consumed NEW-N id], [])`` when the existing id
-            resolves, or ``([], [], [])`` when the existing id is unknown.
-            Never produces a merge group — the existing row is kept as-is (no
-            archive, no survivor).
+            Tuple of ``([], [consumed NEW-N ids], [])`` when every superseding
+            id resolves, or ``([], [], [])`` when any is unknown. Never produces
+            a merge group — the existing rows are kept as-is (no archive, no
+            survivor).
+
+        Raises:
+            KeyError: If any id in ``decision.new_ids`` does not resolve to a
+                known candidate.
         """
-        existing = self._resolve_existing_reference(
-            decision.superseded_by_existing_id,
-            existing_by_position=existing_by_position,
-            existing_by_id=existing_by_id,
-        )
-        if existing is None:
+        new_ids = decision.new_ids
+        missing_new_ids = [
+            new_id for new_id in new_ids if new_id not in candidates_by_id
+        ]
+        if missing_new_ids:
+            raise KeyError(f"reject_new references unknown NEW ids: {missing_new_ids}")
+
+        existing_ids = decision.superseded_by_existing_ids
+        existing_members = [
+            self._resolve_existing_reference(
+                existing_id,
+                existing_by_position=existing_by_position,
+                existing_by_id=existing_by_id,
+            )
+            for existing_id in existing_ids
+        ]
+        if any(existing is None for existing in existing_members):
             logger.warning(
-                "event=consolidation_reject_new_invalid new_id=%s existing_id=%d",
-                decision.new_id,
-                decision.superseded_by_existing_id,
+                "event=consolidation_reject_new_invalid new_id=%s existing_id=%s",
+                ",".join(new_ids),
+                existing_ids,
             )
             return [], [], []
         logger.info(
-            "event=consolidation_reject_new new_id=%s existing_id=%d",
-            decision.new_id,
-            decision.superseded_by_existing_id,
+            "event=consolidation_reject_new new_id=%s existing_id=%s",
+            ",".join(new_ids),
+            existing_ids,
         )
-        return [], [decision.new_id], []
+        return [], new_ids, []
 
     def _apply_differentiate(
         self,
@@ -1028,10 +1200,13 @@ class PlaybookConsolidator(BaseDeduplicator):
             Tuple of ``([candidate row], [consumed NEW-N id], [])`` — no archive,
             so never a merge group.
         """
-        candidate = candidates_by_id.get(decision.new_id)
-        if candidate is None:
-            raise KeyError(f"independent references unknown NEW id: {decision.new_id}")
-        return [candidate], [decision.new_id], []
+        rows: list[UserPlaybook] = []
+        for new_id in decision.new_ids:
+            candidate = candidates_by_id.get(new_id)
+            if candidate is None:
+                raise KeyError(f"independent references unknown NEW id: {new_id}")
+            rows.append(candidate)
+        return rows, decision.new_ids, []
 
     @staticmethod
     def _merge_source_ids(playbooks: list[UserPlaybook]) -> list[int]:
@@ -1104,8 +1279,14 @@ class PlaybookConsolidator(BaseDeduplicator):
             existing_by_id: Mapping ``user_playbook_id`` -> existing playbook.
         """
         kind = decision.kind
-        new_id: str = getattr(decision, "new_id", "")
-        new_pb = candidates_by_id.get(new_id)
+        raw_new_id = getattr(decision, "new_id", "")
+        new_ids = (
+            _new_ids_from_field(raw_new_id)
+            if isinstance(raw_new_id, (str, list))
+            else []
+        )
+        new_id_label = ",".join(new_ids)
+        new_pb = candidates_by_id.get(new_ids[0]) if new_ids else None
 
         # UnifyDecision archives by position (EXISTING-{idx}) rather than a
         # single existing_id; log a synthetic "multi" so the probe parser sees
@@ -1118,34 +1299,42 @@ class PlaybookConsolidator(BaseDeduplicator):
                 "playbook_consolidation.decision kind=%s new_id=%s existing_id=%s "
                 "trigger_match=%s",
                 kind,
-                new_id,
+                new_id_label,
                 existing_id_label,
                 "unknown",
             )
             return
 
-        # RejectNewDecision exposes ``superseded_by_existing_id``; the other
-        # two surviving kinds expose ``existing_id`` directly.
-        existing_id_raw: int = getattr(
-            decision,
-            "existing_id",
-            getattr(decision, "superseded_by_existing_id", 0),
-        )
-        existing_pb = PlaybookConsolidator._resolve_existing_reference(
-            existing_id_raw,
-            existing_by_position=existing_by_position,
-            existing_by_id=existing_by_id,
+        existing_ids: list[int] = []
+        if isinstance(decision, RejectNewDecision):
+            existing_ids = decision.superseded_by_existing_ids
+        elif isinstance(decision, DifferentiateDecision):
+            existing_ids = [decision.existing_id]
+
+        existing_pb = (
+            PlaybookConsolidator._resolve_existing_reference(
+                existing_ids[0],
+                existing_by_position=existing_by_position,
+                existing_by_id=existing_by_id,
+            )
+            if existing_ids
+            else None
         )
         trigger_match = (
             new_pb is not None
             and existing_pb is not None
             and new_pb.trigger == existing_pb.trigger
         )
+        existing_id_label = (
+            ",".join(str(existing_id) for existing_id in existing_ids)
+            if existing_ids
+            else "none"
+        )
         logger.info(
             "playbook_consolidation.decision kind=%s new_id=%s existing_id=%s "
             "trigger_match=%s",
             kind,
-            new_id,
-            existing_id_raw,
+            new_id_label,
+            existing_id_label,
             str(trigger_match).lower(),
         )

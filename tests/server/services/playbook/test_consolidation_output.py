@@ -116,6 +116,59 @@ def test_unify_accepts_empty_archive_existing_ids():
     assert unify.archive_existing_ids == []
 
 
+@pytest.mark.parametrize(
+    ("raw_value", "expected"),
+    [
+        ("NEW-0", "NEW-0"),
+        ("[NEW-0]", "NEW-0"),
+        (["NEW-0"], "NEW-0"),
+        (["[NEW-0]"], "NEW-0"),
+    ],
+)
+def test_single_new_id_accepts_prompt_label_variants(raw_value, expected):
+    """Single-NEW decision fields tolerate common LLM label echoes."""
+    d = DifferentiateDecision(
+        new_id=raw_value,  # type: ignore[arg-type]
+        existing_id=0,
+        refined_new_trigger="narrow new",
+        refined_existing_trigger="narrow existing",
+    )
+    assert d.new_id == expected
+
+
+@pytest.mark.parametrize(
+    "decision",
+    [
+        UnifyDecision(
+            new_id=["[NEW-0]", "NEW-1"],  # type: ignore[arg-type]
+            archive_existing_ids=[],
+            content="X",
+            trigger="t",
+            rationale="r",
+        ),
+        RejectNewDecision(
+            new_id=["[NEW-0]", "NEW-1"],  # type: ignore[arg-type]
+            superseded_by_existing_id=0,
+        ),
+        IndependentDecision(new_id=["[NEW-0]", "NEW-1"]),  # type: ignore[arg-type]
+    ],
+)
+def test_multi_new_decisions_accept_new_id_lists(decision):
+    """Decision kinds with clear multi-NEW semantics keep canonical NEW ids."""
+    assert decision.new_ids == ["NEW-0", "NEW-1"]
+
+
+def test_differentiate_rejects_multi_new_id_list():
+    """``differentiate`` has one pair of refined triggers, so multi-NEW is ambiguous."""
+    with pytest.raises(ValidationError):
+        DifferentiateDecision(
+            new_id=["NEW-0", "NEW-1"],  # type: ignore[arg-type]
+            existing_id=0,
+            refined_new_trigger="narrow new",
+            refined_existing_trigger="narrow existing",
+        )
+
+
 def test_reject_new_requires_superseded_existing_id():
     """``RejectNewDecision`` must name the superseding existing id."""
     with pytest.raises(ValidationError):
@@ -185,9 +238,11 @@ def test_legacy_kind_literals_no_longer_parse(legacy_payload):
     [
         ([0, 1], [0, 1]),
         (["EXISTING-0", "EXISTING-3"], [0, 3]),
+        (["[EXISTING-0]", "[EXISTING-3]"], [0, 3]),
         (["existing-2"], [2]),
         (["5", "EXISTING-6"], [5, 6]),
         ([0, "EXISTING-7"], [0, 7]),
+        ("[EXISTING-8]", [8]),
         (None, []),
     ],
 )
@@ -222,6 +277,15 @@ def test_reject_new_superseded_id_coerces_position_label():
     assert r.superseded_by_existing_id == 4
 
 
+def test_reject_new_superseded_id_accepts_position_label_list():
+    """``reject_new`` can name one-or-more EXISTING refs in list form."""
+    r = RejectNewDecision(
+        new_id="NEW-0",
+        superseded_by_existing_id=["[EXISTING-1]", "EXISTING-4"],  # type: ignore[arg-type]
+    )
+    assert r.superseded_by_existing_ids == [1, 4]
+
+
 def test_differentiate_existing_id_coerces_position_label():
     """``existing_id`` strips an ``EXISTING-N`` label to ``N`` (see
     ``test_reject_new_superseded_id_coerces_position_label``).
@@ -233,6 +297,28 @@ def test_differentiate_existing_id_coerces_position_label():
         refined_existing_trigger="narrow existing",
     )
     assert d.existing_id == 9
+
+
+def test_differentiate_existing_id_accepts_one_item_list():
+    """``differentiate`` tolerates a one-item EXISTING list, but stays singular."""
+    d = DifferentiateDecision(
+        new_id="NEW-0",
+        existing_id=["[EXISTING-2]"],  # type: ignore[arg-type]
+        refined_new_trigger="narrow new",
+        refined_existing_trigger="narrow existing",
+    )
+    assert d.existing_id == 2
+
+
+def test_differentiate_existing_id_rejects_multi_item_list():
+    """A single pair of refined triggers cannot safely cover multiple existing rows."""
+    with pytest.raises(ValidationError):
+        DifferentiateDecision(
+            new_id="NEW-0",
+            existing_id=["EXISTING-1", "EXISTING-2"],  # type: ignore[arg-type]
+            refined_new_trigger="narrow new",
+            refined_existing_trigger="narrow existing",
+        )
 
 
 def test_reject_new_superseded_id_rejects_non_numeric_label():

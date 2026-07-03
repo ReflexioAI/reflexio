@@ -69,7 +69,7 @@ def mock_consolidator():
 
 
 def _unify(
-    new_id: str,
+    new_id: str | list[str],
     archive_existing_ids: list[int] | None = None,
     *,
     content: str = "unified content",
@@ -545,6 +545,93 @@ class TestBuildDeduplicatedResults:
 
         assert len(result) == 2
 
+    def test_independent_decision_accepts_multiple_new_ids(self, mock_consolidator):
+        """A list-valued ``new_id`` inserts each named NEW candidate once."""
+        new_playbooks = [
+            _make_user_playbook(0),
+            _make_user_playbook(1),
+            _make_user_playbook(2),
+        ]
+
+        dedup_output = PlaybookConsolidationOutput(
+            decisions=[
+                IndependentDecision(new_id=["[NEW-0]", "NEW-2"]),  # type: ignore[arg-type]
+            ],
+        )
+
+        result, _, _ = mock_consolidator._build_deduplicated_results(
+            new_playbooks=new_playbooks,
+            existing_playbooks=[],
+            dedup_output=dedup_output,
+            request_id="req1",
+            agent_version="v1",
+        )
+
+        contents = {fb.content for fb in result}
+        assert contents == {"content_0", "content_2", "content_1"}
+
+    def test_unify_accepts_bracketed_new_id_from_llm(self, mock_consolidator):
+        """Regression for Sentry: ``[NEW-0]`` normalizes before apply lookup."""
+        new_playbooks = [_make_user_playbook(0, source_interaction_ids=[10])]
+
+        dedup_output = PlaybookConsolidationOutput(
+            decisions=[
+                _unify("[NEW-0]", content="merged", trigger="merged trigger"),
+            ],
+        )
+
+        result, delete_ids, merge_groups = (
+            mock_consolidator._build_deduplicated_results(
+                new_playbooks=new_playbooks,
+                existing_playbooks=[],
+                dedup_output=dedup_output,
+                request_id="req1",
+                agent_version="v1",
+            )
+        )
+
+        assert len(result) == 1
+        assert result[0].content == "merged"
+        assert result[0].trigger == "merged trigger"
+        assert result[0].source_interaction_ids == [10]
+        assert delete_ids == []
+        assert merge_groups == []
+
+    def test_unify_accepts_multiple_new_ids(self, mock_consolidator):
+        """Multi-NEW ``unify`` emits one synthesized row and consumes all NEW ids."""
+        new_playbooks = [
+            _make_user_playbook(0, source_interaction_ids=[10]),
+            _make_user_playbook(1, source_interaction_ids=[11]),
+            _make_user_playbook(2, source_interaction_ids=[12]),
+        ]
+
+        dedup_output = PlaybookConsolidationOutput(
+            decisions=[
+                _unify(
+                    ["[NEW-0]", "NEW-1"],
+                    content="merged",
+                    trigger="merged trigger",
+                ),
+            ],
+        )
+
+        result, delete_ids, merge_groups = (
+            mock_consolidator._build_deduplicated_results(
+                new_playbooks=new_playbooks,
+                existing_playbooks=[],
+                dedup_output=dedup_output,
+                request_id="req1",
+                agent_version="v1",
+            )
+        )
+
+        assert len(result) == 2
+        assert result[0].content == "merged"
+        assert result[0].source_interaction_ids == [10, 11]
+        assert result[1].content == "content_2"
+        assert delete_ids == []
+        assert merge_groups == []
+
     def test_reject_new_no_storage_changes(self, mock_consolidator):
         """``RejectNewDecision`` produces no inserts and no archives."""
         new_playbooks = [_make_user_playbook(0)]
@@ -595,6 +682,71 @@ class TestBuildDeduplicatedResults:
         )
 
         assert result == []
+        assert delete_ids == []
+
+    def test_reject_new_accepts_multiple_new_ids_and_existing_refs(
+        self, mock_consolidator
+    ):
+        """Multi-NEW ``reject_new`` consumes all named NEWs when refs resolve."""
+        new_playbooks = [
+            _make_user_playbook(0),
+            _make_user_playbook(1),
+            _make_user_playbook(2),
+        ]
+        existing_playbooks = [
+            _make_user_playbook(3, user_playbook_id=998),
+            _make_user_playbook(4, user_playbook_id=999),
+        ]
+
+        dedup_output = PlaybookConsolidationOutput(
+            decisions=[
+                RejectNewDecision(
+                    new_id=["[NEW-0]", "NEW-2"],  # type: ignore[arg-type]
+                    superseded_by_existing_id=["[EXISTING-0]", "EXISTING-1"],  # type: ignore[arg-type]
+                ),
+            ],
+        )
+
+        result, delete_ids, _ = mock_consolidator._build_deduplicated_results(
+            new_playbooks=new_playbooks,
+            existing_playbooks=existing_playbooks,
+            dedup_output=dedup_output,
+            request_id="req1",
+            agent_version="v1",
+        )
+
+        assert [fb.content for fb in result] == ["content_1"]
+        assert delete_ids == []
+
+    def test_reject_new_partial_existing_refs_reinserts_all(self, mock_consolidator):
+        """If ANY superseding ref is unknown, the decision is malformed: no NEW
+        id is consumed, so the safety fallback re-inserts every candidate."""
+        new_playbooks = [
+            _make_user_playbook(0),
+            _make_user_playbook(1),
+            _make_user_playbook(2),
+        ]
+        existing_playbooks = [_make_user_playbook(3, user_playbook_id=998)]
+
+        dedup_output = PlaybookConsolidationOutput(
+            decisions=[
+                RejectNewDecision(
+                    new_id=["NEW-0", "NEW-2"],  # type: ignore[arg-type]
+                    # EXISTING-0 resolves; EXISTING-5 has no row/id -> unknown.
+                    superseded_by_existing_id=["EXISTING-0", "EXISTING-5"],  # type: ignore[arg-type]
+                ),
+            ],
+        )
+
+        result, delete_ids, _ = mock_consolidator._build_deduplicated_results(
+            new_playbooks=new_playbooks,
+            existing_playbooks=existing_playbooks,
+            dedup_output=dedup_output,
+            request_id="req1",
+            agent_version="v1",
+        )
+
+        assert {fb.content for fb in result} == {"content_0", "content_1", "content_2"}
         assert delete_ids == []
 
     def test_differentiate_resolves_existing_position(self, mock_consolidator):
