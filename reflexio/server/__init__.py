@@ -230,5 +230,24 @@ if DEBUG_LOG_TO_CONSOLE:
         logging.ERROR
     )
 else:
-    # Default to WARNING level when DEBUG_LOG_TO_CONSOLE is not set or is false
-    root_logger.setLevel(logging.WARNING)
+    # Production (DEBUG_LOG_TO_CONSOLE off): emit INFO+ app logs to stdout so the
+    # container log driver (e.g. CloudWatch awslogs) captures business-logic audit
+    # lines — billing/webhook/enforcement, etc. Without an explicit handler the
+    # stdlib "handler of last resort" emits only WARNING+ to stderr, so INFO logs
+    # were silently dropped in production. Plain formatter (no colors/files/dedup)
+    # keeps this lean and log-driver friendly — none of the DEBUG-branch overhead.
+    root_logger.setLevel(logging.INFO)
+    if not any(isinstance(h, logging.StreamHandler) for h in root_logger.handlers):
+        prod_console_handler = logging.StreamHandler(sys.stdout)
+        prod_console_handler.setLevel(logging.INFO)
+        prod_console_handler.setFormatter(
+            logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s")
+        )
+        root_logger.addHandler(prod_console_handler)
+
+    # Keep noisy loggers quiet even at INFO (mirror the debug branch's suppression).
+    for _noisy in ("litellm", "LiteLLM", "httpx", "httpcore", "openai", "urllib3"):
+        logging.getLogger(_noisy).setLevel(logging.WARNING)
+    logging.getLogger("reflexio.server.site_var.site_var_manager").setLevel(
+        logging.ERROR
+    )
