@@ -5,6 +5,7 @@ from ._base import (
     _sanitize_fts_query,
     _true_rrf_merge,
     _vector_rank_rows,
+    parse_status,
 )
 from ._extras import ExtrasMixin
 from ._governance import SQLiteGovernanceMixin
@@ -87,6 +88,7 @@ __all__ = [
     "_sanitize_fts_query",
     "_true_rrf_merge",
     "_vector_rank_rows",
+    "parse_status",
     "StallReason",
     "StallState",
     "clear_stall_state",
