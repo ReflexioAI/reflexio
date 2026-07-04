@@ -62,14 +62,22 @@ _ENV_TIMEOUT = "CLAUDE_SMART_CLI_TIMEOUT"
 _ENV_MODEL = "CLAUDE_SMART_CLI_MODEL"
 _HOST_CODEX = "codex"
 _HOST_CLAUDE_CODE = "claude-code"
+
+
+def _is_windows() -> bool:
+    return os.name == "nt"
+
+
 _CODEX_COMPAT_SCRIPT_NAMES = (
     ("codex-claude-compat.cmd", "codex-claude-compat")
-    if os.name == "nt"
+    if _is_windows()
     else ("codex-claude-compat", "codex-claude-compat.cmd")
 )
 _CODEX_COMPAT_SCRIPT_NAME_SET = set(_CODEX_COMPAT_SCRIPT_NAMES)
 _DEFAULT_TIMEOUT_SECONDS = 120
 _DEFAULT_CLI_MODEL = "claude-sonnet-5"
+_WINDOWS_ARGV_SYSTEM_PROMPT_LIMIT = 3_000
+_WINDOWS_CLI_SUFFIXES = (".cmd", ".exe", ".bat")
 
 _TRUTHY_ENV_VALUES = {"1", "true", "yes"}
 _UNSUPPORTED_PARAMS_WARNED: set[str] = set()
@@ -116,6 +124,40 @@ def _candidate_codex_compat_path() -> Path | None:
     return None
 
 
+def _windows_cli_suffixes() -> tuple[str, ...]:
+    suffixes: list[str] = []
+    for suffix in os.environ.get("PATHEXT", "").split(";"):
+        suffix = suffix.strip().lower()
+        if not suffix:
+            continue
+        suffix = suffix if suffix.startswith(".") else f".{suffix}"
+        # PowerShell scripts require a PowerShell host; do not return them as
+        # directly executable CLI shims for subprocess.run([...]).
+        if suffix == ".ps1":
+            continue
+        suffixes.append(suffix)
+    for suffix in _WINDOWS_CLI_SUFFIXES:
+        if suffix not in suffixes:
+            suffixes.append(suffix)
+    return tuple(suffixes)
+
+
+def _resolve_cli_override_path(cli_path: str) -> str:
+    if not _is_windows():
+        return cli_path
+    path = Path(cli_path)
+    if path.suffix:
+        return cli_path
+
+    # Windows package managers expose extensioned shims while users often
+    # configure the extensionless binary name.
+    for suffix in _windows_cli_suffixes():
+        candidate = path.with_suffix(suffix)
+        if candidate.exists():
+            return str(candidate)
+    return cli_path
+
+
 def _resolve_cli_path() -> str | None:
     """Return the path to the active host CLI, or None if unavailable.
 
@@ -129,7 +171,7 @@ def _resolve_cli_path() -> str | None:
     """
     override = os.environ.get(_ENV_CLI_PATH)
     if override:
-        candidate = Path(override)
+        candidate = Path(_resolve_cli_override_path(override))
         if candidate.is_file() and os.access(candidate, os.X_OK):
             return str(candidate)
         _LOGGER.warning(
@@ -432,6 +474,9 @@ def _run_claude_stream(
 ) -> ParseResult:
     """Invoke ``claude -p --output-format stream-json`` and return a ParseResult."""
     model = os.environ.get(_ENV_MODEL) or _DEFAULT_CLI_MODEL
+    inline_system_prompt = (
+        _is_windows() and len(system_prompt) > _WINDOWS_ARGV_SYSTEM_PROMPT_LIMIT
+    )
     cmd = [
         cli_path,
         "-p",
@@ -442,8 +487,11 @@ def _run_claude_stream(
         "--model",
         model,
     ]
-    if system_prompt:
+    if system_prompt and not inline_system_prompt:
         cmd.extend(["--append-system-prompt", system_prompt])
+    stdin_text = dialogue
+    if inline_system_prompt:
+        stdin_text = f"{system_prompt}\n\n{dialogue}" if dialogue else system_prompt
 
     # Tag the child process so any hooks it fires (e.g. claude-smart's
     # Stop hook) can detect that this is a reflexio-internal invocation
@@ -460,9 +508,11 @@ def _run_claude_stream(
     try:
         proc = subprocess.run(  # noqa: S603 — cmd is constructed from validated parts.
             cmd,
-            input=dialogue,
+            input=stdin_text,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace" if _is_windows() else "strict",
             timeout=timeout_seconds,
             check=False,
             env=env,
@@ -511,6 +561,8 @@ def _run_codex_stream(
             input=_codex_prompt(prompt=dialogue, system_prompt=system_prompt),
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace" if _is_windows() else "strict",
             timeout=timeout_seconds,
             check=False,
             env=env,

@@ -29,7 +29,10 @@ from reflexio.server.services.storage.sqlite_storage import (
     _true_rrf_merge,
     _vector_rank_rows,
 )
-from reflexio.server.services.storage.sqlite_storage._base import _iso_to_epoch
+from reflexio.server.services.storage.sqlite_storage._base import (
+    _epoch_to_iso,
+    _iso_to_epoch,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -61,6 +64,26 @@ def test_iso_to_epoch_treats_offsetless_timestamp_as_utc():
     result = _iso_to_epoch("2026-06-10T23:47:07.50016")
     expected = int(datetime(2026, 6, 10, 23, 47, 7, 500160, tzinfo=UTC).timestamp())
     assert result == expected
+
+
+def test_epoch_to_iso_preserves_second_epoch() -> None:
+    epoch_seconds = 1_700_000_000
+
+    assert _iso_to_epoch(_epoch_to_iso(epoch_seconds)) == epoch_seconds
+
+
+def test_epoch_to_iso_normalizes_plausible_millisecond_epoch() -> None:
+    epoch_ms = 1_700_000_000_123
+
+    assert _iso_to_epoch(_epoch_to_iso(epoch_ms)) == 1_700_000_000
+
+
+def test_epoch_to_iso_preserves_documented_open_bound_sentinel() -> None:
+    assert _iso_to_epoch(_epoch_to_iso(10**12)) == 253_402_300_799
+
+
+def test_epoch_to_iso_clamps_large_open_bound_sentinel() -> None:
+    assert _iso_to_epoch(_epoch_to_iso(10**18)) == 253_402_300_799
 
 
 class TestSanitizeFtsQuery:
