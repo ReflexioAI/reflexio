@@ -563,6 +563,24 @@ class TestClaudeCodeLLMCompletion:
 
         assert ccp._resolve_cli_path() == str(bridge_shim)  # noqa: SLF001
 
+    def test_windows_extensionless_cli_override_skips_powershell_shim(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        bridge = tmp_path / "claude"
+        bridge_ps1 = tmp_path / "claude.ps1"
+        bridge_cmd = tmp_path / "claude.cmd"
+        bridge_ps1.write_text("Write-Output shim\n")
+        bridge_cmd.write_text("@echo off\n")
+        bridge_ps1.chmod(0o755)
+        bridge_cmd.chmod(0o755)
+
+        monkeypatch.setattr(ccp, "_is_windows", lambda: True)
+        monkeypatch.setenv(ccp.ENV_ENABLE, "1")
+        monkeypatch.setenv(ccp._ENV_CLI_PATH, str(bridge))
+        monkeypatch.setenv("PATHEXT", "PS1;.CMD")
+
+        assert ccp._resolve_cli_path() == str(bridge_cmd)  # noqa: SLF001
+
     def test_windows_extensionless_cli_override_executes_adjacent_cmd(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
