@@ -523,7 +523,7 @@ class TextGenerationMixin:
 
             # The loop only exits with a drained result (every no-result path
             # above raises); the assert makes that invariant explicit for pyright.
-            assert result is not None
+            assert result is not None  # noqa: S101
             status, payload = result
             # The payload is drained, so the feeder is unblocked and the child can
             # exit. Reap it (terminating if it lingers) to avoid a zombie.

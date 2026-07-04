@@ -11,7 +11,7 @@
       }
     ],
     "candidate": {
-      "new_id": "cand-1",
+      "new_id": "NEW-1",
       "content": "Always add a brief summary at the start of any report you produce.",
       "trigger": "generating a report for the user",
       "rationale": "A leading summary helps the reader orient quickly."
@@ -31,7 +31,7 @@
       }
     ],
     "candidate": {
-      "new_id": "cand-2",
+      "new_id": "NEW-2",
       "content": "Do not attach internal-only files to a customer email.",
       "trigger": "drafting a customer email",
       "rationale": "Internal files can leak confidential data to the customer."
@@ -51,7 +51,7 @@
       }
     ],
     "candidate": {
-      "new_id": "cand-3",
+      "new_id": "NEW-3",
       "content": "Do not answer immediately; ask a clarifying question first.",
       "trigger": "the user asks a factual question",
       "rationale": "Some questions are ambiguous and answering blindly misleads the user."
@@ -71,7 +71,7 @@
       }
     ],
     "candidate": {
-      "new_id": "cand-4",
+      "new_id": "NEW-4",
       "content": "Always run the tests before approving a change.",
       "trigger": "reviewing a proposed code change",
       "rationale": "Tests catch regressions."
@@ -91,7 +91,7 @@
       }
     ],
     "candidate": {
-      "new_id": "cand-5",
+      "new_id": "NEW-5",
       "content": "Use metric units when reporting measurements.",
       "trigger": "reporting a physical measurement to the user",
       "rationale": "The user's region uses the metric system."

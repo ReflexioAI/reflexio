@@ -141,8 +141,11 @@ class TestDeleteExpiredShareLinks:
         grace = 7 * 86400
         # Expired beyond grace
         storage.create_share_link(
-            token="shr_old", resource_type="profile", resource_id="p1",
-            expires_at=1, created_by_email=None,
+            token="shr_old",
+            resource_type="profile",
+            resource_id="p1",
+            expires_at=1,
+            created_by_email=None,
         )
         count = storage.delete_expired_share_links(now=now, grace_seconds=grace)
         assert count == 1
@@ -154,8 +157,11 @@ class TestDeleteExpiredShareLinks:
         grace = 7 * 86400
         # Expired just 1 second ago (within 7-day grace)
         storage.create_share_link(
-            token="shr_recent", resource_type="profile", resource_id="p2",
-            expires_at=now - 1, created_by_email=None,
+            token="shr_recent",
+            resource_type="profile",
+            resource_id="p2",
+            expires_at=now - 1,
+            created_by_email=None,
         )
         count = storage.delete_expired_share_links(now=now, grace_seconds=grace)
         assert count == 0
@@ -164,8 +170,11 @@ class TestDeleteExpiredShareLinks:
     def test_preserves_link_without_expires_at(self, storage):
         """Links with expires_at=None (never-expire) must never be deleted."""
         storage.create_share_link(
-            token="shr_noexp", resource_type="profile", resource_id="p3",
-            expires_at=None, created_by_email=None,
+            token="shr_noexp",
+            resource_type="profile",
+            resource_id="p3",
+            expires_at=None,
+            created_by_email=None,
         )
         count = storage.delete_expired_share_links(now=2_000_000_000, grace_seconds=0)
         assert count == 0
@@ -176,8 +185,11 @@ class TestDeleteExpiredShareLinks:
         now = 2_000_000_000
         for i in range(5):
             storage.create_share_link(
-                token=f"shr_exp_{i}", resource_type="profile", resource_id=f"p{i}",
-                expires_at=1, created_by_email=None,
+                token=f"shr_exp_{i}",
+                resource_type="profile",
+                resource_id=f"p{i}",
+                expires_at=1,
+                created_by_email=None,
             )
         count = storage.delete_expired_share_links(now=now, grace_seconds=0, limit=3)
         assert count == 3

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -147,15 +147,19 @@ class TestCallCli:
         monkeypatch.setenv(ocp.ENV_CLI_PATH, str(fake))
 
         proc = _fake_completed_process("", stderr="bad model", returncode=2)
-        with patch("subprocess.run", return_value=proc):
-            with pytest.raises(ocp.OpenClawCLIError, match="bad model"):
-                ocp._call_cli(prompt="p", model=None, timeout_s=10)
+        with (
+            patch("subprocess.run", return_value=proc),
+            pytest.raises(ocp.OpenClawCLIError, match="bad model"),
+        ):
+            ocp._call_cli(prompt="p", model=None, timeout_s=10)
 
     def test_raises_on_missing_cli(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(ocp.ENV_CLI_PATH, raising=False)
-        with patch("shutil.which", return_value=None):
-            with pytest.raises(ocp.OpenClawCLIError, match="not found"):
-                ocp._call_cli(prompt="p", model=None, timeout_s=10)
+        with (
+            patch("shutil.which", return_value=None),
+            pytest.raises(ocp.OpenClawCLIError, match="not found"),
+        ):
+            ocp._call_cli(prompt="p", model=None, timeout_s=10)
 
     def test_raises_on_invalid_json(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path
@@ -166,9 +170,11 @@ class TestCallCli:
         monkeypatch.setenv(ocp.ENV_CLI_PATH, str(fake))
 
         proc = _fake_completed_process("not json")
-        with patch("subprocess.run", return_value=proc):
-            with pytest.raises(ocp.OpenClawCLIError, match="non-JSON"):
-                ocp._call_cli(prompt="p", model=None, timeout_s=10)
+        with (
+            patch("subprocess.run", return_value=proc),
+            pytest.raises(ocp.OpenClawCLIError, match="non-JSON"),
+        ):
+            ocp._call_cli(prompt="p", model=None, timeout_s=10)
 
     def test_raises_on_empty_completion(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path
@@ -179,9 +185,11 @@ class TestCallCli:
         monkeypatch.setenv(ocp.ENV_CLI_PATH, str(fake))
 
         proc = _fake_completed_process(json.dumps({"unrelated": "x"}))
-        with patch("subprocess.run", return_value=proc):
-            with pytest.raises(ocp.OpenClawCLIError, match="no completion text"):
-                ocp._call_cli(prompt="p", model=None, timeout_s=10)
+        with (
+            patch("subprocess.run", return_value=proc),
+            pytest.raises(ocp.OpenClawCLIError, match="no completion text"),
+        ):
+            ocp._call_cli(prompt="p", model=None, timeout_s=10)
 
 
 class TestRegisterIfEnabled:
@@ -189,9 +197,7 @@ class TestRegisterIfEnabled:
         monkeypatch.delenv(ocp.ENV_ENABLE, raising=False)
         assert ocp.register_if_enabled() is False
 
-    def test_skips_when_cli_missing(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_skips_when_cli_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv(ocp.ENV_ENABLE, "1")
         monkeypatch.delenv(ocp.ENV_CLI_PATH, raising=False)
         with patch("shutil.which", return_value=None):
@@ -208,9 +214,7 @@ class TestRegisterIfEnabled:
         assert ocp.register_if_enabled() is True
         assert ocp._REGISTERED is True
 
-    def test_idempotent(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path
-    ) -> None:
+    def test_idempotent(self, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
         fake = tmp_path / "openclaw"
         fake.write_text("#!/bin/sh")
         fake.chmod(0o755)

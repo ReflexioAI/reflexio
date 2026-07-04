@@ -110,6 +110,7 @@ __all__ = [
     "create_litellm_client",
 ]
 
+
 class LiteLLMClient(TextGenerationMixin, EmbeddingMixin, StructuredOutputMixin):
     """
     Unified LLM client using LiteLLM for multi-provider support.

@@ -201,9 +201,7 @@ class TestGetReflexio:
             assert first.result(timeout=2) is constructed
             assert second.result(timeout=2) is constructed
 
-        mock_reflexio_cls.assert_called_once_with(
-            org_id="org-1", storage_base_dir=None
-        )
+        mock_reflexio_cls.assert_called_once_with(org_id="org-1", storage_base_dir=None)
 
 
 # =============================================================================

@@ -47,12 +47,12 @@ from reflexio.models.api_schema.domain.entities import (
 from reflexio.models.api_schema.domain.enums import Status
 from reflexio.models.config_schema import Config, ReflectionConfig
 from reflexio.server.api_endpoints.request_context import RequestContext
-from reflexio.server.services.reflection.service import ReflectionService
 from reflexio.server.services.reflection.reflection_service_utils import (
     ReflectionDecision,
     ReflectionOutput,
     ReflectionServiceRequest,
 )
+from reflexio.server.services.reflection.service import ReflectionService
 
 pytestmark = pytest.mark.e2e
 

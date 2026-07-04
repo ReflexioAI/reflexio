@@ -29,7 +29,9 @@ def test_user_env_file_honors_override(monkeypatch, tmp_path):
 
 def test_user_env_file_expands_user(monkeypatch):
     monkeypatch.setenv(_ENV, "~/.claude-smart/.env")
-    assert env_loader.user_env_file() == (env_loader.Path.home() / ".claude-smart" / ".env")
+    assert env_loader.user_env_file() == (
+        env_loader.Path.home() / ".claude-smart" / ".env"
+    )
 
 
 def test_blank_override_falls_back_to_default(monkeypatch):

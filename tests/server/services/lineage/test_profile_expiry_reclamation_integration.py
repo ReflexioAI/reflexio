@@ -110,7 +110,7 @@ def _publish_and_get_profile(reflexio: Reflexio) -> object:
     profiles = storage.get_user_profile(user_id)
     assert len(profiles) == 1, (
         "publish_interaction must produce exactly one profile via the real "
-        "calculate_expiration_timestamp path; got %d" % len(profiles)
+        f"calculate_expiration_timestamp path; got {len(profiles)}"
     )
     return profiles[0]
 

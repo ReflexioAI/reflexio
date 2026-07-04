@@ -219,9 +219,9 @@ class TestUnifiedSearch:
         mixin.llm_client = MagicMock()
         mock_config = MagicMock()
         mock_config.llm_config = None
-        cast(Any, mixin.request_context.configurator.get_config).return_value = (
-            mock_config
-        )
+        cast(
+            Any, mixin.request_context.configurator.get_config
+        ).return_value = mock_config
 
         expected_response = UnifiedSearchResponse(success=True)
 
@@ -245,9 +245,9 @@ class TestUnifiedSearch:
         mixin.llm_client = MagicMock()
         mock_config = MagicMock()
         mock_config.llm_config = None
-        cast(Any, mixin.request_context.configurator.get_config).return_value = (
-            mock_config
-        )
+        cast(
+            Any, mixin.request_context.configurator.get_config
+        ).return_value = mock_config
 
         events: list[tuple[str, str, dict[str, object] | None]] = []
 
@@ -313,9 +313,9 @@ class TestUnifiedSearch:
         mixin.llm_client = MagicMock()
         mock_config = MagicMock()
         mock_config.llm_config = None
-        cast(Any, mixin.request_context.configurator.get_config).return_value = (
-            mock_config
-        )
+        cast(
+            Any, mixin.request_context.configurator.get_config
+        ).return_value = mock_config
 
         expected_response = UnifiedSearchResponse(success=True)
 

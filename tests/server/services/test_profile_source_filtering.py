@@ -108,7 +108,9 @@ def test_profile_extractor_filters_by_source_api(mock_chat_completion):
         )
         _storage(profile_generation_service).add_request(request_obj)
         for interaction_obj in interactions:
-            _storage(profile_generation_service).add_user_interaction(user_id, interaction_obj)
+            _storage(profile_generation_service).add_user_interaction(
+                user_id, interaction_obj
+            )
 
         profile_generation_request = ProfileGenerationRequest(
             user_id=user_id,
@@ -174,7 +176,9 @@ def test_profile_extractor_filters_by_source_webhook(mock_chat_completion):
         )
         _storage(profile_generation_service).add_request(request_obj)
         for interaction_obj in interactions:
-            _storage(profile_generation_service).add_user_interaction(user_id, interaction_obj)
+            _storage(profile_generation_service).add_user_interaction(
+                user_id, interaction_obj
+            )
 
         profile_generation_request = ProfileGenerationRequest(
             user_id=user_id,
@@ -240,7 +244,9 @@ def test_profile_extractor_none_enables_all_sources(mock_chat_completion):
         )
         _storage(profile_generation_service).add_request(request_obj)
         for interaction_obj in interactions:
-            _storage(profile_generation_service).add_user_interaction(user_id, interaction_obj)
+            _storage(profile_generation_service).add_user_interaction(
+                user_id, interaction_obj
+            )
 
         profile_generation_request = ProfileGenerationRequest(
             user_id=user_id,
@@ -306,7 +312,9 @@ def test_profile_extractor_empty_list_enables_all_sources(mock_chat_completion):
         )
         _storage(profile_generation_service).add_request(request_obj)
         for interaction_obj in interactions:
-            _storage(profile_generation_service).add_user_interaction(user_id, interaction_obj)
+            _storage(profile_generation_service).add_user_interaction(
+                user_id, interaction_obj
+            )
 
         profile_generation_request = ProfileGenerationRequest(
             user_id=user_id,

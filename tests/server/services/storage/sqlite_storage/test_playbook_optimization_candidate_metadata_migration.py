@@ -40,7 +40,9 @@ def _candidate_columns(db_path: str) -> set[str]:
         conn.close()
 
 
-def test_migration_adds_candidate_metadata_column_and_persists_metadata(tmp_path) -> None:
+def test_migration_adds_candidate_metadata_column_and_persists_metadata(
+    tmp_path,
+) -> None:
     db_path = str(tmp_path / "legacy.db")
     conn = sqlite3.connect(db_path)
     conn.executescript(_LEGACY_CANDIDATE_DDL)

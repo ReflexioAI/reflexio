@@ -835,12 +835,8 @@ def test_rerun_operations_consistency(
 
     # Record initial state
     initial_interactions = storage.get_all_interactions()
-    initial_current_profiles = storage.get_user_profile(
-        user_id, status_filter=[None]
-    )
-    initial_playbooks = storage.get_user_playbooks(
-        playbook_name="test_playbook"
-    )
+    initial_current_profiles = storage.get_user_profile(user_id, status_filter=[None])
+    initial_playbooks = storage.get_user_playbooks(playbook_name="test_playbook")
     initial_agent_success = storage.get_agent_success_evaluation_results(
         agent_version=agent_version
     )
@@ -874,9 +870,7 @@ def test_rerun_operations_consistency(
         assert profile.content == initial_current_profiles[i].content
 
     # Step 4: Verify PENDING profiles were created
-    pending_profiles = storage.get_user_profile(
-        user_id, status_filter=[Status.PENDING]
-    )
+    pending_profiles = storage.get_user_profile(user_id, status_filter=[Status.PENDING])
     assert len(pending_profiles) > 0, "PENDING profiles should be created"
 
     # Step 5: Verify interactions unchanged
@@ -886,9 +880,7 @@ def test_rerun_operations_consistency(
     )
 
     # Step 6: Verify playbooks unchanged
-    playbooks_after_rerun = storage.get_user_playbooks(
-        playbook_name="test_playbook"
-    )
+    playbooks_after_rerun = storage.get_user_playbooks(playbook_name="test_playbook")
     assert len(playbooks_after_rerun) == initial_playbook_count, (
         "User playbooks should remain unchanged"
     )
@@ -919,9 +911,7 @@ def test_rerun_operations_consistency(
     assert len(pending_profiles_after_second) >= pending_count_before_second_rerun
 
     # Step 9: Verify CURRENT profiles still unchanged after second rerun
-    current_profiles_final = storage.get_user_profile(
-        user_id, status_filter=[None]
-    )
+    current_profiles_final = storage.get_user_profile(user_id, status_filter=[None])
     assert len(current_profiles_final) == initial_profile_count, (
         "CURRENT profiles should still be unchanged after second rerun"
     )

@@ -172,7 +172,9 @@ def test_provider_short_circuits_storage_list_org_ids(multitenant):
     # Make list_org_ids explode so any accidental use is caught.
     for storage in storages.values():
         storage.list_org_ids = MagicMock(  # type: ignore[method-assign]
-            side_effect=AssertionError("list_org_ids must not be called with a provider")
+            side_effect=AssertionError(
+                "list_org_ids must not be called with a provider"
+            )
         )
 
     sched = LineageGCScheduler(
