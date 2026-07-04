@@ -142,7 +142,9 @@ class TestSetConfig:
         response = mixin.set_config(config)
 
         assert response.success is True
-        _get_configurator(mixin).is_storage_config_ready_to_test.assert_called_once_with(
+        _get_configurator(
+            mixin
+        ).is_storage_config_ready_to_test.assert_called_once_with(
             storage_config=new_storage_config
         )
         _get_configurator(mixin).test_and_init_storage_config.assert_called_once_with(

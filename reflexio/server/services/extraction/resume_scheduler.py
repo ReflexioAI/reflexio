@@ -107,9 +107,7 @@ class ExtractionResumeScheduler(ThreadedScheduler):
         try:
             bootstrap_ctx = self.request_context_factory(self.bootstrap_org_id)
             config = bootstrap_ctx.configurator.get_config()
-            poll_interval = (
-                config.pending_tool_call_config.resume_poll_interval_seconds
-            )
+            poll_interval = config.pending_tool_call_config.resume_poll_interval_seconds
             self._expire_pending_tool_calls(bootstrap_ctx)
             for org_id in self._discover_org_ids(bootstrap_ctx):
                 if self._stop_event.is_set():

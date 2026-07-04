@@ -25,7 +25,9 @@ def _fake_completed_process(stdout: str, *, stderr: str = "", returncode: int = 
     """Build a CompletedProcess look-alike for ``patch('subprocess.run')``."""
     from subprocess import CompletedProcess
 
-    return CompletedProcess(args=[], returncode=returncode, stdout=stdout, stderr=stderr)
+    return CompletedProcess(
+        args=[], returncode=returncode, stdout=stdout, stderr=stderr
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -33,9 +35,7 @@ def _reset_provider_state(monkeypatch: pytest.MonkeyPatch):
     """Each test starts with the provider unregistered + a clean LiteLLM map."""
     monkeypatch.setattr(ocp, "_REGISTERED", False, raising=False)
     monkeypatch.setattr(ocp, "_HANDLER", None, raising=False)
-    monkeypatch.setattr(
-        litellm, "custom_provider_map", [], raising=False
-    )
+    monkeypatch.setattr(litellm, "custom_provider_map", [], raising=False)
     yield
 
 

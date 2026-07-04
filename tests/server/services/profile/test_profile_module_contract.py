@@ -3,11 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 _PROFILE_DIR = (
-    Path(__file__).resolve().parents[4]
-    / "reflexio"
-    / "server"
-    / "services"
-    / "profile"
+    Path(__file__).resolve().parents[4] / "reflexio" / "server" / "services" / "profile"
 )
 _REMOVED_FILES = {"profile_generation_service.py", "profile_extractor.py"}
 

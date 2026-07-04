@@ -75,7 +75,9 @@ def test_delete_expired_pending_tool_calls_spares_resolved(tmp_path):
         call_id="b",
         status="resolved",
         valid_until=(now + timedelta(days=5)).isoformat(),
-        expires_at=(now - timedelta(days=2)).isoformat(),  # past expires_at but RESOLVED
+        expires_at=(
+            now - timedelta(days=2)
+        ).isoformat(),  # past expires_at but RESOLVED
     )
     deleted = s.delete_expired_pending_tool_calls(
         now=int(now.timestamp()), grace_seconds=86400

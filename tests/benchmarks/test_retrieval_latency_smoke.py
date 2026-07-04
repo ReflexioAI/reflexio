@@ -26,7 +26,7 @@ from reflexio.benchmarks.retrieval_latency.report import (
     cell_key_str,
     load_baseline,
 )
-from tests.server.test_utils import skip_in_precommit
+from tests.server.test_utils import skip_in_precommit, skip_low_priority
 
 _SMOKE_SIZES = "50"
 _SMOKE_TRIALS = 10
@@ -36,6 +36,7 @@ _REGRESSION_TOLERANCE = 3.0  # Allow up to 3× slowdown before failing.
 _BASELINE_PATH = Path(__file__).resolve().parent / "baseline.json"
 
 
+@skip_low_priority
 @skip_in_precommit
 @pytest.mark.integration
 def test_retrieval_latency_smoke(tmp_path: Path) -> None:

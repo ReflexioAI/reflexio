@@ -55,9 +55,7 @@ def _make_mixin(*, storage_configured: bool = True) -> GenerationMixin:
 
 class TestRunPlaybookAggregation:
     @patch("reflexio.server.services.playbook.components.aggregator.PlaybookAggregator")
-    def test_calls_aggregator_run_with_correct_args(
-        self, mock_agg_cls
-    ):
+    def test_calls_aggregator_run_with_correct_args(self, mock_agg_cls):
         """Constructs PlaybookAggregator and calls run() with correct request."""
         mixin = _make_mixin()
         mock_agg_instance = MagicMock()

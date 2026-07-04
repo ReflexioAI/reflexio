@@ -555,7 +555,9 @@ def test_update_all_profiles_status_structured_fields(tmp_path):
     s.add_user_profile("u1", [profile])
     s.update_all_profiles_status(old_status=None, new_status=Status.ARCHIVED)
     evts = [
-        e for e in s.get_lineage_events(entity_id="struct_p1") if e.op == "status_change"
+        e
+        for e in s.get_lineage_events(entity_id="struct_p1")
+        if e.op == "status_change"
     ]
     assert len(evts) == 1
     assert evts[0].from_status is None
@@ -570,7 +572,9 @@ def test_archive_profile_by_id_structured_fields(tmp_path):
     s.add_user_profile("u1", [profile])
     s.archive_profile_by_id("u1", "struct_p2")
     evts = [
-        e for e in s.get_lineage_events(entity_id="struct_p2") if e.op == "status_change"
+        e
+        for e in s.get_lineage_events(entity_id="struct_p2")
+        if e.op == "status_change"
     ]
     assert len(evts) == 1
     assert evts[0].from_status is None

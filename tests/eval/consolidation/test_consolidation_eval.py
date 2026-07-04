@@ -38,7 +38,7 @@ from tests.eval.consolidation.runner import EvalResults, run_eval, score_case
 # ---------------------------------------------------------------------------
 
 
-def _unify(new_id: str = "n1", **kw: object) -> UnifyDecision:
+def _unify(new_id: str = "NEW-1", **kw: object) -> UnifyDecision:
     base: dict[str, object] = {
         "new_id": new_id,
         "content": "Always summarize the report.",
@@ -50,14 +50,16 @@ def _unify(new_id: str = "n1", **kw: object) -> UnifyDecision:
 
 
 def _reject(
-    new_id: str = "n1", superseded_by_existing_id: int = 1
+    new_id: str = "NEW-1", superseded_by_existing_id: int = 1
 ) -> RejectNewDecision:
     return RejectNewDecision(
         new_id=new_id, superseded_by_existing_id=superseded_by_existing_id
     )
 
 
-def _differentiate(new_id: str = "n1", existing_id: int = 1) -> DifferentiateDecision:
+def _differentiate(
+    new_id: str = "NEW-1", existing_id: int = 1
+) -> DifferentiateDecision:
     return DifferentiateDecision(
         new_id=new_id,
         existing_id=existing_id,
@@ -66,7 +68,7 @@ def _differentiate(new_id: str = "n1", existing_id: int = 1) -> DifferentiateDec
     )
 
 
-def _independent(new_id: str = "n1") -> IndependentDecision:
+def _independent(new_id: str = "NEW-1") -> IndependentDecision:
     return IndependentDecision(new_id=new_id)
 
 
@@ -79,7 +81,7 @@ def _case(case_id: str = "c1", gold_kind: str = "unify") -> ConsolidationEvalCas
                 {"id": 1, "content": "existing rule", "trigger": "t", "rationale": ""}
             ],
             "candidate": {
-                "new_id": "n1",
+                "new_id": "NEW-1",
                 "content": "candidate rule",
                 "trigger": "t",
                 "rationale": "",
@@ -556,7 +558,7 @@ def test_real_judge_smoke():  # pragma: no cover - manual, costs money
                 }
             ],
             "candidate": {
-                "new_id": "n1",
+                "new_id": "NEW-1",
                 "content": "Do not attach internal-only files to a customer email.",
                 "trigger": "drafting a customer email",
                 "rationale": "Internal files can leak confidential data.",
@@ -567,7 +569,7 @@ def test_real_judge_smoke():  # pragma: no cover - manual, costs money
         }
     )
     decision = UnifyDecision(
-        new_id="n1",
+        new_id="NEW-1",
         archive_existing_ids=[1],
         content=(
             "Always greet the recipient by name; do not attach internal-only "

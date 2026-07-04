@@ -335,7 +335,9 @@ def test_added_then_superseded_still_in_added(tmp_path):
     s = _store(tmp_path)
 
     # Run 1 adds playbook X.
-    pb_x = _make_playbook(playbook_name="pb", agent_version="v1", content="X added in run1")
+    pb_x = _make_playbook(
+        playbook_name="pb", agent_version="v1", content="X added in run1"
+    )
     x_id = _add_playbook(s, pb_x)
     _emit_aggregate_event(s, entity_id=str(x_id), request_id="run-1")
 
@@ -453,9 +455,7 @@ def test_limit_applies_to_post_filter_set(tmp_path):
     )
     # Most-recent-first: the two newest fb_A runs, oldest dropped, fb_B excluded.
     contents = [
-        snap.content
-        for log in result.change_logs
-        for snap in log.added_agent_playbooks
+        snap.content for log in result.change_logs for snap in log.added_agent_playbooks
     ]
     assert contents == ["A newest", "A middle"], contents
     assert all(log.playbook_name == "fb_A" for log in result.change_logs)

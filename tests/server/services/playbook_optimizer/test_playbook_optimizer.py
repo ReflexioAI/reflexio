@@ -1018,8 +1018,12 @@ def test_optimizer_passes_distinct_train_and_validation_sets_to_gepa(tmp_path):
 
 def test_sqlite_persists_source_mapping_and_winner_candidate(tmp_path):
     storage = _sqlite_storage(tmp_path)
-    storage.set_source_user_playbook_ids_for_agent_playbook(10, [2, 3, 2])
-    assert storage.get_source_user_playbook_ids_for_agent_playbook(10) == [2, 3]
+    up1 = UserPlaybook(user_id="u1", agent_version="v1", request_id="r-src-1")
+    up2 = UserPlaybook(user_id="u1", agent_version="v1", request_id="r-src-2")
+    storage.save_user_playbooks([up1, up2])
+    id1, id2 = up1.user_playbook_id, up2.user_playbook_id
+    storage.set_source_user_playbook_ids_for_agent_playbook(10, [id1, id2, id1])
+    assert storage.get_source_user_playbook_ids_for_agent_playbook(10) == [id1, id2]
 
     job = storage.create_playbook_optimization_job(
         PlaybookOptimizationJob(target_kind="agent_playbook", target_id=10)
@@ -1085,29 +1089,30 @@ def test_scenario_resolver_uses_snapshotted_source_windows_after_user_delete(tmp
     _seed_request_and_user_interaction(
         storage, interaction_id=101, request_id="r101", content="original ask"
     )
-    storage.save_user_playbooks(
-        [
-            UserPlaybook(
-                user_playbook_id=7,
-                user_id="u1",
-                agent_version="v1",
-                request_id="r101",
-                playbook_name="support",
-                content="source",
-                source_interaction_ids=[101],
-            )
-        ]
+    up = UserPlaybook(
+        user_id="u1",
+        agent_version="v1",
+        request_id="r101",
+        playbook_name="support",
+        content="source",
+        source_interaction_ids=[101],
     )
+    storage.save_user_playbooks([up])
+    actual_id = up.user_playbook_id
     storage.set_source_windows_for_agent_playbook(
         10,
-        [AgentPlaybookSourceWindow(user_playbook_id=7, source_interaction_ids=[101])],
+        [
+            AgentPlaybookSourceWindow(
+                user_playbook_id=actual_id, source_interaction_ids=[101]
+            )
+        ],
     )
-    storage.delete_user_playbooks_by_ids([7])
+    storage.delete_user_playbooks_by_ids([actual_id])
 
     windows = ScenarioResolver(storage).for_agent_playbook(10)
 
     assert len(windows) == 1
-    assert windows[0].user_playbook_id == 7
+    assert windows[0].user_playbook_id == actual_id
     assert windows[0].source_interaction_ids == [101]
     assert [turn.content for turn in windows[0].user_turns] == ["original ask"]
 
@@ -1143,6 +1148,9 @@ def test_optimizer_successor_preserves_source_window_snapshots(tmp_path):
     _seed_request_and_user_interaction(
         storage, interaction_id=201, request_id="r201", content="validate"
     )
+    seed_up = UserPlaybook(user_id="u1", agent_version="v1", request_id="r-seed")
+    storage.save_user_playbooks([seed_up])
+    seed_up_id = seed_up.user_playbook_id
     [agent_playbook] = storage.save_agent_playbooks(
         [
             AgentPlaybook(
@@ -1155,7 +1163,11 @@ def test_optimizer_successor_preserves_source_window_snapshots(tmp_path):
     )
     storage.set_source_windows_for_agent_playbook(
         agent_playbook.agent_playbook_id,
-        [AgentPlaybookSourceWindow(user_playbook_id=12, source_interaction_ids=[201])],
+        [
+            AgentPlaybookSourceWindow(
+                user_playbook_id=seed_up_id, source_interaction_ids=[201]
+            )
+        ],
     )
     config = Config(
         storage_config=StorageConfigSQLite(db_path=str(tmp_path / "reflexio.db")),
@@ -1170,7 +1182,7 @@ def test_optimizer_successor_preserves_source_window_snapshots(tmp_path):
     )
     optimizer = _optimizer_for_test(storage, config)
     optimizer._resolve_windows = Mock(  # type: ignore[method-assign]
-        return_value=[_scenario_window(12)]
+        return_value=[_scenario_window(seed_up_id)]
     )
 
     def fake_run_gepa(config, seed_content, train_windows, validation_windows, adapter):  # noqa: ARG001
@@ -1181,8 +1193,8 @@ def test_optimizer_successor_preserves_source_window_snapshots(tmp_path):
                 candidate_id=candidate.candidate_id,
                 target_kind="agent_playbook",
                 target_id=agent_playbook.agent_playbook_id,
-                scenario_user_playbook_id=12,
-                source_interaction_ids=[120],
+                scenario_user_playbook_id=seed_up_id,
+                source_interaction_ids=[seed_up_id * 10],
                 score=0.9,
                 verdict="candidate",
                 likert=5,
@@ -1211,7 +1223,11 @@ def test_optimizer_successor_preserves_source_window_snapshots(tmp_path):
     assert len(successors) == 1
     assert storage.get_source_windows_for_agent_playbook(
         successors[0].agent_playbook_id
-    ) == [AgentPlaybookSourceWindow(user_playbook_id=12, source_interaction_ids=[201])]
+    ) == [
+        AgentPlaybookSourceWindow(
+            user_playbook_id=seed_up_id, source_interaction_ids=[201]
+        )
+    ]
 
 
 def test_commit_thresholds_only_count_winner_candidate(tmp_path):

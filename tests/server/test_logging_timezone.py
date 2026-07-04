@@ -91,9 +91,7 @@ class TestConsoleDebugPolicy:
 
         assert _debug_log_to_console_enabled() is False
 
-    def test_sentry_environment_does_not_define_production(
-        self, monkeypatch
-    ) -> None:
+    def test_sentry_environment_does_not_define_production(self, monkeypatch) -> None:
         monkeypatch.delenv("ENVIRONMENT", raising=False)
         monkeypatch.setenv("SENTRY_ENVIRONMENT", "production")
         monkeypatch.setenv("DEBUG_LOG_TO_CONSOLE", "true")

@@ -124,7 +124,9 @@ def test_create_or_attach_creates_when_no_active_call(storage):
 
     result = storage.create_or_attach_pending_tool_call(
         record=_pending("ptc_1", now=now),
-        dependency=RunToolDependencyRecord(run_id="run_1", pending_tool_call_id="ptc_1"),
+        dependency=RunToolDependencyRecord(
+            run_id="run_1", pending_tool_call_id="ptc_1"
+        ),
         now=now,
     )
 
@@ -147,12 +149,16 @@ def test_create_or_attach_attaches_to_existing_active_call(storage):
 
     first = storage.create_or_attach_pending_tool_call(
         record=_pending("ptc_1", now=now),
-        dependency=RunToolDependencyRecord(run_id="run_1", pending_tool_call_id="ptc_1"),
+        dependency=RunToolDependencyRecord(
+            run_id="run_1", pending_tool_call_id="ptc_1"
+        ),
         now=now,
     )
     second = storage.create_or_attach_pending_tool_call(
         record=_pending("ptc_2", now=now),
-        dependency=RunToolDependencyRecord(run_id="run_2", pending_tool_call_id="ptc_2"),
+        dependency=RunToolDependencyRecord(
+            run_id="run_2", pending_tool_call_id="ptc_2"
+        ),
         now=now,
     )
 
@@ -162,9 +168,9 @@ def test_create_or_attach_attaches_to_existing_active_call(storage):
     assert second.pending_tool_call.id == "ptc_1"
     assert storage.get_pending_tool_call("ptc_2") is None
     # run_2's dependency points at the existing call (ptc_1), not ptc_2.
-    assert [d.pending_tool_call_id for d in storage.list_run_tool_dependencies("run_2")] == [
-        "ptc_1"
-    ]
+    assert [
+        d.pending_tool_call_id for d in storage.list_run_tool_dependencies("run_2")
+    ] == ["ptc_1"]
 
 
 def test_create_or_attach_is_idempotent_on_repeat(storage):
@@ -334,7 +340,9 @@ def test_consume_run_tool_dependencies_guards_and_double_consume(storage):
 
     assert first == 1
     assert second == 0
-    deps = {d.pending_tool_call_id: d for d in storage.list_run_tool_dependencies("run_1")}
+    deps = {
+        d.pending_tool_call_id: d for d in storage.list_run_tool_dependencies("run_1")
+    }
     assert deps["ptc_resolved"].consumed_at is not None
     assert deps["ptc_unresolved"].consumed_at is None
 
@@ -396,7 +404,9 @@ def test_delete_expired_pending_tool_calls_only_deletes_expired_past_grace(stora
         )
     )
 
-    deleted = storage.delete_expired_pending_tool_calls(now=now_epoch, grace_seconds=grace)
+    deleted = storage.delete_expired_pending_tool_calls(
+        now=now_epoch, grace_seconds=grace
+    )
 
     assert deleted == 1
     assert storage.get_pending_tool_call("expired_old") is None
@@ -489,7 +499,9 @@ def test_count_unresolved_followup_dependencies_joins_three_tables(storage):
     )
 
     # Excluded: dependency already resolved.
-    storage.create_pending_tool_call(_pending("ptc_resolved_dep", now=now, question="q3"))
+    storage.create_pending_tool_call(
+        _pending("ptc_resolved_dep", now=now, question="q3")
+    )
     storage.attach_run_tool_dependency(
         RunToolDependencyRecord(
             run_id="run_1", pending_tool_call_id="ptc_resolved_dep", resolved_at=now
@@ -509,7 +521,9 @@ def test_count_unresolved_followup_dependencies_joins_three_tables(storage):
         )
     )
     storage.attach_run_tool_dependency(
-        RunToolDependencyRecord(run_id="run_2", pending_tool_call_id="ptc_call_resolved")
+        RunToolDependencyRecord(
+            run_id="run_2", pending_tool_call_id="ptc_call_resolved"
+        )
     )
 
     # Excluded: run of a different extractor_kind.
@@ -560,7 +574,9 @@ def test_list_pending_tool_calls_filters_clamps_and_orders(storage):
 
     all_calls = storage.list_pending_tool_calls()
     pending_only = storage.list_pending_tool_calls(status=PendingToolCallStatus.PENDING)
-    resolved_only = storage.list_pending_tool_calls(status=PendingToolCallStatus.RESOLVED)
+    resolved_only = storage.list_pending_tool_calls(
+        status=PendingToolCallStatus.RESOLVED
+    )
     clamped_low = storage.list_pending_tool_calls(limit=0)
     clamped_high = storage.list_pending_tool_calls(limit=100_000)
 
@@ -608,7 +624,9 @@ def test_claim_ready_agent_run_resuming_status_guard_is_compare_and_set(storage)
 
     first = storage.claim_ready_agent_run(org_id="org_1", worker_id="worker_1", now=now)
     # Second claim WITHOUT consuming: the only thing blocking it is the status.
-    second = storage.claim_ready_agent_run(org_id="org_1", worker_id="worker_2", now=now)
+    second = storage.claim_ready_agent_run(
+        org_id="org_1", worker_id="worker_2", now=now
+    )
     # Once the RESUMING claim is stale (past the TTL) it is re-claimable.
     stale_now = now + timedelta(seconds=700)
     third = storage.claim_ready_agent_run(

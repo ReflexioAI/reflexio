@@ -47,9 +47,7 @@ _DEDUP_FLAG = "reflexio.server.site_var.feature_flags.is_deduplicator_enabled"
 _DEDUP_CLS = (
     "reflexio.server.services.profile.components.consolidator.ProfileConsolidator"
 )
-_CAPTURE_ANOMALY = (
-    "reflexio.server.services.profile.service.capture_anomaly"
-)
+_CAPTURE_ANOMALY = "reflexio.server.services.profile.service.capture_anomaly"
 
 
 # ---------------------------------------------------------------------------

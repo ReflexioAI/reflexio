@@ -194,18 +194,24 @@ def test_base_recent_verdicts_nonpositive_limit_skips_window_read() -> None:
 
     storage = GuardedShadowStorage()
 
-    assert storage.get_recent_shadow_comparison_verdicts(
-        from_ts=0,
-        to_ts=1,
-        judge_prompt_version="v1.0.0",
-        limit=0,
-    ) == []
-    assert storage.get_recent_shadow_comparison_verdicts(
-        from_ts=0,
-        to_ts=1,
-        judge_prompt_version="v1.0.0",
-        limit=-1,
-    ) == []
+    assert (
+        storage.get_recent_shadow_comparison_verdicts(
+            from_ts=0,
+            to_ts=1,
+            judge_prompt_version="v1.0.0",
+            limit=0,
+        )
+        == []
+    )
+    assert (
+        storage.get_recent_shadow_comparison_verdicts(
+            from_ts=0,
+            to_ts=1,
+            judge_prompt_version="v1.0.0",
+            limit=-1,
+        )
+        == []
+    )
 
 
 def test_delete_by_session_returns_count(storage: BaseStorage) -> None:

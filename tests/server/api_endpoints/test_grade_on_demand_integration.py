@@ -180,7 +180,9 @@ def test_grade_on_demand_second_call_returns_cached(client_with_org):
     fake = _fake_runner_factory(
         storage, agent_version="v1", evaluation_name="overall_success"
     )
-    with patch("reflexio.server.routes.evaluation.run_group_evaluation", side_effect=fake) as runner:
+    with patch(
+        "reflexio.server.routes.evaluation.run_group_evaluation", side_effect=fake
+    ) as runner:
         first = client.post(
             "/api/evaluations/grade_on_demand",
             json={
