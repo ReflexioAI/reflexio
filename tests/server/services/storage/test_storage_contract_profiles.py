@@ -336,6 +336,15 @@ class TestInteractionCRUD:
         ids = {i.interaction_id for i in result}
         assert ids == {1, 2}
 
+    def test_get_all_user_ids_returns_distinct_interaction_users(
+        self, storage: BaseStorage
+    ) -> None:
+        storage.add_user_interaction("u2", _make_interaction("u2", 1, "a1", "req1"))
+        storage.add_user_interaction("u1", _make_interaction("u1", 2, "a2", "req2"))
+        storage.add_user_interaction("u2", _make_interaction("u2", 3, "a3", "req3"))
+
+        assert storage.get_all_user_ids() == ["u1", "u2"]
+
     def test_count_all_interactions(self, storage: BaseStorage) -> None:
         for i in range(1, 4):
             storage.add_user_interaction(
