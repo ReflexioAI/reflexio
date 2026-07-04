@@ -218,18 +218,23 @@ class TestClaudeCodeLLMCompletion:
         assert "--verbose" in cmd
 
     def test_sets_max_retries_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """CLAUDE_CODE_MAX_RETRIES=3 must be passed in the subprocess env."""
+        """CLI subprocess env and stdin encoding are pinned for Windows safety."""
         mock_run = self._mock_cli(monkeypatch)
         llm = ClaudeCodeLLM()
 
         llm.completion(
             model="claude-code/default",
-            messages=[{"role": "user", "content": "hi"}],
+            messages=[{"role": "user", "content": "Use an em dash — in the prompt."}],
         )
 
-        env = mock_run.call_args.kwargs["env"]
+        kwargs = mock_run.call_args.kwargs
+        env = kwargs["env"]
         assert env["CLAUDE_CODE_MAX_RETRIES"] == "3"
         assert env["CLAUDE_SMART_INTERNAL"] == "1"
+        assert kwargs["text"] is True
+        assert kwargs["encoding"] == "utf-8"
+        assert kwargs["errors"] == "replace"
+        assert kwargs["input"] == "User: Use an em dash — in the prompt."
 
     def test_system_message_goes_to_append_system_prompt_flag(
         self, monkeypatch: pytest.MonkeyPatch
@@ -251,6 +256,28 @@ class TestClaudeCodeLLMCompletion:
         assert cmd[flag_idx + 1] == "Be terse."
         # User turn goes through stdin, not argv.
         assert mock_run.call_args.kwargs["input"] == "User: hello"
+
+    def test_large_windows_system_prompt_moves_to_stdin(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        mock_run = self._mock_cli(monkeypatch)
+        monkeypatch.setattr(ccp.os, "name", "nt")
+        llm = ClaudeCodeLLM()
+        long_system_prompt = "Use JSON only. " + ("schema-field " * 900)
+
+        llm.completion(
+            model="claude-code/default",
+            messages=[
+                {"role": "system", "content": long_system_prompt},
+                {"role": "user", "content": "Extract playbooks."},
+            ],
+        )
+
+        cmd = mock_run.call_args.args[0]
+        assert "--append-system-prompt" not in cmd
+        assert mock_run.call_args.kwargs["input"] == (
+            f"{long_system_prompt}\n\n## Task\nUser: Extract playbooks."
+        )
 
     def test_no_system_message_omits_flag(
         self, monkeypatch: pytest.MonkeyPatch
@@ -455,7 +482,7 @@ class TestClaudeCodeLLMCompletion:
             model="claude-code/default",
             messages=[
                 {"role": "system", "content": "Be terse."},
-                {"role": "user", "content": "ping"},
+                {"role": "user", "content": "ping — now"},
             ],
         )
 
@@ -463,9 +490,49 @@ class TestClaudeCodeLLMCompletion:
         assert cmd[:2] == ["/usr/local/bin/codex", "exec"]
         assert "-p" not in cmd
         assert "--append-system-prompt" not in cmd
-        assert mock_run.call_args.kwargs["input"] == "Be terse.\n\n## Task\nUser: ping"
-        assert mock_run.call_args.kwargs["env"]["CLAUDE_SMART_HOST"] == "codex"
+        kwargs = mock_run.call_args.kwargs
+        assert kwargs["text"] is True
+        assert kwargs["encoding"] == "utf-8"
+        assert kwargs["errors"] == "replace"
+        assert kwargs["input"] == "Be terse.\n\n## Task\nUser: ping — now"
+        assert kwargs["env"]["CLAUDE_SMART_HOST"] == "codex"
         assert response.choices[0].message.content == "codex reply"  # type: ignore[union-attr]
+
+    def test_windows_extensionless_cli_override_prefers_adjacent_cmd(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        bridge = tmp_path / "opencode-claude-compat"
+        bridge_cmd = tmp_path / "opencode-claude-compat.cmd"
+        bridge_cmd.write_text("@echo off\n")
+        bridge_cmd.chmod(0o755)
+
+        monkeypatch.setattr(ccp.os, "name", "nt")
+        monkeypatch.setenv(ccp.ENV_ENABLE, "1")
+        monkeypatch.setenv(ccp._ENV_CLI_PATH, str(bridge))
+
+        assert ccp._resolve_cli_path() == str(bridge_cmd)  # noqa: SLF001
+        assert is_claude_code_available()
+
+    def test_windows_extensionless_cli_override_executes_adjacent_cmd(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        bridge = tmp_path / "opencode-claude-compat"
+        bridge_cmd = tmp_path / "opencode-claude-compat.cmd"
+        bridge_cmd.write_text("@echo off\n")
+        bridge_cmd.chmod(0o755)
+        mock_run = MagicMock(return_value=_fake_completed_process(_stream_json("ok")))
+
+        monkeypatch.setattr(ccp.os, "name", "nt")
+        monkeypatch.setenv(ccp._ENV_CLI_PATH, str(bridge))
+        monkeypatch.setattr(ccp.subprocess, "run", mock_run)
+
+        ClaudeCodeLLM().completion(
+            model="claude-code/default",
+            messages=[{"role": "user", "content": "hi"}],
+        )
+
+        cmd = mock_run.call_args.args[0]
+        assert cmd[0] == str(bridge_cmd)
 
     def test_codex_host_uses_compat_wrapper_with_claude_flags(
         self, monkeypatch: pytest.MonkeyPatch

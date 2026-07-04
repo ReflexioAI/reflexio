@@ -394,14 +394,18 @@ def _iso_to_epoch(iso_str: str | None) -> int:
 # stored row) with a valid value.
 _MAX_SAFE_EPOCH_TS = 253_402_300_799  # 9999-12-31T23:59:59Z
 _MIN_SAFE_EPOCH_TS = 0  # 1970-01-01T00:00:00Z
+_MIN_PLAUSIBLE_MILLISECOND_EPOCH_TS = 1_000_000_000_000
 
 
 def _epoch_to_iso(ts: int) -> str:
     """Convert a Unix timestamp (seconds) to an ISO 8601 string.
 
-    Out-of-range sentinel bounds are clamped to the representable range so that
-    callers passing "open" window bounds never trigger a ``ValueError``.
+    Plausible millisecond timestamps are normalized to seconds. Out-of-range
+    sentinel bounds are clamped to the representable range so callers passing
+    "open" window bounds never trigger platform-specific datetime errors.
     """
+    if _MIN_PLAUSIBLE_MILLISECOND_EPOCH_TS <= ts <= _MAX_SAFE_EPOCH_TS * 1000:
+        ts = ts // 1000
     clamped = max(_MIN_SAFE_EPOCH_TS, min(ts, _MAX_SAFE_EPOCH_TS))
     return datetime.fromtimestamp(clamped, tz=UTC).isoformat()
 

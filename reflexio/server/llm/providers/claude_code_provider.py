@@ -70,6 +70,7 @@ _CODEX_COMPAT_SCRIPT_NAMES = (
 _CODEX_COMPAT_SCRIPT_NAME_SET = set(_CODEX_COMPAT_SCRIPT_NAMES)
 _DEFAULT_TIMEOUT_SECONDS = 120
 _DEFAULT_CLI_MODEL = "claude-sonnet-5"
+_WINDOWS_ARGV_SYSTEM_PROMPT_LIMIT = 3_000
 
 _TRUTHY_ENV_VALUES = {"1", "true", "yes"}
 _UNSUPPORTED_PARAMS_WARNED: set[str] = set()
@@ -116,6 +117,18 @@ def _candidate_codex_compat_path() -> Path | None:
     return None
 
 
+def _windows_executable_cli_path(cli_path: str) -> str:
+    if os.name != "nt":
+        return cli_path
+    filename = cli_path.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+    if "." in filename:
+        return cli_path
+    cmd_path = f"{cli_path}.cmd"
+    if os.path.exists(cmd_path):  # noqa: PTH110 - Path() follows patched os.name.
+        return cmd_path
+    return cli_path
+
+
 def _resolve_cli_path() -> str | None:
     """Return the path to the active host CLI, or None if unavailable.
 
@@ -129,9 +142,9 @@ def _resolve_cli_path() -> str | None:
     """
     override = os.environ.get(_ENV_CLI_PATH)
     if override:
-        candidate = Path(override)
-        if candidate.is_file() and os.access(candidate, os.X_OK):
-            return str(candidate)
+        candidate = _windows_executable_cli_path(override)
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):  # noqa: PTH113
+            return candidate
         _LOGGER.warning(
             "%s=%s is not an executable file; falling back to PATH",
             _ENV_CLI_PATH,
@@ -432,6 +445,7 @@ def _run_claude_stream(
 ) -> ParseResult:
     """Invoke ``claude -p --output-format stream-json`` and return a ParseResult."""
     model = os.environ.get(_ENV_MODEL) or _DEFAULT_CLI_MODEL
+    inline_system_prompt = _should_inline_system_prompt(system_prompt)
     cmd = [
         cli_path,
         "-p",
@@ -442,8 +456,13 @@ def _run_claude_stream(
         "--model",
         model,
     ]
-    if system_prompt:
+    if system_prompt and not inline_system_prompt:
         cmd.extend(["--append-system-prompt", system_prompt])
+    stdin_text = (
+        _codex_prompt(prompt=dialogue, system_prompt=system_prompt)
+        if inline_system_prompt
+        else dialogue
+    )
 
     # Tag the child process so any hooks it fires (e.g. claude-smart's
     # Stop hook) can detect that this is a reflexio-internal invocation
@@ -460,9 +479,11 @@ def _run_claude_stream(
     try:
         proc = subprocess.run(  # noqa: S603 — cmd is constructed from validated parts.
             cmd,
-            input=dialogue,
+            input=stdin_text,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout_seconds,
             check=False,
             env=env,
@@ -511,6 +532,8 @@ def _run_codex_stream(
             input=_codex_prompt(prompt=dialogue, system_prompt=system_prompt),
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout_seconds,
             check=False,
             env=env,
@@ -548,6 +571,10 @@ def _codex_prompt(*, prompt: str, system_prompt: str) -> str:
     if not system_prompt:
         return prompt
     return f"{system_prompt}\n\n## Task\n{prompt}"
+
+
+def _should_inline_system_prompt(system_prompt: str) -> bool:
+    return os.name == "nt" and len(system_prompt) > _WINDOWS_ARGV_SYSTEM_PROMPT_LIMIT
 
 
 def _build_model_response(
