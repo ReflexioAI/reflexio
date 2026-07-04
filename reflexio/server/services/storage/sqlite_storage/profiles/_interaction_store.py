@@ -65,6 +65,11 @@ class InteractionStoreMixin:
         return [_row_to_interaction(r) for r in rows]
 
     @SQLiteStorageBase.handle_exceptions
+    def get_all_user_ids(self) -> list[str]:
+        rows = self._fetchall("SELECT DISTINCT user_id FROM interactions")
+        return sorted(r["user_id"] for r in rows)
+
+    @SQLiteStorageBase.handle_exceptions
     def add_user_interaction(self, user_id: str, interaction: Interaction) -> None:  # noqa: ARG002
         embedding = self._get_embedding(
             f"{interaction.content}\n{interaction.user_action_description}"

@@ -18,6 +18,11 @@ class InteractionStoreMixin:
         raise NotImplementedError
 
     @abstractmethod
+    def get_all_user_ids(self) -> list[str]:
+        """Return distinct user IDs that have stored interactions."""
+        raise NotImplementedError
+
+    @abstractmethod
     def add_user_interaction(self, user_id: str, interaction: Interaction) -> None:
         raise NotImplementedError
 
