@@ -220,6 +220,7 @@ class TestClaudeCodeLLMCompletion:
     def test_sets_max_retries_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """CLI subprocess env and stdin encoding are pinned for Windows safety."""
         mock_run = self._mock_cli(monkeypatch)
+        monkeypatch.setattr(ccp, "_is_windows", lambda: True)
         llm = ClaudeCodeLLM()
 
         llm.completion(
@@ -256,12 +257,13 @@ class TestClaudeCodeLLMCompletion:
         assert cmd[flag_idx + 1] == "Be terse."
         # User turn goes through stdin, not argv.
         assert mock_run.call_args.kwargs["input"] == "User: hello"
+        assert mock_run.call_args.kwargs["errors"] == "strict"
 
     def test_large_windows_system_prompt_moves_to_stdin(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         mock_run = self._mock_cli(monkeypatch)
-        monkeypatch.setattr(ccp.os, "name", "nt")
+        monkeypatch.setattr(ccp, "_is_windows", lambda: True)
         llm = ClaudeCodeLLM()
         long_system_prompt = "Use JSON only. " + ("schema-field " * 900)
 
@@ -276,7 +278,7 @@ class TestClaudeCodeLLMCompletion:
         cmd = mock_run.call_args.args[0]
         assert "--append-system-prompt" not in cmd
         assert mock_run.call_args.kwargs["input"] == (
-            f"{long_system_prompt}\n\n## Task\nUser: Extract playbooks."
+            f"{long_system_prompt}\n\nUser: Extract playbooks."
         )
 
     def test_no_system_message_omits_flag(
@@ -361,6 +363,38 @@ class TestClaudeCodeLLMCompletion:
         cmd = mock_run.call_args.args[0]
         flag_idx = cmd.index("--append-system-prompt")
         assert '"x"' in cmd[flag_idx + 1]
+
+    def test_large_windows_response_format_schema_moves_to_claude_stdin(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        mock_run = self._mock_cli(monkeypatch, result_text="{}")
+        monkeypatch.setattr(ccp, "_is_windows", lambda: True)
+        llm = ClaudeCodeLLM()
+        properties = {
+            f"field_{idx}": {"type": "string", "description": "required output"}
+            for idx in range(120)
+        }
+
+        llm.completion(
+            model="claude-code/default",
+            messages=[{"role": "user", "content": "Extract"}],
+            optional_params={
+                "response_format": {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "schema": {"type": "object", "properties": properties}
+                    },
+                }
+            },
+        )
+
+        cmd = mock_run.call_args.args[0]
+        stdin = mock_run.call_args.kwargs["input"]
+        assert "--append-system-prompt" not in cmd
+        assert "You MUST respond with a single JSON object" in stdin
+        assert '"field_119"' in stdin
+        assert "\n\nUser: Extract" in stdin
+        assert "## Task" not in stdin
 
     def test_unsupported_params_warn_once(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
@@ -475,6 +509,7 @@ class TestClaudeCodeLLMCompletion:
 
         mock_run = MagicMock(side_effect=fake_run)
         monkeypatch.setenv("CLAUDE_SMART_HOST", "codex")
+        monkeypatch.setattr(ccp, "_is_windows", lambda: True)
         monkeypatch.setattr(ccp.subprocess, "run", mock_run)
         monkeypatch.setattr(ccp, "_resolve_cli_path", lambda: "/usr/local/bin/codex")
 
@@ -506,12 +541,27 @@ class TestClaudeCodeLLMCompletion:
         bridge_cmd.write_text("@echo off\n")
         bridge_cmd.chmod(0o755)
 
-        monkeypatch.setattr(ccp.os, "name", "nt")
+        monkeypatch.setattr(ccp, "_is_windows", lambda: True)
         monkeypatch.setenv(ccp.ENV_ENABLE, "1")
         monkeypatch.setenv(ccp._ENV_CLI_PATH, str(bridge))
 
         assert ccp._resolve_cli_path() == str(bridge_cmd)  # noqa: SLF001
         assert is_claude_code_available()
+
+    @pytest.mark.parametrize("suffix", [".exe", ".bat"])
+    def test_windows_extensionless_cli_override_tries_common_shims(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, suffix: str
+    ) -> None:
+        bridge = tmp_path / "claude"
+        bridge_shim = tmp_path / f"claude{suffix}"
+        bridge_shim.write_text("shim\n")
+        bridge_shim.chmod(0o755)
+
+        monkeypatch.setattr(ccp, "_is_windows", lambda: True)
+        monkeypatch.setenv(ccp.ENV_ENABLE, "1")
+        monkeypatch.setenv(ccp._ENV_CLI_PATH, str(bridge))
+
+        assert ccp._resolve_cli_path() == str(bridge_shim)  # noqa: SLF001
 
     def test_windows_extensionless_cli_override_executes_adjacent_cmd(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -522,7 +572,7 @@ class TestClaudeCodeLLMCompletion:
         bridge_cmd.chmod(0o755)
         mock_run = MagicMock(return_value=_fake_completed_process(_stream_json("ok")))
 
-        monkeypatch.setattr(ccp.os, "name", "nt")
+        monkeypatch.setattr(ccp, "_is_windows", lambda: True)
         monkeypatch.setenv(ccp._ENV_CLI_PATH, str(bridge))
         monkeypatch.setattr(ccp.subprocess, "run", mock_run)
 

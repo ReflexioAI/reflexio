@@ -78,6 +78,10 @@ def test_epoch_to_iso_normalizes_plausible_millisecond_epoch() -> None:
     assert _iso_to_epoch(_epoch_to_iso(epoch_ms)) == 1_700_000_000
 
 
+def test_epoch_to_iso_preserves_documented_open_bound_sentinel() -> None:
+    assert _iso_to_epoch(_epoch_to_iso(10**12)) == 253_402_300_799
+
+
 def test_epoch_to_iso_clamps_large_open_bound_sentinel() -> None:
     assert _iso_to_epoch(_epoch_to_iso(10**18)) == 253_402_300_799
 

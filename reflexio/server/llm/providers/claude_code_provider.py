@@ -62,15 +62,22 @@ _ENV_TIMEOUT = "CLAUDE_SMART_CLI_TIMEOUT"
 _ENV_MODEL = "CLAUDE_SMART_CLI_MODEL"
 _HOST_CODEX = "codex"
 _HOST_CLAUDE_CODE = "claude-code"
+
+
+def _is_windows() -> bool:
+    return os.name == "nt"
+
+
 _CODEX_COMPAT_SCRIPT_NAMES = (
     ("codex-claude-compat.cmd", "codex-claude-compat")
-    if os.name == "nt"
+    if _is_windows()
     else ("codex-claude-compat", "codex-claude-compat.cmd")
 )
 _CODEX_COMPAT_SCRIPT_NAME_SET = set(_CODEX_COMPAT_SCRIPT_NAMES)
 _DEFAULT_TIMEOUT_SECONDS = 120
 _DEFAULT_CLI_MODEL = "claude-sonnet-5"
 _WINDOWS_ARGV_SYSTEM_PROMPT_LIMIT = 3_000
+_WINDOWS_CLI_SUFFIXES = (".cmd", ".exe", ".bat", ".ps1")
 
 _TRUTHY_ENV_VALUES = {"1", "true", "yes"}
 _UNSUPPORTED_PARAMS_WARNED: set[str] = set()
@@ -117,16 +124,37 @@ def _candidate_codex_compat_path() -> Path | None:
     return None
 
 
-def _windows_executable_cli_path(cli_path: str) -> str:
-    if os.name != "nt":
+def _windows_cli_suffixes() -> tuple[str, ...]:
+    suffixes: list[str] = []
+    for suffix in os.environ.get("PATHEXT", "").split(";"):
+        suffix = suffix.strip().lower()
+        if not suffix:
+            continue
+        suffixes.append(suffix if suffix.startswith(".") else f".{suffix}")
+    for suffix in _WINDOWS_CLI_SUFFIXES:
+        if suffix not in suffixes:
+            suffixes.append(suffix)
+    return tuple(suffixes)
+
+
+def _resolve_cli_override_path(cli_path: str) -> str:
+    if not _is_windows():
         return cli_path
-    filename = cli_path.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
-    if "." in filename:
+    path = Path(cli_path)
+    if path.suffix:
         return cli_path
-    cmd_path = f"{cli_path}.cmd"
-    if os.path.exists(cmd_path):  # noqa: PTH110 - Path() follows patched os.name.
-        return cmd_path
+
+    # Windows package managers expose extensioned shims while users often
+    # configure the extensionless binary name.
+    for suffix in _windows_cli_suffixes():
+        candidate = path.with_suffix(suffix)
+        if candidate.exists():
+            return str(candidate)
     return cli_path
+
+
+def _subprocess_text_errors() -> str:
+    return "replace" if _is_windows() else "strict"
 
 
 def _resolve_cli_path() -> str | None:
@@ -142,9 +170,9 @@ def _resolve_cli_path() -> str | None:
     """
     override = os.environ.get(_ENV_CLI_PATH)
     if override:
-        candidate = _windows_executable_cli_path(override)
-        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):  # noqa: PTH113
-            return candidate
+        candidate = Path(_resolve_cli_override_path(override))
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
         _LOGGER.warning(
             "%s=%s is not an executable file; falling back to PATH",
             _ENV_CLI_PATH,
@@ -459,7 +487,7 @@ def _run_claude_stream(
     if system_prompt and not inline_system_prompt:
         cmd.extend(["--append-system-prompt", system_prompt])
     stdin_text = (
-        _codex_prompt(prompt=dialogue, system_prompt=system_prompt)
+        _claude_stdin_prompt(system_prompt=system_prompt, dialogue=dialogue)
         if inline_system_prompt
         else dialogue
     )
@@ -483,7 +511,7 @@ def _run_claude_stream(
             capture_output=True,
             text=True,
             encoding="utf-8",
-            errors="replace",
+            errors=_subprocess_text_errors(),
             timeout=timeout_seconds,
             check=False,
             env=env,
@@ -533,7 +561,7 @@ def _run_codex_stream(
             capture_output=True,
             text=True,
             encoding="utf-8",
-            errors="replace",
+            errors=_subprocess_text_errors(),
             timeout=timeout_seconds,
             check=False,
             env=env,
@@ -573,8 +601,16 @@ def _codex_prompt(*, prompt: str, system_prompt: str) -> str:
     return f"{system_prompt}\n\n## Task\n{prompt}"
 
 
+def _claude_stdin_prompt(*, system_prompt: str, dialogue: str) -> str:
+    if not system_prompt:
+        return dialogue
+    if not dialogue:
+        return system_prompt
+    return f"{system_prompt}\n\n{dialogue}"
+
+
 def _should_inline_system_prompt(system_prompt: str) -> bool:
-    return os.name == "nt" and len(system_prompt) > _WINDOWS_ARGV_SYSTEM_PROMPT_LIMIT
+    return _is_windows() and len(system_prompt) > _WINDOWS_ARGV_SYSTEM_PROMPT_LIMIT
 
 
 def _build_model_response(
