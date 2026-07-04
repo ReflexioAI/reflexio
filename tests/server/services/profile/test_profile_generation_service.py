@@ -8,7 +8,7 @@ _count_manual_generated(), error/exception handling paths, and status change hel
 
 import tempfile
 from datetime import UTC, datetime
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -441,17 +441,18 @@ class TestRunManualRegular:
         mock_state_mgr = MagicMock()
         mock_state_mgr.check_in_progress.return_value = None
 
-        request_context.storage.get_all_user_ids.return_value = ["u1", "u2", "u3"]
-        request_context.storage.get_user_profile.return_value = []
+        request_context.storage.get_all_user_ids.return_value = ["u1", "u2"]
 
         with (
             patch.object(service, "_create_state_manager", return_value=mock_state_mgr),
-            patch.object(service, "_run_batch_with_progress", return_value=(3, 0)),
+            patch.object(service, "_run_batch_with_progress", return_value=(2, 3)),
         ):
             request = ManualProfileGenerationRequest()
             response = service.run_manual_regular(request)
 
         assert response.success is True
+        assert response.profiles_generated == 3
+        assert response.msg == "Generated 3 profiles for 2 user(s)"
         request_context.storage.get_all_user_ids.assert_called_once()
 
 
@@ -488,17 +489,36 @@ class TestCountManualGenerated:
 
         assert count == 0
 
-    def test_no_user_id_filter(self, service, request_context):
-        """When user_id is None, passes None to storage."""
-        request_context.storage.get_user_profile.return_value = []
+    def test_counts_processed_users_without_user_id(
+        self, service, request_context, sample_profile
+    ):
+        """When user_id is None, counts concrete processed users."""
+        request_context.storage.get_user_profile.side_effect = [
+            [sample_profile],
+            [sample_profile, sample_profile],
+        ]
 
         request = ManualProfileGenerationRequest()
-        service._count_manual_generated(request)
-
-        request_context.storage.get_user_profile.assert_called_once_with(
-            user_id=None,
-            status_filter=[None],
+        count = service._count_manual_generated(
+            request, processed_user_ids=["u1", "u2"]
         )
+
+        assert count == 3
+        assert request_context.storage.get_user_profile.call_args_list == [
+            call(user_id="u1", status_filter=[None]),
+            call(user_id="u2", status_filter=[None]),
+        ]
+
+    def test_empty_processed_users_does_not_fallback_to_request_user(
+        self, service, request_context
+    ):
+        """When all processing fails, no stale CURRENT profiles are counted."""
+        request = ManualProfileGenerationRequest(user_id="user_1")
+
+        count = service._count_manual_generated(request, processed_user_ids=[])
+
+        assert count == 0
+        request_context.storage.get_user_profile.assert_not_called()
 
 
 # ===============================
@@ -756,6 +776,38 @@ class TestRerunHooks:
             user_id="user_1",
             status_filter=[Status.PENDING],
         )
+
+    def test_get_generated_count_empty_processed_users_does_not_fallback(
+        self, service, request_context
+    ):
+        """Rerun counts keep an empty successful-user batch empty."""
+        from reflexio.models.api_schema.service_schemas import (
+            RerunProfileGenerationRequest,
+        )
+
+        request = RerunProfileGenerationRequest(user_id="user_1")
+        count = service._get_generated_count(request, processed_user_ids=[])
+
+        assert count == 0
+        request_context.storage.get_user_profile.assert_not_called()
+
+    def test_get_generated_count_manual_uses_processed_users(
+        self, service, request_context, sample_profile
+    ):
+        """Manual batch counts CURRENT profiles only for successful users."""
+        request_context.storage.get_user_profile.side_effect = [
+            [sample_profile],
+            [sample_profile, sample_profile],
+        ]
+
+        request = ManualProfileGenerationRequest()
+        count = service._get_generated_count(request, processed_user_ids=["u1", "u3"])
+
+        assert count == 3
+        assert request_context.storage.get_user_profile.call_args_list == [
+            call(user_id="u1", status_filter=[None]),
+            call(user_id="u3", status_filter=[None]),
+        ]
 
     def test_create_rerun_response(self, service):
         """_create_rerun_response creates RerunProfileGenerationResponse."""
