@@ -474,6 +474,24 @@ class ProfileStoreMixin:
         return row["cnt"] if row else 0
 
     @SQLiteStorageBase.handle_exceptions
+    def count_user_profiles_by_status(
+        self, user_ids: list[str], status: Status | None
+    ) -> int:
+        if not user_ids:
+            return 0
+
+        current_ts = _epoch_now()
+        status_frag, status_params = _build_status_sql([status])
+        ph = ",".join("?" for _ in user_ids)
+        sql = (
+            f"SELECT COUNT(*) as cnt FROM profiles "
+            f"WHERE user_id IN ({ph}) "
+            f"AND expiration_timestamp >= ? AND {status_frag}"
+        )
+        row = self._fetchone(sql, [*user_ids, current_ts, *status_params])
+        return row["cnt"] if row else 0
+
+    @SQLiteStorageBase.handle_exceptions
     def update_all_profiles_status(
         self,
         old_status: Status | None,

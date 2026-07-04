@@ -498,14 +498,12 @@ class ProfileGenerationService(
             )
 
         user_ids = self._count_user_ids(request.user_id, processed_user_ids)
-        total = 0
-        for user_id in user_ids:
-            profiles = self.storage.get_user_profile(  # type: ignore[reportOptionalMemberAccess]
-                user_id=user_id,
-                status_filter=[Status.PENDING],
-            )
-            total += len(profiles)
-        return total
+        if not user_ids:
+            return 0
+        return self.storage.count_user_profiles_by_status(  # type: ignore[reportOptionalMemberAccess]
+            user_ids=user_ids,
+            status=Status.PENDING,
+        )
 
     @staticmethod
     def _count_user_ids(
@@ -692,6 +690,8 @@ class ProfileGenerationService(
                 "source": request.source,
                 "mode": "manual_regular",
             }
+            # total_profiles is computed inside the batch runner via
+            # _get_generated_count(processed_user_ids=...).
             users_processed, total_profiles = self._run_batch_with_progress(
                 user_ids=user_ids,
                 request=request,  # type: ignore[reportArgumentType]
@@ -733,11 +733,9 @@ class ProfileGenerationService(
             Number of profiles with CURRENT status
         """
         user_ids = self._count_user_ids(request.user_id, processed_user_ids)
-        total = 0
-        for user_id in user_ids:
-            profiles = self.storage.get_user_profile(  # type: ignore[reportOptionalMemberAccess]
-                user_id=user_id,
-                status_filter=[None],  # CURRENT profiles
-            )
-            total += len(profiles)
-        return total
+        if not user_ids:
+            return 0
+        return self.storage.count_user_profiles_by_status(  # type: ignore[reportOptionalMemberAccess]
+            user_ids=user_ids,
+            status=None,
+        )
