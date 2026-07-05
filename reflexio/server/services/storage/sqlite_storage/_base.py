@@ -1310,7 +1310,13 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
     def _migrate_learning_jobs(self) -> None:
         """Create the learning_jobs table + partial indexes if missing (idempotent).
 
-        New columns are backfilled via PRAGMA table_info inspection (additive only).
+        Runs ``CREATE TABLE IF NOT EXISTS`` and ``CREATE INDEX IF NOT EXISTS`` only —
+        both are no-ops when the table / indexes already exist.  No column backfill is
+        performed here.  If a new column is added to learning_jobs in a later task,
+        a separate ``PRAGMA table_info`` + ``ALTER TABLE … ADD COLUMN`` step must be
+        added (mirroring ``_migrate_lineage_event_table``), because
+        ``CREATE TABLE IF NOT EXISTS`` silently skips the DDL on existing databases.
+
         Called at the end of migrate() so the table is always present on startup.
         """
         with self._lock:
