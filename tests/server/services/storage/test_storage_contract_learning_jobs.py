@@ -397,6 +397,64 @@ class TestFlagRoundTrip:
         assert job.skip_aggregation is True, "skip_aggregation must round-trip"
 
 
+class TestOrgDiscovery:
+    def test_pending_job_makes_org_discoverable(self, storage) -> None:
+        """An org with a pending job appears in the cross-org discovery list;
+        after its only job is completed, it drops out."""
+        assert storage.org_id not in storage.list_org_ids_with_pending_learning_jobs()
+        _enqueue(storage, "u-disc", "r-disc", 1000.0)
+        assert storage.org_id in storage.list_org_ids_with_pending_learning_jobs()
+
+        # Claim + complete the job → org has no more actionable work.
+        [job] = [
+            j
+            for j in storage.claim_learning_jobs(
+                claimed_by="w1", limit=10, lease_seconds=300
+            )
+            if j.user_id == "u-disc"
+        ]
+        assert (
+            storage.complete_learning_job(
+                job_id=job.job_id, claim_token=job.claim_token
+            )
+            == 1
+        )
+        assert storage.org_id not in storage.list_org_ids_with_pending_learning_jobs()
+
+    def test_failed_job_keeps_org_discoverable(self, storage) -> None:
+        """A failed (reclaimable) job keeps the org discoverable so the scheduler
+        retries it."""
+        _enqueue(storage, "u-df", "r-df", 1000.0)
+        [job] = [
+            j
+            for j in storage.claim_learning_jobs(
+                claimed_by="w1", limit=10, lease_seconds=300
+            )
+            if j.user_id == "u-df"
+        ]
+        # While claimed with a live lease it must NOT be discoverable (in flight).
+        assert storage.org_id not in storage.list_org_ids_with_pending_learning_jobs()
+        storage.fail_learning_job(
+            job_id=job.job_id, claim_token=job.claim_token, dead=False
+        )
+        assert storage.org_id in storage.list_org_ids_with_pending_learning_jobs()
+
+    def test_dead_job_is_not_discoverable(self, storage) -> None:
+        """A dead job is terminal and must not surface as actionable work."""
+        _enqueue(storage, "u-dd", "r-dd", 1000.0)
+        [job] = [
+            j
+            for j in storage.claim_learning_jobs(
+                claimed_by="w1", limit=10, lease_seconds=300
+            )
+            if j.user_id == "u-dd"
+        ]
+        storage.fail_learning_job(
+            job_id=job.job_id, claim_token=job.claim_token, dead=True
+        )
+        assert storage.org_id not in storage.list_org_ids_with_pending_learning_jobs()
+
+
 class TestRetrySemantics:
     def test_failed_job_is_reclaimable(self, storage) -> None:
         """A failed (not dead) job must be re-claimable without manual status reset.

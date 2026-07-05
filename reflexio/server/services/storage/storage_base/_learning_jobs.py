@@ -148,6 +148,25 @@ class LearningJobStoreABC(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def list_org_ids_with_pending_learning_jobs(self) -> list[str]:
+        """Return distinct org_ids that have actionable learning jobs.
+
+        Cross-org discovery query for the :class:`DurableLearningScheduler`:
+        surfaces every org with at least one job that is ``pending``, ``failed``
+        (reclaimable), or ``claimed`` with an expired lease (a stolen/abandoned
+        claim). Terminal ``done``/``dead`` rows and live claims are excluded.
+
+        Mirrors ``list_resumable_work_org_ids``: NOT scoped to ``self.org_id`` —
+        on the shared global table (Postgres ``public.learning_jobs``, or a
+        SQLite DB shared across orgs) it returns every org with work in one
+        query so the scheduler need not enumerate all orgs.
+
+        Returns:
+            list[str]: Distinct org_ids with actionable work, ordered ascending.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     def get_learning_status_for_request(
         self,
         *,

@@ -1340,8 +1340,12 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 );
                 CREATE UNIQUE INDEX IF NOT EXISTS learning_jobs_coalesce
                     ON learning_jobs (org_id, user_id, job_type) WHERE status = 'pending';
+                -- Recreate the poll index with 'failed' in the predicate. CREATE
+                -- INDEX IF NOT EXISTS is a no-op on an existing index with the old
+                -- ('pending','claimed') predicate, so DROP first to migrate it.
+                DROP INDEX IF EXISTS learning_jobs_poll;
                 CREATE INDEX IF NOT EXISTS learning_jobs_poll
-                    ON learning_jobs (created_at) WHERE status IN ('pending','claimed');
+                    ON learning_jobs (created_at) WHERE status IN ('pending','failed','claimed');
             """)
             # Backfill columns added after the initial release (existing DBs skip
             # CREATE TABLE IF NOT EXISTS so these must be applied separately).
@@ -2226,6 +2230,6 @@ CREATE TABLE IF NOT EXISTS learning_jobs (
 CREATE UNIQUE INDEX IF NOT EXISTS learning_jobs_coalesce
     ON learning_jobs (org_id, user_id, job_type) WHERE status = 'pending';
 CREATE INDEX IF NOT EXISTS learning_jobs_poll
-    ON learning_jobs (created_at) WHERE status IN ('pending','claimed');
+    ON learning_jobs (created_at) WHERE status IN ('pending','failed','claimed');
 
 """

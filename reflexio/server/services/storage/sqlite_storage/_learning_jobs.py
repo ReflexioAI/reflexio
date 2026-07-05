@@ -294,6 +294,27 @@ class SQLiteLearningJobStoreMixin(LearningJobStoreABC):
                 raise
 
     @SQLiteStorageBase.handle_exceptions
+    def list_org_ids_with_pending_learning_jobs(self) -> list[str]:
+        """Distinct org_ids with actionable jobs (cross-org, not org-scoped).
+
+        Uses the DB's now() for the expired-lease comparison to avoid clock skew,
+        mirroring ``claim_learning_jobs``. Index-covered by ``learning_jobs_poll``
+        (predicate now includes 'failed').
+        """
+        rows = self._fetchall(
+            """
+            SELECT DISTINCT org_id FROM learning_jobs
+            WHERE status = 'pending'
+               OR status = 'failed'
+               OR (status = 'claimed'
+                   AND claim_expires_at < strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+            ORDER BY org_id ASC
+            """,
+            (),
+        )
+        return [str(row["org_id"]) for row in rows]
+
+    @SQLiteStorageBase.handle_exceptions
     def get_learning_status_for_request(
         self,
         *,

@@ -345,6 +345,9 @@ def create_app(
     )
     from reflexio.server.extensions import AppContext
     from reflexio.server.llm.model_defaults import validate_llm_availability
+    from reflexio.server.services.durable_learning import (
+        maybe_start_durable_learning,
+    )
     from reflexio.server.services.extraction.resume_scheduler import (
         maybe_start_resume_scheduler,
     )
@@ -356,6 +359,7 @@ def create_app(
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
         scheduler = None
         gc_scheduler = None
+        durable_learning_scheduler = None
         started_caps: list = []
         if mounts_data_plane:
             log_publish_hardware_capacity()
@@ -373,6 +377,14 @@ def create_app(
                 bootstrap_org_id=bootstrap_org_id,
             )
             gc_scheduler = maybe_start_lineage_gc(
+                lambda org_id: RequestContext(org_id=org_id),
+                bootstrap_org_id=bootstrap_org_id,
+            )
+            # Durable learning drains the learning_jobs queue per org. Gated on
+            # REFLEXIO_DURABLE_LEARNING_QUEUE; the default provider discovers
+            # orgs-with-work via the bootstrap storage (single-ref). Enterprise
+            # cross-ref fan-out is a deferred follow-up.
+            durable_learning_scheduler = maybe_start_durable_learning(
                 lambda org_id: RequestContext(org_id=org_id),
                 bootstrap_org_id=bootstrap_org_id,
             )
@@ -397,10 +409,9 @@ def create_app(
                         cap,
                         exc_info=True,
                     )
-            if scheduler is not None:
-                scheduler.stop()
-            if gc_scheduler is not None:
-                gc_scheduler.stop()
+            for sched in (scheduler, gc_scheduler, durable_learning_scheduler):
+                if sched is not None:
+                    sched.stop()
             from reflexio.server.services.publish_learning_worker import (
                 stop_publish_learning_worker,
             )
