@@ -1,3 +1,4 @@
+import time
 import uuid
 
 import pytest
@@ -160,6 +161,34 @@ class TestFencedCompletion:
             == 0
         )
 
+    def test_fail_after_complete_is_noop(self, storage) -> None:
+        """fail_learning_job on an already-done job is a no-op (status stays 'done')."""
+        _enqueue(storage, "u-fc", "r-fc", 5000.0)
+        [job] = [
+            j
+            for j in storage.claim_learning_jobs(
+                claimed_by="w1", limit=10, lease_seconds=300
+            )
+            if j.user_id == "u-fc"
+        ]
+        assert (
+            storage.complete_learning_job(
+                job_id=job.job_id, claim_token=job.claim_token
+            )
+            == 1
+        )
+        # Attempt to fail the already-completed job — must be a no-op.
+        storage.fail_learning_job(
+            job_id=job.job_id, claim_token=job.claim_token, dead=False
+        )
+        # Status check: job is done and request is in the past → still "done".
+        assert (
+            storage.get_learning_status_for_request(
+                user_id="u-fc", request_created_at=4000.0
+            )
+            == "done"
+        )
+
 
 class TestStatusCoverage:
     def test_zero_yield_window_reports_done(self, storage) -> None:
@@ -202,13 +231,53 @@ class TestStatusCoverage:
             == "processing"
         )
 
-    def test_no_rows_returns_done_absence_semantics(self, storage) -> None:
-        # No rows for this user → absence semantics → "done"
+    def test_no_rows_old_request_returns_done_absence_semantics(self, storage) -> None:
+        # No rows, request far in the past (older than 72 h retention window) → "done"
         assert (
             storage.get_learning_status_for_request(
-                user_id="u-absent", request_created_at=1000.0
+                user_id="u-absent-old", request_created_at=1000.0
             )
             == "done"
+        )
+
+    def test_no_rows_recent_request_returns_pending(self, storage) -> None:
+        # No rows, but request is recent → absence-done guard fires → "pending"
+        recent_ts = time.time() - 60  # 60 seconds ago — well within 72 h window
+        assert (
+            storage.get_learning_status_for_request(
+                user_id="u-absent-recent", request_created_at=recent_ts
+            )
+            == "pending"
+        )
+
+    def test_no_rows_old_enough_request_returns_done(self, storage) -> None:
+        # No rows, request older than the retention window (90 h) → "done"
+        old_ts = time.time() - 90 * 3600
+        assert (
+            storage.get_learning_status_for_request(
+                user_id="u-absent-old2", request_created_at=old_ts
+            )
+            == "done"
+        )
+
+    def test_failed_reclaimable_job_reports_pending(self, storage) -> None:
+        # A failed (not dead) job is reclaimable — should surface as "pending".
+        _enqueue(storage, "u-rfail", "r-rfail", covers_through=5000.0)
+        [job] = [
+            j
+            for j in storage.claim_learning_jobs(
+                claimed_by="w1", limit=10, lease_seconds=300
+            )
+            if j.user_id == "u-rfail"
+        ]
+        storage.fail_learning_job(
+            job_id=job.job_id, claim_token=job.claim_token, dead=False
+        )
+        assert (
+            storage.get_learning_status_for_request(
+                user_id="u-rfail", request_created_at=4000.0
+            )
+            == "pending"
         )
 
     def test_failed_job_reports_failed(self, storage) -> None:

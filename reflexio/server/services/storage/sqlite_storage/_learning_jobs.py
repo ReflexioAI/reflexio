@@ -1,8 +1,13 @@
 """SQLite implementation of the durable learning-job queue (Task 3)."""
 
 import sqlite3
+import time
 import uuid
 from typing import Any
+
+# Matches the upper bound of the done-row retention window (24–72 h).
+# Err toward "not done" until we are sure a done row would have been GC'd.
+_ABSENCE_DONE_AFTER_SECONDS = 72 * 3600
 
 from reflexio.server.services.storage.storage_base._learning_jobs import (
     LearningJob,
@@ -55,6 +60,7 @@ class SQLiteLearningJobStoreMixin(LearningJobStoreABC):
     ) -> str:
         """Coalescing upsert — safe to call inside a commit_scope."""
         job_id = str(uuid.uuid4())
+        # int() truncates sub-second precision — intentional (second-precision epochs).
         iso_covers = _epoch_to_iso(int(covers_through))
         with self._lock:
             own_txn = self._own_transaction()
@@ -255,7 +261,7 @@ class SQLiteLearningJobStoreMixin(LearningJobStoreABC):
                         claim_token = CASE WHEN ? THEN claim_token ELSE NULL END,
                         claim_expires_at = CASE WHEN ? THEN claim_expires_at ELSE NULL END,
                         updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
-                    WHERE job_id = ? AND claim_token = ?
+                    WHERE job_id = ? AND claim_token = ? AND status = 'claimed'
                     """,
                     (new_status, dead, dead, job_id, claim_token),
                 )
@@ -266,6 +272,7 @@ class SQLiteLearningJobStoreMixin(LearningJobStoreABC):
                     self.conn.rollback()
                 raise
 
+    @SQLiteStorageBase.handle_exceptions
     def get_learning_status_for_request(
         self,
         *,
@@ -299,10 +306,14 @@ class SQLiteLearningJobStoreMixin(LearningJobStoreABC):
                 has_claimed_covering = True
             if covers and status == "dead":
                 has_dead_covering = True
+            if status == "failed":
+                # 'failed' is reclaimable (attempts < max_attempts); treat as pending.
+                return "pending"
             if status == "pending":
                 has_pending = True
             if status == "claimed":
-                # A claimed job in progress will eventually cover this request.
+                # Deliberately treats any claimed job as covering, regardless of its
+                # covers_through value — it will extend the window once it completes.
                 has_claimed_covering = True
 
         if has_claimed_covering:
@@ -311,7 +322,9 @@ class SQLiteLearningJobStoreMixin(LearningJobStoreABC):
             return "pending"
         if has_dead_covering:
             return "failed"
-        # Absence semantics: terminal rows (done/failed/dead) are GC'd after
-        # 24–72 h; polling is minutes-scale so no rows long after the fact means
-        # the job completed and was already reaped.
-        return "done"
+        # Absence semantics: terminal rows (done/dead) are GC'd after 24–72 h.
+        # Only treat absence as "done" once the request is old enough that a done
+        # row would have been reaped; a recent request with no rows is still pending.
+        if time.time() - request_created_at >= _ABSENCE_DONE_AFTER_SECONDS:
+            return "done"
+        return "pending"

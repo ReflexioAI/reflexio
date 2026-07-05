@@ -152,15 +152,18 @@ class LearningJobStoreABC(ABC):
 
         1. Any ``done`` job with ``covers_through >= request_created_at``
            → ``"done"`` (correct even for zero-yield windows).
-        2. Any ``claimed`` job with ``covers_through >= request_created_at``
+        2. Any ``claimed`` job (any ``covers_through``)
            → ``"processing"``.
         3. Any ``pending`` job for this user
            → ``"pending"``.
-        4. Any ``dead`` job with ``covers_through >= request_created_at``
+        4. Any ``failed`` (reclaimable) job
+           → ``"pending"``.
+        5. Any ``dead`` job with ``covers_through >= request_created_at``
            → ``"failed"``.
-        5. No rows (terminal rows are GC'd after 24–72 h; polling is
-           minutes-scale so absence long after the fact means completion)
-           → ``"done"``.
+        6. No rows AND ``now - request_created_at >= 72 h`` (retention window)
+           → ``"done"`` (done row would have been GC'd by now).
+        7. No rows AND request is recent
+           → ``"pending"`` (err toward not-done until retention window passes).
         """
         raise NotImplementedError
 
