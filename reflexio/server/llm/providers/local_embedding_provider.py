@@ -21,8 +21,20 @@ import os
 import shutil
 import tarfile
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows only
+    fcntl = None  # type: ignore[assignment]
+
+try:
+    import msvcrt
+except ImportError:  # pragma: no cover - POSIX only
+    msvcrt = None  # type: ignore[assignment]
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -39,6 +51,8 @@ _TARGET_DIM = 512
 # ValueError that ONNXMiniLM_L6_V2 throws on over-length input.
 _MAX_CHARS = 800
 
+# Chroma keeps this file list private inside ONNXMiniLM_L6_V2's download helper.
+# Keep this in sync with chromadb's all-MiniLM-L6-v2 extracted archive layout.
 _MINILM_EXPECTED_FILES = (
     "config.json",
     "model.onnx",
@@ -124,18 +138,37 @@ class LocalEmbedder:
                 return self._ef(safe_inputs)
 
             embedding_cls = type(failed_ef)
-            cache_path = _clear_minilm_cache(embedding_cls, exc)
+            cache_path = _recoverable_minilm_cache_path(embedding_cls, exc)
             if cache_path is None:
                 raise exc
 
-            _LOGGER.warning(
-                "Failed to use local MiniLM embedder; cleared cache %s and retrying once",
-                cache_path,
-                exc_info=True,
-            )
-            fresh_ef = embedding_cls()
-            self._ef = fresh_ef
-            return fresh_ef(safe_inputs)
+            with _exclusive_file_lock(_minilm_cache_lock_path(cache_path)):
+                if _should_clear_minilm_cache(embedding_cls, cache_path, exc):
+                    shutil.rmtree(cache_path, ignore_errors=True)
+                    recovery_action = "clearing"
+                    _LOGGER.warning(
+                        "Failed to use local MiniLM embedder; cleared cache %s "
+                        "and retrying once",
+                        cache_path,
+                        exc_info=True,
+                    )
+                else:
+                    recovery_action = "waiting for another process to refresh"
+                    _LOGGER.info(
+                        "MiniLM cache %s was refreshed by another process; retrying",
+                        cache_path,
+                    )
+                try:
+                    fresh_ef = embedding_cls()
+                    self._ef = fresh_ef
+                    return fresh_ef(safe_inputs)
+                except Exception as retry_exc:
+                    raise LocalEmbedderError(
+                        "Local MiniLM cache recovery failed after "
+                        f"{recovery_action} {cache_path}. Delete this cache "
+                        "directory and restart Reflexio, or configure a cloud "
+                        "embedding provider."
+                    ) from retry_exc
 
 
 def _pad(vec: Any) -> list[float]:
@@ -149,14 +182,13 @@ def _pad(vec: Any) -> list[float]:
     return floats + [0.0] * (_TARGET_DIM - len(floats))
 
 
-def _clear_minilm_cache(embedding_cls: Any, exc: Exception) -> Path | None:
+def _recoverable_minilm_cache_path(embedding_cls: Any, exc: Exception) -> Path | None:
     cache_path = _minilm_cache_path(embedding_cls)
     if cache_path is None or not _is_recoverable_minilm_cache_error(
         embedding_cls, cache_path, exc
     ):
         return None
 
-    shutil.rmtree(cache_path, ignore_errors=True)
     return cache_path
 
 
@@ -173,6 +205,45 @@ def _minilm_cache_path(embedding_cls: Any) -> Path | None:
     return cache_path
 
 
+def _minilm_cache_lock_path(cache_path: Path) -> Path:
+    return cache_path.parent / f".{cache_path.name}.lock"
+
+
+@contextmanager
+def _exclusive_file_lock(lock_path: Path) -> Iterator[None]:
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+b") as lock_file:
+        lock_file.seek(0)
+        if lock_file.read(1) == b"":
+            lock_file.write(b"\0")
+            lock_file.flush()
+        lock_file.seek(0)
+
+        if fcntl is not None:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+        elif msvcrt is not None:
+            msvcrt.locking(  # type: ignore[reportAttributeAccessIssue]
+                lock_file.fileno(),
+                msvcrt.LK_LOCK,  # type: ignore[reportAttributeAccessIssue]
+                1,
+            )
+            try:
+                yield
+            finally:
+                lock_file.seek(0)
+                msvcrt.locking(  # type: ignore[reportAttributeAccessIssue]
+                    lock_file.fileno(),
+                    msvcrt.LK_UNLCK,  # type: ignore[reportAttributeAccessIssue]
+                    1,
+                )
+        else:
+            yield
+
+
 def _is_recoverable_minilm_cache_error(
     embedding_cls: Any, cache_path: Path, exc: Exception
 ) -> bool:
@@ -180,11 +251,28 @@ def _is_recoverable_minilm_cache_error(
         return True
 
     chain = _exception_chain(exc)
+    return any(
+        isinstance(chain_exc, (tarfile.TarError, EOFError)) for chain_exc in chain
+    ) or _complete_minilm_cache_error_identifies_cache(embedding_cls, cache_path, exc)
+
+
+def _should_clear_minilm_cache(
+    embedding_cls: Any, cache_path: Path, exc: Exception
+) -> bool:
+    if not _minilm_cache_complete(embedding_cls, cache_path):
+        return True
+
+    return _complete_minilm_cache_error_identifies_cache(embedding_cls, cache_path, exc)
+
+
+def _complete_minilm_cache_error_identifies_cache(
+    embedding_cls: Any, cache_path: Path, exc: Exception
+) -> bool:
+    chain = _exception_chain(exc)
     archive_name = str(getattr(embedding_cls, "ARCHIVE_FILENAME", ""))
     messages = "\n".join(str(chain_exc) for chain_exc in chain)
     return (
-        any(isinstance(chain_exc, (tarfile.TarError, EOFError)) for chain_exc in chain)
-        or str(cache_path) in messages
+        str(cache_path) in messages
         or bool(archive_name and archive_name in messages)
         or "does not match expected SHA256" in messages
     )

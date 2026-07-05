@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import sys
 import tarfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -281,6 +283,130 @@ class TestEmbedPadding:
         recovered_ef.assert_called_once_with(["hello"])
         assert cache_dir.exists()
         assert (cache_dir / "partial-download").exists()
+
+    def test_cache_clear_and_retry_run_under_filesystem_lock(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        cache_dir = tmp_path / "chroma" / "onnx_models" / "all-MiniLM-L6-v2"
+        cache_dir.mkdir(parents=True)
+        (cache_dir / "partial-download").write_text("corrupt")
+        lock_active = False
+        attempts = 0
+
+        @contextmanager
+        def fake_file_lock(_lock_path) -> Iterator[None]:
+            nonlocal lock_active
+            lock_active = True
+            try:
+                yield
+            finally:
+                lock_active = False
+
+        def checked_rmtree(*args, **kwargs) -> None:
+            assert lock_active
+            shutil_rmtree(*args, **kwargs)
+
+        class FailingThenWorkingMiniLM:
+            MODEL_NAME = "all-MiniLM-L6-v2"
+            DOWNLOAD_PATH = str(cache_dir)
+            EXTRACTED_FOLDER_NAME = "onnx"
+            ARCHIVE_FILENAME = "onnx.tar.gz"
+
+            def __call__(self, docs: list[str]) -> list[list[float]]:
+                nonlocal attempts
+                attempts += 1
+                if attempts == 1:
+                    raise tarfile.ReadError("bad checksum")
+                assert lock_active
+                return [[0.2] * 384 for _ in docs]
+
+        fake = MagicMock()
+        fake.ONNXMiniLM_L6_V2 = FailingThenWorkingMiniLM
+        monkeypatch.setitem(sys.modules, "chromadb", MagicMock())
+        monkeypatch.setitem(sys.modules, "chromadb.utils", MagicMock())
+        monkeypatch.setitem(sys.modules, "chromadb.utils.embedding_functions", fake)
+        monkeypatch.setattr(lep, "_exclusive_file_lock", fake_file_lock)
+        shutil_rmtree = lep.shutil.rmtree
+        monkeypatch.setattr(lep.shutil, "rmtree", checked_rmtree)
+
+        result = LocalEmbedder.get().embed(["hello"])
+
+        assert attempts == 2
+        assert result == [[0.2] * 384 + [0.0] * 128]
+
+    def test_retry_exhaustion_includes_manual_cache_recovery_hint(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        cache_dir = tmp_path / "chroma" / "onnx_models" / "all-MiniLM-L6-v2"
+        cache_dir.mkdir(parents=True)
+        (cache_dir / "partial-download").write_text("corrupt")
+        attempts = 0
+
+        class AlwaysFailingMiniLM:
+            MODEL_NAME = "all-MiniLM-L6-v2"
+            DOWNLOAD_PATH = str(cache_dir)
+            EXTRACTED_FOLDER_NAME = "onnx"
+            ARCHIVE_FILENAME = "onnx.tar.gz"
+
+            def __call__(self, _docs: list[str]) -> list[list[float]]:
+                nonlocal attempts
+                attempts += 1
+                if attempts == 1:
+                    raise tarfile.ReadError("bad checksum")
+                raise RuntimeError("still corrupt")
+
+        fake = MagicMock()
+        fake.ONNXMiniLM_L6_V2 = AlwaysFailingMiniLM
+        monkeypatch.setitem(sys.modules, "chromadb", MagicMock())
+        monkeypatch.setitem(sys.modules, "chromadb.utils", MagicMock())
+        monkeypatch.setitem(sys.modules, "chromadb.utils.embedding_functions", fake)
+
+        with pytest.raises(lep.LocalEmbedderError) as exc_info:
+            LocalEmbedder.get().embed(["hello"])
+
+        message = str(exc_info.value)
+        assert str(cache_dir) in message
+        assert "Delete this cache directory and restart Reflexio" in message
+        assert "cloud embedding provider" in message
+        assert attempts == 2
+
+    def test_retry_keeps_cache_refreshed_by_another_process(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        cache_dir = tmp_path / "chroma" / "onnx_models" / "all-MiniLM-L6-v2"
+        extracted_dir = cache_dir / "onnx"
+        extracted_dir.mkdir(parents=True)
+        for file_name in lep._MINILM_EXPECTED_FILES:
+            (extracted_dir / file_name).write_text("present")
+        attempts = 0
+
+        class RecoveredMiniLM:
+            MODEL_NAME = "all-MiniLM-L6-v2"
+            DOWNLOAD_PATH = str(cache_dir)
+            EXTRACTED_FOLDER_NAME = "onnx"
+            ARCHIVE_FILENAME = "onnx.tar.gz"
+
+            def __call__(self, docs: list[str]) -> list[list[float]]:
+                nonlocal attempts
+                attempts += 1
+                if attempts == 1:
+                    raise tarfile.ReadError("bad checksum")
+                return [[0.4] * 384 for _ in docs]
+
+        fake = MagicMock()
+        fake.ONNXMiniLM_L6_V2 = RecoveredMiniLM
+        monkeypatch.setitem(sys.modules, "chromadb", MagicMock())
+        monkeypatch.setitem(sys.modules, "chromadb.utils", MagicMock())
+        monkeypatch.setitem(sys.modules, "chromadb.utils.embedding_functions", fake)
+        rmtree = MagicMock()
+        monkeypatch.setattr(lep.shutil, "rmtree", rmtree)
+
+        result = LocalEmbedder.get().embed(["hello"])
+
+        assert result == [[0.4] * 384 + [0.0] * 128]
+        assert attempts == 2
+        rmtree.assert_not_called()
+        assert extracted_dir.exists()
 
     def test_384_vector_padded_to_512(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _install_fake_chroma(monkeypatch)
