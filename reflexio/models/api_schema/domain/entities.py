@@ -123,6 +123,7 @@ __all__ = [
     "LineageEvent",
     "LineageContext",
     "RecordRef",
+    "LearningStatusResponse",
 ]
 
 # ===============================
@@ -689,6 +690,23 @@ class PublishUserInteractionResponse(BaseModel):
     profiles_updated: int | None = None
     playbooks_added: int | None = None
     playbooks_updated: int | None = None
+    # Set to "deferred" when the server queued extraction asynchronously.
+    # None on the sync (wait_for_response=True) path. Poll GET
+    # /api/learning_status?request_id=... to track progress once the
+    # durable queue is active.
+    learning_status: str | None = None
+
+
+class LearningStatusResponse(BaseModel):
+    """Response for GET /api/learning_status.
+
+    Attributes:
+        status: One of ``pending | processing | done | failed``.
+            Coverage-based: reflects whether a durable learning job has
+            processed through the request's creation timestamp.
+    """
+
+    status: str
 
 
 # whoami response — caller identity + resolved storage routing (masked)

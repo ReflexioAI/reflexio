@@ -481,6 +481,35 @@ class ReflexioClient:
         self._cache.invalidate("get_agent_playbooks")
         return result
 
+    def get_learning_status(self, request_id: str) -> str:
+        """Poll the learning status for a previously published request.
+
+        Call this after a deferred ``publish_interaction`` (where
+        ``wait_for_response=False``).  The response carries
+        ``learning_status="deferred"`` to signal that extraction has been
+        queued; use this method to track progress once the durable queue
+        is active.
+
+        Args:
+            request_id: The ``request_id`` of the published interaction, as
+                returned in ``PublishUserInteractionResponse.request_id``
+                (populated on the ``wait_for_response=True`` path) or known
+                by the caller.
+
+        Returns:
+            One of: ``"pending"`` | ``"processing"`` | ``"done"`` | ``"failed"``.
+
+        Raises:
+            requests.HTTPError: 404 when the request_id is not known to the
+                server for this org.
+        """
+        response = self._make_request(
+            "GET",
+            "/api/learning_status",
+            params={"request_id": request_id},
+        )
+        return str(response["status"])
+
     def search_interactions(
         self,
         request: SearchInteractionRequest | dict | None = None,
