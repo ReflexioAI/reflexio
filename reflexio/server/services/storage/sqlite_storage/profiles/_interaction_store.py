@@ -45,6 +45,7 @@ class InteractionStoreMixin:
     embedding_dimensions: int
     _subject_ref_for_user_id: Any
     _assert_subject_writable_locked: Any
+    _own_transaction: Any
 
     # ------------------------------------------------------------------
     # CRUD — Interactions
@@ -80,9 +81,11 @@ class InteractionStoreMixin:
     def _insert_interaction(self, interaction: Interaction) -> int:
         created_at_iso = _epoch_to_iso(interaction.created_at)
         subject_ref = self._subject_ref_for_user_id(interaction.user_id)
+        own_txn = self._own_transaction()
         with self._lock:
             try:
-                self.conn.execute("BEGIN IMMEDIATE")
+                if own_txn:
+                    self.conn.execute("BEGIN IMMEDIATE")
                 self._assert_subject_writable_locked(subject_ref)
                 if interaction.interaction_id:
                     self.conn.execute(
@@ -148,9 +151,11 @@ class InteractionStoreMixin:
                     )
                     iid = cur.lastrowid or 0
                     interaction.interaction_id = iid
-                self.conn.commit()
+                if own_txn:
+                    self.conn.commit()
             except Exception:
-                self.conn.rollback()
+                if own_txn:
+                    self.conn.rollback()
                 raise
         # Update FTS and vec
         self._fts_upsert(

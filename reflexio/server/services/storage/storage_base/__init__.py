@@ -22,6 +22,7 @@ from ._agent_run import (
     not_applicable_tool_result,
 )
 from ._base import BaseStorageCore, matches_status_filter
+from ._commit_scope import CommitScopeMixin
 from ._extras import ExtrasMixin
 from ._lineage import EntityType, LineageEventMixin
 from ._operations import OperationMixin
@@ -48,6 +49,7 @@ from .profiles import InteractionStoreMixin, ProfileSearchMixin, ProfileStoreMix
 
 
 class BaseStorage(
+    CommitScopeMixin,
     AgentRunMixin,
     ProfileStoreMixin,
     InteractionStoreMixin,
@@ -262,6 +264,7 @@ class BaseStorage(
 
 
 __all__ = [
+    "CommitScopeMixin",
     "AgentBinding",
     "AgentRunMixin",
     "EntityType",

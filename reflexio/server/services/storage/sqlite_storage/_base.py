@@ -7,6 +7,7 @@ are available.
 
 """
 
+import contextlib
 import functools
 import json
 import logging
@@ -14,7 +15,7 @@ import math
 import re
 import sqlite3
 import threading
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, ClassVar, Literal
@@ -590,6 +591,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
     # FTS/vec index helpers provided by SQLiteFtsVecMixin via the composed
     # SQLiteStorage MRO; declared here for _migrate_vec_tables's benefit.
     _vec_upsert: Any
+    _flush_index_op: Any
 
     @staticmethod
     def handle_exceptions(func: Callable[..., Any]) -> Callable[..., Any]:
@@ -633,6 +635,10 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
 
         self.db_path = db_path
         self._lock = threading.RLock()
+        self._scope_depth = 0
+        self._deferred_index_ops: list[
+            tuple[str, Any]
+        ] = []  # (kind, args) flushed post-commit
 
         logger.info("SQLite Storage for org %s using db_path: %s", org_id, db_path)
 
@@ -669,6 +675,45 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
 
         # Create tables
         self.migrate()
+
+    # ------------------------------------------------------------------
+    # Transaction scope
+    # ------------------------------------------------------------------
+
+    def _own_transaction(self) -> bool:
+        """True when the caller is NOT inside a commit_scope (owns its BEGIN/commit)."""
+        return self._scope_depth == 0
+
+    @contextlib.contextmanager
+    def commit_scope(self) -> Iterator[None]:  # type: ignore[override]
+        """Group writes into one atomic commit; defer FTS/vec index ops.
+
+        Nested scopes join the outermost: only the outer scope commits. On
+        exception the whole transaction rolls back and deferred index ops
+        are discarded.
+        """
+        with self._lock:
+            if self._scope_depth > 0:
+                self._scope_depth += 1
+                try:
+                    yield
+                finally:
+                    self._scope_depth -= 1
+                return
+            self._scope_depth = 1
+            self.conn.execute("BEGIN IMMEDIATE")
+            try:
+                yield
+                self.conn.commit()
+                ops, self._deferred_index_ops = self._deferred_index_ops, []
+                for kind, args in ops:
+                    self._flush_index_op(kind, args)  # self-commits — fine post-commit
+            except Exception:
+                self.conn.rollback()
+                self._deferred_index_ops = []
+                raise
+            finally:
+                self._scope_depth = 0
 
     # ------------------------------------------------------------------
     # DDL / migration
