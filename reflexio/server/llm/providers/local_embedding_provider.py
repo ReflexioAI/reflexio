@@ -126,7 +126,7 @@ class LocalEmbedder:
         safe_inputs = [(text or "")[:_MAX_CHARS] for text in texts]
         try:
             raw = ef(safe_inputs)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - Chroma raises varied cache errors.
             raw = self._retry_embed_after_cache_clear(ef, exc, safe_inputs)
         return [_pad(vec) for vec in raw]
 
@@ -288,8 +288,10 @@ def _minilm_cache_complete(embedding_cls: Any, cache_path: Path) -> bool:
 
 def _exception_chain(exc: Exception) -> list[BaseException]:
     chain: list[BaseException] = []
+    seen: set[int] = set()
     current: BaseException | None = exc
-    while current is not None:
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
         chain.append(current)
         current = current.__cause__ or current.__context__
     return chain
