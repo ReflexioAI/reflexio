@@ -127,6 +127,7 @@ class SQLiteLineageMixin:
     conn: sqlite3.Connection
     _lock: threading.RLock
     org_id: str
+    _own_transaction: Any
 
     def append_lineage_event(self, event: LineageEvent) -> int:
         """Append an event; idempotent on (org_id, entity_type, entity_id, op, request_id).
@@ -173,10 +174,12 @@ class SQLiteLineageMixin:
                     ),
                 ).fetchone()
                 eid = row[0] if row else None
-                self.conn.commit()
+                if self._own_transaction():
+                    self.conn.commit()
                 return int(eid) if eid is not None else 0
             last = cur.lastrowid
-            self.conn.commit()
+            if self._own_transaction():
+                self.conn.commit()
             return int(last) if last is not None else 0
 
     def get_lineage_events(
@@ -301,7 +304,8 @@ class SQLiteLineageMixin:
                 request_id=context.request_id,
                 reason=context.reason,
             )
-            self.conn.commit()
+            if self._own_transaction():
+                self.conn.commit()
 
     def supersede_record(
         self,
@@ -343,7 +347,8 @@ class SQLiteLineageMixin:
                 (Status.SUPERSEDED.value, successor_id, _epoch_now(), incumbent_id),
             )
             if cur.rowcount == 0:
-                self.conn.commit()
+                if self._own_transaction():
+                    self.conn.commit()
                 return False
             _append_event_stmt(
                 self.conn,
@@ -357,7 +362,8 @@ class SQLiteLineageMixin:
                 request_id=context.request_id,
                 reason=context.reason,
             )
-            self.conn.commit()
+            if self._own_transaction():
+                self.conn.commit()
             return True
 
     def purge_content(self, *, entity_type: EntityType, entity_id: str) -> bool:

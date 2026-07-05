@@ -22,6 +22,7 @@ class PlaybookSourceLinkageMixin:
     _fetchall: Any
     _subject_ref_for_user_id: Any
     _assert_subject_writable_locked: Any
+    _own_transaction: Any
 
     @SQLiteStorageBase.handle_exceptions
     def set_source_user_playbook_ids_for_agent_playbook(
@@ -87,8 +88,10 @@ class PlaybookSourceLinkageMixin:
                     ids.append(source_id)
                     seen.add(source_id)
         with self._lock:
+            own_txn = self._own_transaction()
             try:
-                self.conn.execute("BEGIN IMMEDIATE")
+                if own_txn:
+                    self.conn.execute("BEGIN IMMEDIATE")
                 for user_playbook_id in by_id:
                     row = self.conn.execute(
                         """SELECT user_id, governance_subject_ref FROM user_playbooks
@@ -120,9 +123,11 @@ class PlaybookSourceLinkageMixin:
                         for upid, source_interaction_ids in by_id.items()
                     ],
                 )
-                self.conn.commit()
+                if own_txn:
+                    self.conn.commit()
             except Exception:
-                self.conn.rollback()
+                if own_txn:
+                    self.conn.rollback()
                 raise
 
     @SQLiteStorageBase.handle_exceptions

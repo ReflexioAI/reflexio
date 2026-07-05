@@ -1557,7 +1557,8 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
     ) -> sqlite3.Cursor:
         with self._lock:
             cur = self.conn.execute(sql, params)
-            self.conn.commit()
+            if self._own_transaction():
+                self.conn.commit()
             return cur
 
     def _fetchone(
