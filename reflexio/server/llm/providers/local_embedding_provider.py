@@ -168,8 +168,7 @@ class LocalEmbedder:
                     raise LocalEmbedderError(
                         "Local MiniLM cache recovery failed after "
                         f"{recovery_action} {cache_path}. Delete this cache "
-                        "directory and restart Reflexio, or configure a cloud "
-                        "embedding provider."
+                        "directory, restart Reflexio, and retry local embedding."
                     ) from retry_exc
 
 

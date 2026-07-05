@@ -79,8 +79,8 @@ When `REFLEXIO_EMBEDDING_PROVIDER=local_service` or
 requests allow extra time for model cold start; override with
 `REFLEXIO_EMBEDDING_SERVICE_TIMEOUT_MS` when needed.
 MiniLM cache corruption is retried once automatically. If recovery still fails,
-delete the cache directory named in the error message and restart Reflexio, or
-switch to a cloud embedding provider.
+delete the cache directory named in the error message, restart Reflexio, and
+retry local embedding.
 
 ## Publishing interactions
 

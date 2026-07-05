@@ -366,8 +366,9 @@ class TestEmbedPadding:
 
         message = str(exc_info.value)
         assert str(cache_dir) in message
-        assert "Delete this cache directory and restart Reflexio" in message
-        assert "cloud embedding provider" in message
+        assert (
+            "Delete this cache directory, restart Reflexio, and retry local embedding"
+        ) in message
         assert attempts == 2
 
     def test_retry_keeps_cache_refreshed_by_another_process(
