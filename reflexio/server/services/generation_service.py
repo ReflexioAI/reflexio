@@ -340,13 +340,17 @@ class GenerationService:
                     with self.storage.commit_scope():  # type: ignore[reportOptionalMemberAccess]
                         self.storage.add_request(new_request)  # type: ignore[reportOptionalMemberAccess]
                         self.storage.add_user_interactions_bulk(  # type: ignore[reportOptionalMemberAccess]
-                            user_id=user_id, interactions=new_interactions
+                            user_id=user_id,
+                            interactions=new_interactions,
+                            embeddings_prepared=True,
                         )
                         self.storage.enqueue_learning_job(  # type: ignore[reportOptionalMemberAccess]
                             org_id=self.org_id,
                             user_id=user_id,
                             request_id=request_id,
                             covers_through=covers_through,
+                            force_extraction=publish_user_interaction_request.force_extraction,
+                            skip_aggregation=publish_user_interaction_request.skip_aggregation,
                         )
                     self._schedule_group_evaluation_if_needed(
                         new_request=new_request,

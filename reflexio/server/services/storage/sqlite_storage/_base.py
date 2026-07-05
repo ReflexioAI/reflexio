@@ -1311,10 +1311,9 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         """Create the learning_jobs table + partial indexes if missing (idempotent).
 
         Runs ``CREATE TABLE IF NOT EXISTS`` and ``CREATE INDEX IF NOT EXISTS`` only —
-        both are no-ops when the table / indexes already exist.  No column backfill is
-        performed here.  If a new column is added to learning_jobs in a later task,
-        a separate ``PRAGMA table_info`` + ``ALTER TABLE … ADD COLUMN`` step must be
-        added (mirroring ``_migrate_lineage_event_table``), because
+        both are no-ops when the table / indexes already exist.  New columns added in
+        subsequent tasks are backfilled via ``PRAGMA table_info`` + ``ALTER TABLE … ADD
+        COLUMN`` (mirroring ``_migrate_lineage_event_table``), because
         ``CREATE TABLE IF NOT EXISTS`` silently skips the DDL on existing databases.
 
         Called at the end of migrate() so the table is always present on startup.
@@ -1334,6 +1333,8 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                     claim_token TEXT,
                     claim_expires_at TEXT,
                     covers_through TEXT,
+                    force_extraction INTEGER NOT NULL DEFAULT 0,
+                    skip_aggregation INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
                     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
                 );
@@ -1342,6 +1343,22 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 CREATE INDEX IF NOT EXISTS learning_jobs_poll
                     ON learning_jobs (created_at) WHERE status IN ('pending','claimed');
             """)
+            # Backfill columns added after the initial release (existing DBs skip
+            # CREATE TABLE IF NOT EXISTS so these must be applied separately).
+            existing_cols = {
+                row["name"]
+                for row in self.conn.execute(
+                    "PRAGMA table_info(learning_jobs)"
+                ).fetchall()
+            }
+            if "force_extraction" not in existing_cols:
+                self.conn.execute(
+                    "ALTER TABLE learning_jobs ADD COLUMN force_extraction INTEGER NOT NULL DEFAULT 0"
+                )
+            if "skip_aggregation" not in existing_cols:
+                self.conn.execute(
+                    "ALTER TABLE learning_jobs ADD COLUMN skip_aggregation INTEGER NOT NULL DEFAULT 0"
+                )
             self.conn.commit()
 
     def learning_jobs_columns(self) -> list[str]:
@@ -2200,6 +2217,8 @@ CREATE TABLE IF NOT EXISTS learning_jobs (
     claim_token TEXT,
     claim_expires_at TEXT,
     covers_through TEXT,
+    force_extraction INTEGER NOT NULL DEFAULT 0,
+    skip_aggregation INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );

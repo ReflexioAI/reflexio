@@ -31,6 +31,8 @@ class LearningJob:
     covers_through: (
         float | None
     )  # epoch seconds (converted from stored ISO/timestamptz)
+    force_extraction: bool = False
+    skip_aggregation: bool = False
 
 
 class LearningJobStoreABC(ABC):
@@ -51,6 +53,8 @@ class LearningJobStoreABC(ABC):
         request_id: str,
         covers_through: float,
         job_type: str = "learning",
+        force_extraction: bool = False,
+        skip_aggregation: bool = False,
     ) -> str:
         """Coalescing upsert into the learning_jobs queue.
 

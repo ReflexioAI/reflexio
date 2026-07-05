@@ -28,6 +28,8 @@ def _row_to_learning_job(row: sqlite3.Row) -> LearningJob:
         attempts=d["attempts"],
         claim_token=d.get("claim_token"),
         covers_through=float(_iso_to_epoch(ct)) if ct else None,
+        force_extraction=bool(d.get("force_extraction", 0)),
+        skip_aggregation=bool(d.get("skip_aggregation", 0)),
     )
 
 
@@ -54,11 +56,15 @@ class SQLiteLearningJobStoreMixin(LearningJobStoreABC):
         request_id: str,
         covers_through: float,
         job_type: str = "learning",
+        force_extraction: bool = False,
+        skip_aggregation: bool = False,
     ) -> str:
         """Coalescing upsert — safe to call inside a commit_scope."""
         job_id = str(uuid.uuid4())
         # int() truncates sub-second precision — intentional (second-precision epochs).
         iso_covers = _epoch_to_iso(int(covers_through))
+        fe_int = int(force_extraction)
+        sa_int = int(skip_aggregation)
         with self._lock:
             own_txn = self._own_transaction()
             try:
@@ -68,11 +74,11 @@ class SQLiteLearningJobStoreMixin(LearningJobStoreABC):
                     """
                     INSERT INTO learning_jobs
                         (job_id, org_id, user_id, job_type, latest_request_id,
-                         covers_through, status,
+                         covers_through, status, force_extraction, skip_aggregation,
                          created_at, updated_at)
                     VALUES
                         (?, ?, ?, ?, ?,
-                         ?, 'pending',
+                         ?, 'pending', ?, ?,
                          strftime('%Y-%m-%dT%H:%M:%fZ','now'),
                          strftime('%Y-%m-%dT%H:%M:%fZ','now'))
                     ON CONFLICT (org_id, user_id, job_type) WHERE status = 'pending'
@@ -83,10 +89,21 @@ class SQLiteLearningJobStoreMixin(LearningJobStoreABC):
                             THEN learning_jobs.covers_through
                             ELSE excluded.covers_through
                         END,
+                        force_extraction = excluded.force_extraction,
+                        skip_aggregation = excluded.skip_aggregation,
                         updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
                     RETURNING job_id
                     """,
-                    (job_id, org_id, user_id, job_type, request_id, iso_covers),
+                    (
+                        job_id,
+                        org_id,
+                        user_id,
+                        job_type,
+                        request_id,
+                        iso_covers,
+                        fe_int,
+                        sa_int,
+                    ),
                 ).fetchone()
                 if own_txn:
                     self.conn.commit()

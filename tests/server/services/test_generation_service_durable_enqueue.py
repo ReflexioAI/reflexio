@@ -98,3 +98,49 @@ def test_enqueue_failure_rolls_back_interactions(monkeypatch):
         assert svc.storage.get_request("r2") is None, (
             "request must not persist when enqueue_learning_job fails inside commit_scope"
         )
+        assert svc.storage.get_user_interaction("u2") == [], (
+            "interactions must not persist when enqueue_learning_job fails inside commit_scope"
+        )
+
+
+def test_no_get_embeddings_inside_scope_when_prepare_degraded(monkeypatch):
+    """Fix 3: when prepare_interaction_embeddings degrades (EmbeddingUnavailableError
+    sets embedding=[]), add_user_interactions_bulk with embeddings_prepared=True must
+    NOT call get_embeddings inside the commit_scope (which holds the SQLite RLock)."""
+    from reflexio.server.llm.providers.embedding_service_provider import (
+        EmbeddingUnavailableError,
+    )
+
+    monkeypatch.setenv("REFLEXIO_DURABLE_LEARNING_QUEUE", "true")
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        svc = _make_svc(tmp_dir)
+        req = _publish_request(user_id="u3", request_id="r3")
+
+        # Simulate embedding service being unavailable during prepare.
+        monkeypatch.setattr(
+            svc.storage.llm_client,
+            "get_embeddings",
+            Mock(side_effect=EmbeddingUnavailableError("unavailable")),
+        )
+
+        # Run the durable path — prepare degrades to [], then embeddings_prepared=True
+        # prevents a second get_embeddings call inside the scope.
+        result = svc.run(req, defer_learning=True)
+
+        assert result.request_id == "r3"
+        # Data landed despite degraded embeddings.
+        assert svc.storage is not None
+        assert svc.storage.get_request("r3") is not None
+        interactions = svc.storage.get_user_interaction("u3")
+        assert len(interactions) == 1
+        assert interactions[0].embedding == [], (
+            "degraded embedding should be empty list"
+        )
+
+        # get_embeddings was called once (prepare step) but not again inside the scope.
+        # After the prepare call raises, the mock records exactly 1 call.
+        assert svc.storage.llm_client.get_embeddings.call_count == 1, (
+            "get_embeddings must be called at most once (prepare phase), "
+            "never inside commit_scope"
+        )

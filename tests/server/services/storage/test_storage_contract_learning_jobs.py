@@ -22,6 +22,8 @@ class TestLearningJobsSchema:
             "claim_token",
             "claim_expires_at",
             "covers_through",
+            "force_extraction",
+            "skip_aggregation",
             "created_at",
             "updated_at",
         }
@@ -367,3 +369,29 @@ class TestHeartbeat:
         assert not storage.heartbeat_learning_job(
             job_id=job.job_id, claim_token=str(uuid.uuid4()), lease_seconds=600
         )
+
+
+class TestFlagRoundTrip:
+    def test_force_extraction_and_skip_aggregation_survive_enqueue_claim(
+        self, storage
+    ) -> None:
+        """force_extraction and skip_aggregation persisted on enqueue must be
+        returned on claim so the Task 5 worker can read them."""
+        with storage.commit_scope():
+            storage.enqueue_learning_job(
+                org_id=storage.org_id,
+                user_id="u-flags",
+                request_id="r-flags",
+                covers_through=1000.0,
+                force_extraction=True,
+                skip_aggregation=True,
+            )
+        [job] = [
+            j
+            for j in storage.claim_learning_jobs(
+                claimed_by="w1", limit=10, lease_seconds=300
+            )
+            if j.user_id == "u-flags"
+        ]
+        assert job.force_extraction is True, "force_extraction must round-trip"
+        assert job.skip_aggregation is True, "skip_aggregation must round-trip"
