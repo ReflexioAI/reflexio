@@ -221,6 +221,9 @@ ignore = [
 "reflexio/server/routes/**" = ["B008", "ARG001", "ARG002"]
 "reflexio/server/api_endpoints/**" = ["B008", "ARG001", "ARG002"]
 "reflexio/integrations/**" = ["ARG002"]
+# Adapter Protocol methods require fixed param names (path/attr/ctx) that
+# concrete implementations don't all use — same idiom as integrations above.
+"reflexio/client/llm/**" = ["ARG002"]
 # The openclaw plugin is a nested package; its tests/scripts/cli are not reached
 # by the top-level "tests/**" / "reflexio/cli/**" globs above (those only match
 # at the tree root), so mirror the same standard test/cli ignores here.

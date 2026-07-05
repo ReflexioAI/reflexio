@@ -81,7 +81,15 @@ from reflexio.models.config_schema import (
     UserPlaybookExtractorConfig,
 )
 
-from .client import ReflexioClient
+from .client import (
+    AnthropicAdapter,
+    LLMAdapter,
+    OpenAIChatAdapter,
+    OpenAIResponsesAdapter,
+    ReflexioClient,
+    ReflexioParams,
+    wrap_llm_client,
+)
 
 debug = False
 log = None  # Set to either 'debug' or 'info', controls console logging
@@ -163,4 +171,11 @@ __all__ = [
     "AgentSuccessConfig",
     "ToolUseConfig",
     "Config",
+    # LLM auto-publish wrapper
+    "wrap_llm_client",
+    "ReflexioParams",
+    "LLMAdapter",
+    "OpenAIChatAdapter",
+    "OpenAIResponsesAdapter",
+    "AnthropicAdapter",
 ]

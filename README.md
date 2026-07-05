@@ -281,6 +281,36 @@ playbooks = client.get_agent_playbooks(
 )
 ```
 
+### Auto-publish via your LLM client
+
+Instead of calling `publish_interaction` yourself after every LLM call, wrap your
+existing client with `wrap_llm_client`. You then call it **exactly like before** and
+each turn is published to Reflexio automatically in the background. Works with the
+OpenAI SDK (Chat Completions *and* Responses), litellm, OpenRouter, and Anthropic.
+
+```python
+from reflexio import wrap_llm_client
+from openai import OpenAI
+
+# Wrap once; pass per-turn Reflexio params via reflexio={...} on each call.
+client = wrap_llm_client(OpenAI(), reflexio={"source": "my-app"})
+
+resp = client.chat.completions.create(
+    model="gpt-4o",
+    messages=[system_prompt, retrieved_context, templated_question],
+    # The Reflexio "User" turn is your *clean* utterance, not the engineered prompt:
+    reflexio={"user_id": "alice", "session_id": "s1",
+              "user_content": "what's the weather in SF?"},
+)
+# -> forwards the identical call AND publishes User + Assistant turns to Reflexio.
+```
+
+Notes:
+- `user_id` / `session_id` are required to publish (enforced before the call); turns are grouped into a conversation by `session_id` server-side. Pass a dict as above, or `reflexio=ReflexioParams(user_id=..., session_id=..., user_content=...)` to have the required fields enforced at construction.
+- Omit `user_content` on tool/function-call continuation turns — only the assistant turn is published.
+- Set `reflexio={"publish": False}` (or pass `publish_filter=`) to skip publishing a given call, e.g. internal subagent calls.
+- Publishing is best-effort and never raises into your call. Anthropic/Responses/litellm clients are wrapped the same way.
+
 ### Configuration
 
 ```python
