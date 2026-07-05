@@ -706,7 +706,7 @@ class LearningStatusResponse(BaseModel):
             processed through the request's creation timestamp.
     """
 
-    status: str
+    status: Literal["pending", "processing", "done", "failed"]
 
 
 # whoami response — caller identity + resolved storage routing (masked)

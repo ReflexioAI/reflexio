@@ -3,11 +3,17 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Literal
 
 # Upper bound of the done-row retention window.
 # Shared by all backends so the value cannot drift between implementations.
 # Err toward "not done" until we are sure a done row would have been GC'd.
 _ABSENCE_DONE_AFTER_SECONDS = 72 * 3600
+
+# Coverage-based status reported for a single request (§3.6). This is a
+# collapsed view of the raw job statuses (e.g. claimed -> processing,
+# reclaimable failed -> pending) and matches LearningStatusResponse.status.
+LearningStatus = Literal["pending", "processing", "done", "failed"]
 
 
 class LearningJobStatus(StrEnum):
@@ -172,7 +178,7 @@ class LearningJobStoreABC(ABC):
         *,
         user_id: str,
         request_created_at: float,
-    ) -> str:
+    ) -> LearningStatus:
         """Coverage-based status for a single request (§3.6 rule).
 
         Returns one of ``"done" | "processing" | "pending" | "failed"``.
@@ -201,5 +207,6 @@ __all__ = [
     "_ABSENCE_DONE_AFTER_SECONDS",
     "LearningJob",
     "LearningJobStatus",
+    "LearningStatus",
     "LearningJobStoreABC",
 ]

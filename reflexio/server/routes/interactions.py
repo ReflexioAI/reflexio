@@ -1,6 +1,7 @@
 """Interaction route handlers (extracted from api.py, Tier3 A2)."""
 
 import logging
+import uuid
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -81,6 +82,14 @@ def publish_user_interaction(
             ),
         )
 
+    # Resolve the request_id BEFORE backgrounding so we can return it to the
+    # caller for polling. GenerationService uses a caller-supplied request_id
+    # verbatim (and generates one only when absent), so pinning it on the
+    # payload guarantees the background task stores its status under the same
+    # id we hand back here.
+    request_id = payload.request_id or str(uuid.uuid4())
+    payload.request_id = request_id
+
     def _publish_task() -> None:
         try:
             publisher_api.add_user_interaction(
@@ -93,11 +102,13 @@ def publish_user_interaction(
 
     # Run in background — caller gets immediate acknowledgement.
     # learning_status="deferred" tells the caller that extraction has not yet
-    # run; they can poll GET /api/learning_status?request_id=... to track it.
+    # run; they can poll GET /api/learning_status?request_id=... (using the
+    # request_id returned here) to track it.
     background_tasks.add_task(_publish_task)
     return PublishUserInteractionResponse(
         success=True,
         message="Interaction queued for processing",
+        request_id=request_id,
         learning_status="deferred",
     )
 
@@ -268,6 +279,7 @@ def get_requests_endpoint(
 @router.get(
     "/api/learning_status",
     response_model=LearningStatusResponse,
+    response_model_exclude_none=True,
 )
 @limiter.limit("120/minute")
 def get_learning_status(

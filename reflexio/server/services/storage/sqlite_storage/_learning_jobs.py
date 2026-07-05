@@ -9,6 +9,7 @@ from reflexio.server.services.storage.storage_base._learning_jobs import (
     _ABSENCE_DONE_AFTER_SECONDS,
     LearningJob,
     LearningJobStoreABC,
+    LearningStatus,
 )
 
 from ._base import SQLiteStorageBase, _epoch_to_iso, _iso_to_epoch
@@ -321,7 +322,7 @@ class SQLiteLearningJobStoreMixin(LearningJobStoreABC):
         *,
         user_id: str,
         request_created_at: float,
-    ) -> str:
+    ) -> LearningStatus:
         """Coverage-based status lookup (§3.6 rule).
 
         Converts request_created_at epoch to ISO for lexicographic comparison

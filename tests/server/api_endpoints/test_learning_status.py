@@ -93,6 +93,51 @@ def client_with_storage():
         invalidate_reflexio_cache(org_id=org_id)
 
 
+@pytest.fixture
+def two_org_clients():
+    """Two orgs, each routed to its own org-scoped storage.
+
+    Yields ``(client_a, client_b, storage_b)``. Each client authenticates as
+    a distinct org, and ``reflexio_cache.get_reflexio`` is patched to return a
+    per-org mock so Org A resolves ONLY Org A's storage and Org B resolves
+    ONLY Org B's storage. This mirrors the production isolation seam
+    (schema-per-org): the endpoint reads whichever storage
+    ``get_reflexio(org_id)`` returns, so a request that lives under Org B is
+    invisible to Org A.
+
+    The OSS SQLite backend shares one db file across orgs (isolation is by
+    separate files / enterprise schemas, not an org column), so a real-storage
+    fixture cannot express cross-org isolation here — the per-org mock does.
+    """
+    from fastapi.testclient import TestClient
+
+    org_a = f"test-ls-a-{uuid.uuid4().hex[:10]}"
+    org_b = f"test-ls-b-{uuid.uuid4().hex[:10]}"
+
+    # Org A's storage knows about no requests; Org B's storage owns the seeded
+    # request. Tests seed Org B via ``storage_b.get_request``.
+    storage_a = MagicMock()
+    storage_a.get_request.return_value = None
+    storage_b = MagicMock()
+
+    def _reflexio_for(org_id: str, storage_base_dir=None):
+        mock = MagicMock()
+        mock.request_context.storage = storage_a if org_id == org_a else storage_b
+        return mock
+
+    with patch(
+        "reflexio.server.cache.reflexio_cache.get_reflexio",
+        side_effect=_reflexio_for,
+    ):
+        client_a = TestClient(
+            create_app(get_org_id=lambda: org_a), raise_server_exceptions=False
+        )
+        client_b = TestClient(
+            create_app(get_org_id=lambda: org_b), raise_server_exceptions=False
+        )
+        yield client_a, client_b, storage_b
+
+
 # ---------------------------------------------------------------------------
 # Deferred publish sets learning_status="deferred"
 # ---------------------------------------------------------------------------
@@ -106,6 +151,9 @@ class TestDeferredPublishField:
         assert response.status_code == 200
         data = response.json()
         assert data["learning_status"] == "deferred"
+        # Deferred response must carry a request_id so the caller can poll
+        # GET /api/learning_status — otherwise the poll contract is broken.
+        assert data.get("request_id")
 
     def test_sync_publish_leaves_learning_status_none(self, client, patched_reflexio):
         """Sync path returns real extraction counts — learning_status excluded."""
@@ -153,9 +201,10 @@ class TestLearningStatusEndpoint:
             "/api/learning_status", params={"request_id": "no-such-request"}
         )
         assert response.status_code == 404
-        # Must NOT silently claim "done" for a request that never existed.
+        # Must NOT silently claim "done" for a request that never existed —
+        # a 404 body carries an error detail, never a status field.
         body = response.json()
-        assert "done" not in str(body).lower() or body.get("status") != "done"
+        assert "status" not in body
 
     def test_known_request_returns_valid_status(self, client_with_storage):
         http_client, storage = client_with_storage
@@ -178,6 +227,36 @@ class TestLearningStatusEndpoint:
         http_client, _ = client_with_storage
         response = http_client.get("/api/learning_status")
         assert response.status_code == 422
+
+    def test_cross_org_request_id_returns_404(self, two_org_clients):
+        """Org A must NOT see Org B's request status by request_id.
+
+        Org B owns a request; querying that request_id from Org A returns 404
+        (the request is invisible cross-tenant), never Org B's real status.
+        """
+        client_a, client_b, storage_b = two_org_clients
+        req = Request(
+            request_id="req-cross-org-001",
+            user_id="user-b",
+            session_id="sess-b",
+        )
+        # Seed the request into Org B's storage only.
+        storage_b.get_request.return_value = req
+        storage_b.get_learning_status_for_request.return_value = "pending"
+
+        # Sanity: Org B (the owner) can read its own status.
+        owner_response = client_b.get(
+            "/api/learning_status", params={"request_id": req.request_id}
+        )
+        assert owner_response.status_code == 200
+        assert owner_response.json()["status"] in _VALID_STATUS_VALUES
+
+        # Org A must get a 404 for Org B's request_id — no cross-tenant leak.
+        cross_response = client_a.get(
+            "/api/learning_status", params={"request_id": req.request_id}
+        )
+        assert cross_response.status_code == 404
+        assert "status" not in cross_response.json()
 
 
 # ---------------------------------------------------------------------------
