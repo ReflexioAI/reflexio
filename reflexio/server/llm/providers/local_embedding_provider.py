@@ -254,11 +254,12 @@ def _exclusive_file_lock(lock_path: Path) -> Iterator[None]:
 def _should_clear_minilm_cache(
     embedding_cls: Any, cache_path: Path, exc: Exception, cache_was_complete: bool
 ) -> bool:
-    if not cache_was_complete:
-        return not _minilm_cache_complete(embedding_cls, cache_path)
-
-    if not _minilm_cache_complete(embedding_cls, cache_path):
+    cache_is_complete = _minilm_cache_complete(embedding_cls, cache_path)
+    if not cache_is_complete:
         return True
+
+    if not cache_was_complete:
+        return False
 
     return _complete_minilm_cache_error_identifies_cache(embedding_cls, cache_path, exc)
 
