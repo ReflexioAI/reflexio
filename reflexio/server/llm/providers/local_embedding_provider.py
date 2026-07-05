@@ -19,7 +19,6 @@ import importlib.util
 import logging
 import os
 import shutil
-import tarfile
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -138,12 +137,15 @@ class LocalEmbedder:
                 return self._ef(safe_inputs)
 
             embedding_cls = type(failed_ef)
-            cache_path = _recoverable_minilm_cache_path(embedding_cls, exc)
-            if cache_path is None:
+            recovery = _recoverable_minilm_cache(embedding_cls, exc)
+            if recovery is None:
                 raise exc
+            cache_path, cache_was_complete = recovery
 
             with _exclusive_file_lock(_minilm_cache_lock_path(cache_path)):
-                if _should_clear_minilm_cache(embedding_cls, cache_path, exc):
+                if _should_clear_minilm_cache(
+                    embedding_cls, cache_path, exc, cache_was_complete
+                ):
                     shutil.rmtree(cache_path, ignore_errors=True)
                     recovery_action = "clearing"
                     _LOGGER.warning(
@@ -182,14 +184,19 @@ def _pad(vec: Any) -> list[float]:
     return floats + [0.0] * (_TARGET_DIM - len(floats))
 
 
-def _recoverable_minilm_cache_path(embedding_cls: Any, exc: Exception) -> Path | None:
+def _recoverable_minilm_cache(
+    embedding_cls: Any, exc: Exception
+) -> tuple[Path, bool] | None:
     cache_path = _minilm_cache_path(embedding_cls)
-    if cache_path is None or not _is_recoverable_minilm_cache_error(
+    if cache_path is None:
+        return None
+    cache_was_complete = _minilm_cache_complete(embedding_cls, cache_path)
+    if cache_was_complete and not _complete_minilm_cache_error_identifies_cache(
         embedding_cls, cache_path, exc
     ):
         return None
 
-    return cache_path
+    return cache_path, cache_was_complete
 
 
 def _minilm_cache_path(embedding_cls: Any) -> Path | None:
@@ -244,21 +251,12 @@ def _exclusive_file_lock(lock_path: Path) -> Iterator[None]:
             yield
 
 
-def _is_recoverable_minilm_cache_error(
-    embedding_cls: Any, cache_path: Path, exc: Exception
-) -> bool:
-    if not _minilm_cache_complete(embedding_cls, cache_path):
-        return True
-
-    chain = _exception_chain(exc)
-    return any(
-        isinstance(chain_exc, (tarfile.TarError, EOFError)) for chain_exc in chain
-    ) or _complete_minilm_cache_error_identifies_cache(embedding_cls, cache_path, exc)
-
-
 def _should_clear_minilm_cache(
-    embedding_cls: Any, cache_path: Path, exc: Exception
+    embedding_cls: Any, cache_path: Path, exc: Exception, cache_was_complete: bool
 ) -> bool:
+    if not cache_was_complete:
+        return not _minilm_cache_complete(embedding_cls, cache_path)
+
     if not _minilm_cache_complete(embedding_cls, cache_path):
         return True
 

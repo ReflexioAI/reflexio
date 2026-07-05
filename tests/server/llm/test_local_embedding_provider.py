@@ -375,10 +375,16 @@ class TestEmbedPadding:
     ) -> None:
         cache_dir = tmp_path / "chroma" / "onnx_models" / "all-MiniLM-L6-v2"
         extracted_dir = cache_dir / "onnx"
-        extracted_dir.mkdir(parents=True)
-        for file_name in lep._MINILM_EXPECTED_FILES:
-            (extracted_dir / file_name).write_text("present")
+        cache_dir.mkdir(parents=True)
+        (cache_dir / "partial-download").write_text("corrupt")
         attempts = 0
+
+        @contextmanager
+        def fake_file_lock(_lock_path) -> Iterator[None]:
+            extracted_dir.mkdir(parents=True)
+            for file_name in lep._MINILM_EXPECTED_FILES:
+                (extracted_dir / file_name).write_text("present")
+            yield
 
         class RecoveredMiniLM:
             MODEL_NAME = "all-MiniLM-L6-v2"
@@ -398,6 +404,7 @@ class TestEmbedPadding:
         monkeypatch.setitem(sys.modules, "chromadb", MagicMock())
         monkeypatch.setitem(sys.modules, "chromadb.utils", MagicMock())
         monkeypatch.setitem(sys.modules, "chromadb.utils.embedding_functions", fake)
+        monkeypatch.setattr(lep, "_exclusive_file_lock", fake_file_lock)
         rmtree = MagicMock()
         monkeypatch.setattr(lep.shutil, "rmtree", rmtree)
 
@@ -405,6 +412,38 @@ class TestEmbedPadding:
 
         assert result == [[0.4] * 384 + [0.0] * 128]
         assert attempts == 2
+        rmtree.assert_not_called()
+        assert extracted_dir.exists()
+
+    def test_complete_cache_with_unrelated_tar_error_is_not_recoverable(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        cache_dir = tmp_path / "chroma" / "onnx_models" / "all-MiniLM-L6-v2"
+        extracted_dir = cache_dir / "onnx"
+        extracted_dir.mkdir(parents=True)
+        for file_name in lep._MINILM_EXPECTED_FILES:
+            (extracted_dir / file_name).write_text("present")
+
+        class UnrelatedTarErrorMiniLM:
+            MODEL_NAME = "all-MiniLM-L6-v2"
+            DOWNLOAD_PATH = str(cache_dir)
+            EXTRACTED_FOLDER_NAME = "onnx"
+            ARCHIVE_FILENAME = "onnx.tar.gz"
+
+            def __call__(self, _docs: list[str]) -> list[list[float]]:
+                raise tarfile.ReadError("bad checksum")
+
+        fake = MagicMock()
+        fake.ONNXMiniLM_L6_V2 = UnrelatedTarErrorMiniLM
+        monkeypatch.setitem(sys.modules, "chromadb", MagicMock())
+        monkeypatch.setitem(sys.modules, "chromadb.utils", MagicMock())
+        monkeypatch.setitem(sys.modules, "chromadb.utils.embedding_functions", fake)
+        rmtree = MagicMock()
+        monkeypatch.setattr(lep.shutil, "rmtree", rmtree)
+
+        with pytest.raises(tarfile.ReadError, match="bad checksum"):
+            LocalEmbedder.get().embed(["hello"])
+
         rmtree.assert_not_called()
         assert extracted_dir.exists()
 
