@@ -1,5 +1,6 @@
 from reflexio.models.api_schema.domain.enums import Status
 
+from ._learning_jobs import LearningJob, LearningJobStatus, LearningJobStoreABC
 from ._agent_run import (
     NOT_APPLICABLE_ANSWER,
     AgentBinding,
@@ -49,6 +50,7 @@ from .profiles import InteractionStoreMixin, ProfileSearchMixin, ProfileStoreMix
 
 
 class BaseStorage(
+    LearningJobStoreABC,
     CommitScopeMixin,
     AgentRunMixin,
     ProfileStoreMixin,
@@ -273,6 +275,9 @@ class BaseStorage(
 
 
 __all__ = [
+    "LearningJob",
+    "LearningJobStatus",
+    "LearningJobStoreABC",
     "CommitScopeMixin",
     "AgentBinding",
     "AgentRunMixin",
