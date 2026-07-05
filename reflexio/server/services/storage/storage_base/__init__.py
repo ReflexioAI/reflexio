@@ -262,6 +262,15 @@ class BaseStorage(
             "purged_user_playbooks": len(purge_upb_ids),
         }
 
+    def learning_jobs_columns(self) -> list[str]:
+        """Return the column names of the learning_jobs table.
+
+        Each backend overrides this to query its own schema introspection
+        mechanism (SQLite: PRAGMA table_info; Postgres/Supabase:
+        information_schema.columns).
+        """
+        raise NotImplementedError
+
 
 __all__ = [
     "CommitScopeMixin",

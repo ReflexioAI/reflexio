@@ -759,6 +759,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         self._migrate_retire_profile_change_logs()
         self._migrate_retire_playbook_aggregation_change_logs()
         init_stall_state_table(self.conn)
+        self._migrate_learning_jobs()
         return True
 
     def _try_load_sqlite_vec(self) -> bool:
@@ -1305,6 +1306,43 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 "(Track B Task 4 retirement)"
             )
             self.conn.commit()
+
+    def _migrate_learning_jobs(self) -> None:
+        """Create the learning_jobs table + partial indexes if missing (idempotent).
+
+        New columns are backfilled via PRAGMA table_info inspection (additive only).
+        Called at the end of migrate() so the table is always present on startup.
+        """
+        with self._lock:
+            self.conn.executescript("""
+                CREATE TABLE IF NOT EXISTS learning_jobs (
+                    job_id TEXT PRIMARY KEY,
+                    org_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    job_type TEXT NOT NULL DEFAULT 'learning',
+                    latest_request_id TEXT,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    max_attempts INTEGER NOT NULL DEFAULT 3,
+                    claimed_by TEXT,
+                    claim_token TEXT,
+                    claim_expires_at TEXT,
+                    covers_through TEXT,
+                    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+                    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS learning_jobs_coalesce
+                    ON learning_jobs (org_id, user_id, job_type) WHERE status = 'pending';
+                CREATE INDEX IF NOT EXISTS learning_jobs_poll
+                    ON learning_jobs (created_at) WHERE status IN ('pending','claimed');
+            """)
+            self.conn.commit()
+
+    def learning_jobs_columns(self) -> list[str]:
+        """Return the column names of the learning_jobs table."""
+        with self._lock:
+            rows = self.conn.execute("PRAGMA table_info(learning_jobs)").fetchall()
+        return [row["name"] for row in rows]
 
     def _migrate_agent_playbook_source_windows(self) -> None:
         """Add source window snapshots to existing agent source mappings."""
@@ -2138,5 +2176,30 @@ CREATE TABLE IF NOT EXISTS lineage_event (
     UNIQUE (org_id, entity_type, entity_id, op, request_id)
 );
 CREATE INDEX IF NOT EXISTS idx_lineage_entity ON lineage_event (entity_type, entity_id);
+
+-- ============================================================================
+-- Durable learning pipeline — cross-org job queue
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS learning_jobs (
+    job_id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    job_type TEXT NOT NULL DEFAULT 'learning',
+    latest_request_id TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    max_attempts INTEGER NOT NULL DEFAULT 3,
+    claimed_by TEXT,
+    claim_token TEXT,
+    claim_expires_at TEXT,
+    covers_through TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS learning_jobs_coalesce
+    ON learning_jobs (org_id, user_id, job_type) WHERE status = 'pending';
+CREATE INDEX IF NOT EXISTS learning_jobs_poll
+    ON learning_jobs (created_at) WHERE status IN ('pending','claimed');
 
 """
