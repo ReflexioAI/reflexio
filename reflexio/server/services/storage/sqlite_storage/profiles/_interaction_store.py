@@ -176,9 +176,47 @@ class InteractionStoreMixin:
     ) -> None:
         if not interactions:
             return
+        # Only generate embeddings for interactions that do not already have them.
+        # This allows callers to pre-populate embeddings (e.g. via
+        # prepare_interaction_embeddings) before opening a commit_scope so that no
+        # network I/O occurs inside the transaction.
+        to_embed = [i for i in interactions if not i.embedding]
+        if to_embed:
+            texts = [
+                "\n".join([i.content or "", i.user_action_description or ""])
+                for i in to_embed
+            ]
+            try:
+                embeddings = self.llm_client.get_embeddings(
+                    texts, self.embedding_model_name, self.embedding_dimensions
+                )
+            except EmbeddingUnavailableError as exc:
+                logger.warning(
+                    "Embedding unavailable for interaction bulk insert; "
+                    "continuing without vectors: %s",
+                    exc,
+                )
+                embeddings = [[] for _ in texts]
+            for interaction, embedding in zip(to_embed, embeddings, strict=False):
+                interaction.embedding = embedding
+        for interaction in interactions:
+            self._insert_interaction(interaction)
+
+    @SQLiteStorageBase.handle_exceptions
+    def prepare_interaction_embeddings(self, interactions: list[Interaction]) -> None:
+        """Pre-populate interaction.embedding for each interaction (no DB write).
+
+        Generates embeddings in one batch call so the write path inside a
+        commit_scope can skip the network round-trip.
+        """
+        if not interactions:
+            return
+        to_embed = [i for i in interactions if not i.embedding]
+        if not to_embed:
+            return
         texts = [
             "\n".join([i.content or "", i.user_action_description or ""])
-            for i in interactions
+            for i in to_embed
         ]
         try:
             embeddings = self.llm_client.get_embeddings(
@@ -186,14 +224,13 @@ class InteractionStoreMixin:
             )
         except EmbeddingUnavailableError as exc:
             logger.warning(
-                "Embedding unavailable for interaction bulk insert; "
+                "Embedding unavailable during prepare_interaction_embeddings; "
                 "continuing without vectors: %s",
                 exc,
             )
             embeddings = [[] for _ in texts]
-        for interaction, embedding in zip(interactions, embeddings, strict=False):
+        for interaction, embedding in zip(to_embed, embeddings, strict=False):
             interaction.embedding = embedding
-            self._insert_interaction(interaction)
 
     @SQLiteStorageBase.handle_exceptions
     def delete_user_interaction(self, request: DeleteUserInteractionRequest) -> None:
