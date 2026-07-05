@@ -18,7 +18,10 @@ from __future__ import annotations
 import importlib.util
 import logging
 import os
+import shutil
+import tarfile
 import threading
+from pathlib import Path
 from typing import Any
 
 _LOGGER = logging.getLogger(__name__)
@@ -35,6 +38,15 @@ _TARGET_DIM = 512
 # ~4 chars/token in English prose; leave headroom so we never raise the
 # ValueError that ONNXMiniLM_L6_V2 throws on over-length input.
 _MAX_CHARS = 800
+
+_MINILM_EXPECTED_FILES = (
+    "config.json",
+    "model.onnx",
+    "special_tokens_map.json",
+    "tokenizer_config.json",
+    "tokenizer.json",
+    "vocab.txt",
+)
 
 
 class LocalEmbedderError(RuntimeError):
@@ -98,8 +110,32 @@ class LocalEmbedder:
         """
         ef = self._load()
         safe_inputs = [(text or "")[:_MAX_CHARS] for text in texts]
-        raw = ef(safe_inputs)
+        try:
+            raw = ef(safe_inputs)
+        except Exception as exc:
+            raw = self._retry_embed_after_cache_clear(ef, exc, safe_inputs)
         return [_pad(vec) for vec in raw]
+
+    def _retry_embed_after_cache_clear(
+        self, failed_ef: Any, exc: Exception, safe_inputs: list[str]
+    ) -> Any:
+        with self._ef_lock:
+            if self._ef is not None and self._ef is not failed_ef:
+                return self._ef(safe_inputs)
+
+            embedding_cls = type(failed_ef)
+            cache_path = _clear_minilm_cache(embedding_cls, exc)
+            if cache_path is None:
+                raise exc
+
+            _LOGGER.warning(
+                "Failed to use local MiniLM embedder; cleared cache %s and retrying once",
+                cache_path,
+                exc_info=True,
+            )
+            fresh_ef = embedding_cls()
+            self._ef = fresh_ef
+            return fresh_ef(safe_inputs)
 
 
 def _pad(vec: Any) -> list[float]:
@@ -111,6 +147,64 @@ def _pad(vec: Any) -> list[float]:
     if len(floats) > _TARGET_DIM:
         return floats[:_TARGET_DIM]
     return floats + [0.0] * (_TARGET_DIM - len(floats))
+
+
+def _clear_minilm_cache(embedding_cls: Any, exc: Exception) -> Path | None:
+    cache_path = _minilm_cache_path(embedding_cls)
+    if cache_path is None or not _is_recoverable_minilm_cache_error(
+        embedding_cls, cache_path, exc
+    ):
+        return None
+
+    shutil.rmtree(cache_path, ignore_errors=True)
+    return cache_path
+
+
+def _minilm_cache_path(embedding_cls: Any) -> Path | None:
+    download_path = getattr(embedding_cls, "DOWNLOAD_PATH", None)
+    if not download_path:
+        return None
+
+    model_name = getattr(embedding_cls, "MODEL_NAME", None)
+    cache_path = Path(str(download_path)).expanduser()
+    if not model_name or cache_path.name != model_name:
+        return None
+
+    return cache_path
+
+
+def _is_recoverable_minilm_cache_error(
+    embedding_cls: Any, cache_path: Path, exc: Exception
+) -> bool:
+    if not _minilm_cache_complete(embedding_cls, cache_path):
+        return True
+
+    chain = _exception_chain(exc)
+    archive_name = str(getattr(embedding_cls, "ARCHIVE_FILENAME", ""))
+    messages = "\n".join(str(chain_exc) for chain_exc in chain)
+    return (
+        any(isinstance(chain_exc, (tarfile.TarError, EOFError)) for chain_exc in chain)
+        or str(cache_path) in messages
+        or bool(archive_name and archive_name in messages)
+        or "does not match expected SHA256" in messages
+    )
+
+
+def _minilm_cache_complete(embedding_cls: Any, cache_path: Path) -> bool:
+    extracted_folder = str(getattr(embedding_cls, "EXTRACTED_FOLDER_NAME", "onnx"))
+    return all(
+        (cache_path / extracted_folder / file_name).exists()
+        for file_name in _MINILM_EXPECTED_FILES
+    )
+
+
+def _exception_chain(exc: Exception) -> list[BaseException]:
+    chain: list[BaseException] = []
+    current: BaseException | None = exc
+    while current is not None:
+        chain.append(current)
+        current = current.__cause__ or current.__context__
+    return chain
 
 
 _REGISTERED = False
