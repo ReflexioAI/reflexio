@@ -458,7 +458,7 @@ class TestOrgDiscovery:
         """A job with a live claim hides the org; once the lease expires the org
         resurfaces so the scheduler can reclaim and retry a stuck worker's job."""
         _enqueue(storage, "u-exp", "r-exp", 1000.0)
-        [job] = [
+        [_job] = [
             j
             for j in storage.claim_learning_jobs(
                 claimed_by="w1", limit=10, lease_seconds=1

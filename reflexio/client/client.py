@@ -498,8 +498,8 @@ class ReflexioClient:
         Args:
             request_id: The ``request_id`` of the published interaction, as
                 returned in ``PublishUserInteractionResponse.request_id``
-                (populated on the ``wait_for_response=True`` path) or known
-                by the caller.
+                (populated on both the deferred and ``wait_for_response=True``
+                paths) or known by the caller.
 
         Returns:
             One of: ``"pending"`` | ``"processing"`` | ``"done"`` | ``"failed"``.

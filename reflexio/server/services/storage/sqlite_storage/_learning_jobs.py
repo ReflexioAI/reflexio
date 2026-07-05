@@ -371,7 +371,7 @@ class SQLiteLearningJobStoreMixin(LearningJobStoreABC):
             return "pending"
         if has_dead_covering:
             return "failed"
-        # Absence semantics: terminal rows (done/dead) are GC'd after 24–72 h.
+        # Absence semantics: terminal rows (done/dead) are GC'd after 24-72 h.
         # Only treat absence as "done" once the request is old enough that a done
         # row would have been reaped; a recent request with no rows is still pending.
         if time.time() - request_created_at >= _ABSENCE_DONE_AFTER_SECONDS:

@@ -84,7 +84,8 @@ class LearningJobStoreABC(ABC):
     ) -> list[LearningJob]:
         """Atomically claim up to ``limit`` of this org's claimable jobs.
 
-        A job is claimable when it is ``pending`` OR (``claimed`` AND
+        A job is claimable when it is ``pending``, ``failed`` (reclaimable —
+        attempts < max_attempts), OR (``claimed`` AND
         ``claim_expires_at < now``).  Each claimed job receives a fresh
         ``claim_token``, ``claimed_by``, and ``claim_expires_at``.
 

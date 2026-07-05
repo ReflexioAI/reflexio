@@ -700,8 +700,8 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 finally:
                     self._scope_depth -= 1
                 return
-            self._scope_depth = 1
             self.conn.execute("BEGIN IMMEDIATE")
+            self._scope_depth = 1
             try:
                 yield
                 self.conn.commit()

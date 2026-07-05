@@ -142,12 +142,12 @@ class DurableLearningWorker:
             )
             return False
 
-        reflexio = get_reflexio(
-            org_id=ctx.org_id, storage_base_dir=ctx.storage_base_dir
-        )
-        gen = GenerationService(llm_client=reflexio.llm_client, request_context=ctx)
-
         try:
+            reflexio = get_reflexio(
+                org_id=ctx.org_id, storage_base_dir=ctx.storage_base_dir
+            )
+            gen = GenerationService(llm_client=reflexio.llm_client, request_context=ctx)
+
             with storage.commit_scope():
                 gen.run_deferred_learning(
                     user_id=job.user_id,
