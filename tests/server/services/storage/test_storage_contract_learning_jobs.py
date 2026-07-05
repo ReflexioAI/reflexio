@@ -299,6 +299,47 @@ class TestStatusCoverage:
             == "failed"
         )
 
+    def test_done_wins_over_failed_regardless_of_row_order(self, storage) -> None:
+        """Covering done row must beat a failed row even if DB yields failed first.
+
+        Regression for the early-return bug: `if status == "failed": return "pending"`
+        shadowed a covering done row if the failed row appeared first in the result set.
+        Priority: done > processing > pending > failed(→pending) > dead(→failed).
+        """
+        # Step 1: enqueue, claim, and complete — leaves a done row covering ts=4000.0.
+        _enqueue(storage, "u-df", "r-df-1", covers_through=5000.0)
+        [job1] = [
+            j
+            for j in storage.claim_learning_jobs(
+                claimed_by="w1", limit=10, lease_seconds=300
+            )
+            if j.user_id == "u-df"
+        ]
+        storage.complete_learning_job(job_id=job1.job_id, claim_token=job1.claim_token)
+
+        # Step 2: enqueue a second job for the same user (first is done, so a new
+        # pending row is inserted), claim it, and fail it (dead=False → status='failed').
+        _enqueue(storage, "u-df", "r-df-2", covers_through=9000.0)
+        [job2] = [
+            j
+            for j in storage.claim_learning_jobs(
+                claimed_by="w1", limit=10, lease_seconds=300
+            )
+            if j.user_id == "u-df"
+        ]
+        storage.fail_learning_job(
+            job_id=job2.job_id, claim_token=job2.claim_token, dead=False
+        )
+
+        # The done row covers request_created_at=4000.0; the failed row must not
+        # shadow it regardless of which row the DB yields first.
+        assert (
+            storage.get_learning_status_for_request(
+                user_id="u-df", request_created_at=4000.0
+            )
+            == "done"
+        )
+
 
 class TestHeartbeat:
     def test_heartbeat_extends_live_claim(self, storage) -> None:

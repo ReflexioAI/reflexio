@@ -5,11 +5,8 @@ import time
 import uuid
 from typing import Any
 
-# Matches the upper bound of the done-row retention window (24–72 h).
-# Err toward "not done" until we are sure a done row would have been GC'd.
-_ABSENCE_DONE_AFTER_SECONDS = 72 * 3600
-
 from reflexio.server.services.storage.storage_base._learning_jobs import (
+    _ABSENCE_DONE_AFTER_SECONDS,
     LearningJob,
     LearningJobStoreABC,
 )
@@ -294,6 +291,7 @@ class SQLiteLearningJobStoreMixin(LearningJobStoreABC):
         has_pending = False
         has_claimed_covering = False
         has_dead_covering = False
+        has_failed = False
 
         for row in rows:
             status = row["status"]
@@ -308,7 +306,9 @@ class SQLiteLearningJobStoreMixin(LearningJobStoreABC):
                 has_dead_covering = True
             if status == "failed":
                 # 'failed' is reclaimable (attempts < max_attempts); treat as pending.
-                return "pending"
+                # Accumulate as a flag so a covering done row (encountered later in the
+                # iteration) is not shadowed by a failed row yielded earlier.
+                has_failed = True
             if status == "pending":
                 has_pending = True
             if status == "claimed":
@@ -319,6 +319,8 @@ class SQLiteLearningJobStoreMixin(LearningJobStoreABC):
         if has_claimed_covering:
             return "processing"
         if has_pending:
+            return "pending"
+        if has_failed:
             return "pending"
         if has_dead_covering:
             return "failed"

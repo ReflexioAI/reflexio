@@ -4,6 +4,11 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import StrEnum
 
+# Upper bound of the done-row retention window.
+# Shared by all backends so the value cannot drift between implementations.
+# Err toward "not done" until we are sure a done row would have been GC'd.
+_ABSENCE_DONE_AFTER_SECONDS = 72 * 3600
+
 
 class LearningJobStatus(StrEnum):
     PENDING = "pending"
@@ -169,6 +174,7 @@ class LearningJobStoreABC(ABC):
 
 
 __all__ = [
+    "_ABSENCE_DONE_AFTER_SECONDS",
     "LearningJob",
     "LearningJobStatus",
     "LearningJobStoreABC",
