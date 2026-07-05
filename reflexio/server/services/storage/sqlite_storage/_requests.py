@@ -32,6 +32,7 @@ class RequestMixin:
     _fetchall: Any
     _subject_ref_for_user_id: Any
     _assert_subject_writable_locked: Any
+    _own_transaction: Any
 
     # ------------------------------------------------------------------
     # Request methods
@@ -42,8 +43,10 @@ class RequestMixin:
         created_at_iso = _epoch_to_iso(request.created_at)
         subject_ref = self._subject_ref_for_user_id(request.user_id)
         with self._lock:
+            own_txn = self._own_transaction()
             try:
-                self.conn.execute("BEGIN IMMEDIATE")
+                if own_txn:
+                    self.conn.execute("BEGIN IMMEDIATE")
                 self._assert_subject_writable_locked(subject_ref)
                 self.conn.execute(
                     """INSERT OR REPLACE INTO requests
@@ -61,9 +64,11 @@ class RequestMixin:
                         subject_ref,
                     ),
                 )
-                self.conn.commit()
+                if own_txn:
+                    self.conn.commit()
             except Exception:
-                self.conn.rollback()
+                if own_txn:
+                    self.conn.rollback()
                 raise
 
     @SQLiteStorageBase.handle_exceptions

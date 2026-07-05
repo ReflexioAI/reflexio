@@ -7,6 +7,7 @@ are available.
 
 """
 
+import contextlib
 import functools
 import json
 import logging
@@ -14,7 +15,7 @@ import math
 import re
 import sqlite3
 import threading
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Generator, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, ClassVar, Literal
@@ -590,6 +591,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
     # FTS/vec index helpers provided by SQLiteFtsVecMixin via the composed
     # SQLiteStorage MRO; declared here for _migrate_vec_tables's benefit.
     _vec_upsert: Any
+    _flush_index_op: Any
 
     @staticmethod
     def handle_exceptions(func: Callable[..., Any]) -> Callable[..., Any]:
@@ -633,6 +635,10 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
 
         self.db_path = db_path
         self._lock = threading.RLock()
+        self._scope_depth = 0
+        self._deferred_index_ops: list[
+            tuple[str, Any]
+        ] = []  # (kind, args) flushed post-commit
 
         logger.info("SQLite Storage for org %s using db_path: %s", org_id, db_path)
 
@@ -669,6 +675,45 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
 
         # Create tables
         self.migrate()
+
+    # ------------------------------------------------------------------
+    # Transaction scope
+    # ------------------------------------------------------------------
+
+    def _own_transaction(self) -> bool:
+        """True when the caller is NOT inside a commit_scope (owns its BEGIN/commit)."""
+        return self._scope_depth == 0
+
+    @contextlib.contextmanager
+    def commit_scope(self) -> Generator[None, None, None]:
+        """Group writes into one atomic commit; defer FTS/vec index ops.
+
+        Nested scopes join the outermost: only the outer scope commits. On
+        exception the whole transaction rolls back and deferred index ops
+        are discarded.
+        """
+        with self._lock:
+            if self._scope_depth > 0:
+                self._scope_depth += 1
+                try:
+                    yield
+                finally:
+                    self._scope_depth -= 1
+                return
+            self.conn.execute("BEGIN IMMEDIATE")
+            self._scope_depth = 1
+            try:
+                yield
+                self.conn.commit()
+                ops, self._deferred_index_ops = self._deferred_index_ops, []
+                for kind, args in ops:
+                    self._flush_index_op(kind, args)  # self-commits — fine post-commit
+            except Exception:
+                self.conn.rollback()
+                self._deferred_index_ops = []
+                raise
+            finally:
+                self._scope_depth = 0
 
     # ------------------------------------------------------------------
     # DDL / migration
@@ -714,6 +759,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         self._migrate_retire_profile_change_logs()
         self._migrate_retire_playbook_aggregation_change_logs()
         init_stall_state_table(self.conn)
+        self._migrate_learning_jobs()
         return True
 
     def _try_load_sqlite_vec(self) -> bool:
@@ -1261,6 +1307,70 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             )
             self.conn.commit()
 
+    def _migrate_learning_jobs(self) -> None:
+        """Create the learning_jobs table + partial indexes if missing (idempotent).
+
+        Runs ``CREATE TABLE IF NOT EXISTS`` and ``CREATE INDEX IF NOT EXISTS`` only —
+        both are no-ops when the table / indexes already exist.  New columns added in
+        subsequent tasks are backfilled via ``PRAGMA table_info`` + ``ALTER TABLE … ADD
+        COLUMN`` (mirroring ``_migrate_lineage_event_table``), because
+        ``CREATE TABLE IF NOT EXISTS`` silently skips the DDL on existing databases.
+
+        Called at the end of migrate() so the table is always present on startup.
+        """
+        with self._lock:
+            self.conn.executescript("""
+                CREATE TABLE IF NOT EXISTS learning_jobs (
+                    job_id TEXT PRIMARY KEY,
+                    org_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    job_type TEXT NOT NULL DEFAULT 'learning',
+                    latest_request_id TEXT,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    max_attempts INTEGER NOT NULL DEFAULT 3,
+                    claimed_by TEXT,
+                    claim_token TEXT,
+                    claim_expires_at TEXT,
+                    covers_through TEXT,
+                    force_extraction INTEGER NOT NULL DEFAULT 0,
+                    skip_aggregation INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+                    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS learning_jobs_coalesce
+                    ON learning_jobs (org_id, user_id, job_type) WHERE status = 'pending';
+                -- Recreate the poll index with 'failed' in the predicate. CREATE
+                -- INDEX IF NOT EXISTS is a no-op on an existing index with the old
+                -- ('pending','claimed') predicate, so DROP first to migrate it.
+                DROP INDEX IF EXISTS learning_jobs_poll;
+                CREATE INDEX IF NOT EXISTS learning_jobs_poll
+                    ON learning_jobs (created_at) WHERE status IN ('pending','failed','claimed');
+            """)
+            # Backfill columns added after the initial release (existing DBs skip
+            # CREATE TABLE IF NOT EXISTS so these must be applied separately).
+            existing_cols = {
+                row["name"]
+                for row in self.conn.execute(
+                    "PRAGMA table_info(learning_jobs)"
+                ).fetchall()
+            }
+            if "force_extraction" not in existing_cols:
+                self.conn.execute(
+                    "ALTER TABLE learning_jobs ADD COLUMN force_extraction INTEGER NOT NULL DEFAULT 0"
+                )
+            if "skip_aggregation" not in existing_cols:
+                self.conn.execute(
+                    "ALTER TABLE learning_jobs ADD COLUMN skip_aggregation INTEGER NOT NULL DEFAULT 0"
+                )
+            self.conn.commit()
+
+    def learning_jobs_columns(self) -> list[str]:
+        """Return the column names of the learning_jobs table."""
+        with self._lock:
+            rows = self.conn.execute("PRAGMA table_info(learning_jobs)").fetchall()
+        return [row["name"] for row in rows]
+
     def _migrate_agent_playbook_source_windows(self) -> None:
         """Add source window snapshots to existing agent source mappings."""
         cols = {
@@ -1451,7 +1561,8 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
     ) -> sqlite3.Cursor:
         with self._lock:
             cur = self.conn.execute(sql, params)
-            self.conn.commit()
+            if self._own_transaction():
+                self.conn.commit()
             return cur
 
     def _fetchone(
@@ -2093,5 +2204,32 @@ CREATE TABLE IF NOT EXISTS lineage_event (
     UNIQUE (org_id, entity_type, entity_id, op, request_id)
 );
 CREATE INDEX IF NOT EXISTS idx_lineage_entity ON lineage_event (entity_type, entity_id);
+
+-- ============================================================================
+-- Durable learning pipeline — cross-org job queue
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS learning_jobs (
+    job_id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    job_type TEXT NOT NULL DEFAULT 'learning',
+    latest_request_id TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    max_attempts INTEGER NOT NULL DEFAULT 3,
+    claimed_by TEXT,
+    claim_token TEXT,
+    claim_expires_at TEXT,
+    covers_through TEXT,
+    force_extraction INTEGER NOT NULL DEFAULT 0,
+    skip_aggregation INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS learning_jobs_coalesce
+    ON learning_jobs (org_id, user_id, job_type) WHERE status = 'pending';
+CREATE INDEX IF NOT EXISTS learning_jobs_poll
+    ON learning_jobs (created_at) WHERE status IN ('pending','failed','claimed');
 
 """

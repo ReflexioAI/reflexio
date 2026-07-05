@@ -1,6 +1,7 @@
 """Interaction route handlers (extracted from api.py, Tier3 A2)."""
 
 import logging
+import uuid
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -10,6 +11,7 @@ from fastapi import (
     APIRouter,
     BackgroundTasks,
     Depends,
+    HTTPException,
     Request,
 )
 
@@ -30,6 +32,7 @@ from reflexio.models.api_schema.service_schemas import (
     DeleteSessionResponse,
     DeleteUserInteractionRequest,
     DeleteUserInteractionResponse,
+    LearningStatusResponse,
     PublishUserInteractionRequest,
     PublishUserInteractionResponse,
 )
@@ -79,6 +82,14 @@ def publish_user_interaction(
             ),
         )
 
+    # Resolve the request_id BEFORE backgrounding so we can return it to the
+    # caller for polling. GenerationService uses a caller-supplied request_id
+    # verbatim (and generates one only when absent), so pinning it on the
+    # payload guarantees the background task stores its status under the same
+    # id we hand back here.
+    request_id = payload.request_id or str(uuid.uuid4())
+    payload.request_id = request_id
+
     def _publish_task() -> None:
         try:
             publisher_api.add_user_interaction(
@@ -89,10 +100,16 @@ def publish_user_interaction(
         except Exception:
             logger.exception("Background publish failed for org %s", org_id)
 
-    # Run in background — caller gets immediate acknowledgement
+    # Run in background — caller gets immediate acknowledgement.
+    # learning_status="deferred" tells the caller that extraction has not yet
+    # run; they can poll GET /api/learning_status?request_id=... (using the
+    # request_id returned here) to track it.
     background_tasks.add_task(_publish_task)
     return PublishUserInteractionResponse(
-        success=True, message="Interaction queued for processing"
+        success=True,
+        message="Interaction queued for processing",
+        request_id=request_id,
+        learning_status="deferred",
     )
 
 
@@ -257,3 +274,47 @@ def get_requests_endpoint(
         has_more=internal_response.has_more,
         msg=internal_response.msg,
     )
+
+
+@router.get(
+    "/api/learning_status",
+    response_model=LearningStatusResponse,
+    response_model_exclude_none=True,
+)
+@limiter.limit("120/minute")
+def get_learning_status(
+    request: Request,
+    request_id: str,
+    org_id: str = Depends(default_get_org_id),
+) -> LearningStatusResponse:
+    """Return the coverage-based learning status for a published request.
+
+    The status reflects whether a durable learning job has processed through
+    the request's creation timestamp:
+
+    - ``pending``: not yet picked up.
+    - ``processing``: a worker currently holds the job.
+    - ``done``: at least one completed job covers this request.
+    - ``failed``: a dead job covers this request and no done job does.
+
+    Note: this endpoint reads ``learning_jobs`` rows written by the durable
+    queue. When the durable queue is OFF (in-memory deferred path) it returns
+    absence-based status (``pending`` for recent requests, ``done`` for old
+    ones) — acceptable for v1; the poll contract is tied to the durable queue.
+
+    Raises:
+        HTTPException: 404 when ``request_id`` is not found for this org.
+            Never reports ``done`` for a request that never existed.
+    """
+    reflexio = reflexio_cache.get_reflexio(org_id=org_id)
+    storage = reflexio.request_context.storage
+    if storage is None:
+        raise HTTPException(status_code=503, detail="Storage not configured")
+    req = storage.get_request(request_id)
+    if req is None:
+        raise HTTPException(status_code=404, detail="request not found")
+    status = storage.get_learning_status_for_request(
+        user_id=req.user_id,
+        request_created_at=float(req.created_at),
+    )
+    return LearningStatusResponse(status=status)

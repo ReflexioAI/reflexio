@@ -77,6 +77,7 @@ class ProfileStoreMixin:
     _has_sqlite_vec: bool
     _subject_ref_for_user_id: Any
     _assert_subject_writable_locked: Any
+    _own_transaction: Any
 
     def _subject_ref_from_profile_row(self, row: sqlite3.Row) -> str:
         subject_ref = row["governance_subject_ref"]
@@ -224,8 +225,10 @@ class ProfileStoreMixin:
                 profile.embedding = self._get_embedding(embedding_text)
             embedding = profile.embedding
             with self._lock:
+                own_txn = self._own_transaction()
                 try:
-                    self.conn.execute("BEGIN IMMEDIATE")
+                    if own_txn:
+                        self.conn.execute("BEGIN IMMEDIATE")
                     self._assert_subject_writable_locked(subject_ref)
                     self.conn.execute(
                         """INSERT OR REPLACE INTO profiles
@@ -261,9 +264,11 @@ class ProfileStoreMixin:
                             subject_ref,
                         ),
                     )
-                    self.conn.commit()
+                    if own_txn:
+                        self.conn.commit()
                 except Exception:
-                    self.conn.rollback()
+                    if own_txn:
+                        self.conn.rollback()
                     raise
             fts_parts = [profile.content or ""]
             if profile.custom_features:
@@ -809,7 +814,8 @@ class ProfileStoreMixin:
                         status_namespace="lifecycle_status",
                     )
                     committed_ids.append(pid)
-            self.conn.commit()
+            if self._own_transaction():
+                self.conn.commit()
         return committed_ids
 
     @SQLiteStorageBase.handle_exceptions

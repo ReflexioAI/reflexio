@@ -22,6 +22,7 @@ from reflexio.models.api_schema.service_schemas import (
 )
 from reflexio.models.config_schema import Config
 from reflexio.server.api_endpoints.request_context import RequestContext
+from reflexio.server.env_utils import env_str, env_truthy
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.operation_limiter import operation_limit
 from reflexio.server.services.agent_success_evaluation.runner import (
@@ -249,17 +250,32 @@ class GenerationService:
                 session_id=publish_user_interaction_request.session_id,
                 evaluation_only=publish_user_interaction_request.evaluation_only,
             )
-            self.storage.add_request(new_request)  # type: ignore[reportOptionalMemberAccess]
 
-            # Add interactions to storage (bulk insert with batched embedding generation)
-            self.storage.add_user_interactions_bulk(  # type: ignore[reportOptionalMemberAccess]
-                user_id=user_id, interactions=new_interactions
+            # When the durable queue is enabled and this is a deferred publish, the
+            # request + interactions + job row are written together inside a single
+            # commit_scope (below).  Every other path persists here unconditionally.
+            use_durable_queue = env_truthy(
+                env_str("REFLEXIO_DURABLE_LEARNING_QUEUE", "false")
             )
+            _durable_defer = defer_learning and use_durable_queue
+
+            if not _durable_defer:
+                self.storage.add_request(new_request)  # type: ignore[reportOptionalMemberAccess]
+                # Add interactions to storage (bulk insert with batched embedding generation)
+                self.storage.add_user_interactions_bulk(  # type: ignore[reportOptionalMemberAccess]
+                    user_id=user_id, interactions=new_interactions
+                )
 
             # Extract source (empty string treated as None)
             source = publish_user_interaction_request.source or None
 
             if publish_user_interaction_request.evaluation_only:
+                if _durable_defer:
+                    # evaluation_only returns early; ensure data lands even on durable path.
+                    self.storage.add_request(new_request)  # type: ignore[reportOptionalMemberAccess]
+                    self.storage.add_user_interactions_bulk(  # type: ignore[reportOptionalMemberAccess]
+                        user_id=user_id, interactions=new_interactions
+                    )
                 self._schedule_group_evaluation_if_needed(
                     new_request=new_request,
                     user_id=user_id,
@@ -290,6 +306,12 @@ class GenerationService:
                 not publish_user_interaction_request.override_learning_stall
                 and (stall_warning := self._active_learning_stall_warning()) is not None
             ):
+                if _durable_defer:
+                    # Stall skips learning but data must still land.
+                    self.storage.add_request(new_request)  # type: ignore[reportOptionalMemberAccess]
+                    self.storage.add_user_interactions_bulk(  # type: ignore[reportOptionalMemberAccess]
+                        user_id=user_id, interactions=new_interactions
+                    )
                 result.warnings.append(stall_warning)
                 logger.warning("%s; skipping automatic extraction", stall_warning)
                 record_usage_event(
@@ -309,6 +331,54 @@ class GenerationService:
                 return result
 
             if defer_learning:
+                if _durable_defer:
+                    # Durable atomic path: pre-generate embeddings OUTSIDE the
+                    # transaction (network call), then persist request + interactions
+                    # + job in one commit_scope.
+                    self.storage.prepare_interaction_embeddings(new_interactions)  # type: ignore[reportOptionalMemberAccess]
+                    covers_through = max(i.created_at for i in new_interactions)
+                    with self.storage.commit_scope():  # type: ignore[reportOptionalMemberAccess]
+                        self.storage.add_request(new_request)  # type: ignore[reportOptionalMemberAccess]
+                        self.storage.add_user_interactions_bulk(  # type: ignore[reportOptionalMemberAccess]
+                            user_id=user_id,
+                            interactions=new_interactions,
+                            embeddings_prepared=True,
+                        )
+                        self.storage.enqueue_learning_job(  # type: ignore[reportOptionalMemberAccess]
+                            org_id=self.org_id,
+                            user_id=user_id,
+                            request_id=request_id,
+                            covers_through=covers_through,
+                            force_extraction=publish_user_interaction_request.force_extraction,
+                            skip_aggregation=publish_user_interaction_request.skip_aggregation,
+                        )
+                    self._schedule_group_evaluation_if_needed(
+                        new_request=new_request,
+                        user_id=user_id,
+                        agent_version=agent_version,
+                        source=source,
+                    )
+                    record_usage_event(
+                        org_id=self.org_id,
+                        user_id=user_id,
+                        request_id=request_id,
+                        session_id=new_request.session_id,
+                        source=source,
+                        agent_version=agent_version,
+                        backend="durable",
+                        event_name="publish_request_succeeded",
+                        event_category="publish",
+                        outcome="success",
+                        count_value=len(new_interactions),
+                        duration_ms=int((time.perf_counter() - publish_start) * 1000),
+                        metadata={
+                            "defer_learning": True,
+                            "durable_queue": True,
+                            "warning_count": len(result.warnings),
+                        },
+                    )
+                    return result
+
                 from reflexio.server.services.publish_learning_worker import (
                     PublishLearningJob,
                     enqueue_publish_learning,
@@ -444,7 +514,16 @@ class GenerationService:
         agent_version: str,
         force_extraction: bool,
         skip_aggregation: bool,
+        sequential: bool = False,
     ) -> GenerationServiceResult:
+        """Run the learning steps for a deferred job.
+
+        Args:
+            sequential: When True, run profile and playbook generation on the
+                calling thread (no ThreadPoolExecutor).  Required when the
+                caller already holds the storage commit_scope lock — spawning
+                worker threads inside that scope would deadlock on the RLock.
+        """
         result = GenerationServiceResult(request_id=request_id)
         self._run_learning_steps(
             user_id=user_id,
@@ -454,6 +533,7 @@ class GenerationService:
             skip_aggregation=skip_aggregation,
             source=source,
             result=result,
+            parallel=not sequential,
         )
         return result
 
@@ -471,6 +551,7 @@ class GenerationService:
         skip_aggregation: bool,
         source: str | None,
         result: GenerationServiceResult,
+        parallel: bool = True,
     ) -> None:
         # Reflection runs as its own sliding-window step BEFORE the extractor
         # pool spins up, so replacements are visible to extractors.
@@ -504,43 +585,29 @@ class GenerationService:
             force_extraction=force_extraction,
         )
 
-        executor = ThreadPoolExecutor(max_workers=2)
-        try:
-            futures = [
-                executor.submit(
-                    contextvars.copy_context().run,
-                    profile_generation_service.run,
-                    profile_generation_request,
+        if not parallel:
+            # Sequential mode: run both services on the calling thread.
+            # Required when the caller holds a commit_scope lock — spawning
+            # child threads inside that scope would deadlock the SQLite RLock.
+            for svc_name, _run in (
+                (
+                    "profile_generation",
+                    lambda: profile_generation_service.run(profile_generation_request),
                 ),
-                executor.submit(
-                    contextvars.copy_context().run,
-                    playbook_generation_service.run,
-                    playbook_generation_request,
+                (
+                    "playbook_generation",
+                    lambda: playbook_generation_service.run(
+                        playbook_generation_request
+                    ),
                 ),
-            ]
-
-            service_names = ["profile_generation", "playbook_generation"]
-            for future, service_name in zip(futures, service_names, strict=True):
+            ):
                 try:
-                    future.result(timeout=GENERATION_SERVICE_TIMEOUT_SECONDS)
-                except FuturesTimeoutError:  # noqa: PERF203
-                    msg = (
-                        f"{service_name} timed out after "
-                        f"{GENERATION_SERVICE_TIMEOUT_SECONDS}s"
-                    )
-                    with sentry_tags(
-                        subsystem="generation",
-                        service=service_name,
-                        request_id=request_id,
-                        error_type="timeout",
-                    ):
-                        logger.error("%s for request %s", msg, request_id)
-                    result.warnings.append(msg)
+                    _run()
                 except Exception as e:
-                    msg = f"{service_name} failed: {e}"
+                    msg = f"{svc_name} failed: {e}"
                     with sentry_tags(
                         subsystem="generation",
-                        service=service_name,
+                        service=svc_name,
                         request_id=request_id,
                         error_type=type(e).__name__,
                     ):
@@ -549,8 +616,54 @@ class GenerationService:
                             request_id,
                         )
                     result.warnings.append(msg)
-        finally:
-            executor.shutdown(wait=False, cancel_futures=True)
+        else:
+            executor = ThreadPoolExecutor(max_workers=2)
+            try:
+                futures = [
+                    executor.submit(
+                        contextvars.copy_context().run,
+                        profile_generation_service.run,
+                        profile_generation_request,
+                    ),
+                    executor.submit(
+                        contextvars.copy_context().run,
+                        playbook_generation_service.run,
+                        playbook_generation_request,
+                    ),
+                ]
+
+                service_names = ["profile_generation", "playbook_generation"]
+                for future, service_name in zip(futures, service_names, strict=True):
+                    try:
+                        future.result(timeout=GENERATION_SERVICE_TIMEOUT_SECONDS)
+                    except FuturesTimeoutError:  # noqa: PERF203
+                        msg = (
+                            f"{service_name} timed out after "
+                            f"{GENERATION_SERVICE_TIMEOUT_SECONDS}s"
+                        )
+                        with sentry_tags(
+                            subsystem="generation",
+                            service=service_name,
+                            request_id=request_id,
+                            error_type="timeout",
+                        ):
+                            logger.error("%s for request %s", msg, request_id)
+                        result.warnings.append(msg)
+                    except Exception as e:
+                        msg = f"{service_name} failed: {e}"
+                        with sentry_tags(
+                            subsystem="generation",
+                            service=service_name,
+                            request_id=request_id,
+                            error_type=type(e).__name__,
+                        ):
+                            logger.exception(
+                                "Generation service failed for request %s",
+                                request_id,
+                            )
+                        result.warnings.append(msg)
+            finally:
+                executor.shutdown(wait=False, cancel_futures=True)
 
         try:
             schedule_tagging(

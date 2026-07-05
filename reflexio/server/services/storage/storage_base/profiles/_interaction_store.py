@@ -28,15 +28,37 @@ class InteractionStoreMixin:
 
     @abstractmethod
     def add_user_interactions_bulk(
-        self, user_id: str, interactions: list[Interaction]
+        self,
+        user_id: str,
+        interactions: list[Interaction],
+        *,
+        embeddings_prepared: bool = False,
     ) -> None:
         """Add multiple user interactions with batched embedding generation.
 
         Args:
             user_id: The user ID
             interactions: List of interactions to add
+            embeddings_prepared: When True, skip all embedding generation and write
+                whatever embedding is already on each interaction (real or ``[]``).
+                Use on the durable path after ``prepare_interaction_embeddings`` to
+                ensure no network I/O occurs inside an open ``commit_scope``.
         """
         raise NotImplementedError
+
+    def prepare_interaction_embeddings(self, interactions: list[Interaction]) -> None:  # noqa: ARG002
+        """Pre-populate interaction.embedding for each interaction without writing to storage.
+
+        Call this before opening a commit_scope to avoid a network round-trip inside
+        the transaction.  Subclasses that generate embeddings client-side MUST override
+        this to call get_embeddings and populate interaction.embedding before the scope
+        is opened; backends where the embedding is generated server-side can leave this
+        as a no-op.
+
+        Args:
+            interactions: Interactions whose embedding fields will be populated in-place.
+        """
+        return
 
     @abstractmethod
     def delete_user_interaction(self, request: DeleteUserInteractionRequest) -> None:

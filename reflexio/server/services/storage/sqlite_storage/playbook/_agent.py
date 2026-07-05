@@ -87,6 +87,7 @@ class AgentPlaybookStoreMixin:
     _fts_upsert: Any
     _vec_upsert: Any
     _delete_playbook_search_rows: Any
+    _own_transaction: Any
 
     def _index_agent_playbook_fts_vec(self, ap: AgentPlaybook) -> None:
         """Update the FTS and vector indexes for a single agent playbook row.
@@ -178,7 +179,8 @@ class AgentPlaybookStoreMixin:
             created_at_iso = _epoch_to_iso(ap.created_at)
             with self._lock:
                 self._insert_agent_playbook_row(self.conn, ap, created_at_iso)
-                self.conn.commit()
+                if self._own_transaction():
+                    self.conn.commit()
 
             self._index_agent_playbook_fts_vec(ap)
             saved.append(ap)
@@ -228,6 +230,7 @@ class AgentPlaybookStoreMixin:
 
         created_at_iso = _epoch_to_iso(ap.created_at)
         with self._lock:
+            own_txn = self._own_transaction()
             try:
                 self._insert_agent_playbook_row(self.conn, ap, created_at_iso)
                 _append_event_stmt(
@@ -242,9 +245,11 @@ class AgentPlaybookStoreMixin:
                     request_id=request_id,
                     reason=f"{AGGREGATE_REASON_PREFIX}{run_mode}",
                 )
-                self.conn.commit()
+                if own_txn:
+                    self.conn.commit()
             except Exception:
-                self.conn.rollback()
+                if own_txn:
+                    self.conn.rollback()
                 raise
 
         # FTS/vec indexing AFTER commit — these helpers self-commit and must
@@ -609,7 +614,8 @@ class AgentPlaybookStoreMixin:
                     to_status="archived",
                     status_namespace="lifecycle_status",
                 )
-            self.conn.commit()
+            if self._own_transaction():
+                self.conn.commit()
 
     @SQLiteStorageBase.handle_exceptions
     def archive_agent_playbooks_by_ids(self, agent_playbook_ids: list[int]) -> None:
@@ -648,7 +654,8 @@ class AgentPlaybookStoreMixin:
                     to_status="archived",
                     status_namespace="lifecycle_status",
                 )
-            self.conn.commit()
+            if self._own_transaction():
+                self.conn.commit()
 
     @SQLiteStorageBase.handle_exceptions
     def supersede_agent_playbooks_by_ids(
@@ -712,7 +719,8 @@ class AgentPlaybookStoreMixin:
                         request_id=request_id,
                     )
                     updated += 1
-            self.conn.commit()
+            if self._own_transaction():
+                self.conn.commit()
         return updated
 
     @SQLiteStorageBase.handle_exceptions
@@ -773,7 +781,8 @@ class AgentPlaybookStoreMixin:
                         request_id=request_id,
                     )
                     updated += 1
-            self.conn.commit()
+            if self._own_transaction():
+                self.conn.commit()
         return updated
 
     @SQLiteStorageBase.handle_exceptions

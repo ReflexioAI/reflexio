@@ -445,12 +445,17 @@ class ReflexioClient:
                 explicit retry after reauth or limit reset.
 
         Returns:
-            PublishUserInteractionResponse: Server response. In
-                ``wait_for_response=False`` mode this is a bare
-                acknowledgement ("Interaction queued for processing")
-                without extraction counts; in ``wait_for_response=True``
-                mode it includes request_id, storage routing, and
-                deltas.
+            PublishUserInteractionResponse: Server response.
+
+                In deferred mode (``wait_for_response=False``) the
+                response carries ``learning_status="deferred"`` and a
+                ``request_id``; ``profiles_added``/``playbooks_added`` are
+                0 because extraction has not run yet. Poll
+                ``get_learning_status(request_id)`` for completion.
+
+                In ``wait_for_response=True`` mode the server waits for
+                extraction and the response includes ``request_id``,
+                storage routing, and real profile/playbook deltas.
         """
         if session_id is None or not session_id.strip():
             raise ValueError("session_id is required and cannot be empty")
@@ -480,6 +485,35 @@ class ReflexioClient:
         self._cache.invalidate("get_profiles")
         self._cache.invalidate("get_agent_playbooks")
         return result
+
+    def get_learning_status(self, request_id: str) -> str:
+        """Poll the learning status for a previously published request.
+
+        Call this after a deferred ``publish_interaction`` (where
+        ``wait_for_response=False``).  The response carries
+        ``learning_status="deferred"`` to signal that extraction has been
+        queued; use this method to track progress once the durable queue
+        is active.
+
+        Args:
+            request_id: The ``request_id`` of the published interaction, as
+                returned in ``PublishUserInteractionResponse.request_id``
+                (populated on both the deferred and ``wait_for_response=True``
+                paths) or known by the caller.
+
+        Returns:
+            One of: ``"pending"`` | ``"processing"`` | ``"done"`` | ``"failed"``.
+
+        Raises:
+            requests.HTTPError: 404 when the request_id is not known to the
+                server for this org.
+        """
+        response = self._make_request(
+            "GET",
+            "/api/learning_status",
+            params={"request_id": request_id},
+        )
+        return str(response["status"])
 
     def search_interactions(
         self,

@@ -71,6 +71,7 @@ class UserPlaybookStoreMixin:
     _delete_playbook_search_rows: Any
     _subject_ref_for_user_id: Any
     _assert_subject_writable_locked: Any
+    _own_transaction: Any
 
     def _subject_ref_from_user_playbook_row(self, row: sqlite3.Row) -> str:
         subject_ref = row["governance_subject_ref"]
@@ -119,8 +120,10 @@ class UserPlaybookStoreMixin:
 
             created_at_iso = _epoch_to_iso(up.created_at)
             with self._lock:
+                own_txn = self._own_transaction()
                 try:
-                    self.conn.execute("BEGIN IMMEDIATE")
+                    if own_txn:
+                        self.conn.execute("BEGIN IMMEDIATE")
                     self._assert_subject_writable_locked(subject_ref)
                     cur = self.conn.execute(
                         """INSERT INTO user_playbooks
@@ -159,9 +162,11 @@ class UserPlaybookStoreMixin:
                     )
                     upid = cur.lastrowid or 0
                     up.user_playbook_id = upid
-                    self.conn.commit()
+                    if own_txn:
+                        self.conn.commit()
                 except Exception:
-                    self.conn.rollback()
+                    if own_txn:
+                        self.conn.rollback()
                     raise
 
             fts_parts = [up.trigger or "", up.content or ""]
@@ -789,7 +794,8 @@ class UserPlaybookStoreMixin:
                         to_status=None,
                         status_namespace=None,
                     )
-                self.conn.commit()
+                if self._own_transaction():
+                    self.conn.commit()
 
     @SQLiteStorageBase.handle_exceptions
     def supersede_user_playbooks_by_ids(
@@ -840,5 +846,6 @@ class UserPlaybookStoreMixin:
                         request_id=request_id,
                     )
                     updated += 1
-            self.conn.commit()
+            if self._own_transaction():
+                self.conn.commit()
         return updated

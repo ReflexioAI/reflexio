@@ -1,3 +1,4 @@
+from ._learning_jobs import SQLiteLearningJobStoreMixin
 from ._base import (
     SQLiteStorageBase,
     _cosine_similarity,
@@ -48,6 +49,7 @@ from .profiles import InteractionStoreMixin, ProfileSearchMixin, ProfileStoreMix
 
 
 class SQLiteStorage(
+    SQLiteLearningJobStoreMixin,
     SQLiteAgentRunStoreMixin,
     SQLitePendingToolCallStoreMixin,
     SQLiteRunToolDependencyStoreMixin,
