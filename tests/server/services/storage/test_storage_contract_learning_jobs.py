@@ -454,6 +454,24 @@ class TestOrgDiscovery:
         )
         assert storage.org_id not in storage.list_org_ids_with_pending_learning_jobs()
 
+    def test_expired_claim_makes_org_discoverable(self, storage) -> None:
+        """A job with a live claim hides the org; once the lease expires the org
+        resurfaces so the scheduler can reclaim and retry a stuck worker's job."""
+        _enqueue(storage, "u-exp", "r-exp", 1000.0)
+        [job] = [
+            j
+            for j in storage.claim_learning_jobs(
+                claimed_by="w1", limit=10, lease_seconds=1
+            )
+            if j.user_id == "u-exp"
+        ]
+        # Live claim: org must not appear as having actionable work.
+        assert storage.org_id not in storage.list_org_ids_with_pending_learning_jobs()
+        # Wait for the 1-second lease to expire.
+        time.sleep(2)
+        # Expired claim: org must be discoverable again.
+        assert storage.org_id in storage.list_org_ids_with_pending_learning_jobs()
+
 
 class TestRetrySemantics:
     def test_failed_job_is_reclaimable(self, storage) -> None:

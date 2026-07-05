@@ -298,8 +298,9 @@ class SQLiteLearningJobStoreMixin(LearningJobStoreABC):
         """Distinct org_ids with actionable jobs (cross-org, not org-scoped).
 
         Uses the DB's now() for the expired-lease comparison to avoid clock skew,
-        mirroring ``claim_learning_jobs``. Index-covered by ``learning_jobs_poll``
-        (predicate now includes 'failed').
+        mirroring ``claim_learning_jobs``. Index-aided by ``learning_jobs_poll``
+        (partial index narrows the scan to non-terminal rows; org_id still requires
+        a heap fetch).
         """
         rows = self._fetchall(
             """

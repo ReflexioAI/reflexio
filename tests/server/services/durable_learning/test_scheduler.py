@@ -128,7 +128,7 @@ def test_scheduler_gated_off_by_default(monkeypatch):
 
 def test_run_once_drains_discovered_orgs():
     """_run_once drives the worker over each org the provider yields; a seeded
-    pending job is drained (no longer claimable) and the poll interval returned."""
+    pending job is drained to status='done' and the poll interval returned."""
     with tempfile.TemporaryDirectory() as tmp_dir:
         factory = _factory(tmp_dir)
         ctx = factory("org_a")
@@ -136,9 +136,6 @@ def test_run_once_drains_discovered_orgs():
         _seed_pending_job(
             ctx.storage, org_id="org_a", user_id="u_a", request_id="req_a"
         )
-        assert _still_pending(ctx.storage, "u_a"), "precondition: job is pending"
-        # Undo the probe claim so the scheduler tick sees a claimable job.
-        ctx2 = factory("org_a")
 
         scheduler = DurableLearningScheduler(
             request_context_factory=factory,
@@ -147,9 +144,12 @@ def test_run_once_drains_discovered_orgs():
         interval = scheduler._run_once()
 
         assert interval == 2.0, "default poll interval is 2.0s"
-        assert not _still_pending(ctx2.storage, "u_a"), (
-            "the discovered org's pending job must be drained by the tick"
-        )
+        assert (
+            ctx.storage.get_learning_status_for_request(
+                user_id="u_a", request_created_at=1.0
+            )
+            == "done"
+        ), "the discovered org's pending job must reach status='done' after the tick"
 
 
 # ---------------------------------------------------------------------------
@@ -186,12 +186,18 @@ def test_scheduler_drains_multiple_sources_in_one_tick():
         )
         scheduler._run_once()
 
-        assert not _still_pending(factory("org_a").storage, "u_a"), (
-            "org_a's job must be drained"
-        )
-        assert not _still_pending(factory("org_b").storage, "u_b"), (
-            "org_b's job (a second ref) must also be drained in the same tick"
-        )
+        assert (
+            ctx_a.storage.get_learning_status_for_request(
+                user_id="u_a", request_created_at=1.0
+            )
+            == "done"
+        ), "org_a's job must reach status='done'"
+        assert (
+            ctx_b.storage.get_learning_status_for_request(
+                user_id="u_b", request_created_at=1.0
+            )
+            == "done"
+        ), "org_b's job (a second ref) must also reach status='done' in the same tick"
 
 
 # ---------------------------------------------------------------------------
