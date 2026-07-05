@@ -395,3 +395,76 @@ class TestFlagRoundTrip:
         ]
         assert job.force_extraction is True, "force_extraction must round-trip"
         assert job.skip_aggregation is True, "skip_aggregation must round-trip"
+
+
+class TestRetrySemantics:
+    def test_failed_job_is_reclaimable(self, storage) -> None:
+        """A failed (not dead) job must be re-claimable without manual status reset.
+
+        claim_learning_jobs includes status='failed' in its predicate.
+        fail_learning_job does NOT increment attempts — attempts tracks delivery
+        count (incremented only by claim).
+        """
+        _enqueue(storage, "u-retry", "r-retry", 1000.0)
+        [job1] = [
+            j
+            for j in storage.claim_learning_jobs(
+                claimed_by="w1", limit=10, lease_seconds=300
+            )
+            if j.user_id == "u-retry"
+        ]
+        assert job1.attempts == 1
+        storage.fail_learning_job(
+            job_id=job1.job_id, claim_token=job1.claim_token, dead=False
+        )
+
+        # Job must be re-claimable directly from 'failed' status
+        reclaimed = [
+            j
+            for j in storage.claim_learning_jobs(
+                claimed_by="w2", limit=10, lease_seconds=300
+            )
+            if j.user_id == "u-retry"
+        ]
+        assert len(reclaimed) == 1, "failed job must be re-claimable"
+        assert reclaimed[0].attempts == 2, (
+            f"re-claimed job must have attempts=2 (only claim increments), "
+            f"got {reclaimed[0].attempts}"
+        )
+
+    def test_dead_after_three_delivery_attempts(self, storage) -> None:
+        """Job goes dead after exactly max_attempts (3) delivery attempts.
+
+        Only claim increments attempts; fail does not.
+        """
+        _enqueue(storage, "u-dead3", "r-dead3", 1000.0)
+
+        # Three claim→fail cycles; dead=False for first two, dead=True on third.
+        for cycle, (expected_attempts, expect_dead) in enumerate(
+            [(1, False), (2, False), (3, True)], start=1
+        ):
+            jobs = [
+                j
+                for j in storage.claim_learning_jobs(
+                    claimed_by="w1", limit=10, lease_seconds=300
+                )
+                if j.user_id == "u-dead3"
+            ]
+            assert len(jobs) == 1, f"cycle {cycle}: expected 1 job, got {len(jobs)}"
+            job = jobs[0]
+            assert job.attempts == expected_attempts, (
+                f"cycle {cycle}: expected attempts={expected_attempts}, got {job.attempts}"
+            )
+            storage.fail_learning_job(
+                job_id=job.job_id, claim_token=job.claim_token, dead=expect_dead
+            )
+
+        # After 3 delivery attempts the job is dead — must not be reclaimable
+        post_dead = [
+            j
+            for j in storage.claim_learning_jobs(
+                claimed_by="w1", limit=10, lease_seconds=300
+            )
+            if j.user_id == "u-dead3"
+        ]
+        assert not post_dead, "dead job must not be reclaimable"

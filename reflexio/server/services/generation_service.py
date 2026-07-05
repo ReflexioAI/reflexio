@@ -616,55 +616,54 @@ class GenerationService:
                             request_id,
                         )
                     result.warnings.append(msg)
-            return
+        else:
+            executor = ThreadPoolExecutor(max_workers=2)
+            try:
+                futures = [
+                    executor.submit(
+                        contextvars.copy_context().run,
+                        profile_generation_service.run,
+                        profile_generation_request,
+                    ),
+                    executor.submit(
+                        contextvars.copy_context().run,
+                        playbook_generation_service.run,
+                        playbook_generation_request,
+                    ),
+                ]
 
-        executor = ThreadPoolExecutor(max_workers=2)
-        try:
-            futures = [
-                executor.submit(
-                    contextvars.copy_context().run,
-                    profile_generation_service.run,
-                    profile_generation_request,
-                ),
-                executor.submit(
-                    contextvars.copy_context().run,
-                    playbook_generation_service.run,
-                    playbook_generation_request,
-                ),
-            ]
-
-            service_names = ["profile_generation", "playbook_generation"]
-            for future, service_name in zip(futures, service_names, strict=True):
-                try:
-                    future.result(timeout=GENERATION_SERVICE_TIMEOUT_SECONDS)
-                except FuturesTimeoutError:  # noqa: PERF203
-                    msg = (
-                        f"{service_name} timed out after "
-                        f"{GENERATION_SERVICE_TIMEOUT_SECONDS}s"
-                    )
-                    with sentry_tags(
-                        subsystem="generation",
-                        service=service_name,
-                        request_id=request_id,
-                        error_type="timeout",
-                    ):
-                        logger.error("%s for request %s", msg, request_id)
-                    result.warnings.append(msg)
-                except Exception as e:
-                    msg = f"{service_name} failed: {e}"
-                    with sentry_tags(
-                        subsystem="generation",
-                        service=service_name,
-                        request_id=request_id,
-                        error_type=type(e).__name__,
-                    ):
-                        logger.exception(
-                            "Generation service failed for request %s",
-                            request_id,
+                service_names = ["profile_generation", "playbook_generation"]
+                for future, service_name in zip(futures, service_names, strict=True):
+                    try:
+                        future.result(timeout=GENERATION_SERVICE_TIMEOUT_SECONDS)
+                    except FuturesTimeoutError:  # noqa: PERF203
+                        msg = (
+                            f"{service_name} timed out after "
+                            f"{GENERATION_SERVICE_TIMEOUT_SECONDS}s"
                         )
-                    result.warnings.append(msg)
-        finally:
-            executor.shutdown(wait=False, cancel_futures=True)
+                        with sentry_tags(
+                            subsystem="generation",
+                            service=service_name,
+                            request_id=request_id,
+                            error_type="timeout",
+                        ):
+                            logger.error("%s for request %s", msg, request_id)
+                        result.warnings.append(msg)
+                    except Exception as e:
+                        msg = f"{service_name} failed: {e}"
+                        with sentry_tags(
+                            subsystem="generation",
+                            service=service_name,
+                            request_id=request_id,
+                            error_type=type(e).__name__,
+                        ):
+                            logger.exception(
+                                "Generation service failed for request %s",
+                                request_id,
+                            )
+                        result.warnings.append(msg)
+            finally:
+                executor.shutdown(wait=False, cancel_futures=True)
 
         try:
             schedule_tagging(

@@ -8,17 +8,19 @@ Test taxonomy:
 3. Missing Request → job failed (not dead), not processed.
 4. Dead transition — job goes dead after max_attempts threshold.
 5. Superseded job — complete_learning_job=0 rolls back profile writes.
+6. Failed job is re-claimable (no manual status reset required).
 
 SQLite storage; LLM mocked globally by conftest; embeddings disabled
 (REFLEXIO_EMBEDDING_PROVIDER=off) so _get_embedding returns [] immediately
 without loading the local ONNX model.
 
 Dead-transition semantics:
-  Both claim_learning_jobs and fail_learning_job increment `attempts`.
+  Only claim_learning_jobs increments `attempts` (fail_learning_job does not).
   With max_attempts=3 (DB default):
-    Claim 1 → attempts=1 (1<3, not dead) → fail → DB=2
-    Claim 2 → attempts=3 (3>=3, dead) → fail(dead=True)
-  So the job goes dead after 2 failure cycles.
+    Claim 1 → attempts=1 (1<3, not dead) → fail(dead=False) → status='failed'
+    Claim 2 → attempts=2 (2<3, not dead) → fail(dead=False) → status='failed'
+    Claim 3 → attempts=3 (3>=3, dead)    → fail(dead=True)  → status='dead'
+  So the job goes dead after 3 delivery attempts.
 """
 
 from __future__ import annotations
@@ -80,6 +82,7 @@ def _setup_job(
     skip_aggregation: bool = False,
 ) -> None:
     """Directly add request + interaction + job to storage without embedding calls."""
+    assert storage is not None, "_setup_job requires non-None storage"
     req = Request(
         request_id=request_id,
         user_id=user_id,
@@ -132,6 +135,7 @@ def test_exactly_once_under_claim_race():
 
         # Baseline: single worker run
         ctx_single = factory("org_single")
+        assert ctx_single.storage is not None
         _setup_job(
             ctx_single.storage,
             org_id="org_single",
@@ -150,6 +154,7 @@ def test_exactly_once_under_claim_race():
 
         # Race: two workers, same job
         ctx_race = factory("org_race")
+        assert ctx_race.storage is not None
         _setup_job(
             ctx_race.storage,
             org_id="org_race",
@@ -224,6 +229,7 @@ def test_per_job_flags_honored():
     with tempfile.TemporaryDirectory() as tmp_dir:
         factory = _factory(tmp_dir)
         ctx = factory("org_flags")
+        assert ctx.storage is not None
 
         _setup_job(
             ctx.storage,
@@ -289,6 +295,7 @@ def test_missing_request_fails_job():
     with tempfile.TemporaryDirectory() as tmp_dir:
         factory = _factory(tmp_dir)
         ctx = factory("org_missing")
+        assert ctx.storage is not None
 
         _setup_job(
             ctx.storage,
@@ -340,16 +347,19 @@ def test_missing_request_fails_job():
 
 
 def test_dead_transition_after_max_attempts():
-    """Job goes dead when claim raises job.attempts to max_attempts.
+    """Job goes dead after exactly max_attempts (3) delivery attempts.
 
-    Both claim_learning_jobs and fail_learning_job increment `attempts`.
+    Only claim_learning_jobs increments attempts; fail_learning_job does not.
     With max_attempts=3 (DB default):
-      Cycle 1: claim -> attempts=1 (1<3, not dead) -> fail(dead=False) -> DB=2
-      Cycle 2: claim -> attempts=3 (3>=3, dead)    -> fail(dead=True)  -> dead
+      Cycle 1: claim -> attempts=1 (1<3, not dead) -> fail(dead=False) -> status='failed'
+      Cycle 2: claim -> attempts=2 (2<3, not dead) -> fail(dead=False) -> status='failed'
+      Cycle 3: claim -> attempts=3 (3>=3, dead)    -> fail(dead=True)  -> status='dead'
+    Failed jobs are re-claimable naturally (no manual status reset needed).
     """
     with tempfile.TemporaryDirectory() as tmp_dir:
         factory = _factory(tmp_dir)
         ctx = factory("org_dead")
+        assert ctx.storage is not None
 
         _setup_job(
             ctx.storage,
@@ -374,7 +384,7 @@ def test_dead_transition_after_max_attempts():
         ):
             raise RuntimeError("simulated extraction failure")
 
-        # Cycle 1: claim -> attempts=1 -> not dead -> fail(dead=False) -> DB=2
+        # Cycle 1: claim -> attempts=1 (1<3, not dead) -> fail(dead=False) -> status='failed'
         [job1] = ctx.storage.claim_learning_jobs(
             claimed_by="dead_w", limit=1, lease_seconds=300
         )
@@ -393,25 +403,35 @@ def test_dead_transition_after_max_attempts():
             == "pending"
         ), "cycle 1 fail must leave job as 'pending' (reclaimable)"
 
-        # Reset to 'pending' so cycle 2 can claim it (claim only picks pending/expired)
-        with ctx.storage._lock:
-            ctx.storage.conn.execute(
-                "UPDATE learning_jobs SET status='pending', claim_token=NULL, "
-                "claim_expires_at=NULL WHERE user_id=? AND status='failed'",
-                ("u_dead",),
-            )
-            ctx.storage.conn.commit()
-
-        # Cycle 2: DB attempts=2 -> claim -> attempts=3 (>=3) -> dead=True
+        # Cycle 2: failed job is re-claimable without manual reset
+        # claim -> attempts=2 (2<3, not dead) -> fail(dead=False) -> status='failed'
         [job2] = ctx.storage.claim_learning_jobs(
             claimed_by="dead_w", limit=1, lease_seconds=300
         )
-        assert job2.attempts == 3, f"cycle 2: expected attempts=3, got {job2.attempts}"
+        assert job2.attempts == 2, f"cycle 2: expected attempts=2, got {job2.attempts}"
         with mock.patch.object(
             GenerationService, "run_deferred_learning", _always_raise
         ):
             r2 = worker._process_job(factory("org_dead"), job2)
         assert r2 is False
+
+        assert (
+            ctx.storage.get_learning_status_for_request(
+                user_id="u_dead", request_created_at=0.0
+            )
+            == "pending"
+        ), "cycle 2 fail must leave job as 'pending' (reclaimable)"
+
+        # Cycle 3: claim -> attempts=3 (3>=3, dead=True) -> fail(dead=True) -> status='dead'
+        [job3] = ctx.storage.claim_learning_jobs(
+            claimed_by="dead_w", limit=1, lease_seconds=300
+        )
+        assert job3.attempts == 3, f"cycle 3: expected attempts=3, got {job3.attempts}"
+        with mock.patch.object(
+            GenerationService, "run_deferred_learning", _always_raise
+        ):
+            r3 = worker._process_job(factory("org_dead"), job3)
+        assert r3 is False
 
         # Job must now be dead
         assert (
@@ -419,7 +439,7 @@ def test_dead_transition_after_max_attempts():
                 user_id="u_dead", request_created_at=0.0
             )
             == "failed"
-        ), "cycle 2 dead-fail must surface as 'failed'"
+        ), "cycle 3 dead-fail must surface as 'failed'"
 
         # Dead job must NOT be reclaimable
         still_claimable = ctx.storage.claim_learning_jobs(
@@ -441,6 +461,7 @@ def test_superseded_job_does_not_commit_outputs():
     with tempfile.TemporaryDirectory() as tmp_dir:
         factory = _factory(tmp_dir)
         ctx = factory("org_supersede")
+        assert ctx.storage is not None
 
         _setup_job(
             ctx.storage,
@@ -469,4 +490,109 @@ def test_superseded_job_does_not_commit_outputs():
         assert profiles_after == profiles_before, (
             "superseded worker must NOT commit profile writes: "
             f"before={profiles_before}, after={profiles_after}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Test 6: Failed job is re-claimable without manual status reset
+# ---------------------------------------------------------------------------
+
+
+def test_failed_job_is_reclaimable():
+    """A failed (not dead) job must be re-claimable directly.
+
+    claim_learning_jobs includes status='failed' in its predicate, so a job
+    that fails once is naturally picked up on the next poll without any manual
+    status reset.
+    """
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        factory = _factory(tmp_dir)
+        ctx = factory("org_reclaim")
+        assert ctx.storage is not None
+
+        _setup_job(
+            ctx.storage,
+            org_id="org_reclaim",
+            user_id="u_reclaim",
+            request_id="req_reclaim",
+        )
+
+        # Claim and fail the job (not dead — attempts=1 < max_attempts=3)
+        [job1] = ctx.storage.claim_learning_jobs(
+            claimed_by="w_reclaim", limit=1, lease_seconds=300
+        )
+        assert job1.attempts == 1
+        assert job1.claim_token is not None
+        ctx.storage.fail_learning_job(
+            job_id=job1.job_id, claim_token=job1.claim_token, dead=False
+        )
+
+        # Without any manual reset, the job must be immediately re-claimable
+        reclaimed = [
+            j
+            for j in ctx.storage.claim_learning_jobs(
+                claimed_by="w_reclaim2", limit=5, lease_seconds=300
+            )
+            if j.user_id == "u_reclaim"
+        ]
+        assert len(reclaimed) == 1, "failed job must be re-claimable"
+        assert reclaimed[0].attempts == 2, (
+            f"re-claimed job must have attempts=2, got {reclaimed[0].attempts}"
+        )
+        assert reclaimed[0].status == "claimed"
+
+
+# ---------------------------------------------------------------------------
+# Test 7: schedule_tagging is called on the sequential (durable) path
+# ---------------------------------------------------------------------------
+
+
+def test_run_deferred_learning_schedules_tagging():
+    """schedule_tagging must be called even when sequential=True (durable-worker path).
+
+    Previously the sequential branch in _run_learning_steps returned early before
+    reaching schedule_tagging — this test guards that regression.
+    """
+    from reflexio.server.api_endpoints.request_context import RequestContext
+    from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        ctx = RequestContext(org_id="org_tag_seq", storage_base_dir=tmp_dir)
+        gen = GenerationService(
+            llm_client=LiteLLMClient(LiteLLMConfig(model="gpt-4o-mini")),
+            request_context=ctx,
+        )
+
+        tagging_calls: list[dict] = []
+
+        def _mock_tagging(**kwargs):
+            tagging_calls.append(kwargs)
+
+        with (
+            mock.patch(
+                "reflexio.server.services.generation_service.schedule_tagging",
+                side_effect=_mock_tagging,
+            ),
+            mock.patch(
+                "reflexio.server.services.generation_service.ProfileGenerationService"
+            ),
+            mock.patch(
+                "reflexio.server.services.generation_service.PlaybookGenerationService"
+            ),
+            mock.patch.object(gen, "_maybe_run_reflection"),
+        ):
+            gen.run_deferred_learning(
+                user_id="u_tag",
+                request_id="r_tag",
+                session_id="s_tag",
+                source="test",
+                agent_version="v1",
+                force_extraction=False,
+                skip_aggregation=False,
+                sequential=True,
+            )
+
+        assert len(tagging_calls) == 1, (
+            f"schedule_tagging must be called exactly once on the sequential path, "
+            f"got {len(tagging_calls)} calls"
         )

@@ -131,13 +131,16 @@ class SQLiteLearningJobStoreMixin(LearningJobStoreABC):
                 if own_txn:
                     self.conn.execute("BEGIN IMMEDIATE")
 
-                # Find candidate job_ids using DB's now() to avoid clock skew
+                # Find candidate job_ids using DB's now() to avoid clock skew.
+                # Include 'failed' so a failed-but-not-dead job is naturally
+                # reclaimable without a manual status reset.
                 candidate_rows = self.conn.execute(
                     """
                     SELECT job_id FROM learning_jobs
                     WHERE org_id = ?
                       AND (
                             status = 'pending'
+                            OR status = 'failed'
                             OR (status = 'claimed'
                                 AND claim_expires_at < strftime('%Y-%m-%dT%H:%M:%fZ','now'))
                           )
@@ -259,7 +262,11 @@ class SQLiteLearningJobStoreMixin(LearningJobStoreABC):
         claim_token: str,
         dead: bool,
     ) -> None:
-        """Fenced fail/dead transition — increments attempts, clears token for retry."""
+        """Fenced fail/dead transition — sets status, clears token for retry.
+
+        Does NOT increment attempts: claim_learning_jobs already incremented on
+        delivery.  attempts tracks delivery count; fail only transitions status.
+        """
         new_status = "dead" if dead else "failed"
         # Clear claim_token and claim_expires_at only for 'failed' so it's reclaimable.
         # For 'dead', we keep claim_token set for auditability (won't be reclaimed anyway).
@@ -272,7 +279,6 @@ class SQLiteLearningJobStoreMixin(LearningJobStoreABC):
                     """
                     UPDATE learning_jobs SET
                         status = ?,
-                        attempts = attempts + 1,
                         claim_token = CASE WHEN ? THEN claim_token ELSE NULL END,
                         claim_expires_at = CASE WHEN ? THEN claim_expires_at ELSE NULL END,
                         updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
