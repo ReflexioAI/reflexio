@@ -110,6 +110,28 @@ class ProfileStoreMixin:
         """
         raise NotImplementedError
 
+    def count_user_profiles_by_status(
+        self, user_ids: list[str], status: Status | None
+    ) -> int:
+        """Count non-expired profiles for concrete users with the given status.
+
+        Storage backends may override this with a single query. The default keeps
+        the storage contract backward-compatible for out-of-tree backends.
+
+        Args:
+            user_ids: Concrete user IDs to include. Empty list returns 0.
+            status: Profile status to match; None means CURRENT.
+
+        Returns:
+            int: Number of matching profiles
+        """
+        if not user_ids:
+            return 0
+        return sum(
+            len(self.get_user_profile(user_id=user_id, status_filter=[status]))
+            for user_id in user_ids
+        )
+
     @abstractmethod
     def update_all_profiles_status(
         self,

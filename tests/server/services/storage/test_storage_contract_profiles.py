@@ -220,6 +220,25 @@ class TestProfileCRUD:
         )
         assert storage.count_all_profiles() == 2
 
+    def test_count_user_profiles_by_status_filters_users_and_status(
+        self, storage: BaseStorage
+    ) -> None:
+        current_1 = _make_profile("u1", "p-current-1", "likes sushi")
+        current_2 = _make_profile("u2", "p-current-2", "likes ramen")
+        pending = _make_profile("u2", "p-pending", "likes pizza")
+        pending.status = Status.PENDING
+        outside_user = _make_profile("u3", "p-current-3", "likes tacos")
+        expired = _make_profile("u1", "p-expired", "old preference")
+        expired.expiration_timestamp = 1
+
+        storage.add_user_profile("u1", [current_1, expired])
+        storage.add_user_profile("u2", [current_2, pending])
+        storage.add_user_profile("u3", [outside_user])
+
+        assert storage.count_user_profiles_by_status(["u1", "u2"], None) == 2
+        assert storage.count_user_profiles_by_status(["u1", "u2"], Status.PENDING) == 1
+        assert storage.count_user_profiles_by_status([], None) == 0
+
 
 class TestGetProfilesByIds:
     """Contract tests for get_profiles_by_ids (used by ReflectionService)."""

@@ -477,29 +477,43 @@ class ProfileGenerationService(
 
     def _get_generated_count(
         self,
-        request: RerunProfileGenerationRequest,
+        request: RerunProfileGenerationRequest | ManualProfileGenerationRequest,
         processed_user_ids: list[str] | None = None,
     ) -> int:
-        """Get the count of profiles generated during rerun.
+        """Get the count of profiles generated during batch generation.
 
-        Counts profiles with PENDING status for each processed user.
+        Counts PENDING profiles for rerun requests and CURRENT profiles for manual
+        regular requests, scoped to users the batch runner actually processed.
 
         Args:
-            request: The rerun request object
+            request: The rerun or manual generation request object
             processed_user_ids: List of user IDs processed in the batch
 
         Returns:
             Number of profiles generated
         """
-        user_ids = processed_user_ids or ([request.user_id] if request.user_id else [])
-        total = 0
-        for user_id in user_ids:
-            profiles = self.storage.get_user_profile(  # type: ignore[reportOptionalMemberAccess]
-                user_id=user_id,
-                status_filter=[Status.PENDING],
+        if isinstance(request, ManualProfileGenerationRequest):
+            return self._count_manual_generated(
+                request, processed_user_ids=processed_user_ids
             )
-            total += len(profiles)
-        return total
+
+        user_ids = self._count_user_ids(request.user_id, processed_user_ids)
+        if not user_ids:
+            return 0
+        return self.storage.count_user_profiles_by_status(  # type: ignore[reportOptionalMemberAccess]
+            user_ids=user_ids,
+            status=Status.PENDING,
+        )
+
+    @staticmethod
+    def _count_user_ids(
+        request_user_id: str | None, processed_user_ids: list[str] | None
+    ) -> list[str]:
+        """Resolve users to count without treating an empty processed batch as missing."""
+
+        if processed_user_ids is not None:
+            return processed_user_ids
+        return [request_user_id] if request_user_id else []
 
     # ===============================
     # Upgrade/Downgrade hook implementations (override base class methods)
@@ -676,15 +690,14 @@ class ProfileGenerationService(
                 "source": request.source,
                 "mode": "manual_regular",
             }
-            users_processed, _ = self._run_batch_with_progress(
+            # total_profiles is computed inside the batch runner via
+            # _get_generated_count(processed_user_ids=...).
+            users_processed, total_profiles = self._run_batch_with_progress(
                 user_ids=user_ids,
                 request=request,  # type: ignore[reportArgumentType]
                 request_params=request_params,
                 state_manager=state_manager,
             )
-
-            # 3. Count generated profiles (CURRENT status = None)
-            total_profiles = self._count_manual_generated(request)
 
             return ManualProfileGenerationResponse(
                 success=True,
@@ -700,20 +713,29 @@ class ProfileGenerationService(
                 profiles_generated=0,
             )
 
-    def _count_manual_generated(self, request: ManualProfileGenerationRequest) -> int:
+    def _count_manual_generated(
+        self,
+        request: ManualProfileGenerationRequest,
+        processed_user_ids: list[str] | None = None,
+    ) -> int:
         """
         Count profiles generated during manual regular generation.
 
-        Counts profiles with CURRENT status (None), optionally filtered by user_id.
+        Counts profiles with CURRENT status (None) for each processed user.
 
         Args:
             request: The manual generation request object
+            processed_user_ids: User IDs processed by the manual batch. When
+                the request omitted user_id, this prevents passing None through
+                to storage methods that require a concrete user.
 
         Returns:
             Number of profiles with CURRENT status
         """
-        profiles = self.storage.get_user_profile(  # type: ignore[reportOptionalMemberAccess]
-            user_id=request.user_id,  # type: ignore[reportArgumentType]
-            status_filter=[None],  # CURRENT profiles
+        user_ids = self._count_user_ids(request.user_id, processed_user_ids)
+        if not user_ids:
+            return 0
+        return self.storage.count_user_profiles_by_status(  # type: ignore[reportOptionalMemberAccess]
+            user_ids=user_ids,
+            status=None,
         )
-        return len(profiles)
