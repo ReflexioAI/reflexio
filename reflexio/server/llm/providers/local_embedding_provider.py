@@ -18,8 +18,22 @@ from __future__ import annotations
 import importlib.util
 import logging
 import os
+import shutil
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
+from pathlib import Path
 from typing import Any
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows only
+    fcntl = None  # type: ignore[assignment]
+
+try:
+    import msvcrt
+except ImportError:  # pragma: no cover - POSIX only
+    msvcrt = None  # type: ignore[assignment]
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -35,6 +49,17 @@ _TARGET_DIM = 512
 # ~4 chars/token in English prose; leave headroom so we never raise the
 # ValueError that ONNXMiniLM_L6_V2 throws on over-length input.
 _MAX_CHARS = 800
+
+# Chroma keeps this file list private inside ONNXMiniLM_L6_V2's download helper.
+# Keep this in sync with chromadb's all-MiniLM-L6-v2 extracted archive layout.
+_MINILM_EXPECTED_FILES = (
+    "config.json",
+    "model.onnx",
+    "special_tokens_map.json",
+    "tokenizer_config.json",
+    "tokenizer.json",
+    "vocab.txt",
+)
 
 
 class LocalEmbedderError(RuntimeError):
@@ -98,8 +123,53 @@ class LocalEmbedder:
         """
         ef = self._load()
         safe_inputs = [(text or "")[:_MAX_CHARS] for text in texts]
-        raw = ef(safe_inputs)
+        try:
+            raw = ef(safe_inputs)
+        except Exception as exc:  # noqa: BLE001 - Chroma raises varied cache errors.
+            raw = self._retry_embed_after_cache_clear(ef, exc, safe_inputs)
         return [_pad(vec) for vec in raw]
+
+    def _retry_embed_after_cache_clear(
+        self, failed_ef: Any, exc: Exception, safe_inputs: list[str]
+    ) -> Any:
+        with self._ef_lock:
+            if self._ef is not None and self._ef is not failed_ef:
+                return self._ef(safe_inputs)
+
+            embedding_cls = type(failed_ef)
+            recovery = _recoverable_minilm_cache(embedding_cls, exc)
+            if recovery is None:
+                raise exc
+            cache_path, cache_was_complete = recovery
+
+            with _exclusive_file_lock(_minilm_cache_lock_path(cache_path)):
+                if _should_clear_minilm_cache(
+                    embedding_cls, cache_path, exc, cache_was_complete
+                ):
+                    shutil.rmtree(cache_path, ignore_errors=True)
+                    recovery_action = "clearing"
+                    _LOGGER.warning(
+                        "Failed to use local MiniLM embedder; cleared cache %s "
+                        "and retrying once",
+                        cache_path,
+                        exc_info=True,
+                    )
+                else:
+                    recovery_action = "waiting for another process to refresh"
+                    _LOGGER.info(
+                        "MiniLM cache %s was refreshed by another process; retrying",
+                        cache_path,
+                    )
+                try:
+                    fresh_ef = embedding_cls()
+                    self._ef = fresh_ef
+                    return fresh_ef(safe_inputs)
+                except Exception as retry_exc:
+                    raise LocalEmbedderError(
+                        "Local MiniLM cache recovery failed after "
+                        f"{recovery_action} {cache_path}. Delete this cache "
+                        "directory, restart Reflexio, and retry local embedding."
+                    ) from retry_exc
 
 
 def _pad(vec: Any) -> list[float]:
@@ -111,6 +181,118 @@ def _pad(vec: Any) -> list[float]:
     if len(floats) > _TARGET_DIM:
         return floats[:_TARGET_DIM]
     return floats + [0.0] * (_TARGET_DIM - len(floats))
+
+
+def _recoverable_minilm_cache(
+    embedding_cls: Any, exc: Exception
+) -> tuple[Path, bool] | None:
+    cache_path = _minilm_cache_path(embedding_cls)
+    if cache_path is None:
+        return None
+    cache_was_complete = _minilm_cache_complete(embedding_cls, cache_path)
+    if cache_was_complete and not _complete_minilm_cache_error_identifies_cache(
+        embedding_cls, cache_path, exc
+    ):
+        return None
+
+    return cache_path, cache_was_complete
+
+
+def _minilm_cache_path(embedding_cls: Any) -> Path | None:
+    download_path = getattr(embedding_cls, "DOWNLOAD_PATH", None)
+    if not download_path:
+        return None
+
+    model_name = getattr(embedding_cls, "MODEL_NAME", None)
+    cache_path = Path(str(download_path)).expanduser()
+    if not model_name or cache_path.name != model_name:
+        return None
+
+    return cache_path
+
+
+def _minilm_cache_lock_path(cache_path: Path) -> Path:
+    return cache_path.parent / f".{cache_path.name}.lock"
+
+
+@contextmanager
+def _exclusive_file_lock(lock_path: Path) -> Iterator[None]:
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+b") as lock_file:
+        lock_file.seek(0)
+        if lock_file.read(1) == b"":
+            lock_file.write(b"\0")
+            lock_file.flush()
+        lock_file.seek(0)
+
+        if fcntl is not None:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+        elif msvcrt is not None:
+            msvcrt.locking(  # type: ignore[reportAttributeAccessIssue]
+                lock_file.fileno(),
+                msvcrt.LK_LOCK,  # type: ignore[reportAttributeAccessIssue]
+                1,
+            )
+            try:
+                yield
+            finally:
+                lock_file.seek(0)
+                msvcrt.locking(  # type: ignore[reportAttributeAccessIssue]
+                    lock_file.fileno(),
+                    msvcrt.LK_UNLCK,  # type: ignore[reportAttributeAccessIssue]
+                    1,
+                )
+        else:
+            yield
+
+
+def _should_clear_minilm_cache(
+    embedding_cls: Any, cache_path: Path, exc: Exception, cache_was_complete: bool
+) -> bool:
+    cache_is_complete = _minilm_cache_complete(embedding_cls, cache_path)
+    if not cache_is_complete:
+        return True
+
+    if not cache_was_complete:
+        return False
+
+    return _complete_minilm_cache_error_identifies_cache(embedding_cls, cache_path, exc)
+
+
+def _complete_minilm_cache_error_identifies_cache(
+    embedding_cls: Any, cache_path: Path, exc: Exception
+) -> bool:
+    chain = _exception_chain(exc)
+    archive_name = str(getattr(embedding_cls, "ARCHIVE_FILENAME", ""))
+    messages = "\n".join(str(chain_exc) for chain_exc in chain)
+    return (
+        str(cache_path) in messages
+        or bool(archive_name and archive_name in messages)
+        or "does not match expected SHA256" in messages
+    )
+
+
+def _minilm_cache_complete(embedding_cls: Any, cache_path: Path) -> bool:
+    extracted_folder = str(getattr(embedding_cls, "EXTRACTED_FOLDER_NAME", "onnx"))
+    return all(
+        (cache_path / extracted_folder / file_name).exists()
+        for file_name in _MINILM_EXPECTED_FILES
+    )
+
+
+def _exception_chain(exc: Exception) -> list[BaseException]:
+    chain: list[BaseException] = []
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        chain.append(current)
+        current = current.__cause__ or current.__context__
+    return chain
 
 
 _REGISTERED = False
