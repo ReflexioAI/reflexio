@@ -145,11 +145,17 @@ class LearningJobStoreABC(ABC):
         claim_token: str,
         dead: bool,
     ) -> None:
-        """Fenced fail/dead transition.
+        """Fenced fail/dead transition — sets status, does NOT increment attempts.
 
-        Fenced on ``claim_token``.  Increments ``attempts``.  Sets
+        Fenced on ``claim_token`` and ``status='claimed'``.  Sets
         ``status='dead'`` when ``dead=True``, else ``status='failed'`` (and
         clears ``claim_token``/``claim_expires_at`` so the job is reclaimable).
+
+        ``attempts`` is intentionally NOT incremented here.  It is incremented
+        once per delivery attempt exclusively by ``claim_learning_jobs``; the
+        worker's dead-gate (``job.attempts >= max_attempts``) depends on that
+        single-increment-per-claim invariant.  Incrementing here would
+        double-count and misfire the dead transition.
         """
         raise NotImplementedError
 
