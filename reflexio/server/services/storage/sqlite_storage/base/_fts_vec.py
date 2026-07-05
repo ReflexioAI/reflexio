@@ -55,6 +55,8 @@ class SQLiteFtsVecMixin:
         elif kind == "vec_delete":
             table, rowid = args
             self._vec_delete_now(table, rowid)
+        else:
+            raise ValueError(f"unknown index op kind: {kind!r}")
 
     # ------------------------------------------------------------------
     # FTS helpers — public (defer when in scope) + _now (immediate)

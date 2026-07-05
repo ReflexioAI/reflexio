@@ -15,7 +15,7 @@ import math
 import re
 import sqlite3
 import threading
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Generator, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, ClassVar, Literal
@@ -685,7 +685,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         return self._scope_depth == 0
 
     @contextlib.contextmanager
-    def commit_scope(self) -> Iterator[None]:  # type: ignore[override]
+    def commit_scope(self) -> Generator[None, None, None]:
         """Group writes into one atomic commit; defer FTS/vec index ops.
 
         Nested scopes join the outermost: only the outer scope commits. On

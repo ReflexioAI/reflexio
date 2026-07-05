@@ -36,3 +36,22 @@ class TestCommitScopeAtomicity:
         with storage.commit_scope():
             _seed_request(storage, "r-clean", "u-clean")
         assert storage.get_request("r-clean") is not None
+
+    def test_standalone_write_succeeds_after_failed_scope(
+        self, storage: BaseStorage
+    ) -> None:
+        """After a rolled-back commit_scope, no implicit txn must remain open.
+
+        Regression guard for the Important-1 TOCTOU fix: if own_txn is read
+        outside the lock, a stale False value skips BEGIN IMMEDIATE on the next
+        standalone call, leaving an implicit transaction open that makes the
+        following BEGIN IMMEDIATE raise OperationalError.
+        """
+        with pytest.raises(RuntimeError), storage.commit_scope():
+            _seed_request(storage, "r-fail", "u-fail")
+            raise RuntimeError("trigger rollback")
+        # The rolled-back request must not be visible.
+        assert storage.get_request("r-fail") is None
+        # A standalone write after the failed scope must succeed without error.
+        _seed_request(storage, "r-after", "u-after")
+        assert storage.get_request("r-after") is not None

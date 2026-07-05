@@ -81,8 +81,8 @@ class InteractionStoreMixin:
     def _insert_interaction(self, interaction: Interaction) -> int:
         created_at_iso = _epoch_to_iso(interaction.created_at)
         subject_ref = self._subject_ref_for_user_id(interaction.user_id)
-        own_txn = self._own_transaction()
         with self._lock:
+            own_txn = self._own_transaction()
             try:
                 if own_txn:
                     self.conn.execute("BEGIN IMMEDIATE")
