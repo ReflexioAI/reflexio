@@ -228,6 +228,24 @@ class TestLearningStatusEndpoint:
         response = http_client.get("/api/learning_status")
         assert response.status_code == 422
 
+    def test_deferred_publish_request_id_is_pollable(self, client_with_storage):
+        """request_id from a deferred publish can round-trip to GET /api/learning_status.
+
+        TestClient runs background tasks synchronously, so after the deferred
+        publish completes the request is stored and the poll must succeed.
+        """
+        http_client, _ = client_with_storage
+        response = http_client.post("/api/publish_interaction", json=_publish_payload())
+        assert response.status_code == 200
+        request_id = response.json().get("request_id")
+        assert request_id  # deferred response must carry a pollable id
+
+        status_response = http_client.get(
+            "/api/learning_status", params={"request_id": request_id}
+        )
+        assert status_response.status_code == 200
+        assert status_response.json()["status"] in _VALID_STATUS_VALUES
+
     def test_cross_org_request_id_returns_404(self, two_org_clients):
         """Org A must NOT see Org B's request status by request_id.
 
