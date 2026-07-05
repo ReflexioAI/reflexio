@@ -514,7 +514,16 @@ class GenerationService:
         agent_version: str,
         force_extraction: bool,
         skip_aggregation: bool,
+        sequential: bool = False,
     ) -> GenerationServiceResult:
+        """Run the learning steps for a deferred job.
+
+        Args:
+            sequential: When True, run profile and playbook generation on the
+                calling thread (no ThreadPoolExecutor).  Required when the
+                caller already holds the storage commit_scope lock — spawning
+                worker threads inside that scope would deadlock on the RLock.
+        """
         result = GenerationServiceResult(request_id=request_id)
         self._run_learning_steps(
             user_id=user_id,
@@ -524,6 +533,7 @@ class GenerationService:
             skip_aggregation=skip_aggregation,
             source=source,
             result=result,
+            parallel=not sequential,
         )
         return result
 
@@ -541,6 +551,7 @@ class GenerationService:
         skip_aggregation: bool,
         source: str | None,
         result: GenerationServiceResult,
+        parallel: bool = True,
     ) -> None:
         # Reflection runs as its own sliding-window step BEFORE the extractor
         # pool spins up, so replacements are visible to extractors.
@@ -573,6 +584,39 @@ class GenerationService:
             source=source,
             force_extraction=force_extraction,
         )
+
+        if not parallel:
+            # Sequential mode: run both services on the calling thread.
+            # Required when the caller holds a commit_scope lock — spawning
+            # child threads inside that scope would deadlock the SQLite RLock.
+            for svc_name, _run in (
+                (
+                    "profile_generation",
+                    lambda: profile_generation_service.run(profile_generation_request),
+                ),
+                (
+                    "playbook_generation",
+                    lambda: playbook_generation_service.run(
+                        playbook_generation_request
+                    ),
+                ),
+            ):
+                try:
+                    _run()
+                except Exception as e:
+                    msg = f"{svc_name} failed: {e}"
+                    with sentry_tags(
+                        subsystem="generation",
+                        service=svc_name,
+                        request_id=request_id,
+                        error_type=type(e).__name__,
+                    ):
+                        logger.exception(
+                            "Generation service failed for request %s",
+                            request_id,
+                        )
+                    result.warnings.append(msg)
+            return
 
         executor = ThreadPoolExecutor(max_workers=2)
         try:

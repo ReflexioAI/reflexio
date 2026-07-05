@@ -30,6 +30,7 @@ def _row_to_learning_job(row: sqlite3.Row) -> LearningJob:
         covers_through=float(_iso_to_epoch(ct)) if ct else None,
         force_extraction=bool(d.get("force_extraction", 0)),
         skip_aggregation=bool(d.get("skip_aggregation", 0)),
+        max_attempts=int(d.get("max_attempts", 3)),
     )
 
 

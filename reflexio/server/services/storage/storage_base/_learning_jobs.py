@@ -33,6 +33,7 @@ class LearningJob:
     )  # epoch seconds (converted from stored ISO/timestamptz)
     force_extraction: bool = False
     skip_aggregation: bool = False
+    max_attempts: int = 3
 
 
 class LearningJobStoreABC(ABC):
