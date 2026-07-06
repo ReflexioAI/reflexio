@@ -53,7 +53,9 @@ def test_reflection_revision_records_learnings_generated() -> None:
     )
 
     service._record_learnings_generated(
-        ReflectionServiceRequest(user_id="user-1", request_id="req-1"),
+        ReflectionServiceRequest(
+            user_id="user-1", request_id="req-1", agent_version="agent-v9"
+        ),
         result,
     )
 
@@ -66,6 +68,7 @@ def test_reflection_revision_records_learnings_generated() -> None:
     assert event.source == "reflection"
     assert event.user_id == "user-1"
     assert event.request_id == "req-1"
+    assert event.agent_version == "agent-v9"
     assert event.metadata["content_revised_count"] == 2
 
 

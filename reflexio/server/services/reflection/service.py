@@ -317,6 +317,7 @@ class ReflectionService:
             pipeline="reflection",
             user_id=request.user_id,
             request_id=request.request_id,
+            agent_version=request.agent_version,
             metadata={
                 "cited_count": result.cited_count,
                 "considered_count": result.considered_count,
