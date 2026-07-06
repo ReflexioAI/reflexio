@@ -4,8 +4,8 @@ import logging
 import os
 import time
 import uuid
-from collections.abc import Sequence
-from typing import TYPE_CHECKING
+from collections.abc import Mapping, Sequence
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     import numpy as np
@@ -728,6 +728,12 @@ class PlaybookAggregator:
                 duration_ms=int((time.perf_counter() - aggregation_start) * 1000),
                 metadata=stats,
             )
+            self._record_learnings_generated(
+                count=len(saved_playbook_list),
+                playbook_name=playbook_name,
+                request_id=_run_id,
+                metadata=stats,
+            )
             return stats
 
         except Exception as e:
@@ -759,6 +765,29 @@ class PlaybookAggregator:
                 )
             # Re-raise the exception after restoring
             raise
+
+    def _record_learnings_generated(
+        self,
+        *,
+        count: int,
+        playbook_name: str,
+        request_id: str,
+        metadata: Mapping[str, Any],
+    ) -> None:
+        from reflexio.server.billing_meter import emit_learnings_generated
+
+        emit_learnings_generated(
+            org_id=self.request_context.org_id,
+            configurator=self.configurator,
+            count=count,
+            source="aggregation",
+            pipeline="playbook",
+            request_id=request_id,
+            agent_version=self.agent_version,
+            playbook_name=playbook_name,
+            entity_type="agent_playbook",
+            metadata=metadata,
+        )
 
     def get_clusters(
         self,

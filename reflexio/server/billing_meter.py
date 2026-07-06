@@ -8,7 +8,13 @@ wrapper over the ``record_usage_event`` hook (which only enqueues). No DB I/O.
 
 from __future__ import annotations
 
+import logging
+from collections.abc import Mapping
+from typing import Any
+
 from reflexio.server.usage_metrics import record_usage_event
+
+logger = logging.getLogger(__name__)
 
 _INTERNAL = (
     "internal"  # == BillingCallerType.INTERNAL.value (kept literal; OSS stays clean)
@@ -68,8 +74,14 @@ def record_learnings_generated(
     platform_llm: bool | None,
     platform_storage: bool | None,
     pipeline: str | None = None,
+    user_id: str | None = None,
     request_id: str | None = None,
     session_id: str | None = None,
+    source: str | None = None,
+    agent_version: str | None = None,
+    playbook_name: str | None = None,
+    entity_type: str | None = None,
+    metadata: Mapping[str, Any] | None = None,
 ) -> None:
     """Emit the Learning value facet — number of profiles/playbooks generated.
 
@@ -81,8 +93,14 @@ def record_learnings_generated(
         platform_llm: True iff the platform supplies the LLM for this org.
         platform_storage: True iff the platform supplies storage; None defers to rollup.
         pipeline: Optional pipeline tag (e.g. ``"playbook"``).
+        user_id: Optional user ID tied to the generated learning.
         request_id: Optional request correlation ID.
         session_id: Optional session ID.
+        source: Optional metering source/path label.
+        agent_version: Optional agent version tied to the generated learning.
+        playbook_name: Optional playbook name for playbook learnings.
+        entity_type: Optional entity type (e.g. ``"profile"``).
+        metadata: Optional path-specific usage metadata.
     """
     if count <= 0:
         return
@@ -91,13 +109,87 @@ def record_learnings_generated(
         event_name="learnings_generated",
         event_category="learning",
         pipeline=pipeline,
+        user_id=user_id,
         request_id=request_id,
         session_id=session_id,
+        source=source,
+        agent_version=agent_version,
+        playbook_name=playbook_name,
+        entity_type=entity_type,
         count_value=count,
         platform_llm=platform_llm,
         platform_storage=platform_storage,
         caller_type=_INTERNAL,
+        metadata=metadata,
     )
+
+
+def emit_learnings_generated(
+    *,
+    org_id: str,
+    configurator: Any,
+    count: int,
+    source: str,
+    pipeline: str | None = None,
+    user_id: str | None = None,
+    request_id: str | None = None,
+    agent_version: str | None = None,
+    playbook_name: str | None = None,
+    entity_type: str | None = None,
+    metadata: Mapping[str, Any] | None = None,
+) -> None:
+    """Resolve ``platform_llm`` from config and emit the Learning value facet.
+
+    Convenience wrapper for the non-extraction learning-mutation paths (reflection,
+    resumable-extraction finalization, aggregation, offline-tuner auto-apply). It
+    owns the ``configurator.get_config()`` + ``platform_llm_from_config`` lookup so
+    each call site stays a thin one-liner, and — critically — is **guarded**: the
+    product path must never fail because metering failed, so config resolution and
+    emission are wrapped and any exception is logged and swallowed (mirroring the
+    extraction path's ``_record_billing_learning_events``). No-op when
+    ``count <= 0``.
+
+    Args:
+        org_id: Organisation identifier.
+        configurator: Object exposing ``get_config()`` for platform-LLM resolution.
+        count: Number of learnings durably produced by this path.
+        source: Metering source/path label (e.g. ``"reflection"``).
+        pipeline: Optional pipeline tag (e.g. ``"playbook"``).
+        user_id: Optional user ID tied to the generated learning.
+        request_id: Optional request correlation ID.
+        agent_version: Optional agent version tied to the generated learning.
+        playbook_name: Optional playbook name for playbook learnings.
+        entity_type: Optional entity type (e.g. ``"profile"``).
+        metadata: Optional path-specific usage metadata.
+    """
+    if count <= 0:
+        return
+    try:
+        from reflexio.server.billing_signals import platform_llm_from_config
+
+        config = configurator.get_config()
+        record_learnings_generated(
+            org_id=org_id,
+            count=count,
+            platform_llm=platform_llm_from_config(config),
+            platform_storage=None,
+            pipeline=pipeline,
+            user_id=user_id,
+            request_id=request_id,
+            source=source,
+            agent_version=agent_version,
+            playbook_name=playbook_name,
+            entity_type=entity_type,
+            metadata=metadata,
+        )
+    except Exception:
+        logger.warning(
+            "emit_learnings_generated failed for source=%s org=%s; "
+            "learnings_generated event not emitted",
+            source,
+            org_id,
+            exc_info=True,
+        )
 
 
 def record_applied_learnings(
