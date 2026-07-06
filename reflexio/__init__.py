@@ -5,6 +5,13 @@ try:
 except PackageNotFoundError:
     __version__ = "0.0.0-dev"
 
+from reflexio.models.api_schema.eval_overview_schema import (
+    GradeOnDemandRequest,
+    GradeOnDemandResponse,
+    RegenerateRequest,
+    RegenerateStartResponse,
+    RegenerateStatusResponse,
+)
 from reflexio.models.api_schema.retriever_schema import (
     ConversationTurn,
     GetAgentPlaybooksViewResponse,
@@ -125,6 +132,8 @@ __all__ = [
     "DeleteProfilesByIdsRequest",
     "DeleteAgentPlaybooksByIdsRequest",
     "DeleteUserPlaybooksByIdsRequest",
+    "GradeOnDemandRequest",
+    "RegenerateRequest",
     # Response types (internal)
     "PublishUserInteractionResponse",
     "DeleteUserProfileResponse",
@@ -135,6 +144,9 @@ __all__ = [
     "SearchInteractionResponse",
     "SearchUserProfileResponse",
     "BulkDeleteResponse",
+    "GradeOnDemandResponse",
+    "RegenerateStartResponse",
+    "RegenerateStatusResponse",
     # View response types (user-facing)
     "GetInteractionsViewResponse",
     "GetProfilesViewResponse",
