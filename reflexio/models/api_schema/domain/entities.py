@@ -599,19 +599,19 @@ class BulkDeleteResponse(BaseModel):
 
 
 class DeleteRequestsByIdsRequest(BaseModel):
-    request_ids: list[str] = Field(min_length=1)
+    request_ids: list[str] = Field(min_length=1, max_length=10_000)
 
 
 class DeleteProfilesByIdsRequest(BaseModel):
-    profile_ids: list[str] = Field(min_length=1)
+    profile_ids: list[str] = Field(min_length=1, max_length=10_000)
 
 
 class DeleteAgentPlaybooksByIdsRequest(BaseModel):
-    agent_playbook_ids: list[int] = Field(min_length=1)
+    agent_playbook_ids: list[int] = Field(min_length=1, max_length=10_000)
 
 
 class DeleteUserPlaybooksByIdsRequest(BaseModel):
-    user_playbook_ids: list[int] = Field(min_length=1)
+    user_playbook_ids: list[int] = Field(min_length=1, max_length=10_000)
 
 
 # Clear all data scoped to a single user_id (interactions, requests, user
@@ -632,16 +632,18 @@ class ClearUserDataResponse(BaseModel):
 # user provided interaction data from the request
 class InteractionData(BaseModel):
     created_at: int = Field(default_factory=lambda: int(datetime.now(UTC).timestamp()))
-    role: str = "User"
-    content: str = ""
-    shadow_content: str = ""
-    expert_content: str = ""
+    role: str = Field(default="User", max_length=1_000)
+    content: str = Field(default="", max_length=1_000_000)
+    shadow_content: str = Field(default="", max_length=1_000_000)
+    expert_content: str = Field(default="", max_length=1_000_000)
     user_action: UserActionType = UserActionType.NONE
-    user_action_description: str = ""
-    interacted_image_url: str = ""
-    image_encoding: str = ""  # base64 encoded image
-    tools_used: list[ToolUsed] = Field(default_factory=list)
-    citations: list[Citation] = Field(default_factory=list)
+    user_action_description: str = Field(default="", max_length=10_000)
+    interacted_image_url: str = Field(default="", max_length=2_048)
+    image_encoding: str = Field(
+        default="", max_length=15_000_000
+    )  # base64 encoded image
+    tools_used: list[ToolUsed] = Field(default_factory=list, max_length=1_000)
+    citations: list[Citation] = Field(default_factory=list, max_length=1_000)
 
     @field_validator("interacted_image_url", mode="after")
     @classmethod
@@ -653,11 +655,10 @@ class InteractionData(BaseModel):
 class PublishUserInteractionRequest(BaseModel):
     request_id: NonEmptyStr | None = None
     user_id: NonEmptyStr
-    interaction_data_list: list[InteractionData] = Field(min_length=1)
-    source: str = ""
-    agent_version: str = (
-        ""  # this is used for aggregating interactions for generating agent playbooks
-    )
+    interaction_data_list: list[InteractionData] = Field(min_length=1, max_length=1_000)
+    source: str = Field(default="", max_length=1_000)
+    # this is used for aggregating interactions for generating agent playbooks
+    agent_version: str = Field(default="", max_length=1_000)
     session_id: NonEmptyStr  # used for grouping requests together
     skip_aggregation: bool = (
         False  # when True, extract profiles/playbooks but skip aggregation
@@ -730,7 +731,7 @@ class MyConfigResponse(BaseModel):
 
 # add user playbook request/response
 class AddUserPlaybookRequest(BaseModel):
-    user_playbooks: list[UserPlaybook] = Field(min_length=1)
+    user_playbooks: list[UserPlaybook] = Field(min_length=1, max_length=1_000)
 
     @model_validator(mode="after")
     def check_content_fields(self) -> Self:
