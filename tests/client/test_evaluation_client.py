@@ -165,13 +165,13 @@ def test_grade_on_demand_accepts_request_dict(mock_session_class) -> None:
     }
 
 
-def test_evaluation_models_export_from_client_package() -> None:
-    from reflexio.client import (  # noqa: PLC0415
-        GradeOnDemandRequest as ClientGradeOnDemandRequest,
+def test_evaluation_models_export_from_top_level_package() -> None:
+    from reflexio import (  # noqa: PLC0415
+        GradeOnDemandRequest as TopLevelGradeOnDemandRequest,
     )
-    from reflexio.client import (
-        RegenerateRequest as ClientRegenerateRequest,
+    from reflexio import (
+        RegenerateRequest as TopLevelRegenerateRequest,
     )
 
-    assert ClientGradeOnDemandRequest is GradeOnDemandRequest
-    assert ClientRegenerateRequest is RegenerateRequest
+    assert TopLevelGradeOnDemandRequest is GradeOnDemandRequest
+    assert TopLevelRegenerateRequest is RegenerateRequest
