@@ -15,6 +15,13 @@ import requests
 from pydantic import ConfigDict
 
 from reflexio.defaults import DEFAULT_AGENT_VERSION
+from reflexio.models.api_schema.eval_overview_schema import (
+    GradeOnDemandRequest,
+    GradeOnDemandResponse,
+    RegenerateRequest,
+    RegenerateStartResponse,
+    RegenerateStatusResponse,
+)
 from reflexio.models.api_schema.retriever_schema import (
     ConversationTurn,
     GetAgentPlaybooksRequest,
@@ -1919,6 +1926,93 @@ class ReflexioClient:
             json=req.model_dump(),
         )
         return GetEvaluationResultsViewResponse(**response)
+
+    def regenerate_evaluations(
+        self,
+        request: RegenerateRequest | dict | None = None,
+        *,
+        from_ts: int | None = None,
+        to_ts: int | None = None,
+        evaluation_name: str | None = None,
+    ) -> RegenerateStartResponse:
+        """Start a replay-the-judge regeneration job over a time window.
+
+        Args:
+            request: Optional ``RegenerateRequest`` or dict. If omitted,
+                keyword arguments are used.
+            from_ts: Inclusive lower bound of the window as Unix seconds.
+            to_ts: Inclusive upper bound of the window as Unix seconds.
+            evaluation_name: Deprecated compatibility field accepted by the
+                API but ignored by the singleton evaluator.
+
+        Returns:
+            RegenerateStartResponse: The job id and number of queued sessions.
+        """
+        req = self._build_request(
+            request,
+            RegenerateRequest,
+            from_ts=from_ts,
+            to_ts=to_ts,
+            evaluation_name=evaluation_name,
+        )
+        response = self._make_request(
+            "POST",
+            "/api/evaluations/regenerate",
+            json=req.model_dump(),
+        )
+        return RegenerateStartResponse(**response)
+
+    def get_evaluation_regeneration_status(
+        self, job_id: str
+    ) -> RegenerateStatusResponse:
+        """Get status for an evaluation regeneration job."""
+        response = self._make_request(
+            "GET",
+            f"/api/evaluations/regenerate/{job_id}",
+        )
+        return RegenerateStatusResponse(**response)
+
+    def cancel_evaluation_regeneration(self, job_id: str) -> dict[str, str]:
+        """Request cancellation for an evaluation regeneration job."""
+        return self._make_request(
+            "DELETE",
+            f"/api/evaluations/regenerate/{job_id}",
+        )
+
+    def grade_on_demand(
+        self,
+        request: GradeOnDemandRequest | dict | None = None,
+        *,
+        session_id: str | None = None,
+        agent_version: str | None = None,
+        evaluation_name: str | None = None,
+    ) -> GradeOnDemandResponse:
+        """Grade a single session synchronously.
+
+        Args:
+            request: Optional ``GradeOnDemandRequest`` or dict. If omitted,
+                keyword arguments are used.
+            session_id: Session to grade.
+            agent_version: Agent version to grade.
+            evaluation_name: Deprecated compatibility field accepted by the
+                API but ignored by the singleton evaluator.
+
+        Returns:
+            GradeOnDemandResponse: Result id, cache flag, or skipped reason.
+        """
+        req = self._build_request(
+            request,
+            GradeOnDemandRequest,
+            session_id=session_id,
+            agent_version=agent_version,
+            evaluation_name=evaluation_name,
+        )
+        response = self._make_request(
+            "POST",
+            "/api/evaluations/grade_on_demand",
+            json=req.model_dump(),
+        )
+        return GradeOnDemandResponse(**response)
 
     def _poll_operation_status(
         self,
