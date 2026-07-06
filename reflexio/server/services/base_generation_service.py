@@ -159,8 +159,9 @@ class BaseGenerationService(
     ABC,
     Generic[TExtractorConfig, TExtractor, TGenerationServiceConfig, TRequest],  # noqa: UP046
 ):
-    # Only profile/playbook GENERATION services bill the ② Learning line;
-    # reflection/consolidation/aggregation/evaluation are bundled, not metered.
+    # Only profile/playbook GENERATION services emit extraction-run billing here.
+    # Non-extraction learning mutation paths emit their value facet at their own
+    # durable-success point.
     # Default is False so any future subclass is safe by default (opt-IN).
     EMITS_LEARNING_BILLING: bool = False
     """

@@ -764,6 +764,7 @@ class ExtractionResumeWorker:
                 force_extraction=True,
             )
             service._finalize_extracted_items(items)
+            self._record_finalized_learnings(run, items, entity_type="profile")
             return
         if run.binding.extractor_kind == "playbook":
             service = PlaybookGenerationService(
@@ -779,9 +780,31 @@ class ExtractionResumeWorker:
                 force_extraction=True,
             )
             service._finalize_extracted_items(items)
+            self._record_finalized_learnings(run, items, entity_type="user_playbook")
             return
         raise ResumeWorkerError(
             f"Unsupported extractor kind {run.binding.extractor_kind!r}"
+        )
+
+    def _record_finalized_learnings(
+        self, run: AgentRunRecord, items: list[Any], *, entity_type: str
+    ) -> None:
+        from reflexio.server.billing_meter import emit_learnings_generated
+
+        emit_learnings_generated(
+            org_id=self.request_context.org_id,
+            configurator=self.request_context.configurator,
+            count=len(items),
+            source="resumable_extraction",
+            pipeline=run.binding.extractor_kind,
+            user_id=run.binding.user_id,
+            request_id=run.binding.request_id,
+            agent_version=run.binding.agent_version,
+            entity_type=entity_type,
+            metadata={
+                "run_id": run.id,
+                "extractor_kind": run.binding.extractor_kind,
+            },
         )
 
     def _schedule_finalized_tagging(self, run: AgentRunRecord) -> None:

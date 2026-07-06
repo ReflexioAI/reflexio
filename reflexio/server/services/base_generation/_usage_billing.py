@@ -189,8 +189,9 @@ class UsageBillingMixin(Generic[TExtractorConfig, TGenerationServiceConfig]):  #
         ``None`` here and resolved enterprise-side at rollup (Phase 1).
 
         Gated by ``EMITS_LEARNING_BILLING`` — only profile/playbook generation
-        services opt in. Evaluation, reflection, consolidation and aggregation
-        are bundled and must NOT separately meter the ② Learning line.
+        services opt in here. Non-extraction learning mutation paths emit their
+        own ``learnings_generated`` value-facet events when they durably apply
+        revisions/successors.
 
         Args:
             prepared: The prepared generation run (used for input-text computation).
@@ -227,7 +228,10 @@ class UsageBillingMixin(Generic[TExtractorConfig, TGenerationServiceConfig]):  #
                 platform_llm=platform_llm,
                 platform_storage=None,
                 pipeline=ctx.get("pipeline"),
+                user_id=ctx.get("user_id"),
                 request_id=ctx.get("request_id"),
+                source=ctx.get("source"),
+                agent_version=ctx.get("agent_version"),
             )
 
             # ② Learning — cost: input-anchored extraction tokens + real provider tokens.

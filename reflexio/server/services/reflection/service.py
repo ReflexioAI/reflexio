@@ -277,6 +277,8 @@ class ReflectionService:
             user_id=request.user_id,
         )
 
+        self._record_learnings_generated(request, result)
+
         logger.info(
             "event=reflection_done user_id=%s gate_open=%s ran=%s "
             "cited=%d considered=%d no_change=%d revised=%d "
@@ -301,6 +303,31 @@ class ReflectionService:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def _record_learnings_generated(
+        self, request: ReflectionServiceRequest, result: ReflectionResult
+    ) -> None:
+        from reflexio.server.billing_meter import emit_learnings_generated
+
+        emit_learnings_generated(
+            org_id=self.request_context.org_id,
+            configurator=self.request_context.configurator,
+            count=result.revised_count,
+            source="reflection",
+            pipeline="reflection",
+            user_id=request.user_id,
+            request_id=request.request_id,
+            metadata={
+                "cited_count": result.cited_count,
+                "considered_count": result.considered_count,
+                "trigger_revised_count": result.trigger_revised_count,
+                "content_revised_count": result.content_revised_count,
+                "ttl_changed_count": result.ttl_changed_count,
+                "capped_count": result.capped_count,
+                "skipped_count": result.skipped_count,
+                "failed_count": result.failed_count,
+            },
+        )
 
     def _resolve_cited_rows(
         self,
