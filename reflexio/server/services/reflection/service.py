@@ -40,6 +40,9 @@ from reflexio.models.api_schema.domain.entities import (
 )
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.services.operation_state_utils import OperationStateManager
+from reflexio.server.services.playbook.aggregation_trigger import (
+    maybe_trigger_user_playbook_aggregation,
+)
 from reflexio.server.services.playbook.playbook_edit_apply import apply_playbook_edit
 from reflexio.server.services.reflection.components.extractor import (
     ReflectionExtractor,
@@ -655,6 +658,13 @@ class ReflectionService:
                     new_playbook.user_playbook_id,
                 )
             return True
+        if archived > 0:
+            maybe_trigger_user_playbook_aggregation(
+                request_context=self.request_context,
+                llm_client=self.client,
+                agent_version=new_playbook.agent_version,
+                reason="reflection",
+            )
         if archived < 0:
             with sentry_tags(
                 subsystem="reflection",

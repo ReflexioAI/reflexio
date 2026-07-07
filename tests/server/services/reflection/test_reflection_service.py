@@ -457,6 +457,96 @@ class TestReplacePlaybook:
         assert len(current) == 1
         assert current[0].source_interaction_ids == [10, 11]
 
+    def test_successful_playbook_successor_triggers_aggregation(
+        self, request_context, service, llm_client
+    ):
+        _set_config(request_context)
+        storage = request_context.storage
+        _seed_playbook(storage, 1, "user-1")
+
+        cite = Citation(kind="playbook", real_id="1")
+        _seed_request_with_interactions(
+            storage,
+            "user-1",
+            "req-1",
+            [
+                _make_interaction("user-1", "req-1", "User", "hi"),
+                _make_interaction(
+                    "user-1", "req-1", "Assistant", "hello", citations=[cite]
+                ),
+            ],
+        )
+
+        llm_client.generate_chat_response.return_value = ReflectionOutput(
+            decisions=[
+                ReflectionDecision(
+                    target_kind="playbook",
+                    target_id="1",
+                    new_content="new rule",
+                    new_rationale="rewritten because Y was wrong",
+                    reason="rule was wrong",
+                )
+            ]
+        )
+
+        with patch(
+            "reflexio.server.services.reflection.service."
+            "maybe_trigger_user_playbook_aggregation",
+        ) as trigger:
+            service.run(ReflectionServiceRequest(request_id="req-1", user_id="user-1"))
+
+        trigger.assert_called_once()
+        assert trigger.call_args.kwargs["request_context"] is request_context
+        assert trigger.call_args.kwargs["llm_client"] is llm_client
+        assert trigger.call_args.kwargs["agent_version"] == "v1"
+        assert trigger.call_args.kwargs["reason"] == "reflection"
+
+    def test_lost_cas_playbook_successor_does_not_trigger_aggregation(
+        self, request_context, service, llm_client
+    ):
+        _set_config(request_context)
+        storage = request_context.storage
+        _seed_playbook(storage, 1, "user-1")
+
+        cite = Citation(kind="playbook", real_id="1")
+        _seed_request_with_interactions(
+            storage,
+            "user-1",
+            "req-1",
+            [
+                _make_interaction("user-1", "req-1", "User", "hi"),
+                _make_interaction(
+                    "user-1", "req-1", "Assistant", "hello", citations=[cite]
+                ),
+            ],
+        )
+
+        llm_client.generate_chat_response.return_value = ReflectionOutput(
+            decisions=[
+                ReflectionDecision(
+                    target_kind="playbook",
+                    target_id="1",
+                    new_content="new rule",
+                    new_rationale="rewritten because Y was wrong",
+                    reason="rule was wrong",
+                )
+            ]
+        )
+
+        with (
+            patch(
+                "reflexio.server.services.reflection.service.apply_playbook_edit",
+                return_value=-1,
+            ),
+            patch(
+                "reflexio.server.services.reflection.service."
+                "maybe_trigger_user_playbook_aggregation",
+            ) as trigger,
+        ):
+            service.run(ReflectionServiceRequest(request_id="req-1", user_id="user-1"))
+
+        trigger.assert_not_called()
+
 
 class TestNoChange:
     def test_no_change_does_not_mutate_storage(

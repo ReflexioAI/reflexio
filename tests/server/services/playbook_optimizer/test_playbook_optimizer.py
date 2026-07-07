@@ -47,6 +47,7 @@ from reflexio.server.services.playbook_optimizer.models import (
 )
 from reflexio.server.services.playbook_optimizer.optimizer import (
     PlaybookOptimizer,
+    _agent_like_playbook,
     _split_train_validation_windows,
 )
 from reflexio.server.services.playbook_optimizer.rollout import MultiTurnRollout
@@ -676,6 +677,86 @@ def test_optimizer_skips_when_winner_cannot_be_adopted(
     optimizer._run_gepa.assert_not_called()  # type: ignore[attr-defined]
     jobs = storage.conn.execute("SELECT * FROM playbook_optimization_jobs").fetchall()
     assert jobs == []
+
+
+def test_user_playbook_optimizer_successor_triggers_aggregation(tmp_path):
+    storage = _sqlite_storage(tmp_path)
+    config = Config(
+        storage_config=StorageConfigSQLite(db_path=str(tmp_path / "reflexio.db")),
+        playbook_optimizer_config=PlaybookOptimizerConfig(
+            auto_update_user_playbooks=True
+        ),
+    )
+    optimizer = _optimizer_for_test(storage, config)
+    user_playbook = UserPlaybook(
+        user_playbook_id=0,
+        user_id="u1",
+        agent_version="v1",
+        request_id="req-1",
+        content="old",
+        trigger="when old",
+    )
+    storage.save_user_playbooks([user_playbook])
+    target = PlaybookOptimizationTarget(
+        kind="user_playbook", target_id=user_playbook.user_playbook_id
+    )
+
+    with patch(
+        "reflexio.server.services.playbook_optimizer.optimizer."
+        "maybe_trigger_user_playbook_aggregation",
+    ) as trigger:
+        successor_id = optimizer._commit_if_allowed(  # noqa: SLF001
+            target,
+            _agent_like_playbook(user_playbook),
+            "new",
+            config.playbook_optimizer_config,
+            "run-1",
+        )
+
+    assert successor_id is not None
+    trigger.assert_called_once()
+    assert trigger.call_args.kwargs["agent_version"] == "v1"
+    assert trigger.call_args.kwargs["reason"] == "playbook_optimizer"
+
+
+def test_agent_playbook_optimizer_successor_does_not_trigger_aggregation(tmp_path):
+    storage = _sqlite_storage(tmp_path)
+    config = Config(
+        storage_config=StorageConfigSQLite(db_path=str(tmp_path / "reflexio.db")),
+        playbook_optimizer_config=PlaybookOptimizerConfig(
+            auto_update_pending_agent_playbooks=True
+        ),
+    )
+    optimizer = _optimizer_for_test(storage, config)
+    [agent_playbook] = storage.save_agent_playbooks(
+        [
+            AgentPlaybook(
+                playbook_name="support",
+                agent_version="v1",
+                content="old",
+                trigger="when old",
+                playbook_status=PlaybookStatus.PENDING,
+            )
+        ]
+    )
+    target = PlaybookOptimizationTarget(
+        kind="agent_playbook", target_id=agent_playbook.agent_playbook_id
+    )
+
+    with patch(
+        "reflexio.server.services.playbook_optimizer.optimizer."
+        "maybe_trigger_user_playbook_aggregation",
+    ) as trigger:
+        successor_id = optimizer._commit_if_allowed(  # noqa: SLF001
+            target,
+            agent_playbook,
+            "new",
+            config.playbook_optimizer_config,
+            "run-1",
+        )
+
+    assert successor_id is not None
+    trigger.assert_not_called()
 
 
 def test_optimizer_runs_single_window_when_commit_threshold_is_one(tmp_path):
