@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from reflexio.models.api_schema.retriever_schema import (
     ConversationTurn,
+    ReformulationResult,
     SearchAgentPlaybookRequest,
     SearchUserPlaybookRequest,
     SearchUserProfileRequest,
@@ -50,6 +51,11 @@ from reflexio.server.services.retrieval.recency import (
     multiplicative_factor,
 )
 from reflexio.server.services.retrieval.relevance_floor import apply_relevance_floors
+from reflexio.server.services.retrieval.temporal import (
+    freshness_collapse,
+    sort_by_recency,
+    window_bounds,
+)
 from reflexio.server.services.storage.storage_base import BaseStorage
 from reflexio.server.tracing import profile_step, set_span_data
 
@@ -76,6 +82,10 @@ _SEARCH_FANOUT_EXECUTOR = ThreadPoolExecutor(
     thread_name_prefix="reflexio-search",
 )
 _ENV_SINGLE_RPC = "REFLEXIO_UNIFIED_SEARCH_SINGLE_RPC"
+# Working-pool floor for temporal reordering (freshness collapse / recency
+# sort): matches the RecencyConfig default pool so the fresh version of a
+# fact can be promoted even when it ranks below top_k on text relevance.
+_TEMPORAL_POOL_SIZE = 20
 _EMBEDDING_CACHE_TTL_SECONDS = max(
     0, int(os.getenv("REFLEXIO_QUERY_EMBEDDING_CACHE_TTL_SECONDS", "300") or "300")
 )
@@ -139,14 +149,9 @@ def run_unified_search(
     floor_cfg = retrieval_floor or RetrievalFloorConfig()
     floor_on = floor_cfg.enabled
     recency_on = bool(recency and recency.enabled)
-    fetch_k = max(
-        top_k,
-        floor_cfg.pool_size if floor_on else 0,
-        recency.pool_size if recency_on and recency is not None else 0,
-    )
 
-    # --- Phase A: query reformulation + embedding generation ---
-    reformulated_query, embedding = _run_phase_a(
+    # --- Phase A: query reformulation (+ temporal signals) + embedding ---
+    reformulation, embedding = _run_phase_a(
         query=request.query,
         storage=storage,
         llm_client=llm_client,
@@ -157,6 +162,24 @@ def run_unified_search(
         pre_retrieval_model_name=pre_retrieval_model_name,
         search_mode=request.search_mode,
     )
+    reformulated_query = reformulation.standalone_query
+    window_start, window_end = window_bounds(
+        reformulation.start_days_ago, reformulation.end_days_ago
+    )
+
+    # Temporal reordering (freshness collapse / recency sort) happens after
+    # relevance ranking, so it needs a wider working pool: the fresh version
+    # of a fact may rank below top_k on text relevance alone. When signals
+    # are present, fetch and rank a larger pool and cut to top_k only after
+    # the temporal pass.
+    temporal_reorder = reformulation.wants_current or reformulation.recency_dominant
+    fetch_k = max(
+        top_k,
+        floor_cfg.pool_size if floor_on else 0,
+        recency.pool_size if recency_on and recency is not None else 0,
+        _TEMPORAL_POOL_SIZE if temporal_reorder else 0,
+    )
+    result_cap = max(top_k, _TEMPORAL_POOL_SIZE) if temporal_reorder else top_k
 
     # --- Phase B: parallel searches across all entity types ---
     profiles, agent_playbooks, user_playbooks = _run_phase_b(
@@ -168,6 +191,8 @@ def run_unified_search(
         top_k=fetch_k,
         threshold=threshold,
         recency_on=recency_on,
+        start_time=window_start,
+        end_time=window_end,
     )
 
     if profiles is None:
@@ -179,30 +204,41 @@ def run_unified_search(
             profiles=profiles,
             agent_playbooks=agent_playbooks,  # type: ignore[arg-type]
             user_playbooks=user_playbooks,  # type: ignore[arg-type]
-            top_k=top_k,
+            top_k=result_cap,
             cfg=floor_cfg,
             recency=recency if recency_on else None,
         )
     elif recency_on and recency is not None:
         profiles = _apply_combined_score_recency(
-            profiles or [], entity_type="profiles", top_k=top_k, cfg=recency
+            profiles or [], entity_type="profiles", top_k=result_cap, cfg=recency
         )
         agent_playbooks = _apply_combined_score_recency(
             agent_playbooks or [],
             entity_type="agent_playbooks",
-            top_k=top_k,
+            top_k=result_cap,
             cfg=recency,
         )
         user_playbooks = _apply_combined_score_recency(
             user_playbooks or [],
             entity_type="user_playbooks",
-            top_k=top_k,
+            top_k=result_cap,
             cfg=recency,
         )
     else:
-        profiles = _unwrap_items(profiles or [])[:top_k]
-        agent_playbooks = _unwrap_items(agent_playbooks or [])[:top_k]
-        user_playbooks = _unwrap_items(user_playbooks or [])[:top_k]
+        profiles = _unwrap_items(profiles or [])[:result_cap]
+        agent_playbooks = _unwrap_items(agent_playbooks or [])[:result_cap]
+        user_playbooks = _unwrap_items(user_playbooks or [])[:result_cap]
+
+    # --- Temporal post-processing from query-derived signals ---
+    if temporal_reorder:
+        arms = [profiles or [], agent_playbooks or [], user_playbooks or []]
+        if reformulation.wants_current:
+            arms = [freshness_collapse(arm) for arm in arms]
+        if reformulation.recency_dominant:
+            arms = [sort_by_recency(arm) for arm in arms]
+        # Final cut to top_k only after the temporal pass, so items promoted
+        # from the wider pool can take the top slots.
+        profiles, agent_playbooks, user_playbooks = (arm[:top_k] for arm in arms)
 
     user_playbooks = _suppress_source_user_playbooks(
         storage=storage,
@@ -257,7 +293,7 @@ def _run_phase_a(
     enable_reformulation: bool = False,
     pre_retrieval_model_name: str | None = None,
     search_mode: SearchMode = SearchMode.HYBRID,
-) -> tuple[str, list[float] | None]:
+) -> tuple[ReformulationResult, list[float] | None]:
     """Run query reformulation and embedding generation sequentially.
 
     Args:
@@ -273,7 +309,11 @@ def _run_phase_a(
         search_mode (SearchMode): Search mode; FTS-only mode skips embedding generation entirely
 
     Returns:
-        tuple[str, Optional[list[float]]]: (standalone_query, embedding_vector) — embedding is None when unsupported or on failure
+        tuple[ReformulationResult, Optional[list[float]]]: The reformulation
+            result (standalone query + temporal signals; signal-free
+            pass-through of the original query when reformulation is
+            disabled) and the query embedding (None when unsupported or on
+            failure).
     """
     reformulator = QueryReformulator(
         llm_client=llm_client,
@@ -288,10 +328,9 @@ def _run_phase_a(
         has_conversation_history=bool(conversation_history),
     ):
         if enable_reformulation:
-            result = reformulator.rewrite(query, conversation_history)
-            standalone_query = result.standalone_query
+            reformulation = reformulator.rewrite(query, conversation_history)
         else:
-            standalone_query = query
+            reformulation = ReformulationResult(standalone_query=query)
 
     # Embedding generation (uses reformulated query for semantic accuracy).
     # FTS-only search has no use for an embedding, so skip the call entirely.
@@ -303,13 +342,15 @@ def _run_phase_a(
             purpose="query",
         ) as span:
             try:
-                embedding = _get_cached_query_embedding(storage, standalone_query)
+                embedding = _get_cached_query_embedding(
+                    storage, reformulation.standalone_query
+                )
                 span.set_data("embedding_generated", embedding is not None)
             except Exception as e:
                 span.set_data("embedding_generated", False)
                 logger.error("Embedding generation failed: %s", e)
 
-    return standalone_query, embedding
+    return reformulation, embedding
 
 
 def _run_phase_b(
@@ -321,6 +362,8 @@ def _run_phase_b(
     top_k: int,
     threshold: float,
     recency_on: bool = False,
+    start_time: datetime | None = None,
+    end_time: datetime | None = None,
 ) -> tuple[
     list[Any] | None,
     list[Any] | None,
@@ -336,6 +379,10 @@ def _run_phase_b(
         query (str): Query string (possibly rewritten) for FTS
         top_k (int): Maximum results per entity type
         threshold (float): Minimum match threshold
+        start_time (Optional[datetime]): Query-derived time-window lower bound
+            (from reformulation temporal signals); forces the per-arm fan-out
+            path since the combined single RPC has no time parameters.
+        end_time (Optional[datetime]): Query-derived time-window upper bound.
 
     Returns:
         tuple: (profiles, agent_playbooks, user_playbooks) — all None on timeout/failure
@@ -360,9 +407,16 @@ def _run_phase_b(
             wants_scored_single_rpc = recency_on and callable(
                 getattr(storage, "unified_hybrid_search_scored", None)
             )
-            if _unified_single_rpc_enabled() and (
-                getattr(storage, "supports_unified_hybrid_search", False)
-                or wants_scored_single_rpc
+            # A query-derived time window forces the per-arm fan-out: the
+            # combined single RPC has no time parameters.
+            has_time_window = start_time is not None or end_time is not None
+            if (
+                not has_time_window
+                and _unified_single_rpc_enabled()
+                and (
+                    getattr(storage, "supports_unified_hybrid_search", False)
+                    or wants_scored_single_rpc
+                )
             ):
                 combined = _run_phase_b_single_rpc(
                     request=request,
@@ -399,6 +453,8 @@ def _run_phase_b(
                     request.user_id,
                     embedding,
                     request.search_mode,
+                    start_time,
+                    end_time,
                 )
                 if "profiles" in entity_types
                 else None
@@ -415,6 +471,8 @@ def _run_phase_b(
                     request.playbook_name,
                     allowed_agent_statuses,
                     options,
+                    start_time,
+                    end_time,
                 )
                 if "agent_playbooks" in entity_types
                 else None
@@ -429,6 +487,8 @@ def _run_phase_b(
                     threshold=threshold,
                     top_k=top_k,
                     search_mode=request.search_mode,
+                    start_time=start_time,
+                    end_time=end_time,
                 )
                 user_playbooks_future = _submit_with_current_context(
                     _SEARCH_FANOUT_EXECUTOR,
@@ -764,12 +824,17 @@ def _search_agent_playbooks_via_storage(
     playbook_name: str | None,
     allowed_statuses: list[PlaybookStatus] | None,
     options: SearchOptions,
+    start_time: datetime | None = None,
+    end_time: datetime | None = None,
 ) -> list[AgentPlaybook]:
     """Search agent playbooks, restricted to one or more approval statuses.
 
     When ``allowed_statuses`` is None or empty, falls back to
     ``_DEFAULT_AGENT_PLAYBOOK_STATUSES`` (APPROVED + PENDING). Callers that
     genuinely want REJECTED playbooks must opt in by passing the full list.
+    ``start_time``/``end_time`` bound ``created_at`` (query-derived time
+    windows from reformulation temporal signals; unset when the query names
+    no window).
     """
     with profile_step(
         "search.branch.agent_playbooks",
@@ -790,6 +855,8 @@ def _search_agent_playbooks_via_storage(
             threshold=threshold,
             top_k=top_k,
             search_mode=options.search_mode,
+            start_time=start_time,
+            end_time=end_time,
         )
         results: list[AgentPlaybook] = []
         seen_ids: set[str] = set()
@@ -812,6 +879,8 @@ def _search_profiles_via_storage(
     user_id: str | None,
     embedding: list[float] | None,
     search_mode: SearchMode,
+    start_time: datetime | None = None,
+    end_time: datetime | None = None,
 ) -> list[UserProfile]:
     """Search profiles via storage.search_user_profile, returning [] on error or missing user_id.
 
@@ -823,6 +892,10 @@ def _search_profiles_via_storage(
         user_id (Optional[str]): User ID filter (required for profile search)
         embedding (Optional[list[float]]): Pre-computed query embedding, or None for text-only search
         search_mode (SearchMode): Search mode (hybrid/vector/fts)
+        start_time (Optional[datetime]): Lower bound on last_modified_timestamp
+            (query-derived time window from reformulation temporal signals;
+            unset when the query names no window)
+        end_time (Optional[datetime]): Upper bound on last_modified_timestamp
 
     Returns:
         list[UserProfile]: Matching profiles, or [] on error/missing user_id
@@ -843,6 +916,8 @@ def _search_profiles_via_storage(
                     top_k=top_k,
                     threshold=threshold,
                     search_mode=search_mode,
+                    start_time=start_time,
+                    end_time=end_time,
                 ),
                 status_filter=[None],
                 query_embedding=embedding,

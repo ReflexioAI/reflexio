@@ -72,6 +72,10 @@ def _create_mock_completion(
         content = json.dumps(registry["playbook_extraction"].minimal_valid)
     elif '"tags"' in prompt_content:
         content = json.dumps(registry["tagging"].minimal_valid)
+    elif "standalone_query" in prompt_content:
+        # Query-reformulation prompt (v2+, structured) — anchored on its
+        # primary output field name, which the prompt must describe.
+        content = json.dumps(registry["query_reformulation"].minimal_valid)
     elif parse_structured_output:
         content = json.dumps(registry["profile_extraction"].minimal_valid)
     else:

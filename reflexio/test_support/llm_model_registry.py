@@ -30,6 +30,7 @@ class ModelRegistryEntry:
 def _build_registry() -> dict[str, ModelRegistryEntry]:
     """Build the model registry with lazy imports to avoid circular dependencies."""
     from reflexio.models.api_schema.eval_overview_schema import ShadowComparisonOutput
+    from reflexio.models.api_schema.retriever_schema import ReformulationResult
     from reflexio.server.services.agent_success_evaluation.agent_success_evaluation_constants import (
         AgentSuccessEvaluationOutput,
     )
@@ -151,6 +152,10 @@ def _build_registry() -> dict[str, ModelRegistryEntry]:
         "boolean_evaluation": ModelRegistryEntry(
             model_class=None,
             minimal_valid="true",
+        ),
+        "query_reformulation": ModelRegistryEntry(
+            model_class=ReformulationResult,
+            minimal_valid={"standalone_query": "example reformulated query"},
         ),
     }
 

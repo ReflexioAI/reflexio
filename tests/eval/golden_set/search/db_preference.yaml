@@ -1,28 +1,33 @@
 id: db_preference
+category: preference
 description: |
-  Classic "what DB does the user prefer?" — the stored profile says "polars
+  Classic "what DB does the user prefer?" — the stored profiles say "polars
   for dataframes" AND "postgres for OLTP". The search should surface postgres,
   not polars.
 query: "what DB does the user prefer?"
 conversation_history: []
 seeded_profiles:
-  - id: p_polars
+  - key: p_polars
     user_id: u1
     content: "User prefers polars over pandas for DataFrames."
-    time_to_live: "persistent"
-  - id: p_pg
+    age_days: 30
+    ttl: infinity
+  - key: p_pg
     user_id: u1
-    content: "User prefers postgres for OLTP workloads."
-    time_to_live: "persistent"
-  - id: p_redis
+    content: "User prefers postgres for OLTP database workloads."
+    age_days: 30
+    ttl: infinity
+  - key: p_redis
     user_id: u1
     content: "User uses redis for caching."
-    time_to_live: "persistent"
-seeded_playbooks: []
-expected_top_candidates: ["p_pg"]
+    age_days: 30
+    ttl: infinity
+request_overrides:
+  entity_types: [profiles]
+expected_top_candidates: [p_pg]
+must_NOT_rank_first: [p_polars]
 expected_answer: "postgres"
-must_NOT_rank_first: ["p_polars"]
 notes_for_judge: |
   Fixed-fanout classic search often confuses "polars" (a dataframe lib,
-  frequently called a DB in shorthand) with the DB preference. A good agentic
-  pipeline should reformulate / disambiguate and rank postgres first.
+  frequently called a DB in shorthand) with the DB preference. A good
+  pipeline should disambiguate and rank postgres first.

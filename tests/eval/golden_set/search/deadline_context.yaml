@@ -1,19 +1,27 @@
 id: deadline_context
-description: Query asks what the user is working on; depends on short-term context profile.
+category: temporal_current
+description: |
+  Query asks what the user is working on right now; the correct hit is the
+  fresh short-lived project profile, not the persistent role profile.
 query: "what is the user working on right now?"
 conversation_history: []
 seeded_profiles:
-  - id: p_role
+  - key: p_role
     user_id: u1
     content: "User is a senior backend engineer."
-    time_to_live: "persistent"
-  - id: p_project
+    age_days: 200
+    ttl: infinity
+  - key: p_project
     user_id: u1
     content: "User is migrating the billing service to Go, due Friday."
-    time_to_live: "short_term"
-seeded_playbooks: []
-expected_top_candidates: ["p_project"]
+    age_days: 2
+    ttl: one_month
+request_overrides:
+  entity_types: [profiles]
+expected_top_candidates: [p_project]
+must_NOT_rank_first: [p_role]
 expected_answer: "billing service migration to Go"
 notes_for_judge: |
   The persistent role profile is a red herring for this query — any pipeline
-  that ranks p_role first fails.
+  that ranks p_role first fails. "Right now" should bias toward the fresh,
+  short-TTL context profile.

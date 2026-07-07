@@ -1,0 +1,29 @@
+id: temporal_stale_distractor
+category: supersession
+description: |
+  A fresh, tersely-worded fact vs a stale distractor that is lexically much
+  stronger for the query. Pure text matching picks the stale one.
+query: "which database migration tool do we use?"
+conversation_history: []
+seeded_profiles:
+  - key: p_fresh
+    user_id: u1
+    content: "Team adopted Alembic for database migrations."
+    age_days: 4
+    ttl: infinity
+  - key: p_stale
+    user_id: u1
+    content: >-
+      Team uses Flyway as the database migration tool; database migration
+      scripts run nightly through the database migration pipeline.
+    age_days: 300
+    ttl: infinity
+request_overrides:
+  entity_types: [profiles]
+expected_top_candidates: [p_fresh]
+must_NOT_rank_first: [p_stale]
+expected_answer: "Alembic"
+notes_for_judge: |
+  The stale profile repeats "database migration" three times and dominates
+  lexical scoring; the fresh profile is the true current answer. This is the
+  stale-lexically-loud failure mode.

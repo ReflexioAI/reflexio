@@ -2492,7 +2492,12 @@ class ReflexioClient:
                 "profiles", "user_playbooks", "agent_playbooks".
             agent_playbook_status_filter (Optional[list[Union[PlaybookStatus, str]]]):
                 Agent-playbook approval statuses to include.
-            enable_reformulation (Optional[bool]): Enable LLM query reformulation (default: False)
+            enable_reformulation (Optional[bool]): Enable the pre-search LLM
+                query reformulation call (default: False). Besides rewriting
+                the query, it extracts temporal signals — time windows
+                ("this week"), as-of boundaries, and current-value intent —
+                that make retrieval time-sensitive (window filters,
+                freshness-preferred ranking for superseded facts).
             enable_agent_answer (Optional[bool]): Enable agentic answer synthesis when
                 the configured search backend supports it (default: False).
             conversation_history (Optional[list[ConversationTurn] | list[dict]]): Prior conversation turns for context-aware query reformulation. Accepts ConversationTurn objects or dicts with "role" and "content" keys.

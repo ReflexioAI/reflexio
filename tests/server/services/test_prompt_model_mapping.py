@@ -54,8 +54,12 @@ PROMPT_VERSION_MAP: dict[str, tuple[str, str | None]] = {
     "agent_success_evaluation_with_comparison": ("v1.0.0", None),
     "shadow_content_evaluation": ("v1.0.0", None),
     "memory_reflection": ("v1.7.0", None),
-    "query_reformulation": ("v1.0.0", None),
-    "document_expansion": ("v1.0.0", None),
+    # v2.0.0: structured output — rewrite + temporal signals (window,
+    # recency_dominant, wants_current) in the same pre-search LLM call.
+    "query_reformulation": ("v2.0.0", "query_reformulation"),
+    # v1.1.0: fact-key/category phrasings + escaped JSON braces (v1.0.0 never
+    # rendered — literal braces broke str.format and the expander swallowed it).
+    "document_expansion": ("v1.1.0", None),
     "compress_session_for_query": ("v1.3.0", None),
     "rerank_relevance": ("v1.1.0", None),
     # Answer-LLM system prompt for memory-grounded user questions
@@ -189,3 +193,25 @@ class TestPromptVersionMapping:
             f"Prompt directories not in PROMPT_VERSION_MAP: {unmapped}. "
             f"Add them with their latest version and registry key."
         )
+
+    @pytest.mark.parametrize("prompt_id", list(PROMPT_VERSION_MAP.keys()))
+    def test_active_prompt_renders_with_dummy_variables(self, prompt_id):
+        """Every ACTIVE prompt must render through str.format with its
+        declared variables.
+
+        Literal ``{``/``}`` in a prompt body (e.g. JSON output examples)
+        break ``str.format`` at render time, and several callers swallow the
+        error — ``document_expansion`` v1.0.0 shipped this way and silently
+        never rendered, making ``enable_document_expansion`` a no-op.
+        Literal braces must be escaped as ``{{``/``}}``.
+        """
+        from reflexio.server.prompt.prompt_manager import PromptManager
+
+        manager = PromptManager()
+        prompt = manager._get_prompt(prompt_id, None)
+        if prompt is None:
+            pytest.skip(f"{prompt_id} has no active version (historical record)")
+        rendered = manager.render_prompt(
+            prompt_id, dict.fromkeys(prompt.variables, "dummy")
+        )
+        assert rendered

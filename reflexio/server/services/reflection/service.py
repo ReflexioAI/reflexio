@@ -773,7 +773,9 @@ def _collect_citations(interactions: list[Interaction]) -> list[Citation]:
     return out
 
 
-def _reflection_target_kind(citation: Citation) -> Literal["playbook", "profile"] | None:
+def _reflection_target_kind(
+    citation: Citation,
+) -> Literal["playbook", "profile"] | None:
     if citation.kind == "user_playbook":
         return "playbook"
     if citation.kind == "playbook":

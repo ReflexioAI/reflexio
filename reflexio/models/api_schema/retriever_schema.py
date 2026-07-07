@@ -6,6 +6,7 @@ from typing import Literal, Self
 from pydantic import BaseModel, Field, model_validator
 
 from ..config_schema import SearchMode
+from ..structured_output import StrictStructuredOutput
 from .domain import CitationKind
 from .service_schemas import (
     AgentPlaybook,
@@ -662,15 +663,36 @@ class ConversationTurn(BaseModel):
     content: NonEmptyStr
 
 
-class ReformulationResult(BaseModel):
+class ReformulationResult(StrictStructuredOutput):
     """Output of the query reformulation pipeline.
+
+    Besides the rewritten query, carries the query's TEMPORAL SIGNALS so the
+    search pipeline can be time-sensitive without any additional LLM call
+    (the reformulation call already runs before retrieval when
+    ``enable_reformulation`` is set). Time windows are relative day offsets
+    (never absolute dates) so results don't rot with calendar time.
 
     Args:
         standalone_query (str): Clean, normalized natural language query with
             conversation context resolved, abbreviations expanded, grammar fixed.
+        start_days_ago (float, optional): Older bound of a query time window
+            ("in the last 7 days" → 7).
+        end_days_ago (float, optional): Newer bound ("before this month" →
+            ~30, with no start bound).
+        recency_dominant (bool): The query asks for the CURRENT/LATEST value —
+            final ordering becomes timestamp-based.
+        wants_current (bool): Present-tense question about a mutable
+            fact/policy — near-duplicate competing facts collapse to the
+            freshest, while relevance ordering is otherwise preserved.
+            (Superseded/TTL-expired rows never reach results: storage search
+            excludes tombstone statuses and expired profiles at SQL level.)
     """
 
     standalone_query: str
+    start_days_ago: float | None = Field(default=None, ge=0)
+    end_days_ago: float | None = Field(default=None, ge=0)
+    recency_dominant: bool = False
+    wants_current: bool = False
 
 
 # ===============================

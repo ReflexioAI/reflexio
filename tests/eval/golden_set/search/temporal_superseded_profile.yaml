@@ -1,0 +1,28 @@
+id: temporal_superseded_profile
+category: supersession
+description: |
+  Knowledge update: the user switched tools but the old fact was never
+  tombstoned. Both facts are live and lexically similar; the fresh one must
+  rank first.
+query: "what package manager do I use for Python?"
+conversation_history: []
+seeded_profiles:
+  - key: p_pip
+    user_id: u1
+    content: "User uses pip for Python package management."
+    age_days: 90
+    ttl: infinity
+  - key: p_uv
+    user_id: u1
+    content: "User switched to uv for Python package management."
+    age_days: 2
+    ttl: infinity
+request_overrides:
+  entity_types: [profiles]
+expected_top_candidates: [p_uv]
+must_NOT_rank_first: [p_pip]
+expected_answer: "uv"
+notes_for_judge: |
+  The two profiles are near-identical lexically ("Python package
+  management"); only recency separates them. Ranking pip first answers the
+  question wrongly with stale knowledge.

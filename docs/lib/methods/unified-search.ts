@@ -71,7 +71,8 @@ export const unifiedSearchMethods: MethodDef[] = [
         type: "boolean",
         required: false,
         default: false,
-        description: "Enable LLM query reformulation",
+        description:
+          "Enable pre-search LLM query reformulation; also extracts temporal signals (time windows, current-value intent) that make ranking time-sensitive",
       },
       {
         name: "conversation_history",

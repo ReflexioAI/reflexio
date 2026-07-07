@@ -1,6 +1,5 @@
 from reflexio.models.api_schema.domain.enums import Status
 
-from ._learning_jobs import LearningJob, LearningJobStatus, LearningJobStoreABC
 from ._agent_run import (
     NOT_APPLICABLE_ANSWER,
     AgentBinding,
@@ -25,6 +24,7 @@ from ._agent_run import (
 from ._base import BaseStorageCore, matches_status_filter
 from ._commit_scope import CommitScopeMixin
 from ._extras import ExtrasMixin
+from ._learning_jobs import LearningJob, LearningJobStatus, LearningJobStoreABC
 from ._lineage import EntityType, LineageEventMixin
 from ._operations import OperationMixin
 from ._requests import RequestMixin

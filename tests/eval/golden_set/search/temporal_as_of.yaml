@@ -1,0 +1,29 @@
+id: temporal_as_of
+category: temporal_window
+description: |
+  As-of semantics: the query asks for the state BEFORE a boundary, so the
+  most recent rule — normally the best answer — is exactly the wrong one.
+query: "what deployment approval rule did we follow before this month?"
+conversation_history: []
+seeded_user_playbooks:
+  - key: b_current
+    user_id: u1
+    trigger: "deployment approval"
+    content: "Deployments require one approval from the on-call engineer."
+    age_days: 5
+  - key: b_previous
+    user_id: u1
+    trigger: "deployment approval"
+    content: "Deployments require two approvals from senior engineers."
+    age_days: 60
+request_overrides:
+  entity_types: [user_playbooks]
+expected_top_candidates: [b_previous]
+must_NOT_rank_first: [b_current]
+expected_answer: "two approvals from senior engineers"
+expected_time_window:
+  end_days_ago: 30
+notes_for_judge: |
+  "Before this month" excludes the 5-day-old rule. A pipeline that always
+  prefers fresh items fails here — the correct behavior is honoring the
+  as-of boundary (only the 60-day-old rule qualifies).

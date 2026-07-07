@@ -303,11 +303,9 @@ class TestUnifiedSearch:
         assert response.msg is not None
 
     def test_always_dispatches_to_unified_search(self):
-        """unified_search unconditionally routes through run_unified_search.
-
-        After the extraction/search unification, there is no agentic search
-        backend and no config-driven branch — the public /api/search path
-        always uses the unified search service.
+        """unified_search unconditionally routes through run_unified_search —
+        there is no config-driven backend branch; temporal behavior rides on
+        the reformulation call inside the service.
         """
         mixin = _make_mixin()
         mixin.llm_client = MagicMock()

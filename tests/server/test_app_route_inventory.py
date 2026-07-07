@@ -403,6 +403,15 @@ FULL_ROUTES = [
         ("default_get_org_id",),
     ),
     (
+        "/api/learning_status",
+        ("GET",),
+        "LearningStatusResponse",
+        None,
+        (),
+        "get_learning_status",
+        ("default_get_org_id",),
+    ),
+    (
         "/api/get_requests",
         ("POST",),
         "GetRequestsViewResponse",
