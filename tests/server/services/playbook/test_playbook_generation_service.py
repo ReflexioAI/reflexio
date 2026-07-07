@@ -1,5 +1,6 @@
 import datetime
 import tempfile
+from contextlib import nullcontext
 from datetime import UTC
 from typing import Any, cast
 from unittest.mock import MagicMock, patch
@@ -286,6 +287,89 @@ def test_maybe_trigger_user_playbook_aggregation_reports_failure_without_raising
 
     assert result.status == "failed"
     assert result.error_type == "RuntimeError"
+
+
+def test_maybe_trigger_user_playbook_aggregation_reports_timeout_saturation():
+    from reflexio.server.services.playbook.aggregation_trigger import (
+        maybe_trigger_user_playbook_aggregation,
+    )
+
+    configurator = MagicMock()
+    configurator.get_config.return_value = _aggregation_enabled_config()
+    ctx = MagicMock(configurator=configurator, org_id="test-org")
+
+    with patch(
+        "reflexio.server.services.playbook.aggregation_trigger.run_with_operation_limit",
+        side_effect=TimeoutError("aggregation limiter saturated"),
+    ):
+        result = maybe_trigger_user_playbook_aggregation(
+            request_context=ctx,
+            llm_client=MagicMock(),
+            agent_version="v1",
+            reason="post_commit",
+        )
+
+    assert result.status == "skipped_saturated"
+    assert result.error_type == "TimeoutError"
+
+
+@pytest.mark.parametrize(
+    ("patch_target", "error_type"),
+    [
+        (None, "RuntimeError"),
+        (
+            "reflexio.server.services.playbook.aggregation_trigger.get_service",
+            "LookupError",
+        ),
+        (
+            "reflexio.server.services.playbook.aggregation_trigger.PlaybookAggregator",
+            "ValueError",
+        ),
+        (
+            "reflexio.server.services.playbook.aggregation_trigger.PlaybookAggregatorRequest",
+            "TypeError",
+        ),
+    ],
+)
+def test_maybe_trigger_user_playbook_aggregation_reports_setup_failure_without_raising(
+    patch_target: str | None, error_type: str
+):
+    from reflexio.server.services.playbook.aggregation_trigger import (
+        maybe_trigger_user_playbook_aggregation,
+    )
+
+    configurator = MagicMock()
+    configurator.get_config.return_value = _aggregation_enabled_config()
+    ctx = MagicMock(configurator=configurator, org_id="test-org")
+
+    expected_error = {
+        "RuntimeError": RuntimeError("config failed"),
+        "LookupError": LookupError("processor failed"),
+        "ValueError": ValueError("aggregator failed"),
+        "TypeError": TypeError("request failed"),
+    }[error_type]
+    if patch_target is None:
+        configurator.get_config.side_effect = expected_error
+        failure_context = nullcontext()
+    else:
+        failure_context = patch(patch_target, side_effect=expected_error)
+
+    with (
+        failure_context,
+        patch(
+            "reflexio.server.services.playbook.aggregation_trigger.run_with_operation_limit"
+        ) as limiter,
+    ):
+        result = maybe_trigger_user_playbook_aggregation(
+            request_context=ctx,
+            llm_client=MagicMock(),
+            agent_version="v1",
+            reason="post_commit",
+        )
+
+    assert result.status == "failed"
+    assert result.error_type == error_type
+    limiter.assert_not_called()
 
 
 @pytest.fixture
