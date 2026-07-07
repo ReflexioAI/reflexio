@@ -1,0 +1,28 @@
+id: temporal_latest_value
+category: temporal_current
+description: |
+  "Current X" question where the two candidate facts are near-identical
+  lexically and only timestamps differ. Guards against rerankers scrambling
+  a correct recency ordering.
+query: "what is my current deploy target?"
+conversation_history: []
+seeded_profiles:
+  - key: p_heroku
+    user_id: u1
+    content: "User deploys the app to the Heroku production environment."
+    age_days: 120
+    ttl: infinity
+  - key: p_ecs
+    user_id: u1
+    content: "User deploys the app to the AWS ECS production environment."
+    age_days: 1
+    ttl: infinity
+request_overrides:
+  entity_types: [profiles]
+expected_top_candidates: [p_ecs]
+must_NOT_rank_first: [p_heroku]
+expected_answer: "AWS ECS"
+notes_for_judge: |
+  Content relevance is a tie by construction; "current" makes recency the
+  deciding signal. A pipeline whose rerank stage reorders by pure text
+  similarity will fail this case even if its first-stage recency was right.

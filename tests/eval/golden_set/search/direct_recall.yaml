@@ -1,0 +1,26 @@
+id: direct_recall
+category: recall
+description: |
+  Sanity floor: a lexically direct query with one obvious hit and one
+  unrelated distractor. Every backend should pass this mechanically.
+query: "vegan restaurants"
+conversation_history: []
+seeded_profiles:
+  - key: p_vegan
+    user_id: u1
+    content: "User is vegan and prefers vegan-friendly restaurants."
+    age_days: 10
+    ttl: infinity
+  - key: p_tennis
+    user_id: u1
+    content: "User plays tennis on weekends."
+    age_days: 10
+    ttl: infinity
+request_overrides:
+  entity_types: [profiles]
+expected_top_candidates: [p_vegan]
+must_NOT_rank_first: [p_tennis]
+expected_answer: "user is vegan and prefers vegan-friendly restaurants"
+notes_for_judge: |
+  Direct lexical match. Failing this indicates a broken retrieval pipeline,
+  not a ranking-quality nuance.

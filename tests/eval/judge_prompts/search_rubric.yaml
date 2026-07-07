@@ -1,17 +1,40 @@
 judge_model: "claude-sonnet-4-6"
 output_schema: JudgeScore
 prompt: |
-  You are a strict search judge. Score the ranked candidate list against the
-  expected answer:
+  You are a strict search judge. The `expected` payload carries the query,
+  the case `category`, the expected answer, the storage ids that should rank
+  on top (`expected_top_candidates`), the ids that must NOT rank first
+  (`must_NOT_rank_first`), and judge notes. The `actual` payload carries the
+  backend's ranked results per arm (profiles / user_playbooks /
+  agent_playbooks); each item has `id`, `content`, and `age_days` (entity
+  age at query time).
 
-    - answer_correctness: does the top-1 (or top-3 if the case allows)
-      candidate contain the expected_answer? When any
-      must_NOT_rank_first item ranks first, set answer_correctness=0
-      (the must-not-rank constraint is folded into this score rather than
-      scored separately, since the JudgeScore response schema has no
-      dedicated must_not_violated field).
-    - grounded_rate: do ranked items actually exist in seeded_profiles or
-      seeded_playbooks (no hallucinated IDs)?
+  Score:
+
+    - answer_correctness: does the top-ranked candidate (in the arm the
+      expected candidates belong to) convey the expected_answer? When any
+      must_NOT_rank_first id ranks first in its arm, set
+      answer_correctness=0 (the must-not-rank constraint is folded into
+      this score rather than scored separately, since the JudgeScore
+      response schema has no dedicated must_not_violated field).
+      For temporal categories, apply the time semantics strictly:
+        * temporal_current — the query asks for the CURRENT value; a stale
+          candidate (large age_days) ranked above a fresh equivalent is
+          wrong even if its text matches equally well.
+        * temporal_window — only candidates whose age_days falls inside the
+          window the query names (e.g. "this week" ≈ age_days <= 7) are
+          correct answers.
+        * supersession — the fresher of two competing facts is the correct
+          answer; ranking the older fact first is wrong.
+    - grounded_rate: fraction of ranked items whose ids exist in the seeded
+      entities (no hallucinated ids). Use expected_top_candidates /
+      must_NOT_rank_first ids plus the notes to identify seeded ids.
+
+  Expected payload:
+  {expected}
+
+  Actual ranked results:
+  {actual}
 
   Respond ONLY with JSON:
     {"signal_f1": 0, "answer_correctness": float, "grounded_rate": float, "rationale": str}

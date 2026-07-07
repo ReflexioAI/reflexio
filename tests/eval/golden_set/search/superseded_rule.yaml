@@ -1,25 +1,29 @@
 id: superseded_rule
-description: Query asks about a rule the user updated — must surface the current rule, not the obsolete one.
+category: supersession
+description: |
+  Query asks about a rule the team updated — must surface the current rule,
+  not the obsolete one. Both rules are live (the supersession was never
+  recorded), so retrieval has to prefer the fresh rule on its own.
 query: "do we skip tests on ship?"
 conversation_history: []
-seeded_profiles: []
-seeded_playbooks:
-  - id: b_old
+seeded_user_playbooks:
+  - key: b_old
     user_id: u1
     trigger: "user says ship"
-    content: "skip tests"
-    rationale: ""
-    time_to_live: "expired"
-  - id: b_new
+    content: "Skip tests and deploy immediately."
+    age_days: 200
+  - key: b_new
     user_id: u1
     trigger: "user says ship"
-    content: "run tests then deploy"
+    content: "Run tests then deploy."
     rationale: "after the april regression"
-    time_to_live: "persistent"
-expected_top_candidates: ["b_new"]
+    age_days: 5
+request_overrides:
+  entity_types: [user_playbooks]
+expected_top_candidates: [b_new]
+must_NOT_rank_first: [b_old]
 expected_answer: "run tests then deploy"
-must_NOT_rank_first: ["b_old"]
 notes_for_judge: |
-  Classic search with respect_ttl=true may drop b_old entirely (good), but
-  the agentic temporal intent can keep it flagged as "superseded" and
-  explain the supersession chain.
+  Both playbooks share the trigger and are lexically near-identical to the
+  query; only their age separates them. Ranking the 200-day-old "skip tests"
+  rule first is the failure mode this case guards.

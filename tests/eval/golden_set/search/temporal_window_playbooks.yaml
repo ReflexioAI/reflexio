@@ -1,0 +1,35 @@
+id: temporal_window_playbooks
+category: temporal_window
+description: |
+  The query names a time window ("this week"); only the in-window rule is a
+  correct answer even though older rules match the topic just as well.
+query: "what new rules did we adopt this week for code review?"
+conversation_history: []
+seeded_user_playbooks:
+  - key: b_recent
+    user_id: u1
+    trigger: "code review of a schema migration"
+    content: "Require two approvals for schema migration code reviews."
+    age_days: 3
+  - key: b_mid
+    user_id: u1
+    trigger: "code review of a large PR"
+    content: "Split code reviews over 500 lines into stacked PRs."
+    age_days: 40
+  - key: b_old
+    user_id: u1
+    trigger: "code review turnaround"
+    content: "Code reviews must be answered within one business day."
+    age_days: 200
+request_overrides:
+  entity_types: [user_playbooks]
+expected_top_candidates: [b_recent]
+must_NOT_rank_first: [b_old]
+expected_answer: "require two approvals for schema migration code reviews"
+expected_time_window:
+  start_days_ago: 7
+  end_days_ago: 0
+notes_for_judge: |
+  All three playbooks are about code review and match the query topically.
+  Only b_recent (3 days old) falls inside "this week"; surfacing the
+  200-day-old rule first ignores the explicit time constraint.

@@ -37,3 +37,36 @@ def aggregate_eval_results(results_path: str) -> pl.DataFrame:
         )
         .collect()
     )
+
+
+def aggregate_by_category(results_path: str) -> pl.DataFrame:
+    """Group per-case rows by ``(backend, category)`` for the search eval.
+
+    Keeps temporal categories (``temporal_current``, ``temporal_window``,
+    ``supersession``) visible instead of averaging them into one number.
+
+    Args:
+        results_path (str): Path to a parquet file with columns ``backend``,
+            ``category``, ``recall_at_k``, ``mrr``, ``answer_correctness``,
+            ``latency_ms``.
+
+    Returns:
+        pl.DataFrame: One row per (backend, category) with aggregated
+            columns ``mean_recall``, ``mean_mrr``, ``mean_correctness``,
+            ``p95_latency``, ``n_cases``.
+    """
+    return (
+        pl.scan_parquet(results_path)
+        .group_by(["backend", "category"])
+        .agg(
+            [
+                pl.col("recall_at_k").mean().alias("mean_recall"),
+                pl.col("mrr").mean().alias("mean_mrr"),
+                pl.col("answer_correctness").mean().alias("mean_correctness"),
+                pl.col("latency_ms").quantile(0.95).alias("p95_latency"),
+                pl.len().alias("n_cases"),
+            ]
+        )
+        .sort(["backend", "category"])
+        .collect()
+    )
