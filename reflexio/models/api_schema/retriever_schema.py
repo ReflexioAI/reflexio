@@ -682,9 +682,10 @@ class ReformulationResult(StrictStructuredOutput):
         recency_dominant (bool): The query asks for the CURRENT/LATEST value —
             final ordering becomes timestamp-based.
         wants_current (bool): Present-tense question about a mutable
-            fact/policy — superseded/expired entities are dropped and
-            near-duplicate competing facts collapse to the freshest, while
-            relevance ordering is otherwise preserved.
+            fact/policy — near-duplicate competing facts collapse to the
+            freshest, while relevance ordering is otherwise preserved.
+            (Superseded/TTL-expired rows never reach results: storage search
+            excludes tombstone statuses and expired profiles at SQL level.)
     """
 
     standalone_query: str

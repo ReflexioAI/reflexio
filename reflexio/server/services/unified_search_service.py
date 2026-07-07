@@ -53,7 +53,6 @@ from reflexio.server.services.retrieval.recency import (
 from reflexio.server.services.retrieval.relevance_floor import apply_relevance_floors
 from reflexio.server.services.retrieval.temporal import (
     freshness_collapse,
-    is_current,
     sort_by_recency,
     window_bounds,
 )
@@ -185,15 +184,6 @@ def run_unified_search(
 
     if profiles is None:
         return UnifiedSearchResponse(success=False, msg="Search failed")
-
-    # Current-value questions: drop superseded / TTL-expired entities from
-    # the pools BEFORE floor/recency truncation, so surviving results can
-    # backfill up to top_k.
-    if reformulation.wants_current:
-        now = int(datetime.now(UTC).timestamp())
-        profiles = _drop_non_current(profiles, now)
-        agent_playbooks = _drop_non_current(agent_playbooks, now)
-        user_playbooks = _drop_non_current(user_playbooks, now)
 
     if floor_on:
         profiles, agent_playbooks, user_playbooks = _apply_floors(
@@ -717,11 +707,6 @@ def _unwrap_item(item: Any) -> Any:
 
 def _unwrap_items(items: list[Any]) -> list[Any]:
     return [_unwrap_item(item) for item in items]
-
-
-def _drop_non_current(items: list[Any] | None, now: int) -> list[Any]:
-    """Drop superseded / TTL-expired entities from a (possibly scored) pool."""
-    return [item for item in items or [] if is_current(_unwrap_item(item), now)]
 
 
 def _suppress_source_user_playbooks(

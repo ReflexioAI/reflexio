@@ -12,7 +12,9 @@ from dataclasses import dataclass
 
 from reflexio.models.api_schema.domain import CitationKind
 
-CitationKey = tuple[CitationKind, str]  # (kind, real_id) — matches PlaybookApplicationStat
+CitationKey = tuple[
+    CitationKind, str
+]  # (kind, real_id) — matches PlaybookApplicationStat
 SessionIdentity = tuple[str, str]  # (user_id, session_id)
 
 

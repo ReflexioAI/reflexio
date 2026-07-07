@@ -5,9 +5,6 @@ alongside the rewrite — see ``ReformulationResult``) to ranked entity lists:
 
 - ``window_bounds``: relative day offsets → absolute datetimes for the
   per-arm ``start_time``/``end_time`` SQL filters.
-- ``is_current``: predicate for dropping superseded / TTL-expired entities
-  on current-value questions (applied to the pre-truncation pools so
-  survivors backfill to ``top_k``).
 - ``freshness_collapse``: within near-duplicate groups of competing facts,
   the freshest wins — deterministically fixing "stale fact with the same
   wording outranks its fresh update", which LLM ordering alone misses.
@@ -62,26 +59,6 @@ def window_bounds(
     if start and end and start > end:
         start, end = end, start
     return start, end
-
-
-def is_current(entity: Any, now: int) -> bool:
-    """Whether an entity is still current (current-value questions).
-
-    False for entities with a ``superseded_by`` link and for profiles whose
-    TTL expired. Defensive at orchestration level — storage usually excludes
-    tombstoned rows already, but the field can be set on live rows.
-
-    Args:
-        entity: One retrieved entity.
-        now: Epoch seconds for TTL-expiry comparison.
-
-    Returns:
-        bool: True when the entity is neither superseded nor expired.
-    """
-    if getattr(entity, "superseded_by", None) is not None:
-        return False
-    expiration = getattr(entity, "expiration_timestamp", None)
-    return expiration is None or expiration >= now
 
 
 def freshness_collapse(entities: list[Any]) -> list[Any]:
