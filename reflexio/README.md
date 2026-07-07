@@ -56,8 +56,9 @@ Description: Python SDK for interacting with Reflexio API remotely
 Remote API client for applications to:
 1. **Publish interactions** - Send user interactions to server for processing
 2. **Search/retrieve data** - Query profiles, interactions, playbooks, evaluations, and context
-3. **Manage profiles/playbooks** - Delete, regenerate, and update status where supported by API endpoints
-4. **Configure** - Set/get organization configuration
+3. **Track deferred learning** - Poll `get_learning_status(request_id)` after `publish_interaction(..., wait_for_response=False)` queues extraction
+4. **Manage profiles/playbooks** - Delete, regenerate, and update status where supported by API endpoints
+5. **Configure** - Set/get organization configuration
 
 #### Architecture Pattern
 Async HTTP client wrapping typed models from `models/api_schema/`. Automatically handles authentication via Bearer tokens.
@@ -123,6 +124,7 @@ client (Python SDK)
         -> services/generation_service.py (orchestrator)
           ├─> services/profile/ -> storage (BaseStorage)
           ├─> services/playbook/ (playbook extraction) -> storage (BaseStorage)
+          ├─> services/durable_learning/ -> learning_jobs queue -> deferred extraction
           └─> services/agent_success_evaluation/ -> storage (BaseStorage)
 ```
 
@@ -138,6 +140,7 @@ client (Python SDK)
   - `profile/` - Profile extraction & updates
   - `playbook/` - Playbook extraction, consolidation, and aggregation
   - `agent_success_evaluation/` - Success evaluation
+  - `durable_learning/` - Claim/drain durable `learning_jobs` for deferred extraction when `REFLEXIO_DURABLE_LEARNING_QUEUE` is enabled
   - `reflection/` - Post-horizon reflection extraction
   - `extraction/` - Resumable async extraction agent infrastructure
   - `shadow_comparison/` - Per-turn regular vs shadow verdict judge
@@ -146,9 +149,10 @@ client (Python SDK)
   - `braintrust/` - Braintrust eval export/sync support
   - `lineage/` - Resolve current records and schedule tombstone garbage collection for superseded profile/playbook rows
   - `governance/` - Subject-reference contracts and retention/barrier helpers used by storage and lineage
-  - `storage/` - Abstract layer (SQLite prod, LocalJSON test) with governance-aware write validation
+  - `storage/` - Abstract layer (SQLite prod, LocalJSON test) with governance-aware write validation and durable `learning_jobs` contracts
   - `pre_retrieval/` - Query rewriting and document expansion helpers
   - `configurator/` - YAML config loader
+- **`billing_meter.py`**: OSS usage-event facade for learning/search metering; keep imports function-local at call sites so enterprise emitters remain optional
 - **`site_var/`**: Global settings singleton
 
 ### Architecture Patterns

@@ -17,6 +17,7 @@ Description: FastAPI backend server that processes user interactions to generate
   - [Profile Generation](#profile-generation)
   - [Playbook Extraction](#playbook-extraction)
   - [Agent Success Evaluation](#agent-success-evaluation)
+  - [Durable Learning Queue](#durable-learning-queue)
   - [Reflection and Async Extraction](#reflection-and-async-extraction)
   - [Shadow Comparison and Evaluation Overview](#shadow-comparison-and-evaluation-overview)
   - [Playbook Optimizer and Braintrust](#playbook-optimizer-and-braintrust)
@@ -38,6 +39,7 @@ Description: FastAPI backend server that processes user interactions to generate
 - **Endpoint Helpers**: `api_endpoints/` - Shared handlers/helpers plus `RequestContext` used by route modules
 - **Extension Registry**: `extensions.py` - Capability and service registry for optional OSS/enterprise integrations
 - **Core Service**: `services/generation_service.py` - Main orchestrator
+- **Durable Learning**: `services/durable_learning/` - background queue worker for deferred post-publish extraction
 
 ## Cache
 
@@ -86,7 +88,7 @@ Description: FastAPI backend server that processes user interactions to generate
 - **Health/version**: `GET /`, `GET /health`, `GET /healthz`, `GET /healthz/eval`, `GET /meta/version`
 - **Identity/config**: `GET /api/whoami`, `GET /api/my_config`, `GET /api/get_config`, `POST /api/set_config`, `POST /api/update_config`
 - **Publish/direct writes**: `POST /api/publish_interaction`, `POST /api/add_user_profile`, `POST /api/add_user_playbook`, `POST /api/add_agent_playbook`
-- **Retrieval**: `POST /api/get_requests`, `POST /api/get_interactions`, `GET /api/get_all_interactions`, `POST /api/get_profiles`, `GET /api/get_all_profiles`, `POST /api/get_user_playbooks`, `POST /api/get_agent_playbooks`, `POST /api/get_agent_success_evaluation_results`
+- **Retrieval**: `POST /api/get_requests`, `POST /api/get_interactions`, `GET /api/get_all_interactions`, `GET /api/learning_status`, `POST /api/get_profiles`, `GET /api/get_all_profiles`, `POST /api/get_user_playbooks`, `POST /api/get_agent_playbooks`, `POST /api/get_agent_success_evaluation_results`
 - **Search/stats**: `POST /api/search`, `POST /api/search_profiles`, `POST /api/rerank_user_profiles`, `POST /api/search_interactions`, `POST /api/search_user_playbooks`, `POST /api/search_agent_playbooks`, `GET /api/storage_stats`, `GET /api/get_profile_statistics`, `POST /api/get_dashboard_stats`, `POST /api/get_playbook_application_stats`
 - **Profile lifecycle**: `POST /api/rerun_profile_generation`, `POST /api/manual_profile_generation`, `POST /api/upgrade_all_profiles`, `POST /api/downgrade_all_profiles`, `GET /api/profile_change_log`, `PUT /api/update_user_profile`, `DELETE /api/delete_profile`, `DELETE /api/delete_profiles_by_ids`, `DELETE /api/delete_all_profiles`
 - **Playbook lifecycle**: `POST /api/rerun_playbook_generation`, `POST /api/manual_playbook_generation`, `POST /api/run_playbook_aggregation`, `GET /api/playbook_aggregation_change_logs`, `POST /api/upgrade_all_user_playbooks`, `POST /api/downgrade_all_user_playbooks`, `PUT /api/update_agent_playbook_status`, `PUT /api/update_agent_playbook`, `PUT /api/update_user_playbook`, `DELETE /api/delete_agent_playbook`, `DELETE /api/delete_user_playbook`, `DELETE /api/delete_agent_playbooks_by_ids`, `DELETE /api/delete_user_playbooks_by_ids`, `DELETE /api/delete_all_playbooks`, `DELETE /api/delete_all_user_playbooks`, `DELETE /api/delete_all_agent_playbooks`
@@ -210,12 +212,14 @@ python -m reflexio.server.scripts.manage_invitation_codes list --show-used
 - **Profile memory**: `profile/` extracts, deduplicates, and applies user profile updates.
 - **Playbook memory**: `playbook/` extracts user playbooks, consolidates them against existing rows, aggregates them into agent playbooks, and tracks aggregation change logs.
 - **Evaluation**: `agent_success_evaluation/service.py`, `agent_success_evaluation/runner.py`, `agent_success_evaluation/scheduler.py`, `agent_success_evaluation/components/evaluator.py`, `shadow_comparison/`, and `evaluation_overview/` handle session grading, per-turn shadow verdicts, regeneration jobs, and dashboard-facing rollups.
+- **Durable learning queue**: `durable_learning/scheduler.py` and `durable_learning/worker.py` drain `learning_jobs` after deferred publishes and report coverage through `GET /api/learning_status`.
 - **Async clarification**: `extraction/` and `reflection/` manage resumable agent runs, pending tool calls, prior-answer search, and long-horizon reflection updates.
 - **Search preparation**: `pre_retrieval/` and `unified_search_service.py` handle query reformulation, document expansion, embeddings, and cross-entity search orchestration.
 - **Optimization/integrations**: `playbook_optimizer/` and `braintrust/` run candidate playbook optimization, rollout support, and Braintrust export/sync.
 - **Lineage**: `lineage/` resolves active records across superseded chains and schedules tombstone garbage collection for profile/playbook storage.
 - **Governance**: `governance/` defines subject-reference contracts and retention/barrier policy helpers used by storage and lineage paths.
 - **Persistence/config**: `storage/`, `configurator/`, and `operation_state_utils.py` provide storage abstractions, config loading, locks, bookmarks, progress, and cancellation.
+- **Usage metering**: `billing_meter.py` converts learning/search signals into optional `usage_events` without importing enterprise types.
 
 ### Orchestrator
 
@@ -424,6 +428,17 @@ Key files:
 **Tool Context**: Reads `tool_can_use` from root `Config` level (shared with playbook extraction).
 
 **Shadow Comparison**: Session-level shadow comparison was retracted in F1 because multi-turn shadow content suffers from trajectory contamination (turn 2+ user messages react to the regular response, not the shadow). The `regular_vs_shadow` field on `AgentSuccessEvaluationResult` is preserved as a nullable historical column but is always `None` on newly produced rows. Per-turn shadow comparison lives in a dedicated `services/shadow_comparison/` judge that writes its verdicts to a separate table — see the F1 spec.
+
+### Durable Learning Queue
+
+**Directory**: `services/durable_learning/`
+
+Key files:
+- `scheduler.py`: `DurableLearningScheduler` plus `maybe_start_durable_learning()`; starts only when `REFLEXIO_DURABLE_LEARNING_QUEUE` is truthy and polls orgs with actionable queue rows.
+- `worker.py`: `DurableLearningWorker`; claims leased jobs, reloads the persisted request, runs `GenerationService.run_deferred_learning()`, and completes the job with a fenced `claim_token` transition.
+- `services/storage/storage_base/_learning_jobs.py`: `LearningJobStoreABC`, queue status types, coverage-based request status, and the direct-storage contract implemented by each backend.
+
+**Pattern**: `POST /api/publish_interaction` returns immediately when `wait_for_response=false`; callers use the returned `request_id` with `GET /api/learning_status`. Queue workers run generation inside `storage.commit_scope()` and must raise/rollback if `complete_learning_job()` returns 0 because another worker stole the lease.
 
 ### Reflection and Async Extraction
 
