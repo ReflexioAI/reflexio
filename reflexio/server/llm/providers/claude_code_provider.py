@@ -89,6 +89,12 @@ class ClaudeCodeCLIError(RuntimeError):
     """Raised when the claude CLI subprocess fails in a way we cannot recover from."""
 
 
+def _diagnostic_excerpt(text: str, limit: int = 500) -> str:
+    """Return a bounded single-line excerpt for local CLI diagnostics."""
+    compact = " ".join((text or "").split())
+    return compact[:limit]
+
+
 def _env_enabled() -> bool:
     """Return True when ``CLAUDE_SMART_USE_LOCAL_CLI`` is set to a truthy value.
 
@@ -1037,7 +1043,9 @@ class ClaudeCodeLLM(CustomLLM):
         self._record_stall_safely(result)
         raise ClaudeCodeCLIError(
             f"claude -p stream failed; retry_errors={result.retry_errors}; "
-            f"stderr={result.stderr_text[:200]!r}"
+            f"stderr={_diagnostic_excerpt(result.stderr_text)!r}; "
+            f"stdout={_diagnostic_excerpt(result.terminal_text)!r}; "
+            f"parsed={result.raw_lines_parsed}; failed={result.raw_lines_failed}"
         )
 
     def _record_stall_safely(self, result: ParseResult) -> None:

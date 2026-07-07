@@ -441,6 +441,33 @@ class TestClaudeCodeLLMCompletion:
                 messages=[{"role": "user", "content": "hi"}],
             )
 
+    def test_non_zero_exit_includes_stdout_diagnostic(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            ccp.subprocess,
+            "run",
+            MagicMock(
+                return_value=_fake_completed_process(
+                    stdout=_stream_json("oauth token has expired"),
+                    stderr="",
+                    returncode=1,
+                )
+            ),
+        )
+        monkeypatch.setattr(ccp, "_resolve_cli_path", lambda: "/usr/local/bin/claude")
+        llm = ClaudeCodeLLM()
+
+        with pytest.raises(ClaudeCodeCLIError) as exc:
+            llm.completion(
+                model="claude-code/default",
+                messages=[{"role": "user", "content": "hi"}],
+            )
+
+        message = str(exc.value)
+        assert "stdout='oauth token has expired'" in message
+        assert "stderr=''" in message
+
     def test_timeout_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
             ccp.subprocess,
