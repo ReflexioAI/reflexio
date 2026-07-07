@@ -43,6 +43,11 @@ class PlannedSubquery(BaseModel):  # nested in the strict outputs below
         recency_dominant (bool): True when the query asks for the CURRENT
             or LATEST value — final ordering for this arm is by entity
             timestamp instead of text relevance.
+        wants_current (bool): True for present-tense questions about a
+            mutable fact/policy ("what X do I use", "do we still Y") —
+            superseded/expired entities are dropped and near-duplicate
+            competing facts collapse to the freshest one, while relevance
+            ordering is otherwise preserved (unlike ``recency_dominant``).
         reason (str): One short sentence on why this subquery helps.
     """
 
@@ -52,6 +57,7 @@ class PlannedSubquery(BaseModel):  # nested in the strict outputs below
     start_days_ago: float | None = Field(default=None, ge=0)
     end_days_ago: float | None = Field(default=None, ge=0)
     recency_dominant: bool = False
+    wants_current: bool = False
     reason: str = ""
 
 

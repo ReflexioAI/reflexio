@@ -662,6 +662,16 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             api_key_config=self.api_key_config,
         )
         self.embedding_dimensions = EMBEDDING_DIMENSIONS
+        # Text-generation model for storage-time document expansion. The
+        # shared self.llm_client is pinned to the EMBEDDING model, which is
+        # not a chat model — expansion calls must override the model or they
+        # fail (e.g. local/minilm-l6-v2 cannot serve completions).
+        self._expansion_model_name = resolve_model_name(
+            ModelRole.GENERATION,
+            site_var_value=site_var.get("default_generation_model_name"),
+            config_override=llm_config.generation_model_name if llm_config else None,
+            api_key_config=self.api_key_config,
+        )
 
         litellm_config = LiteLLMConfig(
             model=self.embedding_model_name,
@@ -1630,6 +1640,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             expander = DocumentExpander(
                 llm_client=self.llm_client,
                 prompt_manager=PromptManager(),
+                model_name=self._expansion_model_name,
             )
             result = expander.expand(content)
             return result.expanded_text or None

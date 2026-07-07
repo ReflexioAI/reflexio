@@ -1,0 +1,31 @@
+id: factkey_paraphrase
+category: recall
+description: |
+  Category-paraphrase recall: the query uses a category word ("soda") that
+  never appears in the stored fact ("Coke"). Pure keyword search cannot
+  bridge it; write-time fact-key expansion (expanded_terms) or semantic
+  retrieval must.
+query: "what soda does the user drink?"
+conversation_history: []
+config_overrides:
+  enable_document_expansion: true
+seeded_profiles:
+  - key: p_coke
+    user_id: u1
+    content: "User always orders Coke at restaurants."
+    age_days: 10
+    ttl: infinity
+  - key: p_coffee
+    user_id: u1
+    content: "User drinks two coffees every morning."
+    age_days: 10
+    ttl: infinity
+request_overrides:
+  entity_types: [profiles]
+expected_top_candidates: [p_coke]
+must_NOT_rank_first: [p_coffee]
+expected_answer: "Coke"
+notes_for_judge: |
+  "soda" appears nowhere in the stored profiles. The coffee profile is a
+  lexical trap ("drinks"). Finding p_coke requires category bridging —
+  via expanded terms written at storage time or semantic matching.

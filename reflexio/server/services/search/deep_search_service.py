@@ -20,11 +20,16 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from reflexio.models.api_schema.retriever_schema import (
     UnifiedSearchRequest,
     UnifiedSearchResponse,
+)
+from reflexio.server.services.profile.profile_generation_service_utils import (
+    check_string_token_overlap,
 )
 from reflexio.server.services.search.executor import Candidate, execute_subqueries
 from reflexio.server.services.search.planner import plan_subqueries
@@ -167,6 +172,9 @@ class AgenticUnifiedSearchService:
                     )
                 ]
 
+            wants_current_arms = {
+                sq.arm for sq in (*plan.subqueries, *corrective) if sq.wants_current
+            }
             span.set_data("pool_size", len(pool))
             span.set_data("rounds", len(rounds))
             span.set_data("corrective_ran", bool(corrective))
@@ -178,6 +186,7 @@ class AgenticUnifiedSearchService:
                 pool=pool,
                 ranked_keys=ranked_keys,
                 recency_arms=recency_arms,
+                wants_current_arms=wants_current_arms,
                 rounds=rounds,
                 top_k=top_k,
             )
@@ -231,14 +240,18 @@ class AgenticUnifiedSearchService:
         pool: list[Candidate],
         ranked_keys: list[str],
         recency_arms: set[str],
+        wants_current_arms: set[str] | None = None,
         rounds: list[ReflectVerdict],
         top_k: int,
     ) -> UnifiedSearchResponse:
         ordered = _order_pool(pool, ranked_keys)
+        now = int(datetime.now(UTC).timestamp())
 
         per_arm: dict[str, list[Candidate]] = {arm: [] for arm in _ALL_ARMS}
         for candidate in ordered:
             per_arm[candidate.arm].append(candidate)
+        for arm in wants_current_arms or set():
+            per_arm[arm] = _freshness_collapse(_filter_current(per_arm[arm], now))
         for arm in recency_arms:
             per_arm[arm] = sorted(
                 per_arm[arm], key=lambda c: c.timestamp(), reverse=True
@@ -268,6 +281,61 @@ def _order_pool(pool: list[Candidate], ranked_keys: list[str]) -> list[Candidate
     ranked_set = set(ranked_keys)
     ordered.extend(c for c in pool if c.key not in ranked_set)
     return ordered
+
+
+def _filter_current(candidates: list[Candidate], now: int) -> list[Candidate]:
+    """Drop candidates that are no longer current (wants_current arms only).
+
+    Removes entities with a ``superseded_by`` link and profiles whose TTL
+    expired. Defensive at orchestration level — storage usually excludes
+    tombstoned rows already, but the field can be set on live rows.
+    """
+    kept = []
+    for candidate in candidates:
+        if getattr(candidate.entity, "superseded_by", None) is not None:
+            continue
+        expiration = getattr(candidate.entity, "expiration_timestamp", None)
+        if expiration is not None and expiration < now:
+            continue
+        kept.append(candidate)
+    return kept
+
+
+_DUPLICATE_OVERLAP_THRESHOLD = 0.6
+
+
+def _freshness_collapse(candidates: list[Candidate]) -> list[Candidate]:
+    """Within near-duplicate groups of competing facts, freshest wins.
+
+    Greedy grouping in ranked order by token overlap of (trigger + content);
+    each group stays anchored at its best-ranked member's position but is
+    internally ordered newest-first. This deterministically fixes the
+    "stale fact with the same trigger/wording outranks its fresh update"
+    failure that LLM ordering instructions alone miss, without disturbing
+    relevance order across unrelated candidates.
+    """
+    groups: list[list[Candidate]] = []
+    for candidate in candidates:
+        text = _compare_text(candidate)
+        for group in groups:
+            if check_string_token_overlap(
+                text, _compare_text(group[0]), _DUPLICATE_OVERLAP_THRESHOLD
+            ):
+                group.append(candidate)
+                break
+        else:
+            groups.append([candidate])
+    collapsed: list[Candidate] = []
+    for group in groups:
+        collapsed.extend(sorted(group, key=lambda c: c.timestamp(), reverse=True))
+    return collapsed
+
+
+def _compare_text(candidate: Candidate) -> str:
+    """Trigger + content, punctuation-normalized for token-overlap grouping."""
+    trigger = getattr(candidate.entity, "trigger", None) or ""
+    content = getattr(candidate.entity, "content", "") or ""
+    return re.sub(r"[^\w\s]", " ", f"{trigger} {content}").strip()
 
 
 def _build_trace(

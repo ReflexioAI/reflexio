@@ -126,6 +126,31 @@ def seed_case_entities(
     return key_to_id
 
 
+def apply_config_overrides(ctx: Any, case: dict[str, Any]) -> None:
+    """Apply a case's ``config_overrides`` to the org config before seeding.
+
+    Used e.g. by ``factkey_paraphrase`` to enable write-time document
+    expansion (``enable_document_expansion``) so seeded entities get
+    ``expanded_terms``. The expansion flag is constructor-bound on storage,
+    so it is mirrored onto the already-created instance as well.
+
+    Args:
+        ctx: The per-case ``RequestContext``.
+        case (dict): The golden case dict.
+    """
+    overrides = case.get("config_overrides") or {}
+    if not overrides:
+        return
+    config = ctx.configurator.get_config()
+    ctx.configurator.set_config(config.model_copy(update=dict(overrides)))
+    if "enable_document_expansion" in overrides and hasattr(
+        ctx.storage, "_enable_document_expansion"
+    ):
+        ctx.storage._enable_document_expansion = bool(
+            overrides["enable_document_expansion"]
+        )
+
+
 def build_request(
     case: dict[str, Any], *, default_search_mode: SearchMode
 ) -> UnifiedSearchRequest:
@@ -184,6 +209,7 @@ def make_classic_search_provider(
         storage = ctx.storage
         if storage is None:
             raise RuntimeError(f"eval storage failed to initialize for {org_id}")
+        apply_config_overrides(ctx, case)
         now = int(datetime.now(UTC).timestamp())
         key_to_id = seed_case_entities(storage, case, now)
         request = build_request(case, default_search_mode=search_mode)
@@ -246,6 +272,7 @@ def make_deep_search_provider(
         storage = ctx.storage
         if storage is None:
             raise RuntimeError(f"eval storage failed to initialize for {org_id}")
+        apply_config_overrides(ctx, case)
         now = int(datetime.now(UTC).timestamp())
         key_to_id = seed_case_entities(storage, case, now)
         request = build_request(case, default_search_mode=search_mode)
