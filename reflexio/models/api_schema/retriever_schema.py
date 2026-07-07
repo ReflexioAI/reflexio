@@ -6,6 +6,7 @@ from typing import Literal, Self
 from pydantic import BaseModel, Field, model_validator
 
 from ..config_schema import SearchMode
+from .domain import CitationKind
 from .service_schemas import (
     AgentPlaybook,
     AgentSuccessEvaluationResult,
@@ -593,8 +594,10 @@ class PlaybookApplicationStat(BaseModel):
         real_id (str): Stable id of the cited item — ``user_playbook_id``,
             ``agent_playbook_id``, or ``profile_id`` (always serialized as a
             string).
-        kind (str): ``"playbook"`` or ``"profile"`` — the citation kind, as
-            recorded on ``Interaction.citations``.
+        kind (CitationKind): Citation kind recorded on
+            ``Interaction.citations``. ``"playbook"`` is the legacy
+            compatibility value; ``"user_playbook"`` is the explicit
+            direct-tuner target.
         title (str): Human-readable label for the rule. Empty string when
             the underlying row has been deleted but old citations remain.
         applied_count (int): Number of interactions in the window whose
@@ -609,7 +612,7 @@ class PlaybookApplicationStat(BaseModel):
     """
 
     real_id: str
-    kind: Literal["playbook", "profile"]
+    kind: CitationKind
     title: str = ""
     applied_count: int = Field(ge=0)
     last_applied_at: int | None = None

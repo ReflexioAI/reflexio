@@ -10,7 +10,9 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-CitationKey = tuple[str, str]  # (kind, real_id) — matches PlaybookApplicationStat
+from reflexio.models.api_schema.domain import CitationKind
+
+CitationKey = tuple[CitationKind, str]  # (kind, real_id) — matches PlaybookApplicationStat
 SessionIdentity = tuple[str, str]  # (user_id, session_id)
 
 
@@ -19,7 +21,7 @@ class RuleAttribution:
     """One row of the "rules that moved the needle" panel."""
 
     rule_id: str
-    kind: str
+    kind: CitationKind
     title: str
     successes_with: int
     failures_with: int

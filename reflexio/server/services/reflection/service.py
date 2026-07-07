@@ -29,7 +29,7 @@ import logging
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from reflexio.models.api_schema.domain.entities import (
     Citation,
@@ -168,7 +168,9 @@ class ReflectionService:
 
         eligible_citations = [e.citation for e in eligible]
         horizon_by_key = {
-            (e.citation.kind, e.citation.real_id): e.has_full_horizon for e in eligible
+            (target_kind, e.citation.real_id): e.has_full_horizon
+            for e in eligible
+            if (target_kind := _reflection_target_kind(e.citation)) is not None
         }
         cited_profiles, cited_playbooks, missing = self._resolve_cited_rows(
             user_id=request.user_id,
@@ -352,9 +354,10 @@ class ReflectionService:
         wanted_profile_ids: set[str] = set()
         wanted_playbook_ids: set[int] = set()
         for c in citations:
-            if c.kind == "profile":
+            target_kind = _reflection_target_kind(c)
+            if target_kind == "profile":
                 wanted_profile_ids.add(c.real_id)
-            elif c.kind == "playbook":
+            elif target_kind == "playbook":
                 try:
                     wanted_playbook_ids.add(int(c.real_id))
                 except (TypeError, ValueError):
@@ -766,6 +769,16 @@ def _collect_citations(interactions: list[Interaction]) -> list[Citation]:
             seen.add(key)
             out.append(c)
     return out
+
+
+def _reflection_target_kind(citation: Citation) -> Literal["playbook", "profile"] | None:
+    if citation.kind == "user_playbook":
+        return "playbook"
+    if citation.kind == "playbook":
+        return "playbook"
+    if citation.kind == "profile":
+        return "profile"
+    return None
 
 
 @dataclass(frozen=True)

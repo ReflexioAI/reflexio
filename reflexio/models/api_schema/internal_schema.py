@@ -6,6 +6,7 @@ from typing import NamedTuple
 
 from pydantic import BaseModel
 
+from .domain import CitationKind
 from .service_schemas import Interaction, Request
 
 
@@ -42,6 +43,6 @@ class SessionCitation(NamedTuple):
 
     user_id: str
     session_id: str
-    kind: str
+    kind: CitationKind
     real_id: str
     title: str

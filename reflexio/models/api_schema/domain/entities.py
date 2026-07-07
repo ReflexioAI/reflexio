@@ -33,6 +33,7 @@ __all__ = [
     "BlockingIssue",
     "BlockingIssueKind",
     "ToolUsed",
+    "CitationKind",
     "Citation",
     "Interaction",
     "Request",
@@ -130,6 +131,8 @@ __all__ = [
 # Data Models
 # ===============================
 
+type CitationKind = Literal["playbook", "profile", "user_playbook", "agent_playbook"]
+
 
 class Citation(BaseModel):
     """A playbook or profile item the agent cited as influential.
@@ -141,8 +144,11 @@ class Citation(BaseModel):
     it was applied?).
 
     Attributes:
-        kind (Literal["playbook", "profile"]): Which kind of cited
-            item this references.
+        kind (CitationKind): Which kind of cited item this references.
+            ``"playbook"`` is the legacy compatibility value.
+            ``"user_playbook"`` is the direct tuner target.
+            ``"agent_playbook"`` references an org-level playbook row.
+            ``"profile"`` references a user profile row.
         real_id (str): Stable storage id — ``user_playbook_id`` for
             playbooks, ``profile_id`` for profiles.
         tag (str): Injection-time rank tag (e.g. ``"r1-301"``,
@@ -151,7 +157,7 @@ class Citation(BaseModel):
         title (str): Short human-readable label for logs and UI.
     """
 
-    kind: Literal["playbook", "profile"]
+    kind: CitationKind
     real_id: str
     tag: str = ""
     title: str = ""

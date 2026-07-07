@@ -11,6 +11,7 @@ from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from reflexio.models.api_schema.domain import CitationKind
 from reflexio.models.api_schema.validators import NonEmptyStr
 from reflexio.models.structured_output import StrictStructuredOutput
 
@@ -79,7 +80,7 @@ class RuleAttributionRow(BaseModel):
     """One row in the "rules that moved the needle" panel."""
 
     rule_id: str
-    kind: Literal["playbook", "profile"]
+    kind: CitationKind
     title: str = ""
     successes_with: int = Field(ge=0)
     failures_with: int = Field(ge=0)
