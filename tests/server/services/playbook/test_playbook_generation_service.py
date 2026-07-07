@@ -96,11 +96,11 @@ def test_inline_aggregation_default_path_does_not_inject_processor():
 
     with (
         patch(
-            "reflexio.server.services.playbook.service.PlaybookAggregator",
+            "reflexio.server.services.playbook.aggregation_trigger.PlaybookAggregator",
             FakeAggregator,
         ),
         patch(
-            "reflexio.server.services.playbook.service.run_with_operation_limit",
+            "reflexio.server.services.playbook.aggregation_trigger.run_with_operation_limit",
             side_effect=lambda **kwargs: kwargs["fn"](),
         ),
     ):
@@ -128,11 +128,11 @@ def test_inline_aggregation_injects_registered_processor():
 
     with (
         patch(
-            "reflexio.server.services.playbook.service.PlaybookAggregator",
+            "reflexio.server.services.playbook.aggregation_trigger.PlaybookAggregator",
             FakeAggregator,
         ),
         patch(
-            "reflexio.server.services.playbook.service.run_with_operation_limit",
+            "reflexio.server.services.playbook.aggregation_trigger.run_with_operation_limit",
             side_effect=lambda **kwargs: kwargs["fn"](),
         ),
     ):
@@ -161,11 +161,11 @@ def test_inline_aggregation_does_not_thread_processor_prompt_text_separately():
 
     with (
         patch(
-            "reflexio.server.services.playbook.service.PlaybookAggregator",
+            "reflexio.server.services.playbook.aggregation_trigger.PlaybookAggregator",
             FakeAggregator,
         ),
         patch(
-            "reflexio.server.services.playbook.service.run_with_operation_limit",
+            "reflexio.server.services.playbook.aggregation_trigger.run_with_operation_limit",
             side_effect=lambda **kwargs: kwargs["fn"](),
         ),
     ):
@@ -174,6 +174,118 @@ def test_inline_aggregation_does_not_thread_processor_prompt_text_separately():
     assert len(created_kwargs) == 1
     assert created_kwargs[0]["aggregation_prompt_processor"] is processor
     assert "aggregation_prompt_extra_instructions" not in created_kwargs[0]
+
+
+def test_maybe_trigger_user_playbook_aggregation_uses_limiter_and_processor():
+    from reflexio.server.services.playbook.aggregation_trigger import (
+        maybe_trigger_user_playbook_aggregation,
+    )
+
+    processor = PassthroughPromptProcessor()
+    register_service(AGGREGATION_PROMPT_PROCESSOR, processor, override=True)
+
+    configurator = MagicMock()
+    configurator.get_config.return_value = _aggregation_enabled_config()
+    ctx = MagicMock()
+    ctx.configurator = configurator
+    ctx.org_id = "test-org"
+    llm_client = MagicMock()
+    created_kwargs: list[dict[str, Any]] = []
+    requests: list[Any] = []
+
+    class FakeAggregator:
+        def __init__(self, **kwargs: Any) -> None:
+            created_kwargs.append(kwargs)
+
+        def run(self, request: Any) -> dict[str, int]:
+            requests.append(request)
+            return {"playbooks_generated": 0}
+
+    with (
+        patch(
+            "reflexio.server.services.playbook.aggregation_trigger.PlaybookAggregator",
+            FakeAggregator,
+        ),
+        patch(
+            "reflexio.server.services.playbook.aggregation_trigger.run_with_operation_limit",
+            side_effect=lambda **kwargs: kwargs["fn"](),
+        ) as limiter,
+    ):
+        result = maybe_trigger_user_playbook_aggregation(
+            request_context=ctx,
+            llm_client=llm_client,
+            agent_version="v1",
+            reason="unit_test",
+        )
+
+    assert result.status == "triggered"
+    assert result.reason == "unit_test"
+    assert result.agent_version == "v1"
+    assert limiter.call_args.kwargs["org_id"] == "test-org"
+    assert limiter.call_args.kwargs["operation"] == "aggregation"
+    assert created_kwargs[0]["llm_client"] is llm_client
+    assert created_kwargs[0]["request_context"] is ctx
+    assert created_kwargs[0]["agent_version"] == "v1"
+    assert created_kwargs[0]["aggregation_prompt_processor"] is processor
+    assert requests[0].agent_version == "v1"
+
+
+def test_maybe_trigger_user_playbook_aggregation_reports_no_config():
+    from reflexio.server.services.playbook.aggregation_trigger import (
+        maybe_trigger_user_playbook_aggregation,
+    )
+
+    configurator = MagicMock()
+    configurator.get_config.return_value = Config(storage_config=StorageConfigSQLite())
+    ctx = MagicMock(configurator=configurator, org_id="test-org")
+
+    result = maybe_trigger_user_playbook_aggregation(
+        request_context=ctx,
+        llm_client=MagicMock(),
+        agent_version="v1",
+        reason="missing_config",
+    )
+
+    assert result.status == "skipped_no_config"
+    assert result.reason == "missing_config"
+    assert result.agent_version == "v1"
+
+
+def test_maybe_trigger_user_playbook_aggregation_reports_failure_without_raising():
+    from reflexio.server.services.playbook.aggregation_trigger import (
+        maybe_trigger_user_playbook_aggregation,
+    )
+
+    configurator = MagicMock()
+    configurator.get_config.return_value = _aggregation_enabled_config()
+    ctx = MagicMock(configurator=configurator, org_id="test-org")
+
+    class FailingAggregator:
+        def __init__(self, **_kwargs: Any) -> None:
+            pass
+
+        def run(self, _request: Any) -> dict[str, int]:
+            raise RuntimeError("boom")
+
+    with (
+        patch(
+            "reflexio.server.services.playbook.aggregation_trigger.PlaybookAggregator",
+            FailingAggregator,
+        ),
+        patch(
+            "reflexio.server.services.playbook.aggregation_trigger.run_with_operation_limit",
+            side_effect=lambda **kwargs: kwargs["fn"](),
+        ),
+    ):
+        result = maybe_trigger_user_playbook_aggregation(
+            request_context=ctx,
+            llm_client=MagicMock(),
+            agent_version="v1",
+            reason="post_commit",
+        )
+
+    assert result.status == "failed"
+    assert result.error_type == "RuntimeError"
 
 
 @pytest.fixture
