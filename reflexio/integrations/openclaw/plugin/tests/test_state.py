@@ -233,3 +233,31 @@ def test_safe_session_ids_accepted():
         path = state.session_path(sid)
         assert path is not None, f"safe id {sid!r} should have been accepted"
         assert path.name == f"{sid}.jsonl"
+
+
+def test_to_wire_citations_preserves_explicit_playbook_source_kind() -> None:
+    wire = state._to_wire_citations(
+        [
+            {
+                "id": "s1-1",
+                "kind": "playbook",
+                "source_kind": "agent_playbook",
+                "real_id": "20",
+                "title": "Agent",
+            },
+            {
+                "id": "s2-1",
+                "kind": "playbook",
+                "source_kind": "user_playbook",
+                "real_id": "101",
+                "title": "User",
+            },
+            {"id": "p1-1", "kind": "profile", "real_id": "p1", "title": "Profile"},
+        ]
+    )
+
+    assert [item["kind"] for item in wire] == [
+        "agent_playbook",
+        "user_playbook",
+        "profile",
+    ]
