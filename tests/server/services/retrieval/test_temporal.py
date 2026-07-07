@@ -6,8 +6,8 @@ from datetime import UTC, datetime, timedelta
 
 from reflexio.models.api_schema.domain.entities import UserPlaybook, UserProfile
 from reflexio.server.services.retrieval.temporal import (
-    filter_current,
     freshness_collapse,
+    is_current,
     sort_by_recency,
     window_bounds,
 )
@@ -80,21 +80,18 @@ def test_window_bounds_swaps_inverted_offsets():
 
 
 # ---------------------------------------------------------------------------
-# filter_current
+# is_current
 # ---------------------------------------------------------------------------
 
 
-def test_filter_current_drops_superseded_and_expired():
-    live = _profile("live", 5)
-    superseded = _profile("old", 50, superseded_by="live")
-    expired = _profile("gone", 50, expiration_timestamp=_NOW - _DAY)
-    kept = filter_current([live, superseded, expired], _NOW)
-    assert [p.profile_id for p in kept] == ["live"]
+def test_is_current_rejects_superseded_and_expired():
+    assert is_current(_profile("live", 5), _NOW)
+    assert not is_current(_profile("old", 50, superseded_by="live"), _NOW)
+    assert not is_current(_profile("gone", 50, expiration_timestamp=_NOW - _DAY), _NOW)
 
 
-def test_filter_current_keeps_playbooks_without_expiry():
-    playbook = _playbook(1, 5, trigger="t", content="c")
-    assert filter_current([playbook], _NOW) == [playbook]
+def test_is_current_keeps_playbooks_without_expiry():
+    assert is_current(_playbook(1, 5, trigger="t", content="c"), _NOW)
 
 
 # ---------------------------------------------------------------------------

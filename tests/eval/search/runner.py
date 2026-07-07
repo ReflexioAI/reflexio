@@ -21,6 +21,9 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from reflexio.server.services.retrieval.temporal import entity_timestamp
+from tests.eval.search.providers import SECONDS_PER_DAY
+
 if TYPE_CHECKING:
     from tests.eval.judge import LLMJudge
     from tests.eval.search.providers import ProviderRun, SearchProvider
@@ -32,7 +35,6 @@ _SEED_LIST_TO_ARM = {
     "seeded_user_playbooks": "user_playbooks",
     "seeded_agent_playbooks": "agent_playbooks",
 }
-_SECONDS_PER_DAY = 86_400
 
 
 def _arm_of_key(case: SearchCase, key: str) -> str | None:
@@ -57,13 +59,11 @@ def _ranked_ids(response: Any) -> dict[str, list[str]]:
 
 
 def _age_days(item: Any, now: int) -> float | None:
-    """Best-effort entity age in days from its timestamp field."""
-    ts = getattr(item, "last_modified_timestamp", None) or getattr(
-        item, "created_at", None
-    )
+    """Best-effort entity age in days (None when the item has no timestamp)."""
+    ts = entity_timestamp(item)
     if not ts:
         return None
-    return round((now - int(ts)) / _SECONDS_PER_DAY, 1)
+    return round((now - ts) / SECONDS_PER_DAY, 1)
 
 
 @dataclass

@@ -5,8 +5,9 @@ alongside the rewrite — see ``ReformulationResult``) to ranked entity lists:
 
 - ``window_bounds``: relative day offsets → absolute datetimes for the
   per-arm ``start_time``/``end_time`` SQL filters.
-- ``filter_current``: drop superseded / TTL-expired entities for
-  current-value questions.
+- ``is_current``: predicate for dropping superseded / TTL-expired entities
+  on current-value questions (applied to the pre-truncation pools so
+  survivors backfill to ``top_k``).
 - ``freshness_collapse``: within near-duplicate groups of competing facts,
   the freshest wins — deterministically fixing "stale fact with the same
   wording outranks its fresh update", which LLM ordering alone misses.
@@ -63,29 +64,24 @@ def window_bounds(
     return start, end
 
 
-def filter_current(entities: list[Any], now: int) -> list[Any]:
-    """Drop entities that are no longer current (current-value questions).
+def is_current(entity: Any, now: int) -> bool:
+    """Whether an entity is still current (current-value questions).
 
-    Removes entities with a ``superseded_by`` link and profiles whose TTL
-    expired. Defensive at orchestration level — storage usually excludes
+    False for entities with a ``superseded_by`` link and for profiles whose
+    TTL expired. Defensive at orchestration level — storage usually excludes
     tombstoned rows already, but the field can be set on live rows.
 
     Args:
-        entities: Ranked entities of one arm.
+        entity: One retrieved entity.
         now: Epoch seconds for TTL-expiry comparison.
 
     Returns:
-        list: Entities still considered current, order preserved.
+        bool: True when the entity is neither superseded nor expired.
     """
-    kept = []
-    for entity in entities:
-        if getattr(entity, "superseded_by", None) is not None:
-            continue
-        expiration = getattr(entity, "expiration_timestamp", None)
-        if expiration is not None and expiration < now:
-            continue
-        kept.append(entity)
-    return kept
+    if getattr(entity, "superseded_by", None) is not None:
+        return False
+    expiration = getattr(entity, "expiration_timestamp", None)
+    return expiration is None or expiration >= now
 
 
 def freshness_collapse(entities: list[Any]) -> list[Any]:

@@ -693,16 +693,6 @@ class ReformulationResult(StrictStructuredOutput):
     recency_dominant: bool = False
     wants_current: bool = False
 
-    @property
-    def has_temporal_signals(self) -> bool:
-        """Whether any temporal signal was extracted."""
-        return (
-            self.start_days_ago is not None
-            or self.end_days_ago is not None
-            or self.recency_dominant
-            or self.wants_current
-        )
-
 
 # ===============================
 # Unified Search Models

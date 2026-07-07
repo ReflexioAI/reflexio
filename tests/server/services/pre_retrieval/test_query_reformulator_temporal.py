@@ -17,6 +17,15 @@ def _reformulator(llm_response: object = None, side_effect: object = None):
     return QueryReformulator(llm_client=llm, prompt_manager=PromptManager()), llm
 
 
+def _has_no_signals(result: ReformulationResult) -> bool:
+    return (
+        result.start_days_ago is None
+        and result.end_days_ago is None
+        and not result.recency_dominant
+        and not result.wants_current
+    )
+
+
 def test_structured_result_with_temporal_signals_passes_through():
     reformulator, llm = _reformulator(
         ReformulationResult(
@@ -29,7 +38,6 @@ def test_structured_result_with_temporal_signals_passes_through():
     assert result.standalone_query == "rules added this week"
     assert result.start_days_ago == 7
     assert result.end_days_ago == 0
-    assert result.has_temporal_signals
     # Structured call: response_format is the ReformulationResult schema.
     call_kwargs = llm.generate_chat_response.call_args[1]
     assert call_kwargs["response_format"] is ReformulationResult
@@ -53,21 +61,21 @@ def test_no_signals_when_query_is_atemporal():
         ReformulationResult(standalone_query="agent failed to process refund")
     )
     result = reformulator.rewrite("agent failed to refund")
-    assert not result.has_temporal_signals
+    assert _has_no_signals(result)
 
 
 def test_llm_failure_falls_back_to_original_query_no_signals():
     reformulator, _ = _reformulator(side_effect=RuntimeError("llm down"))
     result = reformulator.rewrite("what rules did we add this week?")
     assert result.standalone_query == "what rules did we add this week?"
-    assert not result.has_temporal_signals
+    assert _has_no_signals(result)
 
 
 def test_non_structured_response_falls_back():
     reformulator, _ = _reformulator("just a string")
     result = reformulator.rewrite("original query")
     assert result.standalone_query == "original query"
-    assert not result.has_temporal_signals
+    assert _has_no_signals(result)
 
 
 def test_suspect_rewritten_query_distrusts_signals_too():

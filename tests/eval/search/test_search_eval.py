@@ -84,6 +84,16 @@ def test_temporal_categories_are_represented():
     assert {"temporal_current", "temporal_window", "supersession"} <= categories
 
 
+def test_expected_time_window_uses_reformulation_field_names():
+    """``expected_time_window`` keys must be ``ReformulationResult`` fields —
+    the real-LLM eval asserts them via ``getattr`` on the reformulation."""
+    valid_bounds = {"start_days_ago", "end_days_ago"}
+    for case in _cases():
+        window = case.get("expected_time_window") or {}
+        unknown = set(window) - valid_bounds
+        assert not unknown, f"{case['id']}: unknown time-window keys {unknown}"
+
+
 # ---------------------------------------------------------------------------
 # Seeding round-trips controlled timestamps.
 # ---------------------------------------------------------------------------

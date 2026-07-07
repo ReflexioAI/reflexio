@@ -43,9 +43,9 @@ seeded_agent_playbooks:
 expected_top_candidates: [p_new]   # judged/measured within the key's own arm
 must_NOT_rank_first: [p_old]       # ranking any of these first fails the case
 expected_answer: <str>             # what a correct top hit conveys
-expected_time_window:              # optional; asserted against the planner
-  start_days_ago: 7                # once the deep tier exists (Phase 1+)
-  end_days_ago: 0
+expected_time_window:              # optional; the real-LLM eval asserts the
+  start_days_ago: 7                # reformulation extracts these bounds
+  end_days_ago: 0                  # (ReformulationResult field names)
 notes_for_judge: <str>
 ```
 

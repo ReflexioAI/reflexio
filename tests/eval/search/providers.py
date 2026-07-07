@@ -40,7 +40,7 @@ if TYPE_CHECKING:
 _SEED_REQUEST_ID = "eval-seed"
 _DEFAULT_USER_ID = "u1"
 _DEFAULT_AGENT_VERSION = "eval"
-_SECONDS_PER_DAY = 86_400
+SECONDS_PER_DAY = 86_400
 
 
 @dataclass
@@ -63,7 +63,7 @@ SearchProvider = Callable[[dict[str, Any]], ProviderRun]
 
 
 def _age_to_epoch(now: int, spec: dict[str, Any]) -> int:
-    return now - int(float(spec["age_days"]) * _SECONDS_PER_DAY)
+    return now - int(float(spec["age_days"]) * SECONDS_PER_DAY)
 
 
 def seed_case_entities(

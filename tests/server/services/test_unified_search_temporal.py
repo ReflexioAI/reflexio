@@ -23,13 +23,20 @@ _NOW = int(datetime.now(UTC).timestamp())
 _DAY = 86_400
 
 
-def _profile(pid: str, age_days: int, *, content: str | None = None) -> UserProfile:
+def _profile(
+    pid: str,
+    age_days: int,
+    *,
+    content: str | None = None,
+    superseded_by: str | None = None,
+) -> UserProfile:
     return UserProfile(
         profile_id=pid,
         user_id="u1",
         content=content or f"content-{pid}",
         last_modified_timestamp=_NOW - age_days * _DAY,
         generated_from_request_id="r1",
+        superseded_by=superseded_by,
     )
 
 
@@ -43,14 +50,17 @@ def _mock_storage(profiles: list[UserProfile] | None = None) -> MagicMock:
     return storage
 
 
-def _run(storage: MagicMock, reformulation: ReformulationResult):
+def _run(storage: MagicMock, reformulation: ReformulationResult, **request_overrides):
     with patch(
         "reflexio.server.services.unified_search_service.QueryReformulator"
     ) as reformulator_cls:
         reformulator_cls.return_value.rewrite.return_value = reformulation
         return run_unified_search(
             request=UnifiedSearchRequest(
-                query="original query", user_id="u1", enable_reformulation=True
+                query="original query",
+                user_id="u1",
+                enable_reformulation=True,
+                **request_overrides,
             ),
             org_id="test-org",
             storage=storage,
@@ -139,3 +149,94 @@ def test_no_signals_leaves_ordering_untouched():
     result = _run(storage, ReformulationResult(standalone_query="q"))
 
     assert [p.profile_id for p in result.profiles] == ["a", "b"]
+
+
+def test_wants_current_backfills_after_dropping_superseded():
+    # The superseded profile ranks first; with top_k=1 the current-filter
+    # must run BEFORE truncation so the live profile backfills the slot.
+    superseded = _profile("dead", 5, superseded_by="live")
+    live = _profile("live", 10)
+    storage = _mock_storage([superseded, live])
+
+    result = _run(
+        storage,
+        ReformulationResult(standalone_query="q", wants_current=True),
+        top_k=1,
+    )
+
+    assert [p.profile_id for p in result.profiles] == ["live"]
+
+
+def test_window_and_wants_current_combined():
+    # A single reformulation can carry both a time window and wants_current
+    # (e.g. "what package manager did we adopt this week?"): the window must
+    # reach the per-arm requests AND the freshness collapse must still apply.
+    stale = _profile("stale", 6, content="User uses pip for Python package management.")
+    fresh = _profile(
+        "fresh", 2, content="User switched to uv for Python package management."
+    )
+    storage = _mock_storage([stale, fresh])
+
+    result = _run(
+        storage,
+        ReformulationResult(
+            standalone_query="package manager this week",
+            start_days_ago=7,
+            end_days_ago=0,
+            wants_current=True,
+        ),
+    )
+
+    profile_request = storage.search_user_profile.call_args[0][0]
+    assert profile_request.start_time is not None
+    assert [p.profile_id for p in result.profiles] == ["fresh", "stale"]
+
+
+def test_wants_current_composes_with_relevance_floor(monkeypatch):
+    # The floor path returns unwrapped entities; superseded entities must be
+    # dropped from its pool and near-duplicates collapsed in its output.
+    from reflexio.models.config_schema import RetrievalFloorConfig
+    from reflexio.server.services import unified_search_service as uss
+
+    superseded = _profile(
+        "dead",
+        1,
+        content="User uses poetry for Python package management.",
+        superseded_by="fresh",
+    )
+    stale = _profile(
+        "stale", 90, content="User uses pip for Python package management."
+    )
+    fresh = _profile(
+        "fresh", 2, content="User switched to uv for Python package management."
+    )
+
+    monkeypatch.setattr(
+        uss,
+        "_run_phase_a",
+        lambda **_kw: (
+            ReformulationResult(standalone_query="q", wants_current=True),
+            None,
+        ),
+    )
+    monkeypatch.setattr(
+        uss, "_run_phase_b", lambda **_kw: ([superseded, stale, fresh], [], [])
+    )
+
+    def fake_score(query, docs):  # noqa: ARG001
+        return [1.0] * len(docs)
+
+    with patch(
+        "reflexio.server.services.retrieval.relevance_floor.score_pairs",
+        side_effect=fake_score,
+    ):
+        result = uss.run_unified_search(
+            request=UnifiedSearchRequest(query="q", user_id="u1", top_k=5),
+            org_id="test-org",
+            storage=_mock_storage(),
+            llm_client=MagicMock(),
+            prompt_manager=MagicMock(),
+            retrieval_floor=RetrievalFloorConfig(enabled=True),
+        )
+
+    assert [p.profile_id for p in result.profiles] == ["fresh", "stale"]

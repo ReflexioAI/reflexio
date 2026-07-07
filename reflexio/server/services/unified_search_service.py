@@ -52,8 +52,8 @@ from reflexio.server.services.retrieval.recency import (
 )
 from reflexio.server.services.retrieval.relevance_floor import apply_relevance_floors
 from reflexio.server.services.retrieval.temporal import (
-    filter_current,
     freshness_collapse,
+    is_current,
     sort_by_recency,
     window_bounds,
 )
@@ -186,6 +186,15 @@ def run_unified_search(
     if profiles is None:
         return UnifiedSearchResponse(success=False, msg="Search failed")
 
+    # Current-value questions: drop superseded / TTL-expired entities from
+    # the pools BEFORE floor/recency truncation, so surviving results can
+    # backfill up to top_k.
+    if reformulation.wants_current:
+        now = int(datetime.now(UTC).timestamp())
+        profiles = _drop_non_current(profiles, now)
+        agent_playbooks = _drop_non_current(agent_playbooks, now)
+        user_playbooks = _drop_non_current(user_playbooks, now)
+
     if floor_on:
         profiles, agent_playbooks, user_playbooks = _apply_floors(
             query=reformulated_query,
@@ -219,10 +228,9 @@ def run_unified_search(
 
     # --- Temporal post-processing from query-derived signals ---
     if reformulation.wants_current or reformulation.recency_dominant:
-        now = int(datetime.now(UTC).timestamp())
         arms = [profiles or [], agent_playbooks or [], user_playbooks or []]
         if reformulation.wants_current:
-            arms = [freshness_collapse(filter_current(arm, now)) for arm in arms]
+            arms = [freshness_collapse(arm) for arm in arms]
         if reformulation.recency_dominant:
             arms = [sort_by_recency(arm) for arm in arms]
         profiles, agent_playbooks, user_playbooks = arms
@@ -711,6 +719,11 @@ def _unwrap_items(items: list[Any]) -> list[Any]:
     return [_unwrap_item(item) for item in items]
 
 
+def _drop_non_current(items: list[Any] | None, now: int) -> list[Any]:
+    """Drop superseded / TTL-expired entities from a (possibly scored) pool."""
+    return [item for item in items or [] if is_current(_unwrap_item(item), now)]
+
+
 def _suppress_source_user_playbooks(
     *,
     storage: BaseStorage,
@@ -819,8 +832,9 @@ def _search_agent_playbooks_via_storage(
     When ``allowed_statuses`` is None or empty, falls back to
     ``_DEFAULT_AGENT_PLAYBOOK_STATUSES`` (APPROVED + PENDING). Callers that
     genuinely want REJECTED playbooks must opt in by passing the full list.
-    ``start_time``/``end_time`` bound ``created_at`` (deep-tier
-    planner-inferred time windows; classic callers leave them unset).
+    ``start_time``/``end_time`` bound ``created_at`` (query-derived time
+    windows from reformulation temporal signals; unset when the query names
+    no window).
     """
     with profile_step(
         "search.branch.agent_playbooks",
@@ -879,7 +893,8 @@ def _search_profiles_via_storage(
         embedding (Optional[list[float]]): Pre-computed query embedding, or None for text-only search
         search_mode (SearchMode): Search mode (hybrid/vector/fts)
         start_time (Optional[datetime]): Lower bound on last_modified_timestamp
-            (deep-tier planner-inferred time windows; classic leaves unset)
+            (query-derived time window from reformulation temporal signals;
+            unset when the query names no window)
         end_time (Optional[datetime]): Upper bound on last_modified_timestamp
 
     Returns:
