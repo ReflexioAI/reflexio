@@ -22,7 +22,7 @@ strings before deleting old import paths in the same PR.
 
 | File | Purpose |
 |------|---------|
-| `generation_service.py` | `GenerationService` — saves interactions, runs profile + playbook generation in parallel (ThreadPoolExecutor), schedules deferred evaluation when `session_id` is present. |
+| `generation_service.py` | `GenerationService` — saves interactions, runs/defer-runs profile + playbook generation, schedules deferred evaluation when `session_id` is present, and exposes `run_deferred_learning()` for queue workers. |
 | `publish_learning_worker.py` | Deferred post-persist publish learning worker — queues async publish learning after durable interaction writes and requeues under publish limiter pressure. |
 | `base_generation_service.py` + `base_generation/` | `BaseGenerationService` stable import surface plus mixins for batch progress, config filtering, extraction lifecycle, should-run prechecks, status transitions, and usage billing. Per-extractor timeout `EXTRACTOR_TIMEOUT_SECONDS = 300`. |
 | `operation_state_utils.py` | `OperationStateManager` — all `_operation_state` access (progress, concurrency locks, extractor/aggregator bookmarks, cluster fingerprints, cancellation). |
@@ -38,10 +38,11 @@ strings before deleting old import paths in the same PR.
 | `agent_success_evaluation/` | `AgentSuccessEvaluationService` | `service.py` (session-level service), `runner.py` (`run_group_evaluation`), `scheduler.py` (`GroupEvaluationScheduler`, 10-min defer), `regen_jobs.py`, `components/evaluator.py` |
 | `reflection/` | `ReflectionService` | `service.py`, `components/extractor.py` — post-horizon reflection; runs **before** extraction so extractors read post-reflection state |
 
-## Async Extraction
+## Durable and Async Extraction
 
 | Directory | Purpose |
 |-----------|---------|
+| `durable_learning/` | Durable `learning_jobs` scheduler + worker. Gated by `REFLEXIO_DURABLE_LEARNING_QUEUE`; discovers orgs with pending work, claims jobs with leases, runs `GenerationService.run_deferred_learning()` inside `storage.commit_scope()`, and uses fenced completion to guarantee exactly-once side effects. |
 | `extraction/` | Shared async extraction runtime: `resumable_agent.py`, `resume_scheduler.py`, `resume_worker.py`, `pending_tool_call_dispatch.py` (`ask_human`), `prior_answer_search.py`, `agent_run_records.py`, and `outcome.py`. Long-horizon / tool-mediated extraction continues outside the request path. See [README](extraction/README.md). |
 
 ## Evaluation, Search & Integrations
@@ -63,7 +64,7 @@ strings before deleting old import paths in the same PR.
 
 | Path | Purpose |
 |------|---------|
-| `storage/` | `storage_base/` and `sqlite_storage/` keep legacy domain facades while focused subpackages own `profiles/`, `playbook/`, `agent_run/`, `governance/`, and SQLite `base/` helpers; plus `governance_validation.py` and `retention*.py`. Access via `request_context.storage` only. |
+| `storage/` | `storage_base/` and `sqlite_storage/` keep legacy domain facades while focused subpackages own `profiles/`, `playbook/`, `agent_run/`, `governance/`, durable `learning_jobs`, and SQLite `base/` helpers; plus `governance_validation.py` and `retention*.py`. Access via `request_context.storage` only. |
 | `configurator/` | `DefaultConfigurator` — loads YAML config and creates the storage backend. |
 
 ## Key Rules
@@ -72,5 +73,6 @@ strings before deleting old import paths in the same PR.
 - **NEVER import storage implementations directly** — use `request_context.storage` (`BaseStorage`).
 - **ALWAYS use `LiteLLMClient`** for completions/embeddings and `request_context.prompt_manager.render_prompt(...)` for prompts — no hardcoded prompts, no direct OpenAI/Claude clients.
 - **All `_operation_state` writes go through `OperationStateManager`** — don't touch the table directly (it backs locks, bookmarks, progress, and cancellation).
+- **All durable queue claims go through `LearningJobStoreABC`** — do not update `learning_jobs` directly; completion is fenced by `claim_token` and must roll back the surrounding `commit_scope` when superseded.
 - **`tool_can_use` lives at root `Config`** — shared by playbook extraction and success evaluation, not per-service.
 - **Preserve governance subject refs/barriers** — route validation through `services/governance/` and `storage/governance_validation.py`; do not bypass retention or subject-write checks in storage implementations.
