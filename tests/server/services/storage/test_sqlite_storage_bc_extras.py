@@ -179,7 +179,8 @@ def test_get_citations_by_session_ids_extracts_cited_rows(
         session_id="s1",
         request_id="req_s1",
         assistant_citations=[
-            Citation(kind="playbook", real_id="42", title="Keep it short"),
+            Citation(kind="user_playbook", real_id="42", title="Keep it short"),
+            Citation(kind="agent_playbook", real_id="77", title="Escalate sooner"),
             Citation(kind="profile", real_id="p9", title="Prefers email"),
         ],
     )
@@ -228,7 +229,8 @@ def test_get_citations_by_session_ids_extracts_cited_rows(
         by_session.setdefault(citation.session_id, []).append(citation)
     assert set(by_session) == {"s1", "s2"}
     assert [(c.kind, c.real_id, c.title) for c in by_session["s1"]] == [
-        ("playbook", "42", "Keep it short"),
+        ("user_playbook", "42", "Keep it short"),
+        ("agent_playbook", "77", "Escalate sooner"),
         ("profile", "p9", "Prefers email"),
     ]
     assert [(c.kind, c.real_id) for c in by_session["s2"]] == [

@@ -29,7 +29,7 @@ import logging
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from reflexio.models.api_schema.domain.entities import (
     Citation,
@@ -167,8 +167,10 @@ class ReflectionService:
             return result
 
         eligible_citations = [e.citation for e in eligible]
-        horizon_by_key = {
-            (e.citation.kind, e.citation.real_id): e.has_full_horizon for e in eligible
+        horizon_by_key: dict[tuple[str, str], bool] = {
+            key: e.has_full_horizon
+            for e in eligible
+            if (key := _reflection_citation_key(e.citation)) is not None
         }
         cited_profiles, cited_playbooks, missing = self._resolve_cited_rows(
             user_id=request.user_id,
@@ -352,9 +354,10 @@ class ReflectionService:
         wanted_profile_ids: set[str] = set()
         wanted_playbook_ids: set[int] = set()
         for c in citations:
-            if c.kind == "profile":
+            target_kind = _reflection_target_kind(c)
+            if target_kind == "profile":
                 wanted_profile_ids.add(c.real_id)
-            elif c.kind == "playbook":
+            elif target_kind == "playbook":
                 try:
                     wanted_playbook_ids.add(int(c.real_id))
                 except (TypeError, ValueError):
@@ -753,19 +756,40 @@ def _flatten(
 
 
 def _collect_citations(interactions: list[Interaction]) -> list[Citation]:
-    """Pull distinct citations off Assistant interactions."""
-    seen: set[tuple[str, str]] = set()
+    """Pull distinct reflection-eligible citations off Assistant interactions."""
+    seen: set[tuple[Literal["playbook", "profile"], str]] = set()
     out: list[Citation] = []
     for i in interactions:
         if i.role != "Assistant":
             continue
         for c in i.citations:
-            key = (c.kind, c.real_id)
+            key = _reflection_citation_key(c)
+            if key is None:
+                continue
             if key in seen:
                 continue
             seen.add(key)
             out.append(c)
     return out
+
+
+def _reflection_target_kind(citation: Citation) -> Literal["playbook", "profile"] | None:
+    if citation.kind == "user_playbook":
+        return "playbook"
+    if citation.kind == "playbook":
+        return "playbook"
+    if citation.kind == "profile":
+        return "profile"
+    return None
+
+
+def _reflection_citation_key(
+    citation: Citation,
+) -> tuple[Literal["playbook", "profile"], str] | None:
+    target_kind = _reflection_target_kind(citation)
+    if target_kind is None:
+        return None
+    return (target_kind, citation.real_id)
 
 
 @dataclass(frozen=True)
@@ -796,8 +820,8 @@ def _filter_citations_by_horizon(
 ) -> list[_EligibleCitation]:
     """Filter citations to those that have enough post-citation context.
 
-    For each unique ``(kind, real_id)``, finds the **earliest** occurrence
-    in the window (maximizes follow-up turns) and decides:
+    For each unique reflection citation key, finds the **earliest**
+    occurrence in the window (maximizes follow-up turns) and decides:
 
     - ``after_count >= post_horizon_size`` → eligible, ``has_full_horizon=True``.
     - ``position < stride_size`` → eligible (last-chance, about to fall
@@ -820,15 +844,22 @@ def _filter_citations_by_horizon(
         list[_EligibleCitation]: Citations to send to the LLM, each
         paired with its window position and horizon flag.
     """
-    seen: dict[tuple[str, str], int] = {}
+    seen: dict[tuple[Literal["playbook", "profile"], str], int] = {}
     for idx, interaction in enumerate(window):
         if interaction.role != "Assistant":
             continue
         for c in interaction.citations:
-            key = (c.kind, c.real_id)
+            key = _reflection_citation_key(c)
+            if key is None:
+                continue
             seen.setdefault(key, idx)  # earliest occurrence only
 
-    citation_by_key = {(c.kind, c.real_id): c for c in citations}
+    citation_by_key: dict[tuple[Literal["playbook", "profile"], str], Citation] = {}
+    for citation in citations:
+        key = _reflection_citation_key(citation)
+        if key is None:
+            continue
+        citation_by_key.setdefault(key, citation)
 
     out: list[_EligibleCitation] = []
     for key, position in seen.items():

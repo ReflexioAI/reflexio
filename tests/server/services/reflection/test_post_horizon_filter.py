@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 
 from reflexio.models.api_schema.domain.entities import Citation, Interaction
 from reflexio.server.services.reflection.service import (
+    _collect_citations,
     _filter_citations_by_horizon,
 )
 
@@ -122,3 +123,35 @@ def test_filter_ignores_citations_on_non_assistant_turns():
         stride_size=5,
     )
     assert eligible == []
+
+
+def test_filter_canonicalizes_legacy_and_explicit_playbook_keys_and_ignores_agent():
+    """Legacy and explicit user-playbook citations for the same id share one
+    reflection key, and agent-playbook citations are ignored entirely."""
+    explicit = Citation(kind="user_playbook", real_id="42")
+    legacy = Citation(kind="playbook", real_id="42")
+    agent = Citation(kind="agent_playbook", real_id="42")
+    window = [
+        _interaction(0, citations=[explicit]),
+        _interaction(1, citations=[agent]),
+        _interaction(2),
+        _interaction(3, citations=[legacy]),
+        _interaction(4),
+        _interaction(5),
+    ]
+
+    citations = _collect_citations(window)
+    eligible = _filter_citations_by_horizon(
+        citations=citations,
+        window=window,
+        post_horizon_size=3,
+        stride_size=2,
+    )
+
+    assert [(citation.kind, citation.real_id) for citation in citations] == [
+        ("user_playbook", "42")
+    ]
+    assert len(eligible) == 1
+    assert eligible[0].citation.kind == "user_playbook"
+    assert eligible[0].position == 0
+    assert eligible[0].has_full_horizon is True

@@ -137,6 +137,52 @@ class TestPlaybookApplicationStats:
         assert len(stats) == 1
         assert stats[0].applied_count == 1
 
+    def test_accepts_explicit_user_and_agent_playbook_kinds(self, storage):
+        if not _backend_supports_application_stats(storage):
+            pytest.skip("Backend does not implement get_playbook_application_stats")
+        now = int(datetime.now(tz=UTC).timestamp())
+        storage._insert_interaction(
+            _make_interaction(
+                "r1",
+                now - 10,
+                [
+                    Citation(
+                        kind="user_playbook",
+                        real_id="42",
+                        tag="u1-42",
+                        title="timeline",
+                    )
+                ],
+            )
+        )
+        storage._insert_interaction(
+            _make_interaction(
+                "r2",
+                now,
+                [
+                    Citation(
+                        kind="user_playbook",
+                        real_id="42",
+                        tag="u1-42",
+                        title="timeline",
+                    ),
+                    Citation(
+                        kind="agent_playbook",
+                        real_id="7",
+                        tag="a1-7",
+                        title="org rule",
+                    ),
+                ],
+            )
+        )
+
+        stats = storage.get_playbook_application_stats(days_back=30)
+
+        assert [(row.kind, row.real_id, row.applied_count) for row in stats] == [
+            ("user_playbook", "42", 2),
+            ("agent_playbook", "7", 1),
+        ]
+
 
 def _backend_supports_application_stats(storage) -> bool:
     """True when the storage backend has a real (non-default) implementation.

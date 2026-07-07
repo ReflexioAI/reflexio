@@ -25,7 +25,14 @@ from ._base import (
     _row_to_interaction,
 )
 
-type _CitationKind = Literal["playbook", "profile"]
+type _CitationKind = Literal["playbook", "profile", "user_playbook", "agent_playbook"]
+
+_SUPPORTED_CITATION_KINDS: tuple[_CitationKind, ...] = (
+    "playbook",
+    "profile",
+    "user_playbook",
+    "agent_playbook",
+)
 
 
 class ExtrasMixin:
@@ -291,7 +298,7 @@ class ExtrasMixin:
                     continue
                 kind = c.get("kind")
                 real_id = c.get("real_id")
-                if kind not in ("playbook", "profile") or not real_id:
+                if kind not in _SUPPORTED_CITATION_KINDS or not real_id:
                     continue
                 key: tuple[_CitationKind, str] = (
                     cast(_CitationKind, kind),
@@ -453,12 +460,12 @@ class ExtrasMixin:
                         continue
                     kind = citation.get("kind")
                     real_id = citation.get("real_id")
-                    if kind and real_id:
+                    if kind in _SUPPORTED_CITATION_KINDS and real_id:
                         out.append(
                             SessionCitation(
                                 user_id=row["user_id"],
                                 session_id=row["session_id"],
-                                kind=str(kind),
+                                kind=cast(_CitationKind, kind),
                                 real_id=str(real_id),
                                 title=str(citation.get("title") or ""),
                             )
