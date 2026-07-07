@@ -74,12 +74,16 @@ def _create_mock_completion(
         content = json.dumps(registry["tagging"].minimal_valid)
     elif "start_days_ago" in prompt_content:
         # Deep-search PLAN prompt — anchored on the time-window field name the
-        # prompt must describe (the reflect prompt never mentions it).
+        # prompt must describe (reflect/rerank prompts never mention it).
         content = json.dumps(registry["deep_search_plan"].minimal_valid)
-    elif "ranked_candidate_ids" in prompt_content:
-        # Deep-search REFLECT prompt — anchored on its output field name (the
-        # plan prompt never mentions it).
+    elif "corrective_subqueries" in prompt_content:
+        # Deep-search REFLECT prompt — anchored on its reflect-only output
+        # field (the rerank prompt has ranked_candidate_ids but never this).
         content = json.dumps(registry["deep_search_reflect"].minimal_valid)
+    elif "ranked_candidate_ids" in prompt_content:
+        # Deep-search RERANK prompt — its only structured field; checked
+        # after the reflect branch so reflect prompts don't land here.
+        content = json.dumps(registry["deep_search_rerank"].minimal_valid)
     elif parse_structured_output:
         content = json.dumps(registry["profile_extraction"].minimal_valid)
     else:

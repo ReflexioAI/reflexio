@@ -29,6 +29,7 @@ from reflexio.models.api_schema.retriever_schema import (
 from reflexio.server.services.search.executor import Candidate, execute_subqueries
 from reflexio.server.services.search.planner import plan_subqueries
 from reflexio.server.services.search.reflector import reflect_and_rank
+from reflexio.server.services.search.reranker import listwise_rerank
 from reflexio.server.services.unified_search_service import (
     _suppress_source_user_playbooks,
 )
@@ -63,6 +64,8 @@ class AgenticUnifiedSearchService:
         planner_model_name (str, optional): Explicit planner model override.
         reflector_model_name (str, optional): Explicit reflector model
             override.
+        reranker_model_name (str, optional): Explicit listwise-reranker
+            model override (used only when a corrective round ran).
     """
 
     def __init__(
@@ -73,12 +76,14 @@ class AgenticUnifiedSearchService:
         config: DeepSearchConfig,
         planner_model_name: str | None = None,
         reflector_model_name: str | None = None,
+        reranker_model_name: str | None = None,
     ) -> None:
         self.llm_client = llm_client
         self.request_context = request_context
         self.config = config
         self.planner_model_name = planner_model_name
         self.reflector_model_name = reflector_model_name
+        self.reranker_model_name = reranker_model_name
 
     def search(
         self, request: UnifiedSearchRequest, org_id: str
@@ -130,6 +135,8 @@ class AgenticUnifiedSearchService:
             )
             verdict = self._reflect(request, plan, pool, allow_corrective=True)
             rounds = [verdict]
+            ranked_keys = verdict.ranked_candidate_ids
+            recency_arms = {sq.arm for sq in plan.subqueries if sq.recency_dominant}
 
             corrective = self._corrective_subqueries(verdict, allowed_arms)
             if corrective:
@@ -142,18 +149,35 @@ class AgenticUnifiedSearchService:
                     pool=pool,
                     index_offset=len(plan.subqueries),
                 )
-                verdict = self._reflect(request, plan, pool, allow_corrective=False)
-                rounds.append(verdict)
+                recency_arms |= {sq.arm for sq in corrective if sq.recency_dominant}
+                # The grown pool needs a final ordering; the dedicated
+                # listwise reranker replaces a second reflect call (there is
+                # no further round to grade sufficiency for). Total LLM
+                # calls stay <= 3: plan + reflect + rerank.
+                ranked_keys = [
+                    candidate.key
+                    for candidate in listwise_rerank(
+                        query=request.query,
+                        candidates=pool,
+                        skip_arms=recency_arms,
+                        llm_client=self.llm_client,
+                        prompt_manager=self.request_context.prompt_manager,
+                        model_name=self.reranker_model_name,
+                        timeout_s=self.config.reflect_timeout_s,
+                    )
+                ]
 
             span.set_data("pool_size", len(pool))
             span.set_data("rounds", len(rounds))
+            span.set_data("corrective_ran", bool(corrective))
             span.set_data("final_sufficiency", verdict.sufficiency)
             return self._assemble_response(
                 storage=storage,
                 plan=plan,
                 corrective=corrective,
                 pool=pool,
-                verdict=verdict,
+                ranked_keys=ranked_keys,
+                recency_arms=recency_arms,
                 rounds=rounds,
                 top_k=top_k,
             )
@@ -205,14 +229,12 @@ class AgenticUnifiedSearchService:
         plan: SearchPlan,
         corrective: list[PlannedSubquery],
         pool: list[Candidate],
-        verdict: ReflectVerdict,
+        ranked_keys: list[str],
+        recency_arms: set[str],
         rounds: list[ReflectVerdict],
         top_k: int,
     ) -> UnifiedSearchResponse:
-        ordered = _order_pool(pool, verdict.ranked_candidate_ids)
-        recency_arms = {
-            sq.arm for sq in (*plan.subqueries, *corrective) if sq.recency_dominant
-        }
+        ordered = _order_pool(pool, ranked_keys)
 
         per_arm: dict[str, list[Candidate]] = {arm: [] for arm in _ALL_ARMS}
         for candidate in ordered:

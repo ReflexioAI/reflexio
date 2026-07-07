@@ -64,9 +64,10 @@ PROMPT_VERSION_MAP: dict[str, tuple[str, str | None]] = {
     # ShadowComparisonOutput; the mock dispatch lives in the integration
     # tests rather than the global heuristic mock, so no registry key.
     "shadow_comparison": ("v1.0.0", None),
-    # Deep (agentic) unified search tier — PLAN and REFLECT structured calls.
+    # Deep (agentic) unified search tier — PLAN, REFLECT, RERANK structured calls.
     "deep_search_plan": ("v1.0.0", "deep_search_plan"),
     "deep_search_reflect": ("v1.0.0", "deep_search_reflect"),
+    "deep_search_rerank": ("v1.0.0", "deep_search_rerank"),
 }
 
 

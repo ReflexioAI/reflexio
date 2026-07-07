@@ -51,3 +51,20 @@ def test_none_from_stored_blob_falls_back_to_default():
     data["deep_search_config"] = None
     reloaded = Config.model_validate(data)
     assert reloaded.deep_search_config.enabled is True
+
+
+def test_llm_config_deep_search_model_overrides_round_trip():
+    from reflexio.models.config_schema import LLMConfig
+
+    llm = LLMConfig(
+        deep_search_planner_model_name="gpt-5-nano",
+        deep_search_reranker_model_name="claude-sonnet-4-6",
+    )
+    cfg = _config(llm_config=llm)
+    reloaded = Config.model_validate(cfg.model_dump())
+    assert reloaded.llm_config is not None
+    assert reloaded.llm_config.deep_search_planner_model_name == "gpt-5-nano"
+    assert reloaded.llm_config.deep_search_reranker_model_name == "claude-sonnet-4-6"
+    # Defaults stay None (fall through to role resolution).
+    assert LLMConfig().deep_search_planner_model_name is None
+    assert LLMConfig().deep_search_reranker_model_name is None

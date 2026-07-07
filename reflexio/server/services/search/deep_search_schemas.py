@@ -69,6 +69,20 @@ class SearchPlan(StrictStructuredOutput):
     notes: str = ""
 
 
+class RerankOutput(StrictStructuredOutput):
+    """Listwise reranker output: candidate ordering for one window.
+
+    Args:
+        ranked_candidate_ids (list[str]): Candidate keys ordered best-first.
+            Unknown keys are dropped by the caller; omitted candidates keep
+            their prior order after the ranked ones.
+        rationale (str): One short sentence on the ordering decision.
+    """
+
+    ranked_candidate_ids: list[str]
+    rationale: str = ""
+
+
 class ReflectVerdict(StrictStructuredOutput):
     """Reflect stage output: sufficiency grade + candidate ordering.
 

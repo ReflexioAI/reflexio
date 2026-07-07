@@ -53,6 +53,7 @@ def _build_registry() -> dict[str, ModelRegistryEntry]:
     )
     from reflexio.server.services.search.deep_search_schemas import (
         ReflectVerdict,
+        RerankOutput,
         SearchPlan,
     )
     from reflexio.server.services.tagging.service import TagsOutput
@@ -170,6 +171,10 @@ def _build_registry() -> dict[str, ModelRegistryEntry]:
                 "sufficiency": "sufficient",
                 "ranked_candidate_ids": [],
             },
+        ),
+        "deep_search_rerank": ModelRegistryEntry(
+            model_class=RerankOutput,
+            minimal_valid={"ranked_candidate_ids": []},
         ),
     }
 

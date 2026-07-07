@@ -189,12 +189,42 @@ class SearchMixin(ReflexioBase):
         deep_disabled_note: str | None = None
         if request.search_depth == "deep":
             if deep_config is not None and deep_config.enabled:
+                # Planner follows the pre-retrieval (cheap/fast) resolution;
+                # reflector/reranker follow the generation (strong) resolution.
+                # LLMConfig deep_search_* fields override per stage.
+                planner_model = resolve_model_name(
+                    ModelRole.PRE_RETRIEVAL,
+                    site_var_value=site_var.get("pre_retrieval_model_name"),
+                    config_override=(
+                        config_llm_config.deep_search_planner_model_name
+                        or config_llm_config.pre_retrieval_model_name
+                    )
+                    if config_llm_config
+                    else None,
+                    api_key_config=api_key_config,
+                )
+                strong_model = resolve_model_name(
+                    ModelRole.GENERATION,
+                    site_var_value=site_var.get("default_generation_model_name"),
+                    config_override=config_llm_config.generation_model_name
+                    if config_llm_config
+                    else None,
+                    api_key_config=api_key_config,
+                )
+                reranker_model = (
+                    config_llm_config.deep_search_reranker_model_name
+                    if config_llm_config
+                    and config_llm_config.deep_search_reranker_model_name
+                    else strong_model
+                )
                 try:
                     return self._run_deep_search(
                         request=request,
                         org_id=org_id,
                         deep_config=deep_config,
-                        pre_retrieval_model_name=pre_retrieval_model_name,
+                        planner_model_name=planner_model,
+                        reflector_model_name=strong_model,
+                        reranker_model_name=reranker_model,
                     )
                 except Exception:
                     _LOGGER.exception(
@@ -202,9 +232,7 @@ class SearchMixin(ReflexioBase):
                     )
                     deep_disabled_note = "deep search failed; served fast tier"
             else:
-                deep_disabled_note = (
-                    "deep search disabled by config; served fast tier"
-                )
+                deep_disabled_note = "deep search disabled by config; served fast tier"
 
         from reflexio.server.services.unified_search_service import run_unified_search
 
@@ -232,7 +260,9 @@ class SearchMixin(ReflexioBase):
         request: UnifiedSearchRequest,
         org_id: str,
         deep_config: DeepSearchConfig,
-        pre_retrieval_model_name: str | None,
+        planner_model_name: str | None,
+        reflector_model_name: str | None,
+        reranker_model_name: str | None,
     ) -> UnifiedSearchResponse:
         """Run the deep (agentic) search tier.
 
@@ -240,8 +270,9 @@ class SearchMixin(ReflexioBase):
             request (UnifiedSearchRequest): The unified search request.
             org_id (str): Organization ID.
             deep_config (DeepSearchConfig): Operator knobs for the tier.
-            pre_retrieval_model_name (str, optional): Resolved planner model
-                (same resolution chain as classic query reformulation).
+            planner_model_name (str, optional): Resolved planner model.
+            reflector_model_name (str, optional): Resolved reflect model.
+            reranker_model_name (str, optional): Resolved reranker model.
 
         Returns:
             UnifiedSearchResponse: Deep tier results.
@@ -254,6 +285,8 @@ class SearchMixin(ReflexioBase):
             llm_client=self.llm_client,
             request_context=self.request_context,
             config=deep_config,
-            planner_model_name=pre_retrieval_model_name,
+            planner_model_name=planner_model_name,
+            reflector_model_name=reflector_model_name,
+            reranker_model_name=reranker_model_name,
         )
         return service.search(request, org_id=org_id)

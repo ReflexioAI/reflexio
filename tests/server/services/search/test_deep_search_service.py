@@ -25,6 +25,7 @@ from reflexio.server.prompt.prompt_manager import PromptManager
 from reflexio.server.services.search.deep_search_schemas import (
     PlannedSubquery,
     ReflectVerdict,
+    RerankOutput,
     SearchPlan,
 )
 from reflexio.server.services.search.deep_search_service import (
@@ -156,7 +157,7 @@ def test_top_k_caps_each_arm():
 # ---------------------------------------------------------------------------
 
 
-def test_corrective_round_runs_once_and_caps_at_two_reflects():
+def test_corrective_round_runs_once_then_reranks():
     storage = _storage(
         profiles=[_profile("a", 5)], user_playbooks=[_user_playbook(1, 5)]
     )
@@ -167,19 +168,15 @@ def test_corrective_round_runs_once_and_caps_at_two_reflects():
             PlannedSubquery(arm="user_playbooks", query="rules about X")
         ],
     )
-    # Second verdict ALSO requests correction — it must be ignored (hard cap).
-    still_insufficient = ReflectVerdict(
-        sufficiency="insufficient",
-        ranked_candidate_ids=["P:a"],
-        corrective_subqueries=[
-            PlannedSubquery(arm="user_playbooks", query="try yet again")
-        ],
-    )
-    service, llm = _service(storage, [_PROFILE_PLAN, insufficient, still_insufficient])
+    # After the corrective round the final ordering comes from the dedicated
+    # listwise reranker (NOT a second reflect) — total LLM calls stay at 3
+    # and no further corrective round is possible structurally.
+    rerank = RerankOutput(ranked_candidate_ids=["UP:1", "P:a"])
+    service, llm = _service(storage, [_PROFILE_PLAN, insufficient, rerank])
 
     response = service.search(_request(), org_id="org")
 
-    assert llm.generate_chat_response.call_count == 3  # plan + exactly 2 reflects
+    assert llm.generate_chat_response.call_count == 3  # plan + reflect + rerank
     assert storage.search_user_playbooks.call_count == 1  # corrective executed
     assert [p.profile_id for p in response.profiles] == ["a"]
     assert [p.user_playbook_id for p in response.user_playbooks] == [1]

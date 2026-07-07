@@ -838,6 +838,11 @@ class LLMConfig(BaseModel):
     pre_retrieval_model_name: str | None = (
         None  # Model for pre-retrieval query reformulation
     )
+    # Deep-search tier overrides. When None, the planner follows the
+    # pre-retrieval resolution (cheap/fast tier) and the reflector/reranker
+    # follow the generation resolution (strong tier).
+    deep_search_planner_model_name: str | None = None
+    deep_search_reranker_model_name: str | None = None
 
 
 def _default_profile_extractor_config() -> ProfileExtractorConfig:
