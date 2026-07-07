@@ -313,9 +313,8 @@ class ReflexioClient:
         if headers:
             request_headers.update(headers)
 
-        self.session.headers.update(request_headers)
         kwargs.setdefault("timeout", self.timeout)
-        response = self.session.request(method, url, **kwargs)
+        response = self.session.request(method, url, headers=request_headers, **kwargs)
         response.raise_for_status()
 
         # Empty body on a successful response (e.g. 204 No Content).
