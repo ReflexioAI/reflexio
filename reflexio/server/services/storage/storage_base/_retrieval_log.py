@@ -7,7 +7,9 @@ class RetrievalLogMixin:
     These methods are optional retrieval-capture storage hooks. They are
     intentionally concrete (not ``@abstractmethod``) so concrete storage classes
     remain instantiable; each raises ``NotImplementedError`` until a backend
-    provides a real implementation.
+    provides a real implementation. Stored item rows may use either the legacy
+    ``agent_playbook_id`` field or the explicit ``target_kind`` / ``target_id``
+    pair; readers should preserve backward compatibility for both.
     """
 
     def save_playbook_retrieval_log(self, log: PlaybookRetrievalLog) -> int:

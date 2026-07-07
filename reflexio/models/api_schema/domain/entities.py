@@ -407,16 +407,64 @@ class AgentSuccessEvaluationResult(BaseModel):
 
 
 class PlaybookRetrievalLogItem(BaseModel):
-    """One retrieved agent playbook plus the serve-time attribution snapshot."""
+    """One retrieved playbook plus the serve-time attribution snapshot.
+
+    ``agent_playbook_id`` remains as a nullable legacy compatibility field for
+    old agent-only rows. New rows should prefer ``target_kind`` + ``target_id``.
+    """
 
     retrieval_log_item_id: int = 0
     retrieval_log_id: int = 0
     ordinal: int
-    agent_playbook_id: int
+    agent_playbook_id: int | None = Field(default=None, gt=0)
+    target_kind: Literal["agent_playbook", "user_playbook"] | None = None
+    target_id: int | None = Field(default=None, gt=0)
+    target_title: str = ""
+    target_content: str = ""
+    target_trigger: str | None = None
     source_user_playbook_ids: list[int] = Field(default_factory=list)
     source_interaction_ids_by_user_playbook_id: dict[str, list[int]] = Field(
         default_factory=dict
     )
+    source_window_snapshot_mode: Literal["final_response", "live_lookup_compat"] = (
+        "live_lookup_compat"
+    )
+
+    @model_validator(mode="after")
+    def backfill_legacy_target_fields(self) -> Self:
+        if self.target_kind is None:
+            if self.agent_playbook_id is None:
+                raise ValueError(
+                    "PlaybookRetrievalLogItem requires target_kind/target_id or"
+                    " legacy agent_playbook_id"
+                )
+            self.target_kind = "agent_playbook"
+            self.target_id = self.agent_playbook_id
+            return self
+
+        if self.target_id is None:
+            if self.target_kind != "agent_playbook" or self.agent_playbook_id is None:
+                raise ValueError(
+                    "PlaybookRetrievalLogItem.target_id is required for explicit"
+                    " targets"
+                )
+            self.target_id = self.agent_playbook_id
+
+        if self.target_kind == "user_playbook":
+            if self.agent_playbook_id is not None:
+                raise ValueError(
+                    "user_playbook retrieval-log items cannot carry agent_playbook_id"
+                )
+            return self
+
+        if self.agent_playbook_id is None:
+            self.agent_playbook_id = self.target_id
+        elif self.agent_playbook_id != self.target_id:
+            raise ValueError(
+                "agent_playbook retrieval-log item agent_playbook_id must match"
+                " target_id"
+            )
+        return self
 
 
 class PlaybookRetrievalLog(BaseModel):
