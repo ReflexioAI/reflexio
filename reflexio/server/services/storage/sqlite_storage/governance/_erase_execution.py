@@ -30,7 +30,6 @@ resolve through the composed MRO.
 
 from __future__ import annotations
 
-import json
 import sqlite3
 import threading
 from collections.abc import Callable
@@ -157,13 +156,6 @@ class GovernanceEraseExecutionMixin:
             raise ValueError(
                 "Current user playbooks no longer match prepared purge snapshot"
             )
-        request_ids = [
-            str(row["request_id"])
-            for row in self.conn.execute(
-                "SELECT request_id FROM requests WHERE user_id = ?",
-                (user_id,),
-            ).fetchall()
-        ]
         profile_rows = self.conn.execute(
             "SELECT rowid, profile_id FROM profiles WHERE user_id = ?",
             (user_id,),
@@ -183,40 +175,12 @@ class GovernanceEraseExecutionMixin:
         )
         purge_upb_ids = [int(entity_id) for entity_id in purge_upb_str_ids]
         delete_upb_ids = [int(entity_id) for entity_id in delete_upb_str_ids]
-        erased_entity_ids = [
-            *request_ids,
-            *[str(interaction_id) for interaction_id in interaction_ids],
-            *all_profile_ids,
-            *[str(user_playbook_id) for user_playbook_id in raw_upb_ids],
-        ]
-        if erased_entity_ids:
-            erased_entity_id_set = set(erased_entity_ids)
-            lineage_source_event_ids: list[int] = []
-            for row in self.conn.execute(
-                "SELECT event_id, source_ids FROM lineage_event WHERE org_id = ?",
-                (self.org_id,),
-            ).fetchall():
-                try:
-                    source_ids = json.loads(str(row["source_ids"] or "[]"))
-                except json.JSONDecodeError:
-                    source_ids = []
-                if any(
-                    str(source_id) in erased_entity_id_set for source_id in source_ids
-                ):
-                    lineage_source_event_ids.append(int(row["event_id"]))
-            deps._delete_in_chunks(
-                "lineage_event", "event_id", lineage_source_event_ids
-            )
-            placeholders = ",".join("?" for _ in erased_entity_ids)
-            self.conn.execute(
-                f"""DELETE FROM lineage_event
-                    WHERE org_id = ?
-                      AND (
-                        request_id IN ({placeholders})
-                        OR entity_id IN ({placeholders})
-                      )""",  # noqa: S608
-                [self.org_id, *erased_entity_ids, *erased_entity_ids],
-            )
+        # SEC-016: retain the content-free lineage_event skeleton on erase to
+        # match Supabase (which never enumerates lineage_event for erasure).
+        # lineage_event has no PII/content column, no foreign keys, and no
+        # FTS/vec shadow tables, so leaving these rows in place is safe and
+        # preserves the audit/lineage skeleton. Content-bearing entities are
+        # still deleted/purged below.
         delete_profile_rowids = [
             profile_rowid_by_id[profile_id]
             for profile_id in delete_profile_ids
