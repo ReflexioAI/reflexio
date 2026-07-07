@@ -333,6 +333,41 @@ class TestReplaceProfile:
 
 
 class TestReplacePlaybook:
+    def test_user_playbook_citation_is_eligible_and_agent_playbook_is_ignored(
+        self, request_context, service, llm_client
+    ):
+        _set_config(request_context)
+        storage = request_context.storage
+        _seed_playbook(storage, 1, "u1")
+
+        _seed_request_with_interactions(
+            storage,
+            "u1",
+            "r1",
+            [
+                _make_interaction("u1", "r1", "User", "hi"),
+                _make_interaction(
+                    "u1",
+                    "r1",
+                    "Assistant",
+                    "hello",
+                    citations=[
+                        Citation(kind="user_playbook", real_id="1"),
+                        Citation(kind="agent_playbook", real_id="1"),
+                    ],
+                ),
+            ],
+        )
+
+        result = service.run(ReflectionServiceRequest(user_id="u1"))
+
+        assert result.gate_open is True
+        assert result.cited_count == 1
+        assert result.considered_count == 1
+        assert result.skipped_count == 0
+        assert result.ran is True
+        llm_client.generate_chat_response.assert_called_once()
+
     def test_replace_archives_cited_and_inserts_new_current(
         self, request_context, service, llm_client
     ):

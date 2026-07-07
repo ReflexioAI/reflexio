@@ -150,7 +150,8 @@ class Citation(BaseModel):
             ``"agent_playbook"`` references an org-level playbook row.
             ``"profile"`` references a user profile row.
         real_id (str): Stable storage id — ``user_playbook_id`` for
-            playbooks, ``profile_id`` for profiles.
+            user playbooks, ``agent_playbook_id`` for agent playbooks,
+            and ``profile_id`` for profiles.
         tag (str): Injection-time rank tag (e.g. ``"r1-301"``,
             ``"p1-0f37"``). Per-injection, not stable across sessions;
             kept as a debug aid.
