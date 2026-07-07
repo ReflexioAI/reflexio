@@ -303,8 +303,9 @@ class TestUnifiedSearch:
         assert response.msg is not None
 
     def test_always_dispatches_to_unified_search(self):
-        """Default requests (search_depth="fast") always route through
-        run_unified_search — the deep tier is strictly request-opt-in.
+        """unified_search unconditionally routes through run_unified_search —
+        there is no config-driven backend branch; temporal behavior rides on
+        the reformulation call inside the service.
         """
         mixin = _make_mixin()
         mixin.llm_client = MagicMock()
@@ -316,91 +317,12 @@ class TestUnifiedSearch:
 
         expected_response = UnifiedSearchResponse(success=True)
 
-        with (
-            patch(
-                "reflexio.server.services.unified_search_service.run_unified_search",
-                return_value=expected_response,
-            ) as mock_run_unified,
-            patch(
-                "reflexio.server.services.search.deep_search_service.AgenticUnifiedSearchService"
-            ) as mock_service_cls,
-        ):
+        with patch(
+            "reflexio.server.services.unified_search_service.run_unified_search",
+            return_value=expected_response,
+        ) as mock_run_unified:
             request = UnifiedSearchRequest(query="test query")
             response = mixin.unified_search(request, org_id="org_1")
 
         assert response is expected_response
         mock_run_unified.assert_called_once()
-        mock_service_cls.assert_not_called()
-
-
-class TestDeepSearchDispatch:
-    """Dispatch behavior of search_depth="deep" in SearchMixin.unified_search."""
-
-    def _mixin_with_config(self, *, deep_enabled: bool = True):
-        from reflexio.models.config_schema import DeepSearchConfig
-
-        mixin = _make_mixin()
-        mixin.llm_client = MagicMock()
-        mock_config = MagicMock()
-        mock_config.llm_config = None
-        mock_config.deep_search_config = DeepSearchConfig(enabled=deep_enabled)
-        cast(
-            Any, mixin.request_context.configurator.get_config
-        ).return_value = mock_config
-        return mixin
-
-    def test_deep_routes_to_agentic_service(self):
-        mixin = self._mixin_with_config()
-        expected_response = UnifiedSearchResponse(success=True, agent_trace="{}")
-
-        with patch(
-            "reflexio.server.services.search.deep_search_service.AgenticUnifiedSearchService"
-        ) as mock_service_cls:
-            mock_service_cls.return_value.search.return_value = expected_response
-            request = UnifiedSearchRequest(query="test query", search_depth="deep")
-            response = mixin.unified_search(request, org_id="org_1")
-
-        assert response is expected_response
-        mock_service_cls.return_value.search.assert_called_once_with(
-            request, org_id="org_1"
-        )
-
-    def test_deep_disabled_degrades_to_classic_with_note(self):
-        mixin = self._mixin_with_config(deep_enabled=False)
-        classic_response = UnifiedSearchResponse(success=True)
-
-        with (
-            patch(
-                "reflexio.server.services.unified_search_service.run_unified_search",
-                return_value=classic_response,
-            ) as mock_run_unified,
-            patch(
-                "reflexio.server.services.search.deep_search_service.AgenticUnifiedSearchService"
-            ) as mock_service_cls,
-        ):
-            request = UnifiedSearchRequest(query="test query", search_depth="deep")
-            response = mixin.unified_search(request, org_id="org_1")
-
-        mock_service_cls.assert_not_called()
-        mock_run_unified.assert_called_once()
-        assert response.msg is not None and "disabled" in response.msg
-
-    def test_deep_failure_falls_back_to_classic_with_note(self):
-        mixin = self._mixin_with_config()
-        classic_response = UnifiedSearchResponse(success=True)
-
-        with (
-            patch(
-                "reflexio.server.services.unified_search_service.run_unified_search",
-                return_value=classic_response,
-            ) as mock_run_unified,
-            patch(
-                "reflexio.server.services.search.deep_search_service.AgenticUnifiedSearchService"
-            ) as mock_service_cls,
-        ):
-            mock_service_cls.return_value.search.side_effect = RuntimeError("boom")
-            request = UnifiedSearchRequest(query="test query", search_depth="deep")
-            response = mixin.unified_search(request, org_id="org_1")
-
-        mock_run_unified.assert_called_once()
-        assert response.msg is not None and "failed" in response.msg

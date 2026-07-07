@@ -6,6 +6,7 @@ from typing import Literal, Self
 from pydantic import BaseModel, Field, model_validator
 
 from ..config_schema import SearchMode
+from ..structured_output import StrictStructuredOutput
 from .domain import CitationKind
 from .service_schemas import (
     AgentPlaybook,
@@ -662,15 +663,45 @@ class ConversationTurn(BaseModel):
     content: NonEmptyStr
 
 
-class ReformulationResult(BaseModel):
+class ReformulationResult(StrictStructuredOutput):
     """Output of the query reformulation pipeline.
+
+    Besides the rewritten query, carries the query's TEMPORAL SIGNALS so the
+    search pipeline can be time-sensitive without any additional LLM call
+    (the reformulation call already runs before retrieval when
+    ``enable_reformulation`` is set). Time windows are relative day offsets
+    (never absolute dates) so results don't rot with calendar time.
 
     Args:
         standalone_query (str): Clean, normalized natural language query with
             conversation context resolved, abbreviations expanded, grammar fixed.
+        start_days_ago (float, optional): Older bound of a query time window
+            ("in the last 7 days" → 7).
+        end_days_ago (float, optional): Newer bound ("before this month" →
+            ~30, with no start bound).
+        recency_dominant (bool): The query asks for the CURRENT/LATEST value —
+            final ordering becomes timestamp-based.
+        wants_current (bool): Present-tense question about a mutable
+            fact/policy — superseded/expired entities are dropped and
+            near-duplicate competing facts collapse to the freshest, while
+            relevance ordering is otherwise preserved.
     """
 
     standalone_query: str
+    start_days_ago: float | None = Field(default=None, ge=0)
+    end_days_ago: float | None = Field(default=None, ge=0)
+    recency_dominant: bool = False
+    wants_current: bool = False
+
+    @property
+    def has_temporal_signals(self) -> bool:
+        """Whether any temporal signal was extracted."""
+        return (
+            self.start_days_ago is not None
+            or self.end_days_ago is not None
+            or self.recency_dominant
+            or self.wants_current
+        )
 
 
 # ===============================
@@ -713,12 +744,6 @@ class UnifiedSearchRequest(BaseModel):
     enable_reformulation: bool | None = False
     enable_agent_answer: bool | None = False
     search_mode: SearchMode = SearchMode.HYBRID
-    # "fast" = classic single-shot pipeline (default). "deep" = agentic tier:
-    # LLM planner fans out per-arm subqueries (with planner-inferred time
-    # windows), then an LLM reflect pass grades sufficiency and orders the
-    # fused results (at most one corrective round). Falls back to fast on
-    # any failure or when disabled via Config.deep_search_config.
-    search_depth: Literal["fast", "deep"] = "fast"
     # Caller correlation IDs for billing attribution on the Application line.
     # Optional; consumed by _meter_applied_learnings in server/api.py.
     request_id: str | None = None

@@ -1,4 +1,3 @@
-from ._learning_jobs import SQLiteLearningJobStoreMixin
 from ._base import (
     SQLiteStorageBase,
     _cosine_similarity,
@@ -10,6 +9,7 @@ from ._base import (
 )
 from ._extras import ExtrasMixin
 from ._governance import SQLiteGovernanceMixin
+from ._learning_jobs import SQLiteLearningJobStoreMixin
 from ._lineage import SQLiteLineageMixin
 from ._operations import OperationMixin
 from ._requests import RequestMixin

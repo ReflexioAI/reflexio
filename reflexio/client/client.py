@@ -2471,7 +2471,6 @@ class ReflexioClient:
         enable_agent_answer: bool | None = None,
         conversation_history: list[ConversationTurn] | list[dict] | None = None,
         search_mode: SearchMode | str | None = None,
-        search_depth: str | None = None,
         request_id: str | None = None,
         session_id: str | None = None,
         interaction_id: int | None = None,
@@ -2493,14 +2492,16 @@ class ReflexioClient:
                 "profiles", "user_playbooks", "agent_playbooks".
             agent_playbook_status_filter (Optional[list[Union[PlaybookStatus, str]]]):
                 Agent-playbook approval statuses to include.
-            enable_reformulation (Optional[bool]): Enable LLM query reformulation (default: False)
+            enable_reformulation (Optional[bool]): Enable the pre-search LLM
+                query reformulation call (default: False). Besides rewriting
+                the query, it extracts temporal signals — time windows
+                ("this week"), as-of boundaries, and current-value intent —
+                that make retrieval time-sensitive (window filters,
+                freshness-preferred ranking for superseded facts).
             enable_agent_answer (Optional[bool]): Enable agentic answer synthesis when
                 the configured search backend supports it (default: False).
             conversation_history (Optional[list[ConversationTurn] | list[dict]]): Prior conversation turns for context-aware query reformulation. Accepts ConversationTurn objects or dicts with "role" and "content" keys.
             search_mode (Optional[SearchMode | str]): Search mode to use. Accepts SearchMode enum or string value ("vector", "fts", "hybrid").
-            search_depth (Optional[str]): "fast" (default) for the classic
-                single-shot pipeline, or "deep" for the agentic tier (LLM
-                planner fan-out + reflect; higher quality, higher latency).
             request_id (Optional[str]): Caller correlation id for the search turn.
             session_id (Optional[str]): Caller session id for the search turn.
             interaction_id (Optional[int]): Caller interaction id for the search turn.
@@ -2523,7 +2524,6 @@ class ReflexioClient:
             enable_agent_answer=enable_agent_answer,
             conversation_history=conversation_history,
             search_mode=search_mode,
-            search_depth=search_depth,
             request_id=request_id,
             session_id=session_id,
             interaction_id=interaction_id,

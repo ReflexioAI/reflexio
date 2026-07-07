@@ -201,32 +201,30 @@ def test_classic_passes_direct_recall(classic_provider):
 
 
 # ---------------------------------------------------------------------------
-# Deep provider structural check under the global litellm mock.
+# Temporal-classic provider structural check under the global litellm mock.
 # ---------------------------------------------------------------------------
 
 
-def test_deep_provider_structural_under_mock(tmp_path):
-    """The deep tier runs end-to-end under the global mock: the canned plan
-    (one profiles subquery) executes against real temp storage and the canned
-    reflect verdict assembles a response with a populated trace. Result
-    QUALITY is meaningless here (mocked LLM) — quality is measured in the
-    real-LLM e2e eval.
+def test_reformulation_provider_structural_under_mock(tmp_path):
+    """The reformulation-enabled provider runs end-to-end under the global
+    mock: the canned ReformulationResult (no temporal signals) flows through
+    the pipeline and a response assembles. Result QUALITY is meaningless
+    here (mocked LLM) — quality is measured in the real-LLM e2e eval.
     """
     from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
-    from tests.eval.search.providers import make_deep_search_provider
+    from tests.eval.search.providers import make_classic_search_provider
 
-    provider = make_deep_search_provider(
+    provider = make_classic_search_provider(
         storage_base_dir=str(tmp_path),
         llm_client=LiteLLMClient(LiteLLMConfig(model="claude-sonnet-4-6")),
+        enable_reformulation=True,
     )
     case = next(c for c in _cases() if c["id"] == "direct_recall")
     run = provider(case)
 
     assert run.response.success is True
-    assert run.response.agent_trace, "deep tier must populate agent_trace"
-    assert run.response.agent_answer is None  # entities-only by design
-    outcome = score_case(case=case, run=run, backend="deep")
-    assert outcome.backend == "deep"
+    outcome = score_case(case=case, run=run, backend="temporal-classic")
+    assert outcome.backend == "temporal-classic"
 
 
 # ---------------------------------------------------------------------------

@@ -1,16 +1,19 @@
 """Independent query reformulation module for pre-retrieval optimization.
 
-Reformulates search queries into clean, normalized natural language:
-resolves conversation context, expands abbreviations, fixes grammar.
+Reformulates search queries into clean, normalized natural language AND
+extracts the query's temporal signals (relative time window,
+recency_dominant, wants_current) in the same structured LLM call — so
+retrieval can be time-sensitive with no additional pre-search latency.
 No FTS expansion -- that is handled by document-side expansion at storage time.
 
 Provides two interfaces:
-  - rewrite(): pure query transformation (no search)
+  - rewrite(): pure query transformation + temporal signals (no search)
   - search(): rewrite + execute search via callable + merge results
 """
 
 import logging
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Generic, TypeVar
 
 from pydantic import BaseModel
@@ -84,13 +87,15 @@ class QueryReformulator:
         query: str,
         conversation_history: list[ConversationTurn] | None = None,
     ) -> ReformulationResult:
-        """Reformulate a search query into clean, normalized natural language.
+        """Reformulate a query and extract its temporal signals.
 
-        Always runs reformulation: resolves conversation context (pronouns,
+        One structured LLM call resolves conversation context (pronouns,
         ellipsis, implicit references), expands abbreviations, fixes grammar,
-        and normalizes terminology.
+        normalizes terminology — and reads the question's time semantics
+        (relative window, recency_dominant, wants_current).
 
-        Falls back to the original query on any LLM failure.
+        Falls back to the original query with no temporal signals on any
+        LLM/parse failure.
 
         Args:
             query (str): The original user search query
@@ -98,11 +103,11 @@ class QueryReformulator:
                 context-aware reformulation.
 
         Returns:
-            ReformulationResult: The reformulated standalone query
+            ReformulationResult: Reformulated standalone query + temporal
+                signals.
         """
         try:
-            reformulated = self._reformulate(query, conversation_history)
-            return ReformulationResult(standalone_query=reformulated)
+            return self._reformulate(query, conversation_history)
         except Exception as e:
             logger.warning("Query reformulation failed, using original: %s", e)
             return ReformulationResult(standalone_query=query)
@@ -150,18 +155,21 @@ class QueryReformulator:
         self,
         query: str,
         conversation_history: list[ConversationTurn] | None = None,
-    ) -> str:
-        """Use LLM to reformulate the query into clean, standalone natural language.
+    ) -> ReformulationResult:
+        """One structured LLM call: rewritten query + temporal signals.
 
         Args:
             query (str): The original search query
             conversation_history (list, optional): Prior conversation turns
 
         Returns:
-            str: Reformulated query text
+            ReformulationResult: Validated result. A suspect rewritten-query
+                field degrades the whole result to the original query with no
+                signals (a model that mangles the rewrite is not trusted for
+                the signals either).
 
         Raises:
-            Exception: If LLM call or extraction fails
+            Exception: If the LLM call fails
         """
         conversation_context = self._format_conversation_context(conversation_history)
         conversation_context_block = (
@@ -171,29 +179,36 @@ class QueryReformulator:
         )
         prompt = self.prompt_manager.render_prompt(
             "query_reformulation",
-            {"query": query, "conversation_context_block": conversation_context_block},
+            {
+                "query": query,
+                "conversation_context_block": conversation_context_block,
+                "today_iso": datetime.now(UTC).date().isoformat(),
+            },
         )
         logger.debug("Query reformulation prompt: %s", prompt)
         model_kwargs = {}
         if self.model_name:
             model_kwargs["model"] = self.model_name
-        result = self.llm_client.generate_response(
-            prompt,
+        result = self.llm_client.generate_chat_response(
+            messages=[{"role": "user", "content": prompt}],
+            response_format=ReformulationResult,
             timeout=self.LLM_TIMEOUT,
             max_retries=self.LLM_MAX_RETRIES,
             **model_kwargs,
         )
         log_model_response(logger, "Query reformulation model response", result)
 
-        if isinstance(result, str):
-            extracted = self._extract_reformulated_query(result)
-            if extracted:
-                return extracted
-            logger.warning("LLM returned invalid reformulation: %s", result)
-            return query
+        if not isinstance(result, ReformulationResult):
+            logger.warning("LLM returned non-structured reformulation: %r", result)
+            return ReformulationResult(standalone_query=query)
 
-        logger.warning("LLM returned empty response for query reformulation")
-        return query
+        extracted = self._extract_reformulated_query(result.standalone_query)
+        if not extracted:
+            logger.warning(
+                "LLM returned invalid reformulation: %s", result.standalone_query
+            )
+            return ReformulationResult(standalone_query=query)
+        return result.model_copy(update={"standalone_query": extracted})
 
     @classmethod
     def _extract_reformulated_query(cls, output: str) -> str | None:

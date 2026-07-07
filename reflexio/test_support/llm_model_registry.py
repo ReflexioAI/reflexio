@@ -30,6 +30,7 @@ class ModelRegistryEntry:
 def _build_registry() -> dict[str, ModelRegistryEntry]:
     """Build the model registry with lazy imports to avoid circular dependencies."""
     from reflexio.models.api_schema.eval_overview_schema import ShadowComparisonOutput
+    from reflexio.models.api_schema.retriever_schema import ReformulationResult
     from reflexio.server.services.agent_success_evaluation.agent_success_evaluation_constants import (
         AgentSuccessEvaluationOutput,
     )
@@ -50,11 +51,6 @@ def _build_registry() -> dict[str, ModelRegistryEntry]:
     )
     from reflexio.server.services.reflection.reflection_service_utils import (
         ReflectionOutput,
-    )
-    from reflexio.server.services.search.deep_search_schemas import (
-        ReflectVerdict,
-        RerankOutput,
-        SearchPlan,
     )
     from reflexio.server.services.tagging.service import TagsOutput
 
@@ -157,24 +153,9 @@ def _build_registry() -> dict[str, ModelRegistryEntry]:
             model_class=None,
             minimal_valid="true",
         ),
-        "deep_search_plan": ModelRegistryEntry(
-            model_class=SearchPlan,
-            minimal_valid={
-                "subqueries": [
-                    {"arm": "profiles", "query": "example subquery"},
-                ],
-            },
-        ),
-        "deep_search_reflect": ModelRegistryEntry(
-            model_class=ReflectVerdict,
-            minimal_valid={
-                "sufficiency": "sufficient",
-                "ranked_candidate_ids": [],
-            },
-        ),
-        "deep_search_rerank": ModelRegistryEntry(
-            model_class=RerankOutput,
-            minimal_valid={"ranked_candidate_ids": []},
+        "query_reformulation": ModelRegistryEntry(
+            model_class=ReformulationResult,
+            minimal_valid={"standalone_query": "example reformulated query"},
         ),
     }
 

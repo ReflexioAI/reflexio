@@ -372,7 +372,7 @@ class TestRunUnifiedSearch(unittest.TestCase):
         with (
             patch(
                 "reflexio.server.services.unified_search_service._run_phase_a",
-                return_value=("q", None),
+                return_value=(ReformulationResult(standalone_query="q"), None),
             ),
             patch(
                 "reflexio.server.services.unified_search_service._run_phase_b_single_rpc",

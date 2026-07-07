@@ -600,33 +600,6 @@ class RetrievalFloorConfig(BaseModel):
     agent_playbook_floor: float = -3.0
 
 
-class DeepSearchConfig(BaseModel):
-    """Operator knobs for the deep (agentic) unified search tier.
-
-    The tier itself is request-opt-in (``UnifiedSearchRequest.search_depth
-    == "deep"``); ``enabled`` is the org-level kill switch — when False,
-    deep requests are served by the classic pipeline with a note in
-    ``msg``.
-    """
-
-    enabled: bool = True
-    max_subqueries: int = Field(
-        default=6,
-        gt=0,
-        description="Hard cap on planned (and corrective) subqueries per round.",
-    )
-    planner_timeout_s: float = Field(
-        default=15.0,
-        gt=0,
-        description="Timeout for the PLAN structured LLM call.",
-    )
-    reflect_timeout_s: float = Field(
-        default=45.0,
-        gt=0,
-        description="Timeout for each REFLECT structured LLM call.",
-    )
-
-
 class PlaybookOptimizerConfig(BaseModel):
     """Configuration for GEPA-backed playbook content optimization.
 
@@ -838,11 +811,6 @@ class LLMConfig(BaseModel):
     pre_retrieval_model_name: str | None = (
         None  # Model for pre-retrieval query reformulation
     )
-    # Deep-search tier overrides. When None, the planner follows the
-    # pre-retrieval resolution (cheap/fast tier) and the reflector/reranker
-    # follow the generation resolution (strong tier).
-    deep_search_planner_model_name: str | None = None
-    deep_search_reranker_model_name: str | None = None
 
 
 def _default_profile_extractor_config() -> ProfileExtractorConfig:
@@ -901,8 +869,6 @@ class Config(BaseModel):
     reflection_config: ReflectionConfig = Field(default_factory=ReflectionConfig)
     # Read-path relevance floor (per-arm cross-encoder score cutoff)
     retrieval_floor: RetrievalFloorConfig = Field(default_factory=RetrievalFloorConfig)
-    # Deep (agentic) unified search tier knobs (request-opt-in; kill switch here)
-    deep_search_config: DeepSearchConfig = Field(default_factory=DeepSearchConfig)
     # Optional GEPA-backed playbook content optimizer
     playbook_optimizer_config: PlaybookOptimizerConfig = Field(
         default_factory=PlaybookOptimizerConfig
@@ -978,7 +944,6 @@ class Config(BaseModel):
                 "governance_retention",
                 "pending_tool_call_config",
                 "retrieval_floor",
-                "deep_search_config",
             ):
                 if key in data and data[key] is None:
                     del data[key]

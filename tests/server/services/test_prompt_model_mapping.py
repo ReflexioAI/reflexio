@@ -54,7 +54,9 @@ PROMPT_VERSION_MAP: dict[str, tuple[str, str | None]] = {
     "agent_success_evaluation_with_comparison": ("v1.0.0", None),
     "shadow_content_evaluation": ("v1.0.0", None),
     "memory_reflection": ("v1.7.0", None),
-    "query_reformulation": ("v1.0.0", None),
+    # v2.0.0: structured output — rewrite + temporal signals (window,
+    # recency_dominant, wants_current) in the same pre-search LLM call.
+    "query_reformulation": ("v2.0.0", "query_reformulation"),
     # v1.1.0: fact-key/category phrasings + escaped JSON braces (v1.0.0 never
     # rendered — literal braces broke str.format and the expander swallowed it).
     "document_expansion": ("v1.1.0", None),
@@ -66,10 +68,6 @@ PROMPT_VERSION_MAP: dict[str, tuple[str, str | None]] = {
     # ShadowComparisonOutput; the mock dispatch lives in the integration
     # tests rather than the global heuristic mock, so no registry key.
     "shadow_comparison": ("v1.0.0", None),
-    # Deep (agentic) unified search tier — PLAN, REFLECT, RERANK structured calls.
-    "deep_search_plan": ("v1.1.0", "deep_search_plan"),
-    "deep_search_reflect": ("v1.0.0", "deep_search_reflect"),
-    "deep_search_rerank": ("v1.0.0", "deep_search_rerank"),
 }
 
 
