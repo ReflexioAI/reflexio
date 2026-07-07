@@ -82,6 +82,10 @@ _SEARCH_FANOUT_EXECUTOR = ThreadPoolExecutor(
     thread_name_prefix="reflexio-search",
 )
 _ENV_SINGLE_RPC = "REFLEXIO_UNIFIED_SEARCH_SINGLE_RPC"
+# Working-pool floor for temporal reordering (freshness collapse / recency
+# sort): matches the RecencyConfig default pool so the fresh version of a
+# fact can be promoted even when it ranks below top_k on text relevance.
+_TEMPORAL_POOL_SIZE = 20
 _EMBEDDING_CACHE_TTL_SECONDS = max(
     0, int(os.getenv("REFLEXIO_QUERY_EMBEDDING_CACHE_TTL_SECONDS", "300") or "300")
 )
@@ -145,11 +149,6 @@ def run_unified_search(
     floor_cfg = retrieval_floor or RetrievalFloorConfig()
     floor_on = floor_cfg.enabled
     recency_on = bool(recency and recency.enabled)
-    fetch_k = max(
-        top_k,
-        floor_cfg.pool_size if floor_on else 0,
-        recency.pool_size if recency_on and recency is not None else 0,
-    )
 
     # --- Phase A: query reformulation (+ temporal signals) + embedding ---
     reformulation, embedding = _run_phase_a(
@@ -167,6 +166,20 @@ def run_unified_search(
     window_start, window_end = window_bounds(
         reformulation.start_days_ago, reformulation.end_days_ago
     )
+
+    # Temporal reordering (freshness collapse / recency sort) happens after
+    # relevance ranking, so it needs a wider working pool: the fresh version
+    # of a fact may rank below top_k on text relevance alone. When signals
+    # are present, fetch and rank a larger pool and cut to top_k only after
+    # the temporal pass.
+    temporal_reorder = reformulation.wants_current or reformulation.recency_dominant
+    fetch_k = max(
+        top_k,
+        floor_cfg.pool_size if floor_on else 0,
+        recency.pool_size if recency_on and recency is not None else 0,
+        _TEMPORAL_POOL_SIZE if temporal_reorder else 0,
+    )
+    result_cap = max(top_k, _TEMPORAL_POOL_SIZE) if temporal_reorder else top_k
 
     # --- Phase B: parallel searches across all entity types ---
     profiles, agent_playbooks, user_playbooks = _run_phase_b(
@@ -191,39 +204,41 @@ def run_unified_search(
             profiles=profiles,
             agent_playbooks=agent_playbooks,  # type: ignore[arg-type]
             user_playbooks=user_playbooks,  # type: ignore[arg-type]
-            top_k=top_k,
+            top_k=result_cap,
             cfg=floor_cfg,
             recency=recency if recency_on else None,
         )
     elif recency_on and recency is not None:
         profiles = _apply_combined_score_recency(
-            profiles or [], entity_type="profiles", top_k=top_k, cfg=recency
+            profiles or [], entity_type="profiles", top_k=result_cap, cfg=recency
         )
         agent_playbooks = _apply_combined_score_recency(
             agent_playbooks or [],
             entity_type="agent_playbooks",
-            top_k=top_k,
+            top_k=result_cap,
             cfg=recency,
         )
         user_playbooks = _apply_combined_score_recency(
             user_playbooks or [],
             entity_type="user_playbooks",
-            top_k=top_k,
+            top_k=result_cap,
             cfg=recency,
         )
     else:
-        profiles = _unwrap_items(profiles or [])[:top_k]
-        agent_playbooks = _unwrap_items(agent_playbooks or [])[:top_k]
-        user_playbooks = _unwrap_items(user_playbooks or [])[:top_k]
+        profiles = _unwrap_items(profiles or [])[:result_cap]
+        agent_playbooks = _unwrap_items(agent_playbooks or [])[:result_cap]
+        user_playbooks = _unwrap_items(user_playbooks or [])[:result_cap]
 
     # --- Temporal post-processing from query-derived signals ---
-    if reformulation.wants_current or reformulation.recency_dominant:
+    if temporal_reorder:
         arms = [profiles or [], agent_playbooks or [], user_playbooks or []]
         if reformulation.wants_current:
             arms = [freshness_collapse(arm) for arm in arms]
         if reformulation.recency_dominant:
             arms = [sort_by_recency(arm) for arm in arms]
-        profiles, agent_playbooks, user_playbooks = arms
+        # Final cut to top_k only after the temporal pass, so items promoted
+        # from the wider pool can take the top slots.
+        profiles, agent_playbooks, user_playbooks = (arm[:top_k] for arm in arms)
 
     user_playbooks = _suppress_source_user_playbooks(
         storage=storage,

@@ -14,6 +14,7 @@ import pytest
 
 from reflexio.models.api_schema.domain.entities import (
     AgentPlaybook,
+    LineageContext,
     UserPlaybook,
     UserProfile,
 )
@@ -146,3 +147,20 @@ def test_search_excludes_superseded_agent_playbooks(storage):
         None,
     )
     assert [p.agent_playbook_id for p in hits] == [keep.agent_playbook_id]
+
+
+def test_search_excludes_merged_profiles(storage):
+    """merged_into rows carry status=MERGED (single lineage writer) and the
+    tombstone exclusion drops them from search — same coupling as
+    superseded_by."""
+    storage.add_user_profile(_USER, [_profile("survivor"), _profile("source")])
+    storage.merge_records(
+        entity_type="profile",
+        survivor_id="survivor",
+        source_ids=["source"],
+        context=LineageContext(
+            op_kind="merge", actor="contract-test", request_id="r-merge"
+        ),
+    )
+
+    assert _search_profiles(storage) == ["survivor"]

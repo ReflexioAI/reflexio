@@ -216,3 +216,33 @@ def test_wants_current_composes_with_relevance_floor(monkeypatch):
         )
 
     assert [p.profile_id for p in result.profiles] == ["fresh", "stale"]
+
+
+def test_temporal_signals_widen_fetch_pool_and_cut_after_reordering():
+    """Temporal reordering runs after relevance ranking, so signal-carrying
+    queries must (a) request a wider per-arm pool from storage and (b) cut to
+    top_k only AFTER the temporal pass — otherwise the fresh/newest item that
+    ranks below top_k on text relevance can never be promoted."""
+    # Newest profile ranks LAST on relevance; with top_k=2 it would be sliced
+    # away before the recency sort without the wider working pool.
+    profiles = [_profile(f"old-{i}", 100 + i) for i in range(5)]
+    profiles.append(_profile("newest", 1))
+    storage = _mock_storage(profiles)
+
+    result = _run(
+        storage,
+        ReformulationResult(standalone_query="q", recency_dominant=True),
+        top_k=2,
+    )
+
+    fetch_request = storage.search_user_profile.call_args[0][0]
+    assert fetch_request.top_k >= 20  # temporal pool floor reached storage
+    assert len(result.profiles) == 2  # final cut still honors top_k
+    assert result.profiles[0].profile_id == "newest"
+
+
+def test_no_signals_keeps_fetch_pool_untouched():
+    storage = _mock_storage([_profile("a", 1)])
+    _run(storage, ReformulationResult(standalone_query="q"), top_k=2)
+    fetch_request = storage.search_user_profile.call_args[0][0]
+    assert fetch_request.top_k == 2
