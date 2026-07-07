@@ -547,6 +547,48 @@ class TestReplacePlaybook:
 
         trigger.assert_not_called()
 
+    def test_playbook_successor_reload_failure_does_not_fail_reflection(
+        self, request_context, service
+    ):
+        cited = UserPlaybook(
+            user_playbook_id=1,
+            user_id="user-1",
+            agent_version="v1",
+            request_id="req-1",
+            content="old rule",
+            trigger="when old",
+        )
+        decision = ReflectionDecision(
+            target_kind="playbook",
+            target_id="1",
+            new_content="new rule",
+            reason="rule was wrong",
+        )
+
+        with (
+            patch(
+                "reflexio.server.services.reflection.service.apply_playbook_edit",
+                return_value=2,
+            ),
+            patch.object(
+                request_context.storage,
+                "get_user_playbook_by_id",
+                side_effect=RuntimeError("reload failed"),
+            ),
+            patch(
+                "reflexio.server.services.reflection.service."
+                "maybe_trigger_user_playbook_aggregation",
+            ) as trigger,
+        ):
+            replaced = service._replace_playbook(  # noqa: SLF001
+                ReflectionServiceRequest(request_id="req-1", user_id="user-1"),
+                decision,
+                cited,
+            )
+
+        assert replaced is True
+        trigger.assert_not_called()
+
 
 class TestNoChange:
     def test_no_change_does_not_mutate_storage(

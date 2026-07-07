@@ -659,12 +659,21 @@ class ReflectionService:
                 )
             return True
         if archived > 0:
-            maybe_trigger_user_playbook_aggregation(
-                request_context=self.request_context,
-                llm_client=self.client,
-                agent_version=new_playbook.agent_version,
-                reason="reflection",
-            )
+            try:
+                successor = storage.get_user_playbook_by_id(archived)
+                if successor is not None and successor.agent_version:
+                    maybe_trigger_user_playbook_aggregation(
+                        request_context=self.request_context,
+                        llm_client=self.client,
+                        agent_version=successor.agent_version,
+                        reason="reflection",
+                    )
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "event=reflection_aggregation_trigger_failed kind=playbook "
+                    "successor_id=%s",
+                    archived,
+                )
         if archived < 0:
             with sentry_tags(
                 subsystem="reflection",

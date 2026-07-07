@@ -777,6 +777,53 @@ def test_agent_playbook_optimizer_successor_does_not_trigger_aggregation(tmp_pat
     trigger.assert_not_called()
 
 
+def test_user_playbook_optimizer_successor_reload_failure_does_not_fail_commit(
+    tmp_path,
+):
+    storage = _sqlite_storage(tmp_path)
+    config = Config(
+        storage_config=StorageConfigSQLite(db_path=str(tmp_path / "reflexio.db")),
+        playbook_optimizer_config=PlaybookOptimizerConfig(
+            auto_update_user_playbooks=True
+        ),
+    )
+    optimizer = _optimizer_for_test(storage, config)
+    user_playbook = UserPlaybook(
+        user_playbook_id=0,
+        user_id="u1",
+        agent_version="v1",
+        request_id="req-1",
+        content="old",
+        trigger="when old",
+    )
+    storage.save_user_playbooks([user_playbook])
+    target = PlaybookOptimizationTarget(
+        kind="user_playbook", target_id=user_playbook.user_playbook_id
+    )
+
+    with (
+        patch.object(
+            storage,
+            "get_user_playbook_by_id",
+            side_effect=[user_playbook, RuntimeError("reload failed")],
+        ),
+        patch(
+            "reflexio.server.services.playbook_optimizer.optimizer."
+            "maybe_trigger_user_playbook_aggregation",
+        ) as trigger,
+    ):
+        successor_id = optimizer._commit_if_allowed(  # noqa: SLF001
+            target,
+            _agent_like_playbook(user_playbook),
+            "new",
+            config.playbook_optimizer_config,
+            "run-1",
+        )
+
+    assert successor_id is not None
+    trigger.assert_not_called()
+
+
 def test_optimizer_runs_single_window_when_commit_threshold_is_one(tmp_path):
     storage = _sqlite_storage(tmp_path)
     config = Config(

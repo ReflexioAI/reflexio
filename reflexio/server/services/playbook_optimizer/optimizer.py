@@ -499,13 +499,19 @@ class PlaybookOptimizer:
             request_id=run_request_id,
         )
         if successor_id is not None:
-            successor = self.storage.get_user_playbook_by_id(successor_id)
-            if successor is not None and successor.agent_version:
-                maybe_trigger_user_playbook_aggregation(
-                    request_context=self.request_context,
-                    llm_client=self.llm_client,
-                    agent_version=successor.agent_version,
-                    reason="playbook_optimizer",
+            try:
+                successor = self.storage.get_user_playbook_by_id(successor_id)
+                if successor is not None and successor.agent_version:
+                    maybe_trigger_user_playbook_aggregation(
+                        request_context=self.request_context,
+                        llm_client=self.llm_client,
+                        agent_version=successor.agent_version,
+                        reason="playbook_optimizer",
+                    )
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "playbook_optimizer aggregation trigger failed after successor commit",
+                    extra={"successor_id": successor_id},
                 )
         return successor_id
 
