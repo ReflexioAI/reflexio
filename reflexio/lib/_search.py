@@ -11,6 +11,7 @@ from reflexio.models.api_schema.retriever_schema import (
     UnifiedSearchRequest,
     UnifiedSearchResponse,
 )
+from reflexio.models.config_schema import DeepSearchConfig
 from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
 from reflexio.server.site_var.site_var_manager import SiteVarManager
 from reflexio.server.tracing import profile_step
@@ -183,10 +184,31 @@ class SearchMixin(ReflexioBase):
             prompt_manager = self.request_context.prompt_manager
             retrieval_floor = config.retrieval_floor if config else None
             recency = getattr(storage, "recency", None)
+            deep_config = config.deep_search_config if config else None
+
+        deep_disabled_note: str | None = None
+        if request.search_depth == "deep":
+            if deep_config is not None and deep_config.enabled:
+                try:
+                    return self._run_deep_search(
+                        request=request,
+                        org_id=org_id,
+                        deep_config=deep_config,
+                        pre_retrieval_model_name=pre_retrieval_model_name,
+                    )
+                except Exception:
+                    _LOGGER.exception(
+                        "Deep search failed; falling back to classic unified search"
+                    )
+                    deep_disabled_note = "deep search failed; served fast tier"
+            else:
+                deep_disabled_note = (
+                    "deep search disabled by config; served fast tier"
+                )
 
         from reflexio.server.services.unified_search_service import run_unified_search
 
-        return run_unified_search(
+        response = run_unified_search(
             request=request,
             org_id=org_id,
             storage=storage,
@@ -196,3 +218,42 @@ class SearchMixin(ReflexioBase):
             retrieval_floor=retrieval_floor,
             recency=recency,
         )
+        if deep_disabled_note:
+            response.msg = (
+                f"{response.msg}; {deep_disabled_note}"
+                if response.msg
+                else deep_disabled_note
+            )
+        return response
+
+    def _run_deep_search(
+        self,
+        *,
+        request: UnifiedSearchRequest,
+        org_id: str,
+        deep_config: DeepSearchConfig,
+        pre_retrieval_model_name: str | None,
+    ) -> UnifiedSearchResponse:
+        """Run the deep (agentic) search tier.
+
+        Args:
+            request (UnifiedSearchRequest): The unified search request.
+            org_id (str): Organization ID.
+            deep_config (DeepSearchConfig): Operator knobs for the tier.
+            pre_retrieval_model_name (str, optional): Resolved planner model
+                (same resolution chain as classic query reformulation).
+
+        Returns:
+            UnifiedSearchResponse: Deep tier results.
+        """
+        from reflexio.server.services.search.deep_search_service import (
+            AgenticUnifiedSearchService,
+        )
+
+        service = AgenticUnifiedSearchService(
+            llm_client=self.llm_client,
+            request_context=self.request_context,
+            config=deep_config,
+            planner_model_name=pre_retrieval_model_name,
+        )
+        return service.search(request, org_id=org_id)

@@ -713,6 +713,12 @@ class UnifiedSearchRequest(BaseModel):
     enable_reformulation: bool | None = False
     enable_agent_answer: bool | None = False
     search_mode: SearchMode = SearchMode.HYBRID
+    # "fast" = classic single-shot pipeline (default). "deep" = agentic tier:
+    # LLM planner fans out per-arm subqueries (with planner-inferred time
+    # windows), then an LLM reflect pass grades sufficiency and orders the
+    # fused results (at most one corrective round). Falls back to fast on
+    # any failure or when disabled via Config.deep_search_config.
+    search_depth: Literal["fast", "deep"] = "fast"
     # Caller correlation IDs for billing attribution on the Application line.
     # Optional; consumed by _meter_applied_learnings in server/api.py.
     request_id: str | None = None

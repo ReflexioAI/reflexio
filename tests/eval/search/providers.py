@@ -203,3 +203,65 @@ def make_classic_search_provider(
         )
 
     return provider
+
+
+def make_deep_search_provider(
+    *,
+    storage_base_dir: str,
+    llm_client: Any,
+    search_mode: SearchMode = SearchMode.FTS,
+    planner_model_name: str | None = None,
+    reflector_model_name: str | None = None,
+    deep_config: Any = None,
+) -> SearchProvider:
+    """Build a deep-tier (agentic) search provider.
+
+    Same seeding/isolation as the classic provider, but each case runs
+    through ``AgenticUnifiedSearchService`` (plan → parallel fan-out →
+    reflect). The LLM client must be real (or a seam mock) — the deep tier
+    makes 2-3 structured LLM calls per case.
+
+    Args:
+        storage_base_dir: Directory the per-case SQLite stores live under.
+        llm_client: LLM client for the planner/reflect calls.
+        search_mode (SearchMode): Default mode for cases that don't
+            override it (subqueries may still choose their own mode).
+        planner_model_name: Optional explicit planner model.
+        reflector_model_name: Optional explicit reflector model.
+        deep_config: Optional ``DeepSearchConfig`` override (e.g. longer
+            timeouts for slow eval models).
+
+    Returns:
+        SearchProvider: Callable mapping a case to a :class:`ProviderRun`.
+    """
+    from reflexio.models.config_schema import DeepSearchConfig
+    from reflexio.server.api_endpoints.request_context import RequestContext
+    from reflexio.server.services.search.deep_search_service import (
+        AgenticUnifiedSearchService,
+    )
+
+    def provider(case: dict[str, Any]) -> ProviderRun:
+        org_id = f"eval-deep-{case['id']}"
+        ctx = RequestContext(org_id=org_id, storage_base_dir=storage_base_dir)
+        storage = ctx.storage
+        if storage is None:
+            raise RuntimeError(f"eval storage failed to initialize for {org_id}")
+        now = int(datetime.now(UTC).timestamp())
+        key_to_id = seed_case_entities(storage, case, now)
+        request = build_request(case, default_search_mode=search_mode)
+
+        service = AgenticUnifiedSearchService(
+            llm_client=llm_client,
+            request_context=ctx,
+            config=deep_config or DeepSearchConfig(),
+            planner_model_name=planner_model_name,
+            reflector_model_name=reflector_model_name,
+        )
+        start = time.monotonic()
+        response = service.search(request, org_id=org_id)
+        latency_ms = (time.monotonic() - start) * 1000.0
+        return ProviderRun(
+            response=response, key_to_id=key_to_id, latency_ms=latency_ms
+        )
+
+    return provider

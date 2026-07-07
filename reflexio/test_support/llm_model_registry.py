@@ -51,6 +51,10 @@ def _build_registry() -> dict[str, ModelRegistryEntry]:
     from reflexio.server.services.reflection.reflection_service_utils import (
         ReflectionOutput,
     )
+    from reflexio.server.services.search.deep_search_schemas import (
+        ReflectVerdict,
+        SearchPlan,
+    )
     from reflexio.server.services.tagging.service import TagsOutput
 
     return {
@@ -151,6 +155,21 @@ def _build_registry() -> dict[str, ModelRegistryEntry]:
         "boolean_evaluation": ModelRegistryEntry(
             model_class=None,
             minimal_valid="true",
+        ),
+        "deep_search_plan": ModelRegistryEntry(
+            model_class=SearchPlan,
+            minimal_valid={
+                "subqueries": [
+                    {"arm": "profiles", "query": "example subquery"},
+                ],
+            },
+        ),
+        "deep_search_reflect": ModelRegistryEntry(
+            model_class=ReflectVerdict,
+            minimal_valid={
+                "sufficiency": "sufficient",
+                "ranked_candidate_ids": [],
+            },
         ),
     }
 

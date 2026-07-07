@@ -764,12 +764,16 @@ def _search_agent_playbooks_via_storage(
     playbook_name: str | None,
     allowed_statuses: list[PlaybookStatus] | None,
     options: SearchOptions,
+    start_time: datetime | None = None,
+    end_time: datetime | None = None,
 ) -> list[AgentPlaybook]:
     """Search agent playbooks, restricted to one or more approval statuses.
 
     When ``allowed_statuses`` is None or empty, falls back to
     ``_DEFAULT_AGENT_PLAYBOOK_STATUSES`` (APPROVED + PENDING). Callers that
     genuinely want REJECTED playbooks must opt in by passing the full list.
+    ``start_time``/``end_time`` bound ``created_at`` (deep-tier
+    planner-inferred time windows; classic callers leave them unset).
     """
     with profile_step(
         "search.branch.agent_playbooks",
@@ -790,6 +794,8 @@ def _search_agent_playbooks_via_storage(
             threshold=threshold,
             top_k=top_k,
             search_mode=options.search_mode,
+            start_time=start_time,
+            end_time=end_time,
         )
         results: list[AgentPlaybook] = []
         seen_ids: set[str] = set()
@@ -812,6 +818,8 @@ def _search_profiles_via_storage(
     user_id: str | None,
     embedding: list[float] | None,
     search_mode: SearchMode,
+    start_time: datetime | None = None,
+    end_time: datetime | None = None,
 ) -> list[UserProfile]:
     """Search profiles via storage.search_user_profile, returning [] on error or missing user_id.
 
@@ -823,6 +831,9 @@ def _search_profiles_via_storage(
         user_id (Optional[str]): User ID filter (required for profile search)
         embedding (Optional[list[float]]): Pre-computed query embedding, or None for text-only search
         search_mode (SearchMode): Search mode (hybrid/vector/fts)
+        start_time (Optional[datetime]): Lower bound on last_modified_timestamp
+            (deep-tier planner-inferred time windows; classic leaves unset)
+        end_time (Optional[datetime]): Upper bound on last_modified_timestamp
 
     Returns:
         list[UserProfile]: Matching profiles, or [] on error/missing user_id
@@ -843,6 +854,8 @@ def _search_profiles_via_storage(
                     top_k=top_k,
                     threshold=threshold,
                     search_mode=search_mode,
+                    start_time=start_time,
+                    end_time=end_time,
                 ),
                 status_filter=[None],
                 query_embedding=embedding,

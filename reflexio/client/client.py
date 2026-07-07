@@ -2471,6 +2471,7 @@ class ReflexioClient:
         enable_agent_answer: bool | None = None,
         conversation_history: list[ConversationTurn] | list[dict] | None = None,
         search_mode: SearchMode | str | None = None,
+        search_depth: str | None = None,
         request_id: str | None = None,
         session_id: str | None = None,
         interaction_id: int | None = None,
@@ -2497,6 +2498,9 @@ class ReflexioClient:
                 the configured search backend supports it (default: False).
             conversation_history (Optional[list[ConversationTurn] | list[dict]]): Prior conversation turns for context-aware query reformulation. Accepts ConversationTurn objects or dicts with "role" and "content" keys.
             search_mode (Optional[SearchMode | str]): Search mode to use. Accepts SearchMode enum or string value ("vector", "fts", "hybrid").
+            search_depth (Optional[str]): "fast" (default) for the classic
+                single-shot pipeline, or "deep" for the agentic tier (LLM
+                planner fan-out + reflect; higher quality, higher latency).
             request_id (Optional[str]): Caller correlation id for the search turn.
             session_id (Optional[str]): Caller session id for the search turn.
             interaction_id (Optional[int]): Caller interaction id for the search turn.
@@ -2519,6 +2523,7 @@ class ReflexioClient:
             enable_agent_answer=enable_agent_answer,
             conversation_history=conversation_history,
             search_mode=search_mode,
+            search_depth=search_depth,
             request_id=request_id,
             session_id=session_id,
             interaction_id=interaction_id,

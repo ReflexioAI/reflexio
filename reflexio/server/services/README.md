@@ -58,6 +58,7 @@ strings before deleting old import paths in the same PR.
 | `pre_retrieval/` | `QueryReformulator` (`_query_reformulator.py`) + `DocumentExpander` (`_document_expander.py`) - query rewrite and doc expansion for recall. Compact by design; see [README](pre_retrieval/README.md). |
 | `tagging/` | `TaggingService` (`service.py`) + deferred `tagging_scheduler.py` - post-generation profile/playbook tagging. Compact by design; see [README](tagging/README.md). |
 | `unified_search_service.py` | `run_unified_search()` — two-phase parallel search across profiles / agent playbooks / user playbooks. |
+| `search/` | Deep (agentic) unified search tier, opt-in via `UnifiedSearchRequest.search_depth="deep"`: `deep_search_service.py` orchestrates `planner.py` (LLM subquery planning incl. time windows) → `executor.py` (parallel per-arm fan-out + fusion) → `reflector.py` (sufficiency grade + ranking, ≤1 corrective round). Falls back to classic on any failure. |
 | `retrieval/` | `relevance_floor.py` — result relevance thresholding. |
 
 ## Persistence & Config

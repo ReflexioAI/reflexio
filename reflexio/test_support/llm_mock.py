@@ -72,6 +72,14 @@ def _create_mock_completion(
         content = json.dumps(registry["playbook_extraction"].minimal_valid)
     elif '"tags"' in prompt_content:
         content = json.dumps(registry["tagging"].minimal_valid)
+    elif "start_days_ago" in prompt_content:
+        # Deep-search PLAN prompt — anchored on the time-window field name the
+        # prompt must describe (the reflect prompt never mentions it).
+        content = json.dumps(registry["deep_search_plan"].minimal_valid)
+    elif "ranked_candidate_ids" in prompt_content:
+        # Deep-search REFLECT prompt — anchored on its output field name (the
+        # plan prompt never mentions it).
+        content = json.dumps(registry["deep_search_reflect"].minimal_valid)
     elif parse_structured_output:
         content = json.dumps(registry["profile_extraction"].minimal_valid)
     else:
