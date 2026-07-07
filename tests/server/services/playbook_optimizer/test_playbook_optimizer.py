@@ -679,7 +679,9 @@ def test_optimizer_skips_when_winner_cannot_be_adopted(
     assert jobs == []
 
 
-def test_user_playbook_optimizer_successor_triggers_aggregation(tmp_path):
+def test_user_playbook_optimizer_successor_triggers_aggregation_with_successor_version(
+    tmp_path,
+):
     storage = _sqlite_storage(tmp_path)
     config = Config(
         storage_config=StorageConfigSQLite(db_path=str(tmp_path / "reflexio.db")),
@@ -691,7 +693,7 @@ def test_user_playbook_optimizer_successor_triggers_aggregation(tmp_path):
     user_playbook = UserPlaybook(
         user_playbook_id=0,
         user_id="u1",
-        agent_version="v1",
+        agent_version="v-incumbent",
         request_id="req-1",
         content="old",
         trigger="when old",
@@ -700,11 +702,27 @@ def test_user_playbook_optimizer_successor_triggers_aggregation(tmp_path):
     target = PlaybookOptimizationTarget(
         kind="user_playbook", target_id=user_playbook.user_playbook_id
     )
+    original_supersede_record = storage.supersede_record
 
-    with patch(
-        "reflexio.server.services.playbook_optimizer.optimizer."
-        "maybe_trigger_user_playbook_aggregation",
-    ) as trigger:
+    def supersede_and_update_successor(*args, **kwargs):
+        ok = original_supersede_record(*args, **kwargs)
+        if ok:
+            storage.conn.execute(
+                "UPDATE user_playbooks SET agent_version = ? WHERE user_playbook_id = ?",
+                ("v-successor", int(kwargs["successor_id"])),
+            )
+            storage.conn.commit()
+        return ok
+
+    with (
+        patch.object(
+            storage, "supersede_record", side_effect=supersede_and_update_successor
+        ),
+        patch(
+            "reflexio.server.services.playbook_optimizer.optimizer."
+            "maybe_trigger_user_playbook_aggregation",
+        ) as trigger,
+    ):
         successor_id = optimizer._commit_if_allowed(  # noqa: SLF001
             target,
             _agent_like_playbook(user_playbook),
@@ -715,7 +733,7 @@ def test_user_playbook_optimizer_successor_triggers_aggregation(tmp_path):
 
     assert successor_id is not None
     trigger.assert_called_once()
-    assert trigger.call_args.kwargs["agent_version"] == "v1"
+    assert trigger.call_args.kwargs["agent_version"] == "v-successor"
     assert trigger.call_args.kwargs["reason"] == "playbook_optimizer"
 
 

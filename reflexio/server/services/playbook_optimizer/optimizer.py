@@ -499,12 +499,14 @@ class PlaybookOptimizer:
             request_id=run_request_id,
         )
         if successor_id is not None:
-            maybe_trigger_user_playbook_aggregation(
-                request_context=self.request_context,
-                llm_client=self.llm_client,
-                agent_version=current_user.agent_version,
-                reason="playbook_optimizer",
-            )
+            successor = self.storage.get_user_playbook_by_id(successor_id)
+            if successor is not None and successor.agent_version:
+                maybe_trigger_user_playbook_aggregation(
+                    request_context=self.request_context,
+                    llm_client=self.llm_client,
+                    agent_version=successor.agent_version,
+                    reason="playbook_optimizer",
+                )
         return successor_id
 
 
