@@ -99,6 +99,14 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         default=30,
         help="Drain window on shutdown. Default 30.",
     )
+    parser.add_argument(
+        "--skip-if-running",
+        action="store_true",
+        help=(
+            "Skip selected services whose health endpoint is already responding. "
+            "Does not detect code changes; stop then start to reload."
+        ),
+    )
 
 
 def _build_run_services_parser() -> argparse.ArgumentParser:
@@ -396,5 +404,12 @@ def execute(args: argparse.Namespace) -> None:
         return
 
     started_ports = {s.name: ports[s.name] for s in services}
-    print(f"Starting services: {', '.join(s.name for s in services)}")
-    run_services(services, started_ports)
+    if getattr(args, "skip_if_running", False):
+        print(f"Starting services if needed: {', '.join(s.name for s in services)}")
+    else:
+        print(f"Starting services: {', '.join(s.name for s in services)}")
+    run_services(
+        services,
+        started_ports,
+        skip_if_running=getattr(args, "skip_if_running", False),
+    )

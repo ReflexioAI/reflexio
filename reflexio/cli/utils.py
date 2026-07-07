@@ -13,6 +13,8 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.error
+import urllib.request
 from collections.abc import Callable
 from pathlib import Path
 
@@ -79,15 +81,7 @@ def find_pids_by_pattern(pattern: str) -> list[int]:
 def get_requested_port_conflicts(ports: dict[str, int]) -> list[str]:
     """Return startup-blocking conflicts for requested service ports."""
     conflicts: list[str] = []
-    services_by_port: dict[int, list[str]] = {}
-    for name, port in ports.items():
-        services_by_port.setdefault(port, []).append(name)
-
-    for port, names in sorted(services_by_port.items()):
-        if len(names) > 1:
-            conflicts.append(
-                f"port {port} is assigned to multiple services: {', '.join(sorted(names))}"
-            )
+    conflicts.extend(get_duplicate_port_conflicts(ports))
 
     for name, port in sorted(ports.items()):
         pids = find_pids_on_port(port)
@@ -100,9 +94,22 @@ def get_requested_port_conflicts(ports: dict[str, int]) -> list[str]:
     return conflicts
 
 
-def ensure_requested_ports_available(ports: dict[str, int]) -> None:
-    """Exit with a clear message when requested service ports are unavailable."""
-    conflicts = get_requested_port_conflicts(ports)
+def get_duplicate_port_conflicts(ports: dict[str, int]) -> list[str]:
+    """Return conflicts caused by assigning one port to multiple services."""
+    conflicts: list[str] = []
+    services_by_port: dict[int, list[str]] = {}
+    for name, port in ports.items():
+        services_by_port.setdefault(port, []).append(name)
+
+    for port, names in sorted(services_by_port.items()):
+        if len(names) > 1:
+            conflicts.append(
+                f"port {port} is assigned to multiple services: {', '.join(sorted(names))}"
+            )
+    return conflicts
+
+
+def _exit_for_port_conflicts(conflicts: list[str]) -> None:
     if not conflicts:
         return
 
@@ -115,6 +122,16 @@ def ensure_requested_ports_available(ports: dict[str, int]) -> None:
     )
     sys.stdout.flush()
     sys.exit(1)
+
+
+def ensure_requested_service_ports_unique(ports: dict[str, int]) -> None:
+    """Exit when one start request assigns the same port to multiple services."""
+    _exit_for_port_conflicts(get_duplicate_port_conflicts(ports))
+
+
+def ensure_requested_ports_available(ports: dict[str, int]) -> None:
+    """Exit with a clear message when requested service ports are unavailable."""
+    _exit_for_port_conflicts(get_requested_port_conflicts(ports))
 
 
 def kill_processes(
@@ -198,6 +215,70 @@ _NOISE_SUPPRESSION_ENV: dict[str, dict[str, str]] = {
     "docs": {"NODE_NO_WARNINGS": "1"},
 }
 
+# Only list services with dedicated health endpoints. Root HTML pages such as
+# docs/frontend can return 200 for unrelated servers, so they are not safe
+# skip-if-running signals.
+_HEALTH_PATHS: dict[str, str] = {
+    "backend": "/health",
+    "embedding": "/health",
+}
+
+
+def service_port_healthy(service_name: str, port: int, *, timeout: float = 1.0) -> bool:
+    """Return whether the selected service answers on its health endpoint.
+
+    Args:
+        service_name: Name of the service to probe. Only services with a
+            marker health path in ``_HEALTH_PATHS`` are probed.
+        port: Loopback TCP port for the selected service.
+        timeout: Maximum seconds to wait for the health response.
+
+    Returns:
+        ``True`` when the service has a known health endpoint and returns a
+        2xx or 3xx HTTP status; otherwise ``False``.
+    """
+    path = _HEALTH_PATHS.get(service_name)
+    if path is None:
+        return False
+
+    request = urllib.request.Request(f"http://127.0.0.1:{port}{path}", method="GET")
+    try:
+        # Fixed loopback URL assembled from a known service path and integer port.
+        with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
+            return 200 <= response.status < 400
+    except (OSError, urllib.error.URLError, TimeoutError):
+        return False
+
+
+def skip_healthy_services(
+    services: list[ServiceConfig],
+    ports: dict[str, int],
+) -> tuple[list[ServiceConfig], dict[str, int], list[str]]:
+    """Filter already-healthy services from a requested start set.
+
+    Args:
+        services: Requested service configurations in start order.
+        ports: Resolved port map keyed by service name.
+    Returns:
+        A tuple of ``(remaining_services, remaining_ports, skipped_names)``.
+        ``remaining_services`` contains services that still need to start;
+        ``remaining_ports`` contains known ports for those services;
+        ``skipped_names`` lists services that were already healthy.
+    """
+    remaining_services: list[ServiceConfig] = []
+    skipped: list[str] = []
+    for svc in services:
+        port = ports.get(svc.name)
+        if port is not None and service_port_healthy(svc.name, port):
+            skipped.append(svc.name)
+            continue
+        remaining_services.append(svc)
+
+    remaining_ports = {
+        svc.name: ports[svc.name] for svc in remaining_services if svc.name in ports
+    }
+    return remaining_services, remaining_ports, skipped
+
 
 def _stream_output(
     proc: subprocess.Popen[bytes],
@@ -233,6 +314,7 @@ def run_services(
     ports: dict[str, int],
     *,
     on_all_ready: Callable[[dict[str, int]], None] | None = None,
+    skip_if_running: bool = False,
 ) -> None:
     """Launch services, pipe output with prefixes, and manage lifecycle.
 
@@ -244,6 +326,7 @@ def run_services(
         services: List of service configurations to launch.
         ports: Port mapping for pidfile identification.
         on_all_ready: Optional callback invoked with ports when all services are ready.
+        skip_if_running: If True, do not launch services that already answer health.
     """
     processes: dict[str, subprocess.Popen[bytes]] = {}
     threads: list[threading.Thread] = []
@@ -273,6 +356,17 @@ def run_services(
 
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)
+
+    if skip_if_running:
+        ensure_requested_service_ports_unique(ports)
+        services, ports, skipped = skip_healthy_services(services, ports)
+        if skipped:
+            sys.stdout.write(
+                "Services already running: " + ", ".join(sorted(skipped)) + "\n"
+            )
+            sys.stdout.flush()
+        if not services:
+            return
 
     ensure_requested_ports_available(ports)
 

@@ -308,3 +308,62 @@ def test_embedding_only_start_skips_first_run_llm_guard(monkeypatch) -> None:
 
     assert called_args is not None
     assert called_args.only == "embedding"
+
+
+def test_backend_skip_if_running_bypasses_first_run_guard_when_healthy(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from reflexio.cli.commands import services
+
+    called_args = None
+
+    def _capture_execute(args) -> None:
+        nonlocal called_args
+        called_args = args
+
+    monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_EMBEDDING", raising=False)
+    monkeypatch.setattr("reflexio.cli.env_loader.load_reflexio_env", lambda: None)
+    monkeypatch.setattr("reflexio.cli.env_loader.get_env_path", lambda: tmp_path / ".env")
+    monkeypatch.setattr(
+        "reflexio.cli.bootstrap_config.resolve_storage", lambda _: "sqlite"
+    )
+    monkeypatch.setattr(
+        services, "_backend_already_healthy_for_skip", lambda **_kwargs: True
+    )
+    monkeypatch.setattr(services, "_ensure_llm_configured", lambda _: pytest.fail())
+    monkeypatch.setattr(services.run_mod, "execute", _capture_execute)
+
+    services.start(only="backend", skip_if_running=True)
+
+    assert called_args is not None
+    assert called_args.only == "backend"
+    assert called_args.skip_if_running is True
+
+
+def test_backend_skip_if_running_keeps_first_run_guard_when_unhealthy(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from reflexio.cli.commands import services
+
+    guard_paths: list[Path] = []
+
+    def _capture_guard(path: Path) -> None:
+        guard_paths.append(path)
+
+    monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_EMBEDDING", raising=False)
+    monkeypatch.setattr("reflexio.cli.env_loader.load_reflexio_env", lambda: None)
+    monkeypatch.setattr("reflexio.cli.env_loader.get_env_path", lambda: tmp_path / ".env")
+    monkeypatch.setattr(
+        "reflexio.cli.bootstrap_config.resolve_storage", lambda _: "sqlite"
+    )
+    monkeypatch.setattr(
+        services, "_backend_already_healthy_for_skip", lambda **_kwargs: False
+    )
+    monkeypatch.setattr(services, "_ensure_llm_configured", _capture_guard)
+    monkeypatch.setattr(services.run_mod, "execute", lambda _args: None)
+
+    services.start(only="backend", skip_if_running=True)
+
+    assert guard_paths == [tmp_path / ".env"]

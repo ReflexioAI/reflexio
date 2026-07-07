@@ -20,6 +20,26 @@ _logger = logging.getLogger(__name__)
 app = typer.Typer(help="Start and stop Reflexio services.")
 
 
+def _backend_already_healthy_for_skip(
+    *,
+    backend_port: int | None,
+    docs_port: int | None,
+    embedding_port: int | None,
+) -> bool:
+    """Return True when ``--skip-if-running`` can bypass backend setup prompts."""
+    from reflexio.cli.utils import service_port_healthy
+
+    ports = run_mod.resolve_ports(
+        argparse.Namespace(
+            backend_port=backend_port,
+            docs_port=docs_port,
+            embedding_port=embedding_port,
+        ),
+        defaults=run_mod.DEFAULT_OSS_PORTS,
+    )
+    return service_port_healthy("backend", ports["backend"])
+
+
 def _ensure_llm_configured(env_path: Path) -> None:
     """Run the first-run LLM + embedding wizard when no key is configured.
 
@@ -218,6 +238,16 @@ def start(
             help="Seconds to drain in-flight requests on shutdown.",
         ),
     ] = 30,
+    skip_if_running: Annotated[
+        bool,
+        typer.Option(
+            "--skip-if-running",
+            help=(
+                "Skip selected services whose health endpoint is already responding. "
+                "Does not detect code changes; stop then start to reload."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Start Reflexio services (backend, docs)."""
     from reflexio.cli.bootstrap_config import resolve_storage, save_storage_to_config
@@ -238,7 +268,18 @@ def start(
     # First-run guard: if the backend's lifespan validator would reject the
     # current env (no LLM key, or no embedding-capable provider), prompt now
     # so users see a friendly wizard instead of a lifespan traceback.
-    if "backend" in selected_services:
+    skip_backend_guard = (
+        skip_if_running
+        and "backend" in selected_services
+        and _backend_already_healthy_for_skip(
+            backend_port=backend_port,
+            docs_port=docs_port,
+            embedding_port=embedding_port,
+        )
+    )
+    # Only the first-run guard uses this early backend precheck; the launcher
+    # still re-probes every selected service before deciding to skip startup.
+    if "backend" in selected_services and not skip_backend_guard:
         _ensure_llm_configured(get_env_path())
 
     resolved = resolve_storage(storage)
@@ -264,6 +305,7 @@ def start(
         max_requests=max_requests,
         max_requests_jitter=max_requests_jitter,
         graceful_shutdown_sec=graceful_shutdown_sec,
+        skip_if_running=skip_if_running,
     )
     run_mod.execute(args)
 

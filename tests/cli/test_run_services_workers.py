@@ -80,6 +80,7 @@ def test_run_services_parser_accepts_new_flags() -> None:
             "500",
             "--graceful-shutdown-sec",
             "20",
+            "--skip-if-running",
         ]
     )
     assert args.no_reload is True
@@ -87,6 +88,7 @@ def test_run_services_parser_accepts_new_flags() -> None:
     assert args.max_requests == 5000
     assert args.max_requests_jitter == 500
     assert args.graceful_shutdown_sec == 20
+    assert args.skip_if_running is True
 
 
 def test_sqlite_plus_multi_worker_logs_warning(
