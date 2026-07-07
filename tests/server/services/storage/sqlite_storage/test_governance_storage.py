@@ -3212,9 +3212,17 @@ def test_apply_governance_user_data_delete_preserves_org_agent_playbooks_without
     }
 
 
-def test_apply_governance_user_data_delete_succeeds_after_hide_targets_complete(
+def test_apply_governance_user_data_delete_retains_lineage_skeleton(
     storage,
 ):
+    """SEC-016: erase retains the content-free lineage_event skeleton.
+
+    The SQLite erase path must converge with Supabase, which never enumerates
+    ``lineage_event`` for deletion. A pre-existing lineage_event referencing an
+    erased entity (here via ``source_ids``) must STILL EXIST after
+    ``apply_governance_user_data_delete`` — only content-bearing entity rows are
+    deleted or purged.
+    """
     purge_id = "purge_delete_after_hide"
     user_id = "user-delete-hide-complete"
     storage.begin_purge_operation(
@@ -3299,27 +3307,23 @@ def test_apply_governance_user_data_delete_succeeds_after_hide_targets_complete(
         ).fetchone()[0]
         == 1
     )
+    # SEC-016: the pre-existing lineage_event referencing the erased
+    # user_playbook (via source_ids) is the content-free skeleton and must be
+    # RETAINED after erase — matching Supabase, which never deletes it.
     assert (
         storage.conn.execute(
             """SELECT COUNT(*)
                FROM lineage_event
                WHERE org_id = ?
-                 AND (
-                    request_id = ?
-                    OR entity_id IN (?, ?, ?, ?)
-                    OR source_ids = ?
-                 )""",
+                 AND entity_id = 'agent_survivor'
+                 AND request_id = 'req-unrelated'
+                 AND source_ids = ?""",
             (
                 storage.org_id,
-                "req-delete-hide-complete",
-                "req-delete-hide-complete",
-                "101",
-                "profile_seed",
-                str(affected_user_playbook_id),
                 json.dumps([str(affected_user_playbook_id)]),
             ),
         ).fetchone()[0]
-        == 0
+        == 1
     )
     delete_targets = storage.list_purge_targets(purge_id, phase="delete")
     assert {target.target_name: target.deleted_count for target in delete_targets} == {
