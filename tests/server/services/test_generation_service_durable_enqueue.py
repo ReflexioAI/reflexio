@@ -18,13 +18,16 @@ from reflexio.models.api_schema.service_schemas import (
 )
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
-from reflexio.server.services.generation_service import GenerationService
+from reflexio.server.services.generation_service import (
+    GenerationService,
+    _org_in_durable_allowlist,
+)
 
 
-def _make_svc(tmp_dir: str) -> GenerationService:
+def _make_svc(tmp_dir: str, org_id: str = "test_org") -> GenerationService:
     return GenerationService(
         llm_client=LiteLLMClient(LiteLLMConfig(model="gpt-4o-mini")),
-        request_context=RequestContext(org_id="test_org", storage_base_dir=tmp_dir),
+        request_context=RequestContext(org_id=org_id, storage_base_dir=tmp_dir),
     )
 
 
@@ -144,3 +147,129 @@ def test_no_get_embeddings_inside_scope_when_prepare_degraded(monkeypatch):
             "get_embeddings must be called at most once (prepare phase), "
             "never inside commit_scope"
         )
+
+
+# --- Org-allowlist gate on durable enqueue ---------------------------------
+#
+# The allowlist (REFLEXIO_DURABLE_LEARNING_QUEUE_ORG_ALLOWLIST) only *narrows*
+# the durable path: empty/unset = current global behavior (all orgs durable
+# when the flag is on); a false flag always wins.
+
+
+@pytest.mark.parametrize(
+    ("allowlist", "org_id", "expected"),
+    [
+        # Empty / unset / whitespace-only => global (True for anything).
+        ("", "9", True),
+        ("", "anything", True),
+        ("   ", "42", True),
+        (" , , ", "42", True),
+        # Single-org allowlist.
+        ("9", "9", True),
+        ("9", "16", False),
+        # Whitespace and multi-value parsing.
+        (" 9 , 16 ", "9", True),
+        (" 9 , 16 ", "16", True),
+        (" 9 , 16 ", "42", False),
+        # None org never matches a non-empty allowlist.
+        ("9", None, False),
+    ],
+)
+def test_org_in_durable_allowlist_parsing(monkeypatch, allowlist, org_id, expected):
+    monkeypatch.setenv("REFLEXIO_DURABLE_LEARNING_QUEUE_ORG_ALLOWLIST", allowlist)
+    assert _org_in_durable_allowlist(org_id) is expected
+
+
+def test_org_in_durable_allowlist_unset_is_global(monkeypatch):
+    monkeypatch.delenv("REFLEXIO_DURABLE_LEARNING_QUEUE_ORG_ALLOWLIST", raising=False)
+    assert _org_in_durable_allowlist("9") is True
+    assert _org_in_durable_allowlist(None) is True
+
+
+def _assert_durable_path(svc, user_id: str) -> None:
+    """Assert the durable branch ran: a pending job row was enqueued."""
+    assert svc.storage is not None
+    jobs = svc.storage.claim_learning_jobs(
+        claimed_by="test-worker", limit=10, lease_seconds=300
+    )
+    assert any(j.user_id == user_id for j in jobs), (
+        f"expected a durable pending job for {user_id}"
+    )
+
+
+def _assert_in_memory_path(svc, user_id: str) -> None:
+    """Assert the in-memory branch ran: no durable job row was enqueued."""
+    assert svc.storage is not None
+    jobs = svc.storage.claim_learning_jobs(
+        claimed_by="test-worker", limit=10, lease_seconds=300
+    )
+    assert not any(j.user_id == user_id for j in jobs), (
+        f"expected NO durable job for {user_id} (in-memory path)"
+    )
+
+
+def _run_deferred(svc, req):
+    """Run defer_learning=True while blocking the in-memory extraction workers
+    so extraction never actually runs regardless of which branch is taken."""
+    with (
+        patch(
+            "reflexio.server.services.generation_service.ProfileGenerationService",
+            side_effect=AssertionError("profile extraction should be deferred"),
+        ),
+        patch(
+            "reflexio.server.services.generation_service.PlaybookGenerationService",
+            side_effect=AssertionError("playbook extraction should be deferred"),
+        ),
+        patch(
+            "reflexio.server.services.publish_learning_worker.enqueue_publish_learning",
+        ),
+    ):
+        return svc.run(req, defer_learning=True)
+
+
+def test_allowlist_empty_takes_durable_path(monkeypatch):
+    """flag on + empty allowlist => durable path (unchanged global behavior)."""
+    monkeypatch.setenv("REFLEXIO_DURABLE_LEARNING_QUEUE", "true")
+    monkeypatch.setenv("REFLEXIO_DURABLE_LEARNING_QUEUE_ORG_ALLOWLIST", "")
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        svc = _make_svc(tmp_dir, org_id="9")
+        result = _run_deferred(svc, _publish_request(user_id="a1", request_id="ar1"))
+        assert result.request_id == "ar1"
+        _assert_durable_path(svc, "a1")
+
+
+def test_allowlist_match_takes_durable_path(monkeypatch):
+    """flag on + allowlist='9' + org 9 => durable path."""
+    monkeypatch.setenv("REFLEXIO_DURABLE_LEARNING_QUEUE", "true")
+    monkeypatch.setenv("REFLEXIO_DURABLE_LEARNING_QUEUE_ORG_ALLOWLIST", "9")
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        svc = _make_svc(tmp_dir, org_id="9")
+        result = _run_deferred(svc, _publish_request(user_id="a2", request_id="ar2"))
+        assert result.request_id == "ar2"
+        _assert_durable_path(svc, "a2")
+
+
+def test_allowlist_miss_takes_in_memory_path(monkeypatch):
+    """flag on + allowlist='9' + org 16 => in-memory path (durable NOT used)."""
+    monkeypatch.setenv("REFLEXIO_DURABLE_LEARNING_QUEUE", "true")
+    monkeypatch.setenv("REFLEXIO_DURABLE_LEARNING_QUEUE_ORG_ALLOWLIST", "9")
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        svc = _make_svc(tmp_dir, org_id="16")
+        result = _run_deferred(svc, _publish_request(user_id="a3", request_id="ar3"))
+        assert result.request_id == "ar3"
+        _assert_in_memory_path(svc, "a3")
+
+
+def test_flag_off_dominates_allowlist(monkeypatch):
+    """flag off + allowlist='9' + org 9 => in-memory (flag always wins)."""
+    monkeypatch.setenv("REFLEXIO_DURABLE_LEARNING_QUEUE", "false")
+    monkeypatch.setenv("REFLEXIO_DURABLE_LEARNING_QUEUE_ORG_ALLOWLIST", "9")
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        svc = _make_svc(tmp_dir, org_id="9")
+        result = _run_deferred(svc, _publish_request(user_id="a4", request_id="ar4"))
+        assert result.request_id == "ar4"
+        _assert_in_memory_path(svc, "a4")
