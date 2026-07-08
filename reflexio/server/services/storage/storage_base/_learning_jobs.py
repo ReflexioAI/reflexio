@@ -180,6 +180,36 @@ class LearningJobStoreABC(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def get_oldest_pending_learning_job_age_seconds(self) -> float | None:
+        """Age in seconds of the oldest ``status='pending'`` job on this storage ref.
+
+        Returns:
+            The age in seconds (``now - created_at``) of the oldest pending job,
+            or ``None`` if there are no pending jobs.
+
+        Resolves the table via the same placement resolver used by
+        ``list_org_ids_with_pending_learning_jobs`` — never hardcodes
+        ``public.`` or ``reflexio_ops.``.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def count_learning_jobs_by_status(self, status: str) -> int:
+        """Count of learning jobs with the given ``status`` on this storage ref.
+
+        Args:
+            status: One of ``'pending'``, ``'claimed'``, ``'done'``,
+                ``'failed'``, or ``'dead'``.
+
+        Returns:
+            The integer count of matching rows (0 if none).
+
+        Resolves the table via the same placement resolver used by the other
+        query methods — never hardcodes schema prefix.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     def get_learning_status_for_request(
         self,
         *,

@@ -16,7 +16,7 @@ iterates (e.g. the QPS billable-endpoint scan over ``core_router.routes``).
 
 import inspect
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -269,6 +269,7 @@ def create_app(
     capabilities: "CapabilityRegistry | None" = None,
     app_context_factory: "Callable[[], AppContext] | None" = None,
     profile: "DeploymentProfile | None" = None,
+    durable_org_ids_provider: Callable[[], Iterable[str]] | None = None,
 ) -> FastAPI:
     """Factory to create a FastAPI app.
 
@@ -310,6 +311,16 @@ def create_app(
             provided it is the single source for router-group mounting, auth, and
             data-plane lifespan gating (the legacy knobs still populate the derived
             profile, so callers may pass either — they express the same thing).
+        durable_org_ids_provider: Optional zero-arg callable returning the org_ids
+            with actionable durable-learning work, threaded straight through to
+            ``maybe_start_durable_learning(org_ids_provider=...)``. When None
+            (default) the single-ref bootstrap default is used, so behaviour is
+            byte-identical to before this parameter existed. It is a plain
+            injectable seam so a deployment (e.g. enterprise cross-ref fan-out) can
+            supply its own discovery WITHOUT this factory importing deployment
+            logic. It is only consulted when ``REFLEXIO_DURABLE_LEARNING_QUEUE`` is
+            on — when the flag is off ``maybe_start_durable_learning`` returns None
+            without ever calling the provider.
 
     Returns:
         Configured FastAPI application.
@@ -382,11 +393,13 @@ def create_app(
             )
             # Durable learning drains the learning_jobs queue per org. Gated on
             # REFLEXIO_DURABLE_LEARNING_QUEUE; the default provider discovers
-            # orgs-with-work via the bootstrap storage (single-ref). Enterprise
-            # cross-ref fan-out is a deferred follow-up.
+            # orgs-with-work via the bootstrap storage (single-ref). A deployment
+            # may inject its own discovery via ``durable_org_ids_provider`` (e.g.
+            # enterprise cross-ref fan-out); when None the single-ref default runs.
             durable_learning_scheduler = maybe_start_durable_learning(
                 lambda org_id: RequestContext(org_id=org_id),
                 bootstrap_org_id=bootstrap_org_id,
+                org_ids_provider=durable_org_ids_provider,
             )
         try:
             if capabilities is not None:

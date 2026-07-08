@@ -317,6 +317,33 @@ class SQLiteLearningJobStoreMixin(LearningJobStoreABC):
         return [str(row["org_id"]) for row in rows]
 
     @SQLiteStorageBase.handle_exceptions
+    def get_oldest_pending_learning_job_age_seconds(self) -> float | None:
+        """Age in seconds of the oldest pending job, or None if none pending.
+
+        Computes the age entirely in SQLite using ``strftime('%s','now')`` to
+        avoid app/DB clock skew.  The table is accessed without a schema prefix
+        (SQLite has no schema routing — the local DB file is the ref).
+        """
+        row = self._fetchall(
+            """
+            SELECT (strftime('%s', 'now') - strftime('%s', MIN(created_at))) AS age_seconds
+            FROM learning_jobs
+            WHERE status = 'pending'
+            """,
+            (),
+        )
+        return None if row[0]["age_seconds"] is None else float(row[0]["age_seconds"])
+
+    @SQLiteStorageBase.handle_exceptions
+    def count_learning_jobs_by_status(self, status: str) -> int:
+        """Count of learning jobs with the given status on this storage ref."""
+        row = self._fetchall(
+            "SELECT COUNT(*) AS cnt FROM learning_jobs WHERE status = ?",
+            (status,),
+        )
+        return int(row[0]["cnt"])
+
+    @SQLiteStorageBase.handle_exceptions
     def get_learning_status_for_request(
         self,
         *,
