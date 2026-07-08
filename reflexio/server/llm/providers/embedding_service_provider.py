@@ -54,9 +54,19 @@ _LOCAL_SERVICE_PROBE_FAILURE_CACHE_SECONDS = 5.0
 # never hands out a connection the load balancer already closed.
 _HTTP_KEEPALIVE_EXPIRY_SECONDS = 50.0
 _EMBEDDING_RETRY_BACKOFF_SECONDS = 0.1
+# ``embedding_provider_mode`` is called on every embedding request (often several
+# times per request), and a down daemon resolves to ``inprocess`` every time, so
+# an unconditional warning would flood the logs. Emit the fallback WARNING at most
+# once per this interval per process.
+_INPROCESS_FALLBACK_WARN_INTERVAL_SECONDS = 60.0
 _SERVICE_MODES = {"local_service", "internal_service"}
 _VALID_MODES = {"cloud", *_SERVICE_MODES, "inprocess", "off"}
 _local_service_probe_cache: tuple[float, bool, str | None] | None = None
+# Reason the most recent *fresh* /health probe failed (populated by
+# ``_local_service_status``), surfaced in the inprocess-fallback WARNING.
+_last_probe_failure_reason: str | None = None
+# Monotonic timestamp of the last inprocess-fallback WARNING, for rate limiting.
+_last_inprocess_fallback_warn_at: float | None = None
 _http_client_lock = threading.Lock()
 _http_client_instance: httpx.Client | None = None
 _http_client_pid: int | None = None
@@ -154,7 +164,7 @@ def _http_client() -> httpx.Client:
 
 
 def _local_service_status() -> tuple[bool, str | None]:
-    global _local_service_probe_cache
+    global _local_service_probe_cache, _last_probe_failure_reason
     now = time.monotonic()
     if _local_service_probe_cache is not None:
         cached_at, cached_reachable, cached_model = _local_service_probe_cache
@@ -166,6 +176,7 @@ def _local_service_status() -> tuple[bool, str | None]:
         if now - cached_at < ttl:
             return cached_reachable, cached_model
 
+    reason: str | None = None
     try:
         response = _http_client().get(
             f"{_local_service_url()}/health",
@@ -175,19 +186,53 @@ def _local_service_status() -> tuple[bool, str | None]:
         active_model = response.json().get("active_model") if reachable else None
         if not isinstance(active_model, str):
             active_model = None
-    except httpx.HTTPError:
+        if not reachable:
+            reason = f"/health returned HTTP {response.status_code}"
+    except httpx.HTTPError as exc:
         reachable = False
         active_model = None
-    except ValueError:
+        reason = f"{type(exc).__name__}: {exc}"
+    except ValueError as exc:
         reachable = False
         active_model = None
+        reason = f"invalid /health response: {exc}"
+    _last_probe_failure_reason = reason
     _local_service_probe_cache = (now, reachable, active_model)
     return reachable, active_model
 
 
-def _local_service_supports_model(model: str | None) -> bool:
-    reachable, active_model = _local_service_status()
-    return reachable and (active_model is None or active_model == model)
+def _warn_inprocess_fallback(model: str | None, reason: str | None) -> None:
+    """Warn (rate-limited) that a ``local/*`` model fell back to the in-process embedder.
+
+    Emitted only when daemon-mode resolution for a ``local/*`` model fails the
+    ``/health`` probe (or the daemon serves a different model) and routing falls
+    back to ``inprocess`` — NOT when ``inprocess`` was configured explicitly. The
+    fallback loads a second copy of the embedding model into this worker process,
+    so operators need to distinguish it from an intentional in-process config.
+
+    Args:
+        model (str | None): The ``local/*`` embedding model being resolved.
+        reason (str | None): Why the daemon path was rejected, if known.
+    """
+    global _last_inprocess_fallback_warn_at
+    now = time.monotonic()
+    if (
+        _last_inprocess_fallback_warn_at is not None
+        and now - _last_inprocess_fallback_warn_at
+        < _INPROCESS_FALLBACK_WARN_INTERVAL_SECONDS
+    ):
+        return
+    _last_inprocess_fallback_warn_at = now
+    _LOGGER.warning(
+        "Embedding daemon probe at %s failed for model %r; falling back to an "
+        "in-process embedding model copy (a second model is loaded into this "
+        "worker process). Probe failure: %s. Further fallback warnings are "
+        "suppressed for %.0fs.",
+        _local_service_url(),
+        model,
+        reason or "unknown",
+        _INPROCESS_FALLBACK_WARN_INTERVAL_SECONDS,
+    )
 
 
 def _ordered_embeddings_from_response(
@@ -260,7 +305,18 @@ def embedding_provider_mode(model: str | None = None) -> EmbeddingProviderMode:
         return "local_service"
 
     if _is_local_model(model):
-        return "local_service" if _local_service_supports_model(model) else "inprocess"
+        reachable, active_model = _local_service_status()
+        if reachable and (active_model is None or active_model == model):
+            return "local_service"
+        if reachable:
+            reason = (
+                f"daemon is reachable but serves active_model={active_model!r}, "
+                f"not {model!r}"
+            )
+        else:
+            reason = _last_probe_failure_reason
+        _warn_inprocess_fallback(model, reason)
+        return "inprocess"
     return "cloud"
 
 
@@ -311,7 +367,12 @@ def get_service_embeddings(
         chunk = texts[start : start + chunk_size]
         embeddings.extend(
             _post_embedding_batch(
-                url, model=model, texts=chunk, dimensions=dimensions, timeout=timeout
+                url,
+                model=model,
+                texts=chunk,
+                dimensions=dimensions,
+                timeout=timeout,
+                mode=mode,
             )
         )
     return embeddings
@@ -324,6 +385,7 @@ def _post_embedding_batch(
     texts: list[str],
     dimensions: int | None,
     timeout: float,
+    mode: EmbeddingProviderMode,
 ) -> list[list[float]]:
     """POST one bounded batch of texts to the embedding service."""
     payload: dict[str, Any] = {"model": model, "input": texts}
@@ -368,7 +430,12 @@ def _post_embedding_batch(
             last_error = exc
             break
 
-    _LOGGER.warning("Embedding service unavailable at %s: %s", url, last_error)
+    _LOGGER.warning(
+        "Embedding service unavailable at %s: %s",
+        url,
+        last_error,
+        extra={"mode": mode},
+    )
     raise EmbeddingUnavailableError(
         f"Embedding service unavailable at {url}: {last_error}"
     ) from last_error
