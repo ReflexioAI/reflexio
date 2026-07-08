@@ -737,6 +737,9 @@ class UnifiedSearchRequest(BaseModel):
     search_mode: SearchMode = SearchMode.HYBRID
     # Caller correlation IDs for billing attribution on the Application line.
     # Optional; consumed by _meter_applied_learnings in server/api.py.
+    # ``session_id`` additionally enables session-scoped result dedup: items
+    # already served to the same (org, session) are skipped and the next-best
+    # matches backfilled (see server/services/retrieval/session_dedup.py).
     request_id: str | None = None
     session_id: str | None = None
     interaction_id: int | None = Field(default=None, gt=0)

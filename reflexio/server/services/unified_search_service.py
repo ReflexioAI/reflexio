@@ -51,6 +51,10 @@ from reflexio.server.services.retrieval.recency import (
     multiplicative_factor,
 )
 from reflexio.server.services.retrieval.relevance_floor import apply_relevance_floors
+from reflexio.server.services.retrieval.session_dedup import (
+    EntityKey,
+    session_seen_cache,
+)
 from reflexio.server.services.retrieval.temporal import (
     freshness_collapse,
     sort_by_recency,
@@ -86,6 +90,16 @@ _ENV_SINGLE_RPC = "REFLEXIO_UNIFIED_SEARCH_SINGLE_RPC"
 # sort): matches the RecencyConfig default pool so the fresh version of a
 # fact can be promoted even when it ranks below top_k on text relevance.
 _TEMPORAL_POOL_SIZE = 20
+# Session dedup widens the fetch pool so filtered-out (already served) items
+# can be backfilled, but never by more than this many extra candidates.
+_SESSION_DEDUP_FETCH_BUMP_CAP = 50
+# Singular dedup kinds (session_dedup EntityKey vocabulary) — deliberately
+# distinct from the plural request-level ``entity_types`` values.
+_ENTITY_ID_ATTRS = {
+    "profile": "profile_id",
+    "user_playbook": "user_playbook_id",
+    "agent_playbook": "agent_playbook_id",
+}
 _EMBEDDING_CACHE_TTL_SECONDS = max(
     0, int(os.getenv("REFLEXIO_QUERY_EMBEDDING_CACHE_TTL_SECONDS", "300") or "300")
 )
@@ -181,6 +195,15 @@ def run_unified_search(
     )
     result_cap = max(top_k, _TEMPORAL_POOL_SIZE) if temporal_reorder else top_k
 
+    # Session dedup: a request that carries a session_id skips items already
+    # served to that (org, session) and backfills from a widened pool.
+    session_id = (request.session_id or "").strip()
+    seen_keys = (
+        session_seen_cache.seen(org_id, session_id) if session_id else frozenset()
+    )
+    if seen_keys:
+        fetch_k += min(len(seen_keys), _SESSION_DEDUP_FETCH_BUMP_CAP)
+
     # --- Phase B: parallel searches across all entity types ---
     profiles, agent_playbooks, user_playbooks = _run_phase_b(
         request=request,
@@ -197,6 +220,16 @@ def run_unified_search(
 
     if profiles is None:
         return UnifiedSearchResponse(success=False, msg="Search failed")
+
+    if seen_keys:
+        # Drop before the floors so seen items spend no cross-encoder budget.
+        profiles = _drop_seen_items(profiles or [], "profile", seen_keys)
+        agent_playbooks = _drop_seen_items(
+            agent_playbooks or [], "agent_playbook", seen_keys
+        )
+        user_playbooks = _drop_seen_items(
+            user_playbooks or [], "user_playbook", seen_keys
+        )
 
     if floor_on:
         profiles, agent_playbooks, user_playbooks = _apply_floors(
@@ -255,6 +288,8 @@ def run_unified_search(
         if reformulated_query != request.query
         else None,
     )
+    if session_id:
+        session_seen_cache.record(org_id, session_id, _served_entity_keys(response))
     _maybe_capture_final_response(
         request=request,
         response=response,
@@ -722,6 +757,34 @@ def _unwrap_item(item: Any) -> Any:
 
 def _unwrap_items(items: list[Any]) -> list[Any]:
     return [_unwrap_item(item) for item in items]
+
+
+def _entity_key(kind: str, item: Any) -> EntityKey | None:
+    """Return the session-dedup key for a (possibly score-wrapped) item."""
+    raw_id = getattr(_unwrap_item(item), _ENTITY_ID_ATTRS[kind], None)
+    if raw_id in (None, "", 0):
+        return None
+    return (kind, str(raw_id))
+
+
+def _drop_seen_items(
+    items: list[Any], kind: str, seen: frozenset[EntityKey]
+) -> list[Any]:
+    return [item for item in items if _entity_key(kind, item) not in seen]
+
+
+def _served_entity_keys(response: UnifiedSearchResponse) -> list[EntityKey]:
+    arms: tuple[tuple[str, list[Any]], ...] = (
+        ("profile", response.profiles or []),
+        ("user_playbook", response.user_playbooks or []),
+        ("agent_playbook", response.agent_playbooks or []),
+    )
+    return [
+        key
+        for kind, items in arms
+        for item in items
+        if (key := _entity_key(kind, item)) is not None
+    ]
 
 
 def _suppress_source_user_playbooks(
