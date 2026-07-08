@@ -361,9 +361,7 @@ def run_services(
         ensure_requested_service_ports_unique(ports)
         services, ports, skipped = skip_healthy_services(services, ports)
         if skipped:
-            sys.stdout.write(
-                "Services already running: " + ", ".join(sorted(skipped)) + "\n"
-            )
+            sys.stdout.write(f"Services already running: {', '.join(sorted(skipped))}\n")
             sys.stdout.flush()
         if not services:
             return
