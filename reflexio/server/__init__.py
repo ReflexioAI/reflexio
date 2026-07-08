@@ -230,13 +230,16 @@ if DEBUG_LOG_TO_CONSOLE:
         logging.ERROR
     )
 else:
-    # Production (DEBUG_LOG_TO_CONSOLE off): emit INFO+ app logs to stdout so the
-    # container log driver (e.g. CloudWatch awslogs) captures business-logic audit
-    # lines — billing/webhook/enforcement, etc. Without an explicit handler the
-    # stdlib "handler of last resort" emits only WARNING+ to stderr, so INFO logs
-    # were silently dropped in production. Plain formatter (no colors/files/dedup)
-    # keeps this lean and log-driver friendly — none of the DEBUG-branch overhead.
-    root_logger.setLevel(logging.INFO)
+    # Production (DEBUG_LOG_TO_CONSOLE off): default the root logger to WARNING.
+    # App-wide INFO on a busy server drove ~3x log volume and grew memory to the
+    # container ceiling over a few hours (prod incident 2026-07-04) — so INFO is
+    # OPT-IN per subsystem, not global. A stdout StreamHandler is still attached at
+    # INFO so that any logger explicitly raised to INFO reaches the container log
+    # driver (e.g. CloudWatch awslogs); everything else stays WARNING+ and cheap.
+    #
+    # REFLEXIO_INFO_LOGGERS: comma-separated logger-name prefixes to surface at INFO
+    # (e.g. the billing money-path). Empty/unset => WARNING-only (the safe default).
+    root_logger.setLevel(logging.WARNING)
     if not any(isinstance(h, logging.StreamHandler) for h in root_logger.handlers):
         prod_console_handler = logging.StreamHandler(sys.stdout)
         prod_console_handler.setLevel(logging.INFO)
@@ -245,7 +248,14 @@ else:
         )
         root_logger.addHandler(prod_console_handler)
 
-    # Keep noisy loggers quiet even at INFO (mirror the debug branch's suppression).
+    for _info_logger in (
+        name.strip()
+        for name in os.getenv("REFLEXIO_INFO_LOGGERS", "").split(",")
+        if name.strip()
+    ):
+        logging.getLogger(_info_logger).setLevel(logging.INFO)
+
+    # Keep noisy loggers quiet regardless of the above (mirror the debug branch).
     for _noisy in ("litellm", "LiteLLM", "httpx", "httpcore", "openai", "urllib3"):
         logging.getLogger(_noisy).setLevel(logging.WARNING)
     logging.getLogger("reflexio.server.site_var.site_var_manager").setLevel(
