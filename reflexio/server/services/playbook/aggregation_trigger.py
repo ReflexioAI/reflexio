@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -18,6 +20,7 @@ from reflexio.server.services.playbook.playbook_service_utils import (
 logger = logging.getLogger(__name__)
 
 AggregationTriggerStatus = Literal[
+    "queued",
     "triggered",
     "skipped_no_config",
     "skipped_saturated",
@@ -60,6 +63,55 @@ def has_user_playbook_aggregation_config(request_context: RequestContext) -> boo
     return bool(playbook_config and playbook_config.aggregation_config)
 
 
+def _run_aggregation_task(
+    *,
+    request_context: RequestContext,
+    aggregator: PlaybookAggregator,
+    request: PlaybookAggregatorRequest,
+    reason: str,
+) -> AggregationTriggerResult:
+    agent_version = request.agent_version
+    try:
+        run_with_operation_limit(
+            org_id=request_context.org_id,
+            operation="aggregation",
+            fn=lambda: aggregator.run(request),
+        )
+    except TimeoutError:
+        logger.info(
+            "Skipping background aggregation for agent_version=%s reason=%s: aggregation limiter is saturated",
+            agent_version,
+            reason,
+        )
+        return AggregationTriggerResult(
+            status="skipped_saturated",
+            reason=reason,
+            agent_version=agent_version,
+            error_type="TimeoutError",
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _failed_result(
+            exc=exc,
+            reason=reason,
+            agent_version=agent_version,
+            message="User playbook aggregation failed after successor commit",
+        )
+    return AggregationTriggerResult(
+        status="triggered",
+        reason=reason,
+        agent_version=agent_version,
+    )
+
+
+def _start_aggregation_thread(task: Callable[[], AggregationTriggerResult]) -> None:
+    thread = threading.Thread(
+        target=task,
+        name="reflexio-user-playbook-aggregation",
+        daemon=True,
+    )
+    thread.start()
+
+
 def maybe_trigger_user_playbook_aggregation(
     *,
     request_context: RequestContext,
@@ -95,29 +147,20 @@ def maybe_trigger_user_playbook_aggregation(
         )
         request = PlaybookAggregatorRequest(agent_version=agent_version)
         try:
-            run_with_operation_limit(
-                org_id=request_context.org_id,
-                operation="aggregation",
-                fn=lambda: aggregator.run(request),
-            )
-        except TimeoutError:
-            logger.info(
-                "Skipping inline aggregation for agent_version=%s reason=%s: aggregation limiter is saturated",
-                agent_version,
-                reason,
-            )
-            return AggregationTriggerResult(
-                status="skipped_saturated",
-                reason=reason,
-                agent_version=agent_version,
-                error_type="TimeoutError",
+            _start_aggregation_thread(
+                lambda: _run_aggregation_task(
+                    request_context=request_context,
+                    aggregator=aggregator,
+                    request=request,
+                    reason=reason,
+                )
             )
         except Exception as exc:  # noqa: BLE001
             return _failed_result(
                 exc=exc,
                 reason=reason,
                 agent_version=agent_version,
-                message="User playbook aggregation failed after successor commit",
+                message="User playbook aggregation dispatch failed after successor commit",
             )
     except Exception as exc:  # noqa: BLE001
         return _failed_result(
@@ -128,7 +171,7 @@ def maybe_trigger_user_playbook_aggregation(
         )
 
     return AggregationTriggerResult(
-        status="triggered",
+        status="queued",
         reason=reason,
         agent_version=agent_version,
     )

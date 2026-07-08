@@ -104,6 +104,10 @@ def test_inline_aggregation_default_path_does_not_inject_processor():
             "reflexio.server.services.playbook.aggregation_trigger.run_with_operation_limit",
             side_effect=lambda **kwargs: kwargs["fn"](),
         ),
+        patch(
+            "reflexio.server.services.playbook.aggregation_trigger._start_aggregation_thread",
+            side_effect=lambda task: task(),
+        ),
     ):
         service._trigger_playbook_aggregation()
 
@@ -193,6 +197,7 @@ def test_maybe_trigger_user_playbook_aggregation_uses_limiter_and_processor():
     llm_client = MagicMock()
     created_kwargs: list[dict[str, Any]] = []
     requests: list[Any] = []
+    task_results: list[Any] = []
 
     class FakeAggregator:
         def __init__(self, **kwargs: Any) -> None:
@@ -211,6 +216,10 @@ def test_maybe_trigger_user_playbook_aggregation_uses_limiter_and_processor():
             "reflexio.server.services.playbook.aggregation_trigger.run_with_operation_limit",
             side_effect=lambda **kwargs: kwargs["fn"](),
         ) as limiter,
+        patch(
+            "reflexio.server.services.playbook.aggregation_trigger._start_aggregation_thread",
+            side_effect=lambda task: task_results.append(task()),
+        ),
     ):
         result = maybe_trigger_user_playbook_aggregation(
             request_context=ctx,
@@ -219,9 +228,10 @@ def test_maybe_trigger_user_playbook_aggregation_uses_limiter_and_processor():
             reason="unit_test",
         )
 
-    assert result.status == "triggered"
+    assert result.status == "queued"
     assert result.reason == "unit_test"
     assert result.agent_version == "v1"
+    assert task_results[0].status == "triggered"
     assert limiter.call_args.kwargs["org_id"] == "test-org"
     assert limiter.call_args.kwargs["operation"] == "aggregation"
     assert created_kwargs[0]["llm_client"] is llm_client
@@ -260,6 +270,7 @@ def test_maybe_trigger_user_playbook_aggregation_reports_failure_without_raising
     configurator = MagicMock()
     configurator.get_config.return_value = _aggregation_enabled_config()
     ctx = MagicMock(configurator=configurator, org_id="test-org")
+    task_results: list[Any] = []
 
     class FailingAggregator:
         def __init__(self, **_kwargs: Any) -> None:
@@ -277,6 +288,10 @@ def test_maybe_trigger_user_playbook_aggregation_reports_failure_without_raising
             "reflexio.server.services.playbook.aggregation_trigger.run_with_operation_limit",
             side_effect=lambda **kwargs: kwargs["fn"](),
         ),
+        patch(
+            "reflexio.server.services.playbook.aggregation_trigger._start_aggregation_thread",
+            side_effect=lambda task: task_results.append(task()),
+        ),
     ):
         result = maybe_trigger_user_playbook_aggregation(
             request_context=ctx,
@@ -285,8 +300,9 @@ def test_maybe_trigger_user_playbook_aggregation_reports_failure_without_raising
             reason="post_commit",
         )
 
-    assert result.status == "failed"
-    assert result.error_type == "RuntimeError"
+    assert result.status == "queued"
+    assert task_results[0].status == "failed"
+    assert task_results[0].error_type == "RuntimeError"
 
 
 def test_maybe_trigger_user_playbook_aggregation_reports_timeout_saturation():
@@ -297,10 +313,14 @@ def test_maybe_trigger_user_playbook_aggregation_reports_timeout_saturation():
     configurator = MagicMock()
     configurator.get_config.return_value = _aggregation_enabled_config()
     ctx = MagicMock(configurator=configurator, org_id="test-org")
+    task_results: list[Any] = []
 
     with patch(
         "reflexio.server.services.playbook.aggregation_trigger.run_with_operation_limit",
         side_effect=TimeoutError("aggregation limiter saturated"),
+    ), patch(
+        "reflexio.server.services.playbook.aggregation_trigger._start_aggregation_thread",
+        side_effect=lambda task: task_results.append(task()),
     ):
         result = maybe_trigger_user_playbook_aggregation(
             request_context=ctx,
@@ -309,8 +329,9 @@ def test_maybe_trigger_user_playbook_aggregation_reports_timeout_saturation():
             reason="post_commit",
         )
 
-    assert result.status == "skipped_saturated"
-    assert result.error_type == "TimeoutError"
+    assert result.status == "queued"
+    assert task_results[0].status == "skipped_saturated"
+    assert task_results[0].error_type == "TimeoutError"
 
 
 @pytest.mark.parametrize(
