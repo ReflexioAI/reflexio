@@ -165,7 +165,7 @@ def run_unified_search(
     recency_on = bool(recency and recency.enabled)
 
     # --- Phase A: query reformulation (+ temporal signals) + embedding ---
-    reformulation, embedding = _run_phase_a(
+    reformulation, embedding, embedding_failed = _run_phase_a(
         query=request.query,
         storage=storage,
         llm_client=llm_client,
@@ -177,6 +177,23 @@ def run_unified_search(
         search_mode=request.search_mode,
     )
     reformulated_query = reformulation.standalone_query
+
+    # Degrade-to-FTS: when embedding GENERATION failed (distinct from the
+    # benign None cases), force the effective mode to FTS for the entire
+    # Phase B fan-out. Storage then takes the zero-placeholder branch and
+    # never re-embeds — closing the historical second-embed leak where a
+    # None embedding + a vector/hybrid mode caused the storage layer to retry
+    # the embed and raise unguarded. Benign None (FTS-only, unsupported)
+    # leaves the requested mode untouched.
+    effective_search_mode = request.search_mode
+    if embedding_failed:
+        effective_search_mode = SearchMode.FTS
+        logger.warning(
+            "event=search_degraded_to_fts reason=embedding_generation_failed "
+            "backend=%s requested_mode=%s",
+            _storage_backend_name(storage),
+            request.search_mode.value,
+        )
     window_start, window_end = window_bounds(
         reformulation.start_days_ago, reformulation.end_days_ago
     )
@@ -216,6 +233,7 @@ def run_unified_search(
         recency_on=recency_on,
         start_time=window_start,
         end_time=window_end,
+        search_mode=effective_search_mode,
     )
 
     if profiles is None:
@@ -287,6 +305,8 @@ def run_unified_search(
         reformulated_query=reformulated_query
         if reformulated_query != request.query
         else None,
+        degraded=embedding_failed,
+        search_mode_effective=effective_search_mode.value if embedding_failed else None,
     )
     if session_id:
         session_seen_cache.record(org_id, session_id, _served_entity_keys(response))
@@ -328,7 +348,7 @@ def _run_phase_a(
     enable_reformulation: bool = False,
     pre_retrieval_model_name: str | None = None,
     search_mode: SearchMode = SearchMode.HYBRID,
-) -> tuple[ReformulationResult, list[float] | None]:
+) -> tuple[ReformulationResult, list[float] | None, bool]:
     """Run query reformulation and embedding generation sequentially.
 
     Args:
@@ -344,11 +364,16 @@ def _run_phase_a(
         search_mode (SearchMode): Search mode; FTS-only mode skips embedding generation entirely
 
     Returns:
-        tuple[ReformulationResult, Optional[list[float]]]: The reformulation
-            result (standalone query + temporal signals; signal-free
-            pass-through of the original query when reformulation is
-            disabled) and the query embedding (None when unsupported or on
-            failure).
+        tuple[ReformulationResult, Optional[list[float]], bool]: The
+            reformulation result (standalone query + temporal signals;
+            signal-free pass-through of the original query when reformulation
+            is disabled), the query embedding (None when unsupported, when the
+            mode is FTS-only, or when generation failed), and
+            ``embedding_failed`` — True *only* when an embedding attempt was
+            made and raised. The benign None cases (FTS-only mode,
+            ``supports_embedding`` False) leave ``embedding_failed`` False so
+            callers can distinguish a real failure from a mode that never
+            needed an embedding.
     """
     reformulator = QueryReformulator(
         llm_client=llm_client,
@@ -370,6 +395,7 @@ def _run_phase_a(
     # Embedding generation (uses reformulated query for semantic accuracy).
     # FTS-only search has no use for an embedding, so skip the call entirely.
     embedding = None
+    embedding_failed = False
     if supports_embedding and search_mode != SearchMode.FTS:
         with profile_step(
             "search.embedding",
@@ -383,9 +409,10 @@ def _run_phase_a(
                 span.set_data("embedding_generated", embedding is not None)
             except Exception as e:
                 span.set_data("embedding_generated", False)
+                embedding_failed = True
                 logger.error("Embedding generation failed: %s", e)
 
-    return reformulation, embedding
+    return reformulation, embedding, embedding_failed
 
 
 def _run_phase_b(
@@ -399,6 +426,7 @@ def _run_phase_b(
     recency_on: bool = False,
     start_time: datetime | None = None,
     end_time: datetime | None = None,
+    search_mode: SearchMode = SearchMode.HYBRID,
 ) -> tuple[
     list[Any] | None,
     list[Any] | None,
@@ -418,11 +446,15 @@ def _run_phase_b(
             (from reformulation temporal signals); forces the per-arm fan-out
             path since the combined single RPC has no time parameters.
         end_time (Optional[datetime]): Query-derived time-window upper bound.
+        search_mode (SearchMode): The EFFECTIVE search mode for this fan-out —
+            equal to ``request.search_mode`` normally, but forced to FTS by the
+            caller when embedding generation failed (degrade-to-FTS). Threaded
+            into every arm so storage never re-embeds a failed query.
 
     Returns:
         tuple: (profiles, agent_playbooks, user_playbooks) — all None on timeout/failure
     """
-    options = SearchOptions(query_embedding=embedding, search_mode=request.search_mode)
+    options = SearchOptions(query_embedding=embedding, search_mode=search_mode)
 
     entity_types = set(request.entity_types or _DEFAULT_ENTITY_TYPES)
     allowed_agent_statuses = request.agent_playbook_status_filter
@@ -463,6 +495,7 @@ def _run_phase_b(
                     entity_types=entity_types,
                     allowed_agent_statuses=allowed_agent_statuses,
                     recency_on=recency_on,
+                    search_mode=search_mode,
                 )
                 if combined is not None:
                     profiles, agent_playbooks, user_playbooks = combined
@@ -487,7 +520,7 @@ def _run_phase_b(
                     threshold,
                     request.user_id,
                     embedding,
-                    request.search_mode,
+                    search_mode,
                     start_time,
                     end_time,
                 )
@@ -521,7 +554,7 @@ def _run_phase_b(
                     status_filter=None,
                     threshold=threshold,
                     top_k=top_k,
-                    search_mode=request.search_mode,
+                    search_mode=search_mode,
                     start_time=start_time,
                     end_time=end_time,
                 )
@@ -580,6 +613,7 @@ def _run_phase_b_single_rpc(
     entity_types: set[str],
     allowed_agent_statuses: list[PlaybookStatus] | None,
     recency_on: bool = False,
+    search_mode: SearchMode = SearchMode.HYBRID,
 ) -> tuple[list[Any], list[Any], list[Any]] | None:
     """Run all Phase B arms through one combined storage round trip.
 
@@ -624,7 +658,7 @@ def _run_phase_b_single_rpc(
         agent_version=request.agent_version,
         playbook_name=request.playbook_name,
         agent_playbook_statuses=statuses,
-        search_mode=request.search_mode,
+        search_mode=search_mode,
         include_profiles="profiles" in entity_types and bool(request.user_id),
         include_agent_playbooks="agent_playbooks" in entity_types,
         include_user_playbooks="user_playbooks" in entity_types,

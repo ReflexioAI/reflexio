@@ -757,6 +757,14 @@ class UnifiedSearchResponse(BaseModel):
         msg (str, optional): Additional message
         agent_answer (str, optional): LLM-synthesised answer populated by the agentic backend;
             None for classic backend.
+        degraded (bool): True when the search silently fell back from the
+            requested vector/hybrid mode to full-text search because query
+            embedding generation failed. Results are still returned (via FTS),
+            but relevance may be lower than a healthy vector/hybrid run.
+            Defaults to False.
+        search_mode_effective (str, optional): The search mode actually used
+            when it differs from the requested mode — currently ``"fts"`` on
+            the degrade path. None when the requested mode was honored.
     """
 
     success: bool
@@ -768,6 +776,8 @@ class UnifiedSearchResponse(BaseModel):
     agent_answer: str | None = None
     agent_trace: str | None = None
     rehydrated_text: str | None = None
+    degraded: bool = False
+    search_mode_effective: str | None = None
 
 
 # ===============================

@@ -195,6 +195,7 @@ def test_wants_current_composes_with_relevance_floor(monkeypatch):
         lambda **_kw: (
             ReformulationResult(standalone_query="q", wants_current=True),
             None,
+            False,
         ),
     )
     monkeypatch.setattr(uss, "_run_phase_b", lambda **_kw: ([stale, fresh], [], []))
