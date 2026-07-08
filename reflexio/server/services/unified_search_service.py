@@ -410,7 +410,7 @@ def _run_phase_a(
             except Exception as e:
                 span.set_data("embedding_generated", False)
                 embedding_failed = True
-                logger.error("Embedding generation failed: %s", e)
+                logger.exception("Embedding generation failed: %s", e)
 
     return reformulation, embedding, embedding_failed
 
