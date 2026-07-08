@@ -372,6 +372,19 @@ def create_app(
         gc_scheduler = None
         durable_learning_scheduler = None
         started_caps: list = []
+        # D8 config guards + D5 warm-before-ready. Both are dormant unless the
+        # deployment has flipped to the in-process local embedder
+        # (REFLEXIO_EMBEDDING_PROVIDER=inprocess + local/* default); pre-flip
+        # this is a no-op and /health stays byte-for-byte unchanged. Run before
+        # the data-plane block so a gated deployment warms regardless of the
+        # mount profile (otherwise /health could 503 forever).
+        from reflexio.server.llm.providers.embedder_warmup import (
+            maybe_start_embedder_warmup,
+            run_startup_config_guards,
+        )
+
+        run_startup_config_guards()
+        maybe_start_embedder_warmup()
         if mounts_data_plane:
             log_publish_hardware_capacity()
             validate_llm_availability()

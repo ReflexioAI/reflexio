@@ -82,7 +82,10 @@ FULL_ROUTES = [
     (
         "/health",
         ("GET",),
-        "dict",
+        # response_model is None: the handler may return a JSONResponse (503,
+        # not-ready) when the in-process warm gate is active, so the route
+        # cannot declare a Pydantic response model. The 200 body is unchanged.
+        None,
         None,
         (),
         "health_check",
