@@ -427,7 +427,7 @@ Key files:
 
 **Tool Context**: Reads `tool_can_use` from root `Config` level (shared with playbook extraction).
 
-**Shadow Comparison**: Session-level shadow comparison was retracted in F1 because multi-turn shadow content suffers from trajectory contamination (turn 2+ user messages react to the regular response, not the shadow). The `regular_vs_shadow` field on `AgentSuccessEvaluationResult` is preserved as a nullable historical column but is always `None` on newly produced rows. Per-turn shadow comparison lives in a dedicated `services/shadow_comparison/` judge that writes its verdicts to a separate table — see the F1 spec.
+**Shadow Comparison**: Session-level shadow comparison was retracted in F1 because multi-turn shadow content suffers from trajectory contamination (turn 2+ user messages react to the regular response, not the shadow). The `regular_vs_shadow` field on `AgentSuccessEvaluationResult` is preserved as a nullable historical column but is always `None` on newly produced rows. Per-turn shadow comparison is scheduled from the publish path whenever an assistant interaction carries `shadow_content`; it lives in a dedicated `services/shadow_comparison/` judge that writes verdicts to a separate table, independent of session-level evaluation sampling.
 
 ### Durable Learning Queue
 
@@ -459,7 +459,8 @@ Key files:
 **Directories**: `services/shadow_comparison/`, `services/evaluation_overview/`
 
 Key files:
-- `shadow_comparison/judge.py`: Per-turn regular-vs-shadow judge that writes shadow verdicts through storage
+- `shadow_comparison/judge.py`: Per-turn regular-vs-shadow judge
+- `shadow_comparison/dispatcher.py` and `shadow_comparison/worker.py`: Publish-time dispatch and bounded background execution for shadow verdict writes
 - `shadow_comparison/outcome.py`: Verdict outcome model helpers
 - `evaluation_overview/service.py`: Aggregates evaluation-page metrics
 - `evaluation_overview/components/hero_state.py`, `evaluation_overview/components/distribution.py`, `evaluation_overview/components/rule_attribution.py`, `evaluation_overview/components/shadow_aggregation.py`: Focused aggregation helpers

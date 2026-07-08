@@ -48,6 +48,10 @@ from reflexio.server.services.reflection.reflection_service_utils import (
     ReflectionServiceRequest,
 )
 from reflexio.server.services.reflection.service import ReflectionService
+from reflexio.server.services.shadow_comparison.worker import (
+    ShadowComparisonJob,
+    enqueue_shadow_comparison,
+)
 from reflexio.server.services.storage.retention import (
     delete_count_for_retention,
     get_row_retention_limits,
@@ -276,8 +280,9 @@ class GenerationService:
                     self.storage.add_user_interactions_bulk(  # type: ignore[reportOptionalMemberAccess]
                         user_id=user_id, interactions=new_interactions
                     )
-                self._schedule_group_evaluation_if_needed(
+                self._schedule_post_publish_evaluations(
                     new_request=new_request,
+                    interactions=new_interactions,
                     user_id=user_id,
                     agent_version=agent_version,
                     source=source,
@@ -314,6 +319,13 @@ class GenerationService:
                     )
                 result.warnings.append(stall_warning)
                 logger.warning("%s; skipping automatic extraction", stall_warning)
+                self._schedule_post_publish_evaluations(
+                    new_request=new_request,
+                    interactions=new_interactions,
+                    user_id=user_id,
+                    agent_version=agent_version,
+                    source=source,
+                )
                 record_usage_event(
                     org_id=self.org_id,
                     user_id=user_id,
@@ -352,8 +364,9 @@ class GenerationService:
                             force_extraction=publish_user_interaction_request.force_extraction,
                             skip_aggregation=publish_user_interaction_request.skip_aggregation,
                         )
-                    self._schedule_group_evaluation_if_needed(
+                    self._schedule_post_publish_evaluations(
                         new_request=new_request,
+                        interactions=new_interactions,
                         user_id=user_id,
                         agent_version=agent_version,
                         source=source,
@@ -384,8 +397,9 @@ class GenerationService:
                     enqueue_publish_learning,
                 )
 
-                self._schedule_group_evaluation_if_needed(
+                self._schedule_post_publish_evaluations(
                     new_request=new_request,
+                    interactions=new_interactions,
                     user_id=user_id,
                     agent_version=agent_version,
                     source=source,
@@ -447,30 +461,30 @@ class GenerationService:
                     result=result,
                 )
 
-                # Schedule delayed group evaluation for the required session.
-                self._schedule_group_evaluation_if_needed(
-                    new_request=new_request,
-                    user_id=user_id,
-                    agent_version=agent_version,
-                    source=source,
-                )
+            self._schedule_post_publish_evaluations(
+                new_request=new_request,
+                interactions=new_interactions,
+                user_id=user_id,
+                agent_version=agent_version,
+                source=source,
+            )
 
-                record_usage_event(
-                    org_id=self.org_id,
-                    user_id=user_id,
-                    request_id=request_id,
-                    session_id=new_request.session_id,
-                    source=source,
-                    agent_version=agent_version,
-                    backend="classic",
-                    event_name="publish_request_succeeded",
-                    event_category="publish",
-                    outcome="success",
-                    count_value=len(new_interactions),
-                    duration_ms=int((time.perf_counter() - publish_start) * 1000),
-                    metadata={"warning_count": len(result.warnings)},
-                )
-                return result
+            record_usage_event(
+                org_id=self.org_id,
+                user_id=user_id,
+                request_id=request_id,
+                session_id=new_request.session_id,
+                source=source,
+                agent_version=agent_version,
+                backend="classic",
+                event_name="publish_request_succeeded",
+                event_category="publish",
+                outcome="success",
+                count_value=len(new_interactions),
+                duration_ms=int((time.perf_counter() - publish_start) * 1000),
+                metadata={"warning_count": len(result.warnings)},
+            )
+            return result
 
         except Exception as e:
             record_usage_event(
@@ -678,6 +692,39 @@ class GenerationService:
                 "Failed to schedule tagging for publish request %s",
                 request_id,
             )
+
+    def _schedule_post_publish_evaluations(
+        self,
+        *,
+        new_request: Request,
+        interactions: list[Interaction],
+        user_id: str,
+        agent_version: str,
+        source: str | None,
+    ) -> None:
+        """Schedule all best-effort evaluation work after publish persistence."""
+        if any(interaction.shadow_content for interaction in interactions):
+            try:
+                enqueue_shadow_comparison(
+                    ShadowComparisonJob(
+                        org_id=self.org_id,
+                        interactions=interactions,
+                        session_id=new_request.session_id,
+                        agent_version=agent_version,
+                    )
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to enqueue shadow comparison for session %s",
+                    new_request.session_id,
+                )
+
+        self._schedule_group_evaluation_if_needed(
+            new_request=new_request,
+            user_id=user_id,
+            agent_version=agent_version,
+            source=source,
+        )
 
     def _schedule_group_evaluation_if_needed(
         self,

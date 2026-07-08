@@ -914,7 +914,7 @@ class Config(BaseModel):
         ),
     )
     shadow_comparison_judge_prompt_version: NonEmptyStr = Field(
-        default="v1.0.0",
+        default="v1.1.0",
         description=(
             "F1: pinned judge prompt version for per-turn shadow comparison. "
             "Verdicts are stored with the version that produced them; the "

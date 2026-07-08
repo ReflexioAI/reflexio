@@ -10,9 +10,9 @@ def _minimal(**overrides) -> Config:
     return Config(storage_config=StorageConfigSQLite(), **overrides)
 
 
-def test_shadow_comparison_judge_prompt_version_defaults_to_v1_0_0():
+def test_shadow_comparison_judge_prompt_version_defaults_to_v1_1_0():
     c = _minimal()
-    assert c.shadow_comparison_judge_prompt_version == "v1.0.0"
+    assert c.shadow_comparison_judge_prompt_version == "v1.1.0"
 
 
 def test_shadow_comparison_judge_prompt_version_rejects_empty_string():
