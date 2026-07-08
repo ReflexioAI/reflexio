@@ -15,6 +15,7 @@ Flags mirror the subset of ``uvicorn`` CLI options that
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 
 import uvicorn
@@ -99,6 +100,11 @@ def main(argv: list[str] | None = None) -> None:
             file=sys.stderr,
         )
         raise SystemExit(2)
+
+    # Record the configured worker count so per-worker startup guards can read
+    # it (uvicorn exposes no worker-count env inside a worker process). See
+    # ``embedder_warmup._detected_worker_count``.
+    os.environ["REFLEXIO_SERVER_WORKERS"] = str(1 if args.reload else args.workers)
 
     if args.reload:
         uvicorn.run(

@@ -63,10 +63,60 @@ _MAX_CHARS = 32_000
 _DEFAULT_ENCODE_BATCH_SIZE = 4
 _ENV_BATCH_SIZE = "REFLEXIO_EMBED_BATCH_SIZE"
 
+# D7 (Phase 2 prep): optionally pin torch intra-op thread count so the embedder
+# does not oversubscribe CPU under bounded concurrency. Unset (the default) =
+# leave torch untouched, i.e. zero behaviour change. Applies at model load so it
+# covers both the in-process path and the shared daemon.
+_ENV_TORCH_THREADS = "REFLEXIO_EMBED_TORCH_THREADS"
+_torch_threads_pinned = False
+_torch_threads_lock = threading.Lock()
+
 
 def _encode_batch_size() -> int:
     """Resolve the encode mini-batch size from env, defaulting to 4."""
     return positive_int_env(_ENV_BATCH_SIZE, _DEFAULT_ENCODE_BATCH_SIZE, _LOGGER)
+
+
+def _maybe_pin_torch_threads() -> None:
+    """Pin torch intra-op threads to ``REFLEXIO_EMBED_TORCH_THREADS`` if set.
+
+    Dormant by default: when the env var is unset (or blank) this is a no-op and
+    ``torch.set_num_threads`` is never called, so torch keeps its default
+    autodetected thread count. When set to a positive int it is applied exactly
+    once per process (guarded against re-calling). A non-positive or non-integer
+    value is ignored with a warning.
+    """
+    global _torch_threads_pinned
+    if _torch_threads_pinned:
+        return
+    raw = os.environ.get(_ENV_TORCH_THREADS)
+    if not raw:
+        return
+    try:
+        n = int(raw)
+    except ValueError:
+        _LOGGER.warning(
+            "%s must be a positive integer; got %r — leaving torch threads at "
+            "their default.",
+            _ENV_TORCH_THREADS,
+            raw,
+        )
+        return
+    if n < 1:
+        _LOGGER.warning(
+            "%s must be >= 1; got %d — leaving torch threads at their default.",
+            _ENV_TORCH_THREADS,
+            n,
+        )
+        return
+    with _torch_threads_lock:
+        if _torch_threads_pinned:
+            return
+        import torch
+
+        torch.set_num_threads(n)
+        _torch_threads_pinned = True
+        _LOGGER.info("Pinned torch intra-op threads to %d (%s)", n, _ENV_TORCH_THREADS)
 
 
 class NomicEmbedderError(RuntimeError):
@@ -118,6 +168,7 @@ class NomicEmbedder:
                     "sentence-transformers is required for the Nomic local "
                     "embedder. Install with `uv add sentence-transformers`."
                 ) from exc
+            _maybe_pin_torch_threads()
             _LOGGER.info(
                 "Loading Nomic embedding model %s — first call may download "
                 "~550 MB to %s",
