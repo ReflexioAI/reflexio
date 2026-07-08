@@ -46,7 +46,7 @@ def test_floor_applied_per_arm(monkeypatch):
     monkeypatch.setattr(
         uss,
         "_run_phase_a",
-        lambda **_kw: (ReformulationResult(standalone_query="q"), None),
+        lambda **_kw: (ReformulationResult(standalone_query="q"), None, False),
     )
     monkeypatch.setattr(uss, "_run_phase_b", lambda **_kw: ([], [], pbs))
 
@@ -81,7 +81,7 @@ def test_floor_recency_applied_after_logits(monkeypatch):
     monkeypatch.setattr(
         uss,
         "_run_phase_a",
-        lambda **_kw: (ReformulationResult(standalone_query="q"), None),
+        lambda **_kw: (ReformulationResult(standalone_query="q"), None, False),
     )
     monkeypatch.setattr(uss, "_run_phase_b", lambda **_kw: ([], [], [old, fresh]))
 
@@ -116,7 +116,7 @@ def test_floor_recency_does_not_overtake_clearly_more_relevant(monkeypatch):
     monkeypatch.setattr(
         uss,
         "_run_phase_a",
-        lambda **_kw: (ReformulationResult(standalone_query="q"), None),
+        lambda **_kw: (ReformulationResult(standalone_query="q"), None, False),
     )
     monkeypatch.setattr(uss, "_run_phase_b", lambda **_kw: ([], [], [old, fresh]))
 
@@ -152,7 +152,7 @@ def test_floor_recency_falls_back_to_combined_score_when_unavailable(monkeypatch
     monkeypatch.setattr(
         uss,
         "_run_phase_a",
-        lambda **_kw: (ReformulationResult(standalone_query="q"), None),
+        lambda **_kw: (ReformulationResult(standalone_query="q"), None, False),
     )
     monkeypatch.setattr(uss, "_run_phase_b", lambda **_kw: ([], [], [old, fresh]))
 
@@ -183,7 +183,7 @@ def test_floor_disabled_returns_all(monkeypatch):
     monkeypatch.setattr(
         uss,
         "_run_phase_a",
-        lambda **_kw: (ReformulationResult(standalone_query="q"), None),
+        lambda **_kw: (ReformulationResult(standalone_query="q"), None, False),
     )
     monkeypatch.setattr(uss, "_run_phase_b", lambda **_kw: ([], [], pbs))
 

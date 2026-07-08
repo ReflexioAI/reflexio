@@ -17,7 +17,11 @@ from reflexio.models.api_schema.domain.entities import (
 from reflexio.models.api_schema.retriever_schema import (
     UnifiedSearchRequest,
 )
-from reflexio.models.config_schema import RetrievalFloorConfig, SearchOptions
+from reflexio.models.config_schema import (
+    RetrievalFloorConfig,
+    SearchMode,
+    SearchOptions,
+)
 from reflexio.server.services.pre_retrieval import ReformulationResult
 from reflexio.server.services.retrieval.recency import RecencyConfig, ScoredItem
 from reflexio.server.services.storage.storage_base import BaseStorage
@@ -372,7 +376,7 @@ class TestRunUnifiedSearch(unittest.TestCase):
         with (
             patch(
                 "reflexio.server.services.unified_search_service._run_phase_a",
-                return_value=(ReformulationResult(standalone_query="q"), None),
+                return_value=(ReformulationResult(standalone_query="q"), None, False),
             ),
             patch(
                 "reflexio.server.services.unified_search_service._run_phase_b_single_rpc",
@@ -506,6 +510,163 @@ class TestEntityTypesFiltering(unittest.TestCase):
         self.assertTrue(result.success)
         self.assertEqual(result.agent_playbooks, [])
         self.assertEqual(result.user_playbooks, [])
+
+
+_SERVICE_LOGGER = "reflexio.server.services.unified_search_service"
+
+
+def _fanout_storage(embedding=None):
+    """Mock storage pinned to the per-arm fan-out (single-RPC disabled).
+
+    Lets a test inspect the per-leg storage requests (and their
+    ``search_mode``) directly instead of the opaque combined RPC.
+    """
+    storage = _mock_storage(embedding)
+    storage.supports_embedding = True
+    storage.supports_unified_hybrid_search = False
+    return storage
+
+
+def _leg_search_modes(storage):
+    """The ``search_mode`` each fan-out leg was invoked with."""
+    return {
+        "profiles": storage.search_user_profile.call_args.args[0].search_mode,
+        "agent_playbooks": storage.search_agent_playbooks.call_args.args[0].search_mode,
+        "user_playbooks": storage.search_user_playbooks.call_args.args[0].search_mode,
+    }
+
+
+class TestEmbeddingFailureDegradesToFTS(unittest.TestCase):
+    """D2/D3: embedding-generation failure degrades the whole search to FTS."""
+
+    @patch("reflexio.server.services.unified_search_service.QueryReformulator")
+    def test_embedding_failure_degrades_to_fts_visibly_and_counted(
+        self, _reformulator_cls
+    ):
+        """A raising query-embedder must (a) still return results via FTS,
+        (b) surface degraded=True / effective mode fts, (c) drive every storage
+        leg with FTS so storage takes the placeholder branch and never
+        re-embeds, and (d) emit the counted degrade signal."""
+        _reformulator_cls.return_value.rewrite.return_value = ReformulationResult(
+            standalone_query="test query"
+        )
+        storage = _fanout_storage()
+        storage._get_embedding.side_effect = RuntimeError("Embedding API down")
+
+        request = UnifiedSearchRequest(query="test query", user_id="user-1")
+        with self.assertLogs(_SERVICE_LOGGER, level="WARNING") as logs:
+            result = run_unified_search(
+                request=request,
+                org_id="test-org",
+                storage=storage,
+                llm_client=MagicMock(),
+                prompt_manager=MagicMock(),
+            )
+
+        # (a) success via FTS, not an exception
+        self.assertTrue(result.success)
+        # (b) caller-visible degrade
+        self.assertTrue(result.degraded)
+        self.assertEqual(result.search_mode_effective, SearchMode.FTS.value)
+        # (c) every leg driven with FTS; the embedder was hit exactly once
+        # (the failed Phase-A attempt) — storage never re-embeds.
+        self.assertEqual(
+            _leg_search_modes(storage),
+            {
+                "profiles": SearchMode.FTS,
+                "agent_playbooks": SearchMode.FTS,
+                "user_playbooks": SearchMode.FTS,
+            },
+        )
+        self.assertEqual(storage._get_embedding.call_count, 1)
+        # profile leg received no embedding to force a re-embed downstream
+        self.assertIsNone(
+            storage.search_user_profile.call_args.kwargs["query_embedding"]
+        )
+        # (d) counted signal fired with a stable event key
+        self.assertTrue(
+            any("event=search_degraded_to_fts" in line for line in logs.output),
+            logs.output,
+        )
+
+    @patch("reflexio.server.services.unified_search_service.QueryReformulator")
+    def test_successful_embedding_is_not_degraded(self, _reformulator_cls):
+        """Healthy embedding: no degrade, requested mode honored, vector path
+        used (embedding threaded into the profile leg)."""
+        _reformulator_cls.return_value.rewrite.return_value = ReformulationResult(
+            standalone_query="test query"
+        )
+        embedding = [0.42] * 1536
+        storage = _fanout_storage(embedding=embedding)
+
+        request = UnifiedSearchRequest(query="test query", user_id="user-1")
+        with self.assertNoLogs(_SERVICE_LOGGER, level="WARNING"):
+            result = run_unified_search(
+                request=request,
+                org_id="test-org",
+                storage=storage,
+                llm_client=MagicMock(),
+                prompt_manager=MagicMock(),
+            )
+
+        self.assertTrue(result.success)
+        self.assertFalse(result.degraded)
+        self.assertIsNone(result.search_mode_effective)
+        self.assertEqual(
+            _leg_search_modes(storage),
+            {
+                "profiles": SearchMode.HYBRID,
+                "agent_playbooks": SearchMode.HYBRID,
+                "user_playbooks": SearchMode.HYBRID,
+            },
+        )
+        self.assertEqual(
+            storage.search_user_profile.call_args.kwargs["query_embedding"], embedding
+        )
+
+    @patch("reflexio.server.services.unified_search_service.QueryReformulator")
+    def test_fts_mode_from_start_is_not_degraded(self, _reformulator_cls):
+        """A request that asks for FTS outright never embedded, so it is a
+        benign None — not a degrade."""
+        _reformulator_cls.return_value.rewrite.return_value = ReformulationResult(
+            standalone_query="test query"
+        )
+        storage = _fanout_storage()
+
+        request = UnifiedSearchRequest(
+            query="test query", user_id="user-1", search_mode=SearchMode.FTS
+        )
+        result = run_unified_search(
+            request=request,
+            org_id="test-org",
+            storage=storage,
+            llm_client=MagicMock(),
+            prompt_manager=MagicMock(),
+        )
+
+        self.assertTrue(result.success)
+        self.assertFalse(result.degraded)
+        self.assertIsNone(result.search_mode_effective)
+        # FTS-only mode skips the embedder entirely.
+        storage._get_embedding.assert_not_called()
+        self.assertEqual(_leg_search_modes(storage)["agent_playbooks"], SearchMode.FTS)
+
+    def test_empty_query_guard_is_not_degraded(self):
+        """The empty-query early return is a benign no-op, never a degrade."""
+        # query is NonEmptyStr at the API boundary; construct past validation to
+        # exercise the defensive guard inside run_unified_search.
+        request = UnifiedSearchRequest.model_construct(query="")
+        result = run_unified_search(
+            request=request,
+            org_id="test-org",
+            storage=_fanout_storage(),
+            llm_client=MagicMock(),
+            prompt_manager=MagicMock(),
+        )
+
+        self.assertTrue(result.success)
+        self.assertFalse(result.degraded)
+        self.assertIsNone(result.search_mode_effective)
 
 
 if __name__ == "__main__":
