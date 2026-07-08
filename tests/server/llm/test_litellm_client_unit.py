@@ -689,6 +689,74 @@ class TestGetEmbeddings:
 
 
 # ===================================================================
+# Single/batch parity + error-mode tagging
+# ===================================================================
+
+
+class TestEmbeddingSingleBatchParity:
+    """``get_embedding`` is a thin wrapper over ``get_embeddings`` — the two
+    must agree, and embedding failures must be tagged with the resolved mode."""
+
+    @staticmethod
+    def _route_local_inprocess(monkeypatch, *, embed):
+        """Force the in-process LocalEmbedder branch with a fake embedder."""
+        from reflexio.server.llm import _litellm_embedding
+
+        monkeypatch.setattr(
+            _litellm_embedding, "embedding_provider_mode", lambda _m: "inprocess"
+        )
+        monkeypatch.setattr(
+            _litellm_embedding, "should_use_embedding_service", lambda _m: False
+        )
+        monkeypatch.setattr(_litellm_embedding, "_is_chromadb_importable", lambda: True)
+
+        class _FakeEmbedder:
+            @staticmethod
+            def get():
+                return _FakeEmbedder()
+
+            def embed(self, texts):
+                return embed(texts)
+
+        monkeypatch.setattr(_litellm_embedding, "LocalEmbedder", _FakeEmbedder)
+
+    def test_get_embedding_matches_get_embeddings_first_element(self, monkeypatch):
+        """get_embedding(t) == get_embeddings([t])[0] on the local-embedder path."""
+        self._route_local_inprocess(
+            monkeypatch,
+            embed=lambda texts: [[float(len(t)), 1.0, 2.0] for t in texts],
+        )
+        client = _build_client()
+
+        single = client.get_embedding("hello", model="local/minilm-l6-v2")
+        batch = client.get_embeddings(["hello"], model="local/minilm-l6-v2")
+
+        assert single == batch[0]
+        assert single == [5.0, 1.0, 2.0]
+
+    def test_inprocess_embedding_failure_is_tagged_with_mode(self, monkeypatch, caplog):
+        """A local (in-process) embedding failure logs a record tagged mode=inprocess."""
+
+        def _boom(_texts):
+            raise RuntimeError("boom")
+
+        self._route_local_inprocess(monkeypatch, embed=_boom)
+        client = _build_client()
+
+        with (
+            caplog.at_level(logging.WARNING),
+            pytest.raises(
+                LiteLLMClientError, match="Local embedding generation failed"
+            ),
+        ):
+            client.get_embedding("hello", model="local/minilm-l6-v2")
+
+        tagged = [r for r in caplog.records if getattr(r, "mode", None) == "inprocess"]
+        assert tagged, "expected a log record carrying the resolved mode"
+        assert "mode=inprocess" in tagged[0].getMessage()
+
+
+# ===================================================================
 # Default embedding-model resolution tests
 # ===================================================================
 

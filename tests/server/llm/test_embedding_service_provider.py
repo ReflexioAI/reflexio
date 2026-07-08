@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import time
 from contextlib import contextmanager
 from unittest.mock import patch
@@ -71,6 +72,75 @@ def test_local_model_without_opt_in_preserves_inprocess_mode(monkeypatch) -> Non
     monkeypatch.setattr(esp, "_http_client", lambda: _UnreachableHttpClient())
 
     assert embedding_provider_mode("local/minilm-l6-v2") == "inprocess"
+
+
+def test_inprocess_fallback_warns_once_then_rate_limits(monkeypatch, caplog) -> None:
+    """A failed daemon probe for a ``local/*`` model warns once about the
+    in-process fallback, then suppresses repeats within the 60s window."""
+    monkeypatch.delenv("REFLEXIO_EMBEDDING_PROVIDER", raising=False)
+    monkeypatch.delenv("REFLEXIO_EMBEDDING_SERVICE_URL", raising=False)
+    monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_EMBEDDING", raising=False)
+    monkeypatch.delenv("REFLEXIO_EMBEDDING_DAEMON_HOST", raising=False)
+    monkeypatch.setattr(esp, "_local_service_probe_cache", None)
+    monkeypatch.setattr(esp, "_last_probe_failure_reason", None)
+    monkeypatch.setattr(esp, "_last_inprocess_fallback_warn_at", None)
+    monkeypatch.setattr(esp, "_http_client", lambda: _UnreachableHttpClient())
+
+    with caplog.at_level(logging.WARNING, logger=esp.__name__):
+        assert embedding_provider_mode("local/minilm-l6-v2") == "inprocess"
+        assert embedding_provider_mode("local/minilm-l6-v2") == "inprocess"
+
+    fallbacks = [r for r in caplog.records if "falling back to an" in r.getMessage()]
+    assert len(fallbacks) == 1
+    message = fallbacks[0].getMessage()
+    assert "in-process embedding model copy" in message
+    assert "127.0.0.1:8072" in message  # the probe target
+    assert "RequestError" in message  # the probe failure reason
+
+
+def test_explicit_inprocess_config_does_not_warn(monkeypatch, caplog) -> None:
+    """An explicit ``REFLEXIO_EMBEDDING_PROVIDER=inprocess`` is intentional, not a
+    fallback, so it must not emit the fallback WARNING."""
+    monkeypatch.setenv("REFLEXIO_EMBEDDING_PROVIDER", "inprocess")
+    monkeypatch.setattr(esp, "_last_inprocess_fallback_warn_at", None)
+
+    with caplog.at_level(logging.WARNING, logger=esp.__name__):
+        assert embedding_provider_mode("local/minilm-l6-v2") == "inprocess"
+
+    assert not [r for r in caplog.records if "falling back" in r.getMessage()]
+
+
+def test_reachable_mismatched_daemon_warns_with_model_reason(
+    monkeypatch, caplog
+) -> None:
+    """A reachable daemon serving a different model also falls back in-process,
+    and the warning names the model mismatch as the reason."""
+
+    class _HealthResponse:
+        status_code = 200
+
+        def json(self) -> dict[str, str]:
+            return {"active_model": "local/nomic-embed-text-v1.5"}
+
+    class _Client:
+        def get(self, *_args, **_kwargs) -> _HealthResponse:
+            return _HealthResponse()
+
+    monkeypatch.delenv("REFLEXIO_EMBEDDING_PROVIDER", raising=False)
+    monkeypatch.delenv("REFLEXIO_EMBEDDING_SERVICE_URL", raising=False)
+    monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_EMBEDDING", raising=False)
+    monkeypatch.delenv("REFLEXIO_EMBEDDING_DAEMON_HOST", raising=False)
+    monkeypatch.setattr(esp, "_local_service_probe_cache", None)
+    monkeypatch.setattr(esp, "_last_probe_failure_reason", None)
+    monkeypatch.setattr(esp, "_last_inprocess_fallback_warn_at", None)
+    monkeypatch.setattr(esp, "_http_client", lambda: _Client())
+
+    with caplog.at_level(logging.WARNING, logger=esp.__name__):
+        assert embedding_provider_mode("local/minilm-l6-v2") == "inprocess"
+
+    fallbacks = [r for r in caplog.records if "falling back to an" in r.getMessage()]
+    assert len(fallbacks) == 1
+    assert "active_model=" in fallbacks[0].getMessage()
 
 
 def test_local_model_auto_uses_reachable_matching_daemon(monkeypatch) -> None:

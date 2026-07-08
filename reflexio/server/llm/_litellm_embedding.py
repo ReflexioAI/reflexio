@@ -197,6 +197,24 @@ def _truncate_for_embedding(
     return encoding.decode(tokens[:max_tokens])
 
 
+def _embedding_error(message: str, mode: str) -> LiteLLMClientError:
+    """Build a ``LiteLLMClientError`` and log it tagged with the resolved mode.
+
+    Attaching ``mode`` (daemon-path vs in-process-path vs cloud) to the log makes
+    embedding failures attributable to a routing decision. The exception message
+    itself is unchanged so existing callers/tests keep matching on it.
+
+    Args:
+        message (str): The exception message (also logged).
+        mode (str): The resolved embedding provider mode.
+
+    Returns:
+        LiteLLMClientError: The exception to raise (``raise ... from e``).
+    """
+    _LOGGER.warning("%s (mode=%s)", message, mode, extra={"mode": mode})
+    return LiteLLMClientError(message)
+
+
 class EmbeddingMixin:
     """Embedding dispatch (service / Nomic / local ONNX / litellm) for ``LiteLLMClient``.
 
@@ -251,6 +269,10 @@ class EmbeddingMixin:
         """
         Get embedding vector for the given text.
 
+        Thin wrapper over ``get_embeddings`` — the single- and batch-text paths
+        share one dispatch body so their routing, truncation, and error handling
+        cannot drift.
+
         Args:
             text: The text to get embedding for.
             model: Optional embedding model. When omitted, the model is
@@ -265,73 +287,7 @@ class EmbeddingMixin:
         Raises:
             LiteLLMClientError: If embedding generation fails.
         """
-        embedding_model = model or self._resolve_default_embedding_model()
-        mode = embedding_provider_mode(embedding_model)
-        if mode == "off":
-            raise EmbeddingUnavailableError("Embedding provider is disabled")
-        if should_use_embedding_service(embedding_model):
-            return get_service_embeddings(
-                [text], model=embedding_model, dimensions=dimensions
-            )[0]
-
-        # local/nomic-embed-* must stay on the Nomic provider (137M params,
-        # 768d Matryoshka-truncated to 512). Falling through to MiniLM would
-        # mix embedding models inside existing vector stores.
-        if _is_nomic_model(embedding_model):
-            _reject_cloud_mode(embedding_model, mode)
-            try:
-                return NomicEmbedder.get().embed([text])[0]
-            except Exception as e:
-                raise LiteLLMClientError(
-                    f"Nomic embedding generation failed: {str(e)}"
-                ) from e
-
-        # local/* models route through the in-process ONNX embedder — no
-        # network call, no litellm API, no tiktoken truncation (the embedder
-        # applies its own token cap). The dispatch is gated solely on
-        # ``chromadb`` being importable; the env-var opt-in (claude-smart's
-        # ``CLAUDE_SMART_USE_LOCAL_EMBEDDING``) is enforced earlier in the
-        # auto-detection layer (see ``model_defaults._auto_detect_model``).
-        if embedding_model.startswith("local/"):
-            _reject_cloud_mode(embedding_model, mode)
-            if not _is_chromadb_importable():
-                raise LiteLLMClientError(
-                    f"Embedding model {embedding_model!r} requires chromadb. "
-                    "Run `pip install chromadb`."
-                )
-            try:
-                return LocalEmbedder.get().embed([text])[0]
-            except Exception as e:
-                raise LiteLLMClientError(
-                    f"Local embedding generation failed: {str(e)}"
-                ) from e
-
-        text = _truncate_for_embedding(text, embedding_model)
-
-        try:
-            params = {"model": embedding_model, "input": [text]}
-            if dimensions:
-                params["dimensions"] = dimensions
-
-            # Resolve and add API key configuration if provided (overrides env vars)
-            api_key, api_base, api_version = self._resolve_api_key(
-                embedding_model, for_embedding=True
-            )
-            if api_key:
-                params["api_key"] = api_key
-            if api_base:
-                params["api_base"] = api_base
-            if api_version:
-                params["api_version"] = api_version
-
-            response = litellm.embedding(
-                **params,
-                timeout=self.config.timeout,
-                num_retries=self.config.max_retries,
-            )
-            return response.data[0]["embedding"]
-        except Exception as e:
-            raise LiteLLMClientError(f"Embedding generation failed: {str(e)}") from e
+        return self._embed_texts([text], model, dimensions, batch=False)[0]
 
     def get_embeddings(
         self,
@@ -358,44 +314,86 @@ class EmbeddingMixin:
         """
         if not texts:
             return []
+        return self._embed_texts(list(texts), model, dimensions, batch=True)
 
+    def _embed_texts(
+        self,
+        texts: list[str],
+        model: str | None,
+        dimensions: int | None,
+        *,
+        batch: bool,
+    ) -> list[list[float]]:
+        """Shared embedding dispatch for ``get_embedding`` and ``get_embeddings``.
+
+        ``get_embedding`` passes a single-element list and unwraps ``[0]``;
+        ``get_embeddings`` passes the whole list. Behavior is identical between
+        the two callers except the error-message wording, which ``batch``
+        selects ("batch" wording matches the historical batch-path messages).
+
+        Args:
+            texts: Non-empty list of texts to embed (caller guarantees non-empty).
+            model: Optional embedding model; auto-detected when ``None``.
+            dimensions: Optional embedding dimensions.
+            batch: Selects the batch vs single error-message wording.
+
+        Returns:
+            One embedding vector per input text, in input order.
+
+        Raises:
+            EmbeddingUnavailableError: If the embedding provider is disabled.
+            LiteLLMClientError: If embedding generation fails.
+        """
         embedding_model = model or self._resolve_default_embedding_model()
         mode = embedding_provider_mode(embedding_model)
         if mode == "off":
             raise EmbeddingUnavailableError("Embedding provider is disabled")
         if should_use_embedding_service(embedding_model):
             return get_service_embeddings(
-                list(texts), model=embedding_model, dimensions=dimensions
+                texts, model=embedding_model, dimensions=dimensions
             )
 
-        # See matching short-circuits in get_embedding above.
+        # local/nomic-embed-* must stay on the Nomic provider (137M params,
+        # 768d Matryoshka-truncated to 512). Falling through to MiniLM would
+        # mix embedding models inside existing vector stores.
         if _is_nomic_model(embedding_model):
             _reject_cloud_mode(embedding_model, mode)
             try:
-                return NomicEmbedder.get().embed(list(texts))
+                return NomicEmbedder.get().embed(texts)
             except Exception as e:
-                raise LiteLLMClientError(
-                    f"Nomic batch embedding generation failed: {str(e)}"
+                raise _embedding_error(
+                    f"Nomic{' batch' if batch else ''} embedding generation "
+                    f"failed: {str(e)}",
+                    mode,
                 ) from e
 
+        # local/* models route through the in-process ONNX embedder — no
+        # network call, no litellm API, no tiktoken truncation (the embedder
+        # applies its own token cap). The dispatch is gated solely on
+        # ``chromadb`` being importable; the env-var opt-in (claude-smart's
+        # ``CLAUDE_SMART_USE_LOCAL_EMBEDDING``) is enforced earlier in the
+        # auto-detection layer (see ``model_defaults._auto_detect_model``).
         if embedding_model.startswith("local/"):
             _reject_cloud_mode(embedding_model, mode)
             if not _is_chromadb_importable():
-                raise LiteLLMClientError(
+                raise _embedding_error(
                     f"Embedding model {embedding_model!r} requires chromadb. "
-                    "Run `pip install chromadb`."
+                    "Run `pip install chromadb`.",
+                    mode,
                 )
             try:
-                return LocalEmbedder.get().embed(list(texts))
+                return LocalEmbedder.get().embed(texts)
             except Exception as e:
-                raise LiteLLMClientError(
-                    f"Local batch embedding generation failed: {str(e)}"
+                raise _embedding_error(
+                    f"Local{' batch' if batch else ''} embedding generation "
+                    f"failed: {str(e)}",
+                    mode,
                 ) from e
 
-        texts = [_truncate_for_embedding(t, embedding_model) for t in texts]
+        truncated = [_truncate_for_embedding(t, embedding_model) for t in texts]
 
         try:
-            params = {"model": embedding_model, "input": texts}
+            params = {"model": embedding_model, "input": truncated}
             if dimensions:
                 params["dimensions"] = dimensions
 
@@ -419,6 +417,8 @@ class EmbeddingMixin:
             sorted_data = sorted(response.data, key=lambda x: x["index"])
             return [item["embedding"] for item in sorted_data]
         except Exception as e:
-            raise LiteLLMClientError(
-                f"Batch embedding generation failed: {str(e)}"
+            raise _embedding_error(
+                f"{'Batch embedding' if batch else 'Embedding'} generation "
+                f"failed: {str(e)}",
+                mode,
             ) from e
