@@ -332,9 +332,7 @@ class SQLiteLearningJobStoreMixin(LearningJobStoreABC):
             """,
             (),
         )
-        if not row or row[0]["age_seconds"] is None:
-            return None
-        return float(row[0]["age_seconds"])
+        return None if row[0]["age_seconds"] is None else float(row[0]["age_seconds"])
 
     @SQLiteStorageBase.handle_exceptions
     def count_learning_jobs_by_status(self, status: str) -> int:
@@ -343,8 +341,6 @@ class SQLiteLearningJobStoreMixin(LearningJobStoreABC):
             "SELECT COUNT(*) AS cnt FROM learning_jobs WHERE status = ?",
             (status,),
         )
-        if not row:
-            return 0
         return int(row[0]["cnt"])
 
     @SQLiteStorageBase.handle_exceptions

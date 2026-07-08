@@ -489,18 +489,52 @@ class TestQueueAlarmQueries:
         assert age >= 0.0
 
     def test_oldest_pending_age_ignores_non_pending(self, storage) -> None:
-        """A claimed, done, failed, or dead job does not contribute to oldest-pending age."""
+        """Non-pending jobs (claimed, done, failed, dead) do not contribute to oldest-pending age."""
         # Enqueue and immediately claim the job → status becomes 'claimed', not 'pending'.
-        _enqueue(storage, "u-age-np", "r-age-np", 1000.0)
-        [job] = [
+        _enqueue(storage, "u-age-np-cl", "r-age-np-cl", 1000.0)
+        [claimed_job] = [
             j
             for j in storage.claim_learning_jobs(
                 claimed_by="w1", limit=10, lease_seconds=300
             )
-            if j.user_id == "u-age-np"
+            if j.user_id == "u-age-np-cl"
         ]
-        assert job.status == "claimed"
+        assert claimed_job.status == "claimed"
         # No pending jobs → must return None.
+        assert storage.get_oldest_pending_learning_job_age_seconds() is None
+
+        # Complete the claimed job → 'done'; still no pending.
+        storage.complete_learning_job(
+            job_id=claimed_job.job_id, claim_token=claimed_job.claim_token
+        )
+        assert storage.get_oldest_pending_learning_job_age_seconds() is None
+
+        # Enqueue, claim, and fail (dead=False) → 'failed'; still no pending.
+        _enqueue(storage, "u-age-np-fail", "r-age-np-fail", 1000.0)
+        [failed_job] = [
+            j
+            for j in storage.claim_learning_jobs(
+                claimed_by="w1", limit=10, lease_seconds=300
+            )
+            if j.user_id == "u-age-np-fail"
+        ]
+        storage.fail_learning_job(
+            job_id=failed_job.job_id, claim_token=failed_job.claim_token, dead=False
+        )
+        assert storage.get_oldest_pending_learning_job_age_seconds() is None
+
+        # Enqueue, claim, and kill (dead=True) → 'dead'; still no pending.
+        _enqueue(storage, "u-age-np-dead", "r-age-np-dead", 1000.0)
+        [dead_job] = [
+            j
+            for j in storage.claim_learning_jobs(
+                claimed_by="w1", limit=10, lease_seconds=300
+            )
+            if j.user_id == "u-age-np-dead"
+        ]
+        storage.fail_learning_job(
+            job_id=dead_job.job_id, claim_token=dead_job.claim_token, dead=True
+        )
         assert storage.get_oldest_pending_learning_job_age_seconds() is None
 
     def test_oldest_pending_age_picks_oldest(self, storage) -> None:
@@ -509,6 +543,10 @@ class TestQueueAlarmQueries:
         We inject the created_at directly (bypassing enqueue) so we can control
         the timestamp precisely.
         """
+        if not hasattr(storage, "conn"):
+            pytest.skip(
+                "direct-insert controlled-created_at test requires a SQLite connection"
+            )
         import time
         import uuid as _uuid
         from datetime import UTC, datetime
