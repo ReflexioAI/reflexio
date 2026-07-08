@@ -22,22 +22,18 @@ from reflexio.models.api_schema.service_schemas import (
     UserPlaybook,
 )
 from reflexio.models.config_schema import PlaybookConfig
-from reflexio.server.extensions import get_service
-from reflexio.server.operation_limiter import run_with_operation_limit
 from reflexio.server.services.base_generation_service import (
     BaseGenerationService,
     StatusChangeOperation,
 )
-from reflexio.server.services.playbook.aggregation_prompt_processing import (
-    AGGREGATION_PROMPT_PROCESSOR,
+from reflexio.server.services.playbook.aggregation_trigger import (
+    maybe_trigger_user_playbook_aggregation,
 )
-from reflexio.server.services.playbook.components.aggregator import PlaybookAggregator
 from reflexio.server.services.playbook.components.extractor import PlaybookExtractor
 from reflexio.server.services.playbook.playbook_service_constants import (
     PlaybookServiceConstants,
 )
 from reflexio.server.services.playbook.playbook_service_utils import (
-    PlaybookAggregatorRequest,
     PlaybookGenerationRequest,
     format_expert_comparison_pairs,
     has_expert_content,
@@ -528,42 +524,12 @@ class PlaybookGenerationService(
         Trigger playbook aggregation for playbook types that have aggregator config.
         This is called after raw user playbook entries are saved to check if aggregation should run.
         """
-        playbook_config = self._configured_playbook_config()
-        if not playbook_config or not playbook_config.aggregation_config:
-            return
-
-        logger.info("Triggering aggregation")
-
-        # Create aggregator request. Aggregation is singleton — it operates on the
-        # user's whole playbook set, so no name selector is threaded.
-        aggregator_request = PlaybookAggregatorRequest(
-            agent_version=self.service_config.agent_version,  # type: ignore[reportOptionalMemberAccess]
-        )
-
-        # Initialize and run aggregator (synchronous)
-        aggregation_prompt_processor = get_service(AGGREGATION_PROMPT_PROCESSOR)
-        aggregator_kwargs = {}
-        if aggregation_prompt_processor is not None:
-            aggregator_kwargs["aggregation_prompt_processor"] = (
-                aggregation_prompt_processor
-            )
-        aggregator = PlaybookAggregator(
-            llm_client=self.client,
+        maybe_trigger_user_playbook_aggregation(
             request_context=self.request_context,
+            llm_client=self.client,
             agent_version=self.service_config.agent_version,  # type: ignore[reportOptionalMemberAccess]
-            **aggregator_kwargs,
+            reason="playbook_generation",
         )
-        try:
-            run_with_operation_limit(
-                org_id=self.request_context.org_id,
-                operation="aggregation",
-                fn=lambda: aggregator.run(aggregator_request),
-            )
-        except TimeoutError:
-            logger.info(
-                "Skipping inline aggregation for agent_version=%s: aggregation limiter is saturated",
-                self.service_config.agent_version,  # type: ignore[reportOptionalMemberAccess]
-            )
 
     # ===============================
     # Rerun hook implementations (override base class methods)

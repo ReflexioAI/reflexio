@@ -40,6 +40,9 @@ from reflexio.models.api_schema.domain.entities import (
 )
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.services.operation_state_utils import OperationStateManager
+from reflexio.server.services.playbook.aggregation_trigger import (
+    maybe_trigger_user_playbook_aggregation,
+)
 from reflexio.server.services.playbook.playbook_edit_apply import apply_playbook_edit
 from reflexio.server.services.reflection.components.extractor import (
     ReflectionExtractor,
@@ -655,6 +658,22 @@ class ReflectionService:
                     new_playbook.user_playbook_id,
                 )
             return True
+        if archived > 0:
+            try:
+                successor = storage.get_user_playbook_by_id(archived)
+                if successor is not None and successor.agent_version:
+                    maybe_trigger_user_playbook_aggregation(
+                        request_context=self.request_context,
+                        llm_client=self.client,
+                        agent_version=successor.agent_version,
+                        reason="reflection",
+                    )
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "event=reflection_aggregation_trigger_failed kind=playbook "
+                    "successor_id=%s",
+                    archived,
+                )
         if archived < 0:
             with sentry_tags(
                 subsystem="reflection",

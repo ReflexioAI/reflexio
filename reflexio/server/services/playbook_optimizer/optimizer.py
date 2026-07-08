@@ -20,6 +20,9 @@ from reflexio.models.api_schema.domain.entities import LineageContext
 from reflexio.models.config_schema import PlaybookOptimizerConfig
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient
+from reflexio.server.services.playbook.aggregation_trigger import (
+    maybe_trigger_user_playbook_aggregation,
+)
 from reflexio.server.tracing import sentry_tags
 
 from .assistant_webhook import AssistantCallable, LocalScriptAssistant, WebhookAssistant
@@ -488,13 +491,29 @@ class PlaybookOptimizer:
         # the rule wording, so writing ``best_content`` is sufficient — there
         # is no derived polarity label or separate polarity field to keep in
         # sync.
-        return _supersede_user_playbook(
+        successor_id = _supersede_user_playbook(
             self.storage,
             current_user,
             best_content,
             "playbook_optimizer",
             request_id=run_request_id,
         )
+        if successor_id is not None:
+            try:
+                successor = self.storage.get_user_playbook_by_id(successor_id)
+                if successor is not None and successor.agent_version:
+                    maybe_trigger_user_playbook_aggregation(
+                        request_context=self.request_context,
+                        llm_client=self.llm_client,
+                        agent_version=successor.agent_version,
+                        reason="playbook_optimizer",
+                    )
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "playbook_optimizer aggregation trigger failed after successor commit",
+                    extra={"successor_id": successor_id},
+                )
+        return successor_id
 
 
 def _agent_like_playbook(playbook: UserPlaybook) -> AgentPlaybook:
