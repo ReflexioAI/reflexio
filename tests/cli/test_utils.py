@@ -200,6 +200,7 @@ def test_run_services_skip_if_running_returns_without_conflict_or_spawn(
     capsys,
 ) -> None:
     monkeypatch.setattr(utils, "service_port_healthy", lambda _name, _port: True)
+    monkeypatch.setattr(utils.signal, "signal", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         utils,
         "ensure_requested_ports_available",
@@ -282,6 +283,7 @@ def test_run_services_skip_if_running_rejects_duplicate_ports_before_health(
     capsys,
 ) -> None:
     monkeypatch.setattr(utils, "service_port_healthy", lambda _name, _port: True)
+    monkeypatch.setattr(utils.signal, "signal", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         utils.subprocess,
         "Popen",
