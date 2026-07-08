@@ -27,8 +27,16 @@ from __future__ import annotations
 import logging
 import os
 import threading
+import time
+from collections.abc import Callable
 
 _LOGGER = logging.getLogger(__name__)
+
+# Warm-before-ready retry: cold model load is ~2-8s and reliable in prod, but a
+# bounded retry absorbs a transient blip before giving up (a give-up leaves
+# /health at 503, forcing a full ECS task replacement).
+_WARM_MAX_ATTEMPTS = 3
+_WARM_RETRY_BACKOFF_S = 2.0
 
 _ENV_PROVIDER = "REFLEXIO_EMBEDDING_PROVIDER"
 _ENV_DISABLE_DAEMON = "REFLEXIO_DISABLE_LOCAL_EMBEDDING_DAEMON"
@@ -83,7 +91,14 @@ def inprocess_local_gate_active() -> bool:
         embedding_provider_mode,
     )
 
-    if embedding_provider_mode() != _INPROCESS:
+    try:
+        mode = embedding_provider_mode()
+    except Exception:  # noqa: BLE001
+        # An invalid REFLEXIO_EMBEDDING_PROVIDER must not turn /health (polled on
+        # every ALB probe) into a 500 — treat unresolvable config as gate-off.
+        _LOGGER.debug("Embedding provider mode unresolvable; gate inactive", exc_info=True)
+        return False
+    if mode != _INPROCESS:
         return False
 
     from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
@@ -98,21 +113,72 @@ def inprocess_local_gate_active() -> bool:
     return model.startswith("local/")
 
 
-def _warm_embedder() -> None:
-    """Load the in-process embedder, then flip the readiness signal.
+def _resolve_local_embedder_loader() -> Callable[[], object] | None:
+    """Return a zero-arg loader for the embedder matching the resolved local model.
 
-    Fire-and-forget; runs in a daemon thread so a slow model load never blocks
-    startup. On failure the readiness signal stays clear and ``/health`` keeps
-    reporting not-ready, which is the intended fail-safe.
+    Dispatches on the SAME model the gate resolved so readiness reflects the
+    embedder that will actually serve: ``local/nomic-*`` -> ``NomicEmbedder``
+    (sentence-transformers), any other ``local/*`` -> ``LocalEmbedder`` (chromadb
+    ONNX, e.g. the OSS ``local/minilm-l6-v2`` default). Returns None when no
+    in-process local model resolves.
+
+    Returns:
+        Callable[[], object] | None: A loader that warms the correct singleton,
+            or None if the resolved model is not an in-process local one.
     """
-    from reflexio.server.llm.providers.nomic_embedding_provider import NomicEmbedder
+    from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
 
     try:
-        NomicEmbedder.get()._load()
-        mark_embedder_ready()
-        _LOGGER.info("In-process embedder warm; /health now reports ready.")
+        model = resolve_model_name(ModelRole.EMBEDDING)
     except Exception:  # noqa: BLE001
-        _LOGGER.exception("In-process embedder warmup failed; /health stays not-ready.")
+        return None
+    if not model.startswith("local/"):
+        return None
+    if "nomic" in model:
+        from reflexio.server.llm.providers.nomic_embedding_provider import NomicEmbedder
+
+        return lambda: NomicEmbedder.get()._load()
+    from reflexio.server.llm.providers.local_embedding_provider import LocalEmbedder
+
+    return lambda: LocalEmbedder.get()._load()
+
+
+def _warm_embedder() -> None:
+    """Load the resolved in-process local embedder, then flip the readiness signal.
+
+    Warms whichever embedder the gate's resolved ``local/*`` model maps to (see
+    :func:`_resolve_local_embedder_loader`), so readiness reflects the model that
+    will actually serve — not a hardcoded one. Fire-and-forget in a daemon thread
+    so a slow load never blocks startup; a bounded retry absorbs a transient blip.
+    On final failure the readiness signal stays clear and ``/health`` keeps
+    reporting not-ready — the intended fail-safe (deploy fails loud, old rev serves).
+    """
+    loader = _resolve_local_embedder_loader()
+    if loader is None:
+        _LOGGER.warning(
+            "Warmup gate active but no in-process local embedder resolved; "
+            "/health stays not-ready."
+        )
+        return
+    for attempt in range(1, _WARM_MAX_ATTEMPTS + 1):
+        try:
+            loader()
+            mark_embedder_ready()
+            _LOGGER.info("In-process embedder warm; /health now reports ready.")
+            return
+        except Exception:  # noqa: BLE001
+            _LOGGER.warning(
+                "In-process embedder warmup attempt %d/%d failed.",
+                attempt,
+                _WARM_MAX_ATTEMPTS,
+                exc_info=True,
+            )
+            if attempt < _WARM_MAX_ATTEMPTS:
+                time.sleep(_WARM_RETRY_BACKOFF_S * attempt)
+    _LOGGER.error(
+        "In-process embedder warmup exhausted %d attempts; /health stays not-ready.",
+        _WARM_MAX_ATTEMPTS,
+    )
 
 
 def maybe_start_embedder_warmup() -> bool:

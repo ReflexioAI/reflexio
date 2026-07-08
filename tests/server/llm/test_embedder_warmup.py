@@ -111,16 +111,14 @@ def test_warmup_starts_and_marks_ready_under_gate(
 
     load_calls: list[int] = []
 
-    class _FakeEmbedder:
-        def _load(self) -> None:
-            load_calls.append(1)
+    from reflexio.server.llm.providers import embedder_warmup
 
-    from reflexio.server.llm.providers import nomic_embedding_provider
-
+    # Patch the loader seam so the test controls warm success regardless of which
+    # local embedder (nomic vs minilm/LocalEmbedder) the default model resolves to.
     monkeypatch.setattr(
-        nomic_embedding_provider.NomicEmbedder,
-        "get",
-        staticmethod(lambda: _FakeEmbedder()),
+        embedder_warmup,
+        "_resolve_local_embedder_loader",
+        lambda: (lambda: load_calls.append(1)),
     )
 
     assert is_embedder_ready() is False
@@ -136,24 +134,72 @@ def test_warmup_starts_and_marks_ready_under_gate(
 
 
 def test_warmup_failure_leaves_not_ready(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A load failure must NOT mark ready — /health stays 503 (fail-safe)."""
+    """A load failure (all retries) must NOT mark ready — /health stays 503 (fail-safe)."""
     monkeypatch.setenv("REFLEXIO_EMBEDDING_PROVIDER", "inprocess")
 
-    class _BoomEmbedder:
-        def _load(self) -> None:
-            raise RuntimeError("boom")
+    from reflexio.server.llm.providers import embedder_warmup
 
-    from reflexio.server.llm.providers import nomic_embedding_provider
+    # Fast, deterministic retry for the test.
+    monkeypatch.setattr(embedder_warmup, "_WARM_MAX_ATTEMPTS", 2)
+    monkeypatch.setattr(embedder_warmup, "_WARM_RETRY_BACKOFF_S", 0.0)
+
+    attempts: list[int] = []
+
+    def _boom() -> None:
+        attempts.append(1)
+        raise RuntimeError("boom")
 
     monkeypatch.setattr(
-        nomic_embedding_provider.NomicEmbedder,
-        "get",
-        staticmethod(lambda: _BoomEmbedder()),
+        embedder_warmup, "_resolve_local_embedder_loader", lambda: _boom
     )
 
     assert maybe_start_embedder_warmup() is True
     time.sleep(0.2)
     assert is_embedder_ready() is False
+    # Bounded retry actually retried before giving up.
+    assert attempts == [1, 1]
+
+
+def test_warm_target_follows_resolved_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The warmed embedder matches the resolved local model (nomic vs minilm),
+    not a hardcoded class — so readiness reflects the model that will serve."""
+    from reflexio.server.llm import model_defaults
+    from reflexio.server.llm.providers import (
+        embedder_warmup,
+        local_embedding_provider,
+        nomic_embedding_provider,
+    )
+
+    warmed: list[str] = []
+    monkeypatch.setattr(
+        nomic_embedding_provider.NomicEmbedder,
+        "get",
+        staticmethod(lambda: type("N", (), {"_load": lambda _self: warmed.append("nomic")})()),
+    )
+    monkeypatch.setattr(
+        local_embedding_provider.LocalEmbedder,
+        "get",
+        staticmethod(lambda: type("L", (), {"_load": lambda _self: warmed.append("minilm")})()),
+    )
+
+    monkeypatch.setattr(
+        model_defaults, "resolve_model_name", lambda _role: "local/nomic-embed-text-v1.5"
+    )
+    embedder_warmup._resolve_local_embedder_loader()()  # type: ignore[misc]
+    assert warmed == ["nomic"]
+
+    warmed.clear()
+    monkeypatch.setattr(
+        model_defaults, "resolve_model_name", lambda _role: "local/minilm-l6-v2"
+    )
+    embedder_warmup._resolve_local_embedder_loader()()  # type: ignore[misc]
+    assert warmed == ["minilm"]
+
+    # A non-local resolved model yields no loader (gate would be inactive too).
+    monkeypatch.setattr(
+        model_defaults, "resolve_model_name", lambda _role: "text-embedding-3-small"
+    )
+    assert embedder_warmup._resolve_local_embedder_loader() is None
 
 
 # --------------------------------------------------------------------------- #

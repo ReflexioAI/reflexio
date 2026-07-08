@@ -65,8 +65,10 @@ _ENV_BATCH_SIZE = "REFLEXIO_EMBED_BATCH_SIZE"
 
 # D7 (Phase 2 prep): optionally pin torch intra-op thread count so the embedder
 # does not oversubscribe CPU under bounded concurrency. Unset (the default) =
-# leave torch untouched, i.e. zero behaviour change. Applies at model load so it
-# covers both the in-process path and the shared daemon.
+# leave torch untouched, i.e. zero behaviour change. Applies at Nomic model load
+# (both the in-process fallback and the shared daemon run NomicEmbedder). Note the
+# chromadb/minilm LocalEmbedder path uses onnxruntime, not torch, so this knob does
+# not affect it.
 _ENV_TORCH_THREADS = "REFLEXIO_EMBED_TORCH_THREADS"
 _torch_threads_pinned = False
 _torch_threads_lock = threading.Lock()
