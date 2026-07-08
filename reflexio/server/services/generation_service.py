@@ -97,6 +97,22 @@ def _stable_group_sampling_fraction(
     return int.from_bytes(digest[:8], "big") / 2**64
 
 
+def _org_in_durable_allowlist(org_id: str | None) -> bool:
+    """Whether ``org_id`` may use the durable learning queue.
+
+    Reads ``REFLEXIO_DURABLE_LEARNING_QUEUE_ORG_ALLOWLIST`` (comma-separated org
+    IDs). An empty/whitespace-only value means the allowlist is unset — the
+    default global behavior, so every org is eligible. The allowlist can only
+    *narrow* the durable path; it never enables it on its own (the
+    ``REFLEXIO_DURABLE_LEARNING_QUEUE`` flag still gates activation).
+    """
+    raw = env_str("REFLEXIO_DURABLE_LEARNING_QUEUE_ORG_ALLOWLIST", "")
+    allowed = {s.strip() for s in raw.split(",") if s.strip()}
+    if not allowed:
+        return True
+    return str(org_id) in allowed
+
+
 @dataclass
 class GenerationServiceResult:
     """Result of a GenerationService.run call.
@@ -261,7 +277,11 @@ class GenerationService:
             use_durable_queue = env_truthy(
                 env_str("REFLEXIO_DURABLE_LEARNING_QUEUE", "false")
             )
-            _durable_defer = defer_learning and use_durable_queue
+            _durable_defer = (
+                defer_learning
+                and use_durable_queue
+                and _org_in_durable_allowlist(self.org_id)
+            )
 
             if not _durable_defer:
                 self.storage.add_request(new_request)  # type: ignore[reportOptionalMemberAccess]
