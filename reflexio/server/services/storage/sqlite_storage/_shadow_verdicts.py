@@ -74,6 +74,10 @@ class ShadowVerdictsMixin:
     _fetchone: Any
     _fetchall: Any
 
+    def supports_shadow_comparison_verdicts(self) -> bool:
+        """Return whether this backend can persist shadow comparison verdicts."""
+        return True
+
     @SQLiteStorageBase.handle_exceptions
     def save_shadow_comparison_verdict(
         self, verdict: ShadowComparisonVerdict

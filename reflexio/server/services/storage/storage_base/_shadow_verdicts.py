@@ -34,6 +34,10 @@ class ShadowVerdictsMixin:
     clear error message naming the backend rather than ``AttributeError``.
     """
 
+    def supports_shadow_comparison_verdicts(self) -> bool:
+        """Return whether this backend can persist shadow comparison verdicts."""
+        return False
+
     def save_shadow_comparison_verdict(
         self, verdict: ShadowComparisonVerdict
     ) -> ShadowComparisonVerdict:

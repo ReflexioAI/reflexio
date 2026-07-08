@@ -77,14 +77,16 @@ class ShadowComparisonJudge:
         agent_version: str,
         rng: random.Random,
         user_message: str = "",
+        conversation_context: str | None = None,
     ) -> ShadowComparisonVerdict | None:
         """
         Grade one interaction; return ``None`` when the LLM fails or the
         interaction has no shadow response to compare against.
 
-        Returning ``None`` (rather than raising) lets the regen worker
-        skip this turn and continue with the rest of the session — one
-        rate-limit blip should not abort an entire batch.
+        Returning ``None`` (rather than raising) lets the publish-time
+        dispatcher skip this turn and continue with the rest of the
+        request's shadow-bearing turns — one rate-limit blip should not
+        abort an entire batch.
 
         Args:
             interaction (Interaction): The agent-side interaction. Its
@@ -98,9 +100,11 @@ class ShadowComparisonJudge:
                 Production callers pass a fresh ``random.Random()`` per
                 judge call; tests inject a seeded ``Random`` for
                 reproducibility.
-            user_message (str): The user turn this interaction responds
-                to. Optional — empty string is rendered into the prompt
-                if the caller does not provide a value.
+            user_message (str): Backward-compatible single-turn context used
+                by the v1.0 prompt.
+            conversation_context (str | None): Request-local transcript context
+                used by v1.1+ prompts. Defaults to ``user_message`` so explicit
+                v1.0 prompt-version overrides keep working.
 
         Returns:
             ShadowComparisonVerdict | None: The constructed verdict, or
@@ -118,7 +122,13 @@ class ShadowComparisonJudge:
         prompt = self._prompt_manager.render_prompt(
             prompt_id=_PROMPT_ID,
             variables={
+                # ``user_message`` is retained only for explicit v1.0.0
+                # prompt-version overrides; the active v1.1+ template reads
+                # ``conversation_context`` instead. Do not drop it as "unused".
                 "user_message": user_message,
+                "conversation_context": conversation_context
+                if conversation_context is not None
+                else user_message,
                 "request_1_response": request_1,
                 "request_2_response": request_2,
             },

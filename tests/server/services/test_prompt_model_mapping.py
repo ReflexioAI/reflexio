@@ -67,7 +67,7 @@ PROMPT_VERSION_MAP: dict[str, tuple[str, str | None]] = {
     # F1 — per-turn shadow comparison judge. Produces structured
     # ShadowComparisonOutput; the mock dispatch lives in the integration
     # tests rather than the global heuristic mock, so no registry key.
-    "shadow_comparison": ("v1.0.0", None),
+    "shadow_comparison": ("v1.1.0", None),
 }
 
 
