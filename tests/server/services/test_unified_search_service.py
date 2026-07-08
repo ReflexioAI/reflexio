@@ -91,6 +91,31 @@ class TestRunUnifiedSearch(unittest.TestCase):
         assert sent_filters == [[PlaybookStatus.APPROVED, PlaybookStatus.PENDING]]
 
     @patch("reflexio.server.services.unified_search_service.QueryReformulator")
+    def test_empty_embedding_degrades_to_fts(self, _reformulator_cls):
+        """An empty embedding result (e.g. a storage backend that swallows
+        EmbeddingUnavailableError and returns []) degrades to FTS and is flagged
+        as degraded — not run as a vector search with an empty embedding."""
+        storage = _mock_storage()
+        storage._get_embedding.return_value = []  # no usable query vector
+
+        _reformulator_cls.return_value.rewrite.return_value = ReformulationResult(
+            standalone_query="test query"
+        )
+
+        request = UnifiedSearchRequest(query="test query")
+        result = run_unified_search(
+            request=request,
+            org_id="test-org",
+            storage=storage,
+            llm_client=MagicMock(),
+            prompt_manager=MagicMock(),
+        )
+
+        self.assertTrue(result.success)
+        self.assertTrue(result.degraded)
+        self.assertEqual(result.search_mode_effective, "fts")
+
+    @patch("reflexio.server.services.unified_search_service.QueryReformulator")
     def test_local_storage_without_get_embedding(self, _reformulator_cls):
         """Storage without _get_embedding should not crash and should use text-only search."""
         storage = _mock_storage()

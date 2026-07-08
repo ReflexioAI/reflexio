@@ -406,6 +406,14 @@ def _run_phase_a(
                 embedding = _get_cached_query_embedding(
                     storage, reformulation.standalone_query
                 )
+                # A falsy result (None or []) means the embedder produced no
+                # usable query vector — e.g. a storage backend that swallows
+                # EmbeddingUnavailableError and returns [] on a provider outage.
+                # Treat it the same as a raised failure: degrade to FTS rather
+                # than run a vector search with an empty embedding.
+                if not embedding:
+                    embedding = None
+                    embedding_failed = True
                 span.set_data("embedding_generated", embedding is not None)
             except Exception as e:
                 span.set_data("embedding_generated", False)
