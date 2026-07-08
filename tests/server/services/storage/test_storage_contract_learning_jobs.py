@@ -473,6 +473,144 @@ class TestOrgDiscovery:
         assert storage.org_id in storage.list_org_ids_with_pending_learning_jobs()
 
 
+class TestQueueAlarmQueries:
+    """Contract tests for the queue-alarm query methods (Task 1 of durable XRef)."""
+
+    def test_oldest_pending_age_none_when_no_pending(self, storage) -> None:
+        """Returns None when there are no pending jobs."""
+        assert storage.get_oldest_pending_learning_job_age_seconds() is None
+
+    def test_oldest_pending_age_returns_float_when_pending(self, storage) -> None:
+        """Returns a non-negative float when at least one pending job exists."""
+        _enqueue(storage, "u-age1", "r-age1", 1000.0)
+        age = storage.get_oldest_pending_learning_job_age_seconds()
+        assert age is not None
+        assert isinstance(age, float)
+        assert age >= 0.0
+
+    def test_oldest_pending_age_ignores_non_pending(self, storage) -> None:
+        """A claimed, done, failed, or dead job does not contribute to oldest-pending age."""
+        # Enqueue and immediately claim the job → status becomes 'claimed', not 'pending'.
+        _enqueue(storage, "u-age-np", "r-age-np", 1000.0)
+        [job] = [
+            j
+            for j in storage.claim_learning_jobs(
+                claimed_by="w1", limit=10, lease_seconds=300
+            )
+            if j.user_id == "u-age-np"
+        ]
+        assert job.status == "claimed"
+        # No pending jobs → must return None.
+        assert storage.get_oldest_pending_learning_job_age_seconds() is None
+
+    def test_oldest_pending_age_picks_oldest(self, storage) -> None:
+        """When there are multiple pending jobs the method returns the age of the oldest.
+
+        We inject the created_at directly (bypassing enqueue) so we can control
+        the timestamp precisely.
+        """
+        import time
+        import uuid as _uuid
+        from datetime import UTC, datetime
+
+        now = time.time()
+        older_ts = now - 100  # 100 seconds ago
+        newer_ts = now - 10  # 10 seconds ago
+
+        # Insert two pending rows with controlled created_at values.
+        older_iso = datetime.fromtimestamp(older_ts, tz=UTC).strftime(
+            "%Y-%m-%dT%H:%M:%S.000Z"
+        )
+        newer_iso = datetime.fromtimestamp(newer_ts, tz=UTC).strftime(
+            "%Y-%m-%dT%H:%M:%S.000Z"
+        )
+
+        storage.conn.execute(
+            """
+            INSERT INTO learning_jobs
+                (job_id, org_id, user_id, job_type, latest_request_id,
+                 covers_through, status, force_extraction, skip_aggregation,
+                 created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, 0, ?, ?)
+            """,
+            (
+                str(_uuid.uuid4()),
+                storage.org_id,
+                "u-old",
+                "learning",
+                "r-old",
+                older_iso,
+                older_iso,
+                older_iso,
+            ),
+        )
+        storage.conn.execute(
+            """
+            INSERT INTO learning_jobs
+                (job_id, org_id, user_id, job_type, latest_request_id,
+                 covers_through, status, force_extraction, skip_aggregation,
+                 created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, 0, ?, ?)
+            """,
+            (
+                str(_uuid.uuid4()),
+                storage.org_id,
+                "u-new",
+                "learning",
+                "r-new",
+                newer_iso,
+                newer_iso,
+                newer_iso,
+            ),
+        )
+        storage.conn.commit()
+
+        age = storage.get_oldest_pending_learning_job_age_seconds()
+        assert age is not None
+        # The oldest pending job was created ~100 s ago; allow +/-5 s clock tolerance.
+        assert 95.0 <= age <= 105.0, f"Expected ~100 s, got {age}"
+
+    def test_count_by_status_zero_when_empty(self, storage) -> None:
+        """count_learning_jobs_by_status returns 0 for all statuses when empty."""
+        for status in ("pending", "claimed", "done", "failed", "dead"):
+            assert storage.count_learning_jobs_by_status(status) == 0
+
+    def test_count_by_status_pending(self, storage) -> None:
+        """Counts pending jobs correctly."""
+        _enqueue(storage, "u-cnt1", "r-cnt1", 1000.0)
+        _enqueue(storage, "u-cnt2", "r-cnt2", 2000.0)
+        assert storage.count_learning_jobs_by_status("pending") == 2
+
+    def test_count_by_status_dead(self, storage) -> None:
+        """Counts dead jobs correctly (including 'dead' which is terminal)."""
+        _enqueue(storage, "u-cntd", "r-cntd", 1000.0)
+        [job] = [
+            j
+            for j in storage.claim_learning_jobs(
+                claimed_by="w1", limit=10, lease_seconds=300
+            )
+            if j.user_id == "u-cntd"
+        ]
+        storage.fail_learning_job(
+            job_id=job.job_id, claim_token=job.claim_token, dead=True
+        )
+        assert storage.count_learning_jobs_by_status("dead") == 1
+        assert storage.count_learning_jobs_by_status("pending") == 0
+
+    def test_count_by_status_mixed(self, storage) -> None:
+        """Count is scoped correctly across multiple statuses."""
+        _enqueue(storage, "u-mix1", "r-mix1", 1000.0)
+        _enqueue(storage, "u-mix2", "r-mix2", 1000.0)
+        # Claim only one of the two pending jobs (limit=1).
+        claimed = storage.claim_learning_jobs(
+            claimed_by="w1", limit=1, lease_seconds=300
+        )
+        assert len(claimed) == 1
+        assert storage.count_learning_jobs_by_status("pending") == 1
+        assert storage.count_learning_jobs_by_status("claimed") == 1
+        assert storage.count_learning_jobs_by_status("done") == 0
+
+
 class TestRetrySemantics:
     def test_failed_job_is_reclaimable(self, storage) -> None:
         """A failed (not dead) job must be re-claimable without manual status reset.
