@@ -74,7 +74,17 @@ class LocalEmbedder:
 
     def __init__(self) -> None:
         self._ef: Any | None = None
+        # Guards lazy construction / cache-recovery swaps of ``self._ef``.
         self._ef_lock = threading.Lock()
+        # Serializes the actual encode call. The shared ONNX embedding function
+        # is NOT thread-safe — concurrent ``ef(...)`` calls interleave and
+        # corrupt each other's padding/attention buffers (observed in prod as
+        # tensor-shape mismatches). ``threading.Lock`` is non-reentrant, so this
+        # is a SEPARATE lock from ``_ef_lock`` (the recovery path re-acquires
+        # ``_ef_lock`` while we hold this one): fixed order is ``_encode_lock``
+        # outer, ``_ef_lock`` inner, which cannot deadlock. NOTE: this lock is
+        # not FIFO-fair — do not turn it into a fairness queue without measuring.
+        self._encode_lock = threading.Lock()
 
     @classmethod
     def get(cls) -> LocalEmbedder:
@@ -121,12 +131,17 @@ class LocalEmbedder:
                 ``_TARGET_DIM`` (512) floats with the last 128 positions
                 zero-padded.
         """
-        ef = self._load()
         safe_inputs = [(text or "")[:_MAX_CHARS] for text in texts]
-        try:
-            raw = ef(safe_inputs)
-        except Exception as exc:  # noqa: BLE001 - Chroma raises varied cache errors.
-            raw = self._retry_embed_after_cache_clear(ef, exc, safe_inputs)
+        # Serialize the encode: the shared ONNX embedder is not thread-safe.
+        # ``_load()`` and ``_retry_embed_after_cache_clear()`` both acquire
+        # ``_ef_lock`` internally; running them under ``_encode_lock`` fixes the
+        # lock order (``_encode_lock`` outer) so recovery can never deadlock.
+        with self._encode_lock:
+            ef = self._load()
+            try:
+                raw = ef(safe_inputs)
+            except Exception as exc:  # noqa: BLE001 - Chroma raises varied cache errors.
+                raw = self._retry_embed_after_cache_clear(ef, exc, safe_inputs)
         return [_pad(vec) for vec in raw]
 
     def _retry_embed_after_cache_clear(

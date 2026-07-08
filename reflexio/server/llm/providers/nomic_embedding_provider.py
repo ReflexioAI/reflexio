@@ -157,15 +157,30 @@ class NomicEmbedder:
         """
         model = self._load()
         safe = [(t or "")[:_MAX_CHARS] for t in texts]
-        # show_progress_bar=False so server logs stay clean during ingest
-        # batches. convert_to_numpy=True returns a numpy ndarray; we slice
-        # and renormalise per-row before converting to plain Python lists.
-        raw = model.encode(
-            safe,
-            batch_size=_encode_batch_size(),
-            show_progress_bar=False,
-            convert_to_numpy=True,
-        )
+        # The sentence-transformers model is NOT thread-safe: nomic-bert's
+        # rotary-embedding code mutates instance attrs (``_cos_cached`` /
+        # ``_sin_cached``) on every forward pass, so two concurrent
+        # ``encode()`` calls on this shared singleton corrupt each other's
+        # buffers (observed in prod as "size of tensor a (N) must match tensor
+        # b (M)" and "'NoneType' object is not subscriptable"). Serialize the
+        # encode so every caller — daemon, in-process fallback, prewarm,
+        # regeneration — is safe by construction. ``_load()`` acquires and
+        # releases ``_model_lock`` and returns before we re-acquire it here, so
+        # there is no nesting/deadlock. NOTE: ``threading.Lock`` is not FIFO-fair
+        # — do not "improve" this into a fairness queue without measuring; the
+        # micro-batch coalescing in ``embedding_service`` is where throughput
+        # comes from, not parallel encodes on one model.
+        with self._model_lock:
+            # show_progress_bar=False so server logs stay clean during ingest
+            # batches. convert_to_numpy=True returns a numpy ndarray; we slice
+            # and renormalise per-row (below, outside the lock) before
+            # converting to plain Python lists.
+            raw = model.encode(
+                safe,
+                batch_size=_encode_batch_size(),
+                show_progress_bar=False,
+                convert_to_numpy=True,
+            )
         return [_truncate_and_renormalise(vec.tolist()) for vec in raw]
 
 
