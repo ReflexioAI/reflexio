@@ -54,6 +54,12 @@ def _failed_result(
     )
 
 
+def has_user_playbook_aggregation_config(request_context: RequestContext) -> bool:
+    root_config = request_context.configurator.get_config()
+    playbook_config = getattr(root_config, "user_playbook_extractor_config", None)
+    return bool(playbook_config and playbook_config.aggregation_config)
+
+
 def maybe_trigger_user_playbook_aggregation(
     *,
     request_context: RequestContext,
@@ -62,9 +68,7 @@ def maybe_trigger_user_playbook_aggregation(
     reason: str,
 ) -> AggregationTriggerResult:
     try:
-        root_config = request_context.configurator.get_config()
-        playbook_config = getattr(root_config, "user_playbook_extractor_config", None)
-        if not playbook_config or not playbook_config.aggregation_config:
+        if not has_user_playbook_aggregation_config(request_context):
             return AggregationTriggerResult(
                 status="skipped_no_config",
                 reason=reason,
