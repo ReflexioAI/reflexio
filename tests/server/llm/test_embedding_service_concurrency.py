@@ -5,13 +5,20 @@ from __future__ import annotations
 import threading
 import time
 
+import numpy as np
 import pytest
 
 from reflexio.server.llm import embedding_service as es
 
 
-class _ConcurrencyRecorder:
-    """Stand-in embedder that records the peak number of simultaneous calls."""
+class _ConcurrencyModel:
+    """Fake sentence-transformers model recording peak simultaneous encodes.
+
+    Injected into a real ``NomicEmbedder`` so the assertions exercise the
+    embedder-level ``_model_lock`` — the invariant that survives after the
+    daemon's own ``_MODEL_ENCODE_LOCK`` was removed (the embedder, not the
+    daemon, now owns serialization of the non-thread-safe model).
+    """
 
     def __init__(self, hold: float = 0.1) -> None:
         self._hold = hold
@@ -19,40 +26,30 @@ class _ConcurrencyRecorder:
         self.current = 0
         self.peak = 0
         self.calls = 0
+        self.encode_calls: list[list[str]] = []
 
-    def embed(self, texts: list[str]) -> list[list[float]]:
+    def encode(self, texts: list[str], **_kwargs: object) -> np.ndarray:
         with self._lock:
             self.current += 1
             self.calls += 1
             self.peak = max(self.peak, self.current)
-        # Hold the slot so concurrent callers actually overlap.
+            self.encode_calls.append(list(texts))
+        # Hold the slot so concurrent callers would overlap if unserialized.
         time.sleep(self._hold)
         with self._lock:
             self.current -= 1
-        return [[0.0] * 512 for _ in texts]
-
-
-class _BatchRecorder:
-    """Stand-in embedder that records each encode call's texts."""
-
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self.calls: list[list[str]] = []
-
-    def embed(self, texts: list[str]) -> list[list[float]]:
-        with self._lock:
-            self.calls.append(list(texts))
-        return [[float(index)] * 512 for index, _text in enumerate(texts)]
+        return np.array([[0.1] * 768 for _ in texts])
 
 
 def _reset_service_state(
-    monkeypatch: pytest.MonkeyPatch, recorder: _ConcurrencyRecorder | _BatchRecorder
+    monkeypatch: pytest.MonkeyPatch, model: _ConcurrencyModel
 ) -> None:
-    monkeypatch.setattr(es, "_ENCODE_SEMAPHORE", None)
     monkeypatch.setattr(es, "_ACTIVE_MODEL", None)
     monkeypatch.setattr(es, "_MICRO_BATCH_QUEUE", [])
     monkeypatch.setattr(es, "_ACTIVE_BATCH_PROCESSORS", 0)
-    monkeypatch.setattr(es.NomicEmbedder, "get", classmethod(lambda _cls: recorder))
+    embedder = es.NomicEmbedder()
+    embedder._model = model  # pre-load so _load() is a no-op fast path
+    monkeypatch.setattr(es.NomicEmbedder, "get", classmethod(lambda _cls: embedder))
 
 
 def test_max_concurrency_defaults_to_4(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -81,12 +78,12 @@ def test_micro_batch_max_texts_respects_env(monkeypatch: pytest.MonkeyPatch) -> 
 
 
 def test_embed_texts_caps_and_queues(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Excess concurrent requests queue (never reject) and the cap is honored."""
+    """Excess concurrent requests queue (never reject) and encodes serialize."""
     monkeypatch.setenv("REFLEXIO_EMBED_MAX_CONCURRENCY", "2")
     monkeypatch.setenv("REFLEXIO_EMBED_MICRO_BATCH_DELAY_MS", "1")
     monkeypatch.setenv("REFLEXIO_EMBED_MICRO_BATCH_MAX_TEXTS", "1")
-    recorder = _ConcurrencyRecorder(hold=0.1)
-    _reset_service_state(monkeypatch, recorder)
+    fake_model = _ConcurrencyModel(hold=0.1)
+    _reset_service_state(monkeypatch, fake_model)
 
     model = "local/nomic-embed-text-v1.5"
     errors: list[Exception] = []
@@ -101,17 +98,18 @@ def test_embed_texts_caps_and_queues(monkeypatch: pytest.MonkeyPatch) -> None:
     for thread in threads:
         thread.start()
     for thread in threads:
-        thread.join()
+        thread.join(timeout=10)
 
     # All six requests completed — they queued, none were rejected.
+    assert all(not thread.is_alive() for thread in threads)
     assert errors == []
-    assert recorder.calls == 6
-    # Model inference itself is serialized by _MODEL_ENCODE_LOCK (see PR #153:
-    # concurrent .embed() calls on the shared, non-thread-safe model corrupt each
-    # other's tensors). The semaphore only bounds how many requests sit waiting
-    # for that lock; the recorder counts time inside embed(), which the lock
-    # makes mutually exclusive, so the peak simultaneous-encode count is exactly 1.
-    assert recorder.peak == 1
+    assert fake_model.calls == 6
+    # Model inference is serialized by the embedder's own ``_model_lock`` (see
+    # PR #153: concurrent encodes on the shared, non-thread-safe model corrupt
+    # each other's tensors). The daemon no longer holds a redundant lock — the
+    # embedder owns serialization by construction. The fake model counts time
+    # inside encode(), so the peak simultaneous-encode count must be exactly 1.
+    assert fake_model.peak == 1
 
 
 def test_micro_batches_concurrent_requests(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -119,8 +117,8 @@ def test_micro_batches_concurrent_requests(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setenv("REFLEXIO_EMBED_MAX_CONCURRENCY", "1")
     monkeypatch.setenv("REFLEXIO_EMBED_MICRO_BATCH_DELAY_MS", "50")
     monkeypatch.setenv("REFLEXIO_EMBED_MICRO_BATCH_MAX_TEXTS", "8")
-    recorder = _BatchRecorder()
-    _reset_service_state(monkeypatch, recorder)
+    fake_model = _ConcurrencyModel(hold=0.0)
+    _reset_service_state(monkeypatch, fake_model)
 
     model = "local/nomic-embed-text-v1.5"
     barrier = threading.Barrier(2)
@@ -141,9 +139,9 @@ def test_micro_batches_concurrent_requests(monkeypatch: pytest.MonkeyPatch) -> N
     for thread in threads:
         thread.start()
     for thread in threads:
-        thread.join()
+        thread.join(timeout=10)
 
     assert errors == []
     assert len(results) == 2
-    assert len(recorder.calls) == 1
-    assert set(recorder.calls[0]) == {"first", "second"}
+    assert len(fake_model.encode_calls) == 1
+    assert set(fake_model.encode_calls[0]) == {"first", "second"}

@@ -34,29 +34,19 @@ _SUPPORTED_MODELS = {
 _ACTIVE_MODEL: str | None = None
 _ACTIVE_MODEL_LOCK = threading.Lock()
 
-# The underlying sentence-transformers / ONNX embedders share internal buffers
-# and are NOT thread-safe: concurrent ``.embed()`` calls interleave and corrupt
-# each other's padding/attention tensors (observed under concurrent publishes as
-# ``RuntimeError: The size of tensor a (62) must match the size of tensor b (61)
-# at non-singleton dimension 1``). The ``_ENCODE_SEMAPHORE`` below only caps how
-# many requests run at once (for memory), it does NOT serialize them, so this
-# lock guards the actual model inference. Throughput comes from micro-batch
-# coalescing (many texts per encode), not from parallel encodes on one model.
-_MODEL_ENCODE_LOCK = threading.Lock()
-
 DEFAULT_OSS_EMBEDDING_MODEL = MINILM_MODEL
 
-# Bound how many embed/encode calls run at once. The endpoint is a sync ``def``
-# served from Starlette's threadpool, so without a guard a burst of requests
-# would run that many model.encode() calls in parallel, stacking their
-# activation memory and OOM-killing the daemon. The semaphore caps simultaneous
-# encodes; excess requests block on acquire() and are picked up when a slot
-# frees — they queue, they are never rejected. Pair with a small encode
-# batch_size so each in-flight encode stays cheap.
+# Bound how many micro-batch processor threads run at once. The endpoint is a
+# sync ``def`` served from Starlette's threadpool, so without a cap a burst of
+# requests would spawn a processor per request and stack their activation
+# memory, OOM-killing the daemon. This caps concurrent processors; excess
+# requests queue on the micro-batch condition and are picked up when a slot
+# frees — they are never rejected. The embedder singletons (NomicEmbedder /
+# LocalEmbedder) serialize the actual model.encode() internally — the shared
+# models are not thread-safe — so no encode lock or semaphore is needed here.
+# Pair with a small encode batch_size so each in-flight encode stays cheap.
 _DEFAULT_MAX_CONCURRENCY = 4
 _ENV_MAX_CONCURRENCY = "REFLEXIO_EMBED_MAX_CONCURRENCY"
-_ENCODE_SEMAPHORE: threading.BoundedSemaphore | None = None
-_ENCODE_SEMAPHORE_LOCK = threading.Lock()
 
 # Opportunistically coalesce concurrent small requests before calling
 # model.encode(). This keeps request concurrency thread-based while giving the
@@ -109,16 +99,6 @@ def _micro_batch_max_texts() -> int:
     return positive_int_env(
         _ENV_MICRO_BATCH_MAX_TEXTS, _DEFAULT_MICRO_BATCH_MAX_TEXTS, logger
     )
-
-
-def _encode_semaphore() -> threading.BoundedSemaphore:
-    """Return the process-wide encode semaphore, building it on first use."""
-    global _ENCODE_SEMAPHORE
-    if _ENCODE_SEMAPHORE is None:
-        with _ENCODE_SEMAPHORE_LOCK:
-            if _ENCODE_SEMAPHORE is None:
-                _ENCODE_SEMAPHORE = threading.BoundedSemaphore(_max_concurrency())
-    return _ENCODE_SEMAPHORE
 
 
 class EmbeddingRequest(BaseModel):
@@ -313,29 +293,16 @@ def _process_micro_batch(jobs: list[_EmbeddingJob]) -> None:
 
 
 def _encode_texts_now(model: str, texts: list[str]) -> list[list[float]]:
-    semaphore = _encode_semaphore()
-    # Non-blocking probe purely for observability: if no slot is free, this
-    # request will have to wait. The real acquire below blocks until a slot
-    # opens, so the request queues and is picked up later — never rejected.
-    if not semaphore.acquire(blocking=False):
-        logger.info(
-            "Embedding request queued; all %d encode slots busy",
-            _max_concurrency(),
-        )
-        semaphore.acquire()
-    try:
-        # Serialize the actual inference: the shared embedder models are not
-        # thread-safe, so concurrent encodes race and produce tensor-shape
-        # errors. The semaphore (above) bounds memory; this lock bounds the
-        # model to one in-flight encode at a time.
-        with _MODEL_ENCODE_LOCK:
-            if is_nomic_model(model):
-                return NomicEmbedder.get().embed(texts)
-            if model == MINILM_MODEL:
-                return LocalEmbedder.get().embed(texts)
-        raise HTTPException(status_code=400, detail=f"Unsupported model: {model}")
-    finally:
-        semaphore.release()
+    # The embedder singletons serialize their own model.encode() internally
+    # (the shared sentence-transformers / ONNX models are not thread-safe — see
+    # NomicEmbedder / LocalEmbedder). Concurrency is already bounded by the
+    # micro-batch processor cap (``_max_concurrency``), so no extra encode
+    # lock/semaphore is needed here.
+    if is_nomic_model(model):
+        return NomicEmbedder.get().embed(texts)
+    if model == MINILM_MODEL:
+        return LocalEmbedder.get().embed(texts)
+    raise HTTPException(status_code=400, detail=f"Unsupported model: {model}")
 
 
 def _activate_model(model: str) -> None:

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import sys
 import tarfile
+import threading
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
@@ -491,6 +493,161 @@ class TestEmbedPadding:
 
         with pytest.raises(lep.LocalEmbedderError, match="chromadb"):
             LocalEmbedder.get().embed(["hi"])
+
+
+class TestEncodeSerialization:
+    """The shared ONNX embedding function is not thread-safe.
+
+    ``LocalEmbedder.embed()`` must serialize the actual encode call so
+    concurrent publishes can't interleave and corrupt shared buffers.
+    """
+
+    def test_encode_is_serialized_across_threads(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """8 threads on ONE embedder never enter the encode callable at once.
+
+        Reverting the ``self._encode_lock`` guard in ``embed()`` makes this
+        fail: the stub records/raises on concurrent entry.
+        """
+        state = {"active": False, "reentered": False, "calls": 0}
+        guard = threading.Lock()
+
+        def encode(docs: list[str]) -> list[list[float]]:
+            with guard:
+                if state["active"]:
+                    state["reentered"] = True
+                    raise AssertionError("embedder entered by two threads at once")
+                state["active"] = True
+                state["calls"] += 1
+            try:
+                time.sleep(0.02)  # widen the race window
+            finally:
+                with guard:
+                    state["active"] = False
+            return [[0.1] * 384 for _ in docs]
+
+        ef_instance = MagicMock()
+        ef_instance.side_effect = encode
+        ef_class = MagicMock(return_value=ef_instance)
+        ef_class.MODEL_NAME = "all-MiniLM-L6-v2"
+        ef_class.DOWNLOAD_PATH = "/fake/cache"
+        fake = MagicMock()
+        fake.ONNXMiniLM_L6_V2 = ef_class
+        monkeypatch.setitem(sys.modules, "chromadb", MagicMock())
+        monkeypatch.setitem(sys.modules, "chromadb.utils", MagicMock())
+        monkeypatch.setitem(sys.modules, "chromadb.utils.embedding_functions", fake)
+
+        embedder = LocalEmbedder.get()
+        payloads = [
+            ["short"],
+            ["x" * 500],
+            ["a", "b", "c"],
+            ["", "y" * 50],
+            ["one"],
+            ["p", "q"],
+            ["z" * 700],
+            ["m", "n", "o", "p"],
+        ]
+        results: list[list[list[float]]] = []
+        errors: list[BaseException] = []
+        results_lock = threading.Lock()
+
+        def worker(texts: list[str]) -> None:
+            try:
+                out = embedder.embed(texts)
+            except BaseException as exc:  # noqa: BLE001
+                with results_lock:
+                    errors.append(exc)
+                return
+            with results_lock:
+                results.append(out)
+
+        threads = [threading.Thread(target=worker, args=(p,)) for p in payloads]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=10)
+
+        assert all(not thread.is_alive() for thread in threads)
+        assert errors == []
+        assert state["reentered"] is False
+        assert state["calls"] == len(payloads)
+        assert len(results) == len(payloads)
+        assert all(len(vec) == 512 for out in results for vec in out)
+
+    def test_concurrent_cache_recovery_does_not_deadlock(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        """Recovery path (``_ef_lock``) nests safely inside ``_encode_lock``.
+
+        The recovery path re-embeds while holding ``_ef_lock``; because it runs
+        under the outer ``_encode_lock``, no encode call ever overlaps and the
+        two locks never deadlock. Drives it concurrently to prove both.
+        """
+        cache_dir = tmp_path / "chroma" / "onnx_models" / "all-MiniLM-L6-v2"
+        cache_dir.mkdir(parents=True)
+        (cache_dir / "partial-download").write_text("corrupt")
+
+        guard = threading.Lock()
+        state = {"active": False, "reentered": False, "attempts": 0}
+
+        class FlakyMiniLM:
+            MODEL_NAME = "all-MiniLM-L6-v2"
+            DOWNLOAD_PATH = str(cache_dir)
+            EXTRACTED_FOLDER_NAME = "onnx"
+            ARCHIVE_FILENAME = "onnx.tar.gz"
+
+            def __call__(self, docs: list[str]) -> list[list[float]]:
+                with guard:
+                    if state["active"]:
+                        state["reentered"] = True
+                        raise AssertionError("encode entered by two threads at once")
+                    state["active"] = True
+                    state["attempts"] += 1
+                    first = state["attempts"] == 1
+                try:
+                    time.sleep(0.01)
+                    if first:
+                        raise tarfile.ReadError("bad checksum")
+                finally:
+                    with guard:
+                        state["active"] = False
+                return [[0.2] * 384 for _ in docs]
+
+        fake = MagicMock()
+        fake.ONNXMiniLM_L6_V2 = FlakyMiniLM
+        monkeypatch.setitem(sys.modules, "chromadb", MagicMock())
+        monkeypatch.setitem(sys.modules, "chromadb.utils", MagicMock())
+        monkeypatch.setitem(sys.modules, "chromadb.utils.embedding_functions", fake)
+
+        embedder = LocalEmbedder.get()
+        results: list[list[list[float]]] = []
+        errors: list[BaseException] = []
+        results_lock = threading.Lock()
+
+        def worker() -> None:
+            try:
+                out = embedder.embed(["hello", "world"])
+            except BaseException as exc:  # noqa: BLE001
+                with results_lock:
+                    errors.append(exc)
+                return
+            with results_lock:
+                results.append(out)
+
+        threads = [threading.Thread(target=worker) for _ in range(6)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=15)
+
+        # No thread is stuck: the _encode_lock/_ef_lock ordering can't deadlock.
+        assert all(not thread.is_alive() for thread in threads)
+        assert errors == []
+        assert state["reentered"] is False
+        assert len(results) == 6
+        assert all(len(vec) == 512 for out in results for vec in out)
 
 
 class TestLiteLLMClientShortCircuit:
