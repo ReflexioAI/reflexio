@@ -90,6 +90,13 @@ export const unifiedSearchMethods: MethodDef[] = [
           "Search mode: vector (embedding similarity), fts (full-text search), or hybrid (combined with RRF)",
         enumValues: ["vector", "fts", "hybrid"],
       },
+      {
+        name: "session_id",
+        type: "string",
+        required: false,
+        description:
+          "Agent session this search serves. When set, results already returned to the same session are skipped and next-best matches backfilled; searches without it neither read nor record session dedup state",
+      },
     ],
   },
 ];
