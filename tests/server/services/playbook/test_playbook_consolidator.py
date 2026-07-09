@@ -545,6 +545,52 @@ class TestBuildDeduplicatedResults:
 
         assert len(result) == 2
 
+    def test_build_deduplicated_results_stamps_generation_request_id(
+        self, mock_consolidator
+    ):
+        """Newly synthesized rows should carry the generation provenance id."""
+        new_playbooks = [
+            _make_user_playbook(0, content="Use the deployment checklist."),
+        ]
+        dedup_output = PlaybookConsolidationOutput(
+            decisions=[IndependentDecision(kind="independent", new_id="NEW-0")]
+        )
+
+        result, delete_ids, merge_groups = (
+            mock_consolidator._build_deduplicated_results(
+                new_playbooks=new_playbooks,
+                existing_playbooks=[],
+                dedup_output=dedup_output,
+                generation_request_id="rerun_playbook_ab12cd34",
+                agent_version="v1",
+            )
+        )
+
+        assert delete_ids == []
+        assert merge_groups == []
+        assert [row.request_id for row in result] == ["rerun_playbook_ab12cd34"]
+
+    def test_build_deduplicated_results_accepts_legacy_request_id_keyword(
+        self, mock_consolidator
+    ):
+        """The helper should keep the legacy ``request_id=`` alias working."""
+        new_playbooks = [
+            _make_user_playbook(0, content="Use the deployment checklist."),
+        ]
+        dedup_output = PlaybookConsolidationOutput(
+            decisions=[IndependentDecision(kind="independent", new_id="NEW-0")]
+        )
+
+        result, _, _ = mock_consolidator._build_deduplicated_results(
+            new_playbooks=new_playbooks,
+            existing_playbooks=[],
+            dedup_output=dedup_output,
+            request_id="legacy_req_1",
+            agent_version="v1",
+        )
+
+        assert [row.request_id for row in result] == ["legacy_req_1"]
+
     def test_independent_decision_accepts_multiple_new_ids(self, mock_consolidator):
         """A list-valued ``new_id`` inserts each named NEW candidate once."""
         new_playbooks = [
