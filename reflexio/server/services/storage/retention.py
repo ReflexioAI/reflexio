@@ -36,6 +36,12 @@ RETENTION_TARGETS: tuple[RetentionTarget, ...] = (
         "created_at",
         ("result_id",),
     ),
+    RetentionTarget(
+        "offline_tuner_reward_label",
+        "offline_tuner_reward_label",
+        "label_created_at",
+        ("reward_label_id",),
+    ),
     RetentionTarget("share_links", "share_links", "created_at", ("id",)),
     RetentionTarget(
         "agent_playbook_source_user_playbooks",
@@ -116,6 +122,9 @@ RETENTION_CASCADES: dict[str, tuple[CascadeRef, ...]] = {
     ),
     "playbook_retrieval_logs": (
         CascadeRef("playbook_retrieval_log_items", "retrieval_log_id"),
+    ),
+    "offline_tuner_reward_label": (
+        CascadeRef("offline_tuner_reward_label_target", "reward_label_id"),
     ),
 }
 
