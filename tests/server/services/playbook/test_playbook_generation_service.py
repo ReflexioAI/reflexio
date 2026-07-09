@@ -11,6 +11,7 @@ from reflexio.models.api_schema.domain.entities import UserPlaybook
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
 from reflexio.models.api_schema.service_schemas import (
     Interaction,
+    ManualPlaybookGenerationRequest,
     Request,
 )
 from reflexio.models.config_schema import (
@@ -1194,6 +1195,22 @@ def test_get_rerun_user_ids_returns_empty_when_no_matches():
         result = service._get_rerun_user_ids(request)
 
         assert result == []
+
+
+def test_create_run_request_for_item_uses_per_user_operation_request_ids():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        service = PlaybookGenerationService(
+            llm_client=LiteLLMClient(LiteLLMConfig(model="gpt-4o-mini")),
+            request_context=RequestContext(org_id="0", storage_base_dir=temp_dir),
+        )
+        request = ManualPlaybookGenerationRequest(agent_version="v1", source="api")
+
+        first = service._create_run_request_for_item("user_1", request)
+        second = service._create_run_request_for_item("user_2", request)
+
+    assert first.request_id.startswith("manual_")
+    assert second.request_id.startswith("manual_")
+    assert first.request_id != second.request_id
 
 
 def test_collect_scoped_interactions_for_precheck_uses_extractor_scope():

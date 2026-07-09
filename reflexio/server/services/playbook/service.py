@@ -150,8 +150,9 @@ class PlaybookGenerationService(
         Returns:
             PlaybookGenerationServiceConfig object
         """
+        generation_request_id = request.request_id
         return PlaybookGenerationServiceConfig(
-            request_id=request.request_id,
+            request_id=generation_request_id,
             agent_version=request.agent_version,
             user_id=request.user_id,
             source=request.source,
@@ -292,6 +293,7 @@ class PlaybookGenerationService(
             dedupe_and_drop_empty,
         )
 
+        generation_request_id = self.service_config.request_id  # type: ignore[reportOptionalMemberAccess]
         all_playbooks = dedupe_and_drop_empty(all_playbooks)
 
         # Deduplicate against existing entries in DB when deduplicator is enabled
@@ -320,7 +322,7 @@ class PlaybookGenerationService(
                 merge_groups,
             ) = consolidator.deduplicate(
                 [all_playbooks],
-                self.service_config.request_id,  # type: ignore[reportOptionalMemberAccess]
+                generation_request_id,
                 self.service_config.agent_version,  # type: ignore[reportOptionalMemberAccess]
                 user_id=self.service_config.user_id,  # type: ignore[reportOptionalMemberAccess]
             )
@@ -342,7 +344,7 @@ class PlaybookGenerationService(
             "Successfully completed %d %s playbook generation for request id: %s",
             len(all_playbooks),
             self._get_service_name(),
-            self.service_config.request_id,  # type: ignore[reportOptionalMemberAccess]
+            generation_request_id,
         )
 
         # Save results
@@ -357,7 +359,7 @@ class PlaybookGenerationService(
                 logger.error(
                     "Failed to save %s results for request id: %s due to %s, exception type: %s",
                     self._get_service_name(),
-                    self.service_config.request_id,  # type: ignore[reportOptionalMemberAccess]
+                    generation_request_id,
                     str(e),
                     type(e).__name__,
                 )
@@ -392,6 +394,7 @@ class PlaybookGenerationService(
         """
         from reflexio.models.api_schema.domain.entities import LineageContext
 
+        generation_request_id = self.service_config.request_id  # type: ignore[reportOptionalMemberAccess]
         merged_source_ids: set[int] = set()
         for survivor_idx, source_ids in merge_groups:
             survivor_id = saved_playbooks[survivor_idx].user_playbook_id
@@ -405,7 +408,7 @@ class PlaybookGenerationService(
                     actor="consolidator",
                     source_ids=[str(s) for s in source_ids],
                     reason="dedup-merge",
-                    request_id=self.service_config.request_id,  # type: ignore[reportOptionalMemberAccess]
+                    request_id=generation_request_id,
                 ),
             )
 
@@ -419,7 +422,7 @@ class PlaybookGenerationService(
             try:
                 superseded_count = self.storage.supersede_user_playbooks_by_ids(  # type: ignore[reportOptionalMemberAccess]
                     leftover_ids,
-                    self.service_config.request_id,  # type: ignore[reportOptionalMemberAccess]
+                    generation_request_id,
                 )
                 logger.info(
                     "Superseded %d split-source existing entries", superseded_count
@@ -612,8 +615,9 @@ class PlaybookGenerationService(
         """
         # Handle rerun requests (have start_time/end_time datetime objects)
         if isinstance(request, RerunPlaybookGenerationRequest):
+            operation_request_id = f"rerun_playbook_{uuid.uuid4().hex[:8]}"
             return PlaybookGenerationRequest(
-                request_id=f"rerun_playbook_{uuid.uuid4().hex[:8]}",
+                request_id=operation_request_id,
                 agent_version=request.agent_version,
                 user_id=user_id,
                 source=request.source,
@@ -626,8 +630,9 @@ class PlaybookGenerationService(
                 auto_run=False,
             )
         # Handle manual requests (ManualPlaybookGenerationRequest)
+        operation_request_id = f"manual_{uuid.uuid4().hex[:8]}"
         return PlaybookGenerationRequest(
-            request_id=f"manual_{uuid.uuid4().hex[:8]}",
+            request_id=operation_request_id,
             agent_version=request.agent_version,
             user_id=user_id,
             source=request.source,

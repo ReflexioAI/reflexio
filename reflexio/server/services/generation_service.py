@@ -599,9 +599,10 @@ class GenerationService:
         profile_generation_service = ProfileGenerationService(
             llm_client=self.client, request_context=self.request_context
         )
+        source_request_id = request_id
         profile_generation_request = ProfileGenerationRequest(
             user_id=user_id,
-            request_id=request_id,
+            request_id=source_request_id,
             source=source,
             force_extraction=force_extraction,
         )
@@ -612,7 +613,7 @@ class GenerationService:
             skip_aggregation=skip_aggregation,
         )
         playbook_generation_request = PlaybookGenerationRequest(
-            request_id=request_id,
+            request_id=source_request_id,
             agent_version=agent_version,
             user_id=user_id,
             source=source,

@@ -123,9 +123,10 @@ class ProfileGenerationService(
         else:
             existing_profiles = self.storage.get_user_profile(request.user_id)  # type: ignore[reportOptionalMemberAccess]
 
+        generation_request_id = request.request_id
         return ProfileGenerationServiceConfig(
             user_id=request.user_id,
-            request_id=request.request_id,
+            request_id=generation_request_id,
             source=request.source,
             existing_data=existing_profiles,
             allow_manual_trigger=self.allow_manual_trigger,
@@ -151,7 +152,7 @@ class ProfileGenerationService(
         """Deduplicate, persist, and changelog extracted profile items."""
         user_id = self.service_config.user_id  # type: ignore[reportOptionalMemberAccess]
         source = self.service_config.source  # type: ignore[reportOptionalMemberAccess]
-        request_id = self.service_config.request_id  # type: ignore[reportOptionalMemberAccess]
+        generation_request_id = self.service_config.request_id  # type: ignore[reportOptionalMemberAccess]
 
         existing_ids_to_delete: list[str] = []
 
@@ -170,7 +171,9 @@ class ProfileGenerationService(
                     output_pending_status=self.output_pending_status,
                 )
                 all_new_profiles, existing_ids_to_delete, _superseded_profiles = (
-                    consolidator.deduplicate(all_new_profiles, user_id, request_id)
+                    consolidator.deduplicate(
+                        all_new_profiles, user_id, generation_request_id
+                    )
                 )
                 logger.info(
                     "Profile updates after deduplication: %d profiles, %d existing to delete",
@@ -193,7 +196,7 @@ class ProfileGenerationService(
                     op="save_profiles",
                     org_id=self.org_id,
                     user_id=user_id,
-                    request_id=request_id,
+                    request_id=generation_request_id,
                     error_type=type(e).__name__,
                 ):
                     logger.exception(
@@ -207,7 +210,7 @@ class ProfileGenerationService(
         # is reconstructed from (the legacy `profile_change_logs` table is no longer
         # written — see reconstruct_profile_change_log).
         if existing_ids_to_delete:
-            if not request_id:
+            if not generation_request_id:
                 # An empty request_id makes the removal unreconstructable (the lineage
                 # events are keyed on it). Fail loud and skip removal entirely — never
                 # silently hard-delete.
@@ -222,7 +225,7 @@ class ProfileGenerationService(
                     self.storage.supersede_profiles_by_ids(  # type: ignore[reportOptionalMemberAccess]
                         user_id=user_id,
                         profile_ids=existing_ids_to_delete,
-                        request_id=request_id,
+                        request_id=generation_request_id,
                     )
                 except Exception as e:
                     with sentry_tags(
@@ -230,7 +233,7 @@ class ProfileGenerationService(
                         op="supersede_profiles",
                         org_id=self.org_id,
                         user_id=user_id,
-                        request_id=request_id,
+                        request_id=generation_request_id,
                         error_type=type(e).__name__,
                     ):
                         logger.exception(
@@ -436,9 +439,10 @@ class ProfileGenerationService(
         """
         # Handle rerun requests (have start_time/end_time datetime objects)
         if isinstance(request, RerunProfileGenerationRequest):
+            operation_request_id = f"rerun_{uuid.uuid4().hex[:8]}"
             return ProfileGenerationRequest(
                 user_id=user_id,
-                request_id=f"rerun_{uuid.uuid4().hex[:8]}",
+                request_id=operation_request_id,
                 source=request.source,
                 rerun_start_time=(
                     int(request.start_time.timestamp()) if request.start_time else None
@@ -449,9 +453,10 @@ class ProfileGenerationService(
                 auto_run=False,
             )
         # Handle manual requests (ManualProfileGenerationRequest)
+        operation_request_id = f"manual_{uuid.uuid4().hex[:8]}"
         return ProfileGenerationRequest(
             user_id=user_id,
-            request_id=f"manual_{uuid.uuid4().hex[:8]}",
+            request_id=operation_request_id,
             source=request.source,
             auto_run=False,
         )
