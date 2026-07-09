@@ -921,8 +921,7 @@ class PlaybookConsolidator(BaseDeduplicator):
         existing_by_position: dict[str, UserPlaybook],
         archive_ids: list[int],
         seen_archive: set[int],
-        generation_request_id: str | None = None,
-        request_id: str | None = None,
+        generation_request_id: str,
     ) -> tuple[list[UserPlaybook], list[str], list[int]]:
         """Dispatch a single decision to its kind-specific apply method.
 
@@ -948,10 +947,6 @@ class PlaybookConsolidator(BaseDeduplicator):
             either archive nothing or split into multiple rows with no single
             survivor.
         """
-        generation_request_id = _normalize_generation_request_id(
-            generation_request_id, request_id=request_id
-        )
-
         if isinstance(decision, UnifyDecision):
             return self._apply_unify(
                 decision,
@@ -994,8 +989,7 @@ class PlaybookConsolidator(BaseDeduplicator):
         existing_by_position: dict[str, UserPlaybook],
         archive_ids: list[int],
         seen_archive: set[int],
-        generation_request_id: str | None = None,
-        request_id: str | None = None,
+        generation_request_id: str,
     ) -> tuple[list[UserPlaybook], list[str], list[int]]:
         """Collapse / compose NEW (+ 0..N EXISTING) into one row.
 
@@ -1030,10 +1024,6 @@ class PlaybookConsolidator(BaseDeduplicator):
             ValueError: If an ``archive_existing_ids`` entry has no matching
                 ``EXISTING-{idx}`` row in the position map.
         """
-        generation_request_id = _normalize_generation_request_id(
-            generation_request_id, request_id=request_id
-        )
-
         new_ids = decision.new_ids
         candidates: list[UserPlaybook] = []
         for new_id in new_ids:
@@ -1166,8 +1156,7 @@ class PlaybookConsolidator(BaseDeduplicator):
         existing_by_position: dict[str, UserPlaybook],
         archive_ids: list[int],
         seen_archive: set[int],
-        generation_request_id: str | None = None,
-        request_id: str | None = None,
+        generation_request_id: str,
     ) -> tuple[list[UserPlaybook], list[str], list[int]]:
         """Archive the existing row and emit two refined rows in its place.
 
@@ -1191,10 +1180,6 @@ class PlaybookConsolidator(BaseDeduplicator):
             is archived but maps to no single survivor, so it produces NO merge
             group (its archived id is a pure-delete leftover for the caller).
         """
-        generation_request_id = _normalize_generation_request_id(
-            generation_request_id, request_id=request_id
-        )
-
         candidate = candidates_by_id.get(decision.new_id)
         if candidate is None:
             raise KeyError(
@@ -1240,8 +1225,7 @@ class PlaybookConsolidator(BaseDeduplicator):
         decision: IndependentDecision,
         *,
         candidates_by_id: dict[str, UserPlaybook],
-        generation_request_id: str | None = None,
-        request_id: str | None = None,
+        generation_request_id: str,
     ) -> tuple[list[UserPlaybook], list[str], list[int]]:
         """Insert the new candidate unchanged; no archive.
 
@@ -1253,10 +1237,6 @@ class PlaybookConsolidator(BaseDeduplicator):
             Tuple of ``([candidate row], [consumed NEW-N id], [])`` — no archive,
             so never a merge group.
         """
-        generation_request_id = _normalize_generation_request_id(
-            generation_request_id, request_id=request_id
-        )
-
         rows: list[UserPlaybook] = []
         for new_id in decision.new_ids:
             candidate = candidates_by_id.get(new_id)
