@@ -545,6 +545,52 @@ class TestBuildDeduplicatedResults:
 
         assert len(result) == 2
 
+    def test_build_deduplicated_results_stamps_generation_request_id(
+        self, mock_consolidator
+    ):
+        """Newly synthesized rows should carry the generation provenance id."""
+        new_playbooks = [
+            _make_user_playbook(0, content="Use the deployment checklist."),
+        ]
+        dedup_output = PlaybookConsolidationOutput(
+            decisions=[IndependentDecision(kind="independent", new_id="NEW-0")]
+        )
+
+        result, delete_ids, merge_groups = (
+            mock_consolidator._build_deduplicated_results(
+                new_playbooks=new_playbooks,
+                existing_playbooks=[],
+                dedup_output=dedup_output,
+                generation_request_id="rerun_playbook_ab12cd34",
+                agent_version="v1",
+            )
+        )
+
+        assert delete_ids == []
+        assert merge_groups == []
+        assert [row.request_id for row in result] == ["rerun_playbook_ab12cd34"]
+
+    def test_build_deduplicated_results_accepts_legacy_request_id_keyword(
+        self, mock_consolidator
+    ):
+        """The helper should keep the legacy ``request_id=`` alias working."""
+        new_playbooks = [
+            _make_user_playbook(0, content="Use the deployment checklist."),
+        ]
+        dedup_output = PlaybookConsolidationOutput(
+            decisions=[IndependentDecision(kind="independent", new_id="NEW-0")]
+        )
+
+        result, _, _ = mock_consolidator._build_deduplicated_results(
+            new_playbooks=new_playbooks,
+            existing_playbooks=[],
+            dedup_output=dedup_output,
+            request_id="legacy_req_1",
+            agent_version="v1",
+        )
+
+        assert [row.request_id for row in result] == ["legacy_req_1"]
+
     def test_independent_decision_accepts_multiple_new_ids(self, mock_consolidator):
         """A list-valued ``new_id`` inserts each named NEW candidate once."""
         new_playbooks = [
@@ -596,6 +642,26 @@ class TestBuildDeduplicatedResults:
         assert result[0].source_interaction_ids == [10]
         assert delete_ids == []
         assert merge_groups == []
+
+    def test_unify_stamps_generation_request_id(self, mock_consolidator):
+        """``unify`` should stamp synthesized rows with the provenance id."""
+        new_playbooks = [_make_user_playbook(0, source_interaction_ids=[10])]
+
+        dedup_output = PlaybookConsolidationOutput(
+            decisions=[
+                _unify("NEW-0", content="merged", trigger="merged trigger"),
+            ],
+        )
+
+        result, _, _ = mock_consolidator._build_deduplicated_results(
+            new_playbooks=new_playbooks,
+            existing_playbooks=[],
+            dedup_output=dedup_output,
+            generation_request_id="rerun_playbook_unify_1",
+            agent_version="v1",
+        )
+
+        assert [row.request_id for row in result] == ["rerun_playbook_unify_1"]
 
     def test_unify_accepts_multiple_new_ids(self, mock_consolidator):
         """Multi-NEW ``unify`` emits one synthesized row and consumes all NEW ids."""
@@ -811,6 +877,35 @@ class TestBuildDeduplicatedResults:
         assert len(result) == 2
         assert delete_ids == [999]
 
+    def test_differentiate_stamps_generation_request_id(self, mock_consolidator):
+        """``differentiate`` should stamp both synthesized rows with provenance."""
+        new_playbooks = [_make_user_playbook(0, trigger="broad trigger")]
+        existing_playbooks = [_make_user_playbook(1, user_playbook_id=999)]
+
+        dedup_output = PlaybookConsolidationOutput(
+            decisions=[
+                DifferentiateDecision(
+                    new_id="NEW-0",
+                    existing_id=0,
+                    refined_new_trigger="narrow new trigger",
+                    refined_existing_trigger="narrow existing trigger",
+                ),
+            ],
+        )
+
+        result, _, _ = mock_consolidator._build_deduplicated_results(
+            new_playbooks=new_playbooks,
+            existing_playbooks=existing_playbooks,
+            dedup_output=dedup_output,
+            generation_request_id="rerun_playbook_diff_1",
+            agent_version="v1",
+        )
+
+        assert [row.request_id for row in result] == [
+            "rerun_playbook_diff_1",
+            "rerun_playbook_diff_1",
+        ]
+
     def test_existing_reference_ignores_out_of_range_position_key(
         self, mock_consolidator
     ):
@@ -861,6 +956,50 @@ class TestBuildDeduplicatedResults:
 
 class TestDeduplicateHappyPath:
     """Tests for the full deduplicate() flow with LLM mocks returning PlaybookConsolidationOutput."""
+
+    def test_deduplicate_stamps_generation_request_id(self, mock_consolidator):
+        """The main entry point should propagate ``generation_request_id``."""
+        fb0 = _make_user_playbook(0, content="playbook from extractor 1")
+
+        mock_consolidator.client.get_embeddings.return_value = [[0.1]]
+        mock_consolidator.request_context.storage.search_user_playbooks.return_value = []
+        mock_consolidator.client.generate_chat_response.return_value = (
+            PlaybookConsolidationOutput(
+                decisions=[IndependentDecision(new_id="NEW-0")],
+            )
+        )
+
+        with patch.dict("os.environ", {"MOCK_LLM_RESPONSE": "false"}):
+            result, delete_ids, _ = mock_consolidator.deduplicate(
+                results=[[fb0]],
+                generation_request_id="rerun_playbook_dedup_1",
+                agent_version="v1",
+            )
+
+        assert [row.request_id for row in result] == ["rerun_playbook_dedup_1"]
+        assert delete_ids == []
+
+    def test_deduplicate_accepts_legacy_request_id_keyword(self, mock_consolidator):
+        """The main entry point should keep the legacy ``request_id=`` alias."""
+        fb0 = _make_user_playbook(0, content="playbook from extractor 1")
+
+        mock_consolidator.client.get_embeddings.return_value = [[0.1]]
+        mock_consolidator.request_context.storage.search_user_playbooks.return_value = []
+        mock_consolidator.client.generate_chat_response.return_value = (
+            PlaybookConsolidationOutput(
+                decisions=[IndependentDecision(new_id="NEW-0")],
+            )
+        )
+
+        with patch.dict("os.environ", {"MOCK_LLM_RESPONSE": "false"}):
+            result, delete_ids, _ = mock_consolidator.deduplicate(
+                results=[[fb0]],
+                request_id="legacy_req_dedup_1",
+                agent_version="v1",
+            )
+
+        assert [row.request_id for row in result] == ["legacy_req_dedup_1"]
+        assert delete_ids == []
 
     def test_happy_path_with_unify(self, mock_consolidator):
         """Full happy path: LLM returns a ``unify`` decision and an ``independent``.

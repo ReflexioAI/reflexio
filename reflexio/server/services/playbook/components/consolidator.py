@@ -191,6 +191,22 @@ def _existing_id_log_label(value: ExistingIdField) -> str:
     return str(value)
 
 
+def _normalize_generation_request_id(
+    generation_request_id: str | None,
+    *,
+    request_id: str | None = None,
+) -> str:
+    if generation_request_id is not None:
+        if request_id is not None and request_id != generation_request_id:
+            raise TypeError(
+                "generation_request_id and request_id must match when both are provided"
+            )
+        return generation_request_id
+    if request_id is not None:
+        return request_id
+    raise TypeError("generation_request_id is required")
+
+
 class UnifyDecision(BaseModel):
     """Collapse NEW (+ 0..N EXISTING) into one row with LLM-supplied content.
 
@@ -653,16 +669,18 @@ class PlaybookConsolidator(BaseDeduplicator):
     def deduplicate(
         self,
         results: list[list[UserPlaybook]],
-        request_id: str,
-        agent_version: str,
+        generation_request_id: str | None = None,
+        agent_version: str | None = None,
         user_id: str | None = None,
+        *,
+        request_id: str | None = None,
     ) -> tuple[list[UserPlaybook], list[int], list[tuple[int, list[int]]]]:
         """
         Consolidate user playbook entries across extractors and against existing entries in DB.
 
         Args:
             results: List of entry lists from extractors (each extractor returns list[UserPlaybook])
-            request_id: Request ID for context
+            generation_request_id: Request ID for context
             agent_version: Agent version for context
             user_id: Optional user ID to scope the existing entry search
 
@@ -680,6 +698,12 @@ class PlaybookConsolidator(BaseDeduplicator):
             non-merge archives such as ``differentiate``'s split source); the
             caller subtracts the merge-covered ids to find pure-delete leftovers.
         """
+        generation_request_id = _normalize_generation_request_id(
+            generation_request_id, request_id=request_id
+        )
+        if agent_version is None:
+            raise TypeError("agent_version is required")
+
         # Check if mock mode is enabled
         if os.getenv("MOCK_LLM_RESPONSE", "").lower() == "true":
             logger.info("Mock mode: skipping consolidation")
@@ -714,7 +738,7 @@ class PlaybookConsolidator(BaseDeduplicator):
                 op="identify_duplicates",
                 org_id=self.request_context.org_id,
                 user_id=user_id,
-                request_id=request_id,
+                request_id=generation_request_id,
                 agent_version=agent_version,
                 error_type=type(e).__name__,
             ):
@@ -723,14 +747,15 @@ class PlaybookConsolidator(BaseDeduplicator):
 
         if not dedup_output.decisions:
             logger.info(
-                "No consolidation decisions returned for request %s", request_id
+                "No consolidation decisions returned for request %s",
+                generation_request_id,
             )
             return new_playbooks, [], []
 
         logger.info(
             "Received %d consolidation decisions for request %s",
             len(dedup_output.decisions),
-            request_id,
+            generation_request_id,
         )
 
         # Build consolidated result via the discriminated-union apply path
@@ -738,7 +763,7 @@ class PlaybookConsolidator(BaseDeduplicator):
             new_playbooks=new_playbooks,
             existing_playbooks=existing_playbooks,
             dedup_output=dedup_output,
-            request_id=request_id,
+            generation_request_id=generation_request_id,
             agent_version=agent_version,
         )
 
@@ -751,8 +776,10 @@ class PlaybookConsolidator(BaseDeduplicator):
         new_playbooks: list[UserPlaybook],
         existing_playbooks: list[UserPlaybook],
         dedup_output: PlaybookConsolidationOutput,
-        request_id: str,
-        agent_version: str,  # noqa: ARG002
+        generation_request_id: str | None = None,
+        agent_version: str | None = None,  # noqa: ARG002
+        *,
+        request_id: str | None = None,
     ) -> tuple[list[UserPlaybook], list[int], list[tuple[int, list[int]]]]:
         """
         Build the deduplicated entry list from LLM decisions.
@@ -766,7 +793,7 @@ class PlaybookConsolidator(BaseDeduplicator):
             new_playbooks: Flattened list of new (candidate) entries.
             existing_playbooks: List of existing entries from the DB.
             dedup_output: LLM decisions output (discriminated union).
-            request_id: Request ID stamped onto newly-built rows.
+            generation_request_id: Request ID stamped onto newly-built rows.
             agent_version: Agent version (currently unused, kept for symmetry).
 
         Returns:
@@ -781,6 +808,10 @@ class PlaybookConsolidator(BaseDeduplicator):
             two rows (no single survivor), so its archived id appears in the
             delete set but NOT in any merge group.
         """
+        generation_request_id = _normalize_generation_request_id(
+            generation_request_id, request_id=request_id
+        )
+
         candidates_by_id = {
             f"NEW-{idx}": playbook for idx, playbook in enumerate(new_playbooks)
         }
@@ -810,7 +841,7 @@ class PlaybookConsolidator(BaseDeduplicator):
                     existing_by_position=existing_by_position,
                     archive_ids=archive_ids,
                     seen_archive=seen_archive,
-                    request_id=request_id,
+                    generation_request_id=generation_request_id,
                 )
             except Exception as exc:  # noqa: BLE001 — per-decision isolation
                 result_counters.failed_count += 1
@@ -834,7 +865,7 @@ class PlaybookConsolidator(BaseDeduplicator):
                     subsystem="playbook_consolidator",
                     op="apply_decision",
                     org_id=self.request_context.org_id,
-                    request_id=request_id,
+                    request_id=generation_request_id,
                     kind=decision.kind,
                     new_id=new_id_str,
                     existing_id=existing_id_str,
@@ -890,7 +921,7 @@ class PlaybookConsolidator(BaseDeduplicator):
         existing_by_position: dict[str, UserPlaybook],
         archive_ids: list[int],
         seen_archive: set[int],
-        request_id: str,
+        generation_request_id: str,
     ) -> tuple[list[UserPlaybook], list[str], list[int]]:
         """Dispatch a single decision to its kind-specific apply method.
 
@@ -904,7 +935,7 @@ class PlaybookConsolidator(BaseDeduplicator):
             archive_ids: Accumulator list mutated with ids to archive/delete.
             seen_archive: Accumulator set guarding ``archive_ids`` against
                 duplicate ids.
-            request_id: Request ID stamped onto newly-built rows.
+            generation_request_id: Request ID stamped onto newly-built rows.
 
         Returns:
             Tuple of ``(rows_to_insert, handled_new_ids, merge_source_ids)``.
@@ -923,7 +954,7 @@ class PlaybookConsolidator(BaseDeduplicator):
                 existing_by_position=existing_by_position,
                 archive_ids=archive_ids,
                 seen_archive=seen_archive,
-                request_id=request_id,
+                generation_request_id=generation_request_id,
             )
         if isinstance(decision, RejectNewDecision):
             return self._apply_reject_new(
@@ -940,10 +971,14 @@ class PlaybookConsolidator(BaseDeduplicator):
                 existing_by_position=existing_by_position,
                 archive_ids=archive_ids,
                 seen_archive=seen_archive,
-                request_id=request_id,
+                generation_request_id=generation_request_id,
             )
         if isinstance(decision, IndependentDecision):
-            return self._apply_independent(decision, candidates_by_id=candidates_by_id)
+            return self._apply_independent(
+                decision,
+                candidates_by_id=candidates_by_id,
+                generation_request_id=generation_request_id,
+            )
         raise ValueError(f"unknown decision kind: {decision}")
 
     def _apply_unify(
@@ -954,7 +989,7 @@ class PlaybookConsolidator(BaseDeduplicator):
         existing_by_position: dict[str, UserPlaybook],
         archive_ids: list[int],
         seen_archive: set[int],
-        request_id: str,
+        generation_request_id: str,
     ) -> tuple[list[UserPlaybook], list[str], list[int]]:
         """Collapse / compose NEW (+ 0..N EXISTING) into one row.
 
@@ -974,7 +1009,7 @@ class PlaybookConsolidator(BaseDeduplicator):
             existing_by_position: Mapping ``"EXISTING-M"`` -> existing playbook.
             archive_ids: Accumulator mutated with EXISTING ids to archive.
             seen_archive: Dedup set for ``archive_ids``.
-            request_id: Request ID stamped on the unified row.
+            generation_request_id: Request ID stamped on the unified row.
 
         Returns:
             Tuple of ``([unified_row], [consumed NEW-N ids], merge_source_ids)``
@@ -1035,7 +1070,8 @@ class PlaybookConsolidator(BaseDeduplicator):
             user_playbook_id=0,
             user_id=primary_candidate.user_id,
             agent_version=primary_candidate.agent_version,
-            request_id=request_id,
+            # Legacy storage/API field; value may be synthetic for manual/rerun flows.
+            request_id=generation_request_id,
             playbook_name=primary_candidate.playbook_name,
             created_at=int(datetime.now(UTC).timestamp()),
             content=decision.content,
@@ -1120,7 +1156,7 @@ class PlaybookConsolidator(BaseDeduplicator):
         existing_by_position: dict[str, UserPlaybook],
         archive_ids: list[int],
         seen_archive: set[int],
-        request_id: str,
+        generation_request_id: str,
     ) -> tuple[list[UserPlaybook], list[str], list[int]]:
         """Archive the existing row and emit two refined rows in its place.
 
@@ -1136,7 +1172,7 @@ class PlaybookConsolidator(BaseDeduplicator):
             existing_by_position: Mapping ``"EXISTING-M"`` -> existing playbook.
             archive_ids: Accumulator mutated with the existing id to archive.
             seen_archive: Dedup set for ``archive_ids``.
-            request_id: Request ID stamped on both new rows.
+            generation_request_id: Request ID stamped on both new rows.
 
         Returns:
             Tuple of ``([refined_new_row, refined_existing_row], [NEW-N id],
@@ -1168,7 +1204,7 @@ class PlaybookConsolidator(BaseDeduplicator):
         refined_candidate = candidate.model_copy(
             update={
                 "user_playbook_id": 0,
-                "request_id": request_id,
+                "request_id": generation_request_id,
                 "trigger": decision.refined_new_trigger,
                 "created_at": now_ts,
             }
@@ -1176,7 +1212,7 @@ class PlaybookConsolidator(BaseDeduplicator):
         refined_existing = existing.model_copy(
             update={
                 "user_playbook_id": 0,
-                "request_id": request_id,
+                "request_id": generation_request_id,
                 "trigger": decision.refined_existing_trigger,
                 "created_at": now_ts,
                 "source_interaction_ids": list(existing.source_interaction_ids),
@@ -1189,6 +1225,7 @@ class PlaybookConsolidator(BaseDeduplicator):
         decision: IndependentDecision,
         *,
         candidates_by_id: dict[str, UserPlaybook],
+        generation_request_id: str,
     ) -> tuple[list[UserPlaybook], list[str], list[int]]:
         """Insert the new candidate unchanged; no archive.
 
@@ -1205,7 +1242,9 @@ class PlaybookConsolidator(BaseDeduplicator):
             candidate = candidates_by_id.get(new_id)
             if candidate is None:
                 raise KeyError(f"independent references unknown NEW id: {new_id}")
-            rows.append(candidate)
+            rows.append(
+                candidate.model_copy(update={"request_id": generation_request_id})
+            )
         return rows, decision.new_ids, []
 
     @staticmethod
