@@ -118,7 +118,7 @@ def test_warmup_starts_and_marks_ready_under_gate(
     monkeypatch.setattr(
         embedder_warmup,
         "_resolve_local_embedder_loader",
-        lambda: (lambda: load_calls.append(1)),
+        lambda: lambda: load_calls.append(1),
     )
 
     assert is_embedder_ready() is False
@@ -174,16 +174,22 @@ def test_warm_target_follows_resolved_model(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(
         nomic_embedding_provider.NomicEmbedder,
         "get",
-        staticmethod(lambda: type("N", (), {"_load": lambda _self: warmed.append("nomic")})()),
+        staticmethod(
+            lambda: type("N", (), {"_load": lambda _self: warmed.append("nomic")})()
+        ),
     )
     monkeypatch.setattr(
         local_embedding_provider.LocalEmbedder,
         "get",
-        staticmethod(lambda: type("L", (), {"_load": lambda _self: warmed.append("minilm")})()),
+        staticmethod(
+            lambda: type("L", (), {"_load": lambda _self: warmed.append("minilm")})()
+        ),
     )
 
     monkeypatch.setattr(
-        model_defaults, "resolve_model_name", lambda _role: "local/nomic-embed-text-v1.5"
+        model_defaults,
+        "resolve_model_name",
+        lambda _role: "local/nomic-embed-text-v1.5",
     )
     embedder_warmup._resolve_local_embedder_loader()()  # type: ignore[misc]
     assert warmed == ["nomic"]
@@ -291,6 +297,68 @@ def test_half_pair_guard_silent_when_neither_set(
     monkeypatch.delenv("REFLEXIO_DISABLE_LOCAL_EMBEDDING_DAEMON", raising=False)
     with caplog.at_level(logging.WARNING):
         embedder_warmup._guard_daemon_disable_half_pair()
+    assert caplog.records == []
+
+
+# --------------------------------------------------------------------------- #
+# D8(c): inprocess-overrides-service-host guard                               #
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    ("env_var", "value"),
+    [
+        ("REFLEXIO_EMBEDDING_SERVICE_URL", "http://embedding.internal:8089"),
+        ("REFLEXIO_EMBEDDING_DAEMON_HOST", "embedding.internal"),
+    ],
+)
+def test_inprocess_override_guard_warns_when_service_endpoint_set(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    env_var: str,
+    value: str,
+) -> None:
+    """inprocess + a configured service endpoint → one warning naming the var."""
+    monkeypatch.setenv("REFLEXIO_EMBEDDING_PROVIDER", "inprocess")
+    monkeypatch.delenv("REFLEXIO_EMBEDDING_SERVICE_URL", raising=False)
+    monkeypatch.delenv("REFLEXIO_EMBEDDING_DAEMON_HOST", raising=False)
+    monkeypatch.setenv(env_var, value)
+    with caplog.at_level(logging.WARNING):
+        embedder_warmup._guard_inprocess_overrides_service_host()
+    warnings = [r for r in caplog.records if "takes precedence" in r.message]
+    assert len(warnings) == 1
+    assert env_var in warnings[0].getMessage()
+
+
+def test_inprocess_override_guard_silent_for_intended_step_b_config(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The intended flip (inprocess + disable-daemon, NO service endpoints) is silent.
+
+    This is the exact Step B config the in-process rollout ships, so the guard
+    must not false-positive on it.
+    """
+    monkeypatch.setenv("REFLEXIO_EMBEDDING_PROVIDER", "inprocess")
+    monkeypatch.setenv("REFLEXIO_DISABLE_LOCAL_EMBEDDING_DAEMON", "true")
+    monkeypatch.delenv("REFLEXIO_EMBEDDING_SERVICE_URL", raising=False)
+    monkeypatch.delenv("REFLEXIO_EMBEDDING_DAEMON_HOST", raising=False)
+    with caplog.at_level(logging.WARNING):
+        embedder_warmup._guard_inprocess_overrides_service_host()
+    assert caplog.records == []
+
+
+def test_inprocess_override_guard_silent_when_not_inprocess(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A service host without PROVIDER=inprocess is the normal service topology.
+
+    That routes to the service (no in-process load), so the guard stays scoped to
+    the in-process path and says nothing.
+    """
+    monkeypatch.delenv("REFLEXIO_EMBEDDING_PROVIDER", raising=False)
+    monkeypatch.setenv("REFLEXIO_EMBEDDING_DAEMON_HOST", "embedding.internal")
+    with caplog.at_level(logging.WARNING):
+        embedder_warmup._guard_inprocess_overrides_service_host()
     assert caplog.records == []
 
 

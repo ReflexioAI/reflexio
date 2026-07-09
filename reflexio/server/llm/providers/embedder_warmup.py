@@ -14,8 +14,9 @@ Three concerns live here:
   yet warm, so the load balancer does not route embedding traffic at a worker
   that would pay the ~2-8s cold-load on its first request.
 - **D8 config guards** — loud startup warnings for foot-guns of the in-process
-  topology: multiple uvicorn workers (each loads its own model copy) and a
-  half-configured daemon-disable / provider pair.
+  topology: multiple uvicorn workers (each loads its own model copy), a
+  half-configured daemon-disable / provider pair, and an in-process provider set
+  alongside a configured service endpoint (which the provider silently overrides).
 
 The gate is intentionally cheap to evaluate (no network probe, no provider
 auto-detection) because ``/health`` is the ALB + container health target and is
@@ -40,6 +41,11 @@ _WARM_RETRY_BACKOFF_S = 2.0
 
 _ENV_PROVIDER = "REFLEXIO_EMBEDDING_PROVIDER"
 _ENV_DISABLE_DAEMON = "REFLEXIO_DISABLE_LOCAL_EMBEDDING_DAEMON"
+# Service-endpoint envs, named to match embedding_service_provider.py exactly. An
+# in-process provider takes precedence over both, so either being set alongside
+# PROVIDER=inprocess silently strands the configured service host.
+_ENV_SERVICE_URL = "REFLEXIO_EMBEDDING_SERVICE_URL"
+_ENV_DAEMON_HOST = "REFLEXIO_EMBEDDING_DAEMON_HOST"
 # Recorded by ``reflexio.server.__main__`` before ``uvicorn.run`` so the guard
 # can read the configured worker count from inside a worker process, where
 # uvicorn exposes no worker-count env of its own.
@@ -96,7 +102,9 @@ def inprocess_local_gate_active() -> bool:
     except Exception:  # noqa: BLE001
         # An invalid REFLEXIO_EMBEDDING_PROVIDER must not turn /health (polled on
         # every ALB probe) into a 500 — treat unresolvable config as gate-off.
-        _LOGGER.debug("Embedding provider mode unresolvable; gate inactive", exc_info=True)
+        _LOGGER.debug(
+            "Embedding provider mode unresolvable; gate inactive", exc_info=True
+        )
         return False
     if mode != _INPROCESS:
         return False
@@ -272,10 +280,43 @@ def _guard_daemon_disable_half_pair() -> None:
         )
 
 
+def _guard_inprocess_overrides_service_host() -> None:
+    """D8(c): warn when in-process mode is set alongside a configured service host.
+
+    ``REFLEXIO_EMBEDDING_PROVIDER=inprocess`` wins the provider-precedence race in
+    ``embedding_provider_mode`` outright, so a co-configured
+    ``REFLEXIO_EMBEDDING_SERVICE_URL`` / ``REFLEXIO_EMBEDDING_DAEMON_HOST`` is
+    silently ignored and this process loads its own in-process local model instead
+    of routing to the service. On a GPU-service / self-host fleet that means an
+    unintended per-instance CPU model load. Warn-only: the intended in-process
+    flip leaves both endpoint envs unset, so this stays silent there.
+    """
+    if _provider() != _INPROCESS:
+        return
+    configured = [
+        name
+        for name in (_ENV_SERVICE_URL, _ENV_DAEMON_HOST)
+        if os.environ.get(name, "").strip()
+    ]
+    if not configured:
+        return
+    _LOGGER.warning(
+        "%s=%s takes precedence and loads an in-process local model, silently "
+        "ignoring the configured service endpoint(s): %s. Unset the endpoint(s) "
+        "to keep the in-process embedder, or unset %s to route embeddings to the "
+        "service.",
+        _ENV_PROVIDER,
+        _INPROCESS,
+        ", ".join(configured),
+        _ENV_PROVIDER,
+    )
+
+
 def run_startup_config_guards() -> None:
     """Run the D8 config guards once at server startup (idempotent, warn-only)."""
     _guard_workers_multiply_model()
     _guard_daemon_disable_half_pair()
+    _guard_inprocess_overrides_service_host()
 
 
 __all__ = [
