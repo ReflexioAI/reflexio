@@ -50,10 +50,6 @@ import torch
 from reflexio.server.llm.providers.nomic_embedding_provider import NomicEmbedder
 from tests.server.test_utils import skip_in_precommit, skip_low_priority
 
-# Keep each forward single-threaded so the Python threads — not torch intra-op
-# threads — are the concurrency, and a constrained box is not oversubscribed.
-torch.set_num_threads(1)
-
 _N_WORKERS = 12
 _ROUNDS = 20
 _ATOL = 1e-4  # inference is deterministic; a race corrupts grossly, not by 1e-4
@@ -73,7 +69,7 @@ _TEXTS = [
 ]
 
 
-def _reset_rotary(model: Any) -> None:
+def _reset_rotary(model: Any) -> int:
     """Reset every rotary submodule's cache to cold.
 
     Reproduces the prod boot-window state where the next forwards must rebuild
@@ -81,12 +77,21 @@ def _reset_rotary(model: Any) -> None:
 
     Args:
         model (Any): The loaded sentence-transformers model.
+
+    Returns:
+        int: How many rotary modules were reset. Zero means the cache attribute
+            was renamed upstream and this reset is a silent no-op — the caller
+            MUST assert this is non-zero, or the test passes on a warm cache that
+            never opens the race window (a false green).
     """
+    reset = 0
     for module in model.modules():
         if hasattr(module, "_seq_len_cached"):
             module._seq_len_cached = 0
             module._cos_cached = None
             module._sin_cached = None
+            reset += 1
+    return reset
 
 
 def _embed_one(embedder: NomicEmbedder, text: str) -> np.ndarray:
@@ -135,6 +140,12 @@ def test_model_lock_holds_under_real_concurrency(real_embedder: NomicEmbedder) -
     exceptions and that every concurrent vector matches its single-thread serial
     baseline within ``_ATOL``.
     """
+    # Keep each forward single-threaded so the Python threads — not torch intra-op
+    # threads — are the concurrency, and a constrained box is not oversubscribed.
+    # Set here (not at module scope) so it only runs when the test actually runs,
+    # never mutating the process-global thread count during collection of skipped
+    # runs in other tiers.
+    torch.set_num_threads(1)
     model = real_embedder._load()
 
     # Single-thread, one text at a time — the uncorrupted reference vectors.
@@ -157,8 +168,14 @@ def test_model_lock_holds_under_real_concurrency(real_embedder: NomicEmbedder) -
         if vec.shape != base.shape or not np.allclose(vec, base, atol=_ATOL):
             mismatches.append(f"len={len(text)} shape={vec.shape} vs {base.shape}")
 
-    for _ in range(_ROUNDS):
-        _reset_rotary(model)
+    for round_idx in range(_ROUNDS):
+        n_reset = _reset_rotary(model)
+        if round_idx == 0:
+            assert n_reset > 0, (
+                "_reset_rotary matched no rotary modules — the cache attribute was "
+                "likely renamed upstream, so the reset is a no-op and this test no "
+                "longer opens the race window it exists to guard."
+            )
         with cf.ThreadPoolExecutor(max_workers=_N_WORKERS) as pool:
             list(pool.map(task, burst))
 
