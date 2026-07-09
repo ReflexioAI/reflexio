@@ -36,11 +36,12 @@ class AgentEvaluationResultStoreMixin:
         self, results: list[AgentSuccessEvaluationResult]
     ) -> None:
         for result in results:
-            embedding_text = f"{result.failure_type} {result.failure_reason}"
-            if embedding_text.strip():
-                result.embedding = self._get_embedding(embedding_text)
-            else:
-                result.embedding = []
+            if not result.embedding:
+                embedding_text = f"{result.failure_type} {result.failure_reason}"
+                if embedding_text.strip():
+                    result.embedding = self._get_embedding(embedding_text)
+                else:
+                    result.embedding = []
 
             created_at_iso = _epoch_to_iso(result.created_at)
             subject_ref = self._subject_ref_for_user_id(result.user_id)
