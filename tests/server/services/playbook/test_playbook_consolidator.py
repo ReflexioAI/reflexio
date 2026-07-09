@@ -1168,6 +1168,20 @@ class TestConsolidationRepair:
         assert merge_groups == []
         assert mock_consolidator.client.generate_chat_response.call_count == 2
 
+        # The repair is a follow-up turn of the original conversation, so the
+        # model keeps the full first-turn context: [user: original prompt,
+        # assistant: the invalid decisions, user: errors + fix instruction].
+        first_call, repair_call = (
+            mock_consolidator.client.generate_chat_response.call_args_list
+        )
+        original_prompt = first_call.kwargs["messages"][0]["content"]
+        repair_messages = repair_call.kwargs["messages"]
+        assert [m["role"] for m in repair_messages] == ["user", "assistant", "user"]
+        assert repair_messages[0]["content"] == original_prompt
+        assert '"NEW-0"' in repair_messages[1]["content"]
+        assert "exactly once" in repair_messages[2]["content"]
+        assert "missing NEW ids: NEW-1" in repair_messages[2]["content"]
+
     def test_repair_failure_falls_back_to_original_output(
         self, mock_consolidator, caplog
     ):

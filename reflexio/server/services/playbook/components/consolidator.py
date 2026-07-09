@@ -628,6 +628,36 @@ class PlaybookConsolidator(BaseDeduplicator):
         )
         return new_text, existing_text
 
+    def _render_consolidation_prompt(
+        self,
+        new_playbooks: list[UserPlaybook],
+        existing_playbooks: list[UserPlaybook],
+    ) -> str:
+        """Render the consolidation prompt for the given NEW + EXISTING rows.
+
+        Rendering is deterministic, so the repair path calls this again to
+        reconstruct the exact first-turn prompt when building the follow-up
+        conversation.
+
+        Args:
+            new_playbooks: New entries to deduplicate.
+            existing_playbooks: Existing entries from the database.
+
+        Returns:
+            The fully rendered consolidation prompt.
+        """
+        new_text, existing_text = self._format_new_and_existing_for_prompt(
+            new_playbooks, existing_playbooks
+        )
+        return self.request_context.prompt_manager.render_prompt(
+            self._get_prompt_id(),
+            {
+                "new_playbook_count": len(new_playbooks),
+                "new_playbooks": new_text,
+                "existing_playbooks": existing_text,
+            },
+        )
+
     def _consolidation_decisions(
         self,
         new_playbooks: list[UserPlaybook],
@@ -668,20 +698,7 @@ class PlaybookConsolidator(BaseDeduplicator):
             Parsed ``PlaybookConsolidationOutput``; an empty output (no
             decisions) if the LLM returned an unexpected response shape.
         """
-        # Format for prompt
-        new_text, existing_text = self._format_new_and_existing_for_prompt(
-            new_playbooks, existing_playbooks
-        )
-
-        # Build and call LLM
-        prompt = self.request_context.prompt_manager.render_prompt(
-            self._get_prompt_id(),
-            {
-                "new_playbook_count": len(new_playbooks),
-                "new_playbooks": new_text,
-                "existing_playbooks": existing_text,
-            },
-        )
+        prompt = self._render_consolidation_prompt(new_playbooks, existing_playbooks)
 
         output_schema_class = self._get_output_schema_class()
 
@@ -836,12 +853,10 @@ class PlaybookConsolidator(BaseDeduplicator):
         if not errors:
             return dedup_output
 
-        new_text, existing_text = self._format_new_and_existing_for_prompt(
-            new_playbooks, existing_playbooks
-        )
         repaired = self._repair_consolidation_output(
-            new_text=new_text,
-            existing_text=existing_text,
+            original_prompt=self._render_consolidation_prompt(
+                new_playbooks, existing_playbooks
+            ),
             invalid_output=dedup_output,
             errors=errors,
             request_id=request_id,
@@ -868,55 +883,64 @@ class PlaybookConsolidator(BaseDeduplicator):
     def _repair_consolidation_output(
         self,
         *,
-        new_text: str,
-        existing_text: str,
+        original_prompt: str,
         invalid_output: PlaybookConsolidationOutput,
         errors: list[str],
         request_id: str | None,
     ) -> PlaybookConsolidationOutput | None:
+        """Ask the model to fix its consolidation output in a follow-up turn.
+
+        The repair is sent as the third turn of the original conversation —
+        [user: consolidation prompt, assistant: the invalid decisions, user:
+        validation errors + fix instruction] — so the model retains the full
+        first-turn context (rendered rows, decision-kind rules, output format)
+        without restating any of it.
+
+        Args:
+            original_prompt: The exact rendered first-turn consolidation prompt.
+            invalid_output: The parsed decisions that failed validation.
+            errors: Human-readable validation errors to feed back.
+            request_id: Request ID for log correlation.
+
+        Returns:
+            The repaired ``PlaybookConsolidationOutput``, or None when the
+            repair call fails or returns an unexpected shape.
+        """
         logger.warning(
             "event=consolidation_repair_attempted request_id=%s errors=%s",
             request_id,
             errors,
         )
-        prompt = "\n".join(
+        followup = "\n".join(
             [
-                "The previous playbook consolidation output violated the NEW-id coverage contract.",
+                "Your decisions above violate the NEW-id coverage contract:",
                 "",
-                "Your decisions must cover every NEW id exactly once. Every NEW id must appear in exactly one decision.",
-                "If a unified rule uses facts/details from multiple NEW rows, `new_id` must list all of them.",
-                "If the existing decisions are semantically correct, return them unchanged after fixing any coverage errors.",
-                "",
-                "[New playbooks]",
-                new_text,
-                "",
-                "[Existing related playbooks]",
-                existing_text,
-                "",
-                "[Invalid output]",
-                invalid_output.model_dump_json(),
-                "",
-                "[Validation errors]",
                 "\n".join(f"- {error}" for error in errors),
+                "",
+                "Return corrected decisions that cover every NEW id exactly once. "
+                "If a unified rule uses facts/details from multiple NEW rows, `new_id` must list all of them. "
+                "If your decisions are semantically correct apart from these errors, "
+                "keep them and fix only the coverage.",
                 "",
                 'Respond ONLY with valid JSON matching PlaybookConsolidationOutput: {"decisions": [...]}.',
             ]
         )
+        messages = [
+            {"role": "user", "content": original_prompt},
+            {"role": "assistant", "content": invalid_output.model_dump_json()},
+            {"role": "user", "content": followup},
+        ]
 
         from reflexio.server.services.service_utils import (
             log_llm_messages,
             log_model_response,
         )
 
-        log_llm_messages(
-            logger,
-            "Playbook consolidation repair",
-            [{"role": "user", "content": prompt}],
-        )
+        log_llm_messages(logger, "Playbook consolidation repair", messages)
 
         try:
             response = self.client.generate_chat_response(
-                messages=[{"role": "user", "content": prompt}],
+                messages=messages,
                 model=self.model_name,
                 response_format=self._get_output_schema_class(),
             )
