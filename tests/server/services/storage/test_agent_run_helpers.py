@@ -62,7 +62,7 @@ class _ExtractorConfig(BaseModel):
     extraction_definition_prompt: str = "Extract deployment preferences."
 
 
-def test_build_extractor_agent_run_record_maps_generation_request_id_to_legacy_binding_field():
+def _request_interaction_data_models() -> list[RequestInteractionDataModel]:
     request = Request(
         request_id="req_source_1",
         user_id="user_1",
@@ -76,13 +76,17 @@ def test_build_extractor_agent_run_record_maps_generation_request_id_to_legacy_b
         request_id="req_source_1",
         content="Remember that I deploy to ECS.",
     )
-    request_interaction_data_models = [
+    return [
         RequestInteractionDataModel(
             session_id="session_1",
             request=request,
             interactions=[interaction],
         )
     ]
+
+
+def test_build_extractor_agent_run_record_maps_generation_request_id_to_legacy_binding_field():
+    request_interaction_data_models = _request_interaction_data_models()
 
     run = build_extractor_agent_run_record(
         org_id="org_1",
@@ -103,26 +107,7 @@ def test_build_extractor_agent_run_record_maps_generation_request_id_to_legacy_b
 
 
 def test_build_extractor_agent_run_record_accepts_legacy_request_id_keyword():
-    request = Request(
-        request_id="req_source_1",
-        user_id="user_1",
-        source="api",
-        agent_version="v1",
-        session_id="session_1",
-    )
-    interaction = Interaction(
-        interaction_id=42,
-        user_id="user_1",
-        request_id="req_source_1",
-        content="Remember that I deploy to ECS.",
-    )
-    request_interaction_data_models = [
-        RequestInteractionDataModel(
-            session_id="session_1",
-            request=request,
-            interactions=[interaction],
-        )
-    ]
+    request_interaction_data_models = _request_interaction_data_models()
 
     run = build_extractor_agent_run_record(
         org_id="org_1",
@@ -142,26 +127,7 @@ def test_build_extractor_agent_run_record_accepts_legacy_request_id_keyword():
 
 
 def test_build_extractor_agent_run_record_rejects_mismatched_request_id_alias():
-    request = Request(
-        request_id="req_source_1",
-        user_id="user_1",
-        source="api",
-        agent_version="v1",
-        session_id="session_1",
-    )
-    interaction = Interaction(
-        interaction_id=42,
-        user_id="user_1",
-        request_id="req_source_1",
-        content="Remember that I deploy to ECS.",
-    )
-    request_interaction_data_models = [
-        RequestInteractionDataModel(
-            session_id="session_1",
-            request=request,
-            interactions=[interaction],
-        )
-    ]
+    request_interaction_data_models = _request_interaction_data_models()
 
     with pytest.raises(TypeError, match="must match"):
         build_extractor_agent_run_record(
@@ -180,26 +146,7 @@ def test_build_extractor_agent_run_record_rejects_mismatched_request_id_alias():
 
 
 def test_build_extractor_agent_run_record_requires_generation_request_id():
-    request = Request(
-        request_id="req_source_1",
-        user_id="user_1",
-        source="api",
-        agent_version="v1",
-        session_id="session_1",
-    )
-    interaction = Interaction(
-        interaction_id=42,
-        user_id="user_1",
-        request_id="req_source_1",
-        content="Remember that I deploy to ECS.",
-    )
-    request_interaction_data_models = [
-        RequestInteractionDataModel(
-            session_id="session_1",
-            request=request,
-            interactions=[interaction],
-        )
-    ]
+    request_interaction_data_models = _request_interaction_data_models()
 
     with pytest.raises(TypeError, match="generation_request_id is required"):
         build_extractor_agent_run_record(
