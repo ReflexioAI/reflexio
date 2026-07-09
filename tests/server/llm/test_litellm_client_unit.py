@@ -1185,6 +1185,20 @@ class TestStrictStructuredOutputRequest:
         assert parser_schema is SampleResponse
         assert parse_structured is True
 
+    def test_explicit_none_model_falls_back_to_config_default(self):
+        # Callers that forward an optional model (e.g. the eval judges pass
+        # ``model=rubric.get("judge_model")``) may hand over a literal None;
+        # it must resolve to the config default instead of crashing on
+        # ``None.lower()`` during API-key resolution.
+        client = _build_client(LiteLLMConfig(model="gpt-4o-mini"))
+
+        params, _, _, _, _ = client._build_completion_params(
+            [{"role": "user", "content": "test"}],
+            model=None,
+        )
+
+        assert params["model"] == "gpt-4o-mini"
+
     def test_unsupported_model_keeps_pydantic_response_format(self):
         # A provider that is neither natively response-schema-capable nor on the
         # OpenAI-compatible allowlist keeps the raw Pydantic model so LiteLLM can
@@ -2465,6 +2479,12 @@ class TestLitellmIntegration:
         # retry was removed) — still far below the 1s the blocked call would take.
         assert time.perf_counter() - start < 1.0
 
+    @pytest.mark.skipif(
+        multiprocessing.get_start_method() != "fork",
+        reason="the isolated worker sees the litellm.completion monkeypatch only "
+        "under the fork start method (spawn re-imports real litellm); the "
+        "drain-before-join behavior under test is exercised on Linux CI/prod",
+    )
     def test_large_result_does_not_deadlock_hard_timeout(self, monkeypatch):
         """A large completion payload overflows the OS pipe buffer feeding the
         result queue. If the parent joined the child before draining the queue,

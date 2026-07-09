@@ -293,7 +293,10 @@ class TextGenerationMixin:
         tool_choice = kwargs.pop("tool_choice", None)
         model_role: ModelRole | None = kwargs.pop("model_role", None)
 
-        actual_model = kwargs.pop("model", self.config.model)
+        # An explicit ``model=None`` means "use the config default" — callers
+        # like the eval judges forward an optional model straight through, and
+        # a literal None would crash on ``.lower()`` during key resolution.
+        actual_model = kwargs.pop("model", None) or self.config.model
 
         # model_role takes priority over the default model but falls through
         # to the custom_endpoint override below (highest priority).

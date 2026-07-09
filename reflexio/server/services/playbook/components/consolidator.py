@@ -24,6 +24,9 @@ from reflexio.server.services.deduplication_utils import (
     BaseDeduplicator,
     format_dedup_timestamp,
 )
+from reflexio.server.services.profile.profile_generation_service_utils import (
+    check_string_token_overlap,
+)
 from reflexio.server.tracing import sentry_tags
 
 logger = logging.getLogger(__name__)
@@ -395,6 +398,50 @@ _COUNTER_BY_KIND: dict[str, str] = {
 }
 
 
+def _decision_new_ids(decision: ConsolidationDecision) -> list[str]:
+    if isinstance(decision, DifferentiateDecision):
+        return [decision.new_id]
+    return decision.new_ids
+
+
+def validate_consolidation_output(
+    new_playbooks: list[UserPlaybook],
+    output: PlaybookConsolidationOutput,
+) -> list[str]:
+    """Return partition-contract errors for a parsed consolidation output."""
+    known_new_ids = {f"NEW-{idx}" for idx in range(len(new_playbooks))}
+    seen_by_id: dict[str, list[str]] = {}
+    errors: list[str] = []
+
+    for decision_index, decision in enumerate(output.decisions):
+        label = f"decision[{decision_index}] {decision.kind}"
+        for new_id in _decision_new_ids(decision):
+            if new_id not in known_new_ids:
+                errors.append(f"{label} references unknown NEW id {new_id}.")
+                continue
+            seen_by_id.setdefault(new_id, []).append(label)
+
+    missing = sorted(known_new_ids - set(seen_by_id))
+    if missing:
+        errors.append(
+            "Every NEW id must appear exactly once; missing NEW ids: "
+            + ", ".join(missing)
+            + "."
+        )
+
+    duplicates = {
+        new_id: labels for new_id, labels in seen_by_id.items() if len(labels) > 1
+    }
+    for new_id, labels in sorted(duplicates.items()):
+        errors.append(
+            f"Every NEW id must appear exactly once; {new_id} appears in "
+            + "; ".join(labels)
+            + "."
+        )
+
+    return errors
+
+
 class PlaybookConsolidator(BaseDeduplicator):
     """
     Consolidates new user playbook entries against each other and against existing entries
@@ -757,6 +804,12 @@ class PlaybookConsolidator(BaseDeduplicator):
             len(dedup_output.decisions),
             generation_request_id,
         )
+        dedup_output = self._repair_consolidation_output_if_needed(
+            new_playbooks=new_playbooks,
+            existing_playbooks=existing_playbooks,
+            dedup_output=dedup_output,
+            request_id=request_id,
+        )
 
         # Build consolidated result via the discriminated-union apply path
         return self._build_deduplicated_results(
@@ -766,6 +819,204 @@ class PlaybookConsolidator(BaseDeduplicator):
             generation_request_id=generation_request_id,
             agent_version=agent_version,
         )
+
+    def _repair_consolidation_output_if_needed(
+        self,
+        *,
+        new_playbooks: list[UserPlaybook],
+        existing_playbooks: list[UserPlaybook],
+        dedup_output: PlaybookConsolidationOutput,
+        request_id: str | None,
+    ) -> PlaybookConsolidationOutput:
+        errors = validate_consolidation_output(new_playbooks, dedup_output)
+        if not errors:
+            errors = self._find_suspicious_under_consumed_new_rows(
+                new_playbooks, dedup_output
+            )
+        if not errors:
+            return dedup_output
+
+        new_text, existing_text = self._format_new_and_existing_for_prompt(
+            new_playbooks, existing_playbooks
+        )
+        repaired = self._repair_consolidation_output(
+            new_text=new_text,
+            existing_text=existing_text,
+            invalid_output=dedup_output,
+            errors=errors,
+            request_id=request_id,
+        )
+        if repaired is None:
+            return dedup_output
+
+        repaired_errors = validate_consolidation_output(new_playbooks, repaired)
+        if repaired_errors:
+            logger.warning(
+                "event=consolidation_repair_failed request_id=%s errors=%s",
+                request_id,
+                repaired_errors,
+            )
+            return dedup_output
+
+        logger.info(
+            "event=consolidation_repaired request_id=%s decision_count=%d",
+            request_id,
+            len(repaired.decisions),
+        )
+        return repaired
+
+    def _repair_consolidation_output(
+        self,
+        *,
+        new_text: str,
+        existing_text: str,
+        invalid_output: PlaybookConsolidationOutput,
+        errors: list[str],
+        request_id: str | None,
+    ) -> PlaybookConsolidationOutput | None:
+        logger.warning(
+            "event=consolidation_repair_attempted request_id=%s errors=%s",
+            request_id,
+            errors,
+        )
+        prompt = "\n".join(
+            [
+                "The previous playbook consolidation output violated the NEW-id coverage contract.",
+                "",
+                "Your decisions must cover every NEW id exactly once. Every NEW id must appear in exactly one decision.",
+                "If a unified rule uses facts/details from multiple NEW rows, `new_id` must list all of them.",
+                "If the existing decisions are semantically correct, return them unchanged after fixing any coverage errors.",
+                "",
+                "[New playbooks]",
+                new_text,
+                "",
+                "[Existing related playbooks]",
+                existing_text,
+                "",
+                "[Invalid output]",
+                invalid_output.model_dump_json(),
+                "",
+                "[Validation errors]",
+                "\n".join(f"- {error}" for error in errors),
+                "",
+                'Respond ONLY with valid JSON matching PlaybookConsolidationOutput: {"decisions": [...]}.',
+            ]
+        )
+
+        from reflexio.server.services.service_utils import (
+            log_llm_messages,
+            log_model_response,
+        )
+
+        log_llm_messages(
+            logger,
+            "Playbook consolidation repair",
+            [{"role": "user", "content": prompt}],
+        )
+
+        try:
+            response = self.client.generate_chat_response(
+                messages=[{"role": "user", "content": prompt}],
+                model=self.model_name,
+                response_format=self._get_output_schema_class(),
+            )
+        except Exception as exc:  # noqa: BLE001 — repair is best-effort
+            logger.warning(
+                "event=consolidation_repair_failed request_id=%s error_type=%s",
+                request_id,
+                type(exc).__name__,
+                exc_info=True,
+            )
+            return None
+
+        log_model_response(logger, "Consolidation repair response", response)
+
+        if not isinstance(response, PlaybookConsolidationOutput):
+            logger.warning(
+                "event=consolidation_repair_failed request_id=%s unexpected_type=%s",
+                request_id,
+                type(response),
+            )
+            return None
+        return response
+
+    @staticmethod
+    def _find_suspicious_under_consumed_new_rows(
+        new_playbooks: list[UserPlaybook],
+        dedup_output: PlaybookConsolidationOutput,
+    ) -> list[str]:
+        candidates_by_id = {
+            f"NEW-{idx}": playbook for idx, playbook in enumerate(new_playbooks)
+        }
+        # Every kind except reject_new stores a row for its consumed candidates
+        # (raw for independent, refined-trigger copy for differentiate, the
+        # re-synthesized decision content for a sibling unify), so any of them
+        # can duplicate a unify's merged row. Only reject_new drops the row
+        # outright and is never a duplicate-storage risk worth a repair call.
+        consuming_kind_by_new_id = {
+            new_id: decision.kind
+            for decision in dedup_output.decisions
+            for new_id in _decision_new_ids(decision)
+        }
+        source_ids_by_decision = [
+            {
+                source_id
+                for new_id in _decision_new_ids(decision)
+                if new_id in candidates_by_id
+                for source_id in candidates_by_id[new_id].source_interaction_ids
+            }
+            for decision in dedup_output.decisions
+        ]
+        errors: list[str] = []
+
+        for decision_index, decision in enumerate(dedup_output.decisions):
+            if not isinstance(decision, UnifyDecision):
+                continue
+            consumed_ids = set(decision.new_ids)
+            consumed_source_ids = source_ids_by_decision[decision_index]
+            if not consumed_source_ids:
+                continue
+
+            # Candidates stored (near-)verbatim by another decision whose facts
+            # this unify's merged content may have absorbed.
+            for other_id, other in candidates_by_id.items():
+                if other_id in consumed_ids:
+                    continue
+                if consuming_kind_by_new_id.get(other_id) not in (
+                    "independent",
+                    "differentiate",
+                ):
+                    continue
+                if not consumed_source_ids.intersection(other.source_interaction_ids):
+                    continue
+                if check_string_token_overlap(decision.content, other.content):
+                    errors.append(
+                        f"decision[{decision_index}] unify likely absorbed facts from {other_id} but did not list it in new_id; "
+                        "if the unified rule absorbed this row's facts, add its id to new_id; "
+                        "if not, leave the decisions unchanged."
+                    )
+
+            # Sibling unify decisions each persist their own survivor row, so
+            # two same-source unifies with heavily overlapping FINAL contents
+            # are the same duplicate-storage class. Compare stored content to
+            # stored content and flag each pair once (j > i).
+            for sibling_index in range(decision_index + 1, len(dedup_output.decisions)):
+                sibling = dedup_output.decisions[sibling_index]
+                if not isinstance(sibling, UnifyDecision):
+                    continue
+                if not consumed_source_ids.intersection(
+                    source_ids_by_decision[sibling_index]
+                ):
+                    continue
+                if check_string_token_overlap(decision.content, sibling.content):
+                    errors.append(
+                        f"decision[{decision_index}] and decision[{sibling_index}] are both unify decisions over "
+                        "same-source NEW rows with highly overlapping content; if they describe the same skill, "
+                        "merge them into one unify decision whose new_id lists every consumed NEW id; "
+                        "if they are genuinely distinct skills, leave the decisions unchanged."
+                    )
+
+        return errors
 
     # ===============================
     # Apply path: discriminated-union decisions -> (new rows, archive ids)
