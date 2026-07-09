@@ -99,3 +99,42 @@ def test_build_extractor_agent_run_record_maps_generation_request_id_to_legacy_b
     assert run.binding.request_id == "rerun_ab12cd34"
     assert run.generation_request_snapshot["request_id"] == "rerun_ab12cd34"
     assert run.id.startswith("ar_")
+
+
+def test_build_extractor_agent_run_record_accepts_legacy_request_id_keyword():
+    request = Request(
+        request_id="req_source_1",
+        user_id="user_1",
+        source="api",
+        agent_version="v1",
+        session_id="session_1",
+    )
+    interaction = Interaction(
+        interaction_id=42,
+        user_id="user_1",
+        request_id="req_source_1",
+        content="Remember that I deploy to ECS.",
+    )
+    request_interaction_data_models = [
+        RequestInteractionDataModel(
+            session_id="session_1",
+            request=request,
+            interactions=[interaction],
+        )
+    ]
+
+    run = build_extractor_agent_run_record(
+        org_id="org_1",
+        extractor_kind="profile",
+        user_id="user_1",
+        request_id="legacy_req",
+        agent_version="v1",
+        source="api",
+        request_interaction_data_models=request_interaction_data_models,
+        extractor_config=_ExtractorConfig(),
+        service_config={"request_id": "legacy_req"},
+        agent_context="context",
+    )
+
+    assert run.binding.request_id == "legacy_req"
+    assert run.generation_request_snapshot["request_id"] == "legacy_req"

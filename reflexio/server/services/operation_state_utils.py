@@ -101,6 +101,23 @@ class OperationStateManager:
             parts.append(version)
         return "::".join(parts)
 
+    def _normalize_lock_request_id(
+        self,
+        lock_request_id: str | None,
+        *,
+        request_id: str | None = None,
+    ) -> str:
+        """Accept legacy ``request_id`` callers while keeping local lock naming."""
+        if lock_request_id is not None:
+            if request_id is not None and request_id != lock_request_id:
+                raise TypeError(
+                    "lock_request_id and request_id must match when both are provided"
+                )
+            return lock_request_id
+        if request_id is not None:
+            return request_id
+        raise TypeError("lock_request_id is required")
+
     # ── Use Case 1: Progress Tracking ──
     # (Batch operations: rerun + manual)
 
@@ -380,10 +397,11 @@ class OperationStateManager:
 
     def acquire_lock(
         self,
-        lock_request_id: str,
+        lock_request_id: str | None = None,
         scope_id: str | None = None,
         stale_seconds: int = GENERATION_STALE_LOCK_SECONDS,
         payload: dict | None = None,
+        request_id: str | None = None,
     ) -> bool:
         """Atomically check and acquire in-progress lock.
 
@@ -408,6 +426,9 @@ class OperationStateManager:
         Returns:
             bool: True if lock acquired (proceed with generation), False if skipped
         """
+        lock_request_id = self._normalize_lock_request_id(
+            lock_request_id, request_id=request_id
+        )
         state_key = self._lock_key(scope_id)
         # Pass ``payload`` as a kwarg so storage backends that haven't been
         # updated to the new signature still error loudly rather than silently
@@ -440,8 +461,9 @@ class OperationStateManager:
 
     def release_lock(
         self,
-        lock_request_id: str,
+        lock_request_id: str | None = None,
         scope_id: str | None = None,
+        request_id: str | None = None,
     ) -> str | None:
         """Release the in-progress lock and check if a new request came in.
 
@@ -455,6 +477,9 @@ class OperationStateManager:
         Returns:
             Optional[str]: pending_request_id if a new request needs processing, None otherwise
         """
+        lock_request_id = self._normalize_lock_request_id(
+            lock_request_id, request_id=request_id
+        )
         state_key = self._lock_key(scope_id)
         state_record = self.storage.get_operation_state(state_key)
 
@@ -537,10 +562,14 @@ class OperationStateManager:
 
     def clear_lock_if_owner(
         self,
-        lock_request_id: str,
+        lock_request_id: str | None = None,
         scope_id: str | None = None,
+        request_id: str | None = None,
     ) -> bool:
         """Atomically clear a lock only if ``lock_request_id`` still owns it."""
+        lock_request_id = self._normalize_lock_request_id(
+            lock_request_id, request_id=request_id
+        )
         state_key = self._lock_key(scope_id)
         cleared = self.storage.clear_in_progress_lock_if_owner(
             state_key,
@@ -563,8 +592,9 @@ class OperationStateManager:
 
     def release_lock_pop_queue(
         self,
-        lock_request_id: str,
+        lock_request_id: str | None = None,
         scope_id: str | None = None,
+        request_id: str | None = None,
     ) -> dict | None:
         """Release the lock and pop the next queued pending request, if any.
 
@@ -587,6 +617,9 @@ class OperationStateManager:
                 the next queued request, or None if the queue is empty / we're
                 not the lock holder.
         """
+        lock_request_id = self._normalize_lock_request_id(
+            lock_request_id, request_id=request_id
+        )
         state_key = self._lock_key(scope_id)
         state_record = self.storage.get_operation_state(state_key)
 
@@ -643,9 +676,9 @@ class OperationStateManager:
             )
             return None
 
-        # Transfer ownership to the popped request — it becomes the new holder.
-        # Mirror the head request_id into the legacy single slot for the
-        # release window during a server upgrade.
+        # Transfer ownership to the popped request. The storage boundary still
+        # persists queued holders under legacy ``request_id`` keys, plus the
+        # mirrored ``pending_request_id`` slot during upgrade windows.
         new_holder_request_id = next_entry["request_id"]
         legacy_mirror = queue[0]["request_id"] if queue else None
         self.storage.upsert_operation_state(

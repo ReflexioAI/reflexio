@@ -426,6 +426,21 @@ class TestAcquireLock:
             "test_service::org_123::lock", "req_1", 60, payload=None
         )
 
+    def test_acquire_lock_accepts_legacy_request_id_keyword(
+        self, manager, mock_storage
+    ):
+        mock_storage.try_acquire_in_progress_lock.return_value = {"acquired": True}
+
+        result = manager.acquire_lock(request_id="req_1")
+
+        assert result is True
+        mock_storage.try_acquire_in_progress_lock.assert_called_once_with(
+            "test_service::org_123::lock",
+            "req_1",
+            GENERATION_STALE_LOCK_SECONDS,
+            payload=None,
+        )
+
     def test_acquire_lock_passes_lock_request_id_to_legacy_storage_boundary(
         self, manager, mock_storage, caplog
     ):

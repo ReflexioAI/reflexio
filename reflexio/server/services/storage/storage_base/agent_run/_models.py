@@ -44,7 +44,12 @@ class RunToolDependencyKind(StrEnum):
 
 @dataclass(frozen=True)
 class AgentBinding:
-    """Logical run binding flattened into `_agent_runs` storage columns."""
+    """Logical run binding flattened into `_agent_runs` storage columns.
+
+    ``request_id`` remains the persisted provenance field name at this storage
+    boundary even when higher-level helpers refer to the same value as a
+    generation request id.
+    """
 
     org_id: str
     extractor_kind: str
@@ -60,6 +65,12 @@ class AgentBinding:
 
 @dataclass(frozen=True)
 class AgentRunRecord:
+    """Durable agent run row plus snapshots used for resume/finalization.
+
+    ``generation_request_snapshot`` intentionally keeps a legacy ``request_id``
+    key for stored provenance.
+    """
+
     id: str
     binding: AgentBinding
     status: AgentRunStatus
