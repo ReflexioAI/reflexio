@@ -422,6 +422,8 @@ class OperationStateManager:
                 rerun loop to operate on the SAME interactions the original
                 publish enqueued, not whatever the bookmark currently points at
                 (R2).
+            request_id: Legacy alias for ``lock_request_id``. When both are
+                provided they must match.
 
         Returns:
             bool: True if lock acquired (proceed with generation), False if skipped
@@ -473,6 +475,8 @@ class OperationStateManager:
         Args:
             lock_request_id: Request ID for the current lock holder
             scope_id: Optional scope identifier (e.g., user_id)
+            request_id: Legacy alias for ``lock_request_id``. When both are
+                provided they must match.
 
         Returns:
             Optional[str]: pending_request_id if a new request needs processing, None otherwise
@@ -611,6 +615,8 @@ class OperationStateManager:
         Args:
             lock_request_id: Request ID for the current lock holder
             scope_id: Optional scope identifier (e.g., user_id)
+            request_id: Legacy alias for ``lock_request_id``. When both are
+                provided they must match.
 
         Returns:
             dict | None: ``{"request_id": str, "payload": dict | None}`` for

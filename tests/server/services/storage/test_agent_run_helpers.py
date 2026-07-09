@@ -1,3 +1,4 @@
+import pytest
 from pydantic import BaseModel
 
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
@@ -138,3 +139,77 @@ def test_build_extractor_agent_run_record_accepts_legacy_request_id_keyword():
 
     assert run.binding.request_id == "legacy_req"
     assert run.generation_request_snapshot["request_id"] == "legacy_req"
+
+
+def test_build_extractor_agent_run_record_rejects_mismatched_request_id_alias():
+    request = Request(
+        request_id="req_source_1",
+        user_id="user_1",
+        source="api",
+        agent_version="v1",
+        session_id="session_1",
+    )
+    interaction = Interaction(
+        interaction_id=42,
+        user_id="user_1",
+        request_id="req_source_1",
+        content="Remember that I deploy to ECS.",
+    )
+    request_interaction_data_models = [
+        RequestInteractionDataModel(
+            session_id="session_1",
+            request=request,
+            interactions=[interaction],
+        )
+    ]
+
+    with pytest.raises(TypeError, match="must match"):
+        build_extractor_agent_run_record(
+            org_id="org_1",
+            extractor_kind="profile",
+            user_id="user_1",
+            generation_request_id="gen_req",
+            request_id="legacy_req",
+            agent_version="v1",
+            source="api",
+            request_interaction_data_models=request_interaction_data_models,
+            extractor_config=_ExtractorConfig(),
+            service_config={"request_id": "gen_req"},
+            agent_context="context",
+        )
+
+
+def test_build_extractor_agent_run_record_requires_generation_request_id():
+    request = Request(
+        request_id="req_source_1",
+        user_id="user_1",
+        source="api",
+        agent_version="v1",
+        session_id="session_1",
+    )
+    interaction = Interaction(
+        interaction_id=42,
+        user_id="user_1",
+        request_id="req_source_1",
+        content="Remember that I deploy to ECS.",
+    )
+    request_interaction_data_models = [
+        RequestInteractionDataModel(
+            session_id="session_1",
+            request=request,
+            interactions=[interaction],
+        )
+    ]
+
+    with pytest.raises(TypeError, match="generation_request_id is required"):
+        build_extractor_agent_run_record(
+            org_id="org_1",
+            extractor_kind="profile",
+            user_id="user_1",
+            agent_version="v1",
+            source="api",
+            request_interaction_data_models=request_interaction_data_models,
+            extractor_config=_ExtractorConfig(),
+            service_config={},
+            agent_context="context",
+        )
