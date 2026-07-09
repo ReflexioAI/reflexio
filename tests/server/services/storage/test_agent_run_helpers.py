@@ -1,3 +1,10 @@
+from pydantic import BaseModel
+
+from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
+from reflexio.models.api_schema.service_schemas import Interaction, Request
+from reflexio.server.services.extraction.agent_run_records import (
+    build_extractor_agent_run_record,
+)
 from reflexio.server.services.storage.storage_base import (
     build_pending_tool_call_dedup_key,
     build_scope_hash,
@@ -48,3 +55,47 @@ def test_missing_answer_format_normalizes_to_empty_string():
         question_text="Need deployment target?",
         answer_format="",
     )
+
+
+class _ExtractorConfig(BaseModel):
+    extraction_definition_prompt: str = "Extract deployment preferences."
+
+
+def test_build_extractor_agent_run_record_maps_generation_request_id_to_legacy_binding_field():
+    request = Request(
+        request_id="req_source_1",
+        user_id="user_1",
+        source="api",
+        agent_version="v1",
+        session_id="session_1",
+    )
+    interaction = Interaction(
+        interaction_id=42,
+        user_id="user_1",
+        request_id="req_source_1",
+        content="Remember that I deploy to ECS.",
+    )
+    request_interaction_data_models = [
+        RequestInteractionDataModel(
+            session_id="session_1",
+            request=request,
+            interactions=[interaction],
+        )
+    ]
+
+    run = build_extractor_agent_run_record(
+        org_id="org_1",
+        extractor_kind="profile",
+        user_id="user_1",
+        generation_request_id="rerun_ab12cd34",
+        agent_version="v1",
+        source="api",
+        request_interaction_data_models=request_interaction_data_models,
+        extractor_config=_ExtractorConfig(),
+        service_config={"request_id": "rerun_ab12cd34"},
+        agent_context="context",
+    )
+
+    assert run.binding.request_id == "rerun_ab12cd34"
+    assert run.generation_request_snapshot["request_id"] == "rerun_ab12cd34"
+    assert run.id.startswith("ar_")

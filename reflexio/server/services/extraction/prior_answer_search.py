@@ -151,7 +151,7 @@ def format_prior_knowledge_context(matches: list[PriorAnswerMatch]) -> str | Non
         for match in resolved:
             lines.extend(
                 [
-                    f"- source_request_id: {match.pending_tool_call_id}",
+                    f"- pending_tool_call_id: {match.pending_tool_call_id}",
                     f"  question: {match.question_text}",
                     f"  answer: {_format_result(match.result)}",
                     f"  resolved_at: {_format_datetime(match.resolved_at)}",

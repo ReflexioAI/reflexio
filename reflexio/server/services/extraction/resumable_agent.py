@@ -161,6 +161,7 @@ def run_resumable_extraction_agent(
     log_label: str,
 ) -> AgentRunResult:
     """Run and finalize a config-gated classic extraction agent pass."""
+    generation_request_id = request_id
     pending_config = _pending_tool_call_config(request_context)
     storage = request_context.storage
     if storage is None:
@@ -172,7 +173,7 @@ def run_resumable_extraction_agent(
         org_id=request_context.org_id,
         extractor_kind=extractor_kind,
         user_id=user_id,
-        request_id=request_id,
+        generation_request_id=generation_request_id,
         agent_version=agent_version,
         source=source,
         request_interaction_data_models=request_interaction_data_models,

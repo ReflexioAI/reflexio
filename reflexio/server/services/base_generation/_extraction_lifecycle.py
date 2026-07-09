@@ -166,8 +166,8 @@ class ExtractionRunLifecycleMixin(Generic[TExtractorConfig, TGenerationServiceCo
         """Mark active agent-run rows failed when the service timeout fires."""
         if self.storage is None or self.service_config is None:
             return
-        request_id = getattr(self.service_config, "request_id", None)
-        if not request_id:
+        generation_request_id = getattr(self.service_config, "request_id", None)
+        if not generation_request_id:
             return
         user_id = getattr(self.service_config, "user_id", None)
         try:
@@ -175,7 +175,7 @@ class ExtractionRunLifecycleMixin(Generic[TExtractorConfig, TGenerationServiceCo
                 org_id=self.request_context.org_id,
                 extractor_kind=extractor_kind,
                 user_id=user_id,
-                request_id=request_id,
+                request_id=generation_request_id,
                 last_error=last_error,
             )
         except NotImplementedError:
@@ -189,10 +189,10 @@ class ExtractionRunLifecycleMixin(Generic[TExtractorConfig, TGenerationServiceCo
             return
         if failed_count:
             logger.warning(
-                "Marked %d timed-out %s agent run(s) failed for request_id=%s",
+                "Marked %d timed-out %s agent run(s) failed for generation_request_id=%s",
                 failed_count,
                 extractor_kind,
-                request_id,
+                generation_request_id,
             )
 
     def _finalize_extraction_runs(self) -> None:
