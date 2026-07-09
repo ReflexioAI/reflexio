@@ -146,6 +146,10 @@ class OperationMixin:
            the current holder) are dropped to keep the queue idempotent under
            publish retries.
 
+        ``request_id`` is the intentional storage-boundary name here. Higher
+        layers may call the same value ``lock_request_id``, but persisted lock
+        rows and queued entries still use the legacy ``request_id`` key.
+
         The queue is a FIFO drained one entry at a time when the holder
         releases the lock. It replaces the older single-slot
         ``pending_request_id`` field, which silently dropped earlier blocked
@@ -177,6 +181,9 @@ class OperationMixin:
         cleared_state: dict,
     ) -> bool:
         """Atomically clear an in-progress lock only if ``request_id`` still owns it.
+
+        The storage boundary keeps the legacy ``request_id`` naming for the
+        persisted lock holder even when callers use clearer local names.
 
         Args:
             state_key: Operation-state row key for the lock.

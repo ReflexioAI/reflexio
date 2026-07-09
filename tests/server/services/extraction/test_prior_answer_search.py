@@ -92,6 +92,8 @@ def test_append_prior_knowledge_context_adds_resolved_and_pending_entries(storag
     context = messages[-1]["content"]
     assert "Prior Knowledge for org-scoped human feedback" in context
     assert "AWS ECS" in context
+    assert "pending_tool_call_id: ptc_resolved" in context
+    assert "source_request_id:" not in context
     assert "attach_pending_info_request" in context
     assert "ptc_pending" in context
 

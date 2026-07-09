@@ -101,6 +101,23 @@ class OperationStateManager:
             parts.append(version)
         return "::".join(parts)
 
+    def _normalize_lock_request_id(
+        self,
+        lock_request_id: str | None,
+        *,
+        request_id: str | None = None,
+    ) -> str:
+        """Accept legacy ``request_id`` callers while keeping local lock naming."""
+        if lock_request_id is not None:
+            if request_id is not None and request_id != lock_request_id:
+                raise TypeError(
+                    "lock_request_id and request_id must match when both are provided"
+                )
+            return lock_request_id
+        if request_id is not None:
+            return request_id
+        raise TypeError("lock_request_id is required")
+
     # ── Use Case 1: Progress Tracking ──
     # (Batch operations: rerun + manual)
 
@@ -380,10 +397,11 @@ class OperationStateManager:
 
     def acquire_lock(
         self,
-        request_id: str,
+        lock_request_id: str | None = None,
         scope_id: str | None = None,
         stale_seconds: int = GENERATION_STALE_LOCK_SECONDS,
         payload: dict | None = None,
+        request_id: str | None = None,
     ) -> bool:
         """Atomically check and acquire in-progress lock.
 
@@ -396,7 +414,7 @@ class OperationStateManager:
         no valid lock exists or the lock is stale, acquires the lock.
 
         Args:
-            request_id: Current request ID
+            lock_request_id: Request ID for the current lock holder
             scope_id: Optional scope identifier (e.g., user_id)
             stale_seconds: Seconds after which a lock is considered stale
             payload: Optional serialized request payload to enqueue with this
@@ -404,17 +422,22 @@ class OperationStateManager:
                 rerun loop to operate on the SAME interactions the original
                 publish enqueued, not whatever the bookmark currently points at
                 (R2).
+            request_id: Legacy alias for ``lock_request_id``. When both are
+                provided they must match.
 
         Returns:
             bool: True if lock acquired (proceed with generation), False if skipped
         """
+        lock_request_id = self._normalize_lock_request_id(
+            lock_request_id, request_id=request_id
+        )
         state_key = self._lock_key(scope_id)
         # Pass ``payload`` as a kwarg so storage backends that haven't been
         # updated to the new signature still error loudly rather than silently
         # dropping it on the floor.
         result = self.storage.try_acquire_in_progress_lock(
             state_key,
-            request_id,
+            lock_request_id,
             stale_seconds,
             payload=payload,
         )
@@ -423,25 +446,26 @@ class OperationStateManager:
 
         if acquired:
             logger.info(
-                "Acquired in-progress lock for %s: state_key=%s, request_id=%s",
+                "Acquired in-progress lock for %s: state_key=%s, lock_request_id=%s",
                 self.service_name,
                 state_key,
-                request_id,
+                lock_request_id,
             )
         else:
             logger.info(
                 "Skipping %s - another operation is in progress (state_key=%s). "
-                "Enqueued request_id=%s for drain on release",
+                "Enqueued lock_request_id=%s for drain on release",
                 self.service_name,
                 state_key,
-                request_id,
+                lock_request_id,
             )
         return acquired
 
     def release_lock(
         self,
-        request_id: str,
+        lock_request_id: str | None = None,
         scope_id: str | None = None,
+        request_id: str | None = None,
     ) -> str | None:
         """Release the in-progress lock and check if a new request came in.
 
@@ -449,12 +473,17 @@ class OperationStateManager:
         the caller can re-run. Otherwise clears the lock.
 
         Args:
-            request_id: The request ID of the current operation
+            lock_request_id: Request ID for the current lock holder
             scope_id: Optional scope identifier (e.g., user_id)
+            request_id: Legacy alias for ``lock_request_id``. When both are
+                provided they must match.
 
         Returns:
             Optional[str]: pending_request_id if a new request needs processing, None otherwise
         """
+        lock_request_id = self._normalize_lock_request_id(
+            lock_request_id, request_id=request_id
+        )
         state_key = self._lock_key(scope_id)
         state_record = self.storage.get_operation_state(state_key)
 
@@ -473,8 +502,8 @@ class OperationStateManager:
         current_request_id = state.get("current_request_id") or state.get("request_id")
 
         # Only process if we still own the lock
-        if current_request_id == request_id:
-            if pending_request_id and pending_request_id != request_id:
+        if current_request_id == lock_request_id:
+            if pending_request_id and pending_request_id != lock_request_id:
                 # Another request came in, transfer ownership and signal re-run
                 self.storage.upsert_operation_state(
                     state_key,
@@ -502,10 +531,10 @@ class OperationStateManager:
                 },
             )
             logger.info(
-                "Released in-progress lock for %s: state_key=%s, request_id=%s",
+                "Released in-progress lock for %s: state_key=%s, lock_request_id=%s",
                 self.service_name,
                 state_key,
-                request_id,
+                lock_request_id,
             )
 
         return None
@@ -537,14 +566,18 @@ class OperationStateManager:
 
     def clear_lock_if_owner(
         self,
-        request_id: str,
+        lock_request_id: str | None = None,
         scope_id: str | None = None,
+        request_id: str | None = None,
     ) -> bool:
-        """Atomically clear a lock only if ``request_id`` still owns it."""
+        """Atomically clear a lock only if ``lock_request_id`` still owns it."""
+        lock_request_id = self._normalize_lock_request_id(
+            lock_request_id, request_id=request_id
+        )
         state_key = self._lock_key(scope_id)
         cleared = self.storage.clear_in_progress_lock_if_owner(
             state_key,
-            request_id,
+            lock_request_id,
             {
                 "in_progress": False,
                 "current_request_id": None,
@@ -554,17 +587,18 @@ class OperationStateManager:
         )
         if cleared:
             logger.debug(
-                "Cleared in-progress lock for %s: state_key=%s, request_id=%s",
+                "Cleared in-progress lock for %s: state_key=%s, lock_request_id=%s",
                 self.service_name,
                 state_key,
-                request_id,
+                lock_request_id,
             )
         return cleared
 
     def release_lock_pop_queue(
         self,
-        request_id: str,
+        lock_request_id: str | None = None,
         scope_id: str | None = None,
+        request_id: str | None = None,
     ) -> dict | None:
         """Release the lock and pop the next queued pending request, if any.
 
@@ -579,14 +613,19 @@ class OperationStateManager:
         to the original request rather than dropping it on the floor.
 
         Args:
-            request_id: The request ID of the current operation (the holder)
+            lock_request_id: Request ID for the current lock holder
             scope_id: Optional scope identifier (e.g., user_id)
+            request_id: Legacy alias for ``lock_request_id``. When both are
+                provided they must match.
 
         Returns:
             dict | None: ``{"request_id": str, "payload": dict | None}`` for
                 the next queued request, or None if the queue is empty / we're
                 not the lock holder.
         """
+        lock_request_id = self._normalize_lock_request_id(
+            lock_request_id, request_id=request_id
+        )
         state_key = self._lock_key(scope_id)
         state_record = self.storage.get_operation_state(state_key)
 
@@ -603,7 +642,7 @@ class OperationStateManager:
         current_request_id = state.get("current_request_id") or state.get("request_id")
 
         # Only drain if we still own the lock.
-        if current_request_id != request_id:
+        if current_request_id != lock_request_id:
             return None
 
         queue = list(state.get("pending_request_queue") or [])
@@ -621,7 +660,7 @@ class OperationStateManager:
             # Legacy fallback: storage row lacks the queue field but the old
             # pending_request_id slot was set by an in-flight pre-fix server.
             legacy_pending = state.get("pending_request_id")
-            if legacy_pending and legacy_pending != request_id:
+            if legacy_pending and legacy_pending != lock_request_id:
                 next_entry = {"request_id": legacy_pending, "payload": None}
 
         if next_entry is None:
@@ -636,16 +675,16 @@ class OperationStateManager:
                 },
             )
             logger.info(
-                "Released in-progress lock for %s: state_key=%s, request_id=%s",
+                "Released in-progress lock for %s: state_key=%s, lock_request_id=%s",
                 self.service_name,
                 state_key,
-                request_id,
+                lock_request_id,
             )
             return None
 
-        # Transfer ownership to the popped request — it becomes the new holder.
-        # Mirror the head request_id into the legacy single slot for the
-        # release window during a server upgrade.
+        # Transfer ownership to the popped request. The storage boundary still
+        # persists queued holders under legacy ``request_id`` keys, plus the
+        # mirrored ``pending_request_id`` slot during upgrade windows.
         new_holder_request_id = next_entry["request_id"]
         legacy_mirror = queue[0]["request_id"] if queue else None
         self.storage.upsert_operation_state(

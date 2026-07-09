@@ -1,3 +1,11 @@
+import pytest
+from pydantic import BaseModel
+
+from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
+from reflexio.models.api_schema.service_schemas import Interaction, Request
+from reflexio.server.services.extraction.agent_run_records import (
+    build_extractor_agent_run_record,
+)
 from reflexio.server.services.storage.storage_base import (
     build_pending_tool_call_dedup_key,
     build_scope_hash,
@@ -48,3 +56,107 @@ def test_missing_answer_format_normalizes_to_empty_string():
         question_text="Need deployment target?",
         answer_format="",
     )
+
+
+class _ExtractorConfig(BaseModel):
+    extraction_definition_prompt: str = "Extract deployment preferences."
+
+
+def _request_interaction_data_models() -> list[RequestInteractionDataModel]:
+    request = Request(
+        request_id="req_source_1",
+        user_id="user_1",
+        source="api",
+        agent_version="v1",
+        session_id="session_1",
+    )
+    interaction = Interaction(
+        interaction_id=42,
+        user_id="user_1",
+        request_id="req_source_1",
+        content="Remember that I deploy to ECS.",
+    )
+    return [
+        RequestInteractionDataModel(
+            session_id="session_1",
+            request=request,
+            interactions=[interaction],
+        )
+    ]
+
+
+def test_build_extractor_agent_run_record_maps_generation_request_id_to_legacy_binding_field():
+    request_interaction_data_models = _request_interaction_data_models()
+
+    run = build_extractor_agent_run_record(
+        org_id="org_1",
+        extractor_kind="profile",
+        user_id="user_1",
+        generation_request_id="rerun_ab12cd34",
+        agent_version="v1",
+        source="api",
+        request_interaction_data_models=request_interaction_data_models,
+        extractor_config=_ExtractorConfig(),
+        service_config={"request_id": "rerun_ab12cd34"},
+        agent_context="context",
+    )
+
+    assert run.binding.request_id == "rerun_ab12cd34"
+    assert run.generation_request_snapshot["request_id"] == "rerun_ab12cd34"
+    assert run.id.startswith("ar_")
+
+
+def test_build_extractor_agent_run_record_accepts_legacy_request_id_keyword():
+    request_interaction_data_models = _request_interaction_data_models()
+
+    run = build_extractor_agent_run_record(
+        org_id="org_1",
+        extractor_kind="profile",
+        user_id="user_1",
+        request_id="legacy_req",
+        agent_version="v1",
+        source="api",
+        request_interaction_data_models=request_interaction_data_models,
+        extractor_config=_ExtractorConfig(),
+        service_config={"request_id": "legacy_req"},
+        agent_context="context",
+    )
+
+    assert run.binding.request_id == "legacy_req"
+    assert run.generation_request_snapshot["request_id"] == "legacy_req"
+
+
+def test_build_extractor_agent_run_record_rejects_mismatched_request_id_alias():
+    request_interaction_data_models = _request_interaction_data_models()
+
+    with pytest.raises(TypeError, match="must match"):
+        build_extractor_agent_run_record(
+            org_id="org_1",
+            extractor_kind="profile",
+            user_id="user_1",
+            generation_request_id="gen_req",
+            request_id="legacy_req",
+            agent_version="v1",
+            source="api",
+            request_interaction_data_models=request_interaction_data_models,
+            extractor_config=_ExtractorConfig(),
+            service_config={"request_id": "gen_req"},
+            agent_context="context",
+        )
+
+
+def test_build_extractor_agent_run_record_requires_generation_request_id():
+    request_interaction_data_models = _request_interaction_data_models()
+
+    with pytest.raises(TypeError, match="generation_request_id is required"):
+        build_extractor_agent_run_record(
+            org_id="org_1",
+            extractor_kind="profile",
+            user_id="user_1",
+            agent_version="v1",
+            source="api",
+            request_interaction_data_models=request_interaction_data_models,
+            extractor_config=_ExtractorConfig(),
+            service_config={},
+            agent_context="context",
+        )

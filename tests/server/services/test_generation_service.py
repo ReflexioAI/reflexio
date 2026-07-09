@@ -13,6 +13,8 @@ from reflexio.models.api_schema.service_schemas import (
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.services.generation_service import GenerationService
+from reflexio.server.services.playbook.service import PlaybookGenerationService
+from reflexio.server.services.profile.service import ProfileGenerationService
 
 
 @pytest.fixture
@@ -105,6 +107,53 @@ def test_publish_request_honors_caller_request_id(mock_llm_responses):
         stored_request = generation_service.storage.get_request(request_id)
         assert stored_request is not None
         assert stored_request.request_id == request_id
+
+
+def test_publish_generation_passes_source_request_id_to_legacy_dtos(
+    mock_llm_responses,
+):
+    captured_profile_requests = []
+    captured_playbook_requests = []
+    source_request_id = "req_publish_1"
+
+    def capture_profile_run(self, request):
+        captured_profile_requests.append(request)
+
+    def capture_playbook_run(self, request):
+        captured_playbook_requests.append(request)
+
+    with (
+        tempfile.TemporaryDirectory() as temp_dir,
+        patch.object(ProfileGenerationService, "run", capture_profile_run),
+        patch.object(PlaybookGenerationService, "run", capture_playbook_run),
+    ):
+        llm_config = LiteLLMConfig(model="gpt-4o-mini")
+        llm_client = LiteLLMClient(llm_config)
+        generation_service = GenerationService(
+            llm_client=llm_client,
+            request_context=RequestContext(org_id="test_org", storage_base_dir=temp_dir),
+        )
+        request = PublishUserInteractionRequest(
+            request_id=source_request_id,
+            user_id="user_1",
+            interaction_data_list=[
+                InteractionData(
+                    content="test interaction",
+                    created_at=int(datetime.datetime.now(UTC).timestamp()),
+                )
+            ],
+            session_id="session_1",
+        )
+
+        result = generation_service.run(request)
+
+    assert result.request_id == source_request_id
+    assert [req.request_id for req in captured_profile_requests] == [
+        source_request_id
+    ]
+    assert [req.request_id for req in captured_playbook_requests] == [
+        source_request_id
+    ]
 
 
 def test_publish_request_tagging_schedule_failure_is_best_effort(mock_llm_responses):
