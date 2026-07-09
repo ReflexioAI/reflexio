@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import time
 from contextlib import contextmanager
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
@@ -20,6 +20,8 @@ from reflexio.server.llm.providers.embedding_service_provider import (
     embedding_service_timeout_seconds,
     get_service_embeddings,
 )
+from reflexio.server.llm.providers.local_embedding_provider import LocalEmbedder
+from reflexio.server.llm.providers.nomic_embedding_provider import NomicEmbedder
 from reflexio.server.tracing import configure_tracer
 
 
@@ -751,3 +753,139 @@ def test_nomic_inprocess_fallback_does_not_use_minilm(monkeypatch) -> None:
 
     with pytest.raises(LiteLLMClientError, match="Nomic embedding generation failed"):
         client.get_embedding("hello", model="local/nomic-embed-text-v1.5")
+
+
+class TestRemoteServiceNoLocalFallback:
+    """Design item D4a / test-matrix row 8: a deployment configured for the REMOTE
+    embedding service (``REFLEXIO_EMBEDDING_DAEMON_HOST`` set → authoritative
+    ``local_service`` mode, no probe) must NEVER silently load an in-process
+    embedder (``NomicEmbedder`` / ``LocalEmbedder``) as a hidden fallback.
+
+    When the remote service fails, the call must raise
+    ``EmbeddingUnavailableError`` (which upstream turns into store-fail-loud /
+    query-degrade-to-FTS), NOT quietly instantiate a local model. On a self-host
+    fleet of N data-plane instances pointing at one shared GPU embedding service,
+    a silent per-instance in-process fallback on a service blip would stampede
+    (wrong device, ~1 GB each) into a fleet-wide OOM. This guards against that.
+    """
+
+    _FORBIDDEN = "remote_service must not load a local embedder"
+
+    @staticmethod
+    def _configure_remote_service(monkeypatch) -> None:
+        """Set env so a ``local/*`` model resolves to authoritative ``local_service``.
+
+        ``REFLEXIO_EMBEDDING_DAEMON_HOST`` set with no explicit provider/URL takes
+        the authoritative daemon-host branch in ``embedding_provider_mode`` (no
+        ``/health`` probe, so it can never re-resolve to ``inprocess``).
+        """
+        monkeypatch.delenv("REFLEXIO_EMBEDDING_PROVIDER", raising=False)
+        monkeypatch.delenv("REFLEXIO_EMBEDDING_SERVICE_URL", raising=False)
+        monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_EMBEDDING", raising=False)
+        monkeypatch.setenv("REFLEXIO_EMBEDDING_DAEMON_HOST", "embedding.internal")
+        monkeypatch.delenv("EMBEDDING_PORT", raising=False)
+        # A stale probe cache must not influence the authoritative daemon-host path.
+        monkeypatch.setattr(esp, "_local_service_probe_cache", None)
+
+    def _guard_local_embedders(self, monkeypatch) -> list[MagicMock]:
+        """Patch every in-process-embedder entry point to fail loudly if reached.
+
+        Replaces the two class names the mixin binds
+        (``_litellm_embedding.NomicEmbedder`` / ``.LocalEmbedder`` — the
+        patch-where-used sink) AND the real provider classes' ``get`` / ``_load``
+        with mocks whose ``side_effect`` raises. Returns the ``.get`` mocks so the
+        caller can ``assert_not_called()``.
+        """
+        guards: list[MagicMock] = []
+
+        for target in (
+            "reflexio.server.llm._litellm_embedding.NomicEmbedder",
+            "reflexio.server.llm._litellm_embedding.LocalEmbedder",
+        ):
+            binding = MagicMock(name=target)
+            binding.get.side_effect = AssertionError(self._FORBIDDEN)
+            monkeypatch.setattr(target, binding)
+            guards.append(binding.get)
+
+        # Defense in depth: any OTHER path that reaches the real classes also trips.
+        for cls in (NomicEmbedder, LocalEmbedder):
+            get_mock = MagicMock(side_effect=AssertionError(self._FORBIDDEN))
+            load_mock = MagicMock(side_effect=AssertionError(self._FORBIDDEN))
+            monkeypatch.setattr(cls, "get", get_mock)
+            monkeypatch.setattr(cls, "_load", load_mock)
+            guards.extend([get_mock, load_mock])
+
+        return guards
+
+    @staticmethod
+    def _install_failing_http_client(monkeypatch, post) -> None:
+        """Route ``_http_client`` to a fake whose ``post`` runs ``post``."""
+
+        class _Client:
+            def post(self, *_a, **_k):
+                return post()
+
+        monkeypatch.setattr(esp, "_http_client", lambda: _Client())
+
+    def test_batch_remote_failure_raises_and_never_loads_local(
+        self, monkeypatch
+    ) -> None:
+        """``get_embeddings`` (batch): a remote connection failure must surface as
+        ``EmbeddingUnavailableError`` without ever touching a local embedder.
+        """
+        self._configure_remote_service(monkeypatch)
+        model = "local/nomic-embed-text-v1.5"
+
+        # Assert the precondition: mode is the authoritative service mode, NOT
+        # inprocess — so the test cannot silently degrade into testing nothing.
+        assert embedding_provider_mode(model) == "local_service"
+
+        guards = self._guard_local_embedders(monkeypatch)
+        # No backoff sleep needed — keep the retry loop fast.
+        monkeypatch.setattr(esp.time, "sleep", lambda _s: None)
+
+        def _post():
+            raise httpx.ConnectError("connection refused")
+
+        self._install_failing_http_client(monkeypatch, _post)
+
+        client = LiteLLMClient(LiteLLMConfig(model="gpt-4o"))
+        with pytest.raises(EmbeddingUnavailableError):
+            client.get_embeddings(["hello"], model=model)
+
+        for guard in guards:
+            guard.assert_not_called()
+
+    def test_single_remote_5xx_raises_and_never_loads_local(self, monkeypatch) -> None:
+        """``get_embedding`` (single-text): a remote 5xx must surface as
+        ``EmbeddingUnavailableError`` without ever touching a local embedder.
+        """
+        self._configure_remote_service(monkeypatch)
+        model = "local/nomic-embed-text-v1.5"
+
+        assert embedding_provider_mode(model) == "local_service"
+
+        guards = self._guard_local_embedders(monkeypatch)
+
+        class _ServerErrorResponse:
+            @staticmethod
+            def raise_for_status() -> None:
+                request = httpx.Request("POST", "http://embedding.internal:8072")
+                raise httpx.HTTPStatusError(
+                    "503 Service Unavailable",
+                    request=request,
+                    response=httpx.Response(503, request=request),
+                )
+
+            @staticmethod
+            def json() -> dict:
+                return {}
+
+        self._install_failing_http_client(monkeypatch, _ServerErrorResponse)
+
+        client = LiteLLMClient(LiteLLMConfig(model="gpt-4o"))
+        with pytest.raises(EmbeddingUnavailableError):
+            client.get_embedding("hello", model=model)
+
+        for guard in guards:
+            guard.assert_not_called()
