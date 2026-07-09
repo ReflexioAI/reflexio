@@ -34,6 +34,8 @@ _CANONICAL_DELETE_TARGET_NAMES = (
     "profile",
     "user_playbook",
     "agent_success_evaluation_result",
+    "offline_tuner_reward_label",
+    "offline_tuner_reward_label_target_by_target_owner",
     "profile_purge",
     "user_playbook_purge",
 )
@@ -52,6 +54,8 @@ _ALLOWED_PURGE_TARGET_NAMES = frozenset(
         "profile",
         "user_playbook",
         "agent_success_evaluation_result",
+        "offline_tuner_reward_label",
+        "offline_tuner_reward_label_target_by_target_owner",
         "agent_playbook",
         "profile_purge",
         "user_playbook_purge",
@@ -157,6 +161,8 @@ _ALLOWED_DELETED_COUNTS_KEYS = frozenset(
         "profiles",
         "requests",
         "agent_success_evaluation_results",
+        "offline_tuner_reward_labels",
+        "offline_tuner_reward_label_targets_by_target_owner",
         "purged_profiles",
         "purged_user_playbooks",
     }
