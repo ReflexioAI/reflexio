@@ -127,6 +127,27 @@ def _candidate() -> UserPlaybook:
     )
 
 
+def _candidate_with_content(
+    *,
+    content: str,
+    request_id: str = "req_merge",
+    source_interaction_ids: list[int] | None = None,
+) -> UserPlaybook:
+    return UserPlaybook(
+        user_playbook_id=0,
+        user_id="u1",
+        agent_version="v0",
+        request_id=request_id,
+        playbook_name="default",
+        content=content,
+        trigger="when changing AWS deploy wiring",
+        rationale="r",
+        status=None,
+        source="chat",
+        source_interaction_ids=source_interaction_ids or [],
+    )
+
+
 def test_consolidation_merge_routes_through_merge_records(
     sqlite_storage, generation_service
 ):
@@ -200,6 +221,78 @@ def test_consolidation_merge_routes_through_merge_records(
     ref = resolve_current(sqlite_storage, "user_playbook", old_id)
     assert ref is not None
     assert ref.id == str(survivor.user_playbook_id)
+
+
+def test_consolidation_repair_persists_only_repaired_multi_new_unify(
+    sqlite_storage, generation_service
+):
+    """Repair an under-consumed same-batch merge before the service saves rows.
+
+    This drives the production finalization boundary with real SQLite storage:
+    the initial consolidation output merges facts from two NEW candidates but
+    lists only ``NEW-0``; the repair output lists both. The persisted state must
+    contain the merged survivor and not the raw ``NEW-1`` fallback row.
+    """
+    candidate_0 = _candidate_with_content(
+        content="Always update target groups and security groups.",
+        source_interaction_ids=[15, 16, 19, 20],
+    )
+    candidate_1 = _candidate_with_content(
+        content="Always update security groups.",
+        source_interaction_ids=[15, 16, 19, 20],
+    )
+    initial_output = PlaybookConsolidationOutput(
+        decisions=[
+            UnifyDecision(
+                new_id="NEW-0",
+                archive_existing_ids=[],
+                content="Always update target groups and security groups.",
+                trigger="when changing AWS deploy wiring",
+                rationale="merged",
+            )
+        ]
+    )
+    repaired_output = PlaybookConsolidationOutput(
+        decisions=[
+            UnifyDecision(
+                new_id=["NEW-0", "NEW-1"],
+                archive_existing_ids=[],
+                content="Always update target groups and security groups.",
+                trigger="when changing AWS deploy wiring",
+                rationale="merged",
+            )
+        ]
+    )
+    generation_service.client.generate_chat_response.return_value = repaired_output
+
+    with (
+        patch(
+            "reflexio.server.site_var.feature_flags.is_deduplicator_enabled",
+            return_value=True,
+        ),
+        patch.object(
+            PlaybookGenerationService,
+            "_configured_playbook_config",
+            return_value=None,
+        ),
+        patch(
+            "reflexio.server.services.playbook.components.consolidator.PlaybookConsolidator._retrieve_existing_playbooks",
+            return_value=[],
+        ),
+        patch(
+            "reflexio.server.services.playbook.components.consolidator.PlaybookConsolidator._consolidation_decisions",
+            return_value=initial_output,
+        ),
+        patch.dict("os.environ", {"MOCK_LLM_RESPONSE": "false"}),
+    ):
+        generation_service._finalize_extracted_items([candidate_0, candidate_1])
+
+    current = sqlite_storage.get_user_playbooks(user_id="u1")
+    assert len(current) == 1, [p.content for p in current]
+    survivor = current[0]
+    assert survivor.content == "Always update target groups and security groups."
+    assert survivor.source_interaction_ids == [15, 16, 19, 20]
+    generation_service.client.generate_chat_response.assert_called_once()
 
 
 def test_consolidation_differentiate_tombstones_split_source(

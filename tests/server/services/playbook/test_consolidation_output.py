@@ -8,10 +8,12 @@ longer parse — that structural guarantee is what the new schema buys.
 """
 
 import json
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
+from reflexio.models.api_schema.service_schemas import UserPlaybook
 from reflexio.server.services.playbook.components.consolidator import (
     ConsolidationDecision,
     DifferentiateDecision,
@@ -19,7 +21,35 @@ from reflexio.server.services.playbook.components.consolidator import (
     PlaybookConsolidationOutput,
     RejectNewDecision,
     UnifyDecision,
+    validate_consolidation_output,
 )
+
+
+def _playbook(idx: int) -> UserPlaybook:
+    return UserPlaybook(
+        content=f"content {idx}",
+        trigger=f"trigger {idx}",
+        request_id=f"req-{idx}",
+        agent_version="v1",
+        source_interaction_ids=[idx],
+    )
+
+
+def test_active_prompt_documents_partition_contract():
+    prompt_path = (
+        Path(__file__).resolve().parents[4]
+        / "reflexio"
+        / "server"
+        / "prompt"
+        / "prompt_bank"
+        / "playbook_consolidation"
+        / "v2.4.0.prompt.md"
+    )
+    prompt = prompt_path.read_text(encoding="utf-8")
+
+    assert "Every NEW label MUST appear exactly once" in prompt
+    assert '"new_id": ["NEW-0", "NEW-1"]' in prompt
+    assert "`archive_existing_ids` only refers to rows from the EXISTING list" in prompt
 
 
 def test_output_json_schema_is_provider_safe_by_construction():
@@ -202,6 +232,69 @@ def test_all_four_kinds_round_trip_through_output():
         "differentiate",
         "independent",
     ]
+
+
+def test_validate_consolidation_output_accepts_exactly_once_coverage():
+    output = PlaybookConsolidationOutput(
+        decisions=[
+            UnifyDecision(
+                new_id=["NEW-0", "NEW-1"],
+                archive_existing_ids=[],
+                content="X",
+                trigger="t",
+                rationale="r",
+            ),
+            RejectNewDecision(new_id="NEW-2", superseded_by_existing_id=0),
+            DifferentiateDecision(
+                new_id="NEW-3",
+                existing_id=0,
+                refined_new_trigger="narrow new",
+                refined_existing_trigger="narrow existing",
+            ),
+            IndependentDecision(new_id="NEW-4"),
+        ]
+    )
+
+    assert validate_consolidation_output([_playbook(i) for i in range(5)], output) == []
+
+
+def test_validate_consolidation_output_reports_missing_new_id():
+    output = PlaybookConsolidationOutput(
+        decisions=[IndependentDecision(new_id="NEW-0")]
+    )
+
+    errors = validate_consolidation_output([_playbook(0), _playbook(1)], output)
+
+    assert any("missing NEW ids: NEW-1" in error for error in errors)
+
+
+def test_validate_consolidation_output_reports_duplicate_new_id():
+    output = PlaybookConsolidationOutput(
+        decisions=[
+            IndependentDecision(new_id="NEW-0"),
+            UnifyDecision(
+                new_id="NEW-0",
+                archive_existing_ids=[],
+                content="X",
+                trigger="t",
+                rationale="r",
+            ),
+        ]
+    )
+
+    errors = validate_consolidation_output([_playbook(0)], output)
+
+    assert any("NEW-0 appears in decision[0]" in error for error in errors)
+
+
+def test_validate_consolidation_output_reports_unknown_new_id():
+    output = PlaybookConsolidationOutput(
+        decisions=[IndependentDecision(new_id="NEW-99")]
+    )
+
+    errors = validate_consolidation_output([_playbook(0)], output)
+
+    assert any("unknown NEW id NEW-99" in error for error in errors)
 
 
 @pytest.mark.parametrize(

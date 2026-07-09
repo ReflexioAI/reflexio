@@ -1120,6 +1120,439 @@ class TestDeduplicateHappyPath:
         assert set(result[0].source_interaction_ids) == {5, 10}
 
 
+class TestConsolidationRepair:
+    """Tests for pre-apply validation and the single repair pass."""
+
+    def test_under_consumed_output_repairs_to_multi_new_unify(self, mock_consolidator):
+        new_0 = _make_user_playbook(
+            0, content="alpha beta", source_interaction_ids=[10]
+        )
+        new_1 = _make_user_playbook(
+            1, content="gamma delta", source_interaction_ids=[11]
+        )
+
+        mock_consolidator.client.get_embeddings.return_value = [[0.1], [0.2]]
+        mock_consolidator.request_context.storage.search_user_playbooks.return_value = []
+        mock_consolidator.client.generate_chat_response.side_effect = [
+            PlaybookConsolidationOutput(
+                decisions=[
+                    _unify(
+                        "NEW-0",
+                        content="alpha beta gamma delta",
+                        trigger="when combined",
+                    )
+                ]
+            ),
+            PlaybookConsolidationOutput(
+                decisions=[
+                    _unify(
+                        ["NEW-0", "NEW-1"],
+                        content="alpha beta gamma delta",
+                        trigger="when combined",
+                    )
+                ]
+            ),
+        ]
+
+        with patch.dict("os.environ", {"MOCK_LLM_RESPONSE": "false"}):
+            result, delete_ids, merge_groups = mock_consolidator.deduplicate(
+                results=[[new_0, new_1]],
+                request_id="req_repair",
+                agent_version="v1",
+            )
+
+        assert len(result) == 1
+        assert result[0].content == "alpha beta gamma delta"
+        assert result[0].source_interaction_ids == [10, 11]
+        assert delete_ids == []
+        assert merge_groups == []
+        assert mock_consolidator.client.generate_chat_response.call_count == 2
+
+        # The repair is a follow-up turn of the original conversation, so the
+        # model keeps the full first-turn context: [user: original prompt,
+        # assistant: the invalid decisions, user: errors + fix instruction].
+        first_call, repair_call = (
+            mock_consolidator.client.generate_chat_response.call_args_list
+        )
+        original_prompt = first_call.kwargs["messages"][0]["content"]
+        repair_messages = repair_call.kwargs["messages"]
+        assert [m["role"] for m in repair_messages] == ["user", "assistant", "user"]
+        assert repair_messages[0]["content"] == original_prompt
+        assert '"NEW-0"' in repair_messages[1]["content"]
+        assert "exactly once" in repair_messages[2]["content"]
+        assert "missing NEW ids: NEW-1" in repair_messages[2]["content"]
+
+    def test_repair_failure_falls_back_to_original_output(
+        self, mock_consolidator, caplog
+    ):
+        new_0 = _make_user_playbook(
+            0, content="alpha beta", source_interaction_ids=[10]
+        )
+        new_1 = _make_user_playbook(
+            1, content="gamma delta", source_interaction_ids=[11]
+        )
+
+        mock_consolidator.client.get_embeddings.return_value = [[0.1], [0.2]]
+        mock_consolidator.request_context.storage.search_user_playbooks.return_value = []
+        original_output = PlaybookConsolidationOutput(
+            decisions=[
+                _unify(
+                    "NEW-0",
+                    content="alpha beta gamma delta",
+                    trigger="when combined",
+                )
+            ]
+        )
+        mock_consolidator.client.generate_chat_response.side_effect = [
+            original_output,
+            PlaybookConsolidationOutput(
+                decisions=[IndependentDecision(new_id="NEW-0")]
+            ),
+        ]
+
+        with (
+            patch.dict("os.environ", {"MOCK_LLM_RESPONSE": "false"}),
+            caplog.at_level("WARNING"),
+        ):
+            result, delete_ids, _ = mock_consolidator.deduplicate(
+                results=[[new_0, new_1]],
+                request_id="req_repair_fail",
+                agent_version="v1",
+            )
+
+        assert [row.content for row in result] == [
+            "alpha beta gamma delta",
+            "gamma delta",
+        ]
+        assert delete_ids == []
+        assert mock_consolidator.client.generate_chat_response.call_count == 2
+        assert any(
+            "event=consolidation_repair_failed" in record.message
+            for record in caplog.records
+        )
+
+    def test_suspicious_same_source_split_triggers_repair(self, mock_consolidator):
+        new_0 = _make_user_playbook(
+            0,
+            content="check target group security group health check",
+            source_interaction_ids=[15, 16],
+        )
+        new_1 = _make_user_playbook(
+            1,
+            content="check target group security group health check",
+            source_interaction_ids=[15, 16],
+        )
+
+        mock_consolidator.client.get_embeddings.return_value = [[0.1], [0.2]]
+        mock_consolidator.request_context.storage.search_user_playbooks.return_value = []
+        mock_consolidator.client.generate_chat_response.side_effect = [
+            PlaybookConsolidationOutput(
+                decisions=[
+                    _unify(
+                        "NEW-0",
+                        content="check target group security group health check",
+                        trigger="when deploying",
+                    ),
+                    IndependentDecision(new_id="NEW-1"),
+                ]
+            ),
+            PlaybookConsolidationOutput(
+                decisions=[
+                    _unify(
+                        ["NEW-0", "NEW-1"],
+                        content="check target group security group health check",
+                        trigger="when deploying",
+                    )
+                ]
+            ),
+        ]
+
+        with patch.dict("os.environ", {"MOCK_LLM_RESPONSE": "false"}):
+            result, _, _ = mock_consolidator.deduplicate(
+                results=[[new_0, new_1]],
+                request_id="req_suspicious",
+                agent_version="v1",
+            )
+
+        assert len(result) == 1
+        assert result[0].source_interaction_ids == [15, 16]
+        assert mock_consolidator.client.generate_chat_response.call_count == 2
+
+    def test_low_overlap_same_source_split_does_not_trigger_repair(
+        self, mock_consolidator
+    ):
+        new_0 = _make_user_playbook(
+            0,
+            content="check target group health checks",
+            source_interaction_ids=[15],
+        )
+        new_1 = _make_user_playbook(
+            1,
+            content="avoid friday afternoon deploys",
+            source_interaction_ids=[15],
+        )
+
+        mock_consolidator.client.get_embeddings.return_value = [[0.1], [0.2]]
+        mock_consolidator.request_context.storage.search_user_playbooks.return_value = []
+        mock_consolidator.client.generate_chat_response.return_value = (
+            PlaybookConsolidationOutput(
+                decisions=[
+                    _unify(
+                        "NEW-0",
+                        content="check target group health checks",
+                        trigger="when deploying",
+                    ),
+                    IndependentDecision(new_id="NEW-1"),
+                ]
+            )
+        )
+
+        with patch.dict("os.environ", {"MOCK_LLM_RESPONSE": "false"}):
+            result, _, _ = mock_consolidator.deduplicate(
+                results=[[new_0, new_1]],
+                request_id="req_low_overlap",
+                agent_version="v1",
+            )
+
+        assert len(result) == 2
+        assert mock_consolidator.client.generate_chat_response.call_count == 1
+
+    def test_reject_new_consumed_overlap_does_not_trigger_repair(
+        self, mock_consolidator
+    ):
+        """A high-overlap same-source row consumed by ``reject_new`` is dropped,
+        so it cannot duplicate the unify survivor — no repair call is spent."""
+        new_0 = _make_user_playbook(
+            0,
+            content="check target group security group health check",
+            source_interaction_ids=[15, 16],
+        )
+        new_1 = _make_user_playbook(
+            1,
+            content="check target group security group health check",
+            source_interaction_ids=[15, 16],
+        )
+        existing = _make_user_playbook(
+            50,
+            content="existing deploy checklist",
+            source_interaction_ids=[1],
+            user_playbook_id=50,
+        )
+
+        mock_consolidator.client.get_embeddings.return_value = [[0.1], [0.2]]
+        mock_consolidator.request_context.storage.search_user_playbooks.return_value = [
+            existing
+        ]
+        mock_consolidator.client.generate_chat_response.return_value = (
+            PlaybookConsolidationOutput(
+                decisions=[
+                    _unify(
+                        "NEW-0",
+                        content="check target group security group health check",
+                        trigger="when deploying",
+                    ),
+                    RejectNewDecision(new_id="NEW-1", superseded_by_existing_id=0),
+                ]
+            )
+        )
+
+        with patch.dict("os.environ", {"MOCK_LLM_RESPONSE": "false"}):
+            result, _, _ = mock_consolidator.deduplicate(
+                results=[[new_0, new_1]],
+                request_id="req_reject_new_overlap",
+                agent_version="v1",
+            )
+
+        assert len(result) == 1
+        assert mock_consolidator.client.generate_chat_response.call_count == 1
+
+    def test_sibling_unify_same_source_overlap_triggers_repair(self, mock_consolidator):
+        """Two same-source unify decisions with overlapping FINAL contents each
+        persist a survivor row — the same duplicate-storage class as an
+        under-consumed unify — so the pair must trigger the repair pass."""
+        new_0 = _make_user_playbook(
+            0,
+            content="check target group security group health check",
+            source_interaction_ids=[15, 16],
+        )
+        new_1 = _make_user_playbook(
+            1,
+            content="verify security group and health check wiring",
+            source_interaction_ids=[15, 16],
+        )
+
+        mock_consolidator.client.get_embeddings.return_value = [[0.1], [0.2]]
+        mock_consolidator.request_context.storage.search_user_playbooks.return_value = []
+        mock_consolidator.client.generate_chat_response.side_effect = [
+            PlaybookConsolidationOutput(
+                decisions=[
+                    _unify(
+                        "NEW-0",
+                        content="check target group security group health check wiring",
+                        trigger="when deploying",
+                    ),
+                    _unify(
+                        "NEW-1",
+                        content="check target group security group health check wiring",
+                        trigger="when deploying",
+                    ),
+                ]
+            ),
+            PlaybookConsolidationOutput(
+                decisions=[
+                    _unify(
+                        ["NEW-0", "NEW-1"],
+                        content="check target group security group health check wiring",
+                        trigger="when deploying",
+                    )
+                ]
+            ),
+        ]
+
+        with patch.dict("os.environ", {"MOCK_LLM_RESPONSE": "false"}):
+            result, _, _ = mock_consolidator.deduplicate(
+                results=[[new_0, new_1]],
+                request_id="req_sibling_unify",
+                agent_version="v1",
+            )
+
+        assert len(result) == 1
+        assert result[0].source_interaction_ids == [15, 16]
+        assert mock_consolidator.client.generate_chat_response.call_count == 2
+
+    def test_distinct_sibling_unifies_do_not_trigger_repair(self, mock_consolidator):
+        """Same-source unify pair with genuinely different final contents is a
+        legitimate split — no repair call is spent."""
+        new_0 = _make_user_playbook(
+            0,
+            content="check target group health checks before deploying",
+            source_interaction_ids=[15],
+        )
+        new_1 = _make_user_playbook(
+            1,
+            content="announce the rollout in the deploy channel first",
+            source_interaction_ids=[15],
+        )
+
+        mock_consolidator.client.get_embeddings.return_value = [[0.1], [0.2]]
+        mock_consolidator.request_context.storage.search_user_playbooks.return_value = []
+        mock_consolidator.client.generate_chat_response.return_value = (
+            PlaybookConsolidationOutput(
+                decisions=[
+                    _unify(
+                        "NEW-0",
+                        content="check target group health checks before deploying",
+                        trigger="when deploying",
+                    ),
+                    _unify(
+                        "NEW-1",
+                        content="announce the rollout in the deploy channel first",
+                        trigger="when announcing a rollout",
+                    ),
+                ]
+            )
+        )
+
+        with patch.dict("os.environ", {"MOCK_LLM_RESPONSE": "false"}):
+            result, _, _ = mock_consolidator.deduplicate(
+                results=[[new_0, new_1]],
+                request_id="req_distinct_unifies",
+                agent_version="v1",
+            )
+
+        assert len(result) == 2
+        assert mock_consolidator.client.generate_chat_response.call_count == 1
+
+    def test_suspicious_repair_returning_same_decisions_is_accepted(
+        self, mock_consolidator
+    ):
+        new_0 = _make_user_playbook(
+            0,
+            content="sync env var secret port references",
+            source_interaction_ids=[20],
+        )
+        new_1 = _make_user_playbook(
+            1,
+            content="sync env var secret port references",
+            source_interaction_ids=[20],
+        )
+        same_output = PlaybookConsolidationOutput(
+            decisions=[
+                _unify(
+                    "NEW-0",
+                    content="sync env var secret port references",
+                    trigger="when editing docs",
+                ),
+                IndependentDecision(new_id="NEW-1"),
+            ]
+        )
+
+        mock_consolidator.client.get_embeddings.return_value = [[0.1], [0.2]]
+        mock_consolidator.request_context.storage.search_user_playbooks.return_value = []
+        mock_consolidator.client.generate_chat_response.side_effect = [
+            same_output,
+            same_output,
+        ]
+
+        with patch.dict("os.environ", {"MOCK_LLM_RESPONSE": "false"}):
+            result, _, _ = mock_consolidator.deduplicate(
+                results=[[new_0, new_1]],
+                request_id="req_same_repair",
+                agent_version="v1",
+            )
+
+        assert len(result) == 2
+        assert mock_consolidator.client.generate_chat_response.call_count == 2
+
+    def test_same_batch_duplicate_regression_drops_raw_source_after_repair(
+        self, mock_consolidator
+    ):
+        merged_source = _make_user_playbook(
+            0,
+            content="Always update target groups and security groups.",
+            source_interaction_ids=[15, 16, 19, 20],
+        )
+        raw_source = _make_user_playbook(
+            1,
+            content="Always update security groups.",
+            source_interaction_ids=[15, 16, 19, 20],
+        )
+
+        mock_consolidator.client.get_embeddings.return_value = [[0.1], [0.2]]
+        mock_consolidator.request_context.storage.search_user_playbooks.return_value = []
+        mock_consolidator.client.generate_chat_response.side_effect = [
+            PlaybookConsolidationOutput(
+                decisions=[
+                    _unify(
+                        "NEW-0",
+                        content="Always update target groups and security groups.",
+                        trigger="when changing AWS deploy wiring",
+                    )
+                ]
+            ),
+            PlaybookConsolidationOutput(
+                decisions=[
+                    _unify(
+                        ["NEW-0", "NEW-1"],
+                        content="Always update target groups and security groups.",
+                        trigger="when changing AWS deploy wiring",
+                    )
+                ]
+            ),
+        ]
+
+        with patch.dict("os.environ", {"MOCK_LLM_RESPONSE": "false"}):
+            result, _, _ = mock_consolidator.deduplicate(
+                results=[[merged_source, raw_source]],
+                request_id="req_duplicate_regression",
+                agent_version="v1",
+            )
+
+        assert [row.content for row in result] == [
+            "Always update target groups and security groups."
+        ]
+
+
 # ===============================
 # Edge cases for _build_deduplicated_results
 # ===============================
