@@ -756,10 +756,16 @@ def test_nomic_inprocess_fallback_does_not_use_minilm(monkeypatch) -> None:
 
 
 class TestRemoteServiceNoLocalFallback:
-    """Design item D4a / test-matrix row 8: a deployment configured for the REMOTE
-    embedding service (``REFLEXIO_EMBEDDING_DAEMON_HOST`` set → authoritative
-    ``local_service`` mode, no probe) must NEVER silently load an in-process
-    embedder (``NomicEmbedder`` / ``LocalEmbedder``) as a hidden fallback.
+    """Design item D4a / test-matrix row 8: a deployment configured for a REMOTE
+    embedding service must NEVER silently load an in-process embedder
+    (``NomicEmbedder`` / ``LocalEmbedder``) as a hidden fallback.
+
+    Both remote-service quadrants are covered:
+
+    - ``local_service`` — ``REFLEXIO_EMBEDDING_DAEMON_HOST`` set (authoritative
+      daemon-host branch, no ``/health`` probe).
+    - ``internal_service`` — ``REFLEXIO_EMBEDDING_SERVICE_URL`` set (the
+      horizontally-scaled cloud / GPU-service topology).
 
     When the remote service fails, the call must raise
     ``EmbeddingUnavailableError`` (which upstream turns into store-fail-loud /
@@ -786,6 +792,31 @@ class TestRemoteServiceNoLocalFallback:
         monkeypatch.delenv("EMBEDDING_PORT", raising=False)
         # A stale probe cache must not influence the authoritative daemon-host path.
         monkeypatch.setattr(esp, "_local_service_probe_cache", None)
+
+    @staticmethod
+    def _configure_internal_service(monkeypatch) -> None:
+        """Set env so any model resolves to ``internal_service``.
+
+        ``REFLEXIO_EMBEDDING_SERVICE_URL`` set with no explicit provider,
+        ``CLAUDE_SMART_USE_LOCAL_EMBEDDING`` or ``DAEMON_HOST`` takes the
+        service-URL branch in ``embedding_provider_mode``, which resolves to
+        ``internal_service`` with no ``/health`` probe — so it can never
+        re-resolve to ``inprocess``.
+        """
+        monkeypatch.delenv("REFLEXIO_EMBEDDING_PROVIDER", raising=False)
+        monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_EMBEDDING", raising=False)
+        monkeypatch.delenv("REFLEXIO_EMBEDDING_DAEMON_HOST", raising=False)
+        monkeypatch.setenv(
+            "REFLEXIO_EMBEDDING_SERVICE_URL", "http://embedding.internal:8089"
+        )
+        monkeypatch.setattr(esp, "_local_service_probe_cache", None)
+
+    # (configure_fn, expected_mode) for each remote-service quadrant. Both must
+    # fail loud on a service error and never load an in-process embedder.
+    _QUADRANTS = [
+        pytest.param(_configure_remote_service, "local_service", id="daemon_host"),
+        pytest.param(_configure_internal_service, "internal_service", id="service_url"),
+    ]
 
     def _guard_local_embedders(self, monkeypatch) -> list[MagicMock]:
         """Patch every in-process-embedder entry point to fail loudly if reached.
@@ -827,18 +858,19 @@ class TestRemoteServiceNoLocalFallback:
 
         monkeypatch.setattr(esp, "_http_client", lambda: _Client())
 
+    @pytest.mark.parametrize(("configure", "expected_mode"), _QUADRANTS)
     def test_batch_remote_failure_raises_and_never_loads_local(
-        self, monkeypatch
+        self, monkeypatch, configure, expected_mode
     ) -> None:
         """``get_embeddings`` (batch): a remote connection failure must surface as
         ``EmbeddingUnavailableError`` without ever touching a local embedder.
         """
-        self._configure_remote_service(monkeypatch)
+        configure(monkeypatch)
         model = "local/nomic-embed-text-v1.5"
 
         # Assert the precondition: mode is the authoritative service mode, NOT
         # inprocess — so the test cannot silently degrade into testing nothing.
-        assert embedding_provider_mode(model) == "local_service"
+        assert embedding_provider_mode(model) == expected_mode
 
         guards = self._guard_local_embedders(monkeypatch)
         # No backoff sleep needed — keep the retry loop fast.
@@ -856,14 +888,17 @@ class TestRemoteServiceNoLocalFallback:
         for guard in guards:
             guard.assert_not_called()
 
-    def test_single_remote_5xx_raises_and_never_loads_local(self, monkeypatch) -> None:
+    @pytest.mark.parametrize(("configure", "expected_mode"), _QUADRANTS)
+    def test_single_remote_5xx_raises_and_never_loads_local(
+        self, monkeypatch, configure, expected_mode
+    ) -> None:
         """``get_embedding`` (single-text): a remote 5xx must surface as
         ``EmbeddingUnavailableError`` without ever touching a local embedder.
         """
-        self._configure_remote_service(monkeypatch)
+        configure(monkeypatch)
         model = "local/nomic-embed-text-v1.5"
 
-        assert embedding_provider_mode(model) == "local_service"
+        assert embedding_provider_mode(model) == expected_mode
 
         guards = self._guard_local_embedders(monkeypatch)
 
