@@ -49,7 +49,7 @@ strings before deleting old import paths in the same PR.
 
 | Path | Purpose |
 |------|---------|
-| `shadow_comparison/` | `ShadowComparisonJudge` (`judge.py`) plus pure outcome helpers (`outcome.py`) - per-turn regular-vs-shadow verdicts written to a separate table. Compact by design; see [README](shadow_comparison/README.md). |
+| `shadow_comparison/` | Publish-time regular-vs-shadow comparison: `worker.py` queues bounded background jobs, `dispatcher.py` filters shadow-bearing assistant turns and saves verdicts, `judge.py` renders the structured LLM judge, and `outcome.py` derives win/tie/loss. See [README](shadow_comparison/README.md). |
 | `evaluation_overview/` | Dashboard/read-side rollups: `service.py` entry point, `components/` aggregation helpers, and root `eval_sampler.py` shared with regenerate jobs. See [README](evaluation_overview/README.md). |
 | `playbook_optimizer/` | Scenario-based playbook optimization: mature flat package with `optimizer.py`, `scheduler.py`, `rollout.py`, `judge.py`, `models.py`, `scenario_resolver.py`, `gepa_adapter.py`, and `assistant_webhook.py`. See [README](playbook_optimizer/README.md). |
 | `braintrust/` | Braintrust export/sync: `service.py`, `client.py`, `_cron.py`, `_encryption.py`. |
