@@ -109,6 +109,43 @@ def _make_evaluation(
 
 
 # ---------------------------------------------------------------------------
+# get_user_playbooks
+# ---------------------------------------------------------------------------
+
+
+class TestGetUserPlaybooks:
+    """Round-trip characterization for get_user_playbooks user_id filtering."""
+
+    def test_user_id_filter_includes_synthetic_generation_request_id(self, tmp_path):
+        """Synthetic manual/rerun request ids stay visible under user_id filtering."""
+        s = _store(tmp_path)
+        s.add_request(_make_request(request_id="req-real", user_id="user-1"))
+        real = _make_user_playbook(
+            user_id="user-1",
+            request_id="req-real",
+            content="real request playbook",
+        )
+        synthetic = _make_user_playbook(
+            user_id="user-1",
+            request_id="rerun_playbook_ab12cd34",
+            content="synthetic rerun playbook",
+        )
+        other_user = _make_user_playbook(
+            user_id="user-2",
+            request_id="manual_cd34ef56",
+            content="other user synthetic playbook",
+        )
+        s.save_user_playbooks([real, synthetic, other_user])
+
+        rows = s.get_user_playbooks(user_id="user-1", limit=10)
+
+        assert {row.request_id for row in rows} == {
+            "req-real",
+            "rerun_playbook_ab12cd34",
+        }
+
+
+# ---------------------------------------------------------------------------
 # count_user_playbooks_by_session
 # ---------------------------------------------------------------------------
 
