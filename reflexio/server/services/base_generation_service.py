@@ -429,7 +429,7 @@ class BaseGenerationService(
 
         # Get scope ID and request ID for in-progress tracking
         scope_id = self._get_lock_scope_id(request)
-        my_request_id = getattr(request, "request_id", None) or str(uuid.uuid4())
+        lock_request_id = getattr(request, "request_id", None) or str(uuid.uuid4())
 
         state_manager = self._create_state_manager()
 
@@ -440,7 +440,7 @@ class BaseGenerationService(
         # never get extracted.
         my_payload = self._serialize_request_for_queue(request)
         if not state_manager.acquire_lock(
-            my_request_id, scope_id=scope_id, payload=my_payload
+            lock_request_id, scope_id=scope_id, payload=my_payload
         ):
             return  # Another operation is running, we've enqueued ourselves
 
@@ -465,21 +465,21 @@ class BaseGenerationService(
                 # request's ID + payload so the rerun runs against THAT
                 # publish's data, not the original holder's.
                 next_entry = state_manager.release_lock_pop_queue(
-                    my_request_id, scope_id=scope_id
+                    lock_request_id, scope_id=scope_id
                 )
 
                 if next_entry is None:
                     break  # Queue empty — we're done
 
-                next_request_id = next_entry["request_id"]
+                next_lock_request_id = next_entry["request_id"]
                 next_payload = next_entry.get("payload")
 
                 logger.info(
-                    "Draining queued %s request: prev_request_id=%s, next_request_id=%s, "
+                    "Draining queued %s request: prev_lock_request_id=%s, next_lock_request_id=%s, "
                     "payload_present=%s",
                     self._get_service_name(),
-                    my_request_id,
-                    next_request_id,
+                    lock_request_id,
+                    next_lock_request_id,
                     next_payload is not None,
                 )
 
@@ -493,7 +493,7 @@ class BaseGenerationService(
                 else:
                     current_request = request
 
-                my_request_id = next_request_id
+                lock_request_id = next_lock_request_id
 
         except Exception:
             # Clear lock on error to prevent deadlock

@@ -5,6 +5,7 @@ Tests all 5 use cases: progress tracking, concurrency lock,
 extractor bookmark, aggregator bookmark, and simple lock.
 """
 
+import logging
 import time
 from datetime import UTC, datetime
 from unittest.mock import MagicMock
@@ -425,6 +426,25 @@ class TestAcquireLock:
             "test_service::org_123::lock", "req_1", 60, payload=None
         )
 
+    def test_acquire_lock_passes_lock_request_id_to_legacy_storage_boundary(
+        self, manager, mock_storage, caplog
+    ):
+        mock_storage.try_acquire_in_progress_lock.return_value = {"acquired": True}
+
+        with caplog.at_level(
+            logging.INFO, logger="reflexio.server.services.operation_state_utils"
+        ):
+            result = manager.acquire_lock("lock_req_1", stale_seconds=60)
+
+        assert result is True
+        mock_storage.try_acquire_in_progress_lock.assert_called_once_with(
+            "test_service::org_123::lock",
+            "lock_req_1",
+            60,
+            payload=None,
+        )
+        assert "lock_request_id=lock_req_1" in caplog.text
+
 
 class TestReleaseLock:
     """Tests for release_lock method."""
@@ -641,6 +661,34 @@ class TestReleaseLockPopQueue:
         assert state["pending_request_queue"] == [
             {"request_id": "req_3", "payload": {"user_id": "user_c"}},
         ]
+
+    def test_release_lock_pop_queue_keeps_persisted_queue_request_id_key(
+        self, manager, mock_storage
+    ):
+        mock_storage.get_operation_state.return_value = {
+            "operation_state": {
+                "current_request_id": "holder_req",
+                "pending_request_queue": [
+                    {
+                        "request_id": "queued_req",
+                        "payload": {
+                            "request_id": "queued_req",
+                            "user_id": "user_1",
+                        },
+                    }
+                ],
+            }
+        }
+
+        result = manager.release_lock_pop_queue("holder_req")
+
+        assert result == {
+            "request_id": "queued_req",
+            "payload": {"request_id": "queued_req", "user_id": "user_1"},
+        }
+        _, state = mock_storage.upsert_operation_state.call_args[0]
+        assert state["current_request_id"] == "queued_req"
+        assert state["pending_request_queue"] == []
 
     def test_pop_legacy_pending_request_id_fallback(self, manager, mock_storage):
         """Back-compat: if storage row only has the old pending_request_id slot

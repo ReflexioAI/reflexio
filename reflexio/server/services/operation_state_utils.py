@@ -380,7 +380,7 @@ class OperationStateManager:
 
     def acquire_lock(
         self,
-        request_id: str,
+        lock_request_id: str,
         scope_id: str | None = None,
         stale_seconds: int = GENERATION_STALE_LOCK_SECONDS,
         payload: dict | None = None,
@@ -396,7 +396,7 @@ class OperationStateManager:
         no valid lock exists or the lock is stale, acquires the lock.
 
         Args:
-            request_id: Current request ID
+            lock_request_id: Request ID for the current lock holder
             scope_id: Optional scope identifier (e.g., user_id)
             stale_seconds: Seconds after which a lock is considered stale
             payload: Optional serialized request payload to enqueue with this
@@ -414,7 +414,7 @@ class OperationStateManager:
         # dropping it on the floor.
         result = self.storage.try_acquire_in_progress_lock(
             state_key,
-            request_id,
+            lock_request_id,
             stale_seconds,
             payload=payload,
         )
@@ -423,24 +423,24 @@ class OperationStateManager:
 
         if acquired:
             logger.info(
-                "Acquired in-progress lock for %s: state_key=%s, request_id=%s",
+                "Acquired in-progress lock for %s: state_key=%s, lock_request_id=%s",
                 self.service_name,
                 state_key,
-                request_id,
+                lock_request_id,
             )
         else:
             logger.info(
                 "Skipping %s - another operation is in progress (state_key=%s). "
-                "Enqueued request_id=%s for drain on release",
+                "Enqueued lock_request_id=%s for drain on release",
                 self.service_name,
                 state_key,
-                request_id,
+                lock_request_id,
             )
         return acquired
 
     def release_lock(
         self,
-        request_id: str,
+        lock_request_id: str,
         scope_id: str | None = None,
     ) -> str | None:
         """Release the in-progress lock and check if a new request came in.
@@ -449,7 +449,7 @@ class OperationStateManager:
         the caller can re-run. Otherwise clears the lock.
 
         Args:
-            request_id: The request ID of the current operation
+            lock_request_id: Request ID for the current lock holder
             scope_id: Optional scope identifier (e.g., user_id)
 
         Returns:
@@ -473,8 +473,8 @@ class OperationStateManager:
         current_request_id = state.get("current_request_id") or state.get("request_id")
 
         # Only process if we still own the lock
-        if current_request_id == request_id:
-            if pending_request_id and pending_request_id != request_id:
+        if current_request_id == lock_request_id:
+            if pending_request_id and pending_request_id != lock_request_id:
                 # Another request came in, transfer ownership and signal re-run
                 self.storage.upsert_operation_state(
                     state_key,
@@ -502,10 +502,10 @@ class OperationStateManager:
                 },
             )
             logger.info(
-                "Released in-progress lock for %s: state_key=%s, request_id=%s",
+                "Released in-progress lock for %s: state_key=%s, lock_request_id=%s",
                 self.service_name,
                 state_key,
-                request_id,
+                lock_request_id,
             )
 
         return None
@@ -537,14 +537,14 @@ class OperationStateManager:
 
     def clear_lock_if_owner(
         self,
-        request_id: str,
+        lock_request_id: str,
         scope_id: str | None = None,
     ) -> bool:
-        """Atomically clear a lock only if ``request_id`` still owns it."""
+        """Atomically clear a lock only if ``lock_request_id`` still owns it."""
         state_key = self._lock_key(scope_id)
         cleared = self.storage.clear_in_progress_lock_if_owner(
             state_key,
-            request_id,
+            lock_request_id,
             {
                 "in_progress": False,
                 "current_request_id": None,
@@ -554,16 +554,16 @@ class OperationStateManager:
         )
         if cleared:
             logger.debug(
-                "Cleared in-progress lock for %s: state_key=%s, request_id=%s",
+                "Cleared in-progress lock for %s: state_key=%s, lock_request_id=%s",
                 self.service_name,
                 state_key,
-                request_id,
+                lock_request_id,
             )
         return cleared
 
     def release_lock_pop_queue(
         self,
-        request_id: str,
+        lock_request_id: str,
         scope_id: str | None = None,
     ) -> dict | None:
         """Release the lock and pop the next queued pending request, if any.
@@ -579,7 +579,7 @@ class OperationStateManager:
         to the original request rather than dropping it on the floor.
 
         Args:
-            request_id: The request ID of the current operation (the holder)
+            lock_request_id: Request ID for the current lock holder
             scope_id: Optional scope identifier (e.g., user_id)
 
         Returns:
@@ -603,7 +603,7 @@ class OperationStateManager:
         current_request_id = state.get("current_request_id") or state.get("request_id")
 
         # Only drain if we still own the lock.
-        if current_request_id != request_id:
+        if current_request_id != lock_request_id:
             return None
 
         queue = list(state.get("pending_request_queue") or [])
@@ -621,7 +621,7 @@ class OperationStateManager:
             # Legacy fallback: storage row lacks the queue field but the old
             # pending_request_id slot was set by an in-flight pre-fix server.
             legacy_pending = state.get("pending_request_id")
-            if legacy_pending and legacy_pending != request_id:
+            if legacy_pending and legacy_pending != lock_request_id:
                 next_entry = {"request_id": legacy_pending, "payload": None}
 
         if next_entry is None:
@@ -636,10 +636,10 @@ class OperationStateManager:
                 },
             )
             logger.info(
-                "Released in-progress lock for %s: state_key=%s, request_id=%s",
+                "Released in-progress lock for %s: state_key=%s, lock_request_id=%s",
                 self.service_name,
                 state_key,
-                request_id,
+                lock_request_id,
             )
             return None
 
