@@ -16,7 +16,6 @@ iterates (e.g. the QPS billable-endpoint scan over ``core_router.routes``).
 
 import inspect
 import logging
-import os
 from collections.abc import Callable, Iterable
 from typing import TYPE_CHECKING
 
@@ -85,13 +84,19 @@ def _log_multi_worker_daemons() -> None:
     ``--workers N`` (N>1) runs the full daemon set in every worker process
     (duplicate ticking). Safe by the concurrent-tick invariant — every daemon
     tick is concurrent-safe — but worth one visible line (design D3).
+
+    Reuses ``embedder_warmup._detected_worker_count`` (checks
+    ``REFLEXIO_SERVER_WORKERS`` then falls back to ``WEB_CONCURRENCY``)
+    instead of re-implementing a narrower env read here. When the count is
+    undetectable (``None``), this logs nothing — it cannot verify the count,
+    so it must not assume a single worker.
     """
-    raw = os.environ.get("REFLEXIO_SERVER_WORKERS", "1")
-    try:
-        workers = int(raw)
-    except ValueError:
-        return
-    if workers > 1:
+    from reflexio.server.llm.providers.embedder_warmup import (
+        _detected_worker_count,
+    )
+
+    workers = _detected_worker_count()
+    if workers is not None and workers > 1:
         logger.warning(
             "event=multi_worker_daemons workers=%d — background daemons tick in "
             "every worker process (duplicate ticking; safe: ticks are "

@@ -198,22 +198,57 @@ class _StaticGate:
         return self.answer
 
 
+class _RaisingGate:
+    """LeaderGate stub whose ``should_run`` always raises.
+
+    Exercises the base's fail-open defense (spec: the gate contract says
+    ``should_run`` never raises, but the base must not trust that blindly).
+    """
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def should_run(self) -> bool:
+        self.calls += 1
+        raise RuntimeError("gate boom")
+
+
 class TestLeaderGate:
     def test_no_gate_ticks_run(self) -> None:
         s = _TickCounter()
         s.start()
-        time.sleep(0.1)
-        s.stop()
+        try:
+            assert _wait_until(lambda: s.ticks >= 2)
+        finally:
+            s.stop()
         assert s.ticks >= 2  # today's behavior, byte-for-byte
 
     def test_gate_true_ticks_run(self) -> None:
         gate = _StaticGate(True)
         s = _TickCounter(leader_gate=gate)
         s.start()
-        time.sleep(0.1)
-        s.stop()
+        try:
+            assert _wait_until(lambda: s.ticks >= 2)
+        finally:
+            s.stop()
         assert s.ticks >= 2
         assert gate.calls >= 2  # consulted once per tick
+
+    def test_gate_raises_fails_open_and_loop_survives(self, caplog) -> None:
+        gate = _RaisingGate()
+        s = _TickCounter(leader_gate=gate)
+        with caplog.at_level("ERROR"):
+            s.start()
+            try:
+                assert _wait_until(lambda: s.ticks >= 2), (
+                    "loop died after the gate raised instead of failing open"
+                )
+            finally:
+                s.stop()
+        assert gate.calls >= 2  # gate consulted again on the next iteration
+        assert any(
+            "tick-counter_leader_gate_error" in r.message for r in caplog.records
+        )
 
     def test_gate_false_skips_and_waits_follower_poll(self) -> None:
         gate = _StaticGate(False)
@@ -246,7 +281,9 @@ def test_multi_worker_daemon_log(monkeypatch, caplog) -> None:
     monkeypatch.setenv("REFLEXIO_SERVER_WORKERS", "3")
     with caplog.at_level("WARNING"):
         _log_multi_worker_daemons()
-    assert any("event=multi_worker_daemons workers=3" in r.message for r in caplog.records)
+    assert any(
+        "event=multi_worker_daemons workers=3" in r.message for r in caplog.records
+    )
 
     caplog.clear()
     monkeypatch.setenv("REFLEXIO_SERVER_WORKERS", "1")

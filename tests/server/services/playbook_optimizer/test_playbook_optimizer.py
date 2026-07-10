@@ -46,6 +46,7 @@ from reflexio.server.services.playbook_optimizer.models import (
     ScenarioWindow,
 )
 from reflexio.server.services.playbook_optimizer.optimizer import (
+    PlaybookOptimizationRunStatus,
     PlaybookOptimizer,
     _agent_like_playbook,
     _split_train_validation_windows,
@@ -1469,3 +1470,30 @@ def test_scheduler_applies_abort_cooldown():
         cooldown_after_aborts_seconds=60,
     )
     assert scheduler._scheduled == {}  # noqa: SLF001
+
+
+def test_scheduler_fires_callback_through_executor() -> None:
+    """Fire-path coverage: enqueue on a real scheduler and confirm the
+    callback actually runs through the real ``submit_callback`` /
+    ``BoundedCallbackExecutor`` path, analogous to
+    ``tests/server/services/tagging/test_tagging_scheduler.py::
+    test_scheduler_fires_scheduled_callback``.
+
+    Constructs a fresh ``PlaybookOptimizationScheduler`` instance directly
+    (bypassing ``get_instance``) so the class singleton is not polluted.
+    """
+    scheduler = PlaybookOptimizationScheduler()
+    fired = threading.Event()
+
+    def callback() -> PlaybookOptimizationRunStatus:
+        fired.set()
+        return "completed"
+
+    scheduler.enqueue(
+        org_id="org-fire-path",
+        target=PlaybookOptimizationTarget(kind="agent_playbook", target_id=99),
+        callback=callback,
+        jitter_seconds=0,
+    )
+
+    assert fired.wait(timeout=5), "scheduled callback never fired"

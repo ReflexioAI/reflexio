@@ -86,9 +86,13 @@ _leader_gate_hook: LeaderGate | None = None
 def set_leader_gate(gate: LeaderGate | None) -> None:
     """Register the leader gate consulted by ``maybe_start_lineage_gc``.
 
+    Enterprise deployments call this at app-composition time so the scheduler
+    only ticks on the elected leader (``gate.should_run()`` wraps fleet leader
+    election, e.g. an advisory-lock gate). ``None`` (OSS default) preserves
+    always-tick behavior. Pass ``None`` to clear the hook (tests restore defaults).
+
     Args:
-        gate (LeaderGate | None): Fleet-coordination gate, or ``None`` to clear
-            (tests restore OSS defaults).
+        gate (LeaderGate | None): Fleet-coordination gate, or ``None`` to clear.
     """
     global _leader_gate_hook  # noqa: PLW0603
     _leader_gate_hook = gate
@@ -130,8 +134,8 @@ _per_org_sweep_hooks: list[Callable[[str, int], int]] = []
 def register_per_org_sweep(fn: Callable[[str, int], int]) -> None:
     """Register a per-org reclamation sweep.
 
-    The sweep is invoked once per org inside ``_gc_tick``'s org loop, after
-    the Class-B block, unconditionally (not gated on ``lineage_gc`` or
+    The sweep is invoked once per org inside ``_sweep_org``, after the
+    Class-B block, unconditionally (not gated on ``lineage_gc`` or
     ``expiry_reclamation`` — the real gate lives in the enterprise closure).
 
     Note: a registered sweep that absorbs its own exceptions (returns instead

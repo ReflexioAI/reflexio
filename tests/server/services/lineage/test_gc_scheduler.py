@@ -15,6 +15,7 @@ from reflexio.server.scheduling import LeaderGate
 from reflexio.server.services.lineage import gc_scheduler
 from reflexio.server.services.lineage import gc_scheduler as gc_mod
 from reflexio.server.services.lineage.gc_scheduler import (
+    _DEFAULT_ORG_FANOUT_WORKERS,
     _ENTITY_TYPES,
     _HIGH_VOLUME_THRESHOLD,
     _MIN_POLL_SECONDS,
@@ -23,6 +24,7 @@ from reflexio.server.services.lineage.gc_scheduler import (
     clear_per_org_sweeps,
     maybe_start_lineage_gc,
     register_per_org_sweep,
+    set_leader_gate,
 )
 
 # ---------------------------------------------------------------------------
@@ -760,10 +762,83 @@ def test_repeat_timeout_escalates_anomaly(monkeypatch, gc_scheduler_factory) -> 
     assert [a for a in anomalies if a[0] == "lineage.gc.org_sweep_timeout_repeat"]
 
 
+def test_alternating_timeout_does_not_escalate_anomaly(
+    monkeypatch, gc_scheduler_factory
+) -> None:
+    """An org timing out, then ticking clean, then timing out again is NOT a
+    repeat — only STRICTLY CONSECUTIVE timeouts escalate. Guards against a
+    naive "seen it time out before" set that never gets cleared on a clean
+    tick.
+    """
+    anomalies: list[tuple] = []
+    monkeypatch.setattr(
+        gc_mod, "capture_anomaly", lambda name, **kw: anomalies.append((name, kw))
+    )
+    sched, _ = gc_scheduler_factory(org_ids=["x"])
+
+    # tick1: times out. tick2: clean. tick3: times out again (not consecutive).
+    results = iter([["x"], [], ["x"]])
+    monkeypatch.setattr(
+        gc_mod, "iterate_orgs_bounded", lambda *_args, **_kwargs: next(results)
+    )
+
+    sched._gc_tick(["x"], max_workers=2)  # tick1: first-ever timeout
+    sched._gc_tick(["x"], max_workers=2)  # tick2: clean tick resets the streak
+    sched._gc_tick(["x"], max_workers=2)  # tick3: timed out again, but not consecutive
+
+    assert not [
+        a for a in anomalies if a[0] == "lineage.gc.org_sweep_timeout_repeat"
+    ], "alternating timeouts must not escalate — only strictly consecutive ticks do"
+
+
 def test_sqlite_forces_serial(monkeypatch, gc_scheduler_factory) -> None:
     """SQLite storage pins the fan-out to max_workers=1 (spec 6.1)."""
     sched, _ = gc_scheduler_factory(org_ids=["a"], storage_class_name="SQLiteStorage")
     assert sched._org_fanout_workers(sched.request_context_factory("a")) == 1
+
+
+def test_org_fanout_workers_env_unset_defaults(
+    monkeypatch, gc_scheduler_factory
+) -> None:
+    """Non-SQLite storage + no env override resolves to the module default."""
+    monkeypatch.delenv("REFLEXIO_SCHEDULER_ORG_WORKERS", raising=False)
+    sched, _ = gc_scheduler_factory(org_ids=["a"])
+    assert (
+        sched._org_fanout_workers(sched.request_context_factory("a"))
+        == _DEFAULT_ORG_FANOUT_WORKERS
+    )
+
+
+def test_org_fanout_workers_env_valid_custom(monkeypatch, gc_scheduler_factory) -> None:
+    """A valid positive integer override is honored."""
+    monkeypatch.setenv("REFLEXIO_SCHEDULER_ORG_WORKERS", "3")
+    sched, _ = gc_scheduler_factory(org_ids=["a"])
+    assert sched._org_fanout_workers(sched.request_context_factory("a")) == 3
+
+
+def test_org_fanout_workers_env_non_numeric_falls_back(
+    monkeypatch, gc_scheduler_factory
+) -> None:
+    """A non-numeric override falls back to the module default."""
+    monkeypatch.setenv("REFLEXIO_SCHEDULER_ORG_WORKERS", "abc")
+    sched, _ = gc_scheduler_factory(org_ids=["a"])
+    assert (
+        sched._org_fanout_workers(sched.request_context_factory("a"))
+        == _DEFAULT_ORG_FANOUT_WORKERS
+    )
+
+
+@pytest.mark.parametrize("value", ["0", "-1"])
+def test_org_fanout_workers_env_non_positive_falls_back(
+    monkeypatch, gc_scheduler_factory, value
+) -> None:
+    """Zero or negative overrides fall back to the module default."""
+    monkeypatch.setenv("REFLEXIO_SCHEDULER_ORG_WORKERS", value)
+    sched, _ = gc_scheduler_factory(org_ids=["a"])
+    assert (
+        sched._org_fanout_workers(sched.request_context_factory("a"))
+        == _DEFAULT_ORG_FANOUT_WORKERS
+    )
 
 
 def test_leader_gate_forwarded(gc_scheduler_factory) -> None:
@@ -774,3 +849,30 @@ def test_leader_gate_forwarded(gc_scheduler_factory) -> None:
     gate = _Gate()
     sched, _ = gc_scheduler_factory(org_ids=["a"], leader_gate=gate)
     assert sched._leader_gate is gate
+
+
+def test_maybe_start_lineage_gc_reads_module_leader_gate_hook():
+    """maybe_start_lineage_gc picks up a leader gate set via set_leader_gate,
+    mirroring the module-hook fallback for set_org_id_provider (see
+    test_maybe_start_lineage_gc_reads_module_provider_hook in
+    test_gc_scheduler_multitenant_integration.py)."""
+
+    class _Gate:
+        def should_run(self) -> bool:
+            return True
+
+    gate = _Gate()
+    cfg = LineageGCConfig(enabled=True)
+    ctx = _make_ctx("org_1", lineage_gc=cfg)
+
+    set_leader_gate(gate)
+    sched = None
+    try:
+        sched = maybe_start_lineage_gc(lambda _: ctx, bootstrap_org_id="org_1")  # type: ignore[arg-type]
+        assert sched is not None
+        assert sched._leader_gate is gate
+    finally:
+        set_leader_gate(None)
+        if sched is not None:
+            sched.stop(timeout_seconds=1.0)
+    assert gc_mod._leader_gate_hook is None

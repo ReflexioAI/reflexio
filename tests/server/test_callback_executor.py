@@ -5,13 +5,13 @@ from reflexio.server import callback_executor as ce_mod
 from reflexio.server.callback_executor import BoundedCallbackExecutor
 
 
-def _drain(executor: BoundedCallbackExecutor, timeout: float = 2.0) -> None:
+def _wait_until(predicate, timeout: float = 2.0) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        with executor._cond:
-            if not executor._queue:
-                return
-        time.sleep(0.01)
+        if predicate():
+            return True
+        time.sleep(0.005)
+    return predicate()
 
 
 def test_callbacks_run() -> None:
@@ -29,17 +29,21 @@ def test_queue_bound_drops_oldest(monkeypatch) -> None:
     )
     ex = BoundedCallbackExecutor(workers=1, queue_size=2)
     gate = threading.Event()
-    ex.submit("blocker", lambda: gate.wait(timeout=5))  # occupies the 1 worker
-    time.sleep(0.05)
+    started = threading.Event()
+
+    def blocker() -> None:
+        started.set()
+        gate.wait(timeout=5)
+
+    ex.submit("blocker", blocker)  # occupies the 1 worker
+    assert started.wait(timeout=2.0), "blocker never started running"
     ran: list[str] = []
     ex.submit("old", lambda: ran.append("old"))
     ex.submit("mid", lambda: ran.append("mid"))
     ex.submit("new", lambda: ran.append("new"))  # queue full -> "old" dropped
     gate.set()
-    _drain(ex)
-    time.sleep(0.05)
+    assert _wait_until(lambda: ran == ["mid", "new"]), f"unexpected ran={ran}"
     assert "old" not in ran
-    assert ran == ["mid", "new"]
 
 
 def test_drop_rate_escalates_anomaly(monkeypatch) -> None:
@@ -51,12 +55,18 @@ def test_drop_rate_escalates_anomaly(monkeypatch) -> None:
     )
     ex = BoundedCallbackExecutor(workers=1, queue_size=1)
     gate = threading.Event()
-    ex.submit("blocker", lambda: gate.wait(timeout=5))
-    time.sleep(0.05)
+    started = threading.Event()
+
+    def blocker() -> None:
+        started.set()
+        gate.wait(timeout=5)
+
+    ex.submit("blocker", blocker)
+    assert started.wait(timeout=2.0), "blocker never started running"
     for i in range(ce_mod._DROP_RATE_PER_MINUTE + 3):
         ex.submit(f"cb{i}", lambda: None)  # each overflow drops the prior one
     gate.set()
-    assert "callback_executor.drop_rate_exceeded" in anomalies
+    assert _wait_until(lambda: "callback_executor.drop_rate_exceeded" in anomalies)
     assert anomalies.count("callback_executor.drop_rate_exceeded") == 1  # throttled
 
 

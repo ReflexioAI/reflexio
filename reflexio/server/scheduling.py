@@ -49,8 +49,11 @@ class LeaderGate(Protocol):
     """Fleet-coordination gate consulted before each tick.
 
     Implementations must NEVER raise from ``should_run`` — error handling
-    (including fail-open) lives inside the implementation, so the scheduler
-    base needs no error path (spec §4.1).
+    (including fail-open) lives inside the implementation (spec §4.1). The
+    scheduler base nonetheless defends against a contract violation: if
+    ``should_run`` raises anyway, the base logs the error and fails open
+    (runs the tick) rather than trusting the contract blindly and letting the
+    daemon thread die silently.
     """
 
     def should_run(self) -> bool:
@@ -160,10 +163,25 @@ class ThreadedScheduler:
         ``None`` gate -> tick (today's behavior). Gate ``True`` -> tick.
         Gate ``False`` -> skip and wait the fixed follower poll.
 
+        The gate contract says ``should_run`` never raises (see
+        :class:`LeaderGate`), but this has zero defense of its own: an escaped
+        exception here would kill the daemon thread permanently and silently.
+        A raise is therefore caught defensively and treated as fail-open (tick
+        runs; duplicate work is safe, silence is not) rather than propagated.
+
         Returns:
             float: Seconds to wait before the next loop iteration.
         """
-        if self._leader_gate is None or self._leader_gate.should_run():
+        if self._leader_gate is None:
+            return self._run_once()
+        try:
+            should_run = self._leader_gate.should_run()
+        except Exception:
+            logger.exception(
+                "event=%s_leader_gate_error — failing open", self._thread_name
+            )
+            return self._run_once()
+        if should_run:
             return self._run_once()
         logger.debug("event=%s_skip_not_leader", self._thread_name)
         return _FOLLOWER_POLL_SECONDS
