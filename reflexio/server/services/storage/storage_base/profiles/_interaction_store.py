@@ -60,6 +60,65 @@ class InteractionStoreMixin:
         """
         return
 
+    def iter_interactions_missing_vectors(
+        self,
+        limit: int,  # noqa: ARG002
+    ) -> list[tuple[int, str]]:
+        """Enumerate interactions whose embedding vector was never persisted.
+
+        When an embedding call fails or degrades, the ingest path stores an empty
+        embedding (and writes no vector row), returns success, and nothing ever
+        re-embeds the row — so that interaction is invisible to vector/hybrid
+        search forever. This method surfaces those rows so a background sweep can
+        re-embed them (see ``backfill_missing_interaction_vectors``).
+
+        Returns ``(interaction_id, embed_text)`` pairs where ``embed_text`` is
+        derived exactly as the ingest path derives it, so a backfilled vector is
+        byte-for-byte comparable to a freshly-ingested one.
+
+        Safe default: returns ``[]`` — "this backend does not support backfill
+        detection". Backends that store embeddings (SQLite here; Supabase and
+        Postgres in the enterprise repo) MUST override this so their rows are
+        actually recoverable. Bounded by ``limit`` per call.
+
+        Args:
+            limit: Maximum number of interactions to return.
+
+        Returns:
+            list[tuple[int, str]]: ``(interaction_id, embed_text)`` pairs, at
+            most ``limit`` long. Empty when nothing needs backfilling or the
+            backend does not support detection.
+        """
+        return []
+
+    def backfill_missing_interaction_vectors(
+        self,
+        limit: int,  # noqa: ARG002
+    ) -> int:
+        """Re-embed and persist vectors for interactions missing them.
+
+        Idempotent and bounded: enumerates up to ``limit`` interactions via
+        ``iter_interactions_missing_vectors``, re-embeds their text using the
+        same embedder + derivation the ingest path uses, and writes the vector
+        back through the same code path a fresh insert uses. Once a vector
+        exists the row is skipped on the next call.
+
+        Fail-safe: if the embedder is unavailable the implementation must skip
+        gracefully and leave the work for a later call (never raise, never
+        hot-loop a down embedder).
+
+        Safe default: returns ``0`` — "this backend does not support backfill".
+        SQLite overrides this; the enterprise Supabase/Postgres backends must
+        override it (and ``iter_interactions_missing_vectors``) for production.
+
+        Args:
+            limit: Maximum number of interactions to re-embed this call.
+
+        Returns:
+            int: Number of interactions whose vector was backfilled.
+        """
+        return 0
+
     @abstractmethod
     def delete_user_interaction(self, request: DeleteUserInteractionRequest) -> None:
         raise NotImplementedError
