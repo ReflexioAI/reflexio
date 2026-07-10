@@ -392,11 +392,27 @@ class SQLiteGovernanceMixin:
                WHERE user_id = ?""",
             (user_id,),
         ).fetchone()
+        rle_result_row = self.conn.execute(
+            """SELECT COUNT(*) AS cnt
+               FROM retrieved_learning_evaluation
+               WHERE user_id = ?""",
+            (user_id,),
+        ).fetchone()
+        session_count_row = self.conn.execute(
+            "SELECT COUNT(DISTINCT session_id) AS cnt FROM requests WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
         profile_rows = self.conn.execute(
             "SELECT profile_id FROM profiles WHERE user_id = ?",
             (user_id,),
         ).fetchall()
-        if request_row is None or interaction_row is None or eval_result_row is None:
+        if (
+            request_row is None
+            or interaction_row is None
+            or eval_result_row is None
+            or rle_result_row is None
+            or session_count_row is None
+        ):
             raise ValueError("Missing governance count rows")
         profile_ids = [str(row["profile_id"]) for row in profile_rows]
         purge_profile_ids, delete_profile_ids = self._deps()._partition_purge_vs_delete(
@@ -420,6 +436,17 @@ class SQLiteGovernanceMixin:
             "profile_purge": len(purge_profile_ids),
             "user_playbook": len(delete_playbook_ids),
             "agent_success_evaluation_result": int(eval_result_row["cnt"]),
+            # Offline tuner tables are enterprise-only (tenant stream); the
+            # OSS SQLite backend has no such tables, so the planned and
+            # deleted counts are structurally zero. The delete-target matrix
+            # validator still requires the target rows to exist.
+            "offline_tuner_reward_label": 0,
+            "offline_tuner_reward_label_target_by_target_owner": 0,
+            "retrieved_learning_evaluation_result": int(rle_result_row["cnt"]),
+            # Planned as an upper bound: up to 3 evaluation state namespaces
+            # per session (retrieved-eval state, agent-success marker,
+            # grade-cache rows). The delete phase reports the exact count.
+            "evaluation_operation_state": 3 * int(session_count_row["cnt"]),
             "user_playbook_purge": len(purge_playbook_ids),
         }
 

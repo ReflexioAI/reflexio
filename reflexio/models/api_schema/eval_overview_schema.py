@@ -417,12 +417,17 @@ class GradeOnDemandResponse(BaseModel):
             window. False on a fresh grade.
         skipped_reason (str | None): If grading was skipped, the reason
             (e.g., "NO_REQUESTS"). None on success.
+        retrieved_learning_status (str | None): Outcome of the
+            retrieved-learning evaluation for this session (e.g.
+            "complete", "degraded", "failed", "not_applicable"). None on
+            legacy cache entries and skipped grades.
     """
 
     session_id: str
     result_id: int | None = None
     cached: bool = False
     skipped_reason: str | None = None
+    retrieved_learning_status: str | None = None
 
 
 # ---------------------------------------------------------------------------

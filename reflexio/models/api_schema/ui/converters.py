@@ -53,6 +53,7 @@ def to_interaction_view(interaction: Interaction) -> InteractionView:
         shadow_content=interaction.shadow_content,
         expert_content=interaction.expert_content,
         tools_used=interaction.tools_used,
+        retrieved_learnings=interaction.retrieved_learnings,
     )
 
 

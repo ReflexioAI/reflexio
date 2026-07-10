@@ -109,8 +109,9 @@ class InteractionStoreMixin:
                            (interaction_id, user_id, content, request_id, created_at,
                             role, user_action, user_action_description,
                             interacted_image_url, image_encoding, shadow_content,
-                            expert_content, tools_used, citations, embedding, governance_subject_ref)
-                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                            expert_content, tools_used, citations, retrieved_learnings,
+                            embedding, governance_subject_ref)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                         (
                             interaction.interaction_id,
                             interaction.user_id,
@@ -130,6 +131,12 @@ class InteractionStoreMixin:
                             _json_dumps(
                                 [c.model_dump() for c in interaction.citations]
                             ),
+                            _json_dumps(
+                                [
+                                    c.model_dump()
+                                    for c in interaction.retrieved_learnings
+                                ]
+                            ),
                             _json_dumps(interaction.embedding),
                             subject_ref,
                         ),
@@ -141,8 +148,9 @@ class InteractionStoreMixin:
                            (user_id, content, request_id, created_at,
                             role, user_action, user_action_description,
                             interacted_image_url, image_encoding, shadow_content,
-                            expert_content, tools_used, citations, embedding, governance_subject_ref)
-                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                            expert_content, tools_used, citations, retrieved_learnings,
+                            embedding, governance_subject_ref)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                         (
                             interaction.user_id,
                             interaction.content,
@@ -160,6 +168,12 @@ class InteractionStoreMixin:
                             ),
                             _json_dumps(
                                 [c.model_dump() for c in interaction.citations]
+                            ),
+                            _json_dumps(
+                                [
+                                    c.model_dump()
+                                    for c in interaction.retrieved_learnings
+                                ]
                             ),
                             _json_dumps(interaction.embedding),
                             subject_ref,

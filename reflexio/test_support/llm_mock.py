@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
@@ -41,6 +42,28 @@ from unittest.mock import MagicMock, patch
 
 from reflexio.models.structured_output import find_schema_keyword as _find_schema_key
 from reflexio.test_support.llm_model_registry import get_model_registry
+
+_LEARNING_REF_PATTERN = re.compile(r'"learning_ref":\s*"([^"]+)"')
+
+
+def _extract_learning_refs(prompt_content: str) -> list[str]:
+    """Extract unique learning_refs from a judge prompt, preserving order.
+
+    The retrieved-learning judges validate exact per-ref coverage, so the
+    mock must echo the refs actually listed in the prompt rather than a
+    static payload. Only the ``[Retrieved Learnings]`` payload section is
+    scanned — the prompt's ``[Output]`` example also contains a
+    ``"learning_ref"`` placeholder line that must not be echoed.
+    """
+    start = prompt_content.find("[Retrieved Learnings]")
+    if start != -1:
+        end = prompt_content.find("[Output]", start)
+        prompt_content = prompt_content[start : end if end != -1 else None]
+    seen: list[str] = []
+    for ref in _LEARNING_REF_PATTERN.findall(prompt_content):
+        if ref not in seen:
+            seen.append(ref)
+    return seen
 
 
 def _create_mock_completion(
@@ -55,6 +78,40 @@ def _create_mock_completion(
 
     if "Output just a boolean value" in prompt_content:
         content = str(registry["boolean_evaluation"].minimal_valid)
+    elif "[Retrieved Learning Relevance Evaluation]" in prompt_content:
+        # Echo the refs listed in the prompt — the judge validates exact
+        # coverage, so a static payload would always fail validation.
+        refs = _extract_learning_refs(prompt_content)
+        content = json.dumps(
+            {
+                "verdicts": [
+                    {
+                        "learning_ref": ref,
+                        "is_relevant": True,
+                        "relevance_reason": "Applies to the session task.",
+                    }
+                    for ref in refs
+                ]
+            }
+            if refs
+            else registry["retrieved_learning_relevance"].minimal_valid
+        )
+    elif "[Retrieved Learning Impact Evaluation]" in prompt_content:
+        refs = _extract_learning_refs(prompt_content)
+        content = json.dumps(
+            {
+                "verdicts": [
+                    {
+                        "learning_ref": ref,
+                        "impact": "positive",
+                        "impact_reason": "The response followed this learning.",
+                    }
+                    for ref in refs
+                ]
+            }
+            if refs
+            else registry["retrieved_learning_impact"].minimal_valid
+        )
     elif "policy consolidation" in prompt_content:
         content = json.dumps(registry["playbook_aggregation"].minimal_valid)
     elif (

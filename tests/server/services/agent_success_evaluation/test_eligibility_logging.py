@@ -18,13 +18,20 @@ def _make_mock_context(*, get_op_state=None, get_requests=None, get_interactions
 
 def test_already_evaluated_path_bumps_counter() -> None:
     _eval_health._HEALTH.__init__()
+    # Requests are now fetched before the marker check (the liveness gate
+    # applies to both evaluation families), so the session needs at least one
+    # old-enough request for the flow to reach the already-evaluated branch.
+    old_request = MagicMock()
+    old_request.created_at = 0
     ctx = _make_mock_context(
         get_op_state={"operation_state": {"evaluated": True}},
+        get_requests=[old_request],
     )
 
-    run_group_evaluation("org", "user", "sess", "v0", None, ctx, MagicMock())
+    outcome = run_group_evaluation("org", "user", "sess", "v0", None, ctx, MagicMock())
 
     assert _eval_health.get_status()["skip_counts"]["already_evaluated"] == 1
+    assert outcome.agent_success_status == "skipped"
 
 
 def test_no_requests_path_bumps_counter() -> None:

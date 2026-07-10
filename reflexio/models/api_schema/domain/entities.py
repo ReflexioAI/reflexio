@@ -35,6 +35,9 @@ __all__ = [
     "ToolUsed",
     "CitationKind",
     "Citation",
+    "RetrievedLearningKind",
+    "RetrievedLearning",
+    "LearningImpact",
     "Interaction",
     "Request",
     "UserProfile",
@@ -42,6 +45,7 @@ __all__ = [
     "ProfileChangeLog",
     "AgentPlaybook",
     "AgentSuccessEvaluationResult",
+    "RetrievedLearningEvaluationResult",
     "DeleteUserProfileRequest",
     "DeleteUserProfileResponse",
     "DeleteUserInteractionRequest",
@@ -164,6 +168,32 @@ class Citation(BaseModel):
     title: str = ""
 
 
+# Canonical kinds accepted and persisted by retrieved-learning evaluation.
+# Unlike ``Citation.kind`` there is no legacy ``"playbook"`` alias.
+type RetrievedLearningKind = Literal["profile", "user_playbook", "agent_playbook"]
+
+type LearningImpact = Literal["positive", "negative", "neutral"]
+
+
+class RetrievedLearning(BaseModel):
+    """A learning the caller retrieved and injected into the agent context.
+
+    Deliberately minimal — just the identity pair. It does NOT reuse
+    ``Citation``: citations carry injection-time debug fields (``tag``,
+    ``title``) that callers should not need to supply (or see) when declaring
+    what was retrieved.
+
+    Attributes:
+        kind (RetrievedLearningKind): Which kind of learning this references.
+        learning_id (str): Stable storage id — ``profile_id`` for profiles,
+            ``user_playbook_id`` for user playbooks, ``agent_playbook_id``
+            for agent playbooks (numeric ids as decimal strings).
+    """
+
+    kind: RetrievedLearningKind
+    learning_id: str = Field(min_length=1, max_length=1_000)
+
+
 # information about the user interaction sent by the client
 class Interaction(BaseModel):
     interaction_id: int = 0  # 0 = placeholder for DB auto-increment
@@ -180,6 +210,10 @@ class Interaction(BaseModel):
     expert_content: str = ""
     tools_used: list[ToolUsed] = Field(default_factory=list)
     citations: list[Citation] = Field(default_factory=list)
+    # Every learning retrieved and injected for this turn — including ones
+    # that did not end up influencing the response (contrast: ``citations``
+    # is the agent's claim of influence).
+    retrieved_learnings: list[RetrievedLearning] = Field(default_factory=list)
     embedding: EmbeddingVector = []
 
     @field_validator("interacted_image_url", mode="after")
@@ -404,6 +438,48 @@ class AgentSuccessEvaluationResult(BaseModel):
     user_turns_to_resolution: int | None = None
     is_escalated: bool = False
     embedding: EmbeddingVector = []
+
+
+class RetrievedLearningEvaluationResult(BaseModel):
+    """Latest per-learning relevance/impact verdict for one evaluated session.
+
+    One row per ``(user_id, session_id, kind, learning_id)``. The table holds
+    the most recent successfully persisted evaluation set for a session, not
+    an append-only history.
+
+    Attributes:
+        result_id (int): DB auto-increment identifier (0 = placeholder).
+        user_id (str): Session owner.
+        session_id (str): Evaluated session.
+        agent_version (str): Version supplied to group evaluation;
+            informational, not part of the uniqueness key.
+        kind (RetrievedLearningKind): The learning kind.
+        learning_id (str): Stable storage id, matching
+            ``RetrievedLearning.learning_id``.
+        is_relevant (bool | None): Whether the learning applies to the
+            session. ``None`` only when the relevance judge/chunk failed.
+        relevance_reason (str): Judge reasoning; empty when ``is_relevant``
+            is ``None``.
+        impact (LearningImpact | None): Whether the learning improved,
+            harmed, or did not materially change the response. ``None`` only
+            when the impact judge/chunk failed.
+        impact_reason (str): Judge reasoning; empty when ``impact`` is
+            ``None``.
+        created_at (int): Earliest request timestamp in the evaluated
+            session.
+    """
+
+    result_id: int = 0
+    user_id: str
+    session_id: str
+    agent_version: str = ""
+    kind: RetrievedLearningKind
+    learning_id: str
+    is_relevant: bool | None = None
+    relevance_reason: str = ""
+    impact: LearningImpact | None = None
+    impact_reason: str = ""
+    created_at: int = Field(default_factory=lambda: int(datetime.now(UTC).timestamp()))
 
 
 class PlaybookRetrievalLogItem(BaseModel):
@@ -699,6 +775,13 @@ class InteractionData(BaseModel):
     )  # base64 encoded image
     tools_used: list[ToolUsed] = Field(default_factory=list, max_length=1_000)
     citations: list[Citation] = Field(default_factory=list, max_length=1_000)
+    # Learnings (profiles / user playbooks / agent playbooks) the caller
+    # retrieved and injected into the agent context for this turn. Distinct
+    # from ``citations`` (agent-claimed influence): this is everything that
+    # was injected, whether or not it helped.
+    retrieved_learnings: list[RetrievedLearning] = Field(
+        default_factory=list, max_length=1_000
+    )
 
     @field_validator("interacted_image_url", mode="after")
     @classmethod
@@ -728,6 +811,19 @@ class PublishUserInteractionRequest(BaseModel):
             raise ValueError("evaluation_only cannot be combined with force_extraction")
         if self.evaluation_only and not self.session_id:
             raise ValueError("evaluation_only publishes require session_id")
+        return self
+
+    @model_validator(mode="after")
+    def validate_retrieved_learnings_total(self) -> Self:
+        total = sum(
+            len(interaction.retrieved_learnings)
+            for interaction in self.interaction_data_list
+        )
+        if total > 1_000:
+            raise ValueError(
+                "a publish request may carry at most 1000 retrieved_learnings"
+                f" across all interactions (got {total})"
+            )
         return self
 
 

@@ -1,9 +1,16 @@
 """Abstract agent success evaluation result store declarations."""
 
 from abc import abstractmethod
+from typing import Any
 
 from reflexio.models.api_schema.domain import (
     AgentSuccessEvaluationResult,
+    RetrievedLearningEvaluationResult,
+)
+
+from ..retrieved_learning_state import (
+    BoundedRetrievedLearningSnapshot,
+    RetrievedLearningCommitResult,
 )
 
 
@@ -120,5 +127,165 @@ class AgentEvaluationResultStoreMixin:
 
         Returns:
             int: Number of rows deleted.
+        """
+        raise NotImplementedError
+
+    # ==============================
+    # Retrieved-learning evaluation methods
+    # ==============================
+    #
+    # Concurrency contract (see storage_base/retrieved_learning_state.py):
+    # generation fencing + session-fingerprint CAS recomputed under the
+    # replacement transaction's lock. No interaction write/delete path is
+    # instrumented.
+
+    @abstractmethod
+    def begin_retrieved_learning_evaluation_run(
+        self, user_id: str, session_id: str
+    ) -> int:
+        """Allocate the next evaluation generation for one session.
+
+        Atomically increments (creating on first use) the ``generation``
+        counter in the session's ``_operation_state`` row after asserting the
+        governance subject is writable. Concurrent callers receive distinct
+        generations.
+
+        Args:
+            user_id (str): Session owner.
+            session_id (str): Evaluated session.
+
+        Returns:
+            int: The allocated generation (monotonically increasing per
+            session).
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def load_bounded_retrieved_learning_snapshot(
+        self,
+        user_id: str,
+        session_id: str,
+        raw_ref_limit: int = 5_000,
+    ) -> BoundedRetrievedLearningSnapshot:
+        """Load the bounded session projection for evaluation.
+
+        Streams interaction rows (no ``Interaction`` objects, no embeddings or
+        image encodings) and counts raw attachment occurrences before
+        appending; on occurrence ``raw_ref_limit + 1`` the scan aborts with
+        ``attachment_limit_exceeded=True``.
+
+        Args:
+            user_id (str): Session owner.
+            session_id (str): Evaluated session.
+            raw_ref_limit (int): Maximum raw attachment occurrences to parse.
+
+        Returns:
+            BoundedRetrievedLearningSnapshot: The bounded projection.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_matching_retrieved_learning_terminal_state(
+        self, user_id: str, session_id: str, session_fingerprint: str
+    ) -> dict[str, Any] | None:
+        """Return the session's terminal evaluation state if still fresh.
+
+        One transactionally consistent state read. Matches only when the
+        persisted status is terminal (``complete`` / ``not_applicable``) AND
+        the persisted session fingerprint equals ``session_fingerprint``.
+
+        Args:
+            user_id (str): Session owner.
+            session_id (str): Evaluated session.
+            session_fingerprint (str): Fingerprint of the current session.
+
+        Returns:
+            dict | None: The persisted state JSON on a match, else None.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def replace_retrieved_learning_evaluation_results(
+        self,
+        user_id: str,
+        session_id: str,
+        generation: int,
+        session_fingerprint: str,
+        proposed_status: str,
+        diagnostics: dict[str, Any],
+        results: list[RetrievedLearningEvaluationResult],
+    ) -> RetrievedLearningCommitResult:
+        """Atomically replace one session's evaluation result set.
+
+        In one transaction: locks the session's state row, requires the
+        current generation to equal ``generation`` (else ``superseded``),
+        recomputes the session fingerprint from live rows and requires it to
+        equal ``session_fingerprint`` (else ``stale``), rechecks every
+        result's source row for retrieval eligibility (ineligible rows are
+        dropped), then deletes the prior session set, inserts the filtered
+        set, and persists completion state — all or nothing.
+
+        When commit-time eligibility removes every candidate, prior rows are
+        cleared and the final status is ``not_applicable`` regardless of
+        ``proposed_status``.
+
+        Args:
+            user_id (str): Session owner.
+            session_id (str): Evaluated session.
+            generation (int): Generation allocated by
+                :meth:`begin_retrieved_learning_evaluation_run`.
+            session_fingerprint (str): Fingerprint of the judged snapshot.
+            proposed_status (str): ``"complete"`` or ``"degraded"``.
+            diagnostics (dict): Sanitized counters/timestamps persisted in
+                operation state (never prompt content or raw exception text).
+            results (list[RetrievedLearningEvaluationResult]): Proposed rows.
+
+        Returns:
+            RetrievedLearningCommitResult: Disposition plus authoritative
+            final status/count when applied.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def finish_retrieved_learning_evaluation_run(
+        self,
+        user_id: str,
+        session_id: str,
+        generation: int,
+        status: str,
+        diagnostics: dict[str, Any],
+    ) -> None:
+        """Record a non-applied run outcome (``failed`` or ``pending``).
+
+        Generation-guarded CAS: updates state only while ``generation`` is
+        still current, so an older failure cannot overwrite a newer run.
+        Result rows are never touched.
+
+        Args:
+            user_id (str): Session owner.
+            session_id (str): Evaluated session.
+            generation (int): Generation of the finishing run.
+            status (str): ``"failed"`` or ``"pending"``.
+            diagnostics (dict): Sanitized counters and error type.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_retrieved_learning_evaluation_results(
+        self,
+        user_id: str | None = None,
+        session_id: str | None = None,
+        limit: int = 100,
+    ) -> list[RetrievedLearningEvaluationResult]:
+        """Read persisted per-learning verdicts.
+
+        Args:
+            user_id (str, optional): Filter by session owner.
+            session_id (str, optional): Filter by session.
+            limit (int): Maximum rows, ordered by
+                ``created_at DESC, result_id DESC``.
+
+        Returns:
+            list[RetrievedLearningEvaluationResult]: Matching rows.
         """
         raise NotImplementedError

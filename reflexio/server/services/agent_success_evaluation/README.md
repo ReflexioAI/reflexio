@@ -5,9 +5,10 @@ Session-level agent success evaluation module.
 ## Module Shape
 
 - `service.py`: `AgentSuccessEvaluationService`, the request-path service that runs configured evaluators and saves result rows.
-- `runner.py`: `run_group_evaluation(...)`, the background/manual workflow entry point that loads a session, runs the service, and marks operation state.
+- `runner.py`: `run_group_evaluation(...)`, the background/manual workflow entry point that loads a session, runs the service, and marks operation state. After agent-success work it also runs the retrieved-learning evaluation (independent completion; generation + session-fingerprint fenced) and returns a `GroupEvaluationOutcome` carrying both statuses.
 - `scheduler.py`: `GroupEvaluationScheduler`, the deferred inactivity scheduler.
 - `components/evaluator.py`: `AgentSuccessEvaluator`, the LLM evaluator component.
+- `components/retrieved_learning_evaluator.py`: `RetrievedLearningEvaluator`, per-learning relevance/impact judges over `Interaction.retrieved_learnings`; results go to the `retrieved_learning_evaluation` table.
 - `regen_jobs.py`: regeneration job planning and execution; remains root-level because API/admin regenerate flows import it directly.
 - `_eval_health.py`: producer/scheduler health counters.
 - `agent_success_evaluation_constants.py`: prompt/model output constants.
@@ -15,7 +16,7 @@ Session-level agent success evaluation module.
 
 ## Prompt IDs
 
-- Owns `agent_success_evaluation`.
+- Owns `agent_success_evaluation`, `retrieved_learning_relevance`, and `retrieved_learning_impact`.
 - Keeps historical/configured prompt ID `agent_success_evaluation_with_comparison` stable where prompt mapping tests require it.
 
 Do not reintroduce the deleted service/evaluator/runner/scheduler legacy

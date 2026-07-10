@@ -51,6 +51,34 @@ class EvalHealth:
         self._skip_counts: Counter[SkipReason] = Counter()
         self._failures: deque[float] = deque()
         self._last_tick_monotonic: float | None = None
+        self._retrieved_outcome_counts: Counter[str] = Counter()
+        self._retrieved_invalid_ref_count = 0
+        self._retrieved_failed_relevance_chunks = 0
+        self._retrieved_failed_impact_chunks = 0
+
+    def record_retrieved_outcome(
+        self, status: str, *, diagnostics: dict[str, Any] | None = None
+    ) -> None:
+        """Record one retrieved-learning evaluation outcome.
+
+        Args:
+            status (str): Final invocation status (complete/degraded/failed/
+                not_applicable/...).
+            diagnostics (dict, optional): Evaluator diagnostics; the
+                invalid-ref and failed-chunk counters are accumulated from it.
+        """
+        with self._lock:
+            self._retrieved_outcome_counts[status] += 1
+            if diagnostics:
+                self._retrieved_invalid_ref_count += int(
+                    diagnostics.get("invalid_ref_count") or 0
+                )
+                self._retrieved_failed_relevance_chunks += int(
+                    diagnostics.get("failed_relevance_chunks") or 0
+                )
+                self._retrieved_failed_impact_chunks += int(
+                    diagnostics.get("failed_impact_chunks") or 0
+                )
 
     def record_skip(self, reason: SkipReason) -> None:
         """Bump the counter for `reason` by one.
@@ -99,6 +127,12 @@ class EvalHealth:
                 "skip_counts": {r.value: self._skip_counts[r] for r in SkipReason},
                 "producer_failures_24h": len(self._failures),
                 "last_tick_monotonic": self._last_tick_monotonic,
+                "retrieved_learning": {
+                    "outcome_counts": dict(self._retrieved_outcome_counts),
+                    "invalid_ref_count": self._retrieved_invalid_ref_count,
+                    "failed_relevance_chunks": self._retrieved_failed_relevance_chunks,
+                    "failed_impact_chunks": self._retrieved_failed_impact_chunks,
+                },
             }
 
     def _trim_locked(self, now_ts: float) -> None:
@@ -114,6 +148,13 @@ _HEALTH = EvalHealth()
 def record_skip(reason: SkipReason) -> None:
     """Module-level proxy to the singleton."""
     _HEALTH.record_skip(reason)
+
+
+def record_retrieved_outcome(
+    status: str, *, diagnostics: dict[str, Any] | None = None
+) -> None:
+    """Module-level proxy to the singleton."""
+    _HEALTH.record_retrieved_outcome(status, diagnostics=diagnostics)
 
 
 def record_producer_failure(at_ts: float | None = None) -> None:

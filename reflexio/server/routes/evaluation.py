@@ -29,6 +29,8 @@ from reflexio.models.api_schema.eval_overview_schema import (
 from reflexio.models.api_schema.retriever_schema import (
     GetAgentSuccessEvaluationResultsRequest,
     GetEvaluationResultsViewResponse,
+    GetRetrievedLearningEvaluationResultsRequest,
+    GetRetrievedLearningEvaluationResultsResponse,
 )
 from reflexio.models.api_schema.ui.converters import (
     to_evaluation_result_view,
@@ -47,6 +49,12 @@ from reflexio.server.services.agent_success_evaluation.regen_jobs import (
 )
 from reflexio.server.services.agent_success_evaluation.runner import (
     run_group_evaluation,
+)
+from reflexio.server.services.storage.storage_base.evaluation_state_keys import (
+    build_grade_on_demand_cache_key,
+)
+from reflexio.server.services.storage.storage_base.retrieved_learning_state import (
+    session_fingerprint,
 )
 
 logger = logging.getLogger(__name__)
@@ -90,28 +98,35 @@ def _grade_on_demand_cache_key(
     # injective: distinct component tuples can never collapse to the same key even
     # when a component itself contains the ``::`` delimiter. Keeps the prefix intact
     # for prefix-based filtering and the key human-readable for inspection.
-    parts = "::".join(
-        f"{len(s)}:{s}" for s in (org_id, session_id, agent_version, evaluation_name)
+    # Delegates to the shared builder so governance erasure scrubs the exact
+    # same keys this route writes.
+    return build_grade_on_demand_cache_key(
+        org_id, session_id, agent_version, evaluation_name
     )
-    return f"{_GRADE_ON_DEMAND_CACHE_KEY_PREFIX}::{parts}"
 
 
 def _read_grade_on_demand_cache(
-    storage: Any, cache_key: str, *, now: int
-) -> int | None:
-    """Return the cached ``result_id`` if a valid entry exists, else None.
+    storage: Any, cache_key: str, *, now: int, user_id: str, session_id: str
+) -> tuple[int | None, str | None] | None:
+    """Return the cached ``(result_id, retrieved_learning_status)`` if valid.
 
-    Returns None on three conditions: no entry, malformed entry, or entry
-    whose ``last_graded_at`` is older than the 24h TTL. Keeps the handler
-    body focused on the happy path.
+    Returns None on: no entry, malformed entry, entry older than the 24h TTL,
+    or — for entries carrying retrieved-learning fields — a session whose
+    retrieved-learning state no longer matches the cached fingerprint (a later
+    publish/delete changed the session, so cached completion must not be
+    claimed). Legacy entries without retrieved fields stay valid and report
+    ``retrieved_learning_status=None``.
 
     Args:
         storage: The request's storage backend.
         cache_key (str): Key produced by ``_grade_on_demand_cache_key``.
         now (int): Current Unix-seconds wall-clock timestamp.
+        user_id (str): Session owner, for retrieved-state revalidation.
+        session_id (str): The cached session, for retrieved-state revalidation.
 
     Returns:
-        int | None: Cached result_id when fresh, else None.
+        tuple | None: ``(result_id, retrieved_learning_status)`` when fresh,
+        else None.
     """
     cached_state = storage.get_operation_state(cache_key)
     if not cached_state:
@@ -125,7 +140,27 @@ def _read_grade_on_demand_cache(
     if (now - last_graded_at) >= _GRADE_ON_DEMAND_CACHE_TTL_SECONDS:
         return None
     cached_result_id = state.get("result_id")
-    return cached_result_id if isinstance(cached_result_id, int) else None
+    if not isinstance(cached_result_id, int):
+        return None
+    cached_fingerprint = state.get("retrieved_learning_fingerprint")
+    cached_retrieved_status = state.get("retrieved_learning_status")
+    if isinstance(cached_fingerprint, str) and cached_fingerprint:
+        # Recompute the CURRENT session fingerprint — a later publish/delete
+        # changes it without touching any state row — and require the
+        # persisted terminal state to still match it and the cached status.
+        current_fingerprint = session_fingerprint(
+            storage.load_bounded_retrieved_learning_snapshot(user_id, session_id)
+        )
+        if current_fingerprint != cached_fingerprint:
+            return None
+        current = storage.get_matching_retrieved_learning_terminal_state(
+            user_id, session_id, current_fingerprint
+        )
+        if current is None or current.get("status") != cached_retrieved_status:
+            return None
+    return cached_result_id, (
+        cached_retrieved_status if isinstance(cached_retrieved_status, str) else None
+    )
 
 
 def _resolve_session_user_id(storage: Any, session_id: str) -> str | None:
@@ -215,6 +250,28 @@ def get_agent_success_evaluation_results(
         ],
         msg=response.msg,
     )
+
+
+@router.post(
+    "/api/get_retrieved_learning_evaluation_results",
+    response_model=GetRetrievedLearningEvaluationResultsResponse,
+)
+def get_retrieved_learning_evaluation_results(
+    request: GetRetrievedLearningEvaluationResultsRequest,
+    org_id: str = Depends(default_get_org_id),
+) -> GetRetrievedLearningEvaluationResultsResponse:
+    """Get per-learning retrieved-learning evaluation verdicts.
+
+    Args:
+        request (GetRetrievedLearningEvaluationResultsRequest): Optional
+            user/session filters + limit.
+        org_id (str): Organization ID.
+
+    Returns:
+        GetRetrievedLearningEvaluationResultsResponse: Matching verdicts.
+    """
+    reflexio = reflexio_cache.get_reflexio(org_id=org_id)
+    return reflexio.get_retrieved_learning_evaluation_results(request)
 
 
 @router.post(
@@ -417,15 +474,8 @@ def grade_on_demand(
     )
     now = int(datetime.now(UTC).timestamp())
 
-    cached_result_id = _read_grade_on_demand_cache(storage, cache_key, now=now)
-    if cached_result_id is not None:
-        return GradeOnDemandResponse(
-            session_id=payload.session_id,
-            result_id=cached_result_id,
-            cached=True,
-            skipped_reason=None,
-        )
-
+    # User resolution happens before the cache read: revalidating a cached
+    # retrieved-learning status needs the session owner's id.
     user_id = _resolve_session_user_id(storage, payload.session_id)
     if user_id is None:
         return GradeOnDemandResponse(
@@ -433,6 +483,19 @@ def grade_on_demand(
             result_id=None,
             cached=False,
             skipped_reason="NO_REQUESTS",
+        )
+
+    cached = _read_grade_on_demand_cache(
+        storage, cache_key, now=now, user_id=user_id, session_id=payload.session_id
+    )
+    if cached is not None:
+        cached_result_id, cached_retrieved_status = cached
+        return GradeOnDemandResponse(
+            session_id=payload.session_id,
+            result_id=cached_result_id,
+            cached=True,
+            skipped_reason=None,
+            retrieved_learning_status=cached_retrieved_status,
         )
 
     previous_result_ids = set(
@@ -455,7 +518,7 @@ def grade_on_demand(
     # The cache key namespaces are distinct so the two markers do not
     # interfere; the explicit force_regenerate=True here is what makes
     # an on-demand grade always do real work on a cache miss.
-    run_group_evaluation(
+    outcome = run_group_evaluation(
         org_id=org_id,
         user_id=user_id,
         session_id=payload.session_id,
@@ -475,16 +538,41 @@ def grade_on_demand(
         previous_result_ids=previous_result_ids,
     )
 
-    storage.upsert_operation_state(
-        cache_key,
-        {"last_graded_at": now, "result_id": result_id},
-    )
+    # Cache only settled outcomes. A terminal retrieved status is cached with
+    # its fingerprint ONLY after confirming the persisted state still
+    # linearizes at that fingerprint (a concurrent publish would have changed
+    # it); the cache read revalidates again, so a lost race here can never
+    # serve stale completion. Degraded/failed/pending/stale/superseded
+    # retrieved outcomes are not cached at all — the user's next explicit
+    # click must retry rather than short-circuit.
+    retrieved_status = outcome.retrieved_learning_status
+    if retrieved_status in ("complete", "not_applicable") and (
+        outcome.retrieved_learning_fingerprint
+    ):
+        confirmed = storage.get_matching_retrieved_learning_terminal_state(
+            user_id, payload.session_id, outcome.retrieved_learning_fingerprint
+        )
+        cache_entry: dict[str, Any] = {"last_graded_at": now, "result_id": result_id}
+        if confirmed is not None and confirmed.get("status") == retrieved_status:
+            cache_entry["retrieved_learning_status"] = retrieved_status
+            cache_entry["retrieved_learning_fingerprint"] = (
+                outcome.retrieved_learning_fingerprint
+            )
+        storage.upsert_operation_state(cache_key, cache_entry)
+    elif retrieved_status == "skipped":
+        # Retrieved evaluation not applicable to this deployment/session
+        # shape; keep the legacy agent-success-only cache behavior.
+        storage.upsert_operation_state(
+            cache_key,
+            {"last_graded_at": now, "result_id": result_id},
+        )
 
     return GradeOnDemandResponse(
         session_id=payload.session_id,
         result_id=result_id,
         cached=False,
         skipped_reason=None,
+        retrieved_learning_status=retrieved_status,
     )
 
 

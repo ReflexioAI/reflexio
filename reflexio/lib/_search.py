@@ -6,6 +6,8 @@ from reflexio.models.api_schema.retriever_schema import (
     GetAgentSuccessEvaluationResultsResponse,
     GetRequestsRequest,
     GetRequestsResponse,
+    GetRetrievedLearningEvaluationResultsRequest,
+    GetRetrievedLearningEvaluationResultsResponse,
     RequestData,
     Session,
     UnifiedSearchRequest,
@@ -70,6 +72,42 @@ class SearchMixin(ReflexioBase):
         except Exception as e:
             return GetAgentSuccessEvaluationResultsResponse(
                 success=False, agent_success_evaluation_results=[], msg=str(e)
+            )
+
+    def get_retrieved_learning_evaluation_results(
+        self,
+        request: GetRetrievedLearningEvaluationResultsRequest | dict,
+    ) -> GetRetrievedLearningEvaluationResultsResponse:
+        """Get per-learning retrieved-learning evaluation verdicts.
+
+        Args:
+            request (GetRetrievedLearningEvaluationResultsRequest | dict): The
+                read request (optional user/session filters + limit).
+
+        Returns:
+            GetRetrievedLearningEvaluationResultsResponse: Matching verdicts
+            ordered by created_at DESC, result_id DESC.
+        """
+        if not self._is_storage_configured():
+            return GetRetrievedLearningEvaluationResultsResponse(
+                success=True, results=[], msg=STORAGE_NOT_CONFIGURED_MSG
+            )
+        if isinstance(request, dict):
+            request = GetRetrievedLearningEvaluationResultsRequest(**request)
+        try:
+            results = self._get_storage().get_retrieved_learning_evaluation_results(
+                user_id=request.user_id,
+                session_id=request.session_id,
+                limit=request.limit,
+            )
+            return GetRetrievedLearningEvaluationResultsResponse(
+                success=True,
+                results=results,
+                msg=f"Found {len(results)} retrieved-learning evaluation result(s)",
+            )
+        except Exception as e:
+            return GetRetrievedLearningEvaluationResultsResponse(
+                success=False, results=[], msg=str(e)
             )
 
     def get_requests(
