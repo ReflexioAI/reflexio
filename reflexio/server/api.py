@@ -365,6 +365,9 @@ def create_app(
     from reflexio.server.services.lineage.gc_scheduler import (
         maybe_start_lineage_gc,
     )
+    from reflexio.server.services.lineage.vector_backfill_sweep import (
+        install_missing_vector_backfill_sweep,
+    )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
@@ -400,6 +403,11 @@ def create_app(
                 lambda org_id: RequestContext(org_id=org_id),
                 bootstrap_org_id=bootstrap_org_id,
             )
+            # Register the missing-vector backfill sweep (opt-in via
+            # REFLEXIO_MISSING_VECTOR_BACKFILL_ENABLED) BEFORE starting the GC
+            # scheduler, so its per-org hook is visible when maybe_start_lineage_gc
+            # evaluates its start conditions. No-op when the flag is off.
+            install_missing_vector_backfill_sweep()
             gc_scheduler = maybe_start_lineage_gc(
                 lambda org_id: RequestContext(org_id=org_id),
                 bootstrap_org_id=bootstrap_org_id,

@@ -27,6 +27,16 @@ from .._base import (
 logger = logging.getLogger(__name__)
 
 
+def _embed_text_for_interaction(content: str | None, action_desc: str | None) -> str:
+    """Derive the text embedded for an interaction.
+
+    Kept byte-for-byte identical to the ingest path
+    (``add_user_interactions_bulk`` / ``prepare_interaction_embeddings``) so a
+    backfilled vector matches a freshly-ingested one.
+    """
+    return "\n".join([content or "", action_desc or ""])
+
+
 class InteractionStoreMixin:
     """Mixin providing interaction-store CRUD for SQLite storage."""
 
@@ -234,6 +244,110 @@ class InteractionStoreMixin:
             embeddings = [[] for _ in texts]
         for interaction, embedding in zip(to_embed, embeddings, strict=False):
             interaction.embedding = embedding
+
+    # ------------------------------------------------------------------
+    # Missing-vector backfill (durability sweep)
+    # ------------------------------------------------------------------
+
+    @SQLiteStorageBase.handle_exceptions
+    def iter_interactions_missing_vectors(self, limit: int) -> list[tuple[int, str]]:
+        """Enumerate interactions whose embedding was never persisted.
+
+        A degraded/failed embedding leaves the ``embedding`` column empty
+        (``'[]'`` or NULL) and writes no ``interactions_vec`` row — equivalent
+        conditions on the write path. Detecting on the ``embedding`` column is
+        both the root-cause signal and portable across backends (the column
+        exists everywhere; ``interactions_vec`` is a SQLite-vec detail).
+
+        Args:
+            limit: Maximum number of interactions to return.
+
+        Returns:
+            list[tuple[int, str]]: ``(interaction_id, embed_text)`` pairs, at
+            most ``limit`` long, ordered by ``interaction_id`` for stable paging.
+        """
+        if limit <= 0:
+            return []
+        rows = self._fetchall(
+            """SELECT interaction_id, content, user_action_description
+               FROM interactions
+               WHERE embedding IS NULL OR embedding = '[]'
+               ORDER BY interaction_id
+               LIMIT ?""",
+            (limit,),
+        )
+        return [
+            (
+                r["interaction_id"],
+                _embed_text_for_interaction(r["content"], r["user_action_description"]),
+            )
+            for r in rows
+        ]
+
+    @SQLiteStorageBase.handle_exceptions
+    def backfill_missing_interaction_vectors(self, limit: int) -> int:
+        """Re-embed and persist vectors for interactions missing them.
+
+        Bounded by ``limit`` and idempotent: once the ``embedding`` column and
+        ``interactions_vec`` row are written, the row no longer matches
+        detection and is skipped next time. Embeds via the same batch call and
+        text derivation the ingest path uses so backfilled vectors match
+        freshly-ingested ones.
+
+        Fail-safe: if the embedder is unavailable the batch call raises
+        ``EmbeddingUnavailableError``; we log a single bounded WARN and return 0,
+        leaving the rows for the next tick rather than crashing the caller or
+        hot-looping a down embedder.
+
+        Args:
+            limit: Maximum number of interactions to re-embed this call.
+
+        Returns:
+            int: Number of interactions whose vector was backfilled.
+        """
+        if limit <= 0:
+            return 0
+        pairs = self.iter_interactions_missing_vectors(limit)
+        if not pairs:
+            return 0
+        texts = [text for _, text in pairs]
+        try:
+            embeddings = self.llm_client.get_embeddings(
+                texts, self.embedding_model_name, self.embedding_dimensions
+            )
+        except EmbeddingUnavailableError as exc:
+            logger.warning(
+                "Embedding unavailable during missing-vector backfill; leaving "
+                "%d interaction(s) for the next tick: %s",
+                len(pairs),
+                exc,
+            )
+            return 0
+        backfilled = 0
+        for (iid, _text), embedding in zip(pairs, embeddings, strict=False):
+            if not embedding:
+                # Embedder returned empty for this row — leave it for next tick.
+                continue
+            self._persist_backfilled_vector(iid, embedding)
+            backfilled += 1
+        return backfilled
+
+    def _persist_backfilled_vector(
+        self, interaction_id: int, embedding: list[float]
+    ) -> None:
+        """Write a re-embedded vector for one interaction (column + vec row).
+
+        Updates the ``embedding`` TEXT column (read by the Python vector-rank
+        search path) and upserts the ``interactions_vec`` row via the same
+        ``_vec_upsert`` helper the insert path uses.
+        """
+        with self._lock:
+            self.conn.execute(
+                "UPDATE interactions SET embedding = ? WHERE interaction_id = ?",
+                (_json_dumps(embedding), interaction_id),
+            )
+            self.conn.commit()
+        self._vec_upsert("interactions_vec", interaction_id, embedding)
 
     @SQLiteStorageBase.handle_exceptions
     def delete_user_interaction(self, request: DeleteUserInteractionRequest) -> None:
