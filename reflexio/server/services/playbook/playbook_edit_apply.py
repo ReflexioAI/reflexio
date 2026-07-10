@@ -19,6 +19,7 @@ def apply_playbook_edit(
     new_playbook: UserPlaybook,
     source: str,
     request_id: str,
+    skip_embedding: bool = False,
 ) -> int:
     """Insert a replacement playbook then atomically supersede the incumbent.
 
@@ -43,6 +44,12 @@ def apply_playbook_edit(
             non-empty; use the reflection run id (``ReflectionServiceRequest.request_id``)
             or another operation-scoped id. Raises ``ValueError`` immediately
             (before any storage write) when empty, preventing orphaned successor rows.
+        skip_embedding: Forwarded to ``save_user_playbooks``. Defaults to
+            ``False`` (recompute the embedding at write time — what every online
+            / offline-tuner caller relies on). The durable reflection persist
+            path passes ``True`` because the successor's embedding was already
+            precomputed off the writer transaction, so no embedding runs inside
+            the fence.
 
     Returns:
         The ``user_playbook_id`` of the newly inserted playbook, or ``-1`` if
@@ -56,7 +63,7 @@ def apply_playbook_edit(
             "apply_playbook_edit: request_id must be non-empty (operation-run correlation id)"
         )
     new_playbook.source = source
-    storage.save_user_playbooks([new_playbook])
+    storage.save_user_playbooks([new_playbook], skip_embedding=skip_embedding)
     new_id: int = new_playbook.user_playbook_id
 
     ctx = LineageContext(op_kind="revise", actor=source, request_id=request_id)
