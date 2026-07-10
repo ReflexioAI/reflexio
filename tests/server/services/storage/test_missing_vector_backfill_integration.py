@@ -211,6 +211,74 @@ def test_base_default_is_a_safe_no_op() -> None:
     assert InteractionStoreMixin.backfill_missing_interaction_vectors(None, 10) == 0  # type: ignore[arg-type]
 
 
+@pytest.mark.parametrize(
+    ("content", "action_desc"),
+    [
+        ("hello world", "clicked the submit button"),
+        ("only content", ""),  # empty action desc -> the `or ""` branch
+        ("", "only action desc"),  # empty content
+    ],
+)
+def test_backfill_text_matches_the_ingest_derivation(
+    tmp_path, worker_id, content: str, action_desc: str
+) -> None:
+    """Cross-path guard: the text ``iter_interactions_missing_vectors`` yields for
+    an interaction is byte-identical to the text the *ingest* path actually
+    derives and hands to the embedder for that same interaction. Fails loudly if
+    anyone later changes ingest derivation without updating backfill.
+
+    The mock embedder ignores its input, so this asserts on the derived TEXT that
+    ingest passes to ``get_embeddings`` — not on the resulting vector.
+    """
+    s = _store(tmp_path, worker_id)
+
+    captured_texts: list[str] = []
+
+    def _record(texts, *_a, **_k):
+        captured_texts.extend(texts)
+        return [_unit_vector(s.embedding_dimensions) for _ in texts]
+
+    client = MagicMock()
+    client.get_embeddings.side_effect = _record
+    s.llm_client = client
+
+    uid = "u-equivalence"
+    # Ingest via the REAL bulk path (embeddings_prepared=False) so
+    # add_user_interactions_bulk derives the text and passes it to get_embeddings.
+    ingested = Interaction(
+        interaction_id=1,
+        user_id=uid,
+        request_id="req-ingest",
+        content=content,
+        user_action_description=action_desc,
+        created_at=int(time.time()),
+    )
+    s.add_user_interactions_bulk(user_id=uid, interactions=[ingested])
+    assert len(captured_texts) == 1
+    ingest_text = captured_texts[0]
+
+    # Seed a distinct row with the SAME content/action but no vector, then read
+    # back the text the backfill detector derives for it.
+    missing = Interaction(
+        interaction_id=2,
+        user_id=uid,
+        request_id="req-missing",
+        content=content,
+        user_action_description=action_desc,
+        created_at=int(time.time()) + 1,
+        embedding=[],
+    )
+    s.add_user_interactions_bulk(
+        user_id=uid, interactions=[missing], embeddings_prepared=True
+    )
+    pairs = dict(s.iter_interactions_missing_vectors(100))
+    assert 2 in pairs
+    backfill_text = pairs[2]
+
+    # The load-bearing invariant: single-sourced derivation.
+    assert backfill_text == ingest_text
+
+
 # ---------------------------------------------------------------------------
 # Sweep closure
 # ---------------------------------------------------------------------------

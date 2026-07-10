@@ -82,6 +82,12 @@ class InteractionStoreMixin:
 
     @SQLiteStorageBase.handle_exceptions
     def add_user_interaction(self, user_id: str, interaction: Interaction) -> None:  # noqa: ARG002
+        # NOTE: distinct from the bulk/backfill derivation
+        # (_embed_text_for_interaction). This legacy single-insert path embeds via
+        # the purpose-prefixed _get_embedding ("search_document: ...") and its own
+        # f-string, so it is intentionally NOT routed through the shared helper —
+        # aligning it would silently change stored embedding values (e.g. null ->
+        # literal "None"). The real bulk ingest + backfill share the helper.
         embedding = self._get_embedding(
             f"{interaction.content}\n{interaction.user_action_description}"
         )
@@ -196,7 +202,7 @@ class InteractionStoreMixin:
             to_embed = [i for i in interactions if not i.embedding]
             if to_embed:
                 texts = [
-                    "\n".join([i.content or "", i.user_action_description or ""])
+                    _embed_text_for_interaction(i.content, i.user_action_description)
                     for i in to_embed
                 ]
                 try:
@@ -228,7 +234,7 @@ class InteractionStoreMixin:
         if not to_embed:
             return
         texts = [
-            "\n".join([i.content or "", i.user_action_description or ""])
+            _embed_text_for_interaction(i.content, i.user_action_description)
             for i in to_embed
         ]
         try:
@@ -340,13 +346,19 @@ class InteractionStoreMixin:
         Updates the ``embedding`` TEXT column (read by the Python vector-rank
         search path) and upserts the ``interactions_vec`` row via the same
         ``_vec_upsert`` helper the insert path uses.
+
+        Only commits when it owns the transaction (mirroring ``_insert_interaction``)
+        so it can never flush a partial outer transaction if ever called inside an
+        open ``commit_scope``; ``_vec_upsert`` likewise defers under an open scope.
         """
         with self._lock:
+            own_txn = self._own_transaction()
             self.conn.execute(
                 "UPDATE interactions SET embedding = ? WHERE interaction_id = ?",
                 (_json_dumps(embedding), interaction_id),
             )
-            self.conn.commit()
+            if own_txn:
+                self.conn.commit()
         self._vec_upsert("interactions_vec", interaction_id, embedding)
 
     @SQLiteStorageBase.handle_exceptions
