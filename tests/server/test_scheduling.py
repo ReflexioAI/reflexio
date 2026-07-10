@@ -238,3 +238,18 @@ class TestLeaderGate:
         gate.answer = True
         s._elected_interval()
         assert s.ticks == 1
+
+
+def test_multi_worker_daemon_log(monkeypatch, caplog) -> None:
+    from reflexio.server.api import _log_multi_worker_daemons
+
+    monkeypatch.setenv("REFLEXIO_SERVER_WORKERS", "3")
+    with caplog.at_level("WARNING"):
+        _log_multi_worker_daemons()
+    assert any("event=multi_worker_daemons workers=3" in r.message for r in caplog.records)
+
+    caplog.clear()
+    monkeypatch.setenv("REFLEXIO_SERVER_WORKERS", "1")
+    with caplog.at_level("WARNING"):
+        _log_multi_worker_daemons()
+    assert not caplog.records
