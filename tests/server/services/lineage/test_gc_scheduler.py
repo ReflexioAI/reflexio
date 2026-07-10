@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -10,8 +11,11 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from reflexio.models.config_schema import LineageGCConfig
+from reflexio.server.scheduling import LeaderGate
 from reflexio.server.services.lineage import gc_scheduler
+from reflexio.server.services.lineage import gc_scheduler as gc_mod
 from reflexio.server.services.lineage.gc_scheduler import (
+    _DEFAULT_ORG_FANOUT_WORKERS,
     _ENTITY_TYPES,
     _HIGH_VOLUME_THRESHOLD,
     _MIN_POLL_SECONDS,
@@ -20,6 +24,7 @@ from reflexio.server.services.lineage.gc_scheduler import (
     clear_per_org_sweeps,
     maybe_start_lineage_gc,
     register_per_org_sweep,
+    set_leader_gate,
 )
 
 # ---------------------------------------------------------------------------
@@ -61,6 +66,59 @@ def _scheduler(*, bootstrap_org_id: str = "org_bootstrap", factory=None):
         request_context_factory=factory,  # type: ignore[arg-type]
         bootstrap_org_id=bootstrap_org_id,
     )
+
+
+@pytest.fixture
+def gc_scheduler_factory():
+    """Return a factory building a ``LineageGCScheduler`` with a stubbed sweep.
+
+    The returned callable takes ``org_ids`` (used to build per-org contexts
+    and seed the bootstrap org), an optional ``storage_class_name`` (a
+    stand-in storage type name so ``_org_fanout_workers``'s SQLite check can
+    be exercised without a real ``SQLiteStorage``), and an optional
+    ``leader_gate``. ``_sweep_org`` is replaced with a stub that records the
+    org id into a shared list (thread-safely) instead of doing real storage
+    work, so fan-out tests can assert on which orgs were swept without
+    depending on ``lineage_gc``/``expiry_reclamation`` config gating.
+
+    Returns:
+        Callable[..., tuple[LineageGCScheduler, list[str]]]: Factory
+        returning ``(scheduler, swept_org_ids)``.
+    """
+
+    def _factory(
+        *,
+        org_ids: list[str],
+        storage_class_name: str | None = None,
+        leader_gate: LeaderGate | None = None,
+    ) -> tuple[LineageGCScheduler, list[str]]:
+        swept: list[str] = []
+        lock = threading.Lock()
+
+        def factory(org_id: str):
+            storage = (
+                type(storage_class_name, (), {})()
+                if storage_class_name is not None
+                else None
+            )
+            return _make_ctx(
+                org_id, lineage_gc=LineageGCConfig(enabled=False), storage=storage
+            )
+
+        sched = LineageGCScheduler(
+            request_context_factory=factory,  # type: ignore[arg-type]
+            bootstrap_org_id=org_ids[0] if org_ids else "org_bootstrap",
+            leader_gate=leader_gate,
+        )
+
+        def _stub_sweep_org(org_id: str) -> None:
+            with lock:
+                swept.append(org_id)
+
+        sched._sweep_org = _stub_sweep_org  # type: ignore[method-assign]
+        return sched, swept
+
+    return _factory
 
 
 # ---------------------------------------------------------------------------
@@ -667,3 +725,154 @@ def test_maybe_start_starts_when_a_per_org_sweep_is_registered_even_with_flags_o
         clear_global_sweeps()
         if sched is not None:
             sched.stop(timeout_seconds=1.0)
+
+
+# ---------------------------------------------------------------------------
+# Bounded org fan-out — _gc_tick(max_workers=...) + leader-gate forwarding
+# ---------------------------------------------------------------------------
+
+
+def test_gc_tick_parallel_processes_all_orgs(gc_scheduler_factory) -> None:
+    """max_workers>1 sweeps every org exactly once (same set as serial)."""
+    sched, swept = gc_scheduler_factory(org_ids=[f"o{i}" for i in range(10)])
+    sched._gc_tick([f"o{i}" for i in range(10)], max_workers=4)
+    assert sorted(swept) == sorted(f"o{i}" for i in range(10))
+
+
+def test_gc_tick_default_is_serial(gc_scheduler_factory) -> None:
+    """Default max_workers=1 preserves strict serial order (byte-compat)."""
+    sched, swept = gc_scheduler_factory(org_ids=["a", "b", "c"])
+    sched._gc_tick(["a", "b", "c"])
+    assert swept == ["a", "b", "c"]
+
+
+def test_repeat_timeout_escalates_anomaly(monkeypatch, gc_scheduler_factory) -> None:
+    """The same org timing out in two consecutive ticks fires capture_anomaly."""
+    anomalies: list[tuple] = []
+    monkeypatch.setattr(
+        gc_mod, "capture_anomaly", lambda name, **kw: anomalies.append((name, kw))
+    )
+    sched, _ = gc_scheduler_factory(org_ids=["x"])
+    monkeypatch.setattr(
+        gc_mod, "iterate_orgs_bounded", lambda *_args, **_kwargs: ["x"]
+    )  # every tick: org x times out
+    sched._gc_tick(["x"], max_workers=2)
+    assert not [a for a in anomalies if a[0] == "lineage.gc.org_sweep_timeout_repeat"]
+    sched._gc_tick(["x"], max_workers=2)
+    assert [a for a in anomalies if a[0] == "lineage.gc.org_sweep_timeout_repeat"]
+
+
+def test_alternating_timeout_does_not_escalate_anomaly(
+    monkeypatch, gc_scheduler_factory
+) -> None:
+    """An org timing out, then ticking clean, then timing out again is NOT a
+    repeat — only STRICTLY CONSECUTIVE timeouts escalate. Guards against a
+    naive "seen it time out before" set that never gets cleared on a clean
+    tick.
+    """
+    anomalies: list[tuple] = []
+    monkeypatch.setattr(
+        gc_mod, "capture_anomaly", lambda name, **kw: anomalies.append((name, kw))
+    )
+    sched, _ = gc_scheduler_factory(org_ids=["x"])
+
+    # tick1: times out. tick2: clean. tick3: times out again (not consecutive).
+    results = iter([["x"], [], ["x"]])
+    monkeypatch.setattr(
+        gc_mod, "iterate_orgs_bounded", lambda *_args, **_kwargs: next(results)
+    )
+
+    sched._gc_tick(["x"], max_workers=2)  # tick1: first-ever timeout
+    sched._gc_tick(["x"], max_workers=2)  # tick2: clean tick resets the streak
+    sched._gc_tick(["x"], max_workers=2)  # tick3: timed out again, but not consecutive
+
+    assert not [
+        a for a in anomalies if a[0] == "lineage.gc.org_sweep_timeout_repeat"
+    ], "alternating timeouts must not escalate — only strictly consecutive ticks do"
+
+
+def test_sqlite_forces_serial(monkeypatch, gc_scheduler_factory) -> None:
+    """SQLite storage pins the fan-out to max_workers=1 (spec 6.1)."""
+    sched, _ = gc_scheduler_factory(org_ids=["a"], storage_class_name="SQLiteStorage")
+    assert sched._org_fanout_workers(sched.request_context_factory("a")) == 1
+
+
+def test_org_fanout_workers_env_unset_defaults(
+    monkeypatch, gc_scheduler_factory
+) -> None:
+    """Non-SQLite storage + no env override resolves to the module default."""
+    monkeypatch.delenv("REFLEXIO_SCHEDULER_ORG_WORKERS", raising=False)
+    sched, _ = gc_scheduler_factory(org_ids=["a"])
+    assert (
+        sched._org_fanout_workers(sched.request_context_factory("a"))
+        == _DEFAULT_ORG_FANOUT_WORKERS
+    )
+
+
+def test_org_fanout_workers_env_valid_custom(monkeypatch, gc_scheduler_factory) -> None:
+    """A valid positive integer override is honored."""
+    monkeypatch.setenv("REFLEXIO_SCHEDULER_ORG_WORKERS", "3")
+    sched, _ = gc_scheduler_factory(org_ids=["a"])
+    assert sched._org_fanout_workers(sched.request_context_factory("a")) == 3
+
+
+def test_org_fanout_workers_env_non_numeric_falls_back(
+    monkeypatch, gc_scheduler_factory
+) -> None:
+    """A non-numeric override falls back to the module default."""
+    monkeypatch.setenv("REFLEXIO_SCHEDULER_ORG_WORKERS", "abc")
+    sched, _ = gc_scheduler_factory(org_ids=["a"])
+    assert (
+        sched._org_fanout_workers(sched.request_context_factory("a"))
+        == _DEFAULT_ORG_FANOUT_WORKERS
+    )
+
+
+@pytest.mark.parametrize("value", ["0", "-1"])
+def test_org_fanout_workers_env_non_positive_falls_back(
+    monkeypatch, gc_scheduler_factory, value
+) -> None:
+    """Zero or negative overrides fall back to the module default."""
+    monkeypatch.setenv("REFLEXIO_SCHEDULER_ORG_WORKERS", value)
+    sched, _ = gc_scheduler_factory(org_ids=["a"])
+    assert (
+        sched._org_fanout_workers(sched.request_context_factory("a"))
+        == _DEFAULT_ORG_FANOUT_WORKERS
+    )
+
+
+def test_leader_gate_forwarded(gc_scheduler_factory) -> None:
+    class _Gate:
+        def should_run(self) -> bool:
+            return False
+
+    gate = _Gate()
+    sched, _ = gc_scheduler_factory(org_ids=["a"], leader_gate=gate)
+    assert sched._leader_gate is gate
+
+
+def test_maybe_start_lineage_gc_reads_module_leader_gate_hook():
+    """maybe_start_lineage_gc picks up a leader gate set via set_leader_gate,
+    mirroring the module-hook fallback for set_org_id_provider (see
+    test_maybe_start_lineage_gc_reads_module_provider_hook in
+    test_gc_scheduler_multitenant_integration.py)."""
+
+    class _Gate:
+        def should_run(self) -> bool:
+            return True
+
+    gate = _Gate()
+    cfg = LineageGCConfig(enabled=True)
+    ctx = _make_ctx("org_1", lineage_gc=cfg)
+
+    set_leader_gate(gate)
+    sched = None
+    try:
+        sched = maybe_start_lineage_gc(lambda _: ctx, bootstrap_org_id="org_1")  # type: ignore[arg-type]
+        assert sched is not None
+        assert sched._leader_gate is gate
+    finally:
+        set_leader_gate(None)
+        if sched is not None:
+            sched.stop(timeout_seconds=1.0)
+    assert gc_mod._leader_gate_hook is None

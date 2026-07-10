@@ -20,8 +20,10 @@ import os
 import threading
 import time
 from collections.abc import Callable
+from functools import partial
 
 from reflexio.server.api_endpoints.request_context import RequestContext
+from reflexio.server.callback_executor import submit_callback
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.services.tagging.service import TaggingService
 
@@ -101,13 +103,10 @@ class TaggingScheduler:
                             continue
 
                         del self._scheduled[key]
-                        t = threading.Thread(
-                            target=self._run_callback,
-                            args=(key, callback),
-                            daemon=True,
-                            name=f"tagging-{key[1][:20]}",
+                        submit_callback(
+                            f"tagging-{key[1][:20]}",
+                            partial(self._run_callback, key, callback),
                         )
-                        t.start()
             except Exception:
                 logger.exception("Error in tagging scheduler loop")
                 time.sleep(1)

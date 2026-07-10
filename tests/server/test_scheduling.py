@@ -172,3 +172,121 @@ def test_stop_timeout_keeps_thread_reference_and_blocks_double_start() -> None:
 
     assert sched.is_running() is False
     assert sched._thread is None
+
+
+class _TickCounter(ThreadedScheduler):
+    """Ticks fast; records tick count so tests can assert gating."""
+
+    def __init__(self, *, leader_gate=None) -> None:
+        super().__init__(thread_name="tick-counter", leader_gate=leader_gate)
+        self.ticks = 0
+
+    def _run_once(self) -> float:
+        self.ticks += 1
+        return 0.01
+
+
+class _StaticGate:
+    """LeaderGate stub returning a fixed answer; counts calls."""
+
+    def __init__(self, answer: bool) -> None:
+        self.answer = answer
+        self.calls = 0
+
+    def should_run(self) -> bool:
+        self.calls += 1
+        return self.answer
+
+
+class _RaisingGate:
+    """LeaderGate stub whose ``should_run`` always raises.
+
+    Exercises the base's fail-open defense (spec: the gate contract says
+    ``should_run`` never raises, but the base must not trust that blindly).
+    """
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def should_run(self) -> bool:
+        self.calls += 1
+        raise RuntimeError("gate boom")
+
+
+class TestLeaderGate:
+    def test_no_gate_ticks_run(self) -> None:
+        s = _TickCounter()
+        s.start()
+        try:
+            assert _wait_until(lambda: s.ticks >= 2)
+        finally:
+            s.stop()
+        assert s.ticks >= 2  # today's behavior, byte-for-byte
+
+    def test_gate_true_ticks_run(self) -> None:
+        gate = _StaticGate(True)
+        s = _TickCounter(leader_gate=gate)
+        s.start()
+        try:
+            assert _wait_until(lambda: s.ticks >= 2)
+        finally:
+            s.stop()
+        assert s.ticks >= 2
+        assert gate.calls >= 2  # consulted once per tick
+
+    def test_gate_raises_fails_open_and_loop_survives(self, caplog) -> None:
+        gate = _RaisingGate()
+        s = _TickCounter(leader_gate=gate)
+        with caplog.at_level("ERROR"):
+            s.start()
+            try:
+                assert _wait_until(lambda: s.ticks >= 2), (
+                    "loop died after the gate raised instead of failing open"
+                )
+            finally:
+                s.stop()
+        assert gate.calls >= 2  # gate consulted again on the next iteration
+        assert any(
+            "tick-counter_leader_gate_error" in r.message for r in caplog.records
+        )
+
+    def test_gate_false_skips_and_waits_follower_poll(self) -> None:
+        gate = _StaticGate(False)
+        s = _TickCounter(leader_gate=gate)
+        s.start()
+        time.sleep(0.1)
+        s.stop(timeout_seconds=0.2)
+        assert s.ticks == 0  # follower never ticks
+        assert gate.calls == 1  # then waits _FOLLOWER_POLL_SECONDS (60s)
+        from reflexio.server.scheduling import _FOLLOWER_POLL_SECONDS
+
+        assert _FOLLOWER_POLL_SECONDS == 60.0
+
+    def test_follower_becomes_leader_next_poll(self) -> None:
+        from reflexio.server.scheduling import _FOLLOWER_POLL_SECONDS
+
+        gate = _StaticGate(False)
+        s = _TickCounter(leader_gate=gate)
+        # Drive _run_loop's decision helper directly to avoid waiting 60s.
+        assert s._elected_interval() == _FOLLOWER_POLL_SECONDS
+        assert s.ticks == 0
+        gate.answer = True
+        s._elected_interval()
+        assert s.ticks == 1
+
+
+def test_multi_worker_daemon_log(monkeypatch, caplog) -> None:
+    from reflexio.server.api import _log_multi_worker_daemons
+
+    monkeypatch.setenv("REFLEXIO_SERVER_WORKERS", "3")
+    with caplog.at_level("WARNING"):
+        _log_multi_worker_daemons()
+    assert any(
+        "event=multi_worker_daemons workers=3" in r.message for r in caplog.records
+    )
+
+    caplog.clear()
+    monkeypatch.setenv("REFLEXIO_SERVER_WORKERS", "1")
+    with caplog.at_level("WARNING"):
+        _log_multi_worker_daemons()
+    assert not caplog.records

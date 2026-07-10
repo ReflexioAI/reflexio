@@ -5,6 +5,9 @@ import logging
 import threading
 import time
 from collections.abc import Callable
+from functools import partial
+
+from reflexio.server.callback_executor import submit_callback
 
 from .optimizer import PlaybookOptimizationRunStatus, PlaybookOptimizationTarget
 
@@ -110,12 +113,16 @@ class PlaybookOptimizationScheduler:
                             continue
                         _, callback, abort_threshold, cooldown_seconds = current
                         del self._scheduled[key]
-                        threading.Thread(
-                            target=self._run_callback,
-                            args=(key, callback, abort_threshold, cooldown_seconds),
-                            daemon=True,
-                            name=f"playbook-opt-{key[1]}-{key[2]}",
-                        ).start()
+                        submit_callback(
+                            f"playbook-opt-{key[1]}-{key[2]}",
+                            partial(
+                                self._run_callback,
+                                key,
+                                callback,
+                                abort_threshold,
+                                cooldown_seconds,
+                            ),
+                        )
             except Exception:
                 logger.exception("Playbook optimization scheduler loop failed")
                 time.sleep(1)

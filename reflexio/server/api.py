@@ -77,6 +77,34 @@ __all__ = [
     "limiter",
 ]
 
+
+def _log_multi_worker_daemons() -> None:
+    """Warn once at startup when multiple worker processes will run daemons.
+
+    ``--workers N`` (N>1) runs the full daemon set in every worker process
+    (duplicate ticking). Safe by the concurrent-tick invariant — every daemon
+    tick is concurrent-safe — but worth one visible line (design D3).
+
+    Reuses ``embedder_warmup._detected_worker_count`` (checks
+    ``REFLEXIO_SERVER_WORKERS`` then falls back to ``WEB_CONCURRENCY``)
+    instead of re-implementing a narrower env read here. When the count is
+    undetectable (``None``), this logs nothing — it cannot verify the count,
+    so it must not assume a single worker.
+    """
+    from reflexio.server.llm.providers.embedder_warmup import (
+        _detected_worker_count,
+    )
+
+    workers = _detected_worker_count()
+    if workers is not None and workers > 1:
+        logger.warning(
+            "event=multi_worker_daemons workers=%d — background daemons tick in "
+            "every worker process (duplicate ticking; safe: ticks are "
+            "concurrent-safe by design)",
+            workers,
+        )
+
+
 # ``core_router`` stays an aggregator: it ``include_router``s every domain
 # sub-router so ``core_router.routes`` still enumerates all data-plane handlers
 # (enterprise QPS enforcement iterates this list). The include order is
@@ -389,6 +417,7 @@ def create_app(
         run_startup_config_guards()
         maybe_start_embedder_warmup()
         if mounts_data_plane:
+            _log_multi_worker_daemons()
             log_publish_hardware_capacity()
             validate_llm_availability()
             from reflexio.server.llm.rerank import prewarm as _prewarm_cross_encoder

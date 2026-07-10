@@ -13,7 +13,9 @@ import os
 import threading
 import time
 from collections.abc import Callable
+from functools import partial
 
+from reflexio.server.callback_executor import submit_callback
 from reflexio.server.services.agent_success_evaluation import _eval_health
 
 logger = logging.getLogger(__name__)
@@ -135,14 +137,10 @@ class GroupEvaluationScheduler:
                         # Remove from scheduled map and fire
                         del self._scheduled[key]
 
-                        # Spawn daemon thread for the callback
-                        t = threading.Thread(
-                            target=self._run_callback,
-                            args=(key, callback),
-                            daemon=True,
-                            name=f"group-eval-{key[2][:20]}",
+                        submit_callback(
+                            f"group-eval-{key[2][:20]}",
+                            partial(self._run_callback, key, callback),
                         )
-                        t.start()
 
             except Exception:
                 logger.exception("Error in group evaluation scheduler loop")

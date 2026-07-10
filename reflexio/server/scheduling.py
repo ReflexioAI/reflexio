@@ -19,6 +19,9 @@ set of hooks so no observable behaviour changes:
   ``start`` is a logged no-op when a feature gate is off).
 - :meth:`_on_started` / :meth:`_on_stopped` emit each scheduler's own start/stop
   log line (through its own module logger, so output is byte-identical).
+- ``leader_gate`` (optional): a fleet-coordination gate consulted before each
+  tick; ``None`` (the default and the OSS-local case) preserves today's
+  always-tick behavior byte-for-byte.
 
 A scheduler whose loop is materially different (e.g. a bounded-attempt retrier
 that waits *before* each attempt and exits on first success) may override
@@ -31,7 +34,31 @@ nothing from ``reflexio_ext``.
 
 from __future__ import annotations
 
+import logging
 import threading
+from typing import Protocol
+
+logger = logging.getLogger(__name__)
+
+# How long a non-leader waits before re-checking the gate. Fixed (no interval
+# memoization): a follower that becomes leader starts ticking within <=60s.
+_FOLLOWER_POLL_SECONDS: float = 60.0
+
+
+class LeaderGate(Protocol):
+    """Fleet-coordination gate consulted before each tick.
+
+    Implementations must NEVER raise from ``should_run`` — error handling
+    (including fail-open) lives inside the implementation (spec §4.1). The
+    scheduler base nonetheless defends against a contract violation: if
+    ``should_run`` raises anyway, the base logs the error and fails open
+    (runs the tick) rather than trusting the contract blindly and letting the
+    daemon thread die silently.
+    """
+
+    def should_run(self) -> bool:
+        """Return whether this instance should run the next tick."""
+        ...
 
 
 class ThreadedScheduler:
@@ -44,12 +71,17 @@ class ThreadedScheduler:
 
     Args:
         thread_name (str): OS thread name for the daemon (aids debugging / logs).
+        leader_gate (LeaderGate | None): Optional fleet-coordination gate
+            consulted before each tick. Defaults to None (always tick).
     """
 
-    def __init__(self, *, thread_name: str) -> None:
+    def __init__(
+        self, *, thread_name: str, leader_gate: LeaderGate | None = None
+    ) -> None:
         self._thread_name = thread_name
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
+        self._leader_gate = leader_gate
 
     def start(self) -> None:
         """Start the daemon thread, unless it is gated off or already running.
@@ -125,8 +157,37 @@ class ThreadedScheduler:
         """
         raise NotImplementedError
 
+    def _elected_interval(self) -> float:
+        """Run one gated iteration; return the seconds to wait before the next.
+
+        ``None`` gate -> tick (today's behavior). Gate ``True`` -> tick.
+        Gate ``False`` -> skip and wait the fixed follower poll.
+
+        The gate contract says ``should_run`` never raises (see
+        :class:`LeaderGate`), but this has zero defense of its own: an escaped
+        exception here would kill the daemon thread permanently and silently.
+        A raise is therefore caught defensively and treated as fail-open (tick
+        runs; duplicate work is safe, silence is not) rather than propagated.
+
+        Returns:
+            float: Seconds to wait before the next loop iteration.
+        """
+        if self._leader_gate is None:
+            return self._run_once()
+        try:
+            should_run = self._leader_gate.should_run()
+        except Exception:
+            logger.exception(
+                "event=%s_leader_gate_error — failing open", self._thread_name
+            )
+            return self._run_once()
+        if should_run:
+            return self._run_once()
+        logger.debug("event=%s_skip_not_leader", self._thread_name)
+        return _FOLLOWER_POLL_SECONDS
+
     def _run_loop(self) -> None:
-        """Drive :meth:`_run_once` until stopped, waiting its returned interval."""
+        """Drive gated iterations until stopped, waiting each returned interval."""
         while not self._stop_event.is_set():
-            interval = self._run_once()
+            interval = self._elected_interval()
             self._stop_event.wait(interval)

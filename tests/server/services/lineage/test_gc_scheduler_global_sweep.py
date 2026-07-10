@@ -88,7 +88,11 @@ def test_run_once_invokes_global_sweeps(monkeypatch):
         bootstrap_org_id="org-boot",
     )
     monkeypatch.setattr(scheduler, "_discover_org_ids", lambda _ctx: [])
-    monkeypatch.setattr(scheduler, "_gc_tick", lambda _org_ids: None)
+    # Stub matches _gc_tick's real keyword-only max_workers param (added by
+    # the bounded org fan-out) so _run_once's real calling convention still
+    # resolves; the assertion below is unaffected — this stub is a no-op
+    # regardless of the value it's called with.
+    monkeypatch.setattr(scheduler, "_gc_tick", lambda _org_ids, **_kwargs: None)
 
     scheduler._run_once()
 

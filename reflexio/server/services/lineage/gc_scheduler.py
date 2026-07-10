@@ -28,13 +28,17 @@ import time
 from collections.abc import Callable
 
 from reflexio.server.api_endpoints.request_context import RequestContext
-from reflexio.server.scheduling import ThreadedScheduler
+from reflexio.server.env_utils import env_str
+from reflexio.server.org_fanout import iterate_orgs_bounded
+from reflexio.server.scheduling import LeaderGate, ThreadedScheduler
 from reflexio.server.tracing import capture_anomaly
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_POLL_INTERVAL_SECONDS = 86400
 _MIN_POLL_SECONDS = 1
+_ORG_SWEEP_TIMEOUT_SECONDS = 60.0
+_DEFAULT_ORG_FANOUT_WORKERS = 8
 
 # Window-misconfiguration tripwire: if a single tick deletes more than this
 # many tombstones for one org, something is likely wrong with the grace window.
@@ -73,6 +77,27 @@ def set_org_id_provider(provider: Callable[[], list[str]] | None) -> None:
     _org_id_provider_hook = provider
 
 
+# Injection seam: enterprise sets the fleet leader gate here at composition
+# time (spec 4.3), exactly like set_org_id_provider. None (OSS default) keeps
+# the always-tick behavior.
+_leader_gate_hook: LeaderGate | None = None
+
+
+def set_leader_gate(gate: LeaderGate | None) -> None:
+    """Register the leader gate consulted by ``maybe_start_lineage_gc``.
+
+    Enterprise deployments call this at app-composition time so the scheduler
+    only ticks on the elected leader (``gate.should_run()`` wraps fleet leader
+    election, e.g. an advisory-lock gate). ``None`` (OSS default) preserves
+    always-tick behavior. Pass ``None`` to clear the hook (tests restore defaults).
+
+    Args:
+        gate (LeaderGate | None): Fleet-coordination gate, or ``None`` to clear.
+    """
+    global _leader_gate_hook  # noqa: PLW0603
+    _leader_gate_hook = gate
+
+
 # Global sweeps run once per tick (for GLOBAL tables like invitation_codes),
 # gated on expiry_reclamation.enabled. Each fn takes `now` (unix epoch) and
 # returns a deleted-row count. Enterprise registers its sweeps here at startup;
@@ -109,8 +134,8 @@ _per_org_sweep_hooks: list[Callable[[str, int], int]] = []
 def register_per_org_sweep(fn: Callable[[str, int], int]) -> None:
     """Register a per-org reclamation sweep.
 
-    The sweep is invoked once per org inside ``_gc_tick``'s org loop, after
-    the Class-B block, unconditionally (not gated on ``lineage_gc`` or
+    The sweep is invoked once per org inside ``_sweep_org``, after the
+    Class-B block, unconditionally (not gated on ``lineage_gc`` or
     ``expiry_reclamation`` — the real gate lives in the enterprise closure).
 
     Note: a registered sweep that absorbs its own exceptions (returns instead
@@ -138,8 +163,11 @@ class LineageGCScheduler(ThreadedScheduler):
         request_context_factory: Callable[[str], RequestContext],
         bootstrap_org_id: str,
         org_id_provider: Callable[[], list[str]] | None = None,
+        leader_gate: LeaderGate | None = None,
     ) -> None:
-        super().__init__(thread_name="reflexio-lineage-gc-scheduler")
+        super().__init__(
+            thread_name="reflexio-lineage-gc-scheduler", leader_gate=leader_gate
+        )
         self.request_context_factory = request_context_factory
         self.bootstrap_org_id = bootstrap_org_id
         # Optional injectable org-id source. When set (managed/multi-tenant mode),
@@ -149,6 +177,8 @@ class LineageGCScheduler(ThreadedScheduler):
         # raises NotImplementedError on Supabase. When None (OSS default),
         # discovery falls back to storage.list_org_ids() exactly as before.
         self.org_id_provider = org_id_provider
+        # Orgs that timed out on the PREVIOUS tick; a repeat escalates.
+        self._prior_timeout_orgs: set[str] = set()
 
     def _on_started(self) -> None:
         logger.info("event=lineage_gc_scheduler_started")
@@ -197,119 +227,163 @@ class LineageGCScheduler(ThreadedScheduler):
             org_ids = [bootstrap_ctx.org_id, *org_ids]
         return org_ids
 
-    def _gc_tick(self, org_ids: list[str]) -> None:
+    def _sweep_org(self, org_id: str) -> None:
+        """Run Class A, Class B, and per-org sweeps for a single org.
+
+        Extracted from ``_gc_tick``'s per-org loop body so it can be handed to
+        :func:`iterate_orgs_bounded` as the per-org work item; the stop-event
+        check that used to guard the loop iteration now lives in that helper.
+
+        Args:
+            org_id (str): The org to sweep this tick.
+        """
+        try:
+            ctx = self.request_context_factory(org_id)
+            if ctx.storage is None:
+                return
+            cfg = ctx.configurator.get_config()
+        except Exception:
+            capture_anomaly("lineage.gc.run_failed", org_id=org_id)
+            logger.exception("event=lineage_gc_org_failed org_id=%s", org_id)
+            return
+
+        # Class A: profile expiry sweep (requires PII/grace sign-off; gated on
+        # lineage_gc.enabled independently of Class B).
+        if cfg.lineage_gc.enabled:
+            try:
+                expired_tombstoned = ctx.storage.expire_active_profiles(
+                    now=int(time.time())
+                )
+                if expired_tombstoned:
+                    logger.info(
+                        "event=expiry_sweep org_id=%s profiles_tombstoned=%d",
+                        org_id,
+                        expired_tombstoned,
+                    )
+                if expired_tombstoned > _HIGH_VOLUME_THRESHOLD:
+                    capture_anomaly(
+                        "lineage.expiry_sweep.high_volume",
+                        org_id=org_id,
+                        count=expired_tombstoned,
+                    )
+            except Exception:
+                capture_anomaly("lineage.expiry_sweep.failed", org_id=org_id)
+                logger.exception("event=lineage_expiry_sweep_failed org_id=%s", org_id)
+
+            # Tombstone GC: each entity type is independent within the loop.
+            try:
+                older_than_epoch = (
+                    int(time.time())
+                    - cfg.lineage_gc.tombstone_grace_window_days * 86400
+                )
+                tombstone_deleted = 0
+                for entity_type in _ENTITY_TYPES:
+                    tombstone_deleted += ctx.storage.gc_expired_tombstones(
+                        entity_type=entity_type,
+                        older_than_epoch=older_than_epoch,
+                    )
+                if tombstone_deleted:
+                    logger.info(
+                        "event=lineage_gc_tick org_id=%s tombstone_deleted=%d",
+                        org_id,
+                        tombstone_deleted,
+                    )
+                if tombstone_deleted > _HIGH_VOLUME_THRESHOLD:
+                    capture_anomaly(
+                        "lineage.gc.high_volume",
+                        org_id=org_id,
+                        count=tombstone_deleted,
+                    )
+            except Exception:
+                capture_anomaly("lineage.gc.tombstone_gc_failed", org_id=org_id)
+                logger.exception(
+                    "event=lineage_gc_tombstone_gc_failed org_id=%s", org_id
+                )
+
+        # Class B: direct-delete of expired plain rows (no audit/grace
+        # obligation; independent of lineage_gc).  Each sweep is isolated so
+        # one failing method does not skip the rest.
+        if (
+            getattr(cfg, "expiry_reclamation", None) is not None
+            and cfg.expiry_reclamation.enabled
+        ):
+            now = int(time.time())
+            for method_name, grace, limit in _CLASS_B_SWEEPS:
+                method = getattr(ctx.storage, method_name, None)
+                if method is None:
+                    continue
+                try:
+                    deleted = method(now=now, grace_seconds=grace, limit=limit)
+                    if deleted:
+                        logger.info(
+                            "event=class_b_reclaim org_id=%s method=%s deleted=%d",
+                            org_id,
+                            method_name,
+                            deleted,
+                        )
+                except Exception:
+                    capture_anomaly(
+                        "lineage.class_b_reclaim.failed",
+                        org_id=org_id,
+                        method=method_name,
+                    )
+                    logger.exception(
+                        "event=class_b_reclaim_failed org_id=%s method=%s",
+                        org_id,
+                        method_name,
+                    )
+
+        # Per-org sweeps: invoked unconditionally once per org (the real gate
+        # lives in each enterprise closure). Extracted to keep _gc_tick's
+        # cyclomatic complexity in check and to mirror _run_global_sweeps.
+        self._run_per_org_sweeps(org_id)
+
+    def _gc_tick(self, org_ids: list[str], *, max_workers: int = 1) -> None:
         """Run one GC pass across the given org IDs.
 
         Factored out of ``_run_loop`` so tests can exercise it without threads.
+        Default ``max_workers=1`` is the serial path (used by existing tests);
+        ``_run_once`` passes the configured fan-out width.
 
         Args:
             org_ids (list[str]): Org IDs to process in this tick.
+            max_workers (int): Bounded fan-out width (1 = serial).
         """
-        for org_id in org_ids:
-            if self._stop_event.is_set():
-                break
-            try:
-                ctx = self.request_context_factory(org_id)
-                if ctx.storage is None:
-                    continue
-                cfg = ctx.configurator.get_config()
-            except Exception:
-                capture_anomaly("lineage.gc.run_failed", org_id=org_id)
-                logger.exception("event=lineage_gc_org_failed org_id=%s", org_id)
-                continue
+        timed_out = iterate_orgs_bounded(
+            org_ids,
+            self._sweep_org,
+            max_workers=max_workers,
+            per_org_timeout_seconds=_ORG_SWEEP_TIMEOUT_SECONDS,
+            stop_event=self._stop_event,
+        )
+        for org_id in set(timed_out) & self._prior_timeout_orgs:
+            capture_anomaly("lineage.gc.org_sweep_timeout_repeat", org_id=org_id)
+        self._prior_timeout_orgs = set(timed_out)
 
-            # Class A: profile expiry sweep (requires PII/grace sign-off; gated on
-            # lineage_gc.enabled independently of Class B).
-            if cfg.lineage_gc.enabled:
-                try:
-                    expired_tombstoned = ctx.storage.expire_active_profiles(
-                        now=int(time.time())
-                    )
-                    if expired_tombstoned:
-                        logger.info(
-                            "event=expiry_sweep org_id=%s profiles_tombstoned=%d",
-                            org_id,
-                            expired_tombstoned,
-                        )
-                    if expired_tombstoned > _HIGH_VOLUME_THRESHOLD:
-                        capture_anomaly(
-                            "lineage.expiry_sweep.high_volume",
-                            org_id=org_id,
-                            count=expired_tombstoned,
-                        )
-                except Exception:
-                    capture_anomaly("lineage.expiry_sweep.failed", org_id=org_id)
-                    logger.exception(
-                        "event=lineage_expiry_sweep_failed org_id=%s", org_id
-                    )
+    def _org_fanout_workers(self, bootstrap_ctx: RequestContext) -> int:
+        """Resolve the fan-out width: SQLite pins to 1; else env (default 8).
 
-                # Tombstone GC: each entity type is independent within the loop.
-                try:
-                    older_than_epoch = (
-                        int(time.time())
-                        - cfg.lineage_gc.tombstone_grace_window_days * 86400
-                    )
-                    tombstone_deleted = 0
-                    for entity_type in _ENTITY_TYPES:
-                        tombstone_deleted += ctx.storage.gc_expired_tombstones(
-                            entity_type=entity_type,
-                            older_than_epoch=older_than_epoch,
-                        )
-                    if tombstone_deleted:
-                        logger.info(
-                            "event=lineage_gc_tick org_id=%s tombstone_deleted=%d",
-                            org_id,
-                            tombstone_deleted,
-                        )
-                    if tombstone_deleted > _HIGH_VOLUME_THRESHOLD:
-                        capture_anomaly(
-                            "lineage.gc.high_volume",
-                            org_id=org_id,
-                            count=tombstone_deleted,
-                        )
-                except Exception:
-                    capture_anomaly("lineage.gc.tombstone_gc_failed", org_id=org_id)
-                    logger.exception(
-                        "event=lineage_gc_tombstone_gc_failed org_id=%s", org_id
-                    )
+        SQLite: each worker would construct a fresh storage (connection +
+        migrate()) against one shared DB file — contention the serial loop
+        never produces — and OSS-local is usually one org anyway (spec 6.1).
 
-            # Class B: direct-delete of expired plain rows (no audit/grace
-            # obligation; independent of lineage_gc).  Each sweep is isolated so
-            # one failing method does not skip the rest.
-            if (
-                getattr(cfg, "expiry_reclamation", None) is not None
-                and cfg.expiry_reclamation.enabled
-            ):
-                now = int(time.time())
-                for method_name, grace, limit in _CLASS_B_SWEEPS:
-                    method = getattr(ctx.storage, method_name, None)
-                    if method is None:
-                        continue
-                    try:
-                        deleted = method(now=now, grace_seconds=grace, limit=limit)
-                        if deleted:
-                            logger.info(
-                                "event=class_b_reclaim org_id=%s method=%s deleted=%d",
-                                org_id,
-                                method_name,
-                                deleted,
-                            )
-                    except Exception:
-                        capture_anomaly(
-                            "lineage.class_b_reclaim.failed",
-                            org_id=org_id,
-                            method=method_name,
-                        )
-                        logger.exception(
-                            "event=class_b_reclaim_failed org_id=%s method=%s",
-                            org_id,
-                            method_name,
-                        )
+        Args:
+            bootstrap_ctx (RequestContext): This tick's bootstrap context.
 
-            # Per-org sweeps: invoked unconditionally once per org (the real gate
-            # lives in each enterprise closure). Extracted to keep _gc_tick's
-            # cyclomatic complexity in check and to mirror _run_global_sweeps.
-            self._run_per_org_sweeps(org_id)
+        Returns:
+            int: The pool width for this tick.
+        """
+        storage = getattr(bootstrap_ctx, "storage", None)
+        if storage is not None and "sqlite" in type(storage).__name__.lower():
+            return 1
+        raw = env_str(
+            "REFLEXIO_SCHEDULER_ORG_WORKERS", str(_DEFAULT_ORG_FANOUT_WORKERS)
+        )
+        try:
+            value = int(raw)
+        except ValueError:
+            return _DEFAULT_ORG_FANOUT_WORKERS
+        return value if value > 0 else _DEFAULT_ORG_FANOUT_WORKERS
 
     def _run_per_org_sweeps(self, org_id: str) -> None:
         """Invoke each registered per-org sweep once for this org.
@@ -378,7 +452,7 @@ class LineageGCScheduler(ThreadedScheduler):
             cfg = bootstrap_ctx.configurator.get_config()
             poll_interval = cfg.lineage_gc.poll_interval_seconds
             org_ids = self._discover_org_ids(bootstrap_ctx)
-            self._gc_tick(org_ids)
+            self._gc_tick(org_ids, max_workers=self._org_fanout_workers(bootstrap_ctx))
             self._run_global_sweeps(cfg)
         except Exception:
             logger.exception("event=lineage_gc_scheduler_tick_failed")
@@ -390,6 +464,7 @@ def maybe_start_lineage_gc(
     *,
     bootstrap_org_id: str,
     org_id_provider: Callable[[], list[str]] | None = None,
+    leader_gate: LeaderGate | None = None,
 ) -> LineageGCScheduler | None:
     """Start the scheduler when bootstrap config enables tombstone GC or expiry reclamation.
 
@@ -429,6 +504,10 @@ def maybe_start_lineage_gc(
             (OSS default), falls back to the module-level provider hook set via
             :func:`set_org_id_provider`; when both are ``None`` discovery uses
             ``storage.list_org_ids()`` exactly as before.
+        leader_gate: Optional fleet-coordination gate. When ``None`` (OSS
+            default), falls back to the module-level hook set via
+            :func:`set_leader_gate`; when both are ``None`` the scheduler ticks
+            unconditionally (today's behavior).
 
     Returns:
         LineageGCScheduler: The started scheduler, or ``None`` if no start
@@ -495,6 +574,7 @@ def maybe_start_lineage_gc(
         org_id_provider=(
             org_id_provider if org_id_provider is not None else _org_id_provider_hook
         ),
+        leader_gate=leader_gate if leader_gate is not None else _leader_gate_hook,
     )
     scheduler.start()
     return scheduler
