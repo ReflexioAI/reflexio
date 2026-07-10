@@ -25,6 +25,7 @@ from reflexio.server.services.base_generation import (
 from reflexio.server.services.base_generation import (
     StatusChangeOperation as StatusChangeOperation,  # re-export for back-compat
 )
+from reflexio.server.services.deferred_learning_plan import ExtractorBookmarkAdvance
 from reflexio.server.services.extractor_config_utils import (
     get_extractor_name,
 )
@@ -209,6 +210,9 @@ class BaseGenerationService(
         }
         self._last_extraction_run_ids: list[str] = []
         self._last_token_totals: RunTokenTotals | None = None
+        # Stride-bookmark advance deferred off the extractor (F1); captured in
+        # ``_execute_extractor`` and applied in the persist half of the run.
+        self._last_bookmark_advance: ExtractorBookmarkAdvance | None = None
         # Window fetched by the should-run gate (_collect_scoped_interactions_for_precheck),
         # stashed so the billing path (_extraction_input_text) can reuse it instead of
         # re-querying storage. None when the gate did not run (bypass paths).
@@ -531,6 +535,7 @@ class BaseGenerationService(
             )
             self._last_extraction_run_ids = []
             self._last_token_totals = None
+            self._last_bookmark_advance = None
             result = self._execute_extractor(
                 prepared.extractor_config, prepared.identifier
             )
@@ -540,6 +545,11 @@ class BaseGenerationService(
                 if result:
                     self._process_results([result])
                 self._finalize_extraction_runs()
+                # The extractor no longer self-advances its stride bookmark (F1);
+                # apply the deferred advance in the persist half so the
+                # synchronous ``.run()`` path stays behavior-identical (bookmark
+                # still advances after the row writes it corresponds to).
+                self._apply_bookmark_advance()
             except Exception as exc:
                 self._mark_extraction_runs_finalization_failed(exc)
                 raise
@@ -579,6 +589,30 @@ class BaseGenerationService(
             )
             if isinstance(e, ExtractorExecutionError):
                 raise
+
+    def _apply_bookmark_advance(self) -> None:
+        """Apply the deferred extractor stride-bookmark advance (F1).
+
+        The extractor emits its bookmark advance on the ``ExtractionOutcome``
+        rather than self-advancing; ``_execute_extractor`` captures it into
+        ``_last_bookmark_advance``. This applies it via
+        ``update_extractor_bookmark`` using the same OperationStateManager
+        service name the extractor used, so the bookmark key is byte-identical.
+        No-op when the extractor produced no output (advance is ``None``) or the
+        service has no stride bookmark.
+        """
+        advance = self._last_bookmark_advance
+        if advance is None or self.storage is None:
+            return
+        service_name = self._get_extractor_state_service_name()
+        if service_name is None:
+            return
+        manager = OperationStateManager(self.storage, self.org_id, service_name)
+        manager.update_extractor_bookmark(
+            extractor_name=advance.extractor_name,
+            processed_interactions=advance.processed_interactions,
+            user_id=advance.user_id,
+        )
 
     def _prepare_generation_run(
         self, request: TRequest
