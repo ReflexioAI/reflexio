@@ -66,8 +66,43 @@ class ProfileStoreMixin:
         raise NotImplementedError
 
     @abstractmethod
-    def add_user_profile(self, user_id: str, user_profiles: list[UserProfile]) -> None:
-        """Add the user profile for a given user id."""
+    def add_user_profile(
+        self,
+        user_id: str,
+        user_profiles: list[UserProfile],
+        *,
+        skip_embedding: bool = False,
+    ) -> None:
+        """Add the user profile for a given user id.
+
+        Args:
+            user_id: The owning user id (positional, unused by some backends).
+            user_profiles: Profiles to insert.
+            skip_embedding: When ``False`` (default — what every current caller
+                gets), the embedding (and, when document expansion is enabled,
+                ``expanded_terms``) is recomputed unconditionally at write time,
+                exactly as before. Callers that ``model_copy`` a DB-loaded row
+                with changed content but the old embedding preserved rely on
+                this recompute, so it must stay the default. When ``True``, the
+                embedding step is skipped because ``.embedding`` was already
+                populated up front by :meth:`precompute_profile_embeddings`
+                (the durable compute/persist split — the only caller that opts
+                in). A bare ``if not profile.embedding`` guard is deliberately
+                NOT used: it would persist a stale vector for the ``model_copy``
+                callers' changed content (silent search corruption).
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def precompute_profile_embeddings(self, profiles: list[UserProfile]) -> None:
+        """Populate ``.embedding`` (and ``.expanded_terms`` when document
+        expansion is enabled) on each profile in place, issuing NO DB write.
+
+        Lets the durable learning worker do the (slow, LLM/embedding) compute
+        outside the writer transaction, then pass ``skip_embedding=True`` to
+        :meth:`add_user_profile` so the fenced persist writes the pre-computed
+        vector without re-embedding.
+        """
         raise NotImplementedError
 
     @abstractmethod

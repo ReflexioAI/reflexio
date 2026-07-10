@@ -12,7 +12,44 @@ class UserPlaybookStoreMixin:
     """Abstract user playbook CRUD + search methods."""
 
     @abstractmethod
-    def save_user_playbooks(self, user_playbooks: list[UserPlaybook]) -> None:
+    def save_user_playbooks(
+        self,
+        user_playbooks: list[UserPlaybook],
+        *,
+        skip_embedding: bool = False,
+    ) -> None:
+        """Insert user playbooks, assigning survivor ids.
+
+        Args:
+            user_playbooks: Playbooks to insert.
+            skip_embedding: When ``False`` (default — what every current caller
+                gets), the embedding (and, when document expansion is enabled,
+                ``expanded_terms``) is recomputed unconditionally at write time,
+                exactly as before. Callers that ``model_copy`` a DB-loaded row
+                with changed content but the old embedding preserved rely on
+                this recompute, so it must stay the default. When ``True``, the
+                embedding step is skipped because ``.embedding`` was already
+                populated up front by
+                :meth:`precompute_user_playbook_embeddings` (the durable
+                compute/persist split — the only caller that opts in). A bare
+                ``if not up.embedding`` guard is deliberately NOT used: it would
+                persist a stale vector for the ``model_copy`` callers' changed
+                content (silent search corruption).
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def precompute_user_playbook_embeddings(
+        self, playbooks: list[UserPlaybook]
+    ) -> None:
+        """Populate ``.embedding`` (and ``.expanded_terms`` when document
+        expansion is enabled) on each playbook in place, issuing NO DB write.
+
+        Lets the durable learning worker do the (slow, LLM/embedding) compute
+        outside the writer transaction, then pass ``skip_embedding=True`` to
+        :meth:`save_user_playbooks` so the fenced persist writes the
+        pre-computed vector without re-embedding.
+        """
         raise NotImplementedError
 
     @abstractmethod
