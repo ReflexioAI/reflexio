@@ -69,6 +69,21 @@ def _factory(tmp_dir: str):
     return _make
 
 
+def _org_operation_state_count(storage, org_id: str) -> int:
+    """Count operation-state rows belonging to ``org_id``.
+
+    get_all_operation_states() returns GLOBAL rows (SQLite shares one db file
+    across orgs; org_id is embedded in each ``service_name`` key, e.g.
+    ``profile_generation::<org>::<user>::lock``), so scope by the org marker to
+    compare a single run against a race like-for-like.
+    """
+    return sum(
+        1
+        for s in storage.get_all_operation_states()
+        if f"::{org_id}::" in s["service_name"]
+    )
+
+
 def _setup_job(
     storage,
     *,
@@ -151,6 +166,26 @@ def test_exactly_once_under_claim_race():
 
         baseline_profiles = ctx_single.storage.count_all_profiles()
         baseline_playbooks = ctx_single.storage.count_user_playbooks()
+        # Escaping side effects (lineage events + operation-state / bookmark rows):
+        # a single clean run is the oracle. These are the writes that, on the
+        # networked backends, escape the fence via _rpc/_table auto-commit; on
+        # SQLite (single-connection atomic) the loser's copies always roll back,
+        # so org_race must match the org_single baseline exactly.
+        #
+        # Scoping note: SQLite stores every org in one shared db file (org_id is a
+        # column). count_all_profiles/count_user_playbooks already filter by org,
+        # but get_lineage_events()/get_all_operation_states() return GLOBAL rows,
+        # so we scope both to the org under test (org_id filter for lineage; a
+        # service_name substring filter for operation-state locks) — otherwise the
+        # baseline, captured before org_race exists, would spuriously differ.
+        # Count-based comparison: org_single/org_race rows differ in
+        # event_id/updated_at/request_id, so only the counts are the invariant.
+        baseline_events = len(
+            ctx_single.storage.get_lineage_events(org_id="org_single")
+        )
+        baseline_bookmarks = _org_operation_state_count(
+            ctx_single.storage, "org_single"
+        )
 
         # Race: two workers, same job
         ctx_race = factory("org_race")
@@ -215,6 +250,27 @@ def test_exactly_once_under_claim_race():
             f"Exactly-once violated: race produced {race_playbooks} playbooks "
             f"but baseline is {baseline_playbooks}. "
             "The stale worker's writes must have been rolled back."
+        )
+
+        # Exactly-once must ALSO hold for the ESCAPING side effects: the loser's
+        # lineage events and operation-state / bookmark advance must have rolled
+        # back with the fence, leaving org_race's counts identical to the
+        # single-run oracle. (On the networked backends these auto-commit and leak
+        # pre-fix — that is what gate (a) fixes; SQLite is the always-green parity
+        # oracle: two SQLite connections race, but the loser's fenced scope rolls
+        # back its whole transaction.)
+        race_events = len(ctx_race.storage.get_lineage_events(org_id="org_race"))
+        race_bookmarks = _org_operation_state_count(ctx_race.storage, "org_race")
+
+        assert race_events == baseline_events, (
+            f"Exactly-once violated: race produced {race_events} lineage events "
+            f"but baseline is {baseline_events}. The stale worker's lineage "
+            "events must have rolled back (no doubled events)."
+        )
+        assert race_bookmarks == baseline_bookmarks, (
+            f"Exactly-once violated: race produced {race_bookmarks} operation-state "
+            f"rows but baseline is {baseline_bookmarks}. The stale worker's "
+            "bookmark / operation-state advance must have rolled back."
         )
 
 
