@@ -255,6 +255,19 @@ class AgentEvaluationResultStoreMixin:
             )
         return builder.hexdigest()
 
+    def _rle_attached_refs(self, user_id: str, session_id: str) -> set[tuple[str, str]]:
+        """Canonical ``(kind, learning_id)`` refs attached to the live session."""
+        cur = self.conn.execute(
+            """SELECT i.retrieved_learnings
+               FROM interactions i JOIN requests r ON i.request_id = r.request_id
+               WHERE r.session_id = ? AND i.user_id = ?""",
+            (session_id, user_id),
+        )
+        attached: set[tuple[str, str]] = set()
+        for row in cur:
+            attached.update(_parse_attachment_refs(row["retrieved_learnings"]))
+        return attached
+
     def _rle_eligible_refs(
         self, user_id: str, results: list[RetrievedLearningEvaluationResult]
     ) -> set[tuple[str, str]]:
@@ -443,8 +456,18 @@ class AgentEvaluationResultStoreMixin:
                 ):
                     self.conn.rollback()
                     return RetrievedLearningCommitResult(disposition="stale")
+                # Persist only records that are still attached to the live
+                # session AND retrieval-eligible. A duplicate identity is left
+                # to trip the UNIQUE index and roll back the commit — caller
+                # bugs fail loud rather than silently dropping data.
+                attached = self._rle_attached_refs(user_id, session_id)
                 eligible = self._rle_eligible_refs(user_id, results)
-                kept = [r for r in results if (r.kind, r.learning_id) in eligible]
+                kept = [
+                    r
+                    for r in results
+                    if (r.kind, r.learning_id) in attached
+                    and (r.kind, r.learning_id) in eligible
+                ]
                 final_status = proposed_status if kept else "not_applicable"
                 self.conn.execute(
                     """DELETE FROM retrieved_learning_evaluation

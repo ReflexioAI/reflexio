@@ -218,6 +218,51 @@ def test_replace_persists_exact_eligible_set(storage) -> None:
     assert state["committed_count"] == 2
 
 
+def test_replace_drops_eligible_but_unattached(storage) -> None:
+    """Commit keeps only records attached to the live session.
+
+    Guards the ``attached AND retrieval-eligible`` contract at the storage
+    layer: an otherwise-eligible ref that was never attached to the session
+    must be dropped rather than persisted.
+    """
+    _seed_eligible_learnings(storage)
+    # A second eligible profile that is NOT attached to the session.
+    storage.add_user_profile(
+        USER,
+        [
+            UserProfile(
+                profile_id="prof-2",
+                user_id=USER,
+                content="eligible but not attached",
+                last_modified_timestamp=1,
+                generated_from_request_id="r1",
+            )
+        ],
+    )
+    _seed_session(
+        storage, refs=[RetrievedLearning(kind="profile", learning_id="prof-1")]
+    )
+    snapshot = storage.load_bounded_retrieved_learning_snapshot(USER, SESSION)
+    fingerprint = session_fingerprint(snapshot)
+    generation = storage.begin_retrieved_learning_evaluation_run(USER, SESSION)
+    commit = storage.replace_retrieved_learning_evaluation_results(
+        USER,
+        SESSION,
+        generation,
+        fingerprint,
+        "complete",
+        {},
+        [
+            _result("profile", "prof-1"),  # attached + eligible
+            _result("profile", "prof-2"),  # eligible but never attached
+        ],
+    )
+    assert commit.disposition == "applied"
+    assert commit.committed_count == 1
+    rows = storage.get_retrieved_learning_evaluation_results(session_id=SESSION)
+    assert [(r.kind, r.learning_id) for r in rows] == [("profile", "prof-1")]
+
+
 def test_replace_with_no_eligible_rows_clears_and_records_not_applicable(
     storage,
 ) -> None:
