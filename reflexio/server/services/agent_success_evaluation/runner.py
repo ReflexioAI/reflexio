@@ -394,10 +394,17 @@ def _run_retrieved_learning_evaluation(
                 return status, fingerprint
 
     config = request_context.configurator.get_config()
+    agent_success = config.agent_success_config if config else None
+    success_definition = (
+        agent_success.success_definition_prompt.strip()
+        if agent_success and agent_success.success_definition_prompt
+        else ""
+    )
     evaluator = RetrievedLearningEvaluator(
         request_context=request_context,
         llm_client=llm_client,
         agent_context=(config.agent_context_prompt or "") if config else "",
+        success_definition=success_definition,
     )
 
     logger.info(

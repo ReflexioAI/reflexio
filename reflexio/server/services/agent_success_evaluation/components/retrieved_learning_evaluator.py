@@ -4,8 +4,9 @@ Judges every learning that was retrieved and injected into a session
 (``Interaction.retrieved_learnings``) with two LLM judge families:
 
 - **relevance**: does the learning apply to the session's task/response?
-- **impact**: did applying it improve, harm, or not materially change the
-  response (counterfactual judgment from the observed transcript)?
+- **impact**: relative to the agent's definition of success, did applying it
+  move the response toward success, away from it, or not materially change it
+  (counterfactual judgment from the observed transcript)?
 
 Plain class colocated with the group-evaluation runner (no
 ``BaseGenerationService`` machinery — this is a judge that writes to its own
@@ -161,6 +162,7 @@ class RetrievedLearningEvaluator:
         request_context: RequestContext,
         llm_client: LiteLLMClient,
         agent_context: str = "",
+        success_definition: str = "",
     ):
         """Initialize the evaluator.
 
@@ -169,10 +171,16 @@ class RetrievedLearningEvaluator:
             llm_client (LiteLLMClient): Unified LLM client.
             agent_context (str): Context about the agent, injected into both
                 judge prompts.
+            success_definition (str): The agent's definition of success (from
+                ``AgentSuccessConfig.success_definition_prompt``), injected into
+                the impact judge only so impact is judged relative to what the
+                org actually considers success. Empty means the impact judge
+                falls back to general task helpfulness.
         """
         self.request_context = request_context
         self.client = llm_client
         self.agent_context = agent_context
+        self.success_definition = success_definition
 
         config = self.request_context.configurator.get_config()
         llm_config = config.llm_config if config else None
@@ -463,14 +471,16 @@ class RetrievedLearningEvaluator:
         failure the chunk is marked failed.
         """
         expected_refs = {c.learning_ref for c in chunk}
-        prompt = self.request_context.prompt_manager.render_prompt(
-            prompt_id,
-            {
-                "agent_context_prompt": self.agent_context,
-                "interactions": transcript,
-                "learnings": self._learnings_payload(chunk),
-            },
-        )
+        variables: dict[str, Any] = {
+            "agent_context_prompt": self.agent_context,
+            "interactions": transcript,
+            "learnings": self._learnings_payload(chunk),
+        }
+        # Only the impact judge is anchored to the definition of success;
+        # relevance stays success-agnostic ("does this learning apply?").
+        if prompt_id == RETRIEVED_LEARNING_IMPACT_PROMPT_ID:
+            variables["success_definition_prompt"] = self.success_definition
+        prompt = self.request_context.prompt_manager.render_prompt(prompt_id, variables)
         messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
         for attempt in range(2):
             log_llm_messages(logger, f"Retrieved-learning judge {prompt_id}", messages)

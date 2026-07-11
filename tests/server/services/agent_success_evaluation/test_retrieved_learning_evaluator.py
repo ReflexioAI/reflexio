@@ -46,7 +46,9 @@ def storage() -> Generator[SQLiteStorage]:
 
 
 def _make_evaluator(
-    storage: SQLiteStorage, llm_client: MagicMock
+    storage: SQLiteStorage,
+    llm_client: MagicMock,
+    success_definition: str = "resolve the ticket in one reply",
 ) -> RetrievedLearningEvaluator:
     request_context = SimpleNamespace(
         storage=storage,
@@ -59,6 +61,7 @@ def _make_evaluator(
         request_context=request_context,  # type: ignore[arg-type]
         llm_client=llm_client,
         agent_context="test agent",
+        success_definition=success_definition,
     )
 
 
@@ -311,6 +314,31 @@ def test_duplicate_refs_across_interactions_judged_once(
     assert len(run.rows) == 1
     # One relevance + one impact call for the single deduped candidate.
     assert llm.generate_chat_response.call_count == 2
+
+
+def test_success_definition_reaches_only_impact_prompt(
+    storage: SQLiteStorage,
+) -> None:
+    """The definition of success anchors impact but not relevance."""
+    profile_id, _, _ = _seed_all_kinds(storage)
+    marker = "SUCCESS-DEF-MARKER resolve in one reply"
+    prompts_by_format: dict[type, str] = {}
+
+    llm = _echoing_llm()
+    inner = llm.generate_chat_response.side_effect
+
+    def recording(*, messages, model, response_format):
+        prompts_by_format[response_format] = messages[0]["content"]
+        return inner(messages=messages, model=model, response_format=response_format)
+
+    llm.generate_chat_response.side_effect = recording
+    evaluator = _make_evaluator(storage, llm, success_definition=marker)
+    run = evaluator.evaluate(
+        USER, SESSION, "v1", _snapshot({1: [("profile", profile_id)]})
+    )
+    assert run.outcome == "evaluated"
+    assert marker in prompts_by_format[RetrievedLearningImpactOutput]
+    assert marker not in prompts_by_format[RetrievedLearningRelevanceOutput]
 
 
 def test_verdict_coverage_error_names_all_problems() -> None:
