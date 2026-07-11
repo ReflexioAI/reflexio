@@ -16,7 +16,6 @@ from reflexio.models.api_schema.service_schemas import (
     UserActionType,
 )
 from reflexio.server.services.generation_service import GenerationService
-from reflexio.server.services.storage.retention_archive import RetentionArchiveFullError
 from reflexio.server.services.storage.storage_base import BaseStorage
 
 pytestmark = pytest.mark.integration
@@ -67,46 +66,59 @@ def test_archive_flag_off_preserves_existing_delete_behavior(
     assert not archive_dir.exists()
 
 
-def test_archive_ceiling_stops_deletion_without_exceeding_limit(
-    storage: BaseStorage, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("REFLEXIO_RETENTION_ARCHIVE", "true")
-    monkeypatch.setenv("REFLEXIO_RETENTION_ARCHIVE_MAX_BYTES", "1")
-    storage.add_user_interaction("u1", _interaction(1, "req1"))
-
-    with pytest.raises(RetentionArchiveFullError):
-        storage.delete_oldest_retention_target_rows("interactions", 1)  # type: ignore[attr-defined]
-
-    assert {item.interaction_id for item in storage.get_all_interactions(limit=10)} == {
-        1
-    }
-    archive_dir = Path(storage.db_path).parent / "archive"  # type: ignore[attr-defined]
-    assert sum(path.stat().st_size for path in archive_dir.glob("*.jsonl")) <= 1
-
-
-def test_automatic_cleanup_treats_archive_ceiling_as_nonfatal(
+def test_archive_warning_does_not_stop_live_row_retention(
     storage: BaseStorage,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     monkeypatch.setenv("REFLEXIO_RETENTION_ARCHIVE", "true")
-    monkeypatch.setenv("REFLEXIO_RETENTION_ARCHIVE_MAX_BYTES", "1")
+    monkeypatch.setenv("REFLEXIO_RETENTION_ARCHIVE_WARN_BYTES", "1")
+    storage.add_user_interaction("u1", _interaction(1, "req1"))
+
+    assert storage.delete_oldest_retention_target_rows("interactions", 1) == 1  # type: ignore[attr-defined]
+
+    assert storage.get_all_interactions(limit=10) == []
+    archive_dir = Path(storage.db_path).parent / "archive"  # type: ignore[attr-defined]
+    assert sum(path.stat().st_size for path in archive_dir.glob("*.jsonl")) > 1
+    assert "live-row retention continues" in caplog.text
+
+
+def test_automatic_cleanup_continues_after_archive_warning(
+    storage: BaseStorage,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setenv("REFLEXIO_RETENTION_ARCHIVE", "true")
+    monkeypatch.setenv("REFLEXIO_RETENTION_ARCHIVE_WARN_BYTES", "1")
     monkeypatch.setattr(
         "reflexio.server.services.generation_service.get_row_retention_limits",
         lambda: {"interactions": 1},
     )
     storage.add_user_interaction("u1", _interaction(1, "req1"))
     service = GenerationService.__new__(GenerationService)
-    service.org_id = "archive-ceiling-test"
+    service.org_id = "archive-warning-test"
     service.storage = storage
     monkeypatch.setattr(service, "_should_check_retention_target", lambda *_: True)
 
     service._cleanup_storage_tables_if_needed()
 
-    assert {item.interaction_id for item in storage.get_all_interactions(limit=10)} == {
-        1
-    }
-    assert "live-row trimming was stopped" in caplog.text
+    assert storage.get_all_interactions(limit=10) == []
+    assert "live-row retention continues" in caplog.text
+
+
+def test_invalid_archive_warning_threshold_never_blocks_retention(
+    storage: BaseStorage,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setenv("REFLEXIO_RETENTION_ARCHIVE", "true")
+    monkeypatch.setenv("REFLEXIO_RETENTION_ARCHIVE_WARN_BYTES", "not-a-number")
+    storage.add_user_interaction("u1", _interaction(1, "req1"))
+
+    assert storage.delete_oldest_retention_target_rows("interactions", 1) == 1  # type: ignore[attr-defined]
+
+    assert storage.get_all_interactions(limit=10) == []
+    assert "Invalid REFLEXIO_RETENTION_ARCHIVE_WARN_BYTES" in caplog.text
 
 
 def test_archive_preserves_deleted_rows_without_embeddings(
@@ -170,7 +182,7 @@ def test_large_over_limit_cleanup_caps_live_rows_and_preserves_removed_rows(
     storage: BaseStorage, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("REFLEXIO_RETENTION_ARCHIVE", "true")
-    monkeypatch.setenv("REFLEXIO_RETENTION_ARCHIVE_MAX_BYTES", str(10 * 1024**2))
+    monkeypatch.setenv("REFLEXIO_RETENTION_ARCHIVE_WARN_BYTES", str(10 * 1024**2))
     monkeypatch.setattr(
         "reflexio.server.services.generation_service.get_row_retention_limits",
         lambda: {"interactions": 1000},

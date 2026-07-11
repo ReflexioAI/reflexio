@@ -3,16 +3,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 from pathlib import Path
 from typing import Any
 
-DEFAULT_RETENTION_ARCHIVE_MAX_BYTES = 10 * 1024**3
-
-
-class RetentionArchiveFullError(OSError):
-    """Raised when another archive line would exceed the configured ceiling."""
+DEFAULT_RETENTION_ARCHIVE_WARN_BYTES = 10 * 1024**3
+logger = logging.getLogger(__name__)
+_warned_archive_dirs: set[Path] = set()
 
 
 def retention_archive_enabled() -> bool:
@@ -38,30 +37,34 @@ def resolve_archive_directory(database_path: str) -> Path:
     return Path(database_path).expanduser().parent / "archive"
 
 
-def retention_archive_max_bytes() -> int:
-    """Return the total archive-directory ceiling in bytes.
+def retention_archive_warning_bytes() -> int:
+    """Return the total archive-directory warning threshold in bytes.
 
     Returns:
-        Positive byte ceiling. Defaults to 10 GiB.
+        Positive warning threshold. Defaults to 10 GiB.
 
-    Raises:
-        ValueError: If ``REFLEXIO_RETENTION_ARCHIVE_MAX_BYTES`` is not a
-            positive integer. Retention then fails closed instead of silently
-            running without a usable ceiling.
+    Invalid values log an error and fall back to 10 GiB so observability
+    configuration can never stop live-row retention.
     """
-    raw = os.environ.get("REFLEXIO_RETENTION_ARCHIVE_MAX_BYTES")
+    raw = os.environ.get("REFLEXIO_RETENTION_ARCHIVE_WARN_BYTES")
     if raw is None or not raw.strip():
-        return DEFAULT_RETENTION_ARCHIVE_MAX_BYTES
+        return DEFAULT_RETENTION_ARCHIVE_WARN_BYTES
     try:
         value = int(raw)
-    except ValueError as exc:
-        raise ValueError(
-            "REFLEXIO_RETENTION_ARCHIVE_MAX_BYTES must be a positive integer"
-        ) from exc
-    if value <= 0:
-        raise ValueError(
-            "REFLEXIO_RETENTION_ARCHIVE_MAX_BYTES must be a positive integer"
+    except ValueError:
+        logger.error(
+            "Invalid REFLEXIO_RETENTION_ARCHIVE_WARN_BYTES=%r; using %d",
+            raw,
+            DEFAULT_RETENTION_ARCHIVE_WARN_BYTES,
         )
+        return DEFAULT_RETENTION_ARCHIVE_WARN_BYTES
+    if value <= 0:
+        logger.error(
+            "Invalid REFLEXIO_RETENTION_ARCHIVE_WARN_BYTES=%r; using %d",
+            raw,
+            DEFAULT_RETENTION_ARCHIVE_WARN_BYTES,
+        )
+        return DEFAULT_RETENTION_ARCHIVE_WARN_BYTES
     return value
 
 
@@ -92,16 +95,18 @@ def append_archive_rows(
         table_name: Physical table being archived.
         rows: Complete database rows selected for retention removal.
 
-    Raises:
-        RetentionArchiveFullError: If another line would exceed the total
-            archive-directory ceiling. The caller must then keep live rows.
+    The warning threshold is observability only. Crossing it never blocks
+    live-row retention.
     """
     if not rows:
         return
     archive_dir.mkdir(parents=True, exist_ok=True)
     archived_at = int(time.time())
-    max_bytes = retention_archive_max_bytes()
+    warning_bytes = retention_archive_warning_bytes()
     projected_bytes = archive_size_bytes(archive_dir)
+    resolved_archive_dir = archive_dir.resolve()
+    if projected_bytes <= warning_bytes:
+        _warned_archive_dirs.discard(resolved_archive_dir)
     path = archive_dir / f"{table_name}.jsonl"
     with path.open("ab") as archive_file:
         for row in rows:
@@ -114,10 +119,17 @@ def append_archive_rows(
             encoded_line = (
                 json.dumps(record, default=repr, separators=(",", ":")) + "\n"
             ).encode("utf-8")
-            if projected_bytes + len(encoded_line) > max_bytes:
-                raise RetentionArchiveFullError(
-                    "Retention archive reached its configured ceiling "
-                    f"({max_bytes} bytes); live-row trimming was stopped"
-                )
             archive_file.write(encoded_line)
             projected_bytes += len(encoded_line)
+    if (
+        projected_bytes > warning_bytes
+        and resolved_archive_dir not in _warned_archive_dirs
+    ):
+        logger.error(
+            "Retention archive exceeded its warning threshold: directory=%s "
+            "size_bytes=%d warning_bytes=%d; live-row retention continues",
+            archive_dir,
+            projected_bytes,
+            warning_bytes,
+        )
+        _warned_archive_dirs.add(resolved_archive_dir)
