@@ -141,9 +141,37 @@ def _picklable_completion_result(response: Any) -> Any:
     return response
 
 
+def _reset_llm_client_state_after_fork() -> None:
+    """Drop litellm's module-level HTTP client cache in the forked CHILD.
+
+    ``_litellm_completion_worker`` runs in a ``multiprocessing`` fork child, which
+    inherits a *copy* of the parent's ``litellm.in_memory_llm_clients_cache`` —
+    including any warm keep-alive HTTPS connection the parent held. Reusing such
+    an inherited socket in the child shares one TLS/HTTP connection across two
+    processes and corrupts the child's first completion (surfaces as
+    ``[SSL] record layer failure`` / ``Server disconnected`` / a garbled request
+    the provider rejects as missing auth). Clearing the cache here forces the
+    child to build a fresh client (and socket) for its one completion. Best-effort
+    and fully guarded: a litellm build without these attributes is a no-op, never
+    a crash. Only the child's copy is mutated, so the parent cache is untouched.
+    """
+    try:
+        cache = getattr(litellm, "in_memory_llm_clients_cache", None)
+        if cache is not None:
+            flush = getattr(cache, "flush_cache", None)
+            if callable(flush):
+                flush()
+            cache_dict = getattr(cache, "cache_dict", None)
+            if isinstance(cache_dict, dict):
+                cache_dict.clear()
+    except Exception:  # noqa: BLE001, S110 — a reset failure must never break the call
+        pass
+
+
 def _litellm_completion_worker(
     params: dict[str, Any], result_queue: multiprocessing.Queue
 ) -> None:
+    _reset_llm_client_state_after_fork()
     try:
         result_queue.put(
             ("ok", _picklable_completion_result(litellm.completion(**params)))
