@@ -46,6 +46,35 @@ class ExtractorBookmarkAdvance:
 
 
 @dataclass
+class ProfileWritePlan:
+    """Resolved profile write-plan for the compute/persist split (gate b).
+
+    ``ProfileGenerationService._resolve_write_plan`` produces this in compute
+    (dedup 2nd-LLM call + existing-row reads + source/status assignment +
+    precomputed ``.embedding`` via ``precompute_profile_embeddings``), issuing
+    **no** learning DB write. ``_persist_write_plan`` applies it inside the
+    fence: ``add_user_profile(..., skip_embedding=True)`` (embeddings already
+    set) then ``supersede_profiles_by_ids``.
+
+    Attributes:
+        user_id: Owning user id for the row writes.
+        request_id: Generation request id — the lineage key
+            ``supersede_profiles_by_ids`` records. Compute drops any supersede
+            ids when this is empty (unreconstructable), so persist only ever
+            supersedes with a non-empty request_id.
+        new_profiles: New profile rows with ``source``/``status`` set and
+            ``.embedding`` precomputed in compute.
+        superseded_ids: Existing profile ids to soft-supersede on the dedup
+            path.
+    """
+
+    user_id: str
+    request_id: str
+    new_profiles: list[UserProfile]
+    superseded_ids: list[str]
+
+
+@dataclass
 class ReflectionWritePlan:
     """Resolved reflection write-plan for the compute/persist split (F5, V2).
 

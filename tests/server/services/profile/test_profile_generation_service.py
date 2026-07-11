@@ -311,7 +311,7 @@ class TestProcessResults:
         service._process_results([[sample_profile]])
 
         request_context.storage.add_user_profile.assert_called_once_with(
-            "user_1", [sample_profile]
+            "user_1", [sample_profile], skip_embedding=True
         )
         assert sample_profile.source == "api"
         assert sample_profile.status is None  # CURRENT (not pending)
@@ -353,7 +353,7 @@ class TestProcessResults:
         service._process_results([[sample_profile]])
 
         request_context.storage.add_user_profile.assert_called_once_with(
-            "user_1", [sample_profile]
+            "user_1", [sample_profile], skip_embedding=True
         )
 
 
