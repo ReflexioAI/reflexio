@@ -104,10 +104,7 @@ def append_archive_batch(
     finally:
         temporary.unlink(missing_ok=True)
 
-    segments = sorted(
-        archive_dir.glob("*.jsonl"),
-        key=lambda path: (path.stat().st_mtime_ns, path.name),
-    )
+    segments = sorted(archive_dir.glob("*.jsonl"))
     total_bytes = sum(path.stat().st_size for path in segments)
     evicted_files = 0
     evicted_bytes = 0
