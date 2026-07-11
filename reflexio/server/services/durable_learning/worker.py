@@ -170,12 +170,22 @@ class DurableLearningWorker:
             )
 
             # Same-user contention (F4): another same-user durable job holds the
-            # per-user lock. Leave THIS job reclaimable (dead=False, no attempts
-            # burn) — do NOT complete it — so the queue re-claims it once the
-            # holder finishes. No lock to release (compute never acquired it).
+            # per-user lock. Leave THIS job reclaimable (dead=False) — do NOT
+            # complete it — so the queue re-claims it once the holder finishes.
+            # REFUND the attempt (refund_attempt=True): claim_learning_jobs did
+            # attempts += 1 on this claim, but no real work ran, and the ~2s poll
+            # would otherwise re-claim (and re-increment) every couple of seconds
+            # while the holder is in its ~60s compute — inflating attempts past
+            # max_attempts in seconds so the eventual winner dead-letters on its
+            # first transient error with zero real retries. The refund nets each
+            # contention cycle (claim +1, release -1) to zero. No lock to release
+            # (compute never acquired it).
             if not plan.lock_acquired:
                 storage.fail_learning_job(
-                    job_id=job.job_id, claim_token=claim_token, dead=False
+                    job_id=job.job_id,
+                    claim_token=claim_token,
+                    dead=False,
+                    refund_attempt=True,
                 )
                 return False
 

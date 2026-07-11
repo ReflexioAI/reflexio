@@ -782,17 +782,45 @@ class GenerationService:
 
         A ``lock_acquired=False`` plan never reaches here (the worker skips emit
         on contention), so releasing here is safe — this instance owns the lock.
+
+        Each emit half is isolated in its own try/except (mirroring how
+        ``schedule_tagging`` already self-guards): the halves are independent
+        post-commit side effects (billing / telemetry / off-thread schedulers),
+        so a failure in an early half must NOT starve the later halves. The
+        per-user lock release always runs in ``finally`` so a completed job never
+        strands the lock.
         """
         try:
             if plan.reflection is not None:
                 reflection_service, reflection_plan = plan.reflection
-                reflection_service.emit_side_effects(reflection_plan)
+                try:
+                    reflection_service.emit_side_effects(reflection_plan)
+                except Exception:
+                    logger.exception(
+                        "Failed to emit reflection side effects for deferred "
+                        "learning request %s",
+                        plan.request_id,
+                    )
             if plan.profile is not None:
                 profile_service, profile_plan = plan.profile
-                profile_service.emit_generation_side_effects(profile_plan)
+                try:
+                    profile_service.emit_generation_side_effects(profile_plan)
+                except Exception:
+                    logger.exception(
+                        "Failed to emit profile side effects for deferred "
+                        "learning request %s",
+                        plan.request_id,
+                    )
             if plan.playbook is not None:
                 playbook_service, playbook_plan = plan.playbook
-                playbook_service.emit_generation_side_effects(playbook_plan)
+                try:
+                    playbook_service.emit_generation_side_effects(playbook_plan)
+                except Exception:
+                    logger.exception(
+                        "Failed to emit playbook side effects for deferred "
+                        "learning request %s",
+                        plan.request_id,
+                    )
             try:
                 schedule_tagging(
                     org_id=self.org_id,

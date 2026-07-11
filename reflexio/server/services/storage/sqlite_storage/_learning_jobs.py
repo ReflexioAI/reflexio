@@ -262,11 +262,18 @@ class SQLiteLearningJobStoreMixin(LearningJobStoreABC):
         job_id: str,
         claim_token: str,
         dead: bool,
+        refund_attempt: bool = False,
     ) -> None:
         """Fenced fail/dead transition — sets status, clears token for retry.
 
         Does NOT increment attempts: claim_learning_jobs already incremented on
         delivery.  attempts tracks delivery count; fail only transitions status.
+
+        ``refund_attempt=True`` (the same-user-contention requeue, F4) decrements
+        ``attempts`` by one (``MAX(attempts - 1, 0)``) so a contention cycle
+        (claim +1, contention-release -1) nets to zero and ``attempts`` stays
+        bounded regardless of how many times the job loses the per-user race.
+        Defaults to ``False`` (the ``dead`` retry path is unchanged).
         """
         new_status = "dead" if dead else "failed"
         # Clear claim_token and claim_expires_at only for 'failed' so it's reclaimable.
@@ -282,10 +289,11 @@ class SQLiteLearningJobStoreMixin(LearningJobStoreABC):
                         status = ?,
                         claim_token = CASE WHEN ? THEN claim_token ELSE NULL END,
                         claim_expires_at = CASE WHEN ? THEN claim_expires_at ELSE NULL END,
+                        attempts = CASE WHEN ? THEN MAX(attempts - 1, 0) ELSE attempts END,
                         updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
                     WHERE job_id = ? AND claim_token = ? AND status = 'claimed'
                     """,
-                    (new_status, dead, dead, job_id, claim_token),
+                    (new_status, dead, dead, refund_attempt, job_id, claim_token),
                 )
                 if own_txn:
                     self.conn.commit()

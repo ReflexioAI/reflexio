@@ -720,3 +720,49 @@ class TestRetrySemantics:
             if j.user_id == "u-dead3"
         ]
         assert not post_dead, "dead job must not be reclaimable"
+
+    def test_refund_attempt_keeps_attempts_bounded(self, storage) -> None:
+        """fail_learning_job(refund_attempt=True) decrements attempts (floored at
+        0), so a same-user-contention requeue (F4) nets each claim+release to zero.
+
+        Without the refund, a job that loses the per-user race every poll while
+        the holder runs its long compute would blow past max_attempts in seconds
+        and dead-letter on its first real transient error. The refund keeps
+        attempts bounded no matter how many contention cycles occur.
+        """
+        _enqueue(storage, "u-refund", "r-refund", 1000.0)
+
+        # Many claim → contention-refund cycles: each nets to zero, so every
+        # claim keeps seeing attempts == 1 (never climbing toward max_attempts).
+        for cycle in range(6):
+            [job] = [
+                j
+                for j in storage.claim_learning_jobs(
+                    claimed_by="w1", limit=10, lease_seconds=300
+                )
+                if j.user_id == "u-refund"
+            ]
+            assert job.attempts == 1, (
+                f"cycle {cycle}: refund must keep attempts bounded at 1, "
+                f"got {job.attempts}"
+            )
+            storage.fail_learning_job(
+                job_id=job.job_id,
+                claim_token=job.claim_token,
+                dead=False,
+                refund_attempt=True,
+            )
+
+        # A refund never drives attempts negative (floored at 0): a plain fail
+        # right after a refunded state still shows attempts == 1 on next claim.
+        [job] = [
+            j
+            for j in storage.claim_learning_jobs(
+                claimed_by="w1", limit=10, lease_seconds=300
+            )
+            if j.user_id == "u-refund"
+        ]
+        assert job.attempts == 1, (
+            f"attempts must stay bounded (floored at 0) after refunds, "
+            f"got {job.attempts}"
+        )

@@ -260,11 +260,21 @@ class ReflectionService:
             else _DEFAULT_MAX_REVISIONS_PER_PASS
         )
 
+        # Collapse ≥2 decisions on the SAME target to the first (the LLM emits one
+        # decision per cited row, but nothing constrains it to one per target).
+        # Two same-target revisions produce torn state in persist: D1 supersedes
+        # the incumbent, D2 reuses the SAME successor uuid (keyed by cited id),
+        # finds the incumbent already superseded, its CAS misses, and its cleanup
+        # deletes the live successor — a dangling ``superseded_by`` + double-count.
+        # Deduplicating at the source keeps _precompute_replacement_rows and the
+        # persist apply loop in lockstep and makes that state unreachable.
+        decisions = _dedup_decisions_by_target(output.decisions)
+
         # V2: precompute the replacement rows' embeddings here (outside any
         # writer transaction) so persist inserts them with skip_embedding=True.
         replacement_profiles, replacement_playbooks = self._precompute_replacement_rows(
             request=request,
-            decisions=output.decisions,
+            decisions=decisions,
             profiles_by_id=profiles_by_id,
             playbooks_by_id=playbooks_by_id,
             max_revisions_per_pass=max_revisions_per_pass,
@@ -273,7 +283,7 @@ class ReflectionService:
         return ReflectionWritePlan(
             request=request,
             result=result,
-            decisions=list(output.decisions),
+            decisions=decisions,
             profiles_by_id=profiles_by_id,
             playbooks_by_id=playbooks_by_id,
             max_revisions_per_pass=max_revisions_per_pass,
@@ -969,6 +979,37 @@ def _log_edit_magnitude(
         new_len,
         new_len - old_len,
     )
+
+
+def _dedup_decisions_by_target(
+    decisions: list[ReflectionDecision],
+) -> list[ReflectionDecision]:
+    """Keep only the first decision for each ``(target_kind, target_id)``.
+
+    The reflection LLM is prompted for one decision per cited row, but nothing
+    (schema or code) forbids it from emitting two decisions on the same target.
+    A second same-target revision is not just redundant — it corrupts state: the
+    replacement row is keyed by the cited id, so the second decision reuses the
+    first's successor uuid, re-inserts it, then supersede CAS-misses (the
+    incumbent is already superseded) and deletes the live successor, leaving a
+    dangling ``superseded_by`` pointer. Collapsing duplicates here — before both
+    ``_precompute_replacement_rows`` and the persist apply loop consume the
+    decisions — makes that torn state unreachable and keeps the two loops (which
+    must build/apply exactly the same rows) in lockstep.
+
+    Ids are compared as the canonical strings the prompt is fed
+    (``profile_id`` / ``str(user_playbook_id)``), which is what the LLM echoes
+    back as ``target_id``.
+    """
+    seen: set[tuple[str, str]] = set()
+    out: list[ReflectionDecision] = []
+    for decision in decisions:
+        key = (decision.target_kind, decision.target_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(decision)
+    return out
 
 
 def _is_revision(decision: ReflectionDecision) -> bool:

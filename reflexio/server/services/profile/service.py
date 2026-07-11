@@ -236,6 +236,15 @@ class ProfileGenerationService(
         The soft-supersede emits the lineage events the profile change log is
         reconstructed from (the legacy ``profile_change_logs`` table is no longer
         written — see reconstruct_profile_change_log).
+
+        On a write failure this **re-raises** (symmetric with playbook
+        ``_persist_write_plan``): on the durable path the raise rolls back the
+        fenced ``commit_scope`` so the rows AND the extractor bookmark advance
+        (applied by ``persist_generation`` only if persist returns) are discarded
+        together — never a "write failed but bookmark advanced" window. On the
+        synchronous ``.run()`` path ``_run_generation`` catches it, records
+        ``generation_failed``, and leaves the bookmark un-advanced so the next
+        publish retries the window.
         """
         user_id = plan.user_id
         generation_request_id = plan.request_id
@@ -259,7 +268,10 @@ class ProfileGenerationService(
                         "Failed to save profiles for user id: %s",
                         user_id,
                     )
-                return
+                # Re-raise so the bookmark advance is skipped / the fence rolls
+                # back (F1 symmetry with playbook persist) — never advance the
+                # extractor bookmark over a window whose rows failed to write.
+                raise
 
         # Always soft-supersede superseded existing profiles (never hard-delete
         # on the dedup path). Compute already dropped these when request_id was
@@ -284,6 +296,10 @@ class ProfileGenerationService(
                         "Failed to soft-delete superseded profiles for user %s",
                         user_id,
                     )
+                # Re-raise for the same reason: a half-applied persist (new rows
+                # in, supersede failed) must not advance the bookmark. Playbook's
+                # _apply_consolidation_lineage raises here too.
+                raise
 
     def _finalize_extracted_items(self, all_new_profiles: list[UserProfile]) -> None:
         """Permanent V3 wrapper: compute-then-persist together (no external fence).

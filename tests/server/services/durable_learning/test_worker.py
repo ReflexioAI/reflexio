@@ -598,6 +598,102 @@ def test_failed_job_is_reclaimable():
 
 
 # ---------------------------------------------------------------------------
+# Test 6b: same-user contention refunds the attempt → attempts stays bounded
+# ---------------------------------------------------------------------------
+
+
+def test_contention_refund_keeps_attempts_bounded():
+    """Repeated same-user contention must NOT inflate ``attempts`` (F4 blocker).
+
+    On the contention path (``compute_deferred_learning`` returns
+    ``lock_acquired=False``) the worker fails the job with
+    ``refund_attempt=True``, so ``claim_learning_jobs``'s ``attempts += 1`` is
+    refunded and each contention cycle nets to zero. Without the refund a job
+    that loses the per-user race every ~2s poll while the holder runs its ~60s
+    compute would blow past ``max_attempts=3`` in seconds and dead-letter on its
+    first real transient error with zero retries.
+
+    Proof: run far more contention cycles than ``max_attempts``, assert every
+    claim still sees ``attempts == 1``, then let the job finally win the lock but
+    hit a transient persist error once — it must remain reclaimable (``failed``,
+    not ``dead``) because its retry budget was never burned by contention.
+    """
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        factory = _factory(tmp_dir)
+        ctx = factory("org_refund")
+        assert ctx.storage is not None
+
+        _setup_job(
+            ctx.storage,
+            org_id="org_refund",
+            user_id="u_refund",
+            request_id="req_refund",
+        )
+
+        worker = DurableLearningWorker(factory, instance_id="refund_w")
+
+        def _contention(_self, *, user_id, request_id, agent_version, **_kwargs):
+            # lock_acquired=False -> worker takes the contention requeue path.
+            return DeferredLearningPlan(
+                request_id=request_id,
+                user_id=user_id,
+                agent_version=agent_version,
+                lock_acquired=False,
+                reflection=None,
+                profile=None,
+                playbook=None,
+            )
+
+        # Many more contention cycles than max_attempts (3): each must net to 0.
+        for cycle in range(6):
+            [job] = ctx.storage.claim_learning_jobs(
+                claimed_by="refund_w", limit=1, lease_seconds=300
+            )
+            assert job.attempts == 1, (
+                f"cycle {cycle}: attempts must stay bounded at 1 "
+                f"(prior cycle refunded to 0), got {job.attempts}"
+            )
+            with mock.patch.object(
+                GenerationService, "compute_deferred_learning", _contention
+            ):
+                assert worker._process_job(factory("org_refund"), job) is False
+            # Still reclaimable (failed, not dead) with full retry budget.
+            assert (
+                ctx.storage.get_learning_status_for_request(
+                    user_id="u_refund", request_created_at=0.0
+                )
+                == "pending"
+            ), f"cycle {cycle}: contention requeue must stay reclaimable"
+
+        # The job finally WINS the lock but hits a transient persist error once.
+        # attempts stayed bounded, so dead = attempts >= max_attempts is False:
+        # the job is merely 'failed' (reclaimable), NOT dead-lettered.
+        [win_job] = ctx.storage.claim_learning_jobs(
+            claimed_by="refund_w", limit=1, lease_seconds=300
+        )
+        assert win_job.attempts == 1, (
+            f"winning claim must still have attempts=1 after 6 contention cycles, "
+            f"got {win_job.attempts}"
+        )
+
+        def _transient_raise(*_a, **_k):
+            raise RuntimeError("transient persist error")
+
+        with mock.patch.object(
+            GenerationService, "compute_deferred_learning", _transient_raise
+        ):
+            assert worker._process_job(factory("org_refund"), win_job) is False
+
+        # Not dead — retry budget intact despite many contention cycles.
+        assert (
+            ctx.storage.get_learning_status_for_request(
+                user_id="u_refund", request_created_at=0.0
+            )
+            == "pending"
+        ), "job must remain reclaimable (not dead) — contention did not burn attempts"
+
+
+# ---------------------------------------------------------------------------
 # Test 7: schedule_tagging is called on the sequential (durable) path
 # ---------------------------------------------------------------------------
 

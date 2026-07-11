@@ -435,10 +435,10 @@ Key files:
 
 Key files:
 - `scheduler.py`: `DurableLearningScheduler` plus `maybe_start_durable_learning()`; starts only when `REFLEXIO_DURABLE_LEARNING_QUEUE` is truthy and polls orgs with actionable queue rows.
-- `worker.py`: `DurableLearningWorker`; claims leased jobs, reloads the persisted request, runs `GenerationService.run_deferred_learning()`, and completes the job with a fenced `claim_token` transition.
+- `worker.py`: `DurableLearningWorker`; claims leased jobs, reloads the persisted request, then splits each job into `compute_deferred_learning()` (LLM extraction + dedup + embeddings, **no** writer transaction held) → `persist_deferred_learning()` + fenced `complete_learning_job()` inside one short `storage.commit_scope()` → `emit_deferred_learning_side_effects()` post-commit (billing / telemetry / tagging / lock release).
 - `services/storage/storage_base/_learning_jobs.py`: `LearningJobStoreABC`, queue status types, coverage-based request status, and the direct-storage contract implemented by each backend.
 
-**Pattern**: `POST /api/publish_interaction` returns immediately when `wait_for_response=false`; callers use the returned `request_id` with `GET /api/learning_status`. Queue workers run generation inside `storage.commit_scope()` and must raise/rollback if `complete_learning_job()` returns 0 because another worker stole the lease.
+**Pattern**: `POST /api/publish_interaction` returns immediately when `wait_for_response=false`; callers use the returned `request_id` with `GET /api/learning_status`. Queue workers run the LLM compute **outside** any writer transaction; only the persist half + the fenced `complete_learning_job()` run inside `storage.commit_scope()`, and must raise/rollback if `complete_learning_job()` returns 0 because another worker stole the lease.
 
 ### Reflection and Async Extraction
 
