@@ -661,46 +661,37 @@ class BaseGenerationService(
             prepared=plan.prepared, generated_count=plan.generated_count
         )
 
+    @abstractmethod
     def _resolve_write_plan(self, results: list) -> Any | None:
-        """Compute-half of item finalization.
+        """Compute-half of item finalization — resolve a write-plan, NO DB write.
 
-        Default (non-abstract) shim (Task 5, V3), kept until Tasks 6-7 override
-        the pair for the durable-split profile/playbook services. The shim
-        performs the finalization write HERE, in compute, by replaying the
-        pre-split call through the subclass's permanent ``_finalize_extracted_items``
-        wrapper, then returns ``None`` so ``persist_generation`` issues no further
-        write. This keeps the synchronous ``.run()`` / manual / rerun paths
-        BYTE-IDENTICAL: the write still runs before ``_finalize_extraction_runs``
-        and inside ``compute_generation``'s ``_mark_extraction_runs_finalization_failed``
-        try, so a write failure still marks the agent run FINALIZATION_FAILED
-        (retryable) exactly as before.
+        Runs the dedup + source/status assignment + embedding precompute and
+        returns a resolved write-plan (or ``None`` when there is nothing to
+        write). Issues NO learning DB write — the write is the persist half's
+        job (``_persist_write_plan``), so this stays inside the compute purity
+        contract (the compute-write-tripwire contract test).
 
-        (For the durable-split services in Tasks 6-7 the write moves into
-        ``_persist_write_plan`` — the durable fence, not the agent-run state,
-        provides retry there; the compute purity contract only applies to those
-        overrides, which is why the compute-write-tripwire contract test stays
-        RED against this shim until then.)
-
-        ``ProfileGenerationService``/``PlaybookGenerationService`` override this
-        in Tasks 6-7 to resolve dedup + precomputed embeddings and return a real
-        write-plan (no write); ``AgentSuccessEvaluationService`` (never split)
-        keeps this default. Task 8 flips it to ``@abstractmethod``.
+        The durable-split ``ProfileGenerationService`` /
+        ``PlaybookGenerationService`` return a real ``ProfileWritePlan`` /
+        ``PlaybookWritePlan`` (Tasks 6-7). ``AgentSuccessEvaluationService`` was
+        never split into a durable persist path — it keeps a concrete override
+        that writes in compute via its permanent ``_finalize_extracted_items``
+        wrapper (its results never flow through the durable worker fence).
         """
-        for result in results:
-            if result:
-                self._finalize_extracted_items(result)
-        return None
 
-    def _persist_write_plan(self, plan: Any) -> None:  # noqa: ARG002
-        """Persist-half of item finalization — NO-OP in the Task-5 shim.
+    @abstractmethod
+    def _persist_write_plan(self, plan: Any) -> None:
+        """Persist-half of item finalization — apply the resolved write-plan.
 
-        The default shim performs the write in ``_resolve_write_plan`` (compute)
-        to keep ``.run()`` / manual / rerun byte-identical, and
-        ``_resolve_write_plan`` returns ``None`` so ``persist_generation`` never
-        invokes this. It exists as the contract stub Tasks 6-7 override with the
-        real (post-fence) row-write path, and Task 8 flips to ``@abstractmethod``.
+        Issues only the fence-critical row writes for a plan produced by
+        ``_resolve_write_plan`` (embeddings already precomputed in compute), with
+        NO LLM / embedding / dedup. This is the only item-finalization work that
+        runs inside the durable worker's fenced ``commit_scope``.
+
+        ``AgentSuccessEvaluationService`` (never split) implements this as a
+        no-op — its ``_resolve_write_plan`` performs the write in compute and
+        returns ``None`` so ``persist_generation`` never invokes this.
         """
-        return
 
     def _apply_bookmark_advance(self, advance: ExtractorBookmarkAdvance | None) -> None:
         """Apply the deferred extractor stride-bookmark advance (F1).

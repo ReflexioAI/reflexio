@@ -75,6 +75,11 @@ _EXPECTED_ABSTRACTMETHODS = frozenset(
         "_load_generation_service_config",
         "_process_results",
         "_should_track_in_progress",
+        # Added by gate (b) Task 8: the durable compute/persist split's
+        # item-finalization seam. Intentional API-surface growth (NOT a
+        # decomposition leak) — the 3 concrete subclasses each implement both.
+        "_resolve_write_plan",
+        "_persist_write_plan",
     }
 )
 
@@ -82,7 +87,7 @@ _EXPECTED_ABSTRACTMETHODS = frozenset(
 # here must stay resolvable on all 3 subclasses + the base through Phase B; a
 # name that stops resolving means a mixin move broke the composed surface.
 _CONTRACT_NAMES = (
-    # 8 abstract methods (declared on the base, implemented by subclasses)
+    # abstract methods (declared on the base, implemented by subclasses)
     *_EXPECTED_ABSTRACTMETHODS,
     # orchestration (stays on the base)
     "run",
@@ -198,6 +203,19 @@ class _CharService(BaseGenerationService):  # type: ignore[type-arg]
 
     def _process_results(self, results):
         pass
+
+    # Legacy write-in-compute path (mirrors AgentSuccessEvaluationService): route
+    # through the permanent _finalize_extracted_items wrapper so this helper stays
+    # instantiable after gate (b) made _resolve_write_plan/_persist_write_plan
+    # abstract, preserving the finalize-before-fail atomicity these tests pin.
+    def _resolve_write_plan(self, results):
+        for result in results:
+            if result:
+                self._finalize_extracted_items(result)
+        return
+
+    def _persist_write_plan(self, plan):
+        return
 
     def _should_track_in_progress(self) -> bool:
         return self._track

@@ -31,6 +31,7 @@ from reflexio.server.services.agent_success_evaluation.runner import (
 from reflexio.server.services.agent_success_evaluation.scheduler import (
     GroupEvaluationScheduler,
 )
+from reflexio.server.services.deferred_learning_plan import DeferredLearningPlan
 from reflexio.server.services.operation_state_utils import OperationStateManager
 from reflexio.server.services.playbook.playbook_service_utils import (
     PlaybookGenerationRequest,
@@ -61,6 +62,7 @@ from reflexio.server.tracing import sentry_tags
 from reflexio.server.usage_metrics import record_usage_event
 
 if TYPE_CHECKING:
+    from reflexio.server.services.deferred_learning_plan import ReflectionWritePlan
     from reflexio.server.services.unified_search_service import UnifiedSearchService
 
 logger = logging.getLogger(__name__)
@@ -69,6 +71,24 @@ CLEANUP_STALE_LOCK_SECONDS = 600
 # Timeout for the outer generation service parallel execution
 GENERATION_SERVICE_TIMEOUT_SECONDS = 600
 _STALL_WARNING_PREFIX = "Reflexio learning is paused"
+
+# ── Durable-learning same-user guard (F4) ──
+# Service prefix for the per-user in-progress lock that serializes concurrent
+# durable-learning jobs for one user (compute → persist across the fence).
+_DURABLE_LEARNING_LOCK_SERVICE = "durable_learning"
+# Stale timeout for the per-user durable lock. Deliberately set ABOVE the 300s
+# durable-job claim lease (V4): a job's claim can be re-leased after 300s, so the
+# lock must outlive one claim window and NOT expire in lockstep with the lease
+# under compute-time throttling — 900s = 3x the lease (>= the required 2x).
+_DURABLE_LOCK_STALE_SECONDS = 900
+# Operation-state payload written when releasing the per-user lock (mirrors the
+# clean-slate state OperationStateManager.clear_lock_if_owner writes).
+_DURABLE_LOCK_CLEARED_STATE = {
+    "in_progress": False,
+    "current_request_id": None,
+    "pending_request_id": None,
+    "pending_request_queue": [],
+}
 
 
 def _retention_cleanup_interval_seconds() -> float:
@@ -572,8 +592,319 @@ class GenerationService:
         return result
 
     # ===============================
+    # deferred learning — compute / persist / emit split (gate b)
+    # ===============================
+
+    def compute_deferred_learning(
+        self,
+        *,
+        user_id: str,
+        request_id: str,
+        session_id: str | None,  # noqa: ARG002 - kept for worker call symmetry
+        source: str | None,
+        agent_version: str,
+        force_extraction: bool,
+        skip_aggregation: bool,
+    ) -> DeferredLearningPlan:
+        """Compute half of one durable-learning job — NO ``commit_scope`` held.
+
+        Runs the same-user guard (F4) first, then reflection + profile + playbook
+        compute (LLM extraction, dedup, embeddings) entirely OUTSIDE any writer
+        transaction, and assembles a :class:`DeferredLearningPlan` of the held
+        ``(service, plan)`` pairs. Issues NO learning DB write (F3): the only
+        writes are the extractor's own ``agent_run`` rows + the per-user
+        coordination lock (``try_acquire_in_progress_lock``, not a learning
+        terminal).
+
+        F4 GUARD FIRST: acquires a DB-backed per-user in-progress lock BEFORE any
+        LLM work. On contention returns ``DeferredLearningPlan(lock_acquired=
+        False, reflection/profile/playbook=None)`` immediately (no compute) — the
+        worker must then leave the job reclaimable (Task 9), NOT complete it.
+
+        Reflection runs first on the calling thread (it reads the pre-persist
+        snapshot); profile + playbook ``compute_generation`` then run in parallel
+        (no ``commit_scope`` is held, so the old ``sequential=True`` RLock
+        avoidance is unnecessary). Per-half failures are best-effort — captured
+        into ``warnings`` and the half dropped — mirroring
+        ``_run_learning_steps``.
+        """
+        warnings: list[str] = []
+
+        # F4 GUARD — before any LLM. On contention, no compute runs.
+        if not self._acquire_durable_learning_lock(
+            user_id=user_id, request_id=request_id
+        ):
+            logger.info(
+                "durable-learning same-user lock held; leaving job reclaimable "
+                "(user_id=%s request_id=%s)",
+                user_id,
+                request_id,
+            )
+            return DeferredLearningPlan(
+                request_id=request_id,
+                user_id=user_id,
+                agent_version=agent_version,
+                lock_acquired=False,
+                reflection=None,
+                profile=None,
+                playbook=None,
+                warnings=warnings,
+            )
+
+        # Reflection first (calling thread) — one pre-persist read snapshot.
+        reflection_pair = self._compute_reflection(
+            user_id=user_id,
+            request_id=request_id,
+            agent_version=agent_version,
+            source=source,
+            warnings=warnings,
+        )
+
+        # Profile + playbook compute in parallel — no scope held, so no RLock
+        # contention (the pre-split sequential mode only existed to avoid the
+        # SQLite commit_scope RLock, which compute never takes).
+        profile_service = ProfileGenerationService(
+            llm_client=self.client, request_context=self.request_context
+        )
+        profile_request = ProfileGenerationRequest(
+            user_id=user_id,
+            request_id=request_id,
+            source=source,
+            force_extraction=force_extraction,
+        )
+        playbook_service = PlaybookGenerationService(
+            llm_client=self.client,
+            request_context=self.request_context,
+            skip_aggregation=skip_aggregation,
+        )
+        playbook_request = PlaybookGenerationRequest(
+            request_id=request_id,
+            agent_version=agent_version,
+            user_id=user_id,
+            source=source,
+            force_extraction=force_extraction,
+        )
+
+        profile_pair: tuple = None  # type: ignore[assignment]
+        playbook_pair: tuple = None  # type: ignore[assignment]
+        executor = ThreadPoolExecutor(max_workers=2)
+        try:
+            profile_future = executor.submit(
+                contextvars.copy_context().run,
+                profile_service.compute_generation,
+                profile_request,
+            )
+            playbook_future = executor.submit(
+                contextvars.copy_context().run,
+                playbook_service.compute_generation,
+                playbook_request,
+            )
+            for future, service_name, service in (
+                (profile_future, "profile_generation", profile_service),
+                (playbook_future, "playbook_generation", playbook_service),
+            ):
+                try:
+                    plan = future.result(timeout=GENERATION_SERVICE_TIMEOUT_SECONDS)
+                except FuturesTimeoutError:  # noqa: PERF203
+                    msg = (
+                        f"{service_name} timed out after "
+                        f"{GENERATION_SERVICE_TIMEOUT_SECONDS}s"
+                    )
+                    with sentry_tags(
+                        subsystem="generation",
+                        service=service_name,
+                        request_id=request_id,
+                        error_type="timeout",
+                    ):
+                        logger.error("%s for request %s", msg, request_id)
+                    warnings.append(msg)
+                    continue
+                except Exception as e:
+                    msg = f"{service_name} failed: {e}"
+                    with sentry_tags(
+                        subsystem="generation",
+                        service=service_name,
+                        request_id=request_id,
+                        error_type=type(e).__name__,
+                    ):
+                        logger.exception(
+                            "Generation service failed for request %s",
+                            request_id,
+                        )
+                    warnings.append(msg)
+                    continue
+                if plan is None:
+                    continue
+                if service_name == "profile_generation":
+                    profile_pair = (service, plan)
+                else:
+                    playbook_pair = (service, plan)
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
+
+        return DeferredLearningPlan(
+            request_id=request_id,
+            user_id=user_id,
+            agent_version=agent_version,
+            lock_acquired=True,
+            reflection=reflection_pair,
+            profile=profile_pair,
+            playbook=playbook_pair,
+            warnings=warnings,
+        )
+
+    def persist_deferred_learning(self, plan: DeferredLearningPlan) -> None:
+        """Persist half — apply the fence-critical writes for a computed job.
+
+        This is the ONLY part the durable worker runs inside its fenced
+        ``commit_scope``. For each present half it calls the held instance's
+        persist (reflection apply loop + bookmark; profile/playbook row writes +
+        extractor bookmark advance). Issues NO side-effects (telemetry, billing,
+        tagging, off-thread schedulers, lock release) — those are post-commit
+        (``emit_deferred_learning_side_effects``) so a fence-lost job never fires
+        them.
+        """
+        if plan.reflection is not None:
+            reflection_service, reflection_plan = plan.reflection
+            reflection_service.persist(reflection_plan)
+        if plan.profile is not None:
+            profile_service, profile_plan = plan.profile
+            profile_service.persist_generation(profile_plan)
+        if plan.playbook is not None:
+            playbook_service, playbook_plan = plan.playbook
+            playbook_service.persist_generation(playbook_plan)
+
+    def emit_deferred_learning_side_effects(self, plan: DeferredLearningPlan) -> None:
+        """Post-commit side-effects — telemetry, billing, tagging, lock release.
+
+        Runs only for a fence-winning job (the durable worker calls it after the
+        scope commits). Fires each held half's post-commit emit + schedules the
+        deferred tagging pass, then ALWAYS releases the per-user F4 lock (even if
+        an emit raised) so a completed job never strands the lock.
+
+        A ``lock_acquired=False`` plan never reaches here (the worker skips emit
+        on contention), so releasing here is safe — this instance owns the lock.
+        """
+        try:
+            if plan.reflection is not None:
+                reflection_service, reflection_plan = plan.reflection
+                reflection_service.emit_side_effects(reflection_plan)
+            if plan.profile is not None:
+                profile_service, profile_plan = plan.profile
+                profile_service.emit_generation_side_effects(profile_plan)
+            if plan.playbook is not None:
+                playbook_service, playbook_plan = plan.playbook
+                playbook_service.emit_generation_side_effects(playbook_plan)
+            try:
+                schedule_tagging(
+                    org_id=self.org_id,
+                    user_id=plan.user_id,
+                    agent_version=plan.agent_version,
+                    request_context=self.request_context,
+                    llm_client=self.client,
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to schedule tagging for deferred learning request %s",
+                    plan.request_id,
+                )
+        finally:
+            self._release_durable_learning_lock(
+                user_id=plan.user_id, request_id=plan.request_id
+            )
+
+    # ===============================
     # private methods
     # ===============================
+
+    def _durable_learning_lock_key(self, user_id: str) -> str:
+        """Per-user durable-learning in-progress lock key.
+
+        Mirrors ``OperationStateManager._lock_key`` shape
+        (``{service}::{org}::{scope}::lock``) but on a DEDICATED
+        ``durable_learning`` service prefix, distinct from the
+        profile/playbook generation locks and from any extractor bookmark row.
+        """
+        return f"{_DURABLE_LEARNING_LOCK_SERVICE}::{self.org_id}::{user_id}::lock"
+
+    def _acquire_durable_learning_lock(self, *, user_id: str, request_id: str) -> bool:
+        """Try to acquire the per-user durable-learning lock (F4).
+
+        Uses the atomic DB-backed ``try_acquire_in_progress_lock`` (a distinct
+        storage method, NOT one of the learning-write terminals the compute
+        purity contract forbids), so the guard does not trip the compute
+        write-tripwire. Returns ``True`` when acquired (proceed with compute),
+        ``False`` on contention (another same-user durable job holds it).
+        """
+        if self.storage is None:
+            return True
+        result = self.storage.try_acquire_in_progress_lock(
+            self._durable_learning_lock_key(user_id),
+            request_id,
+            stale_lock_seconds=_DURABLE_LOCK_STALE_SECONDS,
+        )
+        return bool(result.get("acquired", False))
+
+    def _release_durable_learning_lock(self, *, user_id: str, request_id: str) -> None:
+        """Release the per-user durable-learning lock iff we still own it.
+
+        Uses ``clear_in_progress_lock_if_owner`` (CAS on the holder) so a job
+        whose lock was already stolen after a stale-timeout does not clobber the
+        new holder's lock.
+        """
+        if self.storage is None:
+            return
+        self.storage.clear_in_progress_lock_if_owner(
+            self._durable_learning_lock_key(user_id),
+            request_id,
+            dict(_DURABLE_LOCK_CLEARED_STATE),
+        )
+
+    def _compute_reflection(
+        self,
+        *,
+        user_id: str,
+        request_id: str,
+        agent_version: str,
+        source: str | None,
+        warnings: list[str],
+    ) -> tuple[ReflectionService, ReflectionWritePlan] | None:
+        """Run reflection ``compute`` best-effort; return its held pair or None.
+
+        Mirrors ``_maybe_run_reflection`` (a reflection failure must never break
+        the publish) but returns the ``(service, plan)`` pair so the caller can
+        defer ``persist`` / ``emit_side_effects`` across the worker fence.
+        Returns ``None`` when reflection has nothing to persist (gate closed /
+        disabled / storage None) or a compute error (logged + appended to
+        ``warnings``).
+        """
+        try:
+            service = ReflectionService(
+                request_context=self.request_context,
+                llm_client=self.client,
+            )
+            reflection_plan = service.compute(
+                ReflectionServiceRequest(
+                    user_id=user_id,
+                    request_id=request_id,
+                    agent_version=agent_version,
+                    source=source,
+                )
+            )
+            if reflection_plan is None:
+                return None
+            return (service, reflection_plan)
+        except Exception as exc:  # noqa: BLE001 — reflection must not break publish
+            with sentry_tags(
+                subsystem="generation",
+                op="reflection",
+                org_id=self.org_id,
+                user_id=user_id,
+                error_type=type(exc).__name__,
+            ):
+                logger.exception("reflection compute failed for user %s", user_id)
+            warnings.append(f"reflection failed: {exc}")
+            return None
 
     def _run_learning_steps(
         self,
