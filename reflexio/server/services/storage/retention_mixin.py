@@ -118,22 +118,22 @@ class RetentionMixin(ABC):
                 try:
                     archive_dir = self._retention_archive_directory()
                     parent_ids = [(key[0],) for key in keys]
-                    for cascade in RETENTION_CASCADES.get(target.name, ()):
-                        for key_batch in chunked(parent_ids):
-                            rows = self._retention_fetch_rows(
-                                cascade.table_name,
-                                (cascade.fk_column,),
-                                key_batch,
-                            )
-                            append_archive_rows(archive_dir, cascade.table_name, rows)
-                    rows_per_batch = max(
-                        1, RETENTION_DELETE_CHUNK // len(target.id_columns)
-                    )
-                    for key_batch in chunked(keys, rows_per_batch):
-                        rows = self._retention_fetch_rows(
-                            target.table_name, target.id_columns, key_batch
+                    cascades = RETENTION_CASCADES.get(target.name, ())
+                    if cascades and len(target.id_columns) != 1:
+                        raise AssertionError(
+                            f"Cascade archive target {target.name} must have one key"
                         )
-                        append_archive_rows(archive_dir, target.table_name, rows)
+                    for cascade in cascades:
+                        rows = self._retention_fetch_rows(
+                            cascade.table_name,
+                            (cascade.fk_column,),
+                            parent_ids,
+                        )
+                        append_archive_rows(archive_dir, cascade.table_name, rows)
+                    rows = self._retention_fetch_rows(
+                        target.table_name, target.id_columns, keys
+                    )
+                    append_archive_rows(archive_dir, target.table_name, rows)
                 except Exception:  # noqa: BLE001 - any archive failure must stop deletion
                     logger.error(  # noqa: G201 - contract requires an explicit error log
                         "Failed to archive retention rows for target %s; deletion aborted",

@@ -7,6 +7,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -18,6 +19,8 @@ from reflexio.models.api_schema.service_schemas import (
     UserActionType,
 )
 from reflexio.server.services.generation_service import GenerationService
+from reflexio.server.services.storage.retention import RetentionTarget
+from reflexio.server.services.storage.retention_mixin import RetentionMixin
 from reflexio.server.services.storage.storage_base import BaseStorage
 
 pytestmark = pytest.mark.integration
@@ -357,3 +360,76 @@ def test_archive_directory_override_is_respected(
 
     assert (archive_dir / "interactions.jsonl").is_file()
     assert not (Path(storage.db_path).parent / "archive").exists()  # type: ignore[attr-defined]
+
+
+def test_archive_enabled_cleanup_bounds_each_writer_guard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("REFLEXIO_RETENTION_ARCHIVE", "true")
+    service = GenerationService.__new__(GenerationService)
+    service.storage = MagicMock()
+    service.storage.count_retention_target_rows.return_value = 250_000
+    service.storage.delete_oldest_retention_target_rows.return_value = 1_000
+
+    service._cleanup_retention_target("interactions", 250_000)
+
+    assert service.storage.delete_oldest_retention_target_rows.call_count == 50
+    assert all(
+        call.args == ("interactions", 1_000)
+        for call in service.storage.delete_oldest_retention_target_rows.call_args_list
+    )
+
+
+def test_composite_archive_fetch_omits_embeddings(storage: BaseStorage) -> None:
+    storage.conn.execute(  # type: ignore[attr-defined]
+        "CREATE TABLE archive_composite (a TEXT, b TEXT, payload TEXT, embedding TEXT)"
+    )
+    storage.conn.executemany(  # type: ignore[attr-defined]
+        "INSERT INTO archive_composite VALUES (?, ?, ?, ?)",
+        [("a1", "b1", "keep-1", "large-1"), ("a2", "b2", "keep-2", "large-2")],
+    )
+
+    rows = storage._retention_fetch_rows(  # type: ignore[attr-defined]
+        "archive_composite", ("a", "b"), [("a1", "b1"), ("a2", "b2")]
+    )
+
+    assert rows == [
+        {"a": "a1", "b": "b1", "payload": "keep-1"},
+        {"a": "a2", "b": "b2", "payload": "keep-2"},
+    ]
+
+
+def test_non_sqlite_archive_support_fails_before_deletion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class UnsupportedArchiveStorage(RetentionMixin):
+        deleted = False
+
+        def _retention_table_exists(self, table_name: str) -> bool:
+            return True
+
+        def _retention_count_rows(self, target: RetentionTarget) -> int:
+            return 1
+
+        def _retention_select_oldest_keys(
+            self, target: RetentionTarget, count: int
+        ) -> list[tuple[Any, ...]]:
+            return [("1",)]
+
+        def _retention_delete_dependencies(
+            self, target: RetentionTarget, keys: list[tuple[Any, ...]]
+        ) -> None:
+            self.deleted = True
+
+        def _retention_delete_target_rows(
+            self, target: RetentionTarget, keys: list[tuple[Any, ...]]
+        ) -> None:
+            self.deleted = True
+
+    monkeypatch.setenv("REFLEXIO_RETENTION_ARCHIVE", "true")
+    unsupported = UnsupportedArchiveStorage()
+
+    with pytest.raises(NotImplementedError, match="unavailable"):
+        unsupported.delete_oldest_retention_target_rows("interactions", 1)
+
+    assert not unsupported.deleted

@@ -175,12 +175,14 @@ type RetrievedLearningKind = Literal["profile", "user_playbook", "agent_playbook
 
 type LearningImpact = Literal["positive", "negative", "neutral"]
 
+MAX_RETRIEVED_LEARNING_SNAPSHOT_BYTES = 10 * 1024**2
+
 
 class RetrievedLearningSnapshot(BaseModel):
     """Source learning fields captured at injection time for later evaluation."""
 
     title: str = Field(default="", max_length=1_000)
-    content: str = Field(max_length=1_000_000)
+    content: str = Field(max_length=100_000)
     trigger: str = Field(default="", max_length=10_000)
     rationale: str = Field(default="", max_length=10_000)
 
@@ -835,6 +837,23 @@ class PublishUserInteractionRequest(BaseModel):
             raise ValueError(
                 "a publish request may carry at most 1000 retrieved_learnings"
                 f" across all interactions (got {total})"
+            )
+        snapshot_bytes = sum(
+            len(value.encode("utf-8"))
+            for interaction in self.interaction_data_list
+            for learning in interaction.retrieved_learnings
+            if learning.snapshot is not None
+            for value in (
+                learning.snapshot.title,
+                learning.snapshot.content,
+                learning.snapshot.trigger,
+                learning.snapshot.rationale,
+            )
+        )
+        if snapshot_bytes > MAX_RETRIEVED_LEARNING_SNAPSHOT_BYTES:
+            raise ValueError(
+                "a publish request may carry at most 10 MiB of retrieved-learning "
+                f"snapshot text (got {snapshot_bytes} bytes)"
             )
         return self
 

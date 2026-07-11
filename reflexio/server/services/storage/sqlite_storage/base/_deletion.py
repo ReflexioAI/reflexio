@@ -63,12 +63,27 @@ class SQLiteDeletionMixin:
         key_columns: tuple[str, ...],
         keys: list[tuple[Any, ...]],
     ) -> list[dict[str, Any]]:
-        """Fetch full rows matching retention keys for JSONL archiving."""
+        """Fetch archive rows without loading large embedding columns."""
         if not keys:
             return []
+        escaped_table = table_name.replace('"', '""')
+        column_names = [
+            str(row["name"])
+            for row in self.conn.execute(
+                f'PRAGMA table_info("{escaped_table}")'  # noqa: S608
+            ).fetchall()
+            if row["name"] != "embedding"
+        ]
+        if not column_names:
+            return []
+        quoted_columns = []
+        for column in column_names:
+            escaped_column = column.replace('"', '""')
+            quoted_columns.append(f'"{escaped_column}"')
+        columns_sql = ", ".join(quoted_columns)
         if len(key_columns) == 1:
             rows = self._select_in_chunks(
-                f"SELECT * FROM {table_name} "  # noqa: S608
+                f"SELECT {columns_sql} FROM {table_name} "  # noqa: S608
                 f"WHERE {key_columns[0]} IN ({{placeholders}})",
                 [key[0] for key in keys],
             )
@@ -85,7 +100,7 @@ class SQLiteDeletionMixin:
             params = [value for key in key_chunk for value in key]
             rows.extend(
                 self.conn.execute(
-                    f"SELECT * FROM {table_name} WHERE {where}",  # noqa: S608
+                    f"SELECT {columns_sql} FROM {table_name} WHERE {where}",  # noqa: S608
                     params,
                 ).fetchall()
             )

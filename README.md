@@ -294,6 +294,22 @@ client.set_config(reflexio.SetConfigRequest(
 ))
 ```
 
+#### Optional retention archive
+
+SQLite deployments can preserve rows removed by row-count retention in local
+JSONL files. The feature is off by default.
+
+| Environment variable | Meaning |
+|---|---|
+| `REFLEXIO_RETENTION_ARCHIVE=1` | Archive rows before retention deletes them. |
+| `REFLEXIO_RETENTION_ARCHIVE_DIR=/path` | Override the default `<database-directory>/archive` location. |
+| `REFLEXIO_RETENTION_ARCHIVE_WARN_BYTES=10737418240` | Log an error after total JSONL size exceeds this warning threshold; retention continues. |
+
+Archive-enabled cleanup processes at most 1,000 parent rows per pass and holds
+one SQLite write transaction while copying and deleting that batch. JSONL files
+do not have a hard size limit; operators should monitor and rotate them after a
+warning. Postgres and Supabase do not support this local archive.
+
 ## Integrations
 
 Reflexio integrates with popular AI agent frameworks out of the box:

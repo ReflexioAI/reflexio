@@ -57,6 +57,10 @@ from reflexio.server.services.storage.retention import (
     delete_count_for_retention,
     get_row_retention_limits,
 )
+from reflexio.server.services.storage.retention_archive import (
+    RETENTION_ARCHIVE_DELETE_BATCH,
+    retention_archive_enabled,
+)
 from reflexio.server.services.tagging.tagging_scheduler import schedule_tagging
 from reflexio.server.tracing import sentry_tags
 from reflexio.server.usage_metrics import record_usage_event
@@ -1327,10 +1331,20 @@ class GenerationService:
         if total_count < limit:
             return
         delete_count = delete_count_for_retention(total_count)
-        deleted = self.storage.delete_oldest_retention_target_rows(  # type: ignore[reportOptionalMemberAccess]
-            target_name,
-            delete_count,
+        batch_size = (
+            RETENTION_ARCHIVE_DELETE_BATCH
+            if retention_archive_enabled()
+            else delete_count
         )
+        deleted = 0
+        while deleted < delete_count:
+            batch_deleted = self.storage.delete_oldest_retention_target_rows(  # type: ignore[reportOptionalMemberAccess]
+                target_name,
+                min(batch_size, delete_count - deleted),
+            )
+            deleted += batch_deleted
+            if batch_deleted == 0:
+                break
         logger.info(
             "Cleaned up %d oldest %s row(s) (total was %d, limit %d)",
             deleted,

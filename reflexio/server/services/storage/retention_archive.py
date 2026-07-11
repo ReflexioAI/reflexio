@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 DEFAULT_RETENTION_ARCHIVE_WARN_BYTES = 10 * 1024**3
+RETENTION_ARCHIVE_DELETE_BATCH = 1_000
 logger = logging.getLogger(__name__)
 _warned_archive_dirs: set[Path] = set()
 

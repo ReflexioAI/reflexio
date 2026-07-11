@@ -21,6 +21,8 @@ from reflexio.models.api_schema.domain.entities import (
     DeleteUserPlaybooksByIdsRequest,
     InteractionData,
     PublishUserInteractionRequest,
+    RetrievedLearning,
+    RetrievedLearningSnapshot,
     UserPlaybook,
 )
 
@@ -135,6 +137,25 @@ def test_interaction_data_nested_list_bounds() -> None:
         InteractionData(tools_used=[tool] * (cap + 1))
     with pytest.raises(ValidationError):
         InteractionData(citations=[citation] * (cap + 1))
+
+
+def test_retrieved_learning_snapshot_bounds_and_aggregate_bytes() -> None:
+    at_content_cap = RetrievedLearningSnapshot(content="a" * 100_000)
+    with pytest.raises(ValidationError):
+        RetrievedLearningSnapshot(content="a" * 100_001)
+
+    learning = RetrievedLearning(
+        kind="profile", learning_id="p1", snapshot=at_content_cap
+    )
+    _publish(
+        interaction_data_list=[InteractionData(retrieved_learnings=[learning] * 100)]
+    )
+    with pytest.raises(ValidationError, match="at most 10 MiB"):
+        _publish(
+            interaction_data_list=[
+                InteractionData(retrieved_learnings=[learning] * 105)
+            ]
+        )
 
 
 def test_publish_request_string_bounds() -> None:
