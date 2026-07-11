@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import Iterator, Sequence
+from contextlib import AbstractContextManager, nullcontext
 from pathlib import Path
 from typing import Any
 
@@ -107,31 +108,32 @@ class RetentionMixin(ABC):
         target = get_retention_target(target_name)
         if not self._retention_table_exists(target.table_name):
             return 0
-        keys = self._retention_select_oldest_keys(target, count)
-        if not keys:
-            return 0
-        if retention_archive_enabled():
-            try:
-                archive_dir = self._retention_archive_directory()
-                parent_ids = [(key[0],) for key in keys]
-                for cascade in RETENTION_CASCADES.get(target.name, ()):
+        with self._retention_guard():
+            keys = self._retention_select_oldest_keys(target, count)
+            if not keys:
+                return 0
+            if retention_archive_enabled():
+                try:
+                    archive_dir = self._retention_archive_directory()
+                    parent_ids = [(key[0],) for key in keys]
+                    for cascade in RETENTION_CASCADES.get(target.name, ()):
+                        rows = self._retention_fetch_rows(
+                            cascade.table_name, (cascade.fk_column,), parent_ids
+                        )
+                        append_archive_rows(archive_dir, cascade.table_name, rows)
                     rows = self._retention_fetch_rows(
-                        cascade.table_name, (cascade.fk_column,), parent_ids
+                        target.table_name, target.id_columns, keys
                     )
-                    append_archive_rows(archive_dir, cascade.table_name, rows)
-                rows = self._retention_fetch_rows(
-                    target.table_name, target.id_columns, keys
-                )
-                append_archive_rows(archive_dir, target.table_name, rows)
-            except Exception:
-                logger.error(  # noqa: G201 - contract requires an explicit error log
-                    "Failed to archive retention rows for target %s; deletion aborted",
-                    target.name,
-                    exc_info=True,
-                )
-                raise
-        self._retention_perform_delete(target, keys)
-        return len(keys)
+                    append_archive_rows(archive_dir, target.table_name, rows)
+                except Exception:
+                    logger.error(  # noqa: G201 - contract requires an explicit error log
+                        "Failed to archive retention rows for target %s; deletion aborted",
+                        target.name,
+                        exc_info=True,
+                    )
+                    raise
+            self._retention_perform_delete(target, keys)
+            return len(keys)
 
     def _retention_perform_delete(
         self, target: RetentionTarget, keys: list[tuple[Any, ...]]
@@ -146,6 +148,10 @@ class RetentionMixin(ABC):
         self._retention_delete_target_rows(target, keys)
 
     # -- Backend hooks --
+
+    def _retention_guard(self) -> AbstractContextManager[Any]:
+        """Guard selection, optional archive writes, and deletion as one unit."""
+        return nullcontext()
 
     def _retention_archive_directory(self) -> Path:
         """Return the archive sink directory for this backend."""

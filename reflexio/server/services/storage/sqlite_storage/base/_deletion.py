@@ -36,6 +36,9 @@ class SQLiteDeletionMixin:
 
     # -- Retention hooks (see RetentionMixin) --
 
+    def _retention_guard(self) -> Any:
+        return self._lock
+
     def _retention_archive_directory(self) -> Path:
         return resolve_archive_directory(self.db_path)
 

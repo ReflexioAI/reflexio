@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -12,6 +15,7 @@ from reflexio.models.api_schema.service_schemas import (
     Request,
     UserActionType,
 )
+from reflexio.server.services.generation_service import GenerationService
 from reflexio.server.services.storage.storage_base import BaseStorage
 
 pytestmark = pytest.mark.integration
@@ -41,7 +45,7 @@ def _request(request_id: str, created_at: int) -> Request:
     )
 
 
-def _archive_records(path: Path) -> list[dict[str, object]]:
+def _archive_records(path: Path) -> list[dict[str, Any]]:
     return [json.loads(line) for line in path.read_text().splitlines()]
 
 
@@ -82,6 +86,38 @@ def test_archive_preserves_deleted_rows_without_embeddings(
     assert all("embedding" not in record["row"] for record in records)  # type: ignore[operator]
 
 
+def test_over_limit_cleanup_archives_before_automatic_retention(
+    storage: BaseStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("REFLEXIO_RETENTION_ARCHIVE", "true")
+    monkeypatch.setattr(
+        "reflexio.server.services.generation_service.get_row_retention_limits",
+        lambda: {"interactions": 2},
+    )
+    original_ids = {1, 2, 3}
+    for interaction_id in original_ids:
+        storage.add_user_interaction(
+            "u1", _interaction(interaction_id, f"req{interaction_id}")
+        )
+    service = GenerationService.__new__(GenerationService)
+    service.org_id = "archive-cleanup-test"
+    service.storage = storage
+    monkeypatch.setattr(service, "_should_check_retention_target", lambda *_: True)
+
+    service._cleanup_storage_tables_if_needed()
+
+    archive_path = Path(storage.db_path).parent / "archive" / "interactions.jsonl"  # type: ignore[attr-defined]
+    archived_ids = {
+        record["row"]["interaction_id"] for record in _archive_records(archive_path)
+    }
+    live_ids = {
+        interaction.interaction_id
+        for interaction in storage.get_all_interactions(limit=10)
+    }
+    assert archived_ids | live_ids == original_ids
+    assert len(archived_ids) == 1
+
+
 def test_archive_includes_cascade_deleted_rows(
     storage: BaseStorage, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -106,6 +142,55 @@ def test_archive_includes_cascade_deleted_rows(
     }
     assert {item.request_id for item in storage.get_all_interactions(limit=10)} == {
         "req3"
+    }
+
+
+def test_archive_and_delete_hold_one_sqlite_writer_guard(
+    storage: BaseStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("REFLEXIO_RETENTION_ARCHIVE", "true")
+    storage.add_request(_request("req1", 1))
+    storage.add_user_interaction("u1", _interaction(1, "req1"))
+    cascade_fetched = threading.Event()
+    writer_attempting = threading.Event()
+    writer_done = threading.Event()
+    writer_errors: list[BaseException] = []
+    original_fetch = storage._retention_fetch_rows  # type: ignore[attr-defined]
+
+    def observed_fetch(
+        table_name: str,
+        key_columns: tuple[str, ...],
+        keys: list[tuple[object, ...]],
+    ) -> list[dict[str, object]]:
+        rows = original_fetch(table_name, key_columns, keys)
+        if table_name == "interactions":
+            cascade_fetched.set()
+            assert writer_attempting.wait(timeout=1)
+            time.sleep(0.05)
+            assert not writer_done.is_set()
+        return rows
+
+    monkeypatch.setattr(storage, "_retention_fetch_rows", observed_fetch)
+
+    def add_late_child() -> None:
+        try:
+            assert cascade_fetched.wait(timeout=1)
+            writer_attempting.set()
+            storage.add_user_interaction("u1", _interaction(99, "req1"))
+        except BaseException as exc:  # pragma: no cover - asserted in main thread
+            writer_errors.append(exc)
+        finally:
+            writer_done.set()
+
+    writer = threading.Thread(target=add_late_child)
+    writer.start()
+    storage.delete_oldest_retention_target_rows("requests", 1)  # type: ignore[attr-defined]
+    writer.join(timeout=1)
+
+    assert not writer_errors
+    assert writer_done.is_set()
+    assert {item.interaction_id for item in storage.get_all_interactions(limit=10)} == {
+        99
     }
 
 
