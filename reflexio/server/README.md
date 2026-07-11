@@ -40,6 +40,7 @@ Description: FastAPI backend server that processes user interactions to generate
 - **Extension Registry**: `extensions.py` - Capability and service registry for optional OSS/enterprise integrations
 - **Core Service**: `services/generation_service.py` - Main orchestrator
 - **Durable Learning**: `services/durable_learning/` - background queue worker for deferred post-publish extraction
+- **Scheduler infrastructure**: `scheduling.py`, `callback_executor.py`, `org_fanout.py` - shared daemon lifecycle, bounded callback dispatch, and bounded org-walking helpers
 
 ## Cache
 
@@ -214,7 +215,7 @@ python -m reflexio.server.scripts.manage_invitation_codes list --show-used
 - **Evaluation**: `agent_success_evaluation/service.py`, `agent_success_evaluation/runner.py`, `agent_success_evaluation/scheduler.py`, `agent_success_evaluation/components/evaluator.py`, `shadow_comparison/`, and `evaluation_overview/` handle session grading, per-turn shadow verdicts, regeneration jobs, and dashboard-facing rollups.
 - **Durable learning queue**: `durable_learning/scheduler.py` and `durable_learning/worker.py` drain `learning_jobs` after deferred publishes and report coverage through `GET /api/learning_status`.
 - **Async clarification**: `extraction/` and `reflection/` manage resumable agent runs, pending tool calls, prior-answer search, and long-horizon reflection updates.
-- **Search preparation**: `pre_retrieval/` and `unified_search_service.py` handle query reformulation, document expansion, embeddings, and cross-entity search orchestration.
+- **Search preparation**: `pre_retrieval/` and `unified_search_service.py` handle query reformulation, document expansion, embeddings, vector backfill repair, and cross-entity search orchestration.
 - **Optimization/integrations**: `playbook_optimizer/` and `braintrust/` run candidate playbook optimization, rollout support, and Braintrust export/sync.
 - **Lineage**: `lineage/` resolves active records across superseded chains and schedules tombstone garbage collection for profile/playbook storage.
 - **Governance**: `governance/` defines subject-reference contracts and retention/barrier policy helpers used by storage and lineage paths.
@@ -489,6 +490,7 @@ Key files:
 |------|---------|
 | `resolve.py` | Helpers for resolving current records across supersede chains and status transitions. |
 | `gc_scheduler.py` | Tombstone garbage-collection scheduler for lineage-aware storage cleanup. |
+| `vector_backfill_sweep.py` | Opt-in per-org sweep (`REFLEXIO_MISSING_VECTOR_BACKFILL_ENABLED`, cap via `REFLEXIO_MISSING_VECTOR_BACKFILL_CAP`) that re-embeds interactions saved without vector rows. |
 
 **Pattern**: profile/playbook update paths preserve lineage metadata in storage; service code asks lineage helpers to find current records rather than walking superseded chains ad hoc.
 

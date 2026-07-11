@@ -24,6 +24,9 @@ strings before deleting old import paths in the same PR.
 |------|---------|
 | `generation_service.py` | `GenerationService` — saves interactions, runs/defer-runs profile + playbook generation, schedules deferred evaluation when `session_id` is present, and exposes `run_deferred_learning()` for queue workers. |
 | `publish_learning_worker.py` | Deferred post-persist publish learning worker — queues async publish learning after durable interaction writes and requeues under publish limiter pressure. |
+| `../scheduling.py` | `ThreadedScheduler` base for process-local daemons; owns start/stop/idempotent thread lifecycle and optional leader gates. |
+| `../callback_executor.py` | Process-wide bounded callback executor for debounce scheduler fires; fixed worker pool, bounded queue, drop-oldest overflow telemetry. |
+| `../org_fanout.py` | Bounded per-tick org iteration helper for org-walking daemons; classifies starved vs genuinely timed-out org work. |
 | `base_generation_service.py` + `base_generation/` | `BaseGenerationService` stable import surface plus mixins for batch progress, config filtering, extraction lifecycle, should-run prechecks, status transitions, and usage billing. Per-extractor timeout `EXTRACTOR_TIMEOUT_SECONDS = 300`. |
 | `operation_state_utils.py` | `OperationStateManager` — all `_operation_state` access (progress, concurrency locks, extractor/aggregator bookmarks, cluster fingerprints, cancellation). |
 | `extractor_config_utils.py`, `extractor_interaction_utils.py` | Filter extractors by source / `allow_manual_trigger` / names; per-extractor stride + window + bookmark handling. |
@@ -53,7 +56,7 @@ strings before deleting old import paths in the same PR.
 | `evaluation_overview/` | Dashboard/read-side rollups: `service.py` entry point, `components/` aggregation helpers, and root `eval_sampler.py` shared with regenerate jobs. See [README](evaluation_overview/README.md). |
 | `playbook_optimizer/` | Scenario-based playbook optimization: mature flat package with `optimizer.py`, `scheduler.py`, `rollout.py`, `judge.py`, `models.py`, `scenario_resolver.py`, `gepa_adapter.py`, and `assistant_webhook.py`. See [README](playbook_optimizer/README.md). |
 | `braintrust/` | Braintrust export/sync: `service.py`, `client.py`, `_cron.py`, `_encryption.py`. |
-| `lineage/` | Current-record resolution and tombstone GC: `resolve.py`, `gc_scheduler.py`. |
+| `lineage/` | Current-record resolution, tombstone GC, and opt-in missing-vector repair: `resolve.py`, `gc_scheduler.py`, `vector_backfill_sweep.py` (`REFLEXIO_MISSING_VECTOR_BACKFILL_ENABLED`, `REFLEXIO_MISSING_VECTOR_BACKFILL_CAP`). |
 | `governance/` | Subject-reference and retention/barrier policy contracts: `config.py`, `service.py`, `subject_refs.py`. Storage and lineage code use these helpers to preserve governance constraints during writes, supersedes, and cleanup. |
 | `pre_retrieval/` | `QueryReformulator` (`_query_reformulator.py`) + `DocumentExpander` (`_document_expander.py`) - query rewrite and doc expansion for recall. Compact by design; see [README](pre_retrieval/README.md). |
 | `tagging/` | `TaggingService` (`service.py`) + deferred `tagging_scheduler.py` - post-generation profile/playbook tagging. Compact by design; see [README](tagging/README.md). |
