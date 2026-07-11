@@ -12,6 +12,7 @@ from reflexio.models.config_schema import (
 )
 from reflexio.server.llm.model_defaults import (
     _PROVIDER_DEFAULTS,
+    GENERATION_CAPABLE_PROVIDERS,
     ModelRole,
     detect_available_providers,
     resolve_model_name,
@@ -397,6 +398,21 @@ class TestProviderDefaults:
                 ):
                     value = getattr(defaults, role.value)
                     assert value, f"{provider}.{role.value} is empty"
+
+    def test_local_provider_is_embedding_only(self) -> None:
+        """Pin the contract the generation-fallback filter relies on.
+
+        ``_build_completion_params`` (in ``_litellm_text_generation``) drops every
+        ``local/*`` model from text-generation fallback lists on the assumption
+        that ``local`` is an in-process EMBEDDING provider with no litellm
+        completion route (that blanket filter is what fixes Sentry
+        PYTHON-FASTAPI-CV). If a local *generation* model is ever added, this
+        assertion fails loudly so that filter — and the whole ``local/`` naming
+        scheme — is revisited before a legitimate local generation fallback gets
+        silently dropped.
+        """
+        assert _PROVIDER_DEFAULTS["local"].generation is None
+        assert "local" not in GENERATION_CAPABLE_PROVIDERS
 
 
 # ---------------------------------------------------------------------------

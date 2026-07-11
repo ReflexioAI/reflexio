@@ -2267,6 +2267,24 @@ class TestBuildCompletionParamsEdgeCases:
         assert params["model"] == "claude-3-5-sonnet"
         assert params["api_key"] == "ant-key"
 
+    def test_local_embedding_model_is_dropped_from_fallbacks(self):
+        """A ``local/*`` in-process embedding model must be filtered out of the
+        fallback list: it has no litellm completion route (it is served
+        in-process), so handing it to litellm's fallback ladder raises
+        ``BadRequestError: LLM Provider NOT provided`` (Sentry PYTHON-FASTAPI-CV).
+        Valid generation fallbacks are preserved."""
+        config = LiteLLMConfig(
+            model="gpt-4o",
+            fallback_models=["local/nomic-embed-text-v1.5", "gpt-5-mini"],
+        )
+        client = LiteLLMClient(config)
+
+        _, _, _, _, fallbacks = client._build_completion_params(
+            [{"role": "user", "content": "hi"}],
+        )
+        assert "local/nomic-embed-text-v1.5" not in fallbacks
+        assert fallbacks == ["gpt-5-mini"]
+
 
 class TestConfigDefaults:
     def test_max_retries_default_is_three(self):
