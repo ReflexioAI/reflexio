@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 import time
 from pathlib import Path
@@ -64,7 +65,9 @@ def _request(request_id: str, created_at: int) -> Request:
     )
 
 
-def _archive_records(archive_dir: Path, table: str | None = None) -> list[dict[str, Any]]:
+def _archive_records(
+    archive_dir: Path, table: str | None = None
+) -> list[dict[str, Any]]:
     records = [
         json.loads(line)
         for path in sorted(archive_dir.glob("*.jsonl"))
@@ -134,6 +137,48 @@ def test_archive_fifo_evicts_oldest_segment_for_latest_batch(
     assert "FIFO evicted oldest evidence" in caplog.text
 
 
+def test_archive_removes_stale_temporary_segments(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive_dir = tmp_path / "archive"
+    archive_dir.mkdir()
+    stale = archive_dir / "interrupted.tmp"
+    stale.write_bytes(b"orphaned archive bytes")
+    active = archive_dir / "active.tmp"
+    active.write_bytes(b"concurrent archive write")
+    old = time.time() - 2 * 60 * 60
+    os.utime(stale, (old, old))
+    monkeypatch.setenv("REFLEXIO_RETENTION_ARCHIVE_MAX_BYTES", "100000")
+
+    assert append_archive_batch(archive_dir, {"interactions": [{"id": "latest"}]})
+
+    assert not stale.exists()
+    assert active.exists()
+
+
+def test_archive_eviction_tolerates_segment_removed_by_another_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive_dir = tmp_path / "archive"
+    monkeypatch.setenv("REFLEXIO_RETENTION_ARCHIVE_MAX_BYTES", "100000")
+    assert append_archive_batch(archive_dir, {"interactions": [{"id": "old"}]})
+    oldest = next(archive_dir.glob("*.jsonl"))
+    old_size = oldest.stat().st_size
+    monkeypatch.setenv("REFLEXIO_RETENTION_ARCHIVE_MAX_BYTES", str(old_size + 1))
+    original_unlink = Path.unlink
+
+    def disappear_before_unlink(path: Path, *args: Any, **kwargs: Any) -> None:
+        if path == oldest and path.exists():
+            original_unlink(path)
+            raise FileNotFoundError(path)
+        original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", disappear_before_unlink)
+
+    assert append_archive_batch(archive_dir, {"interactions": [{"id": "new"}]})
+    assert [record["row"]["id"] for record in _archive_records(archive_dir)] == ["new"]
+
+
 def test_automatic_cleanup_continues_when_one_batch_exceeds_ceiling(
     storage: BaseStorage,
     monkeypatch: pytest.MonkeyPatch,
@@ -196,7 +241,8 @@ def test_archive_preserves_deleted_rows_without_embeddings(
     assert all(isinstance(record["archived_at"], int) for record in records)
     assert all("embedding" not in record["row"] for record in records)  # type: ignore[operator]
     interaction_columns = {
-        row[1] for row in storage.conn.execute("PRAGMA table_info(interactions)")  # type: ignore[attr-defined]
+        row[1]
+        for row in storage.conn.execute("PRAGMA table_info(interactions)")  # type: ignore[attr-defined]
     }
     assert set(records[0]["row"]) == interaction_columns - {"embedding"}
     assert json.loads(records[0]["row"]["retrieved_learnings"]) == [

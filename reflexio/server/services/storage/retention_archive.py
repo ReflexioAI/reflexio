@@ -13,6 +13,7 @@ from uuid import uuid4
 
 DEFAULT_RETENTION_ARCHIVE_MAX_BYTES = 10 * 1024**3
 RETENTION_ARCHIVE_DELETE_BATCH = 1_000
+STALE_TEMPORARY_FILE_SECONDS = 60 * 60
 logger = logging.getLogger(__name__)
 
 
@@ -65,6 +66,28 @@ def _encode_records(rows_by_table: Mapping[str, list[dict[str, Any]]]) -> bytes:
     return ("\n".join(lines) + "\n").encode("utf-8") if lines else b""
 
 
+def _segment_sizes(archive_dir: Path) -> list[tuple[Path, int]]:
+    """Return existing archive segments and sizes in FIFO order."""
+    segments = []
+    for path in sorted(archive_dir.glob("*.jsonl")):
+        try:
+            segments.append((path, path.stat().st_size))
+        except FileNotFoundError:
+            continue
+    return segments
+
+
+def _remove_stale_temporary_files(archive_dir: Path) -> None:
+    """Remove abandoned writes without disturbing another active process."""
+    stale_before = time.time() - STALE_TEMPORARY_FILE_SECONDS
+    for path in archive_dir.glob("*.tmp"):
+        try:
+            if path.stat().st_mtime < stale_before:
+                path.unlink(missing_ok=True)
+        except FileNotFoundError:
+            continue
+
+
 def append_archive_batch(
     archive_dir: Path, rows_by_table: Mapping[str, list[dict[str, Any]]]
 ) -> bool:
@@ -96,6 +119,7 @@ def append_archive_batch(
         return False
 
     archive_dir.mkdir(parents=True, exist_ok=True)
+    _remove_stale_temporary_files(archive_dir)
     segment = archive_dir / f"{time.time_ns():020d}-{uuid4().hex}.jsonl"
     temporary = segment.with_suffix(".tmp")
     try:
@@ -104,17 +128,20 @@ def append_archive_batch(
     finally:
         temporary.unlink(missing_ok=True)
 
-    segments = sorted(archive_dir.glob("*.jsonl"))
-    total_bytes = sum(path.stat().st_size for path in segments)
+    segments = _segment_sizes(archive_dir)
+    total_bytes = sum(size for _, size in segments)
     evicted_files = 0
     evicted_bytes = 0
-    for oldest in segments:
+    for oldest, size in segments:
         if total_bytes <= max_bytes:
             break
         if oldest == segment:
             continue
-        size = oldest.stat().st_size
-        oldest.unlink()
+        try:
+            oldest.unlink()
+        except FileNotFoundError:
+            total_bytes -= size
+            continue
         total_bytes -= size
         evicted_files += 1
         evicted_bytes += size
