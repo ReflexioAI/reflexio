@@ -9,7 +9,7 @@ later gate-(b) tasks (profile/playbook/reflection/generation/deferred plans).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from reflexio.models.api_schema.domain.entities import (
@@ -17,6 +17,8 @@ if TYPE_CHECKING:
         UserProfile,
     )
     from reflexio.models.api_schema.service_schemas import Interaction
+    from reflexio.server.llm.token_accounting import RunTokenTotals
+    from reflexio.server.services.base_generation_service import PreparedGenerationRun
     from reflexio.server.services.reflection.reflection_service_utils import (
         ReflectionDecision,
         ReflectionResult,
@@ -97,3 +99,47 @@ class ReflectionWritePlan:
     replacement_profiles: dict[str, UserProfile] = field(default_factory=dict)
     replacement_playbooks: dict[int, UserPlaybook] = field(default_factory=dict)
     aggregation_successor_ids: list[int] = field(default_factory=list)
+
+
+@dataclass
+class GenerationComputePlan:
+    """Resolved compute output of one ``BaseGenerationService`` run (gate b).
+
+    ``compute_generation`` runs the prepare gate + extractor + dedup/embedding
+    resolution (``_resolve_write_plan``) and drives the ``agent_run`` rows to
+    their terminal state (``_finalize_extraction_runs`` — agent_run only, §4.3),
+    issuing **no** learning DB write. ``persist_generation`` applies
+    ``write_plan`` + the extractor bookmark advance inside the fence;
+    ``emit_generation_side_effects`` fires the post-commit telemetry + billing.
+
+    The billing inputs (``extraction_run_ids`` / ``token_totals`` /
+    ``generated_count`` / ``prepared``) are **snapshotted at compute time** so
+    the fence-crossing emit reads this plan rather than the reused service
+    instance's mutable ``_last_*`` accumulators (purity contract, plan §File
+    Structure). See ``emit_generation_side_effects`` for the single-use-instance
+    invariant that also keeps the money helper's ``self._last_*`` reads safe.
+
+    Attributes:
+        prepared: The prepared generation run (identifier / extractor_name /
+            extractor_config), reused by emit for telemetry + billing input.
+        generated_count: Learnings produced by this extraction run.
+        write_plan: The resolved write-plan (``ProfileWritePlan`` /
+            ``PlaybookWritePlan`` in Tasks 6-7, a ``_LegacyItems`` shim marker
+            until then) or ``None`` when the extractor produced nothing.
+        bookmark_advance: The deferred extractor stride-bookmark advance (F1),
+            applied inside the persist scope. ``None`` when the extractor
+            produced no output or the service has no stride bookmark.
+        generation_start: ``perf_counter`` captured at compute start; emit reads
+            it for the ``generation_succeeded`` ``duration_ms`` (parity).
+        extraction_run_ids: Snapshot of the run's ``agent_run`` ids.
+        token_totals: Snapshot of the run's LLM token totals (billing cost
+            facet), or ``None`` when the extractor reported none.
+    """
+
+    prepared: PreparedGenerationRun[Any]
+    generated_count: int
+    write_plan: Any
+    bookmark_advance: ExtractorBookmarkAdvance | None
+    generation_start: float
+    extraction_run_ids: list[str]
+    token_totals: RunTokenTotals | None
