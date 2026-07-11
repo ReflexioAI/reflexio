@@ -176,13 +176,13 @@ uv run pytest -k "test_name"           # by name
 
 Today the E2E suite runs `Reflexio` in-process with `StorageConfigSQLite` configured against a `tmp_path` fixture (`tests/e2e_tests/conftest.py`), so tests neither bind production ports nor write to `~/.reflexio`.
 
-If you add a future harness that boots services from a clean checkout — analogous to claude-smart's `tests/integration/integration.sh` — it must:
+If you add a future harness that boots services from a clean checkout, it must:
 
 1. Sandbox storage: point `LOCAL_STORAGE_PATH` (or the SQLite `db_path`) at a temp dir, never the default `~/.reflexio/data/`.
 2. Use non-default ports: pick a `1XXXX` form that mirrors the production `8061`/`8062` while staying clear of common dev ranges (e.g. `BACKEND_PORT=19061`, `DOCS_PORT=19062`, or higher), and refuse production ports (`8061`, `8062`) unless the user explicitly opts in.
 3. Never use the real `$HOME` as the integration home; create a temp `INTEG_HOME` and export `HOME=$INTEG_HOME` before launching services so every subprocess inherits the isolated home.
 
-Rationale: claude-smart encountered this when its harness bound production ports (`8071`/`8072`/`3001`) and either failed or replaced the user's installed instance. OSS avoids the hazard today only because no such harness exists yet; the above rule prevents reintroducing it when one is added.
+Without these guards the harness binds `8061`/`8062` (already taken by a developer's running `reflexio services`) or writes to `~/.reflexio/data/`, clobbering the developer's installed state.
 
 ## Commit & PR Conventions
 
