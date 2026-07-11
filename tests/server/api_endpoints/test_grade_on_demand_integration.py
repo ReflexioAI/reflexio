@@ -19,7 +19,7 @@ wires storage → runner → cache → response.
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -32,11 +32,48 @@ from reflexio.models.api_schema.domain.entities import (
 )
 from reflexio.models.config_schema import AgentSuccessConfig
 from reflexio.server.cache.reflexio_cache import get_reflexio
+from reflexio.server.routes.evaluation import _find_fresh_result_id
 from reflexio.server.services.agent_success_evaluation.runner import (
     GroupEvaluationOutcome,
 )
 
 pytestmark = pytest.mark.integration
+
+
+def test_find_fresh_result_id_accepts_completed_in_place_upsert() -> None:
+    storage = MagicMock()
+    storage.get_agent_success_evaluation_result_ids.return_value = [7]
+
+    assert (
+        _find_fresh_result_id(
+            storage,
+            user_id="user",
+            session_id="session",
+            agent_version="v1",
+            evaluation_name="agent_success",
+            previous_result_ids={7},
+            accept_existing=True,
+        )
+        == 7
+    )
+
+
+def test_find_fresh_result_id_does_not_reuse_old_row_after_failed_grade() -> None:
+    storage = MagicMock()
+    storage.get_agent_success_evaluation_result_ids.return_value = [7]
+
+    assert (
+        _find_fresh_result_id(
+            storage,
+            user_id="user",
+            session_id="session",
+            agent_version="v1",
+            evaluation_name="agent_success",
+            previous_result_ids={7},
+            accept_existing=False,
+        )
+        is None
+    )
 
 
 def _seed_session(
@@ -388,6 +425,7 @@ def test_grade_on_demand_caches_terminal_retrieved_status_and_revalidates(
         status, fingerprint = _run_retrieved_learning_evaluation(
             user_id=kwargs["user_id"],
             session_id=kwargs["session_id"],
+            agent_version="v1",
             request_context=reflexio.request_context,
             llm_client=LiteLLMClient(LiteLLMConfig(model="gpt-4o-mini")),
             force_regenerate=True,
@@ -432,3 +470,39 @@ def test_grade_on_demand_caches_terminal_retrieved_status_and_revalidates(
         third = client.post("/api/evaluations/grade_on_demand", json=payload)
         assert third.json()["cached"] is False
         assert runner.call_count == 2
+
+
+def test_grade_on_demand_does_not_cache_when_terminal_confirmation_fails(
+    client_with_org,
+):
+    client, org_id = client_with_org
+    _configure_evaluator(org_id, evaluation_name="overall_success")
+    reflexio = get_reflexio(org_id=org_id)
+    storage = reflexio.request_context.storage
+    assert storage is not None
+    session_id = "grade-on-demand-unconfirmed"
+    user_id = "user-unconfirmed"
+    _seed_session(storage, session_id=session_id, user_id=user_id, agent_version="v1")
+    base_fake = _fake_runner_factory(
+        storage, agent_version="v1", evaluation_name="overall_success"
+    )
+
+    def fake_unconfirmed(**kwargs):
+        base_fake(**kwargs)
+        return GroupEvaluationOutcome("complete", "complete", "unconfirmed-fingerprint")
+
+    payload = {
+        "session_id": session_id,
+        "agent_version": "v1",
+        "evaluation_name": "overall_success",
+    }
+    with patch(
+        "reflexio.server.routes.evaluation.run_group_evaluation",
+        side_effect=fake_unconfirmed,
+    ) as runner:
+        first = client.post("/api/evaluations/grade_on_demand", json=payload)
+        second = client.post("/api/evaluations/grade_on_demand", json=payload)
+
+    assert first.json()["cached"] is False
+    assert second.json()["cached"] is False
+    assert runner.call_count == 2

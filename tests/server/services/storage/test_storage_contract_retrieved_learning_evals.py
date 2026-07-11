@@ -296,6 +296,14 @@ def test_publish_and_delete_invalidate_fingerprint(storage) -> None:
         USER,
         [Interaction(user_id=USER, request_id="r1", content="follow-up", role="User")],
     )
+    # Even if a caller presents the pre-publish fingerprint, the storage-side
+    # atomic check must recompute live state and reject it.
+    assert (
+        storage.get_matching_retrieved_learning_terminal_state(
+            USER, SESSION, fingerprint
+        )
+        is None
+    )
     new_fingerprint = session_fingerprint(
         storage.load_bounded_retrieved_learning_snapshot(USER, SESSION)
     )
@@ -364,6 +372,66 @@ def test_attachment_limit_aborts_scan(storage) -> None:
     )
     assert snapshot.attachment_limit_exceeded
     assert snapshot.interactions == []
+    fingerprint = session_fingerprint(snapshot)
+    storage.add_user_interactions_bulk(
+        USER,
+        [
+            Interaction(
+                user_id=USER,
+                request_id="r1",
+                content="tail",
+                role="User",
+            )
+        ],
+    )
+    rescanned = storage.load_bounded_retrieved_learning_snapshot(
+        USER, SESSION, raw_ref_limit=10
+    )
+    assert session_fingerprint(rescanned) != fingerprint
+
+
+def test_snapshot_bounds_transcript_but_retains_late_refs(storage) -> None:
+    storage.add_request(Request(request_id="r1", user_id=USER, session_id=SESSION))
+    interactions = [
+        Interaction(
+            user_id=USER,
+            request_id="r1",
+            content="x" * 200,
+            role="User",
+            created_at=1_700_000_000 + index,
+        )
+        for index in range(20)
+    ]
+    interactions.append(
+        Interaction(
+            user_id=USER,
+            request_id="r1",
+            content="late attachment",
+            role="Assistant",
+            created_at=1_700_000_100,
+            retrieved_learnings=[
+                RetrievedLearning(kind="profile", learning_id="late-profile")
+            ],
+        )
+    )
+    storage.add_user_interactions_bulk(USER, interactions)
+
+    snapshot = storage.load_bounded_retrieved_learning_snapshot(
+        USER, SESSION, transcript_char_limit=128
+    )
+
+    assert (
+        sum(
+            len(item.role) + len(item.content) + 3
+            for item in snapshot.interactions
+            if item.content
+        )
+        <= 128
+    )
+    assert any(
+        ("profile", "late-profile") in item.refs for item in snapshot.interactions
+    )
+    assert snapshot.precomputed_fingerprint
 
 
 def test_results_ordering_and_filters(storage) -> None:

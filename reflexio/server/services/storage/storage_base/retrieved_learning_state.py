@@ -52,6 +52,31 @@ type RetrievedLearningInvocationStatus = Literal[
 CANONICAL_RETRIEVED_KINDS: frozenset[str] = frozenset(
     {"profile", "user_playbook", "agent_playbook"}
 )
+DEFAULT_TRANSCRIPT_CHAR_LIMIT = 64_000
+
+
+class SessionFingerprintBuilder:
+    """Incrementally build the canonical session fingerprint."""
+
+    def __init__(self) -> None:
+        self._digest = hashlib.sha256()
+        self._digest.update(b"[")
+        self._has_entries = False
+
+    def add(self, interaction_id: int, refs: list[tuple[str, str]]) -> None:
+        if self._has_entries:
+            self._digest.update(b",")
+        self._digest.update(
+            json.dumps([interaction_id, sorted(refs)], separators=(",", ":")).encode(
+                "utf-8"
+            )
+        )
+        self._has_entries = True
+
+    def hexdigest(self) -> str:
+        digest = self._digest.copy()
+        digest.update(b"]")
+        return digest.hexdigest()
 
 
 def build_retrieved_learning_state_key(user_id: str, session_id: str) -> str:
@@ -105,6 +130,40 @@ class BoundedRetrievedLearningSnapshot:
     agent_version: str = ""
     raw_attachment_count: int = 0
     attachment_limit_exceeded: bool = False
+    precomputed_fingerprint: str | None = None
+
+
+def append_bounded_snapshot_interaction(
+    snapshot: BoundedRetrievedLearningSnapshot,
+    *,
+    interaction_id: int,
+    role: str,
+    content: str,
+    created_at: int,
+    refs: list[tuple[str, str]],
+    transcript_chars_remaining: int,
+) -> int:
+    """Retain refs and only the transcript prefix that fits the char budget."""
+    retained_role = ""
+    retained_content = ""
+    if transcript_chars_remaining > 0 and content:
+        prefix_size = len(role) + 3
+        content_budget = max(0, transcript_chars_remaining - prefix_size)
+        if content_budget:
+            retained_role = role
+            retained_content = content[:content_budget]
+            transcript_chars_remaining -= prefix_size + len(retained_content)
+    if refs or retained_content:
+        snapshot.interactions.append(
+            SnapshotInteraction(
+                interaction_id=interaction_id,
+                role=retained_role,
+                content=retained_content,
+                created_at=created_at,
+                refs=refs,
+            )
+        )
+    return max(0, transcript_chars_remaining)
 
 
 def session_fingerprint(snapshot: BoundedRetrievedLearningSnapshot) -> str:
@@ -120,12 +179,15 @@ def session_fingerprint(snapshot: BoundedRetrievedLearningSnapshot) -> str:
     Returns:
         str: Hex SHA-256 digest.
     """
-    entries = sorted(
-        (interaction.interaction_id, sorted(interaction.refs))
-        for interaction in snapshot.interactions
-    )
-    canonical = json.dumps(entries, separators=(",", ":"), sort_keys=True)
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    if snapshot.precomputed_fingerprint is not None:
+        return snapshot.precomputed_fingerprint
+    builder = SessionFingerprintBuilder()
+    for interaction in sorted(
+        snapshot.interactions,
+        key=lambda item: (item.created_at, item.interaction_id),
+    ):
+        builder.add(interaction.interaction_id, interaction.refs)
+    return builder.hexdigest()
 
 
 @dataclass

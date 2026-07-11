@@ -11,12 +11,13 @@ from reflexio.models.api_schema.service_schemas import (
 
 from ...storage_base.retrieved_learning_state import (
     CANONICAL_RETRIEVED_KINDS,
+    DEFAULT_TRANSCRIPT_CHAR_LIMIT,
     TERMINAL_RETRIEVED_STATUSES,
     BoundedRetrievedLearningSnapshot,
     RetrievedLearningCommitResult,
-    SnapshotInteraction,
+    SessionFingerprintBuilder,
+    append_bounded_snapshot_interaction,
     build_retrieved_learning_state_key,
-    session_fingerprint,
 )
 from .._base import (
     SQLiteStorageBase,
@@ -239,21 +240,17 @@ class AgentEvaluationResultStoreMixin:
         cur = self.conn.execute(
             """SELECT i.interaction_id, i.retrieved_learnings
                FROM interactions i JOIN requests r ON i.request_id = r.request_id
-               WHERE r.session_id = ? AND i.user_id = ?""",
+               WHERE r.session_id = ? AND i.user_id = ?
+               ORDER BY i.created_at ASC, i.interaction_id ASC""",
             (session_id, user_id),
         )
-        snapshot = BoundedRetrievedLearningSnapshot()
-        for row in cur.fetchall():
-            snapshot.interactions.append(
-                SnapshotInteraction(
-                    interaction_id=int(row["interaction_id"]),
-                    role="",
-                    content="",
-                    created_at=0,
-                    refs=_parse_attachment_refs(row["retrieved_learnings"]),
-                )
+        builder = SessionFingerprintBuilder()
+        for row in cur:
+            builder.add(
+                int(row["interaction_id"]),
+                _parse_attachment_refs(row["retrieved_learnings"]),
             )
-        return session_fingerprint(snapshot)
+        return builder.hexdigest()
 
     def _rle_eligible_refs(
         self, user_id: str, results: list[RetrievedLearningEvaluationResult]
@@ -334,6 +331,7 @@ class AgentEvaluationResultStoreMixin:
         user_id: str,
         session_id: str,
         raw_ref_limit: int = 5_000,
+        transcript_char_limit: int = DEFAULT_TRANSCRIPT_CHAR_LIMIT,
     ) -> BoundedRetrievedLearningSnapshot:
         snapshot = BoundedRetrievedLearningSnapshot()
         row = self._fetchone(
@@ -351,30 +349,36 @@ class AgentEvaluationResultStoreMixin:
         )
         if row:
             snapshot.agent_version = row["agent_version"] or ""
-        rows = self._fetchall(
-            """SELECT i.interaction_id, i.role, i.content, i.created_at,
+        cursor = self.conn.execute(
+            """SELECT i.interaction_id, i.role,
+                      substr(i.content, 1, ?) AS content, i.created_at,
                       i.retrieved_learnings
                FROM interactions i JOIN requests r ON i.request_id = r.request_id
                WHERE r.session_id = ? AND i.user_id = ?
                ORDER BY i.created_at ASC, i.interaction_id ASC""",
-            (session_id, user_id),
+            (transcript_char_limit, session_id, user_id),
         )
-        for r in rows:
+        builder = SessionFingerprintBuilder()
+        transcript_chars_remaining = transcript_char_limit
+        for r in cursor:
             refs = _parse_attachment_refs(r["retrieved_learnings"])
             snapshot.raw_attachment_count += len(refs)
+            builder.add(int(r["interaction_id"]), refs)
             if snapshot.raw_attachment_count > raw_ref_limit:
                 snapshot.attachment_limit_exceeded = True
                 snapshot.interactions.clear()
-                return snapshot
-            snapshot.interactions.append(
-                SnapshotInteraction(
-                    interaction_id=int(r["interaction_id"]),
-                    role=r["role"] or "User",
-                    content=r["content"] or "",
-                    created_at=_iso_to_epoch(r["created_at"]),
-                    refs=refs,
-                )
+                transcript_chars_remaining = 0
+                continue
+            transcript_chars_remaining = append_bounded_snapshot_interaction(
+                snapshot,
+                interaction_id=int(r["interaction_id"]),
+                role=r["role"] or "User",
+                content=r["content"] or "",
+                created_at=_iso_to_epoch(r["created_at"]),
+                refs=refs,
+                transcript_chars_remaining=transcript_chars_remaining,
             )
+        snapshot.precomputed_fingerprint = builder.hexdigest()
         return snapshot
 
     @SQLiteStorageBase.handle_exceptions
@@ -382,16 +386,21 @@ class AgentEvaluationResultStoreMixin:
         self, user_id: str, session_id: str, session_fingerprint: str
     ) -> dict[str, Any] | None:
         state_key = build_retrieved_learning_state_key(user_id, session_id)
-        record = self.get_operation_state(state_key)
-        if not record:
-            return None
-        state = record.get("operation_state") or {}
-        if (
-            state.get("status") in TERMINAL_RETRIEVED_STATUSES
-            and state.get("session_fingerprint") == session_fingerprint
-        ):
-            return state
-        return None
+        with self._lock:
+            try:
+                self.conn.execute("BEGIN IMMEDIATE")
+                state = self._rle_state_row(state_key)
+                live_fingerprint = self._rle_fingerprint_now(user_id, session_id)
+                matched = (
+                    state.get("status") in TERMINAL_RETRIEVED_STATUSES
+                    and state.get("session_fingerprint") == session_fingerprint
+                    and live_fingerprint == session_fingerprint
+                )
+                self.conn.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
+        return state if matched else None
 
     @SQLiteStorageBase.handle_exceptions
     def replace_retrieved_learning_evaluation_results(

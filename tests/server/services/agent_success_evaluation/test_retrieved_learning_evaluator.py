@@ -176,7 +176,12 @@ def test_resolution_skips_missing_and_ineligible(storage: SQLiteStorage) -> None
             ]
         }
     )
-    run = evaluator.evaluate(USER, SESSION, snapshot)
+    with patch.object(
+        storage,
+        "get_agent_playbooks_by_ids",
+        wraps=storage.get_agent_playbooks_by_ids,
+    ) as bulk_agent_lookup:
+        run = evaluator.evaluate(USER, SESSION, "evaluated-v2", snapshot)
     assert run.outcome == "evaluated"
     assert run.proposed_status == "complete"
     assert {(r.kind, r.learning_id) for r in run.rows} == {
@@ -186,8 +191,9 @@ def test_resolution_skips_missing_and_ineligible(storage: SQLiteStorage) -> None
     assert run.diagnostics["invalid_ref_count"] == 1
     row = next(r for r in run.rows if r.kind == "profile")
     assert row.is_relevant is True and row.impact == "positive"
-    assert row.agent_version == "v1"
+    assert row.agent_version == "evaluated-v2"
     assert row.created_at == 1_700_000_000
+    bulk_agent_lookup.assert_called_once()
 
 
 def test_unapproved_agent_playbook_is_ineligible(storage: SQLiteStorage) -> None:
@@ -205,7 +211,7 @@ def test_unapproved_agent_playbook_is_ineligible(storage: SQLiteStorage) -> None
     apb_id = storage.get_agent_playbooks(limit=10)[0].agent_playbook_id
     evaluator = _make_evaluator(storage, _echoing_llm())
     run = evaluator.evaluate(
-        USER, SESSION, _snapshot({1: [("agent_playbook", str(apb_id))]})
+        USER, SESSION, "v1", _snapshot({1: [("agent_playbook", str(apb_id))]})
     )
     assert run.outcome == "evaluated"
     assert run.rows == []
@@ -214,7 +220,7 @@ def test_unapproved_agent_playbook_is_ineligible(storage: SQLiteStorage) -> None
 def test_empty_candidates_make_zero_llm_calls(storage: SQLiteStorage) -> None:
     llm = _echoing_llm()
     evaluator = _make_evaluator(storage, llm)
-    run = evaluator.evaluate(USER, SESSION, _snapshot({1: []}))
+    run = evaluator.evaluate(USER, SESSION, "v1", _snapshot({1: []}))
     assert run.outcome == "evaluated"
     assert run.rows == []
     llm.generate_chat_response.assert_not_called()
@@ -224,7 +230,7 @@ def test_attachment_limit_fails_with_zero_llm_calls(storage: SQLiteStorage) -> N
     llm = _echoing_llm()
     evaluator = _make_evaluator(storage, llm)
     snapshot = BoundedRetrievedLearningSnapshot(attachment_limit_exceeded=True)
-    run = evaluator.evaluate(USER, SESSION, snapshot)
+    run = evaluator.evaluate(USER, SESSION, "v1", snapshot)
     assert run.outcome == "failed"
     assert run.diagnostics["error_type"] == "attachment_limit_exceeded"
     llm.generate_chat_response.assert_not_called()
@@ -234,7 +240,7 @@ def test_candidate_limit_fails_with_zero_llm_calls(storage: SQLiteStorage) -> No
     llm = _echoing_llm()
     evaluator = _make_evaluator(storage, llm)
     refs = [("user_playbook", str(n)) for n in range(1, MAX_CANONICAL_CANDIDATES + 2)]
-    run = evaluator.evaluate(USER, SESSION, _snapshot({1: refs}))
+    run = evaluator.evaluate(USER, SESSION, "v1", _snapshot({1: refs}))
     assert run.outcome == "failed"
     assert run.diagnostics["error_type"] == "candidate_limit_exceeded"
     llm.generate_chat_response.assert_not_called()
@@ -268,7 +274,9 @@ def test_one_bounded_repair_then_chunk_failure(storage: SQLiteStorage) -> None:
 
     llm.generate_chat_response.side_effect = bad_relevance_good_impact
     evaluator = _make_evaluator(storage, llm)
-    run = evaluator.evaluate(USER, SESSION, _snapshot({1: [("profile", profile_id)]}))
+    run = evaluator.evaluate(
+        USER, SESSION, "v1", _snapshot({1: [("profile", profile_id)]})
+    )
     assert run.outcome == "evaluated"
     assert run.proposed_status == "degraded"
     assert run.diagnostics["failed_relevance_chunks"] == 1
@@ -285,7 +293,9 @@ def test_all_judges_failed_reports_failure(storage: SQLiteStorage) -> None:
     llm = MagicMock()
     llm.generate_chat_response.return_value = None
     evaluator = _make_evaluator(storage, llm)
-    run = evaluator.evaluate(USER, SESSION, _snapshot({1: [("profile", profile_id)]}))
+    run = evaluator.evaluate(
+        USER, SESSION, "v1", _snapshot({1: [("profile", profile_id)]})
+    )
     assert run.outcome == "failed"
     assert run.diagnostics["error_type"] == "all_judges_failed"
 
@@ -297,7 +307,7 @@ def test_duplicate_refs_across_interactions_judged_once(
     llm = _echoing_llm()
     evaluator = _make_evaluator(storage, llm)
     snapshot = _snapshot({1: [("profile", profile_id)], 2: [("profile", profile_id)]})
-    run = evaluator.evaluate(USER, SESSION, snapshot)
+    run = evaluator.evaluate(USER, SESSION, "v1", snapshot)
     assert len(run.rows) == 1
     # One relevance + one impact call for the single deduped candidate.
     assert llm.generate_chat_response.call_count == 2

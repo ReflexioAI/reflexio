@@ -38,7 +38,6 @@ from reflexio.server.services.storage.storage_base.evaluation_state_keys import 
     build_agent_success_marker_key,
 )
 from reflexio.server.services.storage.storage_base.retrieved_learning_state import (
-    build_retrieved_learning_state_key,
     session_fingerprint,
 )
 
@@ -184,6 +183,7 @@ def run_group_evaluation(
             "skipped",
             user_id=user_id,
             session_id=session_id,
+            agent_version=agent_version,
             request_context=request_context,
             llm_client=llm_client,
             force_regenerate=force_regenerate,
@@ -314,6 +314,7 @@ def run_group_evaluation(
         "complete",
         user_id=user_id,
         session_id=session_id,
+        agent_version=agent_version,
         request_context=request_context,
         llm_client=llm_client,
         force_regenerate=force_regenerate,
@@ -325,6 +326,7 @@ def _finish_with_retrieved_evaluation(
     *,
     user_id: str,
     session_id: str,
+    agent_version: str,
     request_context: RequestContext,
     llm_client: LiteLLMClient,
     force_regenerate: bool,
@@ -334,6 +336,7 @@ def _finish_with_retrieved_evaluation(
         retrieved_status, fingerprint = _run_retrieved_learning_evaluation(
             user_id=user_id,
             session_id=session_id,
+            agent_version=agent_version,
             request_context=request_context,
             llm_client=llm_client,
             force_regenerate=force_regenerate,
@@ -356,6 +359,7 @@ def _run_retrieved_learning_evaluation(
     *,
     user_id: str,
     session_id: str,
+    agent_version: str,
     request_context: RequestContext,
     llm_client: LiteLLMClient,
     force_regenerate: bool,
@@ -389,20 +393,6 @@ def _run_retrieved_learning_evaluation(
             if status in ("complete", "not_applicable"):
                 return status, fingerprint
 
-    # Cheap short-circuit: session has no attachments and no evaluation state
-    # ever existed — nothing to judge and nothing to clear, so skip all writes.
-    has_refs = any(interaction.refs for interaction in snapshot.interactions)
-    if not has_refs and not snapshot.attachment_limit_exceeded:
-        state_key = build_retrieved_learning_state_key(user_id, session_id)
-        if storage.get_operation_state(state_key) is None:
-            logger.info(
-                "event=retrieved_learning_eval_completed session_id=%s"
-                " status=not_applicable candidates=0 committed=0",
-                session_id,
-            )
-            _eval_health.record_retrieved_outcome("not_applicable")
-            return "not_applicable", fingerprint
-
     config = request_context.configurator.get_config()
     evaluator = RetrievedLearningEvaluator(
         request_context=request_context,
@@ -426,7 +416,7 @@ def _run_retrieved_learning_evaluation(
         # that replacement recomputes under lock at commit time.
         snapshot = storage.load_bounded_retrieved_learning_snapshot(user_id, session_id)
         fingerprint = session_fingerprint(snapshot)
-        run = evaluator.evaluate(user_id, session_id, snapshot)
+        run = evaluator.evaluate(user_id, session_id, agent_version, snapshot)
         if run.outcome == "failed":
             storage.finish_retrieved_learning_evaluation_run(
                 user_id, session_id, generation, "failed", run.diagnostics

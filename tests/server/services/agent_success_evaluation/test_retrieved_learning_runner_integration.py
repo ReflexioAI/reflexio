@@ -261,3 +261,6 @@ def test_session_without_attachments_is_not_applicable(
     assert outcome.agent_success_status == "complete"
     assert outcome.retrieved_learning_status == "not_applicable"
     assert storage.get_retrieved_learning_evaluation_results(session_id=SESSION) == []
+    assert storage.get_matching_retrieved_learning_terminal_state(
+        USER, SESSION, outcome.retrieved_learning_fingerprint or ""
+    )

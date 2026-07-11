@@ -192,6 +192,7 @@ def _find_fresh_result_id(
     agent_version: str,
     evaluation_name: str,
     previous_result_ids: set[int],
+    accept_existing: bool,
 ) -> int | None:
     """Locate the result_id written by the most-recent grade for this session.
 
@@ -205,6 +206,8 @@ def _find_fresh_result_id(
         agent_version (str): The version dimension.
         evaluation_name (str): Evaluator/result namespace to isolate readback.
         previous_result_ids (set[int]): Matching rows observed before grading.
+        accept_existing (bool): Whether a completed grade may have updated an
+            existing row in place, as the Supabase backend does.
 
     Returns:
         int | None: result_id of the latest matching row, or None if the
@@ -217,9 +220,11 @@ def _find_fresh_result_id(
         agent_version=agent_version,
     )
     fresh_result_ids = [rid for rid in result_ids if rid not in previous_result_ids]
-    if not fresh_result_ids:
-        return None
-    return max(fresh_result_ids)
+    if fresh_result_ids:
+        return max(fresh_result_ids)
+    if accept_existing and result_ids:
+        return max(result_ids)
+    return None
 
 
 @router.post(
@@ -536,6 +541,7 @@ def grade_on_demand(
         agent_version=payload.agent_version,
         evaluation_name=evaluation_name,
         previous_result_ids=previous_result_ids,
+        accept_existing=outcome.agent_success_status == "complete",
     )
 
     # Cache only settled outcomes. A terminal retrieved status is cached with
@@ -558,7 +564,7 @@ def grade_on_demand(
             cache_entry["retrieved_learning_fingerprint"] = (
                 outcome.retrieved_learning_fingerprint
             )
-        storage.upsert_operation_state(cache_key, cache_entry)
+            storage.upsert_operation_state(cache_key, cache_entry)
     elif retrieved_status == "skipped":
         # Retrieved evaluation not applicable to this deployment/session
         # shape; keep the legacy agent-success-only cache behavior.

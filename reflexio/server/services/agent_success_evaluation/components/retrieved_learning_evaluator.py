@@ -193,6 +193,7 @@ class RetrievedLearningEvaluator:
         self,
         user_id: str,
         session_id: str,
+        agent_version: str,
         snapshot: BoundedRetrievedLearningSnapshot,
     ) -> RetrievedLearningEvaluationRun:
         """Evaluate every attached, retrieval-eligible learning in a session.
@@ -200,6 +201,7 @@ class RetrievedLearningEvaluator:
         Args:
             user_id (str): Session owner.
             session_id (str): Evaluated session.
+            agent_version (str): Version requested by the runner.
             snapshot (BoundedRetrievedLearningSnapshot): Bounded projection
                 loaded by storage.
 
@@ -287,7 +289,7 @@ class RetrievedLearningEvaluator:
                 RetrievedLearningEvaluationResult(
                     user_id=user_id,
                     session_id=session_id,
-                    agent_version=snapshot.agent_version,
+                    agent_version=agent_version,
                     kind=candidate.kind,  # type: ignore[arg-type]
                     learning_id=candidate.learning_id,
                     is_relevant=(
@@ -394,18 +396,15 @@ class RetrievedLearningEvaluator:
                     content=playbook.content,
                     trigger=playbook.trigger or "",
                 )
-        for agent_playbook_id in agent_playbook_ids:
-            playbook = storage.get_agent_playbook_by_id(agent_playbook_id)
-            if (
-                playbook is None
-                or playbook.status is not None
-                or playbook.playbook_status != PlaybookStatus.APPROVED
-            ):
-                continue
-            key = ("agent_playbook", str(agent_playbook_id))
+        for playbook in storage.get_agent_playbooks_by_ids(
+            agent_playbook_ids,
+            status_filter=[None],
+            playbook_status_filter=[PlaybookStatus.APPROVED],
+        ):
+            key = ("agent_playbook", str(playbook.agent_playbook_id))
             resolved[key] = LearningCandidate(
                 kind="agent_playbook",
-                learning_id=str(agent_playbook_id),
+                learning_id=str(playbook.agent_playbook_id),
                 title=playbook.playbook_name,
                 content=playbook.content,
                 trigger=playbook.trigger or "",
@@ -422,6 +421,7 @@ class RetrievedLearningEvaluator:
         lines = [
             f"{interaction.role}: {interaction.content}"
             for interaction in snapshot.interactions
+            if interaction.role or interaction.content
         ]
         return slice_content_by_tokens("\n".join(lines), TRANSCRIPT_TOKEN_LIMIT)
 

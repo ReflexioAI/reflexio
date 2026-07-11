@@ -162,6 +162,17 @@ class AgentPlaybookStoreMixin:
         raise NotImplementedError
 
     @abstractmethod
+    def get_agent_playbooks_by_ids(
+        self,
+        agent_playbook_ids: list[int],
+        *,
+        status_filter: list[Status | None] | None = None,
+        playbook_status_filter: list[PlaybookStatus] | None = None,
+    ) -> list[AgentPlaybook]:
+        """Fetch agent playbooks in bulk with lifecycle filters."""
+        raise NotImplementedError
+
+    @abstractmethod
     def delete_all_agent_playbooks(self) -> None:
         """Delete all agent playbooks from storage."""
         raise NotImplementedError

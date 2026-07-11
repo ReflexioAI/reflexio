@@ -9,6 +9,7 @@ from reflexio.models.api_schema.domain import (
 )
 
 from ..retrieved_learning_state import (
+    DEFAULT_TRANSCRIPT_CHAR_LIMIT,
     BoundedRetrievedLearningSnapshot,
     RetrievedLearningCommitResult,
 )
@@ -166,6 +167,7 @@ class AgentEvaluationResultStoreMixin:
         user_id: str,
         session_id: str,
         raw_ref_limit: int = 5_000,
+        transcript_char_limit: int = DEFAULT_TRANSCRIPT_CHAR_LIMIT,
     ) -> BoundedRetrievedLearningSnapshot:
         """Load the bounded session projection for evaluation.
 
@@ -178,6 +180,7 @@ class AgentEvaluationResultStoreMixin:
             user_id (str): Session owner.
             session_id (str): Evaluated session.
             raw_ref_limit (int): Maximum raw attachment occurrences to parse.
+            transcript_char_limit (int): Maximum transcript characters retained.
 
         Returns:
             BoundedRetrievedLearningSnapshot: The bounded projection.
@@ -190,9 +193,10 @@ class AgentEvaluationResultStoreMixin:
     ) -> dict[str, Any] | None:
         """Return the session's terminal evaluation state if still fresh.
 
-        One transactionally consistent state read. Matches only when the
-        persisted status is terminal (``complete`` / ``not_applicable``) AND
-        the persisted session fingerprint equals ``session_fingerprint``.
+        Implementations must use a writer transaction and recompute the live
+        session fingerprint in that transaction. A match requires terminal
+        status and equality among the supplied, persisted, and live
+        fingerprints.
 
         Args:
             user_id (str): Session owner.
