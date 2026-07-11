@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import time
 from pathlib import Path
@@ -20,6 +21,7 @@ from reflexio.models.api_schema.service_schemas import (
 )
 from reflexio.server.services.generation_service import GenerationService
 from reflexio.server.services.storage.retention import RetentionTarget
+from reflexio.server.services.storage.retention_archive import append_archive_batch
 from reflexio.server.services.storage.retention_mixin import RetentionMixin
 from reflexio.server.services.storage.storage_base import BaseStorage
 
@@ -62,8 +64,13 @@ def _request(request_id: str, created_at: int) -> Request:
     )
 
 
-def _archive_records(path: Path) -> list[dict[str, Any]]:
-    return [json.loads(line) for line in path.read_text().splitlines()]
+def _archive_records(archive_dir: Path, table: str | None = None) -> list[dict[str, Any]]:
+    records = [
+        json.loads(line)
+        for path in sorted(archive_dir.glob("*.jsonl"))
+        for line in path.read_text().splitlines()
+    ]
+    return [record for record in records if table is None or record["table"] == table]
 
 
 def test_archive_flag_off_preserves_existing_delete_behavior(
@@ -83,7 +90,7 @@ def test_archive_flag_off_preserves_existing_delete_behavior(
     assert not archive_dir.exists()
 
 
-def test_archive_ceiling_skips_evidence_but_caps_live_rows(
+def test_single_batch_over_ceiling_skips_evidence_but_caps_live_rows(
     storage: BaseStorage,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
@@ -101,7 +108,33 @@ def test_archive_ceiling_skips_evidence_but_caps_live_rows(
     assert "live-row retention continues" in caplog.text
 
 
-def test_automatic_cleanup_continues_after_archive_ceiling(
+def test_archive_fifo_evicts_oldest_segment_for_latest_batch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    archive_dir = tmp_path / "archive"
+    caplog.set_level(logging.INFO)
+    monkeypatch.setenv("REFLEXIO_RETENTION_ARCHIVE_MAX_BYTES", "100000")
+    assert append_archive_batch(
+        archive_dir, {"interactions": [{"interaction_id": 1, "content": "old"}]}
+    )
+    first_size = sum(path.stat().st_size for path in archive_dir.glob("*.jsonl"))
+    monkeypatch.setenv("REFLEXIO_RETENTION_ARCHIVE_MAX_BYTES", str(first_size + 10))
+
+    assert append_archive_batch(
+        archive_dir, {"interactions": [{"interaction_id": 2, "content": "new"}]}
+    )
+
+    records = _archive_records(archive_dir, "interactions")
+    assert [record["row"]["interaction_id"] for record in records] == [2]
+    assert sum(path.stat().st_size for path in archive_dir.glob("*.jsonl")) <= (
+        first_size + 10
+    )
+    assert "FIFO evicted oldest evidence" in caplog.text
+
+
+def test_automatic_cleanup_continues_when_one_batch_exceeds_ceiling(
     storage: BaseStorage,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
@@ -151,8 +184,8 @@ def test_archive_preserves_deleted_rows_without_embeddings(
 
     assert storage.delete_oldest_retention_target_rows("interactions", 2) == 2  # type: ignore[attr-defined]
 
-    path = Path(storage.db_path).parent / "archive" / "interactions.jsonl"  # type: ignore[attr-defined]
-    records = _archive_records(path)
+    archive_dir = Path(storage.db_path).parent / "archive"  # type: ignore[attr-defined]
+    records = _archive_records(archive_dir, "interactions")
     archived_ids = {record["row"]["interaction_id"] for record in records}  # type: ignore[index]
     live_ids = {
         interaction.interaction_id
@@ -162,6 +195,10 @@ def test_archive_preserves_deleted_rows_without_embeddings(
     assert all(record["table"] == "interactions" for record in records)
     assert all(isinstance(record["archived_at"], int) for record in records)
     assert all("embedding" not in record["row"] for record in records)  # type: ignore[operator]
+    interaction_columns = {
+        row[1] for row in storage.conn.execute("PRAGMA table_info(interactions)")  # type: ignore[attr-defined]
+    }
+    assert set(records[0]["row"]) == interaction_columns - {"embedding"}
     assert json.loads(records[0]["row"]["retrieved_learnings"]) == [
         {
             "kind": "profile",
@@ -196,9 +233,10 @@ def test_over_limit_cleanup_archives_before_automatic_retention(
 
     service._cleanup_storage_tables_if_needed()
 
-    archive_path = Path(storage.db_path).parent / "archive" / "interactions.jsonl"  # type: ignore[attr-defined]
+    archive_dir = Path(storage.db_path).parent / "archive"  # type: ignore[attr-defined]
     archived_ids = {
-        record["row"]["interaction_id"] for record in _archive_records(archive_path)
+        record["row"]["interaction_id"]
+        for record in _archive_records(archive_dir, "interactions")
     }
     live_ids = {
         interaction.interaction_id
@@ -229,9 +267,10 @@ def test_large_over_limit_cleanup_caps_live_rows_and_preserves_removed_rows(
 
     service._cleanup_storage_tables_if_needed()
 
-    archive_path = Path(storage.db_path).parent / "archive" / "interactions.jsonl"  # type: ignore[attr-defined]
+    archive_dir = Path(storage.db_path).parent / "archive"  # type: ignore[attr-defined]
     archived_ids = {
-        record["row"]["interaction_id"] for record in _archive_records(archive_path)
+        record["row"]["interaction_id"]
+        for record in _archive_records(archive_dir, "interactions")
     }
     live_ids = {
         interaction.interaction_id
@@ -255,8 +294,9 @@ def test_archive_includes_cascade_deleted_rows(
     assert storage.delete_oldest_retention_target_rows("requests", 2) == 2  # type: ignore[attr-defined]
 
     archive_dir = Path(storage.db_path).parent / "archive"  # type: ignore[attr-defined]
-    request_records = _archive_records(archive_dir / "requests.jsonl")
-    interaction_records = _archive_records(archive_dir / "interactions.jsonl")
+    request_records = _archive_records(archive_dir, "requests")
+    interaction_records = _archive_records(archive_dir, "interactions")
+    assert len(list(archive_dir.glob("*.jsonl"))) == 1
     assert {record["row"]["request_id"] for record in request_records} == {  # type: ignore[index]
         "req1",
         "req2",
@@ -338,7 +378,7 @@ def test_archive_failure_logs_evidence_loss_and_continues_deletion(
         raise OSError("disk full")
 
     monkeypatch.setattr(
-        "reflexio.server.services.storage.retention_mixin.append_archive_rows", fail
+        "reflexio.server.services.storage.retention_mixin.append_archive_batch", fail
     )
     assert storage.delete_oldest_retention_target_rows("interactions", 1) == 1  # type: ignore[attr-defined]
 
@@ -357,7 +397,7 @@ def test_archive_directory_override_is_respected(
 
     storage.delete_oldest_retention_target_rows("interactions", 1)  # type: ignore[attr-defined]
 
-    assert (archive_dir / "interactions.jsonl").is_file()
+    assert len(list(archive_dir.glob("*.jsonl"))) == 1
     assert not (Path(storage.db_path).parent / "archive").exists()  # type: ignore[attr-defined]
 
 

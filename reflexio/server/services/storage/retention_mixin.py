@@ -22,7 +22,7 @@ from reflexio.server.services.storage.retention import (
     RetentionTarget,
 )
 from reflexio.server.services.storage.retention_archive import (
-    append_archive_rows,
+    append_archive_batch,
     retention_archive_enabled,
 )
 
@@ -119,6 +119,7 @@ class RetentionMixin(ABC):
                     archive_dir = self._retention_archive_directory()
                     parent_ids = [(key[0],) for key in keys]
                     cascades = RETENTION_CASCADES.get(target.name, ())
+                    rows_by_table: dict[str, list[dict[str, Any]]] = {}
                     if cascades and len(target.id_columns) != 1:
                         raise AssertionError(
                             f"Cascade archive target {target.name} must have one key"
@@ -129,11 +130,11 @@ class RetentionMixin(ABC):
                             (cascade.fk_column,),
                             parent_ids,
                         )
-                        append_archive_rows(archive_dir, cascade.table_name, rows)
-                    rows = self._retention_fetch_rows(
+                        rows_by_table[cascade.table_name] = rows
+                    rows_by_table[target.table_name] = self._retention_fetch_rows(
                         target.table_name, target.id_columns, keys
                     )
-                    append_archive_rows(archive_dir, target.table_name, rows)
+                    append_archive_batch(archive_dir, rows_by_table)
                 except Exception:  # noqa: BLE001 - archiving must not stop retention
                     logger.error(  # noqa: G201 - contract requires an explicit error log
                         "Failed to archive retention rows for target %s; evidence was "

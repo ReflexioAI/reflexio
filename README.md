@@ -303,12 +303,14 @@ JSONL files. The feature is off by default.
 |---|---|
 | `REFLEXIO_RETENTION_ARCHIVE=1` | Archive rows before retention deletes them. |
 | `REFLEXIO_RETENTION_ARCHIVE_DIR=/path` | Override the default `<database-directory>/archive` location. |
-| `REFLEXIO_RETENTION_ARCHIVE_WARN_BYTES=10737418240` | Log an error after total JSONL size exceeds this warning threshold; retention continues. |
+| `REFLEXIO_RETENTION_ARCHIVE_MAX_BYTES=10737418240` | Bound completed JSONL segments to this total size (10 GiB by default). |
 
-Archive-enabled cleanup processes at most 1,000 parent rows per pass and holds
-one SQLite write transaction while copying and deleting that batch. JSONL files
-do not have a hard size limit; operators should monitor and rotate them after a
-warning. Postgres and Supabase do not support this local archive.
+Each archive-enabled SQLite transaction processes at most 1,000 parent rows.
+One JSONL segment contains that target batch and its cascade-deleted rows. After
+the newest segment is complete, Reflexio removes the oldest whole segments until
+the archive is back under its ceiling (FIFO). A single batch larger than the
+ceiling, or any archive I/O failure, is logged as evidence loss; live retention
+still continues. The local archive is implemented for SQLite.
 
 ## Integrations
 

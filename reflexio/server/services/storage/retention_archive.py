@@ -1,4 +1,4 @@
-"""Append-only JSONL sink for rows removed by row-count retention."""
+"""Bounded FIFO JSONL archive for rows removed by row-count retention."""
 
 from __future__ import annotations
 
@@ -6,13 +6,14 @@ import json
 import logging
 import os
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 DEFAULT_RETENTION_ARCHIVE_MAX_BYTES = 10 * 1024**3
 RETENTION_ARCHIVE_DELETE_BATCH = 1_000
 logger = logging.getLogger(__name__)
-_warned_archive_dirs: set[Path] = set()
 
 
 def retention_archive_enabled() -> bool:
@@ -24,14 +25,7 @@ def retention_archive_enabled() -> bool:
 
 
 def resolve_archive_directory(database_path: str) -> Path:
-    """Resolve the archive directory from the override or SQLite DB path.
-
-    Args:
-        database_path: Path to the active SQLite database.
-
-    Returns:
-        Directory that owns the per-table JSONL archive files.
-    """
+    """Return the configured archive directory or the SQLite-local default."""
     override = os.environ.get("REFLEXIO_RETENTION_ARCHIVE_DIR")
     if override:
         return Path(override).expanduser()
@@ -39,26 +33,14 @@ def resolve_archive_directory(database_path: str) -> Path:
 
 
 def retention_archive_max_bytes() -> int:
-    """Return the total archive-directory hard ceiling in bytes.
-
-    Returns:
-        Positive archive ceiling. Defaults to 10 GiB.
-
-    Invalid values log an error and fall back to 10 GiB so observability
-    configuration can never stop live-row retention.
-    """
+    """Return the positive archive ceiling, defaulting to 10 GiB."""
     raw = os.environ.get("REFLEXIO_RETENTION_ARCHIVE_MAX_BYTES")
     if raw is None or not raw.strip():
         return DEFAULT_RETENTION_ARCHIVE_MAX_BYTES
     try:
         value = int(raw)
     except ValueError:
-        logger.error(
-            "Invalid REFLEXIO_RETENTION_ARCHIVE_MAX_BYTES=%r; using %d",
-            raw,
-            DEFAULT_RETENTION_ARCHIVE_MAX_BYTES,
-        )
-        return DEFAULT_RETENTION_ARCHIVE_MAX_BYTES
+        value = 0
     if value <= 0:
         logger.error(
             "Invalid REFLEXIO_RETENTION_ARCHIVE_MAX_BYTES=%r; using %d",
@@ -69,81 +51,83 @@ def retention_archive_max_bytes() -> int:
     return value
 
 
-def archive_size_bytes(archive_dir: Path) -> int:
-    """Return total bytes currently used by JSONL archive files.
-
-    Args:
-        archive_dir: Directory containing per-table JSONL files.
-
-    Returns:
-        Sum of all ``*.jsonl`` file sizes, or zero before first write.
-    """
-    if not archive_dir.is_dir():
-        return 0
-    return sum(path.stat().st_size for path in archive_dir.glob("*.jsonl"))
-
-
-def append_archive_rows(
-    archive_dir: Path, table_name: str, rows: list[dict[str, Any]]
-) -> bool:
-    """Append sanitized rows to ``table_name``'s archive file.
-
-    Each JSON line is emitted with one ``write`` call. Values unsupported by
-    the JSON encoder fall back to their ``repr`` while embeddings are omitted.
-
-    Args:
-        archive_dir: Directory containing per-table JSONL files.
-        table_name: Physical table being archived.
-        rows: Complete database rows selected for retention removal.
-
-    The configured threshold is a hard archive ceiling. A batch that would
-    cross it is skipped whole so disk usage stays bounded; callers must still
-    continue live-row retention.
-
-    Returns:
-        True when all rows were appended, or False when the ceiling skipped
-        the batch.
-    """
-    if not rows:
-        return True
-    archive_dir.mkdir(parents=True, exist_ok=True)
+def _encode_records(rows_by_table: Mapping[str, list[dict[str, Any]]]) -> bytes:
     archived_at = int(time.time())
+    lines = []
+    for table_name, rows in rows_by_table.items():
+        for row in rows:
+            record = {
+                "table": table_name,
+                "archived_at": archived_at,
+                "row": {key: value for key, value in row.items() if key != "embedding"},
+            }
+            lines.append(json.dumps(record, default=repr, separators=(",", ":")))
+    return ("\n".join(lines) + "\n").encode("utf-8") if lines else b""
+
+
+def append_archive_batch(
+    archive_dir: Path, rows_by_table: Mapping[str, list[dict[str, Any]]]
+) -> bool:
+    """Append one retention batch and evict oldest segments to stay bounded.
+
+    One segment contains the target rows and any cascade-deleted rows, so FIFO
+    eviction never splits a retention batch. The completed newest segment is
+    installed before old segments are removed; a crash can temporarily exceed
+    the ceiling but cannot replace newest evidence with older evidence.
+
+    Returns:
+        True when the batch was archived. False only when one batch is itself
+        larger than the configured ceiling.
+    """
+    encoded = _encode_records(rows_by_table)
+    if not encoded:
+        return True
     max_bytes = retention_archive_max_bytes()
-    projected_bytes = archive_size_bytes(archive_dir)
-    resolved_archive_dir = archive_dir.resolve()
-    if projected_bytes <= max_bytes:
-        _warned_archive_dirs.discard(resolved_archive_dir)
-    path = archive_dir / f"{table_name}.jsonl"
-    encoded_lines: list[bytes] = []
-    for row in rows:
-        sanitized = {key: value for key, value in row.items() if key != "embedding"}
-        record = {
-            "table": table_name,
-            "archived_at": archived_at,
-            "row": sanitized,
-        }
-        encoded_lines.append(
-            (json.dumps(record, default=repr, separators=(",", ":")) + "\n").encode(
-                "utf-8"
-            )
-        )
-    batch_bytes = sum(len(line) for line in encoded_lines)
-    if projected_bytes + batch_bytes > max_bytes:
+    row_count = sum(len(rows) for rows in rows_by_table.values())
+    if len(encoded) > max_bytes:
         logger.error(
-            "Retention archive ceiling reached; skipping evidence archive while "
-            "live-row retention continues: directory=%s table=%s rows_skipped=%d "
-            "size_bytes=%d batch_bytes=%d ceiling_bytes=%d",
-            archive_dir,
-            table_name,
-            len(rows),
-            projected_bytes,
-            batch_bytes,
+            "Retention archive batch exceeds the archive ceiling; skipping evidence "
+            "while live-row retention continues: rows_skipped=%d batch_bytes=%d "
+            "ceiling_bytes=%d",
+            row_count,
+            len(encoded),
             max_bytes,
         )
-        _warned_archive_dirs.add(resolved_archive_dir)
         return False
-    with path.open("ab") as archive_file:
-        for encoded_line in encoded_lines:
-            archive_file.write(encoded_line)
-            projected_bytes += len(encoded_line)
+
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    segment = archive_dir / f"{time.time_ns():020d}-{uuid4().hex}.jsonl"
+    temporary = segment.with_suffix(".tmp")
+    try:
+        temporary.write_bytes(encoded)
+        temporary.replace(segment)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+    segments = sorted(
+        archive_dir.glob("*.jsonl"),
+        key=lambda path: (path.stat().st_mtime_ns, path.name),
+    )
+    total_bytes = sum(path.stat().st_size for path in segments)
+    evicted_files = 0
+    evicted_bytes = 0
+    for oldest in segments:
+        if total_bytes <= max_bytes:
+            break
+        if oldest == segment:
+            continue
+        size = oldest.stat().st_size
+        oldest.unlink()
+        total_bytes -= size
+        evicted_files += 1
+        evicted_bytes += size
+    if evicted_files:
+        logger.info(
+            "Retention archive FIFO evicted oldest evidence: files=%d bytes=%d "
+            "size_bytes=%d ceiling_bytes=%d",
+            evicted_files,
+            evicted_bytes,
+            total_bytes,
+            max_bytes,
+        )
     return True
