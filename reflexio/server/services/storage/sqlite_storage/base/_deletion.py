@@ -8,6 +8,8 @@ Peeled verbatim from ``_base.py`` (Tier-1 storage decomposition). Composed into
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -36,10 +38,22 @@ class SQLiteDeletionMixin:
 
     # -- Retention hooks (see RetentionMixin) --
 
-    def _retention_guard(self) -> Any:
-        return self._lock
+    @contextmanager
+    def _retention_guard(self) -> Iterator[None]:
+        """Fence archive selection and deletion across threads and processes."""
+        with self._lock:
+            self.conn.execute("BEGIN IMMEDIATE")
+            try:
+                yield
+            except Exception:
+                self.conn.rollback()
+                raise
+            finally:
+                if self.conn.in_transaction:
+                    self.conn.rollback()
 
     def _retention_archive_directory(self) -> Path:
+        """Return this SQLite database's configured archive directory."""
         return resolve_archive_directory(self.db_path)
 
     @SQLiteStorageBase.handle_exceptions
@@ -49,6 +63,7 @@ class SQLiteDeletionMixin:
         key_columns: tuple[str, ...],
         keys: list[tuple[Any, ...]],
     ) -> list[dict[str, Any]]:
+        """Fetch full rows matching retention keys for JSONL archiving."""
         if not keys:
             return []
         if len(key_columns) == 1:

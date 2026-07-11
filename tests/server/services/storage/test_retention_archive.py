@@ -16,6 +16,7 @@ from reflexio.models.api_schema.service_schemas import (
     UserActionType,
 )
 from reflexio.server.services.generation_service import GenerationService
+from reflexio.server.services.storage.retention_archive import RetentionArchiveFullError
 from reflexio.server.services.storage.storage_base import BaseStorage
 
 pytestmark = pytest.mark.integration
@@ -54,11 +55,58 @@ def test_archive_flag_off_preserves_existing_delete_behavior(
 ) -> None:
     monkeypatch.delenv("REFLEXIO_RETENTION_ARCHIVE", raising=False)
     monkeypatch.delenv("REFLEXIO_RETENTION_ARCHIVE_DIR", raising=False)
+    monkeypatch.setattr(
+        storage,
+        "_retention_guard",
+        lambda: (_ for _ in ()).throw(AssertionError("off path acquired guard")),
+    )
     archive_dir = Path(storage.db_path).parent / "archive"  # type: ignore[attr-defined]
     storage.add_user_interaction("u1", _interaction(1, "req1"))
 
     assert storage.delete_oldest_retention_target_rows("interactions", 1) == 1  # type: ignore[attr-defined]
     assert not archive_dir.exists()
+
+
+def test_archive_ceiling_stops_deletion_without_exceeding_limit(
+    storage: BaseStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("REFLEXIO_RETENTION_ARCHIVE", "true")
+    monkeypatch.setenv("REFLEXIO_RETENTION_ARCHIVE_MAX_BYTES", "1")
+    storage.add_user_interaction("u1", _interaction(1, "req1"))
+
+    with pytest.raises(RetentionArchiveFullError):
+        storage.delete_oldest_retention_target_rows("interactions", 1)  # type: ignore[attr-defined]
+
+    assert {item.interaction_id for item in storage.get_all_interactions(limit=10)} == {
+        1
+    }
+    archive_dir = Path(storage.db_path).parent / "archive"  # type: ignore[attr-defined]
+    assert sum(path.stat().st_size for path in archive_dir.glob("*.jsonl")) <= 1
+
+
+def test_automatic_cleanup_treats_archive_ceiling_as_nonfatal(
+    storage: BaseStorage,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setenv("REFLEXIO_RETENTION_ARCHIVE", "true")
+    monkeypatch.setenv("REFLEXIO_RETENTION_ARCHIVE_MAX_BYTES", "1")
+    monkeypatch.setattr(
+        "reflexio.server.services.generation_service.get_row_retention_limits",
+        lambda: {"interactions": 1},
+    )
+    storage.add_user_interaction("u1", _interaction(1, "req1"))
+    service = GenerationService.__new__(GenerationService)
+    service.org_id = "archive-ceiling-test"
+    service.storage = storage
+    monkeypatch.setattr(service, "_should_check_retention_target", lambda *_: True)
+
+    service._cleanup_storage_tables_if_needed()
+
+    assert {item.interaction_id for item in storage.get_all_interactions(limit=10)} == {
+        1
+    }
+    assert "live-row trimming was stopped" in caplog.text
 
 
 def test_archive_preserves_deleted_rows_without_embeddings(
@@ -118,6 +166,41 @@ def test_over_limit_cleanup_archives_before_automatic_retention(
     assert len(archived_ids) == 1
 
 
+def test_large_over_limit_cleanup_caps_live_rows_and_preserves_removed_rows(
+    storage: BaseStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("REFLEXIO_RETENTION_ARCHIVE", "true")
+    monkeypatch.setenv("REFLEXIO_RETENTION_ARCHIVE_MAX_BYTES", str(10 * 1024**2))
+    monkeypatch.setattr(
+        "reflexio.server.services.generation_service.get_row_retention_limits",
+        lambda: {"interactions": 1000},
+    )
+    original_ids = set(range(1, 1201))
+    for interaction_id in original_ids:
+        storage.add_user_interaction(
+            "u1", _interaction(interaction_id, f"req{interaction_id}")
+        )
+    service = GenerationService.__new__(GenerationService)
+    service.org_id = "large-archive-cleanup-test"
+    service.storage = storage
+    monkeypatch.setattr(service, "_should_check_retention_target", lambda *_: True)
+
+    service._cleanup_storage_tables_if_needed()
+
+    archive_path = Path(storage.db_path).parent / "archive" / "interactions.jsonl"  # type: ignore[attr-defined]
+    archived_ids = {
+        record["row"]["interaction_id"] for record in _archive_records(archive_path)
+    }
+    live_ids = {
+        interaction.interaction_id
+        for interaction in storage.get_all_interactions(limit=2000)
+    }
+    assert len(live_ids) == 960
+    assert len(archived_ids) == 240
+    assert archived_ids.isdisjoint(live_ids)
+    assert archived_ids | live_ids == original_ids
+
+
 def test_archive_includes_cascade_deleted_rows(
     storage: BaseStorage, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -148,6 +231,8 @@ def test_archive_includes_cascade_deleted_rows(
 def test_archive_and_delete_hold_one_sqlite_writer_guard(
     storage: BaseStorage, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
+
     monkeypatch.setenv("REFLEXIO_RETENTION_ARCHIVE", "true")
     storage.add_request(_request("req1", 1))
     storage.add_user_interaction("u1", _interaction(1, "req1"))
@@ -156,6 +241,10 @@ def test_archive_and_delete_hold_one_sqlite_writer_guard(
     writer_done = threading.Event()
     writer_errors: list[BaseException] = []
     original_fetch = storage._retention_fetch_rows  # type: ignore[attr-defined]
+    writer_storage = SQLiteStorage(
+        org_id="concurrent-writer",
+        db_path=storage.db_path,  # type: ignore[attr-defined]
+    )
 
     def observed_fetch(
         table_name: str,
@@ -176,7 +265,7 @@ def test_archive_and_delete_hold_one_sqlite_writer_guard(
         try:
             assert cascade_fetched.wait(timeout=1)
             writer_attempting.set()
-            storage.add_user_interaction("u1", _interaction(99, "req1"))
+            writer_storage.add_user_interaction("u1", _interaction(99, "req1"))
         except BaseException as exc:  # pragma: no cover - asserted in main thread
             writer_errors.append(exc)
         finally:
@@ -186,6 +275,7 @@ def test_archive_and_delete_hold_one_sqlite_writer_guard(
     writer.start()
     storage.delete_oldest_retention_target_rows("requests", 1)  # type: ignore[attr-defined]
     writer.join(timeout=1)
+    writer_storage.conn.close()
 
     assert not writer_errors
     assert writer_done.is_set()
