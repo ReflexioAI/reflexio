@@ -67,6 +67,11 @@ class SQLiteDeletionMixin:
         if not keys:
             return []
         escaped_table = table_name.replace('"', '""')
+        quoted_table = f'"{escaped_table}"'
+        quoted_keys = []
+        for column in key_columns:
+            escaped_key = column.replace('"', '""')
+            quoted_keys.append(f'"{escaped_key}"')
         column_names = [
             str(row["name"])
             for row in self.conn.execute(
@@ -83,8 +88,8 @@ class SQLiteDeletionMixin:
         columns_sql = ", ".join(quoted_columns)
         if len(key_columns) == 1:
             rows = self._select_in_chunks(
-                f"SELECT {columns_sql} FROM {table_name} "  # noqa: S608
-                f"WHERE {key_columns[0]} IN ({{placeholders}})",
+                f"SELECT {columns_sql} FROM {quoted_table} "  # noqa: S608
+                f"WHERE {quoted_keys[0]} IN ({{placeholders}})",
                 [key[0] for key in keys],
             )
             return [dict(row) for row in rows]
@@ -94,13 +99,13 @@ class SQLiteDeletionMixin:
         rows: list[Any] = []
         for key_chunk in chunked(keys, rows_per_chunk):
             where = " OR ".join(
-                "(" + " AND ".join(f"{column} = ?" for column in key_columns) + ")"
+                "(" + " AND ".join(f"{column} = ?" for column in quoted_keys) + ")"
                 for _ in key_chunk
             )
             params = [value for key in key_chunk for value in key]
             rows.extend(
                 self.conn.execute(
-                    f"SELECT {columns_sql} FROM {table_name} WHERE {where}",  # noqa: S608
+                    f"SELECT {columns_sql} FROM {quoted_table} WHERE {where}",  # noqa: S608
                     params,
                 ).fetchall()
             )

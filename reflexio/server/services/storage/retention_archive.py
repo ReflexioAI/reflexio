@@ -18,7 +18,11 @@ logger = logging.getLogger(__name__)
 
 
 def retention_archive_enabled() -> bool:
-    """Return whether archive-before-delete retention is enabled."""
+    """Return whether archive-before-delete retention is enabled.
+
+    Returns:
+        True when the archive environment flag is enabled.
+    """
     return os.environ.get("REFLEXIO_RETENTION_ARCHIVE", "").lower() in {
         "1",
         "true",
@@ -26,7 +30,14 @@ def retention_archive_enabled() -> bool:
 
 
 def resolve_archive_directory(database_path: str) -> Path:
-    """Return the configured archive directory or the SQLite-local default."""
+    """Return the configured archive directory or the SQLite-local default.
+
+    Args:
+        database_path: Path to the SQLite database.
+
+    Returns:
+        Configured archive directory, or a sibling ``archive`` directory.
+    """
     override = os.environ.get("REFLEXIO_RETENTION_ARCHIVE_DIR")
     if override:
         return Path(override).expanduser()
@@ -34,7 +45,11 @@ def resolve_archive_directory(database_path: str) -> Path:
 
 
 def retention_archive_max_bytes() -> int:
-    """Return the positive archive ceiling, defaulting to 10 GiB."""
+    """Return the positive archive ceiling, defaulting to 10 GiB.
+
+    Returns:
+        Configured positive ceiling in bytes, or the default for invalid input.
+    """
     raw = os.environ.get("REFLEXIO_RETENTION_ARCHIVE_MAX_BYTES")
     if raw is None or not raw.strip():
         return DEFAULT_RETENTION_ARCHIVE_MAX_BYTES
@@ -97,6 +112,10 @@ def append_archive_batch(
     eviction never splits a retention batch. The completed newest segment is
     installed before old segments are removed; a crash can temporarily exceed
     the ceiling but cannot replace newest evidence with older evidence.
+
+    Args:
+        archive_dir: Directory that owns the FIFO archive segments.
+        rows_by_table: Deleted database rows grouped by source table.
 
     Returns:
         True when the batch was archived. False only when one batch is itself
