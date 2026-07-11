@@ -75,6 +75,51 @@ class ProfileWritePlan:
 
 
 @dataclass
+class PlaybookWritePlan:
+    """Resolved playbook write-plan for the compute/persist split (gate b).
+
+    ``PlaybookGenerationService._resolve_write_plan`` produces this in compute
+    (``dedupe_and_drop_empty`` + the deduplicator's 2nd-LLM call + existing-row
+    reads + source/status assignment + precomputed ``.embedding`` via
+    ``precompute_user_playbook_embeddings``), issuing **no** learning DB write.
+    ``_persist_write_plan`` applies it inside the fence:
+    ``save_user_playbooks(..., skip_embedding=True)`` (which assigns survivor
+    ids) then ``_apply_consolidation_lineage`` (which MUST see those ids, so it
+    runs AFTER the save).
+
+    The off-thread schedulers (``_enqueue_user_playbook_optimization`` +
+    ``_trigger_playbook_aggregation``) are NOT part of persist — they fire
+    post-commit in ``emit_generation_side_effects`` (durable / ``.run()`` path)
+    or right after persist in the permanent ``_finalize_extracted_items``
+    wrapper (synchronous resume/manual path). ``output_pending_status`` /
+    ``skip_aggregation`` are snapshotted here so the scheduler dispatch reads the
+    plan rather than the reused service instance.
+
+    Attributes:
+        request_id: Generation request id — the lineage key
+            ``_apply_consolidation_lineage`` records on merges/supersedes.
+        output_pending_status: Whether the run emits PENDING rows (rerun mode);
+            when True the aggregation trigger is suppressed.
+        skip_aggregation: Whether aggregation is skipped (extract-only); when
+            True the aggregation trigger is suppressed.
+        new_playbooks: New playbook rows with ``source``/``status`` set and
+            ``.embedding`` precomputed in compute. Survivor ids are assigned by
+            ``save_user_playbooks`` in persist, before lineage reads them.
+        superseded_ids: ALL archived existing ids (merge sources + leftovers)
+            routed through ``_apply_consolidation_lineage``.
+        merge_groups: ``(survivor_index_into_new_playbooks, source_existing_ids)``
+            per dedup merge group.
+    """
+
+    request_id: str
+    output_pending_status: bool
+    skip_aggregation: bool
+    new_playbooks: list[UserPlaybook]
+    superseded_ids: list[int]
+    merge_groups: list[tuple[int, list[int]]]
+
+
+@dataclass
 class ReflectionWritePlan:
     """Resolved reflection write-plan for the compute/persist split (F5, V2).
 
