@@ -8,9 +8,13 @@ Peeled verbatim from ``_base.py`` (Tier-1 storage decomposition). Composed into
 from __future__ import annotations
 
 import sqlite3
+from pathlib import Path
 from typing import Any
 
 from reflexio.server.services.storage.retention import RetentionTarget
+from reflexio.server.services.storage.retention_archive import (
+    resolve_archive_directory,
+)
 from reflexio.server.services.storage.retention_mixin import (
     RETENTION_DELETE_CHUNK,
     chunked,
@@ -28,8 +32,46 @@ class SQLiteDeletionMixin:
     _fetchone: Any
     _fetchall: Any
     _has_sqlite_vec: bool
+    db_path: str
 
     # -- Retention hooks (see RetentionMixin) --
+
+    def _retention_archive_directory(self) -> Path:
+        return resolve_archive_directory(self.db_path)
+
+    @SQLiteStorageBase.handle_exceptions
+    def _retention_fetch_rows(
+        self,
+        table_name: str,
+        key_columns: tuple[str, ...],
+        keys: list[tuple[Any, ...]],
+    ) -> list[dict[str, Any]]:
+        if not keys:
+            return []
+        if len(key_columns) == 1:
+            rows = self._select_in_chunks(
+                f"SELECT * FROM {table_name} "  # noqa: S608
+                f"WHERE {key_columns[0]} IN ({{placeholders}})",
+                [key[0] for key in keys],
+            )
+            return [dict(row) for row in rows]
+
+        params_per_key = len(key_columns)
+        rows_per_chunk = max(1, RETENTION_DELETE_CHUNK // params_per_key)
+        rows: list[Any] = []
+        for key_chunk in chunked(keys, rows_per_chunk):
+            where = " OR ".join(
+                "(" + " AND ".join(f"{column} = ?" for column in key_columns) + ")"
+                for _ in key_chunk
+            )
+            params = [value for key in key_chunk for value in key]
+            rows.extend(
+                self.conn.execute(
+                    f"SELECT * FROM {table_name} WHERE {where}",  # noqa: S608
+                    params,
+                ).fetchall()
+            )
+        return [dict(row) for row in rows]
 
     @SQLiteStorageBase.handle_exceptions
     def _retention_table_exists(self, table_name: str) -> bool:
